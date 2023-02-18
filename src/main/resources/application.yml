@@ -1,0 +1,107 @@
+quarkus:
+  datasource:
+    db-kind: mariadb
+    jdbc:
+      url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      driver: org.mariadb.jdbc.Driver
+      min-size: 5
+      max-size: 10
+    username: ${USERNAME:root}
+    password: ${PASSWORD:1606}
+  container-image:
+    group: trustworks
+    name: intranetservices
+    registry: registry.hub.docker.com
+    builder: docker
+  native:
+    additional-build-args: =-H:ResourceConfigurationFiles=resources-config.json
+  swagger-ui:
+    always-include: true
+  mailer:
+    auth-methods: LOGIN
+    from: mailer-deamon@trustworks.dk
+    host: email-smtp.eu-west-1.amazonaws.com
+    port: 587
+    start-tls: REQUIRED
+    username: ${MAILUSERNAME:xx}
+    password: ${MAILPASSWORD:xx}
+    mock: false
+  http:
+    limits:
+      max-body-size: 20M
+    access-log:
+      enabled: false
+      pattern: common
+    port: 9093 #registry.hub.docker.com/
+  resteasy:
+    gzip:
+      enabled: true
+      max-input: 20M
+  log:
+    level: INFO
+    category:
+      "dk.trustworks":
+        level: ${LOGLEVEL:INFO}
+      "io.qua.htt.access-log":
+        level: WARN
+      "dk.tru.api.log.LoggingFilter":
+        level: ERROR
+  cache:
+    caffeine:
+      "work-cache":
+        expire-after-write: 60S
+      "user-cache":
+        expire-after-write: 60S
+      "invoice-cache":
+        expire-after-write: 60S
+      "budget-cache":
+        expire-after-write: 8H
+      "budget-client":
+        expire-after-write: 60S
+      "availability-cache":
+        expire-after-write: 8H
+      "knowledge-cache":
+        expire-after-write: 8H
+      "financedetails-cache":
+        expire-after-write: 300S
+  smallrye-jwt:
+    enabled: true
+  s3:
+    sync-client:
+      type: APACHE
+    aws:
+      region: eu-west-1
+      credentials:
+        type: STATIC
+        static-provider:
+          access-key-id: AKIA5SCDPPSOHCY7OKPF
+          secret-access-key: 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
+mp:
+  jwt:
+    verify:
+      issuer: https://trustworks.dk
+      publickey:
+        location: META-INF/resources/publicKey.pem
+slack:
+  slackApi: https://slack.com/api
+  motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
+bucket:
+  expenses: expensefiles
+  files: trustworksfiles
+dk:
+  trustworks:
+    intranet:
+      expenseservice:
+        remote:
+          EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
+          EconomicsAPIFile/mp-rest/url: https://restapi.e-conomic.com
+          EconomicsAPIAccount/mp-rest/url: https://restapi.e-conomic.com
+      financeservice:
+        remote:
+          EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
+      invoiceservice:
+        network:
+          InvoiceAPI/mp-rest/url: https://invoice-generator.com
+hotmail:
+  username: emilie_duedahl@hotmail.com
+  password: Nostromo2014

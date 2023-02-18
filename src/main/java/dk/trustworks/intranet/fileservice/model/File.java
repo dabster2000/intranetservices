@@ -1,0 +1,46 @@
+package dk.trustworks.intranet.fileservice.model;
+
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import lombok.*;
+
+import javax.persistence.Entity;
+import javax.persistence.Id;
+import javax.persistence.Table;
+import javax.persistence.Transient;
+import java.time.LocalDate;
+
+
+@Data
+@NoArgsConstructor
+@RequiredArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(name = "files")
+public class File extends PanacheEntityBase {
+
+    @Id
+    @NonNull
+    private String uuid;
+
+    @NonNull
+    private String relateduuid;
+
+    @NonNull
+    private String type;
+
+    private String name;
+
+    private String filename;
+
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    private LocalDate uploaddate;
+
+    @Transient
+    private byte[] file;
+
+}
