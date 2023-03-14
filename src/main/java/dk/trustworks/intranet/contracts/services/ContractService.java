@@ -148,6 +148,24 @@ public class ContractService {
     }
 
     @Transactional
+    public Contract extendContract(String contractuuid) {
+        Contract c = Contract.findById(contractuuid);
+        Contract contract = new Contract(c);
+        contract.persist();
+        for (ContractConsultant cc : getContractConsultants(contractuuid)) {
+            ContractConsultant contractConsultant = ContractConsultant.createContractConsultant(cc, contract);
+            contractConsultant.persist();
+            contract.getContractConsultants().add(contractConsultant);
+        }
+        for (ContractProject cp : getContractProjects(contractuuid)) {
+            ContractProject contractProject = new ContractProject(contract.getUuid(), cp.getProjectuuid());
+            contractProject.persist();
+            contract.getContractProjects().add(contractProject);
+        }
+        return contract;
+    }
+
+    @Transactional
     public void update(Contract contract) {
         Contract.update("activefrom = ?1, " +
                         "activeto = ?2, " +

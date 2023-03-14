@@ -10,7 +10,9 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.*;
+import javax.ws.rs.core.Form;
 import javax.ws.rs.core.MediaType;
+import java.util.Comparator;
 import java.util.List;
 
 @JBossLog
@@ -24,17 +26,35 @@ public class ConferenceResource {
 
     @GET
     public List<ConferenceParticipant> findAll() {
-        return ConferenceParticipant.findAll().list();
+        List<ConferenceParticipant> list = ConferenceParticipant.findAll().list();
+        return list.stream().sorted(Comparator.comparing(ConferenceParticipant::getRegistered).reversed()).distinct().toList();
     }
 
     @POST
     @Path("/apply")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)
-    public void receiveForm(@FormParam("name")  String name, @FormParam("email") String email, @FormParam("company") String company) {
-        conferenceService.addParticipant(new ConferenceParticipant(name, email, company,
-                "", ConferenceType.CONFERENCE,
+    public void receiveForm(@FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
+                            @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke, Form form) {
+        conferenceService.addParticipant(new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke), ConferenceType.CONFERENCE,
                 ConferenceApplicationStatus.WAITING));
     }
 
+    @POST
+    @Path("/invite")
+    public void invite(List<ConferenceParticipant> participants) {
+        conferenceService.inviteParticipants(participants);
+    }
+
+    @POST
+    @Path("/deny")
+    public void deny(List<ConferenceParticipant> participants) {
+        conferenceService.denyParticipants(participants);
+    }
+
+    @POST
+    @Path("/withdraw")
+    public void withdraw(List<ConferenceParticipant> participants) {
+        conferenceService.withdraw(participants);
+    }
 }

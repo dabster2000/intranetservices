@@ -9,7 +9,6 @@ import dk.trustworks.intranet.userservice.services.UserService;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.*;
@@ -22,7 +21,6 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
 public class SlackResource {
 
     @ConfigProperty(name = "slack.motherSlackBotToken")

@@ -225,7 +225,7 @@ public class CompanyDataService {
 
     @PostConstruct
     public void init() {
-        log.info("BiService.init");
+        log.info("CompanyDataService.init");
         LocalDate lookupDate = startDate;
         do {
             reloadMonthRevenueDates.add(lookupDate);

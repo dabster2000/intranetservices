@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.expenseservice.events;
 
+import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
-import dk.trustworks.intranet.dto.ExpenseFile;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -30,7 +30,6 @@ public class ExpenseHandler {
 
     @Scheduled(every = "30m")
     public void consumeCreate() {
-
         List<Expense> expenses = Expense.find("status", "oprettet").list();
         AtomicInteger expensesProcessed = new AtomicInteger();
         int expenseCount = expenses.size();

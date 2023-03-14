@@ -11,6 +11,7 @@ import dk.trustworks.intranet.invoiceservice.network.InvoiceAPI;
 import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
 import io.quarkus.panache.common.Sort;
+import io.quarkus.runtime.configuration.ProfileManager;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
@@ -227,7 +228,12 @@ public class InvoiceService {
         draftInvoice.invoicenumber = 0;
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         saveInvoice(draftInvoice);
-        uploadToEconomics(draftInvoice);
+        if(!"dev".equals(ProfileManager.getActiveProfile())) {
+            uploadToEconomics(draftInvoice);
+            log.info("Uploaded invoice to economics ("+draftInvoice.invoicenumber+"): "+draftInvoice.getUuid());
+        } else {
+            log.warn("The invoice is not uploaded to e-conomics in Dev environment");
+        }
         //createEmitter.send(draftInvoice);
         return draftInvoice;
     }
@@ -274,6 +280,7 @@ public class InvoiceService {
 
     public byte[] createInvoicePdf(Invoice invoice) {
         InvoiceDTO invoiceDTO = new InvoiceDTO(invoice);
+        invoice.getInvoiceitems().forEach(invoiceItem -> System.out.println("invoiceItem.itemname = " + invoiceItem.itemname));
         return invoiceAPI.createInvoicePDF(invoiceDTO);
     }
 

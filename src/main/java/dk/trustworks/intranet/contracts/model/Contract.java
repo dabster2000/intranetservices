@@ -4,7 +4,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.userservice.model.User;
@@ -13,7 +15,11 @@ import lombok.Data;
 
 import javax.persistence.*;
 import java.time.LocalDate;
-import java.util.*;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 
 @Data
@@ -50,8 +56,9 @@ public class Contract extends PanacheEntityBase {
     @Column(name = "parentuuid")
     private String parentuuid;
 
-    @Temporal(TemporalType.TIMESTAMP)
-    private Date created;
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime created;
 
     private String name;
 
@@ -70,6 +77,23 @@ public class Contract extends PanacheEntityBase {
 
     public Contract() {
         uuid = UUID.randomUUID().toString();
+    }
+
+    public Contract(Contract contract) {
+        this();
+        this.status = ContractStatus.INACTIVE;
+        this.note = contract.getNote();
+        this.amount = 0.0;
+        this.created = LocalDateTime.now();
+        this.salesconsultant = contract.getSalesconsultant();
+        this.refid = contract.getRefid();
+        this.activeFrom = contract.getActiveTo().plusMonths(1).withDayOfMonth(1);
+        this.activeTo = contract.getActiveTo().plusMonths(3).withDayOfMonth(1);
+        this.parentuuid = contract.getUuid();
+        this.contractType = contract.getContractType();
+        this.clientuuid = contract.getClientuuid();
+        this.clientdatauuid = contract.getClientdatauuid();
+        this.name = contract.getName();
     }
 
     public ContractConsultant findByUser(User user) {

@@ -99,6 +99,15 @@ public class ContractResource {
         contractService.save(contract);
     }
 
+    @POST
+    @RolesAllowed({"SALES"})
+    @Path("/{contractuuid}/extend")
+    public Contract extendContract(@PathParam("contractuuid") String contractuuid) {
+        log.info("ContractResource.extendContract");
+        log.info("contractuuid = " + contractuuid);
+        return contractService.extendContract(contractuuid);
+    }
+
     @PUT
     @RolesAllowed({"SALES"})
     public void updateContract(Contract contract) {

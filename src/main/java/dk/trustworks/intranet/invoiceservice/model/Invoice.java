@@ -13,8 +13,8 @@ import lombok.EqualsAndHashCode;
 
 import javax.persistence.*;
 import java.time.LocalDate;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -59,7 +59,7 @@ public class Invoice extends PanacheEntityBase {
     public String specificdescription;
     @OneToMany(fetch = FetchType.EAGER, cascade={CascadeType.ALL})
     @JoinColumn(name="invoiceuuid")
-    public Set<InvoiceItem> invoiceitems;
+    public List<InvoiceItem> invoiceitems;
     @Transient
     @JsonIgnore
     public boolean errors;
@@ -77,7 +77,7 @@ public class Invoice extends PanacheEntityBase {
     private double sumWithTax;
 
     public Invoice() {
-        this.invoiceitems = new HashSet<>();
+        this.invoiceitems = new LinkedList<>();
         this.errors = false;
     }
 

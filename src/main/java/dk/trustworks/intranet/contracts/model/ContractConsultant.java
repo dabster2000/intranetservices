@@ -8,6 +8,7 @@ import javax.persistence.Entity;
 import javax.persistence.Id;
 import javax.persistence.Table;
 import java.util.Objects;
+import java.util.UUID;
 
 @Data
 @AllArgsConstructor
@@ -29,6 +30,19 @@ public class ContractConsultant extends PanacheEntityBase {
     private double hours;
 
     public ContractConsultant() {
+    }
+
+    private ContractConsultant(ContractConsultant cc, Contract c) {
+        uuid = UUID.randomUUID().toString();
+        contractuuid = c.getUuid();
+        useruuid = cc.getUseruuid();
+        rate = cc.getRate();
+        budget = cc.getBudget();
+        hours = cc.getHours();
+    }
+
+    public static ContractConsultant createContractConsultant(ContractConsultant cc, Contract c) {
+        return new ContractConsultant(cc, c);
     }
 
     @Override

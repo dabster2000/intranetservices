@@ -19,7 +19,7 @@ quarkus:
     always-include: true
   mailer:
     auth-methods: LOGIN
-    from: mailer-deamon@trustworks.dk
+    from: no-reply@trustworks.dk
     host: email-smtp.eu-west-1.amazonaws.com
     port: 587
     start-tls: REQUIRED

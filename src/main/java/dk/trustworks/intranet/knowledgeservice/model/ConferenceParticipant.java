@@ -31,40 +31,90 @@ public class ConferenceParticipant extends PanacheEntityBase {
 
     private String conferenceuuid;
 
-    @Enumerated(EnumType.STRING)
-    private ConferenceType type;
-
     @FormParam("name")
     @PartType(MediaType.TEXT_PLAIN)
     private String name;
-
-    @FormParam("email")
-    @PartType(MediaType.TEXT_PLAIN)
-    private String email;
 
     @FormParam("company")
     @PartType(MediaType.TEXT_PLAIN)
     private String company;
 
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "clientuuid")
-    private Client client;
+    @FormParam("titel")
+    @PartType(MediaType.TEXT_PLAIN)
+    private String titel;
+
+    @FormParam("email")
+    @PartType(MediaType.TEXT_PLAIN)
+    private String email;
+
+    @FormParam("andet")
+    @PartType(MediaType.TEXT_PLAIN)
+    private String andet;
+
+    @FormParam("samtykke")
+    @PartType(MediaType.TEXT_PLAIN)
+    private boolean samtykke;
+
+    @Enumerated(EnumType.STRING)
+    private ConferenceType type;
 
     @Enumerated(EnumType.STRING)
     private ConferenceApplicationStatus status;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "clientuuid")
+    private Client client;
 
     @JsonSerialize(using = LocalDateTimeSerializer.class)
     @JsonDeserialize(using = LocalDateTimeDeserializer.class)
     private LocalDateTime registered;
 
-    public ConferenceParticipant(String name, String email, String company, String conferenceuuid, ConferenceType conferenceType, ConferenceApplicationStatus status) {
+
+    public ConferenceParticipant(String name, String company, String titel, String email, String andet, boolean samtykke, ConferenceType type, ConferenceApplicationStatus status) {
+        this.uuid = UUID.randomUUID().toString();
         this.name = name;
-        this.email = email;
         this.company = company;
-        uuid = UUID.randomUUID().toString();
-        registered = LocalDateTime.now();
-        this.conferenceuuid = conferenceuuid;
-        type = conferenceType;
+        this.titel = titel;
+        this.email = email;
+        this.andet = andet;
+        this.samtykke = samtykke;
+        this.type = type;
         this.status = status;
+        this.registered = LocalDateTime.now();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+
+        ConferenceParticipant that = (ConferenceParticipant) o;
+
+        if (!conferenceuuid.equals(that.conferenceuuid)) return false;
+        return email.equals(that.email);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = conferenceuuid.hashCode();
+        result = 31 * result + email.hashCode();
+        return result;
     }
 }
+
+/*
+    private String uuid;
+    private String conferenceuuid;
+    private String name;
+    private String company;
+    private String titel;
+    private String email;
+    private boolean samtykke;
+    private ConferenceType type;
+    private ConferenceApplicationStatus status;
+    private Client client;
+
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime registered;
+ */
