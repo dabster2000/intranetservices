@@ -1,6 +1,10 @@
 package dk.trustworks.intranet.sales.model;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.sales.model.enums.ConsultantCompetencies;
+import dk.trustworks.intranet.sales.model.enums.ConsultantLevel;
+import dk.trustworks.intranet.sales.model.enums.LeadStatus;
+import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
@@ -8,6 +12,9 @@ import lombok.NoArgsConstructor;
 
 import javax.persistence.*;
 import java.time.LocalDate;
+import java.util.Set;
+
+import static javax.persistence.FetchType.EAGER;
 
 @Data
 @NoArgsConstructor
@@ -16,23 +23,35 @@ public class SalesLead extends PanacheEntityBase {
 
     @Id
     private String uuid;
-    @ManyToOne(fetch = FetchType.EAGER)
+    @ManyToOne(fetch = EAGER)
     @JoinColumn(name = "clientuuid")
     private Client client;
-    @ManyToOne(fetch = FetchType.EAGER)
+    @ManyToOne(fetch = EAGER)
     @JoinColumn(name = "leadmanager")
     private User leadManager;
+    private String description;
     @Column(name = "contactinformation")
     private String contactInformation;
-    @Enumerated
+    @Enumerated(EnumType.STRING)
     private LeadStatus status;
     private double rate;
     @Column(name = "closedate")
     private LocalDate closeDate;
     private int period;
     private int allocation;
-    private String competencies;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "competencies")
+    private ConsultantCompetencies competencies;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "level")
+    private ConsultantLevel consultantLevel;
     private boolean extension;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "lost_reason")
+    private LostReason lostReason;
+
+    @OneToMany(mappedBy = "lead", fetch = EAGER)
+    Set<SalesLeadConsultant> salesLeadConsultants;
 
     @Override
     public boolean equals(Object o) {

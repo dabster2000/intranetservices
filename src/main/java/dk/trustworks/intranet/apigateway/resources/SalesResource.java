@@ -45,4 +45,14 @@ public class SalesResource {
     public void persist(SalesLead salesLead) {
         salesService.persist(salesLead);
     }
+
+    @PUT
+    public void update(SalesLead salesLead) {
+        salesService.update(salesLead);
+    }
+
+    @DELETE
+    public void delete(String uuid) {
+        salesService.delete(uuid);
+    }
 }

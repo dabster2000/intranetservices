@@ -242,6 +242,7 @@ public class ContractService {
     }
 
     private Contract addConsultantsToContract(Contract contract) {
+        System.out.println("contract = " + contract);
         List<ContractConsultant> contractConsultants = ContractConsultant.find("contractuuid like ?1", contract.getUuid()).list();
         Optional<ContractSalesConsultant> salesConsultant = ContractSalesConsultant.find("contractuuid like ?1 and status like 'APPROVED' order by created DESC", contract.getUuid()).firstResultOptional();
         salesConsultant.ifPresent(contract::setSalesconsultant);
