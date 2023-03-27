@@ -101,20 +101,3 @@ public class ConferenceParticipant extends PanacheEntityBase {
         return result;
     }
 }
-
-/*
-    private String uuid;
-    private String conferenceuuid;
-    private String name;
-    private String company;
-    private String titel;
-    private String email;
-    private boolean samtykke;
-    private ConferenceType type;
-    private ConferenceApplicationStatus status;
-    private Client client;
-
-    @JsonSerialize(using = LocalDateTimeSerializer.class)
-    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
-    private LocalDateTime registered;
- */
