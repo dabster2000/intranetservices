@@ -73,7 +73,7 @@ public class UserService {
 
     @CacheResult(cacheName = "user-cache")
     public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String[] statusArray, String[] consultantTypesArray, boolean shallow) {
-        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, u.created, u.email, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
+        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, u.created, u.email, u.primaryskilltype, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
                 "FROM user as u " +
                 "LEFT OUTER JOIN salary ON u.uuid = salary.useruuid " +
                 "LEFT OUTER JOIN roles ON u.uuid = roles.useruuid " +

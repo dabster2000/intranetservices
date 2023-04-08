@@ -197,7 +197,7 @@ public class CompanyDataService {
         return companyAggregateData;
     }
 
-    @Scheduled(every = "60m", delay = 5)
+    @Scheduled(every = "60m", delay = 60)
     public void updateAllData() {
         log.info("CompanyDataService.updateAllData...STARTED!");
         long l = System.currentTimeMillis();

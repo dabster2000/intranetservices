@@ -2,19 +2,28 @@ package dk.trustworks.intranet.dao.bubbleservice.services;
 
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.model.BubbleMember;
+import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
+import dk.trustworks.intranet.userservice.services.UserService;
 import io.quarkus.panache.common.Sort;
+import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
+import javax.inject.Inject;
 import javax.transaction.Transactional;
 import javax.ws.rs.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @JBossLog
 @ApplicationScoped
 public class BubbleService {
+
+    @Inject
+    UserService userService;
 
     public List<Bubble> findAll() {
         return Bubble.findAll().list();
@@ -102,5 +111,17 @@ public class BubbleService {
     @Transactional
     public void removeBubbleMembers(String bubbleuuid) {
         BubbleMember.delete("bubbleuuid like ?1", bubbleuuid);
+    }
+
+    @Scheduled(every = "10m")
+    public void cleanBubbles() {
+        List<User> users = userService.findCurrentlyEmployedUsers(ConsultantType.STUDENT, ConsultantType.CONSULTANT, ConsultantType.STAFF);
+        for (Bubble bubble : findAll()) {
+            for (BubbleMember bubbleMember : bubble.getBubbleMembers()) {
+                Optional<User> optionalUser = users.stream().filter(user -> user.getUuid().equals(bubbleMember.getUseruuid())).findAny();
+                if(optionalUser.isEmpty()) removeBubbleMember(bubble.getUuid(), bubbleMember.getUseruuid());
+                    //System.out.println("Remove bubbleMember " + userService.findById(bubbleMember.getUseruuid(), true).getUsername() + " from "+bubble.getName());
+            }
+        }
     }
 }

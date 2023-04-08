@@ -1,5 +1,17 @@
 version: "3.8"
 services:
+  intranet2.0:
+    container_name: intranet2.0
+    image: trustworks/intranet2.0:prod
+    env_file:
+      - docker-env-intranet.env
+    ports:
+      - "9000:8085"
+    networks:
+      - frontend
+      - services
+    depends_on:
+      - twservices
   intranet:
     container_name: intranet
     image: trustworks/intranet:prod

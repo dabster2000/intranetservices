@@ -2,6 +2,8 @@ package dk.trustworks.intranet.sales.services;
 
 import dk.trustworks.intranet.contracts.model.enums.SalesStatus;
 import dk.trustworks.intranet.sales.model.SalesLead;
+import dk.trustworks.intranet.sales.model.SalesLeadConsultant;
+import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -38,6 +40,18 @@ public class SalesService {
     }
 
     @Transactional
+    public void addConsultant(String salesLeaduuid, User user) {
+        new SalesLeadConsultant(SalesLead.findById(salesLeaduuid), user).persist();
+    }
+
+    @Transactional
+    public void removeConsultant(String salesleaduuid, String useruuid) {
+        SalesLead salesLead = SalesLead.findById(salesleaduuid);
+        User user = User.findById(useruuid);
+        SalesLeadConsultant.delete("lead = ?1 and user = ?2", salesLead, user);
+    }
+
+    @Transactional
     public void update(SalesLead salesLead) {
         log.info("SalesService.update");
         log.info("salesLead = " + salesLead);
@@ -71,4 +85,5 @@ public class SalesService {
     public void delete(String uuid) {
         SalesLead.deleteById(uuid);
     }
+
 }
