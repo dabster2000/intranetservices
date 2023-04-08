@@ -118,6 +118,8 @@ public class ContractResource {
     @Path("/{contractuuid}")
     @RolesAllowed({"SALES"})
     public void deleteContract(@PathParam("contractuuid") String contractuuid) {
+        log.info("ContractResource.deleteContract");
+        log.info("contractuuid = " + contractuuid);
         contractService.delete(contractuuid);
     }
 

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
+import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
@@ -12,10 +13,7 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import org.mindrot.jbcrypt.BCrypt;
 
-import javax.persistence.Entity;
-import javax.persistence.Id;
-import javax.persistence.Table;
-import javax.persistence.Transient;
+import javax.persistence.*;
 import javax.validation.constraints.NotBlank;
 import java.time.LocalDate;
 import java.util.*;
@@ -63,6 +61,8 @@ public class User extends PanacheEntityBase {
     private String defects;
     private boolean photoconsent;
     private String other;
+    @Enumerated(EnumType.STRING)
+    private PrimarySkillType primaryskilltype;
 
     @Transient
     private List<Salary> salaries = new ArrayList<>();

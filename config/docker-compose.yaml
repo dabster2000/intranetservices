@@ -6,7 +6,7 @@ services:
     env_file:
       - docker-env-intranet.env
     ports:
-      - "9000:8085"
+      - "8080:8080"
     networks:
       - frontend
       - services
