@@ -1,0 +1,58 @@
+version: "3.8"
+services:
+  intranet2.0:
+    container_name: intranet2.0
+    image: trustworks/intranet2.0:prod
+    env_file:
+      - docker-env-intranet.env
+    ports:
+      - "8080:8080"
+    networks:
+      - frontend
+      - services
+    depends_on:
+      - twservices
+  intranet:
+    container_name: intranet
+    image: trustworks/intranet:prod
+    env_file:
+      - docker-env-intranet.env
+    environment:
+      - JAEGER_AGENT_HOST=jaeger
+    ports:
+      - "80:8085"
+    networks:
+      - frontend
+      - services
+    depends_on:
+      - jaeger
+      - twservices
+  twservices:
+    container_name: twservices
+    image: trustworks/twservices:prod
+    env_file:
+      - docker-env-twservices.env
+      - userpass.env
+      - aws.env
+    ports:
+      - "9093:9093"
+    networks:
+      - services
+      - backend
+  jaeger:
+    container_name: jaeger
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "6831:6831/udp"
+      - "16686:16686"
+    networks:
+      - backend
+      - services
+networks:
+  frontend:
+  backend:
+  services:
+    external:
+      name: services_network
+
+
