@@ -86,6 +86,8 @@ public class BubbleService {
 
     @Transactional
     public void addBubbleMember(String bubbleuuid, String useruuid) {
+        log.info("BubbleService.addBubbleMember");
+        log.info("bubbleuuid = " + bubbleuuid + ", useruuid = " + useruuid);
         Bubble bubble = Bubble.findById(bubbleuuid);
         if(bubble.getOwner().equals(useruuid)) return;
         if(bubble.getCoowner()!= null && bubble.getCoowner().equals(useruuid)) return;
@@ -105,6 +107,8 @@ public class BubbleService {
 
     @Transactional
     public void removeBubbleMember(String bubbleuuid, String useruuid) {
+        log.info("BubbleService.removeBubbleMember");
+        log.info("bubbleuuid = " + bubbleuuid + ", useruuid = " + useruuid);
         BubbleMember.delete("bubbleuuid like ?1 and useruuid like ?2", bubbleuuid, useruuid);
     }
 

@@ -12,11 +12,13 @@ import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
-import io.quarkus.cache.CacheResult;
+import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.persistence.EntityManager;
+import javax.transaction.*;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -40,19 +42,46 @@ public class BudgetServiceCache {
     @Inject
     BudgetService budgetAPI;
 
-    @CacheResult(cacheName = "budget-cache")
-    public List<BudgetDocument> createBudgetData() {
-        List<BudgetDocument> budgetDocumentList = new ArrayList<>();
+    @Inject
+    TransactionManager transactionManager;
+
+    @Inject
+    EntityManager em;
+
+    @Scheduled(every = "1h")
+    public void refreshBudgetData() {
+        //List<BudgetDocument> budgetDocumentList = new ArrayList<>();
+
+        try {
+            transactionManager.begin();
+            //em.createNativeQuery("truncate table budget_document");
+            BudgetDocument.deleteAll();
+            transactionManager.commit();
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
+        }
 
 
         LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
         do {
-            budgetDocumentList.addAll(calcBudgets(lookupMonth));
+            try {
+                transactionManager.begin();
+                //budgetDocumentList.addAll(calcBudgets(lookupMonth));;
+                BudgetDocument.persist(calcBudgets(lookupMonth));
+                transactionManager.commit();
+            } catch (NotSupportedException | HeuristicRollbackException | HeuristicMixedException | RollbackException |
+                     SystemException e) {
+                throw new RuntimeException(e);
+            }
+
             lookupMonth = lookupMonth.plusMonths(1);
         } while (lookupMonth.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
-        // Adjust for availability
+    }
 
-        return budgetDocumentList;//adjustForAvailability(budgetDocumentList, userList);
+    //@CacheResult(cacheName = "budget-cache")
+    public List<BudgetDocument> createBudgetData() {
+        return BudgetDocument.listAll();
     }
 
     public List<BudgetDocument> calcBudgets(LocalDate lookupMonth) {

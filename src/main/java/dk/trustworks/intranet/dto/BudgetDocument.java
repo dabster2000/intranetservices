@@ -8,11 +8,13 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.userservice.model.User;
+import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import javax.persistence.*;
+import javax.transaction.Transactional;
 import java.time.LocalDate;
 
 @Data
@@ -20,7 +22,7 @@ import java.time.LocalDate;
 @Table(name = "budget_document")
 @NoArgsConstructor
 @AllArgsConstructor
-public class BudgetDocument {
+public class BudgetDocument extends PanacheEntityBase {
 
     @Id
     @JsonIgnore
@@ -31,13 +33,13 @@ public class BudgetDocument {
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate month;
 
-    @OneToOne
+    @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "clientuuid")
     private Client client;
-    @OneToOne
+    @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "useruuid")
     private User user;
-    @OneToOne
+    @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "contractuuid")
     private Contract contract;
     private double budgetHours;
@@ -52,5 +54,10 @@ public class BudgetDocument {
         this.budgetHours = budgetHours;
         this.budgetHoursWithNoAvailabilityAdjustment = budgetHoursWithNoAvailabilityAdjustment;
         this.rate = rate;
+    }
+
+    @Transactional
+    public void truncate() {
+        BudgetDocument.deleteAll();
     }
 }

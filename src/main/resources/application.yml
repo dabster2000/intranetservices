@@ -102,6 +102,3 @@ dk:
       invoiceservice:
         network:
           InvoiceAPI/mp-rest/url: https://invoice-generator.com
-hotmail:
-  username: emilie_duedahl@hotmail.com
-  password: Nostromo2014

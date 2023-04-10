@@ -117,7 +117,7 @@ public class WorkService {
     }
 
     public List<WorkFull> findByContract(@QueryParam("contractuuid") String contractuuid) {
-        return WorkFull.find("contractuuid LIKE ?1 and billable = true", contractuuid).list();
+        return WorkFull.find("contractuuid LIKE ?1 and rate > 0", contractuuid).list();
     }
 
     @CacheResult(cacheName = "work-cache")
