@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.services.BubbleService;
 import io.micrometer.core.annotation.Timed;
@@ -11,6 +12,7 @@ import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.*;
+import java.io.IOException;
 import java.util.List;
 
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -41,8 +43,10 @@ public class BubbleResource {
     }
 
     @POST
-    public void save(Bubble bubble) {
+    public void save(Bubble bubble) throws SlackApiException, IOException {
         bubbleService.save(bubble);
+        log.info("Adding members "+bubble.getBubbleMembers().size());
+        bubble.getBubbleMembers().forEach(bubbleMember -> bubbleService.addBubbleMember(bubble, bubbleMember.getUseruuid()));
     }
 
     @PUT
@@ -61,6 +65,12 @@ public class BubbleResource {
     @Path("/{bubbleuuid}/users/{useruuid}")
     public void addBubbleMember(@PathParam("bubbleuuid") String bubbleuuid, @PathParam("useruuid") String useruuid) {
         bubbleService.addBubbleMember(bubbleuuid, useruuid);
+    }
+
+    @GET
+    @Path("/{bubbleuuid}/apply/{useruuid}")
+    public void applyForBubble(String bubbleuuid, String useruuid) {
+        bubbleService.applyForBubble(bubbleuuid, useruuid);
     }
 
     @DELETE

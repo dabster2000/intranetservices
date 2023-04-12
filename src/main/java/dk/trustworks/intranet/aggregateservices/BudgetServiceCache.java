@@ -48,7 +48,7 @@ public class BudgetServiceCache {
     @Inject
     EntityManager em;
 
-    @Scheduled(every = "1h")
+    @Scheduled(every = "1h", delay = 10000)
     public void refreshBudgetData() {
         //List<BudgetDocument> budgetDocumentList = new ArrayList<>();
 

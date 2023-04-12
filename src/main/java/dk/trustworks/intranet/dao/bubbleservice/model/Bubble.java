@@ -42,6 +42,9 @@ public class Bubble extends PanacheEntityBase {
     @OneToMany(fetch = FetchType.EAGER, mappedBy = "bubble", cascade = CascadeType.ALL)
     private List<BubbleMember> bubbleMembers;
 
+    // Only used on creation
+    @Transient private String slackChannelName;
+
     public static Bubble findById(String uuid){
         return find("uuid", uuid).firstResult();
     }

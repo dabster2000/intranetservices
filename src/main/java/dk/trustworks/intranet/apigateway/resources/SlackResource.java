@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import io.quarkus.vertx.web.Route;
 import io.smallrye.common.annotation.Blocking;
 import io.vertx.ext.web.RoutingContext;
@@ -24,7 +25,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 public class SlackResource {
 
     @Inject
-    dk.trustworks.intranet.communicationsservice.resources.SlackResource slackAPI;
+    SlackService slackAPI;
 
     @Blocking
     @Produces(APPLICATION_JSON)

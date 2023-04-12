@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.dao.bubbleservice.services;
 
+import com.slack.api.methods.SlackApiException;
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.model.BubbleMember;
 import dk.trustworks.intranet.userservice.model.User;
@@ -11,8 +13,10 @@ import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.persistence.EntityManager;
 import javax.transaction.Transactional;
-import javax.ws.rs.*;
+import javax.ws.rs.DELETE;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -24,6 +28,12 @@ public class BubbleService {
 
     @Inject
     UserService userService;
+
+    @Inject
+    SlackService slackService;
+
+    @Inject
+    EntityManager entityManager;
 
     public List<Bubble> findAll() {
         return Bubble.findAll().list();
@@ -48,9 +58,15 @@ public class BubbleService {
     }
 
     @Transactional
-    public void save(Bubble bubble) {
+    public void save(Bubble bubble) throws SlackApiException, IOException {
         if(bubble.getUuid() == null || bubble.getUuid().equalsIgnoreCase("")) bubble.setUuid(UUID.randomUUID().toString());
-        Bubble.persist(bubble);
+        if(bubble.getSlackChannelName().isEmpty()) throw new IOException("No bubble name");
+        log.info("Creating slack channel: "+bubble.getSlackChannelName());
+        bubble.setSlackchannel(slackService.createChannel("b_"+bubble.getSlackChannelName()));
+        log.info("Created slack channel id "+bubble.getSlackchannel());
+        log.info("Persisting bubble "+bubble);
+        bubble.persistAndFlush();
+        //entityManager.flush();
     }
 
     @Transactional
@@ -86,29 +102,38 @@ public class BubbleService {
 
     @Transactional
     public void addBubbleMember(String bubbleuuid, String useruuid) {
-        log.info("BubbleService.addBubbleMember");
-        log.info("bubbleuuid = " + bubbleuuid + ", useruuid = " + useruuid);
         Bubble bubble = Bubble.findById(bubbleuuid);
+        addBubbleMember(bubble, useruuid);
+    }
+
+    @Transactional
+    public void addBubbleMember(Bubble bubble, String useruuid) {
+        log.info("BubbleService.addBubbleMember");
+        log.info("bubbleuuid = " + bubble.getUuid() + ", useruuid = " + useruuid);
         if(bubble.getOwner().equals(useruuid)) return;
         if(bubble.getCoowner()!= null && bubble.getCoowner().equals(useruuid)) return;
         if(bubble.getBubbleMembers().stream().anyMatch(bubbleMember -> bubbleMember.getUseruuid().equals(useruuid))) return;
         BubbleMember bubbleMember = new BubbleMember(UUID.randomUUID().toString(), useruuid, bubble);
+        slackService.addUserToChannel(userService.findById(useruuid, true), bubble.getSlackchannel());
         BubbleMember.persist(bubbleMember);
+    }
 
-        /*
-        Bubble.findById(bubbleuuid).subscribe().with(bubble -> {
-            if(bubble.getOwner().equals(useruuid)) return; // Stop is added user is owner
-            if(bubble.getBubbleMembers().stream().anyMatch(bubbleMember -> bubbleMember.getUseruuid().equals(useruuid))) return; // Stop if added user is already member
-            BubbleMember bubbleMember = new BubbleMember(UUID.randomUUID().toString(), useruuid, bubble);
-            BubbleMember.persist(bubbleMember);
-        });
-         */
+    public void applyForBubble(String bubbleuuid, String useruuid) {
+        Bubble bubble = Bubble.findById(bubbleuuid);
+        User owner = userService.findById(bubble.getOwner(), true);
+        try {
+            slackService.sendMessage(owner, "Hi "+owner.getFirstname()+", *"+userService.findById(useruuid, true).getUsername()+"* would like to join your bubble "+bubble.getName()+"!");
+        } catch (SlackApiException | IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Transactional
     public void removeBubbleMember(String bubbleuuid, String useruuid) {
         log.info("BubbleService.removeBubbleMember");
         log.info("bubbleuuid = " + bubbleuuid + ", useruuid = " + useruuid);
+        Bubble bubble = Bubble.findById(bubbleuuid);
+        slackService.removeUserFromChannel(userService.findById(useruuid, true), bubble.getSlackchannel());
         BubbleMember.delete("bubbleuuid like ?1 and useruuid like ?2", bubbleuuid, useruuid);
     }
 
