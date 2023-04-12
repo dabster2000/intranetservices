@@ -39,7 +39,7 @@ public class Bubble extends PanacheEntityBase {
     @JsonDeserialize(using = LocalDateDeserializer.class)
     private LocalDate created;
 
-    @OneToMany(fetch = FetchType.EAGER, mappedBy = "bubble", cascade = CascadeType.ALL)
+    @OneToMany(fetch = FetchType.EAGER, mappedBy = "bubble")
     private List<BubbleMember> bubbleMembers;
 
     // Only used on creation

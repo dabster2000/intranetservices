@@ -65,8 +65,7 @@ public class BubbleService {
         bubble.setSlackchannel(slackService.createChannel("b_"+bubble.getSlackChannelName()));
         log.info("Created slack channel id "+bubble.getSlackchannel());
         log.info("Persisting bubble "+bubble);
-        bubble.persistAndFlush();
-        //entityManager.flush();
+        bubble.persist();
     }
 
     @Transactional
