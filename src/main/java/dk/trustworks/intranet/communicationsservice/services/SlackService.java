@@ -6,7 +6,6 @@ import com.slack.api.methods.response.chat.ChatPostMessageResponse;
 import com.slack.api.methods.response.conversations.ConversationsCreateResponse;
 import com.slack.api.methods.response.conversations.ConversationsInviteResponse;
 import com.slack.api.methods.response.conversations.ConversationsKickResponse;
-import com.slack.api.methods.response.users.UsersLookupByEmailResponse;
 import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -34,14 +33,7 @@ public class SlackService {
     public void addUserToChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {
-            UsersLookupByEmailResponse userLookup = slack.methods(motherSlackBotToken).usersLookupByEmail(req -> req.email(user.getEmail()));
-            if (!userLookup.isOk()) {
-                System.err.println("Error looking up user by email: " + user.getEmail());
-                return;
-            }
-            String userID = userLookup.getUser().getId();
-
-            ConversationsInviteResponse inviteResponse = slack.methods(motherSlackBotToken).conversationsInvite(req -> req.channel(channelID).users(Collections.singletonList(userID)));
+            ConversationsInviteResponse inviteResponse = slack.methods(motherSlackBotToken).conversationsInvite(req -> req.channel(channelID).users(Collections.singletonList(user.getSlackusername())));
             if (!inviteResponse.isOk()) {
                 System.err.println("Error adding user to channel: " + user.getEmail());
                 return;
@@ -56,14 +48,7 @@ public class SlackService {
     public void removeUserFromChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {
-            UsersLookupByEmailResponse userLookup = slack.methods(motherSlackBotToken).usersLookupByEmail(req -> req.email(user.getEmail()));
-            if (!userLookup.isOk()) {
-                System.err.println("Error looking up user by email: " + user.getEmail());
-                return;
-            }
-            String userID = userLookup.getUser().getId();
-
-            ConversationsKickResponse response = slack.methods(motherSlackBotToken).conversationsKick(req -> req.channel(channelID).user(userID));
+            ConversationsKickResponse response = slack.methods(motherSlackBotToken).conversationsKick(req -> req.channel(channelID).user(user.getSlackusername()));
             if (!response.isOk()) {
                 System.err.println("Error removing user from channel: " + user.getEmail());
                 return;

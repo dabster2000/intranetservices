@@ -45,7 +45,6 @@ public class BubbleResource {
     @POST
     public void save(Bubble bubble) throws SlackApiException, IOException {
         bubbleService.save(bubble);
-        log.info("Adding members "+bubble.getBubbleMembers().size());
         bubble.getBubbleMembers().forEach(bubbleMember -> bubbleService.addBubbleMember(bubble, bubbleMember.getUseruuid()));
     }
 
