@@ -284,6 +284,12 @@ public class InvoiceService {
         return invoiceAPI.createInvoicePDF(invoiceDTO);
     }
 
+    public void regenerateInvoicePdf(String invoiceuuid) {
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        invoice.pdf = invoiceAPI.createInvoicePDF(new InvoiceDTO(invoice));
+        invoice.persist();
+    }
+
     public Integer getMaxInvoiceNumber() {
         Optional<Invoice> latestInvoice = Invoice.findAll(Sort.descending("invoicenumber")).firstResultOptional();
         return latestInvoice.map(invoice -> invoice.invoicenumber).orElse(1);

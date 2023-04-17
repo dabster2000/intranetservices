@@ -102,6 +102,13 @@ public class InvoiceResource {
     }
 
     @POST
+    @Path("/regenerate/{invoiceuuid}")
+    @Transactional
+    public void regenerateInvoicePdf(@PathParam("invoiceuuid") String invoiceuuid) {
+        invoiceService.regenerateInvoicePdf(invoiceuuid);
+    }
+
+    @POST
     @Path("/phantoms")
     public Invoice createPhantomInvoice(Invoice draftInvoice) {
         return invoiceService.createPhantomInvoice(draftInvoice);
