@@ -2,8 +2,8 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.CompanyDataService;
 import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
-import dk.trustworks.intranet.bi.model.CompanyAggregateData;
-import dk.trustworks.intranet.bi.model.EmployeeAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;

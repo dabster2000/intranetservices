@@ -22,12 +22,13 @@ public class FaqService {
 
     @Transactional
     public void create(Faq faq) {
-        faq.persist();
+        if(Faq.findByIdOptional(faq.getUuid()).isPresent()) update(faq);
+        else faq.persist();
     }
 
     @Transactional
     public void update(Faq faq) {
-        Faq.update("faggroup = ?1, title = ?2, content = ?3 WHERE uuid like ?4 ", faq.getFaqgroup(), faq.getTitle(), faq.getContent(), faq.getUuid());
+        Faq.update("faqgroup = ?1, title = ?2, content = ?3 WHERE uuid like ?4 ", faq.getFaqgroup(), faq.getTitle(), faq.getContent(), faq.getUuid());
     }
 
     @Transactional

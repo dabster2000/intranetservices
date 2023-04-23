@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.bi.model.EmployeeAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.BudgetDocument;
@@ -223,18 +223,20 @@ public class EmployeeDataService {
         User user = simpleEntry.getValue();
         EmployeeAggregateData data = new EmployeeAggregateData(reloadDate, user.getUuid());
         //QuarkusTransaction.run( () -> {
-            log.info("EmployeeDataService: Updating cached data for (" + user.getUsername() + "): " + reloadDate);
+            //log.info("EmployeeDataService: Updating cached data for (" + user.getUsername() + "): " + reloadDate);
             updateWorkData(reloadDate, user, data);
             updateFinanceData(reloadDate, user, data);
             updateAvailabilityData(reloadDate, user, data);
             updateBudgetData(reloadDate, user, data);
             updateTeamData(reloadDate, user, data);
             updateMetaData(reloadDate, user, data);
+            data.updateCalculatedData();
+            //System.out.println("data = " + data);
             data.persistAndFlush();
         //});
     }
 
-    //@Scheduled(every = "24h", identity = "UpdateEmployeeData", delay = 30)
+    //@Scheduled(every = "24h", identity = "UpdateEmployeeData")
     @Scheduled(cron = "0 0 1 * * ?")
     //@Transactional
     public void updateAllData() {

@@ -3,7 +3,7 @@ package dk.trustworks.intranet.apigateway.jobs;
 import dk.trustworks.intranet.aggregateservices.CompanyDataService;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
 import dk.trustworks.intranet.aggregateservices.RevenueService;
-import dk.trustworks.intranet.bi.model.CompanyAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.SalaryService;
