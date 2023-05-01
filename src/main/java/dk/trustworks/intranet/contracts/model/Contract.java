@@ -56,6 +56,9 @@ public class Contract extends PanacheEntityBase {
     @Column(name = "parentuuid")
     private String parentuuid;
 
+    @Column(name = "leaduuid")
+    private String leaduuid;
+
     @JsonSerialize(using = LocalDateTimeSerializer.class)
     @JsonDeserialize(using = LocalDateTimeDeserializer.class)
     private LocalDateTime created;

@@ -242,7 +242,7 @@ public class EmployeeDataService {
         //});
     }
 
-    @Scheduled(every = "24h", identity = "UpdateEmployeeData")
+    //@Scheduled(every = "24h", identity = "UpdateEmployeeData")
     @Scheduled(cron = "0 0 1 * * ?")
     //@Transactional
     public void updateAllData() {
