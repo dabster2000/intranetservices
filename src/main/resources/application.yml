@@ -20,7 +20,7 @@ quarkus:
   mailer:
     auth-methods: LOGIN
     from: no-reply@trustworks.dk
-    host: email-smtp.eu-west-1.amazonaws.com
+    host: ${SMTPSERVER:email-smtp.eu-west-1.amazonaws.com}
     port: 587
     start-tls: REQUIRED
     username: ${MAILUSERNAME:xx}

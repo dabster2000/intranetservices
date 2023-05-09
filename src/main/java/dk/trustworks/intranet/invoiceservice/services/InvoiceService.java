@@ -12,7 +12,6 @@ import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
-import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
@@ -324,7 +323,7 @@ public class InvoiceService {
     int invoicePage = 1;
 
     @Transactional
-    @Scheduled(every = "3m")
+    //@Scheduled(every = "3m")
     public void init() {
         int skipCount = (invoicePage - 1) * 10;
         log.info("InvoiceService scheduler started, (skipCount = "+skipCount+"), (invoicePage = "+invoicePage+")...");
