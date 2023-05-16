@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.bi.model;
+package dk.trustworks.intranet.aggregateservices.model;
 
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;

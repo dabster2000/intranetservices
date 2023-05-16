@@ -1,7 +1,6 @@
-package dk.trustworks.intranet.bi.model;
+package dk.trustworks.intranet.aggregateservices.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
@@ -12,7 +11,6 @@ import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.TrustworksConfiguration;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 
@@ -23,7 +21,6 @@ import java.time.LocalDate;
 @Data
 @Entity
 @Table(name = "employee_data")
-@NoArgsConstructor
 @RequiredArgsConstructor
 public class EmployeeAggregateData extends PanacheEntityBase {
 
@@ -58,12 +55,21 @@ public class EmployeeAggregateData extends PanacheEntityBase {
     @Column(name = "actual_utilization")
     private double actualUtilization; // done
 
+    /**
+     * Det antal timer, som konsulenten er tilgængelig, minus de to timer der bruges om fredagen samt eventuelt ferie og sygdom.
+     * @return availability uden ferie, sygdom og fredage
+     */
     @Column(name = "net_available_hours")
     private double netAvailableHours; // done
 
+    /**
+     * Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
+     * @return Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer
+     */
     @Column(name = "gross_available_hours")
     private double grossAvailableHours; // done
 
+    // Available hours during a week. A full time employement means 37 available hours.
     @Column(name = "available_hours")
     private double availableHours; // done
 
@@ -126,6 +132,10 @@ public class EmployeeAggregateData extends PanacheEntityBase {
     @Column(name = "team_guest_of")
     private String teamGuestOf;
 
+    public EmployeeAggregateData() {
+
+    }
+
     public void addWorkDuration(double registeredHours) {
         this.registeredHours += registeredHours;
     }
@@ -147,18 +157,22 @@ public class EmployeeAggregateData extends PanacheEntityBase {
     public void addBudgetHours(double budgetHours) { this.budgetHours += budgetHours; }
     public void addBudgetHoursWithNoAvailabilityAdjustment(double budgetHoursWithNoAvailabilityAdjustment) { this.budgetHoursWithNoAvailabilityAdjustment += budgetHoursWithNoAvailabilityAdjustment; }
     public void addBudgetAmount(double budgetAmount) { this.budgetAmount += budgetAmount; }
-    /*
-    public void addBudgetDocument(BudgetDocument budgetDocument) {
-        budgetDocuments.add(budgetDocument);
+
+    public void updateCalculatedData() {
+        weekdaysInPeriod = DateUtils.getWeekdaysInPeriod(month, month.plusMonths(1));
+        weeks = getWeekdaysInPeriod() / 5.0;
+        grossAvailableHours = Math.max(getAvailableHours() * getWeeks(), 0.0);
+        netAvailableHours = Math.max((getAvailableHours() * getWeeks()) - adjustForOffHours() - getVacation() - getSickdays() - getMaternityLeave(), 0.0); // F.eks. 2019-12-01: ((37 - 2) * 3,6) - (7,4 * 2 - 0.4) - (0 * 1)) = 111,2
+
+        actualUtilization = getNetAvailableHours()!=0.0?getRegisteredHours() / getNetAvailableHours():0.0;
+        contractUtilization = getNetAvailableHours()!=0.0?getBudgetHours() / getNetAvailableHours():0.0;
     }
-
-     */
-
 
     public void addRegisteredAmount(double registeredAmount) {
         this.registeredAmount += registeredAmount;
     }
 
+    /*
     @JsonProperty("weekdaysInPeriod")
     public double getWeekdaysInPeriod() {
         weekdaysInPeriod = DateUtils.getWeekdaysInPeriod(month, month.plusMonths(1));
@@ -171,20 +185,13 @@ public class EmployeeAggregateData extends PanacheEntityBase {
         return weeks;
     }
 
-    /**
-     * Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
-     * @return Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer
-     */
+
     @JsonProperty("grossAvailableHours")
     public double getGrossAvailableHours() {
         grossAvailableHours = Math.max(getAvailableHours() * getWeeks(), 0.0);
         return grossAvailableHours;
     }
 
-    /**
-     * Det antal timer, som konsulenten er tilgængelig, minus de to timer der bruges om fredagen samt eventuelt ferie og sygdom.
-     * @return availability uden ferie, sygdom og fredage
-     */
     @JsonProperty("netAvailableHours")
     public double getNetAvailableHours() {
         netAvailableHours = Math.max((getAvailableHours() * getWeeks()) - adjustForOffHours() - getVacation() - getSickdays() - getMaternityLeave(), 0.0); // F.eks. 2019-12-01: ((37 - 2) * 3,6) - (7,4 * 2 - 0.4) - (0 * 1)) = 111,2
@@ -203,6 +210,8 @@ public class EmployeeAggregateData extends PanacheEntityBase {
         return getNetAvailableHours()==0?0:contractUtilization;
     }
 
+     */
+
     private double adjustForOffHours() {
         int numberOfFridaysInPeriod = DateUtils.countWeekdayOccurances(DayOfWeek.FRIDAY, getMonth(), getMonth().plusMonths(1));
         int numberOfFridayHolidays = DateUtils.getVacationDayArray(getMonth().getYear()).stream()
@@ -212,3 +221,25 @@ public class EmployeeAggregateData extends PanacheEntityBase {
     }
 
 }
+
+/*
+data = EmployeeAggregateData(id=0, month=2021-07-01, useruuid=b01bfaa0-364b-4ef2-8286-86ea1ecc97b1, registeredHours=0.0, helpedColleagueHours=0.0, gotHelpByColleagueHours=0.0, registeredAmount=0.0, contractUtilization=NaN, actualUtilization=NaN, netAvailableHours=0.0, grossAvailableHours=0.0, availableHours=0.0, budgetAmount=0.0, budgetHours=0.0, budgetHoursWithNoAvailabilityAdjustment=0.0, salary=0.0, sharedExpenses=0.0, vacation=0.0, sickdays=0.0, maternityLeave=0.0, weeks=4.4, weekdaysInPeriod=22.0, consultantType=STAFF, statusType=TERMINATED, teamMemberOf=null, teamLeaderOf=null, teamSponsorOf=null, teamGuestOf=null)
+2023-04-18 18:00:45,213 WARN  [org.mar.jdb.mes.ser.ErrorPacket] (vert.x-worker-thread-11) Error: 1054-42S22: Unknown column 'NaN' in 'field list'
+2023-04-18 18:00:45,214 WARN  [org.hib.eng.jdb.spi.SqlExceptionHelper] (vert.x-worker-thread-11) SQL Error: 1054, SQLState: 42S22
+2023-04-18 18:00:45,214 ERROR [org.hib.eng.jdb.spi.SqlExceptionHelper] (vert.x-worker-thread-11) (conn=756) Unknown column 'NaN' in 'field list'
+2023-04-18 18:00:45,217 ERROR [io.qua.mut.run.MutinyInfrastructure] (vert.x-eventloop-thread-4) Mutiny had to drop the following exception: (RECIPIENT_FAILURE,8185) javax.persistence.PersistenceException: org.hibernate.exception.SQLGrammarException: could not execute statement
+	at io.vertx.core.eventbus.Message.fail(Message.java:141)
+	at io.quarkus.vertx.runtime.VertxRecorder$3$1$1.handle(VertxRecorder.java:122)
+	at io.quarkus.vertx.runtime.VertxRecorder$3$1$1.handle(VertxRecorder.java:112)
+	at io.vertx.core.impl.ContextBase.lambda$null$0(ContextBase.java:137)
+	at io.vertx.core.impl.ContextInternal.dispatch(ContextInternal.java:264)
+	at io.vertx.core.impl.ContextBase.lambda$executeBlocking$1(ContextBase.java:135)
+	at org.jboss.threads.ContextHandler$1.runWith(ContextHandler.java:18)
+	at org.jboss.threads.EnhancedQueueExecutor$Task.run(EnhancedQueueExecutor.java:2449)
+	at org.jboss.threads.EnhancedQueueExecutor$ThreadBody.run(EnhancedQueueExecutor.java:1462)
+	at org.jboss.threads.DelegatingRunnable.run(DelegatingRunnable.java:29)
+	at org.jboss.threads.ThreadLocalResettingRunnable.run(ThreadLocalResettingRunnable.java:29)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.base/java.lang.Thread.run(Thread.java:833)
+
+ */

@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.bi.model.CompanyAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;

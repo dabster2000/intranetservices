@@ -5,6 +5,6 @@ package dk.trustworks.intranet.userservice.model.enums;
  */
 public enum StatusType {
 
-    ACTIVE, TERMINATED, NON_PAY_LEAVE
+    PREBOARDING, ACTIVE, TERMINATED, NON_PAY_LEAVE, MATERNITY_LEAVE, PAID_LEAVE
 
 }

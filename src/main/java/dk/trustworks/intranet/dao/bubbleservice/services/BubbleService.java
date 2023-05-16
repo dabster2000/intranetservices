@@ -4,6 +4,7 @@ import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.model.BubbleMember;
+import dk.trustworks.intranet.dao.bubbleservice.model.enums.BubbleType;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.UserService;
@@ -17,6 +18,7 @@ import javax.persistence.EntityManager;
 import javax.transaction.Transactional;
 import javax.ws.rs.DELETE;
 import java.io.IOException;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -61,12 +63,11 @@ public class BubbleService {
     public void save(Bubble bubble) throws SlackApiException, IOException {
         if(bubble.getUuid() == null || bubble.getUuid().equalsIgnoreCase("")) bubble.setUuid(UUID.randomUUID().toString());
         if(bubble.getSlackChannelName().isEmpty()) throw new IOException("No bubble name");
-        log.info("Creating slack channel: "+bubble.getSlackChannelName());
         bubble.setSlackchannel(slackService.createChannel("b_"+bubble.getSlackChannelName()));
-        log.info("Created slack channel id "+bubble.getSlackchannel());
-        log.info("Persisting bubble "+bubble);
-        bubble.persistAndFlush();
-        //entityManager.flush();
+        bubble.setCreated(LocalDate.now());
+        bubble.setActive(true);
+        bubble.setType(BubbleType.KNOWLEDGE);
+        bubble.persist();
     }
 
     @Transactional
@@ -110,9 +111,7 @@ public class BubbleService {
     public void addBubbleMember(Bubble bubble, String useruuid) {
         log.info("BubbleService.addBubbleMember");
         log.info("bubbleuuid = " + bubble.getUuid() + ", useruuid = " + useruuid);
-        if(bubble.getOwner().equals(useruuid)) return;
-        if(bubble.getCoowner()!= null && bubble.getCoowner().equals(useruuid)) return;
-        if(bubble.getBubbleMembers().stream().anyMatch(bubbleMember -> bubbleMember.getUseruuid().equals(useruuid))) return;
+        if(BubbleMember.find("useruuid like ?1 and bubble = ?2", useruuid, bubble).singleResultOptional().isPresent()) return;
         BubbleMember bubbleMember = new BubbleMember(UUID.randomUUID().toString(), useruuid, bubble);
         slackService.addUserToChannel(userService.findById(useruuid, true), bubble.getSlackchannel());
         BubbleMember.persist(bubbleMember);

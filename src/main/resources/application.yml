@@ -5,7 +5,7 @@ quarkus:
       url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
-      max-size: 10
+      max-size: 20
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   container-image:

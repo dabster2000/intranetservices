@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.bi.model.EmployeeAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.BudgetDocument;
@@ -217,24 +217,32 @@ public class EmployeeDataService {
 
     @Transactional
     @ConsumeEvent(value = "process-employee-data-consumer", blocking = true)
-    //@Throttled(rate = 10, rateUnit = TimeUnit.SECONDS)
+    //(rate = 10, rateUnit = TimeUnit.SECONDS)
     public void process(AbstractMap.SimpleEntry<LocalDate, User> simpleEntry) {
-        LocalDate reloadDate = simpleEntry.getKey();
-        User user = simpleEntry.getValue();
-        EmployeeAggregateData data = new EmployeeAggregateData(reloadDate, user.getUuid());
-        //QuarkusTransaction.run( () -> {
-            log.info("EmployeeDataService: Updating cached data for (" + user.getUsername() + "): " + reloadDate);
+        try {
+            LocalDate reloadDate = simpleEntry.getKey();
+            User user = simpleEntry.getValue();
+            EmployeeAggregateData data = new EmployeeAggregateData(reloadDate, user.getUuid());
+            //QuarkusTransaction.run( () -> {
+            //log.info("EmployeeDataService: Updating cached data for (" + user.getUsername() + "): " + reloadDate);
             updateWorkData(reloadDate, user, data);
             updateFinanceData(reloadDate, user, data);
             updateAvailabilityData(reloadDate, user, data);
             updateBudgetData(reloadDate, user, data);
             updateTeamData(reloadDate, user, data);
             updateMetaData(reloadDate, user, data);
-            data.persistAndFlush();
+            data.updateCalculatedData();
+            //System.out.println("data = " + data);
+            data.persist();
+            if (reloadDate.equals(LocalDate.of(2022, 11, 1)))
+                System.out.println("Persisting: " + reloadDate + ": " + user.getUsername());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
         //});
     }
 
-    //@Scheduled(every = "24h", identity = "UpdateEmployeeData", delay = 30)
+    //@Scheduled(every = "24h", identity = "UpdateEmployeeData")
     @Scheduled(cron = "0 0 1 * * ?")
     //@Transactional
     public void updateAllData() {
@@ -249,8 +257,8 @@ public class EmployeeDataService {
         QuarkusTransaction.run(() -> EmployeeAggregateData.deleteAll());
         userService.listAll(false).forEach(user -> {
             reloadMonthRevenueDates.forEach(reloadDate -> {
-                bus.<String>requestAndForget("process-employee-data-consumer", new AbstractMap.SimpleEntry<>(reloadDate, user));
-
+                bus.<String>send("process-employee-data-consumer", new AbstractMap.SimpleEntry<>(reloadDate, user));
+                if(reloadDate.equals(LocalDate.of(2022,11,1))) System.out.println("Sending: "+reloadDate+": "+user.getUsername());
 
                 //QuarkusTransaction.commit();
                     //QuarkusTransaction.commit();
