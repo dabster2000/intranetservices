@@ -61,18 +61,20 @@ public class SalesService {
                         "competencies = ?4, " +
                         "leadManager = ?5, " +
                         "consultantLevel = ?6, " +
-                        "rate = ?7, " +
-                        "period = ?8, " +
-                        "contactInformation = ?9, " +
-                        "description = ?10, " +
-                        "status = ?11 " +
-                        "WHERE uuid like ?12 ",
+                        "extension = ?7, " +
+                        "rate = ?8, " +
+                        "period = ?9, " +
+                        "contactInformation = ?10, " +
+                        "description = ?11, " +
+                        "status = ?12 " +
+                        "WHERE uuid like ?13 ",
                 salesLead.getClient(),
                 salesLead.getAllocation(),
                 salesLead.getCloseDate(),
                 salesLead.getCompetencies(),
                 salesLead.getLeadManager(),
                 salesLead.getConsultantLevel(),
+                salesLead.isExtension(),
                 salesLead.getRate(),
                 salesLead.getPeriod(),
                 salesLead.getContactInformation(),

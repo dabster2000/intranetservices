@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.communicationsservice.resources.MailResource;
+import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import dk.trustworks.intranet.knowledgeservice.model.enums.ConferenceApplicationStatus;
 import dk.trustworks.intranet.knowledgeservice.model.enums.ConferenceType;
@@ -23,6 +25,9 @@ public class ConferenceResource {
 
     @Inject
     ConferenceService conferenceService;
+
+    @Inject
+    MailResource mailResource;
 
     @GET
     public List<ConferenceParticipant> findAll() {
@@ -56,5 +61,11 @@ public class ConferenceResource {
     @Path("/withdraw")
     public void withdraw(List<ConferenceParticipant> participants) {
         conferenceService.withdraw(participants);
+    }
+
+    @POST
+    @Path("/message")
+    public void message(TrustworksMail mail) {
+        mailResource.sendingHTML(mail);
     }
 }

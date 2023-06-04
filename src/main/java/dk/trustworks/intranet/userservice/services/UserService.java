@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.userservice.services;
 
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
-import dk.trustworks.intranet.dto.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;

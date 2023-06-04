@@ -85,6 +85,10 @@ mp:
 slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
+e-conomics:
+  xAppSecretToken: ${XAPPSERCREETTOKEN:none}
+  xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
+  journal-number: ${JOURNALNUMBER:15}
 bucket:
   expenses: expensefiles
   files: trustworksfiles

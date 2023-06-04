@@ -17,12 +17,14 @@ import dk.trustworks.intranet.userservice.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
-import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.persistence.EntityManager;
+import javax.persistence.PersistenceContext;
+import javax.persistence.Query;
 import javax.transaction.TransactionManager;
 import javax.transaction.Transactional;
 import java.time.LocalDate;
@@ -45,6 +47,9 @@ public class EmployeeDataService {
 
     @Inject
     EventBus bus;
+
+    @PersistenceContext
+    EntityManager entityManager;
 
     @Inject
     WorkService workService;
@@ -216,7 +221,7 @@ public class EmployeeDataService {
     }
 
     @Transactional
-    @ConsumeEvent(value = "process-employee-data-consumer", blocking = true)
+    //@ConsumeEvent(value = "process-employee-data-consumer", blocking = true)
     //(rate = 10, rateUnit = TimeUnit.SECONDS)
     public void process(AbstractMap.SimpleEntry<LocalDate, User> simpleEntry) {
         try {
@@ -243,7 +248,7 @@ public class EmployeeDataService {
     }
 
     //@Scheduled(every = "24h", identity = "UpdateEmployeeData")
-    @Scheduled(cron = "0 0 1 * * ?")
+    @Scheduled(cron="0 0 1 * * ?")
     //@Transactional
     public void updateAllData() {
         log.debug("EmployeeDataService.updateAllData...STARTED!");
@@ -254,11 +259,20 @@ public class EmployeeDataService {
         } while (lookupDate.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
 
         long l = System.currentTimeMillis();
-        QuarkusTransaction.run(() -> EmployeeAggregateData.deleteAll());
+
+        QuarkusTransaction.requiringNew().run(() -> {
+            String sql = "TRUNCATE TABLE employee_data";
+            Query query = entityManager.createNativeQuery(sql);
+            query.executeUpdate();
+        });
+        //QuarkusTransaction.run(() -> EmployeeAggregateData.deleteAll());
         userService.listAll(false).forEach(user -> {
             reloadMonthRevenueDates.forEach(reloadDate -> {
-                bus.<String>send("process-employee-data-consumer", new AbstractMap.SimpleEntry<>(reloadDate, user));
-                if(reloadDate.equals(LocalDate.of(2022,11,1))) System.out.println("Sending: "+reloadDate+": "+user.getUsername());
+                QuarkusTransaction.requiringNew().run(() -> {
+                    process(new AbstractMap.SimpleEntry<>(reloadDate, user));
+                });
+                //bus.<String>send("process-employee-data-consumer", new AbstractMap.SimpleEntry<>(reloadDate, user));
+                //if(reloadDate.equals(LocalDate.of(2022,11,1))) System.out.println("Sending: "+reloadDate+": "+user.getUsername());
 
                 //QuarkusTransaction.commit();
                     //QuarkusTransaction.commit();

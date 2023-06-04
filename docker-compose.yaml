@@ -17,15 +17,12 @@ services:
     image: trustworks/intranet:prod
     env_file:
       - docker-env-intranet.env
-    environment:
-      - JAEGER_AGENT_HOST=jaeger
     ports:
       - "80:8085"
     networks:
       - frontend
       - services
     depends_on:
-      - jaeger
       - twservices
   twservices:
     container_name: twservices
@@ -39,15 +36,6 @@ services:
     networks:
       - services
       - backend
-  jaeger:
-    container_name: jaeger
-    image: jaegertracing/all-in-one:latest
-    ports:
-      - "6831:6831/udp"
-      - "16686:16686"
-    networks:
-      - backend
-      - services
 networks:
   frontend:
   backend:

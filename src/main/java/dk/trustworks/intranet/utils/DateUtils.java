@@ -1,9 +1,6 @@
 package dk.trustworks.intranet.utils;
 
-import java.time.DayOfWeek;
-import java.time.LocalDate;
-import java.time.YearMonth;
-import java.time.ZoneId;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
@@ -245,5 +242,10 @@ public final class DateUtils {
 
     public static LocalDate getCompanyStartDate() {
         return LocalDate.of(2014, 7, 1);
+    }
+
+    public static LocalDate ConvertInstantToLocalDate(Instant instant) {
+        ZoneId zoneId = ZoneId.of("Europe/Copenhagen");
+        return LocalDate.ofInstant(instant, zoneId);
     }
 }

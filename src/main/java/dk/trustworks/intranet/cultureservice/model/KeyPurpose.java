@@ -12,7 +12,7 @@ import javax.persistence.*;
 public class KeyPurpose extends PanacheEntityBase {
 
     @Id
-    @GeneratedValue
+    @GeneratedValue(strategy= GenerationType.IDENTITY)
     private int id;
 
     private String useruuid;

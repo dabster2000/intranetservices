@@ -1,15 +1,19 @@
 package dk.trustworks.intranet.communicationsservice.resources;
 
-import dk.trustworks.intranet.dto.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.model.enums.MailStatus;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import io.quarkus.mailer.Mail;
 import io.quarkus.mailer.Mailer;
+import io.quarkus.scheduler.Scheduled;
 import io.smallrye.common.annotation.Blocking;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.transaction.Transactional;
+import java.util.Optional;
 import java.util.UUID;
 
 @JBossLog
@@ -29,18 +33,31 @@ public class MailResource {
     String password;
 
     @Blocking
+    @Transactional
     public void sendingHTML(TrustworksMail mail) {
         log.info("MailResource.sendingHTML");
         log.info("mail = " + mail);
         log.info("username = " + username);
         log.info("password = " + password);
 
-
-        mailer.send(Mail.withHtml(mail.getTo(), mail.getSubject(), mail.getBody()));
+        mail.setStatus(MailStatus.READY);
+        mail.persist();
     }
 
-    //@Scheduled(every = "5m")
+    @Transactional
+    @Scheduled(every = "10s")
+    public void sendMailJob() {
+        Optional<TrustworksMail> optMail = TrustworksMail.find("status = ?1", MailStatus.READY).firstResultOptional();
+        optMail.ifPresent(mail -> {
+            log.info("Sending delayed email uuid: " + mail.getUuid());
+            mailer.send(Mail.withHtml(mail.getTo(), mail.getSubject(), mail.getBody()));
+            mail.setStatus(MailStatus.SENT);
+            TrustworksMail.update("status = ?1 where uuid like ?2", mail.getStatus(), mail.getUuid());
+        });
+    }
+
     @Blocking
+    @Transactional
     public void sendingWaitingListMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "BEKRÆFTELSE PÅ OPSKRIVNING",
                 "<div style='width: 600px'>\n" +
@@ -53,7 +70,7 @@ public class MailResource {
                         "  <p>&nbsp;</p>\n" +
                         "  <img src=\"cid:trustworks@trustworks.dk\" />" +
                         "  <p>&nbsp;</p>\n" +
-                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med opdateringer af dette års talere og program OG om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;<a href=\"“mailto:forefrontkonf@trustworks.dk”\">forefrontkonf@trustworks.dk</a>, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"“https://forefront.trustworks.dk/faq/”\">FAQ</a>, bedes du ligeledes kontakte os.&nbsp;</em></span></p>\n" +
+                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;<a href=\"“mailto:forefrontkonf@trustworks.dk”\">forefrontkonf@trustworks.dk</a>, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"“https://forefront.trustworks.dk/faq/”\">FAQ</a>, bedes du ligeledes kontakte os.&nbsp;</em></span></p>\n" +
                         "</div>");
 
         log.info("MailResource.sendingHTML");
@@ -68,9 +85,12 @@ public class MailResource {
                         .addInlineAttachment("forefront-logo.png", photoService.findPhotoByRelatedUUID("c3395f9f-1d8d-476e-a517-c83e3b86545a").getFile(), "image/png", "<forefront@trustworks.dk>")
                         .addInlineAttachment("trustworks-logo.png", photoService.findPhotoByRelatedUUID("91af1119-7725-4309-8ae8-131463d8d23c").getFile(), "image/png", "<trustworks@trustworks.dk>")
         );
+        mail.setStatus(MailStatus.SENT);
+        mail.persist();
     }
 
     @Blocking
+    @Transactional
     public void sendingInvitationMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "TILLYKKE, DU HAR FÅET EN PLADS",
                 "<div style='width: 600px'>\n" +
@@ -95,7 +115,7 @@ public class MailResource {
                         "  <img src=\"cid:trustworks@trustworks.dk\" />" +
                         "  <p>&nbsp;</p>\n" +
                         "  <p><span style=\"font-size:10px\"><em>Bliver du forhindret i at deltage, bedes du hurtigst muligt kontakte os, s&aring; pladsen kan g&aring; til anden side. Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores FAQ</em><em>, bedes du ligeledes kontakte os p&aring; </em><a href=\"&ldquo;mailto:forefrontkonf@trustworks.dk&rdquo;\"><em>forefrontkonf@trustworks.dk</em></a><em>. </em></span></p>\n" +
-                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med opdateringer af dette års talere og program OG om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til os p&aring;&nbsp;</em><a href=\"&ldquo;mailto:forefrontkonf@trustworks.dk&rdquo;\"><em>forefrontkonf@trustworks.dk</em></a><em>., s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"&ldquo;http://forefront.34.241.72.253.nip.io/faq/&rdquo;\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
+                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til os p&aring;&nbsp;</em><a href=\"&ldquo;mailto:forefrontkonf@trustworks.dk&rdquo;\"><em>forefrontkonf@trustworks.dk</em></a><em>., s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"&ldquo;http://forefront.34.241.72.253.nip.io/faq/&rdquo;\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
                         "</div>");
 
         log.info("MailResource.sendingHTML");
@@ -110,9 +130,12 @@ public class MailResource {
                 .addInlineAttachment("forefront-logo.png", photoService.findPhotoByRelatedUUID("c3395f9f-1d8d-476e-a517-c83e3b86545a").getFile(), "image/png", "<forefront@trustworks.dk>")
                 .addInlineAttachment("trustworks-logo.png", photoService.findPhotoByRelatedUUID("91af1119-7725-4309-8ae8-131463d8d23c").getFile(), "image/png", "<trustworks@trustworks.dk>")
         );
+        mail.setStatus(MailStatus.SENT);
+        mail.persist();
     }
 
     @Blocking
+    @Transactional
     public void sendingDenyMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "TUSIND TAK FOR DIN INTERESSE",
                 "<div style='width: 600px'>\n" +
@@ -127,7 +150,7 @@ public class MailResource {
                         "  <p>&nbsp;</p>\n" +
                         "  <img src=\"cid:trustworks@trustworks.dk\" />" +
                         "  <p>&nbsp;</p>\n" +
-                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med opdateringer af dette års talere og program OG om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"http://forefront.trustworks.dk/faq/\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
+                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"http://forefront.trustworks.dk/faq/\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
                         "</div>");
 
         log.info("MailResource.sendingHTML");
@@ -142,9 +165,12 @@ public class MailResource {
                 .addInlineAttachment("forefront-logo.png", photoService.findPhotoByRelatedUUID("c3395f9f-1d8d-476e-a517-c83e3b86545a").getFile(), "image/png", "<forefront@trustworks.dk>")
                 .addInlineAttachment("trustworks-logo.png", photoService.findPhotoByRelatedUUID("91af1119-7725-4309-8ae8-131463d8d23c").getFile(), "image/png", "<trustworks@trustworks.dk>")
         );
+        mail.setStatus(MailStatus.SENT);
+        mail.persist();
     }
 
     @Blocking
+    @Transactional
     public void sendingWithdrawMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "BEKRÆFTELSE PÅ AFMELDING",
                 "<div style='width: 600px'>\n" +
@@ -160,7 +186,7 @@ public class MailResource {
                         "<p>&nbsp;</p>\n" +
                         "<img src=\"cid:trustworks@trustworks.dk\" />" +
                         "<p>&nbsp;</p>\n" +
-                        "<p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med opdateringer af dette års talere og program OG om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"http://forefront.trustworks.dk/faq/\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
+                        "<p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"http://forefront.trustworks.dk/faq/\">FAQ</a>, bedes du ligeledes kontakte os.</em></span></p>\n" +
                         "</div>");
         log.info("MailResource.sendingHTML");
         log.info("mail = " + mail);
@@ -174,50 +200,7 @@ public class MailResource {
                 .addInlineAttachment("forefront-logo.png", photoService.findPhotoByRelatedUUID("c3395f9f-1d8d-476e-a517-c83e3b86545a").getFile(), "image/png", "<forefront@trustworks.dk>")
                 .addInlineAttachment("trustworks-logo.png", photoService.findPhotoByRelatedUUID("91af1119-7725-4309-8ae8-131463d8d23c").getFile(), "image/png", "<trustworks@trustworks.dk>")
         );
+        mail.setStatus(MailStatus.SENT);
+        mail.persist();
     }
 }
-
-/*
-<div width="400px">
-  <p>&nbsp;</p>
-  <p><strong>BEKR&AElig;FTELSE P&Aring; OPSKRIVNING</strong></p>
-  <p>Tusind tak for din interesse i FOREFRONT23.&nbsp;Du vil f&aring; besked hurtigst muligt, om du har f&aring;et en plads.</p>
-  <p>V&aelig;r opm&aelig;rksom p&aring; at FOREFRONT er en konference, som prim&aelig;rt henvender sig til folk, der arbejder med IT- og digital transformation. Arrang&oslash;ren bag, Trustworks, forbeholder sig derfor retten til at afvise tilmeldinger uden for m&aring;lgruppen.</p>
-  <p>Venligst,</p>
-  <p>Trustworks</p>
-  <p>&nbsp;</p>
-  <p><span style="font-size:10px"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;<a href="“mailto:forefrontkonf@trustworks.dk”">forefrontkonf@trustworks.dk</a>, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href="“http://forefront.34.241.72.253.nip.io/faq/”">FAQ</a>, bedes du ligeledes kontakte os.&nbsp;</em></span></p>
-</div>
- */
-
-/*
-"<table border=\"1\" cellpadding=\"1\" cellspacing=\"1\" style=\"width:500px\">\n" +
-                        "\t<tbody>\n" +
-                        "\t\t<tr>\n" +
-                        "\t\t\t<td style=\"width:25px\">&nbsp;</td>\n" +
-                        "\t\t\t<td style=\"width:442px\">&nbsp;</td>\n" +
-                        "\t\t\t<td style=\"width:14px\">&nbsp;</td>\n" +
-                        "\t\t</tr>\n" +
-                        "\t\t<tr>\n" +
-                        "\t\t\t<td style=\"width:25px\">&nbsp;</td>\n" +
-                        "\t\t\t<td style=\"width:442px\">\n" +
-                        "\t\t\t<p><img src=\"cid:my-image@quarkus.io\" style=\"height:56px; width:225px\" /></p>\n" +
-                        "\t\t\t<p><strong><span style=\"font-family:Arial,Helvetica,sans-serif\">BEKR&AElig;FTELSE P&Aring; OPSKRIVNING</span></strong></p>\n" +
-                        "\t\t\t<p style=\"text-align:start\"><span style=\"font-size:11pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"color:#000000\"><span style=\"font-family:Helvetica\">Tusind tak for din interesse i FOREFRONT23. Du vil f&aring; besked hurtigst muligt, om du har f&aring;et en plads.</span></span></span></span></p>\n" +
-                        "\t\t\t<p style=\"text-align:start\"><span style=\"font-size:11pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"color:#000000\"><span style=\"font-family:Helvetica\">V&aelig;r opm&aelig;rksom p&aring; at FOREFRONT er en konference, som prim&aelig;rt henvender sig til folk, der arbejder med IT- og digital transformation. Arrang&oslash;ren bag, Trustworks, forbeholder sig derfor retten til at afvise tilmeldinger uden for m&aring;lgruppen.</span></span></span></span></p>\n" +
-                        "\t\t\t<p style=\"text-align:start\"><span style=\"font-size:11pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"color:#000000\"><span style=\"font-family:Helvetica\">Venligst,</span></span></span></span></p>\n" +
-                        "\t\t\t<p style=\"text-align:start\"><span style=\"font-size:11pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"color:#000000\"><span style=\"font-family:Helvetica\">Trus</span></span></span></span><span style=\"font-size:11pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"color:#000000\"><span style=\"font-family:Helvetica\">tworks</span></span></span></span></p>\n" +
-                        "\t\t\t<p style=\"text-align:start\"><img src=\"https://ckeditor.com/apps/ckfinder/userfiles/files/1(1).png\" style=\"height:80px; width:200px\" /></p>\n" +
-                        "\t\t\t<p style=\"text-align:start\"><span style=\"font-size:10px\"><span style=\"font-family:Arial,Helvetica,sans-serif\"><em>&Oslash;nsker du ikke&nbsp;at modtage e-mails med tilbud om kommende konferencer? Skriv til&nbsp;</em><a href=\"mailto:forefrontkonf@trustworks.dk\"><em>forefrontkonf@trustworks.dk</em></a><em>, s&aring; skal vi nok afmelde dig.&nbsp;</em><em>Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores FAQ, bedes du ligeledes kontakte os.</em></span></span></p>\n" +
-                        "\t\t\t</td>\n" +
-                        "\t\t\t<td style=\"width:14px\">&nbsp;</td>\n" +
-                        "\t\t</tr>\n" +
-                        "\t\t<tr>\n" +
-                        "\t\t\t<td style=\"width:25px\">&nbsp;</td>\n" +
-                        "\t\t\t<td style=\"width:442px\">&nbsp;</td>\n" +
-                        "\t\t\t<td style=\"width:14px\">&nbsp;</td>\n" +
-                        "\t\t</tr>\n" +
-                        "\t</tbody>\n" +
-                        "</table>\n" +
-                        "<p>&nbsp;</p>"
- */

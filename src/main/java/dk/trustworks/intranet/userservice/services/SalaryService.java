@@ -25,6 +25,7 @@ public class SalaryService {
 
     @Transactional
     public void create(String useruuid, @Valid Salary salary) {
+        if(salary.getUuid()!=null && Salary.findByIdOptional(salary.getUuid()).isPresent()) Salary.deleteById(salary.getUuid());
         salary.setUuid(UUID.randomUUID().toString());
         salary.setUseruuid(useruuid);
         Salary.persist(salary);

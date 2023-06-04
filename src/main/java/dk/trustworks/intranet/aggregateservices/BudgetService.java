@@ -25,40 +25,44 @@ public class BudgetService {
     UserService userService;
 
     public List<BudgetDocument> calcBudgets(LocalDate lookupMonth) {
-        return budgetServiceCache.createBudgetData().stream().filter(budgetDocument -> budgetDocument.getMonth().withDayOfMonth(1).isEqual(lookupMonth.withDayOfMonth(1))).collect(Collectors.toList());
+        return budgetServiceCache.findAllBudgetData().stream().filter(budgetDocument -> budgetDocument.getMonth().withDayOfMonth(1).isEqual(lookupMonth.withDayOfMonth(1))).collect(Collectors.toList());
     }
 
     public double getConsultantBudgetByMonth(User user, LocalDate month) {
-        List<BudgetDocument> budgetData = budgetServiceCache.createBudgetData();
+        List<BudgetDocument> budgetData = budgetServiceCache.findAllBudgetData();
         return budgetData.stream()
                 .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(user.getUuid()) && budgetDocument.getMonth().isEqual(month.withDayOfMonth(1)))
                 .mapToDouble(budgetDocument -> budgetDocument.getBudgetHours() * budgetDocument.getRate()).sum();
     }
 
     public List<BudgetDocument> getConsultantBudgetDataByMonth(String useruuid, LocalDate month) {
-        List<BudgetDocument> budgetData = budgetServiceCache.createBudgetData();
+        List<BudgetDocument> budgetData = budgetServiceCache.findAllBudgetData();
         return budgetData.stream()
                 .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(useruuid) && budgetDocument.getMonth().isEqual(month.withDayOfMonth(1)))
                 .collect(Collectors.toList());
     }
 
     public List<BudgetDocument> getBudgetDataByPeriod(LocalDate startDate, LocalDate endDate) {
-        List<BudgetDocument> budgetData = budgetServiceCache.createBudgetData();
+        List<BudgetDocument> budgetData = budgetServiceCache.findAllBudgetData();
         return budgetData.stream().filter(budgetDocument ->
                 !budgetDocument.getMonth().withDayOfMonth(1).isBefore(startDate) &&
                         !budgetDocument.getMonth().withDayOfMonth(1).isAfter(endDate)
         ).collect(Collectors.toList());
     }
 
+    public List<BudgetDocument> getBudgetDataByUserAndPeriod(String useruuid, LocalDate startDate, LocalDate endDate) {
+        return budgetServiceCache.findAllBudgetDataByUserAndPeriod(useruuid, startDate, endDate);
+    }
+
     public List<BudgetDocument> getBudgetDataByPeriod(LocalDate month) {
-        List<BudgetDocument> budgetData = budgetServiceCache.createBudgetData();
+        List<BudgetDocument> budgetData = budgetServiceCache.findAllBudgetData();
         return budgetData.stream().filter(budgetDocument ->
                 budgetDocument.getMonth().withDayOfMonth(1).isEqual(month.withDayOfMonth(1))
         ).collect(Collectors.toList());
     }
 
     public double getConsultantBudgetHoursByMonth(String useruuid, LocalDate month) {
-        List<BudgetDocument> budgetData = budgetServiceCache.createBudgetData();
+        List<BudgetDocument> budgetData = budgetServiceCache.findAllBudgetData();
         return budgetData.stream()
                 .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(useruuid) && budgetDocument.getMonth().isEqual(month.withDayOfMonth(1)))
                 .mapToDouble(BudgetDocument::getBudgetHours).sum();

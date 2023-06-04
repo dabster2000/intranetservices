@@ -72,6 +72,13 @@ public class BudgetResource {
     }
 
     @GET
+    @Path("/users/{useruuid}")
+    @JsonView(Views.User.class)
+    public List<BudgetDocument> getConsultantBudgetHoursByUserAndPeriodDocuments(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        return budgetService.getBudgetDataByUserAndPeriod(useruuid, dateIt(fromdate), dateIt(todate));
+    }
+
+    @GET
     @Path("/datemonths/{datemonth}")
     @JsonView(Views.User.class)
     public GraphKeyValue getConsultantBudgetHoursByMonth(@PathParam("datemonth") String datemonth) {

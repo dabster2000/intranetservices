@@ -19,6 +19,9 @@ import lombok.extern.jbosslog.JBossLog;
 import javax.annotation.PostConstruct;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.persistence.EntityManager;
+import javax.persistence.PersistenceContext;
+import javax.persistence.Query;
 import java.time.LocalDate;
 import java.util.*;
 
@@ -32,6 +35,9 @@ public class CompanyDataService {
     private final LocalDate startDate = LocalDate.of(2014, 2, 1);
 
     //private final Map<LocalDate, CompanyAggregateData> dataMap = Collections.synchronizedMap(new HashMap<>());
+
+    @PersistenceContext
+    EntityManager entityManager;
 
     @Inject
     WorkService workService;
@@ -197,11 +203,19 @@ public class CompanyDataService {
         return companyAggregateData;
     }
 
-    @Scheduled(every = "60m", delay = 60)
+
+
+    @Scheduled(every = "1h", delay = 6)
     public void updateAllData() {
         log.info("CompanyDataService.updateAllData...STARTED!");
         long l = System.currentTimeMillis();
-        QuarkusTransaction.run(() -> CompanyAggregateData.deleteAll());
+        QuarkusTransaction.requiringNew().run(() -> {
+                    String sql = "TRUNCATE TABLE company_data";
+                    Query query = entityManager.createNativeQuery(sql);
+                    query.executeUpdate();
+                });
+            //CompanyAggregateData.deleteAll()});
+
         for (LocalDate reloadDate : reloadMonthRevenueDates) {
             log.debug("CompanyDataService: Updating cached data for: " + reloadDate);
             String id = UUID.randomUUID().toString();
@@ -216,8 +230,9 @@ public class CompanyDataService {
             updateEmployeeCountData(data);
             updateAvailabilityData(data);
             updateUtilizationData(data);
-            QuarkusTransaction.run(data::persist);
+            QuarkusTransaction.requiringNew().run(data::persist);
         }
+
         //reloadMonthRevenueDates.clear();
         log.info("CompanyDataService.updateAllData...DONE!");
         log.info("CompanyDataService Time: "+(System.currentTimeMillis()-l));

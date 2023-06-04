@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregateservices;
 
+import com.slack.api.methods.SlackApiException;
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.contracts.model.Budget;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
@@ -12,13 +14,18 @@ import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.persistence.EntityManager;
+import javax.persistence.PersistenceContext;
+import javax.persistence.Query;
 import javax.transaction.*;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +33,9 @@ import java.util.List;
 @JBossLog
 @ApplicationScoped
 public class BudgetServiceCache {
+
+    @PersistenceContext
+    EntityManager entityManager;
 
     @Inject
     UserService userService;
@@ -43,15 +53,18 @@ public class BudgetServiceCache {
     BudgetService budgetAPI;
 
     @Inject
-    TransactionManager transactionManager;
+    SlackService slackService;
 
     @Inject
-    EntityManager em;
+    TransactionManager transactionManager;
 
-    @Scheduled(every = "1h", delay = 10000)
+    @Scheduled(every = "1h", delay = 0)
     public void refreshBudgetData() {
+        log.info("BudgetServiceCache.refreshBudgetData");
         //List<BudgetDocument> budgetDocumentList = new ArrayList<>();
-
+        log.info("Deleting all budgets...");
+        long l = System.currentTimeMillis();
+        /*
         try {
             transactionManager.begin();
             //em.createNativeQuery("truncate table budget_document");
@@ -60,11 +73,18 @@ public class BudgetServiceCache {
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException(e);
-        }
-
-
+        }*/
+        QuarkusTransaction.requiringNew().run(() -> {
+            String sql = "TRUNCATE TABLE budget_document";
+            Query query = entityManager.createNativeQuery(sql);
+            query.executeUpdate();
+        });
+        log.info("...budgets deleted: "+(System.currentTimeMillis()-l));
+        log.info("Creating all budgets...");
+        l = System.currentTimeMillis();
         LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
         do {
+            log.info("Loading budget data for: " + lookupMonth);
             try {
                 transactionManager.begin();
                 //budgetDocumentList.addAll(calcBudgets(lookupMonth));;
@@ -72,16 +92,28 @@ public class BudgetServiceCache {
                 transactionManager.commit();
             } catch (NotSupportedException | HeuristicRollbackException | HeuristicMixedException | RollbackException |
                      SystemException e) {
+                try {
+                    e.printStackTrace();
+                    slackService.sendMessage(userService.findByUsername("hans.lassen", true), ExceptionUtils.getStackTrace(e));
+                } catch (SlackApiException | IOException ex) {
+                    throw new RuntimeException(ex);
+                }
                 throw new RuntimeException(e);
             }
 
             lookupMonth = lookupMonth.plusMonths(1);
+            log.info("...budget month done!");
         } while (lookupMonth.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
+        log.info("...budgets created: "+(System.currentTimeMillis()-l));
     }
 
     //@CacheResult(cacheName = "budget-cache")
-    public List<BudgetDocument> createBudgetData() {
+    public List<BudgetDocument> findAllBudgetData() {
         return BudgetDocument.listAll();
+    }
+
+    public List<BudgetDocument> findAllBudgetDataByUserAndPeriod(String useruuid, LocalDate startDate, LocalDate endDate) {
+        return BudgetDocument.find("useruuid like ?1 and month >= ?2 and month < ?3", useruuid, startDate, endDate).list();
     }
 
     public List<BudgetDocument> calcBudgets(LocalDate lookupMonth) {
@@ -151,13 +183,10 @@ public class BudgetServiceCache {
     }
 
     private BudgetDocument createBudgetDocument(User user, LocalDate startDate, Contract contract, ContractConsultant userContract, List<Client> clientList) {
-        //System.out.println("BudgetServiceCache.createBudgetDocument");
-        //System.out.println("user = " + user + ", startDate = " + startDate + ", contract = " + contract + ", userContract = " + userContract + ", clientList = " + clientList);
         BudgetDocument result = null;
         double budget = userContract.getHours(); // (f.eks. 35 timer)
         if (budget != 0.0) {
             AvailabilityDocument availability = availabilityService.getConsultantAvailabilityByMonth(user.getUuid(), startDate);
-            //if(user.getUsername().equalsIgnoreCase("hans.lassen")) System.out.println("12: availability = " + availability);
             double monthBudget = budget * availability.getWeeks(); // f.eks. 2019-12-01, 18 days / 5 = 3,6 weeks * 35 (budget) = 126 hours
             result = new BudgetDocument(startDate, getClient(clientList, contract), user, contract, monthBudget, monthBudget, userContract.getRate());
         }

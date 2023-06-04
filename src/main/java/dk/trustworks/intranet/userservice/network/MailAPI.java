@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.userservice.network;
 
-import dk.trustworks.intranet.dto.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import io.micrometer.core.annotation.Timed;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 

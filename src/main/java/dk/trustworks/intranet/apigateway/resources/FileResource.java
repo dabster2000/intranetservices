@@ -3,6 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
+import dk.trustworks.intranet.fileservice.services.S3FileService;
 
 import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.ApplicationScoped;
@@ -25,6 +26,9 @@ public class FileResource {
 
     @Inject
     UserDocumentResource documentAPI;
+
+    @Inject
+    S3FileService s3FileService;
 
     @GET
     @Path("/photos/{relateduuid}")
@@ -80,5 +84,17 @@ public class FileResource {
     @Path("/documents/{uuid}")
     public void deleteDocument(@PathParam("uuid") String uuid) {
         documentAPI.delete(uuid);
+    }
+
+    @GET
+    @Path("/s3")
+    public List<File> findAllS3Files() {
+        return s3FileService.findAll();
+    }
+
+    @GET
+    @Path("/s3/{uuid}")
+    public File findAllS3Files(@PathParam("uuid") String uuid) {
+        return s3FileService.findOne(uuid);
     }
 }

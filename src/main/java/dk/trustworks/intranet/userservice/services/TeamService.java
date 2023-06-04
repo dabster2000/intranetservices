@@ -152,6 +152,7 @@ public class TeamService {
 
     @Transactional
     public void addTeamroleToUser(String teamuuid, TeamRole teamrole) {
+        if(teamrole.getUuid()!=null && TeamRole.findByIdOptional(teamrole.getUuid()).isPresent()) TeamRole.deleteById(teamrole.getUuid());
         TeamRole.persist(new TeamRole(UUID.randomUUID().toString(), teamuuid, teamrole.getUseruuid(), teamrole.getStartdate(), teamrole.getEnddate(), teamrole.getTeammembertype()));
     }
 

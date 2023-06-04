@@ -9,6 +9,7 @@ import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
@@ -35,9 +36,12 @@ public class EconomicsInvoiceService {
     @RestClient
     EconomicsAPIFile economicsAPIFile;
 
+    @ConfigProperty(name = "e-conomics.journal-number")
+    int journalNumber;
+
     public Response sendVoucher(Invoice invoice) throws IOException {
 
-        Journal journal = new Journal(7);
+        Journal journal = new Journal(journalNumber);
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
         Voucher voucher = buildJSONRequest(invoice, journal, text);

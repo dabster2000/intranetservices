@@ -43,6 +43,7 @@ public class StatusService {
 
     @Transactional
     public void create(String useruuid, @Valid UserStatus status) {
+        if(status.getUuid()!=null && UserStatus.findByIdOptional(status.getUuid()).isPresent()) UserStatus.deleteById(status.getUuid());
         status.setUuid(UUID.randomUUID().toString());
         status.setUseruuid(useruuid);
         UserStatus.persist(status);

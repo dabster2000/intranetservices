@@ -27,6 +27,8 @@ public class CkoExpenseService {
 
     @Transactional
     public void saveExpense(CKOExpense ckoExpense) {
+        log.info("CkoExpenseService.saveExpense");
+        log.info("ckoExpense = " + ckoExpense);
         if(ckoExpense.getUuid()==null || ckoExpense.getUuid().isEmpty()) {
             ckoExpense.setUuid(UUID.randomUUID().toString());
         } else {
@@ -40,6 +42,8 @@ public class CkoExpenseService {
 
     @Transactional
     public void updateExpense(CKOExpense ckoExpense) {
+        log.info("CkoExpenseService.updateExpense");
+        log.info("ckoExpense = " + ckoExpense);
         CKOExpense.update("eventdate = ?1, " +
                 "description = ?2, " +
                 "price = ?3, " +

@@ -1,7 +1,8 @@
-package dk.trustworks.intranet.fileservice.resources;
+package dk.trustworks.intranet.fileservice.services;
 
 import dk.trustworks.intranet.fileservice.model.File;
 import lombok.extern.jbosslog.JBossLog;
+import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
@@ -9,22 +10,22 @@ import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.http.apache.ProxyConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
-import software.amazon.awssdk.services.s3.model.GetObjectRequest;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
-import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.*;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.transaction.Transactional;
 import javax.ws.rs.PathParam;
-import javax.ws.rs.QueryParam;
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+
+import static dk.trustworks.intranet.utils.DateUtils.ConvertInstantToLocalDate;
 
 @ApplicationScoped
 @JBossLog
-public class UserDocumentResource {
+public class S3FileService {
 
     @ConfigProperty(name = "bucket.files")
     String bucketName;
@@ -35,34 +36,48 @@ public class UserDocumentResource {
     ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder().proxyConfiguration(proxyConfig.build());
     S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
 
-    public List<File> findDocuments() {
-        log.debug("UserDocumentResource.findDocuments");
-        return File.find("type like 'DOCUMENT'").list();
+    public List<File> findAll() {
+        ListObjectsRequest listObjects = ListObjectsRequest.builder().bucket(bucketName).build();
+        ListObjectsResponse res = s3.listObjects(listObjects);
+
+        List<File> files = new ArrayList<>();
+        for (S3Object content : res.contents()) {
+            String key = content.key();
+            Optional<File> optionalFile = File.findByIdOptional(key);
+            if(optionalFile.isPresent()) {
+                files.add(optionalFile.get());
+            } else {
+                File one = findOne(content.key());
+                files.add(new File(content.key(), "", one.getType(), content.toString(), "UNMAPPED", ConvertInstantToLocalDate(content.lastModified()), null));
+            }
+        }
+
+        return files;
     }
 
-    public List<File> findDocumentsByUserUUID(@QueryParam("useruuid") String useruuid) {
-        log.debug("UserDocumentResource.findDocumentsByUserUUID");
-        log.debug("useruuid = " + useruuid);
-        return File.find("relateduuid like ?1 AND type like 'DOCUMENT'", useruuid).list();
-    }
-
-    public File findDocumentByUUID(@PathParam("uuid") String uuid) {
-        log.debug("UserDocumentResource.findDocumentByUUID");
-        log.debug("uuid = " + uuid);
-
-        File file = File.findById(uuid);
-
+    public File findOne(String uuid) {
+        Optional<File> optionalFile = File.findByIdOptional(uuid);
+        File file = null;
+        if(optionalFile.isPresent()) {
+            file = optionalFile.get();
+        } else {
+            file = new File(uuid, "", "", "", "", null, null);
+        }
         try{
+            Tika tika = new Tika();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(uuid).build(), ResponseTransformer.toOutputStream(baos));
             byte[] bytes = baos.toByteArray();
+            String fileType = tika.detect(bytes);
             file.setFile(bytes);
+            file.setType(fileType);
             return file;//new File(uuid, "", "DOCUMENT", "", "", null, file);
         }  catch (S3Exception e) {
             log.error("Error loading "+uuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
             return file;//new File(uuid, "", "DOCUMENT", "", "", null, new byte[0]);
         }
     }
+
 
     @Transactional
     public void save(File document) {

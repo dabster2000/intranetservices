@@ -22,7 +22,6 @@ import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.UserService;
-import io.quarkus.cache.CacheResult;
 import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -182,7 +181,6 @@ public class UserResource {
 
     @GET
     @Path("/{useruuid}/knowledge/expenses")
-    @CacheResult(cacheName = "knowledge-cache")
     public List<CKOExpense> findKnowledgeExpensesByUseruuid(@PathParam("useruuid") String useruuid) {
         return knowledgeExpenseAPI.findExpensesByUseruuid(useruuid);
     }

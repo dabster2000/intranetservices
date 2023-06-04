@@ -11,7 +11,9 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
+import javax.transaction.Transactional;
 import javax.ws.rs.*;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
 
@@ -27,19 +29,31 @@ public class SalesResource {
     SalesService salesService;
 
     @GET
+    @Transactional
     public List<SalesLead> findAll() {
-        return salesService.findAll();
+        List<SalesLead> salesLeads = salesService.findAll();
+        for (SalesLead salesLead : salesLeads) {
+            testCloseDate(salesLead);
+        }
+        return salesLeads;
     }
 
     @GET
     @Path("/{uuid}")
+    @Transactional
     public SalesLead findOne(@PathParam("uuid") String uuid) {
-        return salesService.findOne(uuid);
+        SalesLead salesLead = salesService.findOne(uuid);
+        testCloseDate(salesLead);
+        return salesLead;
     }
 
     @GET
     public List<SalesLead> findByStatus(@QueryParam("status") String status) {
-        return salesService.findByStatus(Arrays.stream(status.split(",")).map(SalesStatus::valueOf).toArray((SalesStatus[]::new)));
+        List<SalesLead> salesLeads = salesService.findByStatus(Arrays.stream(status.split(",")).map(SalesStatus::valueOf).toArray((SalesStatus[]::new)));
+        for (SalesLead salesLead : salesLeads) {
+            testCloseDate(salesLead);
+        }
+        return salesLeads;
     }
 
     @POST
@@ -67,5 +81,12 @@ public class SalesResource {
     @DELETE
     public void delete(String uuid) {
         salesService.delete(uuid);
+    }
+
+    private static void testCloseDate(SalesLead salesLead) {
+        if (salesLead.getCloseDate().isBefore(LocalDate.now().withDayOfMonth(1))) {
+            salesLead.setCloseDate(LocalDate.now().withDayOfMonth(1));
+            salesLead.persistAndFlush();
+        }
     }
 }
