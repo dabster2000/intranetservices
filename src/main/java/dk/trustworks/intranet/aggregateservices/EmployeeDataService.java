@@ -248,7 +248,8 @@ public class EmployeeDataService {
     }
 
     //@Scheduled(every = "24h", identity = "UpdateEmployeeData")
-    @Scheduled(cron="0 0 1 * * ?")
+    //@Scheduled(cron="0 0 1 * * ?")
+    @Scheduled(every = "6h", delay = 5, identity = "UpdateEmployeeData")
     //@Transactional
     public void updateAllData() {
         log.debug("EmployeeDataService.updateAllData...STARTED!");

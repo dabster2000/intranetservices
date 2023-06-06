@@ -79,7 +79,8 @@ public class SalesResource {
     }
 
     @DELETE
-    public void delete(String uuid) {
+    @Path("/{uuid}")
+    public void delete(@PathParam("uuid") String uuid) {
         salesService.delete(uuid);
     }
 

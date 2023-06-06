@@ -22,6 +22,7 @@ public class TaskboardService {
         badges.add("Internt kursus");
         badges.add("Markedsføring");
         badges.add("Operations");
+        badges.add("Socialt årshjul");
         badges.add("Vidensdag");
         badges.add("Vidensdeling");
         Stream<TaskboardItem> stream = TaskboardItem.streamAll();
