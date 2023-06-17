@@ -49,18 +49,18 @@ public class BubbleResource {
     }
 
     @PUT
-    public void update(Bubble bubble) {
+    public void update(Bubble bubble) throws SlackApiException, IOException {
         bubbleService.update(bubble);
     }
 
     @DELETE
     @Path("/{bubbleuuid}")
     @RolesAllowed({"CXO"})
-    public void delete(@PathParam("bubbleuuid") String bubbleuuid) {
+    public void delete(@PathParam("bubbleuuid") String bubbleuuid) throws SlackApiException, IOException {
         bubbleService.delete(bubbleuuid);
     }
 
-    @POST
+    @GET
     @Path("/{bubbleuuid}/users/{useruuid}")
     public void addBubbleMember(@PathParam("bubbleuuid") String bubbleuuid, @PathParam("useruuid") String useruuid) {
         bubbleService.addBubbleMember(bubbleuuid, useruuid);

@@ -4,7 +4,6 @@ import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.model.BubbleMember;
-import dk.trustworks.intranet.dao.bubbleservice.model.enums.BubbleType;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.UserService;
@@ -66,13 +65,15 @@ public class BubbleService {
         bubble.setSlackchannel(slackService.createChannel("b_"+bubble.getSlackChannelName()));
         bubble.setCreated(LocalDate.now());
         bubble.setActive(true);
-        bubble.setType(BubbleType.KNOWLEDGE);
         bubble.persist();
     }
 
     @Transactional
-    public void update(Bubble bubble) {
+    public void update(Bubble bubble) throws SlackApiException, IOException {
         log.info("Updating bubble: " + bubble);
+        if(!bubble.isActive()) {
+            slackService.closeChannel(bubble.getSlackchannel());
+        }
         Bubble.update("name = ?1, " +
                         "description = ?2, " +
                         "application = ?3, " +
@@ -97,7 +98,8 @@ public class BubbleService {
 
     @DELETE
     @Transactional
-    public void delete(String bubbleuuid) {
+    public void delete(String bubbleuuid) throws SlackApiException, IOException {
+        slackService.closeChannel(Bubble.findById(bubbleuuid).getSlackchannel());
         Bubble.deleteById(bubbleuuid);
     }
 

@@ -3,9 +3,7 @@ package dk.trustworks.intranet.communicationsservice.services;
 import com.slack.api.Slack;
 import com.slack.api.methods.SlackApiException;
 import com.slack.api.methods.response.chat.ChatPostMessageResponse;
-import com.slack.api.methods.response.conversations.ConversationsCreateResponse;
-import com.slack.api.methods.response.conversations.ConversationsInviteResponse;
-import com.slack.api.methods.response.conversations.ConversationsKickResponse;
+import com.slack.api.methods.response.conversations.*;
 import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -69,6 +67,17 @@ public class SlackService {
         }
 
         return response.getChannel().getId();
+    }
+
+    public boolean closeChannel(String channelName) throws IOException, SlackApiException {
+        Slack slack = Slack.getInstance();
+        ConversationsArchiveResponse response = slack.methods(motherSlackBotToken).conversationsArchive(r -> r.channel(channelName));
+
+        if (!response.isOk()) {
+            System.out.println("response.getError() = " + response.getError());
+        }
+
+        return response.isOk();
     }
 
 }
