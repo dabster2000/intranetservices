@@ -179,8 +179,6 @@
       <artifactId>tika-core</artifactId>
       <version>1.27</version>
     </dependency>
-
-
     <dependency>
       <groupId>com.amazonaws</groupId>
       <artifactId>aws-java-sdk-ses</artifactId>
