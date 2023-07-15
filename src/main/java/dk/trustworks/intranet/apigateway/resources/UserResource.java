@@ -18,6 +18,9 @@ import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
+import dk.trustworks.intranet.knowledgeservice.model.Certification;
+import dk.trustworks.intranet.knowledgeservice.model.UserCertification;
+import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
@@ -34,6 +37,7 @@ import javax.annotation.security.PermitAll;
 import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
+import javax.transaction.Transactional;
 import javax.ws.rs.*;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -73,6 +77,9 @@ public class UserResource {
 
     @Inject
     WorkService workService;
+
+    @Inject
+    CertificationService certificationService;
 
     @Inject
     PhotoService photoAPI;
@@ -308,5 +315,31 @@ public class UserResource {
     @Path("/{useruuid}/documents")
     public void saveDocument(File document) {
         documentAPI.save(document);
+    }
+
+    @GET
+    @Path("/{useruuid}/certifications")
+    public List<Certification> findCertificationsByUserUUID(@PathParam("useruuid") String useruuid) {
+        return certificationService.findAllCertificationsByUseruuid(useruuid);
+    }
+
+    @POST
+    @Path("/{useruuid}/certifications/{certificationuuid}")
+    @Transactional
+    public void addUserCertification(@PathParam("useruuid") String useruuid, @PathParam("certificationuuid") String certificationuuid, Certification body) {
+        if(certificationService.findAllUserCertifications(useruuid).stream().noneMatch(userCertification -> userCertification.getCertificationuuid().equals(certificationuuid))) {
+            new UserCertification(useruuid, certificationuuid).persist();
+        }
+    }
+
+    @DELETE
+    @Path("/{useruuid}/certifications/{certificationuuid}")
+    @Transactional
+    public void deleteUserCertification(@PathParam("useruuid") String useruuid, @PathParam("certificationuuid") String certificationuuid) {
+        for (UserCertification userCertification : certificationService.findAllUserCertifications(useruuid)) {
+            if (userCertification.getCertificationuuid().equals(certificationuuid)) {
+                userCertification.delete();
+            }
+        }
     }
 }

@@ -1,8 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.dto.BannerNews;
-import dk.trustworks.intranet.dto.RegularNews;
 import dk.trustworks.intranet.newsservice.model.News;
+import dk.trustworks.intranet.newsservice.resources.NewsService;
 import io.micrometer.core.annotation.Timed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -12,9 +11,7 @@ import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.transaction.Transactional;
-import javax.ws.rs.GET;
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
+import javax.ws.rs.*;
 import javax.ws.rs.core.Response;
 import java.util.List;
 
@@ -28,63 +25,30 @@ import java.util.List;
 public class NewsResource {
 
     @Inject
-    dk.trustworks.intranet.newsservice.resources.NewsResource newsAPI;
-
+    NewsService newsAPI;
     @GET
     public List<News> all() {
-        return newsAPI.all();
-    }
-/*
-    @GET
-    @Path("/banners")
-    public List<BannerNews> getAllBannerNews() {
-        return newsAPI.getAllBannerNews();
+        return newsAPI.findAll();
     }
 
     @GET
-    @Path("/banners/active")
-    public List<BannerNews> getActiveBannerNews() {
-        return newsAPI.getActiveBannerNews();
+    @Path("/active")
+    public List<News> getActiveNews(@QueryParam("type") String newsType) {
+        return newsAPI.getActiveNews(newsType);
     }
 
-    @GET
-    @Path("/birthday")
-    public List<BirthdayNews> getAllBirthdayNews() {
-        return newsAPI.getAllBirthdayNews();
-    }
-
-    @GET
-    @Path("/birthday/active")
-    public List<BirthdayNews> getActiveBirthdayNews() {
-        return newsAPI.getActiveBirthdayNews();
-    }
-
-    @GET
-    @Path("/feed")
-    public List<RegularNews> getAllRegularNews() {
-        return newsAPI.getAllRegularNews();
-    }
-
-    @GET
-    @Path("/feed/active")
-    public List<RegularNews> getActiveRegularNews() {
-        return newsAPI.getActiveRegularNews();
-    }
-
- */
     @POST
-    @Path("/banner")
     @Transactional
-    public Response add(BannerNews news) {
-        newsAPI.add(news);
+    public Response save(News news) {
+        newsAPI.save(news);
         return Response.ok().build();
     }
 
-    @POST
-    @Path("/feed")
+    @DELETE
+    @Path("/{newsuuid}")
     @Transactional
-    public Response add(RegularNews news) {
-        newsAPI.add(news);
+    public Response delete(@PathParam("newsuuid") String uuid) {
+        newsAPI.delete(uuid);
         return Response.ok().build();
     }
 }

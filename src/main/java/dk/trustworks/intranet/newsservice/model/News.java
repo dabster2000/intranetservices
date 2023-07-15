@@ -4,12 +4,14 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.newsservice.utils.LocalDateTimeSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import javax.persistence.*;
 import java.time.LocalDateTime;
 import java.util.List;
 
 @Data
+@NoArgsConstructor
 @Entity(name = "news")
 //@Inheritance(strategy = InheritanceType.SINGLE_TABLE)
 //@DiscriminatorColumn(name="news_type", discriminatorType = DiscriminatorType.STRING)
@@ -23,6 +25,9 @@ public class News extends PanacheEntityBase {
     @JsonSerialize(using = LocalDateTimeSerializer.class)
     @Column(name = "enddate")
     private LocalDateTime endDate;
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @Column(name = "eventdate")
+    private LocalDateTime eventDate;
     @Column(name = "newstype")
     private String newsType;
 
@@ -36,4 +41,10 @@ public class News extends PanacheEntityBase {
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER, orphanRemoval = true)
     private List<RelatedResource> relatedResources;
 
+    public News(LocalDateTime eventDate, String newsType, String createdBy, String text) {
+        this.eventDate = eventDate;
+        this.newsType = newsType;
+        this.createdBy = createdBy;
+        this.text = text;
+    }
 }

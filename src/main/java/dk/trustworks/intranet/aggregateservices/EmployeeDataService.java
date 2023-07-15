@@ -239,8 +239,6 @@ public class EmployeeDataService {
             data.updateCalculatedData();
             //System.out.println("data = " + data);
             data.persist();
-            if (reloadDate.equals(LocalDate.of(2022, 11, 1)))
-                System.out.println("Persisting: " + reloadDate + ": " + user.getUsername());
         } catch (Exception e) {
             e.printStackTrace();
         }

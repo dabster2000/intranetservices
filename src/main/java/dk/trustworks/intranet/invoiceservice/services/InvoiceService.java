@@ -280,7 +280,6 @@ public class InvoiceService {
 
     public byte[] createInvoicePdf(Invoice invoice) {
         InvoiceDTO invoiceDTO = new InvoiceDTO(invoice);
-        invoice.getInvoiceitems().forEach(invoiceItem -> System.out.println("invoiceItem.itemname = " + invoiceItem.itemname));
         return invoiceAPI.createInvoicePDF(invoiceDTO);
     }
 

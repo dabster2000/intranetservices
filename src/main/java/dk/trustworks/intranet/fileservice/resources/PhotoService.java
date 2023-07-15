@@ -10,7 +10,6 @@ import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.http.apache.ProxyConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
@@ -48,6 +47,8 @@ public class PhotoService {
                 photo.setFile(file);
             }  catch (S3Exception e) {
                 log.error("Error loading "+photo.getUuid()+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+            } catch (Exception e) {
+                log.error(e.getMessage());
             }
             return photo;
         } else {
@@ -63,6 +64,8 @@ public class PhotoService {
                 newPhoto.setFile(file);
             }  catch (S3Exception e) {
                 log.error("Error loading "+type+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+            } catch (Exception e) {
+                log.error(e.getMessage());
             }
             return newPhoto;
         }
@@ -85,6 +88,8 @@ public class PhotoService {
                 photo.get().setFile(file);
             }  catch (S3Exception e) {
                 log.error("Error loading "+relateduuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+            } catch (Exception e) {
+                log.error(e.getMessage());
             }
         }
         return photo.orElseGet(() -> {
@@ -100,6 +105,8 @@ public class PhotoService {
                 newPhoto.setFile(file);
             }  catch (S3Exception e) {
                 log.error("Error loading default 'c297e216-e5cf-437d-9a1f-de840c7557e9' from S3: "+e.awsErrorDetails().errorMessage(), e);
+            } catch (Exception e) {
+                log.error(e.getMessage());
             }
             return newPhoto;
         });
@@ -134,7 +141,7 @@ public class PhotoService {
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
         File.deleteById(uuid);
-        s3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(uuid).build());
+        //s3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(uuid).build());
     }
 
 }

@@ -81,7 +81,6 @@ public class CompanyDataService {
      */
 
     public CompanyAggregateData updateWorkData(CompanyAggregateData companyAggregateData) {
-        log.debug("CompanyDataService.updateWorkData");
         LocalDate lookupDate = companyAggregateData.getMonth();
         companyAggregateData.setRegisteredHours(0);
         companyAggregateData.setRegisteredAmount(0);
@@ -94,7 +93,6 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateFinanceData(CompanyAggregateData companyAggregateData) {
-        log.debug("CompanyDataService.updateFinanceData");
         LocalDate lookupDate = companyAggregateData.getMonth();
         FinanceDocument financeDocument = financeService.getFinanceDocument(lookupDate);
 
@@ -118,7 +116,6 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateInvoiceData(CompanyAggregateData companyAggregateData) {
-        log.debug("CompanyDataService.updateInvoiceData");
         LocalDate lookupDate = companyAggregateData.getMonth();
 
         List<Invoice> invoices = invoiceService.findByBookingDate(lookupDate.withDayOfMonth(1), lookupDate.withDayOfMonth(1).plusMonths(1)).stream()
@@ -140,7 +137,6 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateBudgetData(CompanyAggregateData companyAggregateData) {
-        log.debug("CompanyDataService.updateBudgetData");
         List<BudgetDocument> budgetDocuments = budgetService.calcBudgets(companyAggregateData.getMonth());
 
         double budgetHours = budgetDocuments.stream().mapToDouble(BudgetDocument::getBudgetHours).sum();
@@ -152,7 +148,6 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateEmployeeCountData(CompanyAggregateData companyAggregateData) {
-        log.debug("CompanyDataService.updateEmployeeCountData");
         long employees = availabilityService.countActiveEmployeeTypesByMonth(companyAggregateData.getMonth(), ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT);
         long consultants = availabilityService.countActiveEmployeeTypesByMonth(companyAggregateData.getMonth(), ConsultantType.CONSULTANT);
 
@@ -162,7 +157,6 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateAvailabilityData(CompanyAggregateData companyAggregateData) {
-        log.debug("CompanyDataService.updateAvailabilityData");
         List<AvailabilityDocument> availabilityDocumentList = availabilityService.getConsultantAvailabilityByMonth(companyAggregateData.getMonth());
 
         companyAggregateData.setGrossAvailableHours(0);
@@ -217,7 +211,6 @@ public class CompanyDataService {
             //CompanyAggregateData.deleteAll()});
 
         for (LocalDate reloadDate : reloadMonthRevenueDates) {
-            log.debug("CompanyDataService: Updating cached data for: " + reloadDate);
             String id = UUID.randomUUID().toString();
             CompanyAggregateData data = new CompanyAggregateData(id, reloadDate);
 

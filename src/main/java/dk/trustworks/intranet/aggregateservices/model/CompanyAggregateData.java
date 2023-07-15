@@ -19,7 +19,7 @@ import java.time.LocalDate;
 @Data
 @Entity
 @Table(name = "company_data")
-@NoArgsConstructor
+@NoArgsConstructor(force = true)
 @RequiredArgsConstructor
 public class CompanyAggregateData extends PanacheEntityBase {
 

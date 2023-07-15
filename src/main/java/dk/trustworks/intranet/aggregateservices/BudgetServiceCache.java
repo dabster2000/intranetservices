@@ -84,7 +84,6 @@ public class BudgetServiceCache {
         l = System.currentTimeMillis();
         LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
         do {
-            log.info("Loading budget data for: " + lookupMonth);
             try {
                 transactionManager.begin();
                 //budgetDocumentList.addAll(calcBudgets(lookupMonth));;
@@ -102,7 +101,6 @@ public class BudgetServiceCache {
             }
 
             lookupMonth = lookupMonth.plusMonths(1);
-            log.info("...budget month done!");
         } while (lookupMonth.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
         log.info("...budgets created: "+(System.currentTimeMillis()-l));
     }

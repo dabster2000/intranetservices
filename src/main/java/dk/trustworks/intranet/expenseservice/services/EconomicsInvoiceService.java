@@ -96,8 +96,8 @@ public class EconomicsInvoiceService {
 
         ContraAccount contraAccount = new ContraAccount(invoice.getInvoicenumber()==0?2102:2101);
         ExpenseAccount account = new ExpenseAccount(invoice.getInvoicenumber()==0?2102:2101);
-        String s = DateUtils.getCurrentFiscalStartDate().getYear() + "/" + DateUtils.getCurrentFiscalStartDate().plusYears(1).getYear();
-        AccountingYear accountingYear = new AccountingYear(DateUtils.getCurrentFiscalStartDate().getYear()+"/"+DateUtils.getCurrentFiscalStartDate().plusYears(1).getYear());
+        String s = DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()).getYear() + "/" + DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()).plusYears(1).getYear();
+        AccountingYear accountingYear = new AccountingYear(s);//new AccountingYear(DateUtils.getCurrentFiscalStartDate().getYear()+"/"+DateUtils.getCurrentFiscalStartDate().plusYears(1).getYear());
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 

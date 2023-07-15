@@ -38,7 +38,6 @@ public class BiResource {
     @GET
     @Path("/company")
     public List<CompanyAggregateData> getCompanyDataPerMonth(@QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
-        System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
         return companyDataService.getDataMap(fromdate, todate).stream().filter(m -> DateUtils.isBetween(m.getMonth(), fromdate, todate)).collect(Collectors.toList());
