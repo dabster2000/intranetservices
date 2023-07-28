@@ -31,6 +31,10 @@ import static dk.trustworks.intranet.utils.DateUtils.*;
 @ApplicationScoped
 public class WorkService {
 
+    public static final String VACATION = "f585f46f-19c1-4a3a-9ebd-1a4f21007282";
+    public static final String SICKNESS = "02bf71c5-f588-46cf-9695-5864020eb1c4";
+    public static final String MATERNITY = "da2f89fc-9aef-4029-8ac2-7486be60e9b9";
+
     @GET
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
@@ -126,27 +130,27 @@ public class WorkService {
     }
 
     public List<WorkFull> findVacationByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, "f585f46f-19c1-4a3a-9ebd-1a4f21007282");
+        return findByUserAndTasks(useruuid, VACATION);
     }
 
     public Map<String, Map<String, Double>> findVacationSumByMonth() {
-        return findByUserAndTasksSumByMonth("f585f46f-19c1-4a3a-9ebd-1a4f21007282");
+        return findByUserAndTasksSumByMonth(VACATION);
     }
 
     public List<WorkFull> findSicknessByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, "02bf71c5-f588-46cf-9695-5864020eb1c4");
+        return findByUserAndTasks(useruuid, SICKNESS);
     }
 
     public Map<String, Map<String, Double>> findSicknessSumByMonth() {
-        return findByUserAndTasksSumByMonth("02bf71c5-f588-46cf-9695-5864020eb1c4");
+        return findByUserAndTasksSumByMonth(SICKNESS);
     }
 
     public List<WorkFull> findMaternityLeaveByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, "da2f89fc-9aef-4029-8ac2-7486be60e9b9");
+        return findByUserAndTasks(useruuid, MATERNITY);
     }
 
     public Map<String, Map<String, Double>> findMaternityLeaveSumByMonth() {
-        return findByUserAndTasksSumByMonth("da2f89fc-9aef-4029-8ac2-7486be60e9b9");
+        return findByUserAndTasksSumByMonth(MATERNITY);
     }
 
     @CacheResult(cacheName = "work-cache")

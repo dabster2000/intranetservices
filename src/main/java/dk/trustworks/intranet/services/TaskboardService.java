@@ -55,12 +55,13 @@ public class TaskboardService {
                 "expectedtime = ?7, " +
                 "deadline = ?8, " +
                 "status = ?9 " +
-                "where uuid like ?10",
+                "statusDate = ?10" +
+                "where uuid like ?11",
                 item.getTitle(), item.getDescription(),
                 item.getBadges(), item.getBusinesscase(),
                 item.getStakeholders(), item.getOriginator(),
                 item.getExpectedtime(), item.getDeadline(),
-                item.getStatus(),
+                item.getStatus(), item.getStatusDate(),
                 item.getUuid());
         TaskboardItemWorker.delete("item = ?1", item);
         TaskboardItemWorker.flush();

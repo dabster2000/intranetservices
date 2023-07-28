@@ -42,6 +42,10 @@ public class TaskboardItem extends PanacheEntityBase {
     private LocalDate deadline;
     @Enumerated(EnumType.STRING)
     private TaskboardItemStatus status;
+    @Column(name = "status_date")
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    private LocalDate statusDate;
     @OneToMany(mappedBy = "item", fetch = EAGER)
     @Fetch(FetchMode.SELECT)
     List<TaskboardItemChecklist> checklist;

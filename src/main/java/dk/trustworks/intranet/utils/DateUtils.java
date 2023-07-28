@@ -86,6 +86,11 @@ public final class DateUtils {
         return localDate.getDayOfWeek().equals(DayOfWeek.SATURDAY) || localDate.getDayOfWeek().equals(DayOfWeek.SUNDAY);
     }
 
+    public static boolean isFriday(LocalDate localDate) {
+        return localDate.getDayOfWeek().equals(DayOfWeek.FRIDAY);
+    }
+
+
     /**
      * @param dateFrom inclusive
      * @param dateTo exclusive

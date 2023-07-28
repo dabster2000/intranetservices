@@ -6,6 +6,7 @@ quarkus:
       driver: org.mariadb.jdbc.Driver
       min-size: 5
       max-size: 100
+      extended-leak-report: true
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   container-image:

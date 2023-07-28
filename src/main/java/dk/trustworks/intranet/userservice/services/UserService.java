@@ -26,8 +26,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.*;
-import static dk.trustworks.intranet.userservice.model.enums.StatusType.ACTIVE;
-import static dk.trustworks.intranet.userservice.model.enums.StatusType.NON_PAY_LEAVE;
+import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
 import static io.smallrye.config.common.utils.StringUtil.split;
 
 @JBossLog
@@ -146,7 +145,7 @@ public class UserService {
 
     @CacheResult(cacheName = "user-cache")
     public List<User> findEmployedUsersByDate(LocalDate currentDate, boolean shallow, ConsultantType... consultantType) {
-        String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString()};
+        String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString()};
         return findUsersByDateAndStatusListAndTypes(currentDate, statusList,
                 Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow);
     }
