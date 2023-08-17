@@ -10,6 +10,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 
+import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.transaction.Transactional;
@@ -19,15 +20,13 @@ import java.util.List;
 import java.util.Optional;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @JBossLog
 @Tag(name = "invoice")
 @Path("/invoices")
 @RequestScoped
-@Produces(APPLICATION_JSON)
-@Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
+@RolesAllowed({"SYSTEM", "SALES"})
 @ClientHeaderParam(name="Authorization", value="{generateRequestId}")
 public class InvoiceResource {
 
@@ -79,6 +78,8 @@ public class InvoiceResource {
     @Path("/drafts")
     @Transactional
     public Invoice createDraftInvoice(@QueryParam("contractuuid") String contractuuid, @QueryParam("projectuuid") String projectuuid, @QueryParam("month") String month, @QueryParam("type") String type) {
+        System.out.println("InvoiceResource.createDraftInvoice");
+        System.out.println("contractuuid = " + contractuuid + ", projectuuid = " + projectuuid + ", month = " + month + ", type = " + type);
         LocalDate localDate = dateIt(month);
         return invoiceGeneratorService.createDraftInvoiceFromProject(contractuuid, projectuuid, localDate, type);
     }

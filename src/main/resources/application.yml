@@ -1,23 +1,18 @@
 quarkus:
+  application:
+    name: trustworks-intranet
   datasource:
     db-kind: mariadb
     jdbc:
       url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
-      max-size: 100
+      max-size: 20
       extended-leak-report: true
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
-  container-image:
-    group: trustworks
-    name: intranetservices
-    registry: registry.hub.docker.com
-    builder: docker
-  native:
-    additional-build-args: =-H:ResourceConfigurationFiles=resources-config.json
   swagger-ui:
-    always-include: true
+    enable: true
   mailer:
     auth-methods: LOGIN
     from: no-reply@trustworks.dk
@@ -31,42 +26,14 @@ quarkus:
     limits:
       max-body-size: 20M
     access-log:
-      enabled: false
+      enabled: true
       pattern: common
     port: 9093 #registry.hub.docker.com/
-  resteasy:
-    gzip:
-      enabled: true
-      max-input: 20M
   log:
     level: INFO
     category:
-      "dk.trustworks":
-        level: ${LOGLEVEL:INFO}
-      "io.qua.htt.access-log":
-        level: WARN
-      "dk.tru.api.log.LoggingFilter":
-        level: ERROR
-  cache:
-    caffeine:
-      "work-cache":
-        expire-after-write: 60S
-      "user-cache":
-        expire-after-write: 60S
-      "invoice-cache":
-        expire-after-write: 60S
-      "budget-cache":
-        expire-after-write: 8H
-      "budget-client":
-        expire-after-write: 60S
-      "availability-cache":
-        expire-after-write: 8H
-      "knowledge-cache":
-        expire-after-write: 8H
-      "financedetails-cache":
-        expire-after-write: 300S
-  smallrye-jwt:
-    enabled: true
+      "org.mariadb.jdbc.client":
+        level: INFO
   s3:
     sync-client:
       type: APACHE

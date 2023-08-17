@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregateservices.CompanyDataService;
 import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
 import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
 import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
+import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -49,5 +50,14 @@ public class BiResource {
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
         return employeeDataService.getDataMap(fromdate, todate.plusMonths(1)).stream().filter(m -> DateUtils.isBetweenBothIncluded(m.getMonth(), fromdate, todate)).collect(Collectors.toList());
+    }
+
+    @GET
+    @Path("/employees/v2")
+    public List<EmployeeDataPerMonth> getEmployeeDataPerMonthV2(@QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
+        LocalDate fromdate = dateIt(strFromdate);
+        LocalDate todate = dateIt(strTodate);
+        List<EmployeeDataPerMonth> list = EmployeeDataPerMonth.list("(year = ?1 AND month >= ?2) OR (year = ?3 AND month <= ?4)", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
+        return list;
     }
 }

@@ -64,16 +64,7 @@ public class BudgetServiceCache {
         //List<BudgetDocument> budgetDocumentList = new ArrayList<>();
         log.info("Deleting all budgets...");
         long l = System.currentTimeMillis();
-        /*
-        try {
-            transactionManager.begin();
-            //em.createNativeQuery("truncate table budget_document");
-            BudgetDocument.deleteAll();
-            transactionManager.commit();
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException(e);
-        }*/
+
         QuarkusTransaction.requiringNew().run(() -> {
             String sql = "TRUNCATE TABLE budget_document";
             Query query = entityManager.createNativeQuery(sql);

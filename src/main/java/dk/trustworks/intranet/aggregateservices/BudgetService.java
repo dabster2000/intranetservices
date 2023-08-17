@@ -8,6 +8,8 @@ import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.persistence.EntityManager;
+import javax.persistence.PersistenceUnit;
 import javax.transaction.Transactional;
 import java.time.LocalDate;
 import java.util.List;
@@ -23,6 +25,9 @@ public class BudgetService {
 
     @Inject
     UserService userService;
+
+    @PersistenceUnit
+    EntityManager em;
 
     public List<BudgetDocument> calcBudgets(LocalDate lookupMonth) {
         return budgetServiceCache.findAllBudgetData().stream().filter(budgetDocument -> budgetDocument.getMonth().withDayOfMonth(1).isEqual(lookupMonth.withDayOfMonth(1))).collect(Collectors.toList());
@@ -82,6 +87,11 @@ public class BudgetService {
 
     public List<Budget> findByMonthAndYear(LocalDate month) {
         return Budget.find("year = ?1 and month = ?2", month.getYear(), month.getMonth().getValue()-1).list();
+    }
+
+    public List<Budget> findByYear(LocalDate year) {
+        return em.createNativeQuery("select * from (select STR_TO_DATE(CONCAT(year, '-', LPAD(month+1, 2, '00'), '-01'), '%Y-%m-%d') AS date, b.* " +
+                "from budgets b ) bu where date > '"+year+"' and date < '"+year.plusYears(1)+"' and budget > 0", Budget.class).getResultList();
     }
 
     @Transactional

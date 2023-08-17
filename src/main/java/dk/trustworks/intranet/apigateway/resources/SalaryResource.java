@@ -25,21 +25,22 @@ import java.util.List;
 
 import static dk.trustworks.intranet.userservice.model.enums.TeamMemberType.LEADER;
 import static dk.trustworks.intranet.userservice.model.enums.TeamMemberType.SPONSOR;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"CXO", "ADMIN"})
-@Produces(APPLICATION_JSON)
-@Consumes(APPLICATION_JSON)
+@RolesAllowed({"SYSTEM", "CXO", "ADMIN"})
 @SecurityRequirement(name = "jwt")
 public class SalaryResource {
 
     @Inject
     @Claim(standard = Claims.preferred_username)
     String username;
+
+    @Inject
+    @Claim(standard = Claims.groups)
+    String groups;
 
     @Inject
     JsonWebToken jwt;
@@ -55,9 +56,16 @@ public class SalaryResource {
 
     @GET
     @Path("/{useruuid}/salaries")
-    @RolesAllowed({"TEAMLEAD", "CXO", "ADMIN"})
+    @RolesAllowed({"USER", "TEAMLEAD", "CXO", "ADMIN"})
     public List<Salary> listAll(@PathParam("useruuid") String useruuid) {
         List<RoleType> roles = jwt.getGroups().stream().map(RoleType::valueOf).toList();
+
+        // Check if this is only a user and then if the user requests own salary
+        if(roles.stream().noneMatch(roleType -> roleType.equals(RoleType.ADMIN) || roleType.equals(RoleType.CXO) || roleType.equals(RoleType.TEAMLEAD))) {
+            if(!username.equals(userService.findById(useruuid, true).getUsername())) return Collections.emptyList();
+            return salaryService.listAll(useruuid);
+        }
+
         if(roles.stream().anyMatch(roleType -> roleType.equals(RoleType.ADMIN) || roleType.equals(RoleType.CXO))) return salaryService.listAll(useruuid);
 
         LocalDate date = LocalDate.now().withDayOfMonth(1);

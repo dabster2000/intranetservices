@@ -1,5 +1,0 @@
-<job id="daylightCalculationJob" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
-    <step id="daylightCalculationStep">
-        <batchlet ref="daylightCalculationBatchlet" />
-    </step>
-</job>

@@ -15,6 +15,7 @@ import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.dto.enums.ProjectSummaryType;
+import dk.trustworks.intranet.exceptions.InconsistantDataException;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.model.InvoiceItem;
 import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus;
@@ -22,6 +23,7 @@ import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -142,6 +144,15 @@ public class InvoiceGeneratorService {
 
         if (!type.equals(ProjectSummaryType.RECEIPT.toString())) {
             if (type.equals(ProjectSummaryType.CONTRACT.toString())) {
+                Optional<WorkFull> anyFaultyWork = workService.findByYearAndMonthAndProject(month.getYear(), month.getMonthValue(), projectuuid).stream()
+                        .filter(w -> w.getContractuuid() == null || w.getProjectuuid() == null).findAny();
+                if(anyFaultyWork.isPresent()) {
+                    WorkFull work = anyFaultyWork.get();
+                    String username = userService.findById(work.getUseruuid(), true).getUsername();
+                    String clientName = clientService.findByUuid(work.getClientuuid()).getName();
+                    throw new InconsistantDataException("Work done by " + username + " at " + clientName + " on " + DateUtils.stringIt(work.getRegistered(), "d. MMM yyyy") + " is missing contractuuid or projectuuid, most likely because there is no contract");
+                }
+
                 List<WorkFull> workFullList = workService.findByYearAndMonthAndProject(month.getYear(), month.getMonthValue(), projectuuid).stream()
                         .filter(w -> w.getContractuuid().equals(contractuuid) && w.getProjectuuid().equals(projectuuid)).toList();
                 Map<String, InvoiceItem> invoiceItemMap = new HashMap<>();
@@ -212,6 +223,7 @@ public class InvoiceGeneratorService {
         }
         log.info("draftInvoice: "+invoice);
         assert invoice != null;
+        System.out.println("invoice = " + invoice);
         return invoiceService.createDraftInvoice(invoice);
     }
 }

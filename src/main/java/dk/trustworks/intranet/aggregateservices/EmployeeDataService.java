@@ -16,7 +16,6 @@ import dk.trustworks.intranet.userservice.services.TeamService;
 import dk.trustworks.intranet.userservice.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.scheduler.Scheduled;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -106,7 +105,6 @@ public class EmployeeDataService {
                 case vacation -> employeeAggregateData.addVacation(work.getWorkduration());
                 case maternity -> employeeAggregateData.addMaternity(work.getWorkduration());
             }
-
 
             // Tilføj fakturerbart arbejde
             if (work.getRate() == 0.0) continue;
@@ -247,7 +245,7 @@ public class EmployeeDataService {
 
     //@Scheduled(every = "24h", identity = "UpdateEmployeeData")
     //@Scheduled(cron="0 0 1 * * ?")
-    @Scheduled(every = "6h", delay = 5, identity = "UpdateEmployeeData")
+    //@Scheduled(every = "6h", delay = 5, identity = "UpdateEmployeeData")
     //@Transactional
     public void updateAllData() {
         log.debug("EmployeeDataService.updateAllData...STARTED!");

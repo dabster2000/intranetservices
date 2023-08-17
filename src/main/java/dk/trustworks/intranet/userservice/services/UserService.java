@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.userservice.services;
 
-import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
@@ -9,6 +9,7 @@ import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
+import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.mindrot.jbcrypt.BCrypt;
@@ -134,6 +135,10 @@ public class UserService {
     @CacheResult(cacheName = "user-cache")
     public UserStatus getUserStatus(User user, LocalDate date) {
         return user.getStatuses().stream().filter(value -> value.getStatusdate().isBefore(date) || value.getStatusdate().isEqual(date)).max(Comparator.comparing(UserStatus::getStatusdate)).orElse(new UserStatus(ConsultantType.STAFF, StatusType.TERMINATED, date, 0, user.getUuid()));
+    }
+
+    public Salary getUserSalary(User user, LocalDate date) {
+        return user.getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
     }
 
     @CacheResult(cacheName = "user-cache")
@@ -306,4 +311,6 @@ public class UserService {
         return clearSalaries(List.of(user)).get(0);
     }
 
+    @Inject
+    EventBus bus;
 }

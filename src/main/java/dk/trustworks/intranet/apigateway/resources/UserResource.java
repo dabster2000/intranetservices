@@ -52,14 +52,11 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 import static java.net.URLDecoder.decode;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Tag(name = "user")
 @JBossLog
 @Path("/users")
 @RequestScoped
-@Produces(APPLICATION_JSON)
-@Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
 @RolesAllowed({"SYSTEM", "USER", "EXTERNAL"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
@@ -278,12 +275,15 @@ public class UserResource {
         userAPI.updatePasswordByUsername(username, decode(newPassword, UTF_8));
     }
 
+    /*
     @PUT
     @PermitAll
     @Path("/slackuser/{slackid}/password/{newpassword}")
     public void updatePasswordBySlackid(@PathParam("slackid") String slackid, @PathParam("newpassword") String newPassword) {
         userAPI.updatePasswordBySlackid(slackid, newPassword);
     }
+
+     */
 
     @POST
     @PermitAll

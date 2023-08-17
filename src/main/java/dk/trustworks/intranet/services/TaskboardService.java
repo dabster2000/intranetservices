@@ -54,8 +54,8 @@ public class TaskboardService {
                 "originator = ?6, " +
                 "expectedtime = ?7, " +
                 "deadline = ?8, " +
-                "status = ?9 " +
-                "statusDate = ?10" +
+                "status = ?9, " +
+                "statusDate = ?10 " +
                 "where uuid like ?11",
                 item.getTitle(), item.getDescription(),
                 item.getBadges(), item.getBusinesscase(),

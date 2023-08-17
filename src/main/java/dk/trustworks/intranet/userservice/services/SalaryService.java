@@ -1,9 +1,12 @@
 package dk.trustworks.intranet.userservice.services;
 
+import dk.trustworks.intranet.aggregateservices.AvailabilityCalculatingExecutor;
 import dk.trustworks.intranet.userservice.model.Salary;
+import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
+import javax.inject.Inject;
 import javax.transaction.Transactional;
 import javax.validation.Valid;
 import java.time.LocalDate;
@@ -14,6 +17,9 @@ import java.util.UUID;
 @JBossLog
 @ApplicationScoped
 public class SalaryService {
+
+    @Inject
+    EventBus bus;
 
     public List<Salary> listAll(String useruuid) {
         return Salary.findByUseruuid(useruuid);
@@ -29,6 +35,8 @@ public class SalaryService {
         salary.setUuid(UUID.randomUUID().toString());
         salary.setUseruuid(useruuid);
         Salary.persist(salary);
+
+        bus.send(AvailabilityCalculatingExecutor.USER_CHANGE_EVENT, useruuid);
     }
 
     @Transactional
