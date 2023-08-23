@@ -115,7 +115,7 @@ public class UserService {
 
     @CacheResult(cacheName = "user-cache")
     public List<User> filterForActiveTeamMembers(LocalDate month, List<User> usersInTeam) {
-        List<User> allActiveConsultants = findUsersByDateAndStatusListAndTypes(month, new String[]{StatusType.ACTIVE.toString()}, new String[]{CONSULTANT.toString(), STAFF.toString(), STUDENT.toString()}, true);
+        List<User> allActiveConsultants = findUsersByDateAndStatusListAndTypes(month, new String[]{ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString(), NON_PAY_LEAVE.toString()}, new String[]{CONSULTANT.toString(), STAFF.toString(), STUDENT.toString()}, true);
         return usersInTeam.stream()
                 .filter(two -> allActiveConsultants.stream()
                         .anyMatch(one -> one.getUuid().equals(two.getUuid())))
@@ -125,7 +125,7 @@ public class UserService {
 
     @CacheResult(cacheName = "user-cache")
     public int calcMonthSalaries(LocalDate date, String... consultantTypes) {
-        String[] statusList = {ACTIVE.toString()};
+        String[] statusList = {ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString()};
         return findUsersByDateAndStatusListAndTypes(date, statusList, consultantTypes, false)
                 .stream().mapToInt(value ->
                         value.getSalaries().stream().filter(salary -> salary.getActivefrom().isBefore(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(UUID.randomUUID().toString(), 0, date, value.getUuid())).getSalary()
@@ -138,7 +138,7 @@ public class UserService {
     }
 
     public Salary getUserSalary(User user, LocalDate date) {
-        return user.getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
+        return user.getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date) || value.getActivefrom().isEqual(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
     }
 
     @CacheResult(cacheName = "user-cache")
@@ -177,7 +177,7 @@ public class UserService {
         Map<String, User> users = new HashMap<>();
         for (int i = 0; i < 11; i++) {
             LocalDate date = fiscalYear.plusMonths(i);
-            findUsersByDateAndStatusListAndTypes(date, new String[]{StatusType.ACTIVE.name()}, new String[]{ConsultantType.CONSULTANT.name()}, true).forEach(user -> users.put(user.getUuid(), user));
+            findUsersByDateAndStatusListAndTypes(date, new String[]{ACTIVE.name()}, new String[]{ConsultantType.CONSULTANT.name()}, true).forEach(user -> users.put(user.getUuid(), user));
         }
         return new ArrayList<>(users.values());
     }

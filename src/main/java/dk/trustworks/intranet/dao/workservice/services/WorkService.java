@@ -1,7 +1,8 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
 
-import dk.trustworks.intranet.aggregateservices.AvailabilityCalculatingExecutor;
+import dk.trustworks.intranet.aggregateservices.messaging.MessageEmitter;
+import dk.trustworks.intranet.aggregateservices.messaging.UserDateMap;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.GraphKeyValue;
@@ -9,7 +10,6 @@ import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
 import io.quarkus.panache.common.Page;
-import io.vertx.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -223,7 +223,7 @@ public class WorkService {
     }
 
     @Inject
-    EventBus bus;
+    MessageEmitter messageEmitter;
 
     @Transactional
     @CacheInvalidateAll(cacheName = "work-cache")
@@ -238,9 +238,9 @@ public class WorkService {
             Work.persist(work);
             log.info("Saving work: "+work);
         }
-        bus.publish(AvailabilityCalculatingExecutor.USER_DAY_CHANGE_EVENT, new AvailabilityCalculatingExecutor.UserDateMap(work.getUseruuid(), work.getRegistered()));
+        messageEmitter.sendUserDayChange(new UserDateMap(work.getUseruuid(), work.getRegistered()));
         if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
-            bus.publish(AvailabilityCalculatingExecutor.USER_DAY_CHANGE_EVENT, new AvailabilityCalculatingExecutor.UserDateMap(work.getWorkas(), work.getRegistered()));
+            messageEmitter.sendUserDayChange(new UserDateMap(work.getWorkas(), work.getRegistered()));
     }
 
     public List<WorkFull> findBillableWorkByUser(String useruuid) {

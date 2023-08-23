@@ -46,6 +46,10 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
     private BigDecimal grossAvailableHours; // done
 
+    @Column(name = "unavailable_hours", precision = 7, scale = 4)
+    @JsonProperty("unavailableHours")
+    private BigDecimal unavavailableHours; // fx fridays
+
     @Column(name = "vacation_hours", precision = 7, scale = 4)
     @JsonProperty("vacationHours")
     private BigDecimal vacationHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
@@ -102,11 +106,16 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @JsonIgnore
     private LocalDateTime lastUpdate;
 
-    public EmployeeDataPerDay(LocalDate month, User user, double grossAvailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, double registeredBillableHours, double helpedColleagueBillableHours, double registeredAmount, double contractUtilization, ConsultantType consultantType, StatusType statusType, int salary) {
+    @Column(name = "is_tw_bonus_eligible")
+    @JsonProperty("isTwBonusEligible")
+    private boolean isTwBonusEligible;
+
+    public EmployeeDataPerDay(LocalDate month, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, double registeredBillableHours, double helpedColleagueBillableHours, double registeredAmount, double contractUtilization, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
         this.lastUpdate = LocalDateTime.now();
         this.month = month;
         this.user = user;
         this.grossAvailableHours = BigDecimal.valueOf(grossAvailableHours);
+        this.unavavailableHours = BigDecimal.valueOf(unavailableHours);
         this.vacationHours = BigDecimal.valueOf(vacationHours);
         this.sickHours = BigDecimal.valueOf(sickHours);
         this.maternityLeaveHours = BigDecimal.valueOf(maternityLeaveHours);
@@ -121,13 +130,17 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
         this.consultantType = consultantType;
         this.statusType = statusType;
         this.salary = salary;
-        if(statusType.equals(StatusType.TERMINATED) || statusType.equals(StatusType.PREBOARDING) || statusType.equals(StatusType.NON_PAY_LEAVE)) this.salary = 0;
+        this.isTwBonusEligible = isTwBonusEligible;
+        if(statusType.equals(StatusType.TERMINATED) || statusType.equals(StatusType.PREBOARDING) || statusType.equals(StatusType.NON_PAY_LEAVE)) {
+            this.salary = 0;
+            this.isTwBonusEligible = false;
+        }
     }
 
     @Transient
     @JsonIgnore
     public Double getNetAvailableHours() {
-        return Math.max(grossAvailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
+        return Math.max(grossAvailableHours.doubleValue() - unavavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
     }
 
     @Transient

@@ -9,6 +9,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
+import javax.transaction.Transactional;
 import javax.validation.Valid;
 import javax.ws.rs.*;
 import java.util.List;
@@ -46,5 +47,14 @@ public class RoleResource {
     @Operation(summary = "Delete all user roles")
     public void delete(@PathParam("uuid") String useruuid) {
         roleService.delete(useruuid);
+    }
+
+    @DELETE
+    @Path("/{uuid}/roles/{roleuuid}")
+    @RolesAllowed({"CXO", "PARTNER", "ADMIN"})
+    @Operation(summary = "Delete a specifik user role")
+    @Transactional
+    public void delete(@PathParam("uuid") String useruuid, @PathParam("roleuuid") String roleuuid) {
+        Role.deleteById(roleuuid);
     }
 }

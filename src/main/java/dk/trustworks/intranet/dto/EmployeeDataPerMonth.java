@@ -67,8 +67,17 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @Column(name = "budget_hours_with_no_availability_adjustment")
     private BigDecimal budgetHoursWithNoAvailabilityAdjustment;
 
+    @JsonProperty("contractUtilization")
     @Column(name = "contract_utilization", precision = 7, scale = 4)
     private BigDecimal contractUtilization;
+
+    @JsonProperty("avgSalary")
+    @Column(name = "avg_salary", precision = 14, scale = 4)
+    private BigDecimal avgSalary;
+
+    @Column(name = "is_tw_bonus_eligible")
+    @JsonProperty("isTwBonusEligible")
+    private boolean isTwBonusEligible;
 
 
     @Transient
@@ -82,19 +91,5 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     public Double getActualUtilization() {
         // (5.4 / 7.4) * 100.0
         return ((registeredBillableHours.doubleValue() + helpedColleagueBillableHours.doubleValue()) / getNetAvailableHours()) / 100.0;
-    }
-
-    @Override
-    public String toString() {
-        return "AvailabilityPerDayDocument{" +
-                "month=" + month +
-                ", grossAvailableHours=" + grossAvailableHours +
-                ", vacationHours=" + vacationHours +
-                ", sickHours=" + sickHours +
-                ", maternityLeaveHours=" + maternityLeaveHours +
-                ", nonPaydLeaveHoursPerday=" + nonPaydLeaveHours +
-                ", paidLeaveHoursPerDay=" + paidLeaveHours +
-                ", netAvailableHours=" + getNetAvailableHours() +
-                '}';
     }
 }

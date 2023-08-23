@@ -62,7 +62,7 @@ public class BubbleService {
     public void save(Bubble bubble) throws SlackApiException, IOException {
         if(bubble.getUuid() == null || bubble.getUuid().equalsIgnoreCase("")) bubble.setUuid(UUID.randomUUID().toString());
         if(bubble.getSlackChannelName().isEmpty()) throw new IOException("No bubble name");
-        bubble.setSlackchannel(slackService.createChannel("b_"+bubble.getSlackChannelName()));
+        bubble.setSlackchannel(slackService.createChannel(bubble.getType().getSlackPrefix()+bubble.getSlackChannelName()));
         bubble.setCreated(LocalDate.now());
         bubble.setActive(true);
         bubble.persist();

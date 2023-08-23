@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.userservice.services;
 
+import dk.trustworks.intranet.aggregateservices.messaging.MessageEmitter;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 
 import javax.enterprise.context.ApplicationScoped;
+import javax.inject.Inject;
 import javax.transaction.Transactional;
 import javax.validation.Valid;
 import java.time.LocalDate;
@@ -12,16 +14,9 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class StatusService {
-/*
-    @Inject
-    @Channel("status-create")
-    Emitter<String> createEmitter;
 
     @Inject
-    @Channel("status-update")
-    Emitter<String> updateEmitter;
-
- */
+    MessageEmitter messageEmitter;
 
     public List<UserStatus> listAll(String useruuid) {
         return UserStatus.findByUseruuid(useruuid);
@@ -47,11 +42,14 @@ public class StatusService {
         status.setUuid(UUID.randomUUID().toString());
         status.setUseruuid(useruuid);
         UserStatus.persist(status);
-        //createEmitter.send(useruuid);
+
+        messageEmitter.sendUserChange(useruuid);
     }
 
     @Transactional
     public void delete(String useruuid, String statusuuid) {
         UserStatus.delete("uuid", statusuuid);
+
+        messageEmitter.sendUserChange(useruuid);
     }
 }

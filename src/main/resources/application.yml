@@ -13,6 +13,7 @@ quarkus:
     password: ${PASSWORD:1606}
   swagger-ui:
     enable: true
+    always-include: true
   mailer:
     auth-methods: LOGIN
     from: no-reply@trustworks.dk
@@ -44,12 +45,58 @@ quarkus:
         static-provider:
           access-key-id: AKIA5SCDPPSOHCY7OKPF
           secret-access-key: 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
+  smallrye-reactive-messaging:
+    connectors:
+      smallrye-amqp:
+        connector-enabled: true
+        host: localhost
+        port: 5672
+        username: guest
+        password: guest
+
+#rabbitmq-hosts: ${RABBITMQ_HOSTS:localhost:5672}
+#rabbitmq-username: ${RABBITMQ_USERNAME:guest}
+#rabbitmq-password: ${RABBITMQ_PASSWORD:guest}
+
 mp:
   jwt:
     verify:
       issuer: https://trustworks.dk
       publickey:
         location: META-INF/resources/publicKey.pem
+  messaging:
+    incoming:
+      read-availability-year-calculate:
+        connector: smallrye-rabbitmq
+        queue:
+          name: send-availability-year-calculate
+        exchange:
+          name: send-availability-year-calculate
+      read-availability-user-calculate:
+        connector: smallrye-rabbitmq
+        queue:
+          name: send-availability-user-calculate
+        exchange:
+          name: send-availability-user-calculate
+      read-availability-user-day-calculate:
+        connector: smallrye-rabbitmq
+        queue:
+          name: send-availability-user-day-calculate
+        exchange:
+          name: send-availability-user-day-calculate
+    outgoing:
+      send-availability-year-calculate:
+        connector: smallrye-rabbitmq
+        exchange:
+          name: send-availability-year-calculate
+      send-availability-user-calculate:
+        connector: smallrye-rabbitmq
+        exchange:
+          name: send-availability-user-calculate
+      send-availability-user-day-calculate:
+        connector: smallrye-rabbitmq
+        exchange:
+          name: send-availability-user-day-calculate
 slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
