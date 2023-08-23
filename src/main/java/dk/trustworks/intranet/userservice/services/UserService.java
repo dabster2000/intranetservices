@@ -205,6 +205,7 @@ public class UserService {
         user.setUserContactinfo(userContactinfo);
         user.setSalaries(new ArrayList<>());
         User.persist(user);
+        Role.persist(new Role(UUID.randomUUID().toString(), RoleType.USER, user.getUuid()));
         UserContactinfo.persist(userContactinfo);
         return user;
     }
