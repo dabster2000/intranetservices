@@ -33,6 +33,7 @@ public class SalaryService {
         if(salary.getUuid()!=null && Salary.findByIdOptional(salary.getUuid()).isPresent()) Salary.deleteById(salary.getUuid());
         salary.setUuid(UUID.randomUUID().toString());
         salary.setUseruuid(useruuid);
+        salary.setActivefrom(salary.getActivefrom().withDayOfMonth(1));
         Salary.persist(salary);
 
         messageEmitter.sendUserChange(useruuid);

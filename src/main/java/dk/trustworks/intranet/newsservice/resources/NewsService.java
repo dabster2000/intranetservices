@@ -34,7 +34,7 @@ public class NewsService {
             return News.find("?1 between startdate and enddate AND newsType like ?2", LocalDateTime.now(), newsType).list();
             //5f6fac9d-f52d-462f-ab27-be7eeef1b3f3
         } else if(newsType.equals("events")) {
-            List<News> newsList = News.find("?1 < eventdate and newsType like ?2", LocalDateTime.now().minusWeeks(1), newsType).list();
+            List<News> newsList = News.find("?1 <= eventdate and newsType like ?2", LocalDateTime.now().minusMonths(1), newsType).list();
             List<Consultant> consultants = em.createNativeQuery("select * from consultant where status like 'ACTIVE' and CURDATE() between DATE_SUB(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 1 MONTH ) and DATE_ADD(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 7 DAY)", Consultant.class).getResultList();
             for (Consultant consultant : consultants) {
                 newsList.add(new News(consultant.getBirthday().atStartOfDay(), "events", consultant.uuid, consultant.getFirstname() + " " + consultant.getLastname() + "'s Birthday"));

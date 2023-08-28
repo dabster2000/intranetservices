@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.knowledgeservice.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
@@ -12,6 +13,7 @@ import lombok.NoArgsConstructor;
 
 import javax.persistence.*;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 
 @Data
@@ -49,4 +51,27 @@ public class ProjectDescription extends PanacheEntityBase {
     @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
     @JoinColumn(name = "projectdescid", referencedColumnName="id")
     private List<ProjectDescriptionUser> projectDescriptionUserList;
+
+    @JsonProperty("offeringList")
+    public List<String> getOfferingList() {
+        System.out.println("ProjectDescription.getOfferingList");
+        if(this.offering==null || offering.isBlank()) return new ArrayList<>();
+        System.out.println("this.offering = " + this.offering);
+        String cleanedOffering = removeHashtags(this.offering);
+        System.out.println("cleanedOffering = " + cleanedOffering);
+        return List.of(cleanedOffering.split("\\s+"));
+    }
+
+    @JsonProperty("toolsList")
+    public List<String> getToolsList() {
+        if(this.tools==null || tools.isBlank()) return new ArrayList<>();
+        String cleanedTools = removeHashtags(this.tools);
+        return List.of(cleanedTools.split("\\s+"));
+    }
+
+    private static String removeHashtags(String input) {
+        return input.replaceAll("#", "");
+    }
+
+
 }
