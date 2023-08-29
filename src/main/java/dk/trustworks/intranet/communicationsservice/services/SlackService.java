@@ -28,6 +28,23 @@ public class SlackService {
         log.info("Response received: " + response.getMessage());
     }
 
+    public void sendMessage(String channel, String message) {
+        Slack slack = Slack.getInstance();
+
+        try {
+            ChatPostMessageResponse response = slack.methods(motherSlackBotToken)
+                    .chatPostMessage(req -> req
+                            .channel(channel)
+                            .text(message));
+
+            if (!response.isOk()) {
+                System.err.println("Failed to send message due to error: " + response.getError());
+            }
+        } catch (IOException | SlackApiException e) {
+            System.err.println("Error sending Slack message: " + e.getMessage());
+        }
+    }
+
     public void addUserToChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {
