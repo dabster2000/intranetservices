@@ -32,6 +32,10 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
     private BigDecimal grossAvailableHours; // done
 
+    @Column(name = "unavailable_hours", precision = 7, scale = 4)
+    @JsonProperty("unavailableHours")
+    private BigDecimal unavailableHours; // F.eks. summen af fredage
+
     @Column(name = "vacation_hours", precision = 7, scale = 4)
     @JsonProperty("vacationHours")
     private BigDecimal vacationHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
@@ -83,7 +87,7 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @Transient
     @JsonIgnore
     public Double getNetAvailableHours() {
-        return Math.max(grossAvailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
+        return Math.max(grossAvailableHours.doubleValue() - unavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
     }
 
     @Transient

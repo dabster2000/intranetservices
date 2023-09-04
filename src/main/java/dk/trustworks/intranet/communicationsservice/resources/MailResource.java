@@ -59,12 +59,13 @@ public class MailResource {
     @Blocking
     @Transactional
     public void sendingWaitingListMail(String mailTo) {
-        TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "BEKRÆFTELSE PÅ OPSKRIVNING",
+        TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "DU ER NU PÅ VENTELISTE TIL FOREFRONT 2023",
                 "<div style='width: 600px'>\n" +
                         "  <img src=\"cid:forefront@trustworks.dk\" />" +
                         "  <p>&nbsp;</p>\n" +
-                        "  <p>Tusind tak for din interesse i FOREFRONT23.&nbsp;Du vil f&aring; besked hurtigst muligt, om du har f&aring;et en plads.</p>\n" +
-                        "  <p>V&aelig;r opm&aelig;rksom p&aring; at FOREFRONT er en konference, som prim&aelig;rt henvender sig til folk, der arbejder med IT- og digital transformation. Arrang&oslash;ren bag, Trustworks, forbeholder sig derfor retten til at afvise tilmeldinger uden for m&aring;lgruppen.</p>\n" +
+                        "  <p>Vi oplever meget stor interesse for FOREFRONT 2023, som nu er fuldt booket. Du er derfor kommet på venteliste.</p>\n" +
+                        "  <p>Du får besked hurtigst muligt hvis du får en plads.</p>\n" +
+                        "  <p>Endnu en gang tak for din interesse i FOREFRONT!</p>\n" +
                         "  <p>Venligst,</p>\n" +
                         "  <p>Trustworks</p>\n" +
                         "  <p>&nbsp;</p>\n" +

@@ -23,17 +23,15 @@ public class BirthdayNotificationJob {
 
     @Scheduled(cron = "0 0 7 * * ?")
     public void sendBirthdayNotifications() {
-        log.info("Sending birthday notifications");
         List<Consultant> consultants = em.createNativeQuery("select * from twservices.consultant c " +
                 "         where " +
                 "             c.status like 'ACTIVE' and " +
                 "             c.type not like 'EXTERNAL' and " +
                 "             MONTH(birthday) = MONTH(CURDATE()) and " +
                 "             DAY(birthday) = DAY(CURDATE());", Consultant.class).getResultList();
-        System.out.println("consultants.size() = " + consultants.size());
         for (Consultant consultant : consultants) {
-            System.out.println("consultant = " + consultant);
             slackService.sendMessage(consultant.getSlackusername(), getRandomWish(consultant.getFirstname()+" "+consultant.getLastname(), consultant.getGender()));
+            slackService.sendMessage("#general", getRandomWish(consultant.getFirstname()+" "+consultant.getLastname(), consultant.getGender()));
         }
     }
 

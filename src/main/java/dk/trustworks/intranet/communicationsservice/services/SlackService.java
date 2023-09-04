@@ -19,6 +19,9 @@ public class SlackService {
     @ConfigProperty(name = "slack.motherSlackBotToken")
     String motherSlackBotToken;
 
+    @ConfigProperty(name = "slack.adminSlackBotToken")
+    String adminSlackBotToken;
+
     public void sendMessage(User user, String textMessage) throws SlackApiException, IOException {
         Slack slack = Slack.getInstance();
         log.info("Sending message to "+user.getUsername());
@@ -48,7 +51,7 @@ public class SlackService {
     public void addUserToChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {
-            ConversationsInviteResponse inviteResponse = slack.methods(motherSlackBotToken).conversationsInvite(req -> req.channel(channelID).users(Collections.singletonList(user.getSlackusername())));
+            ConversationsInviteResponse inviteResponse = slack.methods(adminSlackBotToken).conversationsInvite(req -> req.channel(channelID).users(Collections.singletonList(user.getSlackusername())));
             if (!inviteResponse.isOk()) {
                 System.err.println("Error adding user to channel: " + user.getEmail());
                 return;
@@ -63,7 +66,7 @@ public class SlackService {
     public void removeUserFromChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {
-            ConversationsKickResponse response = slack.methods(motherSlackBotToken).conversationsKick(req -> req.channel(channelID).user(user.getSlackusername()));
+            ConversationsKickResponse response = slack.methods(adminSlackBotToken).conversationsKick(req -> req.channel(channelID).user(user.getSlackusername()));
             if (!response.isOk()) {
                 System.err.println("Error removing user from channel: " + user.getEmail());
                 return;
@@ -77,7 +80,7 @@ public class SlackService {
 
     public String createChannel(String channelName) throws IOException, SlackApiException {
         Slack slack = Slack.getInstance();
-        ConversationsCreateResponse response = slack.methods(motherSlackBotToken).conversationsCreate(r -> r.name(channelName));
+        ConversationsCreateResponse response = slack.methods(adminSlackBotToken).conversationsCreate(r -> r.name(channelName));
 
         if (!response.isOk()) {
             System.out.println("response.getError() = " + response.getError());
@@ -88,7 +91,7 @@ public class SlackService {
 
     public boolean closeChannel(String channelName) throws IOException, SlackApiException {
         Slack slack = Slack.getInstance();
-        ConversationsArchiveResponse response = slack.methods(motherSlackBotToken).conversationsArchive(r -> r.channel(channelName));
+        ConversationsArchiveResponse response = slack.methods(adminSlackBotToken).conversationsArchive(r -> r.channel(channelName));
 
         if (!response.isOk()) {
             System.out.println("response.getError() = " + response.getError());

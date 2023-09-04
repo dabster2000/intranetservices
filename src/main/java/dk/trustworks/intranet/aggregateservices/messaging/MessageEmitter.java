@@ -15,6 +15,8 @@ public class MessageEmitter {
     public static final String READ_USER_CHANGE_EVENT = "read-availability-user-calculate";
     public static final String SEND_USER_DAY_CHANGE_EVENT = "send-availability-user-day-calculate";
     public static final String READ_USER_DAY_CHANGE_EVENT = "read-availability-user-day-calculate";
+    public static final String SEND_BUDGET_UPDATE_MONTH_EVENT = "send-budget-update-month-calculate";
+    public static final String READ_BUDGET_UPDATE_MONTH_EVENT = "read-budget-update-month-calculate";
 
     @Inject
     @Channel(SEND_YEAR_CHANGE_EVENT)
@@ -28,6 +30,10 @@ public class MessageEmitter {
     @Channel(SEND_USER_CHANGE_EVENT)
     Emitter<String> userChangeEmitter;
 
+    @Inject
+    @Channel(SEND_BUDGET_UPDATE_MONTH_EVENT)
+    Emitter<DateRangeMap> budgetUpdateMonthEmitter;
+
     public void sendYearChange(DateRangeMap dateRangeMap) {
         yearChangeEmitter.send(dateRangeMap);
     }
@@ -40,4 +46,7 @@ public class MessageEmitter {
         userChangeEmitter.send(useruuid);
     }
 
+    public void sendBudgetUpdateMonthEvent(DateRangeMap dateRangeMap) {
+        budgetUpdateMonthEmitter.send(dateRangeMap);
+    }
 }

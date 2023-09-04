@@ -42,7 +42,7 @@ public class AvailabilityCalculatingExecutor {
     WorkService workService;
 
     @Transactional
-    @Incoming(value = READ_YEAR_CHANGE_EVENT)
+    @Incoming(READ_YEAR_CHANGE_EVENT)
     public void process(JsonObject message) throws Exception {
         DateRangeMap dateRangeMap = message.mapTo(DateRangeMap.class);
         LocalDate startDate = dateRangeMap.getFromDate();
@@ -70,7 +70,7 @@ public class AvailabilityCalculatingExecutor {
     }
 
     @Transactional
-    @Incoming(value = READ_USER_CHANGE_EVENT)
+    @Incoming(READ_USER_CHANGE_EVENT)
     public void createAvailabilityDocumentByUser(String useruuid) {
         System.out.println("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUser");
         System.out.println("useruuid = " + useruuid);
@@ -99,7 +99,7 @@ public class AvailabilityCalculatingExecutor {
     }
 
     @Transactional
-    @Incoming(value = READ_USER_DAY_CHANGE_EVENT)
+    @Incoming(READ_USER_DAY_CHANGE_EVENT)
     public void createAvailabilityDocumentByUserAndDate(JsonObject message) {
         UserDateMap userDateMap = message.mapTo(UserDateMap.class);
         String useruuid = userDateMap.getUseruuid();
@@ -160,7 +160,20 @@ public class AvailabilityCalculatingExecutor {
     public void recalculateAvailability() {
         LocalDate testFiscalYear = DateUtils.getCurrentFiscalStartDate().minusYears(2);
 
+        LocalDate companyStartDate = DateUtils.getCompanyStartDate();
+        int monthCount = 0;
+        do {
+            LocalDate testDate = companyStartDate.plusMonths(monthCount);
+            messageEmitter.sendYearChange(new DateRangeMap(testDate, testDate.plusMonths(1)));
+            monthCount++;
+        }  while (companyStartDate.plusMonths(monthCount).isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
+    }
+
+    @Transactional
+    @Scheduled(cron = "0 0 0 * * ?")
+    public void recalculateElegibility() {
         employedUsers = userService.listAll(false); //findEmployedUsersByDate(testDate, false, ConsultantType.CONSULTANT);
+        LocalDate testFiscalYear = DateUtils.getCurrentFiscalStartDate();
         List<EmployeeBonusEligibility> employeeBonusEligibilityList = EmployeeBonusEligibility.find("year = ?1", testFiscalYear.getYear()).list();
 
         employedUsers.forEach(user -> {
@@ -173,15 +186,5 @@ public class AvailabilityCalculatingExecutor {
                 }
             }
         });
-
-        LocalDate companyStartDate = DateUtils.getCompanyStartDate();
-        int monthCount = 0;
-        do {
-            LocalDate testDate = companyStartDate.plusMonths(monthCount);
-            messageEmitter.sendYearChange(new DateRangeMap(testDate, testDate.plusMonths(1)));
-            monthCount++;
-        }  while (companyStartDate.plusMonths(monthCount).isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
     }
-
-
 }

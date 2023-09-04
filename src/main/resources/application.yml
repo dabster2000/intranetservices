@@ -8,7 +8,9 @@ quarkus:
       driver: org.mariadb.jdbc.Driver
       min-size: 5
       max-size: 20
-      extended-leak-report: true
+      tracing:
+        enabled: false
+      #extended-leak-report: true
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   swagger-ui:
@@ -27,15 +29,24 @@ quarkus:
     limits:
       max-body-size: 20M
     access-log:
-      enabled: true
+      enabled: false
       pattern: common
     port: 9093 #registry.hub.docker.com/
   log:
     level: INFO
+    min-level: INFO
     category:
+      "org.hibernate":
+        level: INFO
       "org.mariadb.jdbc.client":
         level: INFO
-  s3:
+        min-level: INFO
+    file:
+      enable: true
+      level: INFO
+      "org.mariadb.jdbc.client":
+        level: INFO
+    s3:
     sync-client:
       type: APACHE
     aws:
@@ -84,6 +95,12 @@ mp:
           name: send-availability-user-day-calculate
         exchange:
           name: send-availability-user-day-calculate
+      read-budget-update-month-calculate:
+        connector: smallrye-rabbitmq
+        queue:
+          name: send-budget-update-month-calculate
+        exchange:
+          name: send-budget-update-month-calculate
     outgoing:
       send-availability-year-calculate:
         connector: smallrye-rabbitmq
@@ -97,9 +114,14 @@ mp:
         connector: smallrye-rabbitmq
         exchange:
           name: send-availability-user-day-calculate
+      send-budget-update-month-calculate:
+        connector: smallrye-rabbitmq
+        exchange:
+          name: send-budget-update-month-calculate
 slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
+  adminSlackBotToken: ${ADMINSLACKBOTTOKEN:xx}
 e-conomics:
   xAppSecretToken: ${XAPPSERCREETTOKEN:none}
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
