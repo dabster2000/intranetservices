@@ -16,7 +16,7 @@ import java.util.List;
 @ApplicationScoped
 @Tag(name = "Knowledge")
 @Path("/knowledge/expenses")
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class KnowledgeExpenseResource {
 

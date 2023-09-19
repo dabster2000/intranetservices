@@ -16,7 +16,7 @@ import java.util.UUID;
 @Tag(name = "faq")
 @Path("/faq")
 @RequestScoped
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class FaqResource {
 

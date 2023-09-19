@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;

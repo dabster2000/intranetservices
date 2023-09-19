@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.userservice.model;
 
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
@@ -41,12 +40,13 @@ public class UserStatus extends PanacheEntityBase {
 
     private int allocation;
 
-    @JsonIgnore
     private String useruuid;
 
     @Column(name = "is_tw_bonus_eligible")
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
+
+    private int cvr;
 
     public UserStatus() {
     }

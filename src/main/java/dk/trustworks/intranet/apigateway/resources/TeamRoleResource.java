@@ -16,7 +16,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"SYSTEM", "USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")

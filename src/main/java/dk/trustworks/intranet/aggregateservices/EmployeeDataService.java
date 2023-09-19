@@ -13,7 +13,7 @@ import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.services.CapacityService;
 import dk.trustworks.intranet.userservice.services.TeamRoleService;
 import dk.trustworks.intranet.userservice.services.TeamService;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.mutiny.core.eventbus.EventBus;

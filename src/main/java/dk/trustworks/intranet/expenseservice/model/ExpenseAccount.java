@@ -6,12 +6,14 @@ import lombok.NoArgsConstructor;
 
 import javax.persistence.Entity;
 import javax.persistence.Id;
+import javax.persistence.PersistenceUnit;
 import javax.persistence.Table;
 
 @Data
 @Entity
 @NoArgsConstructor
 @Table(name = "expense_account")
+@PersistenceUnit
 public class ExpenseAccount extends PanacheEntityBase {
 
     @Id

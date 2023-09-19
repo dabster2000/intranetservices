@@ -3,7 +3,7 @@ package dk.trustworks.intranet.aggregateservices;
 import dk.trustworks.intranet.contracts.model.Budget;
 import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;

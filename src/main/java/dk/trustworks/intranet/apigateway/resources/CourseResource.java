@@ -15,7 +15,7 @@ import java.util.List;
 @Tag(name = "course")
 @Path("/knowledge/courses")
 @RequestScoped
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class CourseResource {
 

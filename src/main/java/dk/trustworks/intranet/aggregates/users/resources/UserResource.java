@@ -1,7 +1,10 @@
-package dk.trustworks.intranet.apigateway.resources;
+package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 import dk.trustworks.intranet.achievementservice.services.AchievementService;
+import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
+import dk.trustworks.intranet.aggregates.users.events.CreateUserEvent;
+import dk.trustworks.intranet.aggregates.users.events.UpdateUserEvent;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
@@ -24,7 +27,7 @@ import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -46,8 +49,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.userservice.model.enums.StatusType.ACTIVE;
-import static dk.trustworks.intranet.userservice.model.enums.StatusType.NON_PAY_LEAVE;
+import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 import static java.net.URLDecoder.decode;
@@ -58,13 +60,16 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Path("/users")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM", "USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class UserResource {
 
 
     @Inject
     UserService userAPI;
+
+    @Inject
+    AggregateCommand aggregateCommand;
 
     @Inject
     CkoExpenseService knowledgeExpenseAPI;
@@ -129,7 +134,7 @@ public class UserResource {
     @GET
     @Path("/employed/all")
     public List<User> findCurrentlyEmployedUsers(@QueryParam("shallow") Optional<String> shallow) {
-        String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString()};
+        String[] statusList = {ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString(), NON_PAY_LEAVE.toString()};
         return userService.clearSalaries(findUsersByDateAndStatusListAndTypes(
                 LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
                 String.join(",", statusList),
@@ -209,7 +214,6 @@ public class UserResource {
 
     @GET
     @Path("/{useruuid}/rate/average")
-    @RolesAllowed({"TEAMLEAD", "CXO", "ADMIN"})
     public GraphKeyValue calculateAverageRatePerFiscalYear(@PathParam("useruuid") String useruuid, @QueryParam("fiscalyear") int intFiscalyear) {
         LocalDate date = LocalDate.of(intFiscalyear, 7,1);
 
@@ -222,7 +226,6 @@ public class UserResource {
 
     @GET
     @Path("/expenses")
-    @RolesAllowed({"TEAMLEAD", "CXO", "ADMIN"})
     public List<UserFinanceDocument> getConsultantsExpensesByMonth(@QueryParam("month") String month) {
         List<User> users = userAPI.findUsersByDateAndStatusListAndTypes(dateIt(month), "ACTIVE, NON_PAY_LEAVE", "CONSULTANT", true);
         return financeService.getUserFinanceData().stream().filter(userFinanceDocument -> users.stream().map(User::getUuid).anyMatch(s -> s.equals(userFinanceDocument.getUser().getUuid()))).collect(Collectors.toList());
@@ -254,17 +257,15 @@ public class UserResource {
 
     @PUT
     @Path("/{uuid}")
-    @RolesAllowed({"CXO", "ADMIN"})
     public void updateOne(@PathParam("uuid") String uuid, User user) {
-        log.info("User updated ("+uuid+"): "+user);
-        userAPI.updateOne(uuid, user);
+        UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
+        aggregateCommand.handleEvent(event);
     }
 
     @POST
-    @RolesAllowed({"CXO","ADMIN"})
     public void createUser(User user) {
-        log.info("User created: "+user);
-        userAPI.createUser(user);
+        CreateUserEvent event = new CreateUserEvent(user.getUuid(), user);
+        aggregateCommand.handleEvent(event);
     }
 
     @SneakyThrows
@@ -274,16 +275,6 @@ public class UserResource {
     public void updatePasswordByUsername(@PathParam("username") String username, @PathParam("newpassword") String newPassword) {
         userAPI.updatePasswordByUsername(username, decode(newPassword, UTF_8));
     }
-
-    /*
-    @PUT
-    @PermitAll
-    @Path("/slackuser/{slackid}/password/{newpassword}")
-    public void updatePasswordBySlackid(@PathParam("slackid") String slackid, @PathParam("newpassword") String newPassword) {
-        userAPI.updatePasswordBySlackid(slackid, newPassword);
-    }
-
-     */
 
     @POST
     @PermitAll
@@ -295,7 +286,9 @@ public class UserResource {
     @PUT
     @Path("/{uuid}/birthday")
     public void updateBirthday(@PathParam("uuid") String uuid, User user) {
-        userAPI.updateBirthday(uuid, user);
+        UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
+        aggregateCommand.handleEvent(event);
+        //userAPI.updateBirthday(uuid, user);
     }
 
     @GET

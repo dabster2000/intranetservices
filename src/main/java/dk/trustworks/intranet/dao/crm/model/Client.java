@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.dao.crm.model;
 
-
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.EqualsAndHashCode;

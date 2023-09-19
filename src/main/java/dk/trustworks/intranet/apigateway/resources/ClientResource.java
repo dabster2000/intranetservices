@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 
+import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
+import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
 import dk.trustworks.intranet.aggregateservices.BudgetService;
 import dk.trustworks.intranet.aggregateservices.RevenueService;
 import dk.trustworks.intranet.contracts.model.Contract;
@@ -14,9 +16,10 @@ import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.utils.DateUtils;
-import io.micrometer.core.annotation.Timed;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import javax.annotation.security.RolesAllowed;
@@ -26,17 +29,13 @@ import javax.ws.rs.*;
 import java.time.LocalDate;
 import java.util.*;
 
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
-
 @Tag(name = "crm")
 @JBossLog
 @Path("/clients")
 @RequestScoped
-@Produces(APPLICATION_JSON)
-@Consumes(APPLICATION_JSON)
-@RolesAllowed({"USER", "EXTERNAL"})
 @SecurityRequirement(name = "jwt")
-@Timed(histogram = true)
+@RolesAllowed({"SYSTEM"})
+@SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class ClientResource {
 
     @Inject
@@ -44,6 +43,9 @@ public class ClientResource {
 
     @Inject
     ClientService clientAPI;
+
+    @Inject
+    AggregateCommand aggregateCommand;
 
     @Inject
     ProjectService projectService;
@@ -56,7 +58,8 @@ public class ClientResource {
 
     @GET
     public List<Client> findAll() {
-        return clientAPI.listAll();
+        return clientAPI.listAllClients();
+        //return clientAPI.listAll();
     }
 
     @GET
@@ -94,7 +97,7 @@ public class ClientResource {
     @GET
     @Path("/{clientuuid}/clientdata")
     public List<Clientdata> findClientdataByClientuuid(@PathParam("clientuuid") String clientuuid) {
-        return clientAPI.listAll(clientuuid);
+        return clientAPI.listAllClientData(clientuuid);
     }
 
     @GET
@@ -104,13 +107,12 @@ public class ClientResource {
     }
 
     @POST
-    @RolesAllowed({"SALES"})
-    public Client save(Client client) {
-        return clientAPI.save(client);
+    public void save(Client client) {
+        CreateClientEvent createClientEvent = new CreateClientEvent(client.getUuid(), client);
+        aggregateCommand.handleEvent(createClientEvent);
     }
 
     @PUT
-    @RolesAllowed({"SALES"})
     public void updateOne(Client client) {
         log.debug("Updating client:\n"+client);
         clientAPI.updateOne(client);
@@ -118,14 +120,12 @@ public class ClientResource {
 
     @GET
     @Path("/revenue")
-    @RolesAllowed({"SALES"})
     public List<KeyValueDTO> revenuePerClient(@QueryParam("clientuuids") String clientuuids) {
         return revenueService.getRegisteredRevenuePerClient(Arrays.stream(clientuuids.split(",")).toList());
     }
 
     @GET
     @Path("/budgets/{fiscalyear}")
-    @RolesAllowed({"SALES"})
     public List<GraphKeyValue> getClientBudgetSum(@PathParam("fiscalyear") int fiscalYear) {
         LocalDate startDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
         LocalDate endDate = startDate.plusYears(1).minusMonths(1);

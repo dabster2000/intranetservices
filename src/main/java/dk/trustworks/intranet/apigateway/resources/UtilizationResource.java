@@ -8,7 +8,7 @@ import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.NumberUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -36,7 +36,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class UtilizationResource {
 
@@ -49,8 +49,8 @@ public class UtilizationResource {
     @Inject
     AvailabilityService availabilityService;
 
-    @Path("/")
-    public List<KeyValueDTO> getAverageAllocationByYear(final LocalDate startDate, LocalDate endDate) {
+    //@Path("/")
+    public List<KeyValueDTO> getAverageAllocationByYear(LocalDate startDate, LocalDate endDate) {
         LocalDate currentDate = startDate.withDayOfMonth(1);
         List<KeyValueDTO> dataSeriesItemList = new ArrayList<>();
 

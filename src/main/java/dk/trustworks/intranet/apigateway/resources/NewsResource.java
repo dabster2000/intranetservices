@@ -19,7 +19,7 @@ import java.util.List;
 @Tag(name = "News")
 @Path("/news")
 @RequestScoped
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 @Timed(histogram = true)
 public class NewsResource {

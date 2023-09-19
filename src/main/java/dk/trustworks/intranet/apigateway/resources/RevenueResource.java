@@ -30,7 +30,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"USER", "EXTERNAL", "EDITOR", "CXO", "SALES", "VTV", "ACCOUNTING", "MANAGER", "PARTNER", "ADMIN"})
+@RolesAllowed({"SYSTEM"})
 public class RevenueResource {
 
     @Inject
@@ -126,7 +126,6 @@ public class RevenueResource {
 
     @GET
     @Path("/profits/teams")
-    @RolesAllowed({"TEAMLEAD", "CXO", "ADMIN"})
     public GraphKeyValue getTotalProfitsByTeamList(@QueryParam("fiscalyear") Integer intFiscalYear, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate, @QueryParam("teamuuids") String teamlist) {
         log.info("RevenueResource.getTotalProfitsByTeamList");
         log.info("intFiscalYear = " + intFiscalYear + ", fromdate = " + fromdate + ", todate = " + todate + ", teamlist = " + teamlist);
@@ -144,7 +143,6 @@ public class RevenueResource {
 
     @GET
     @Path("/profits/consultants/{useruuid}")
-    @RolesAllowed({"PARTNER", "ADMIN"})
     public List<GraphKeyValue> getRegisteredProfitsForSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodStart, @QueryParam("todate") String periodEnd, @QueryParam("interval") String interval) {
         return revenueService.getRegisteredProfitsForSingleConsultant(useruuid, dateIt(periodStart), dateIt(periodEnd), Integer.parseInt(interval));
     }

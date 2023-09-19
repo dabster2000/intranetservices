@@ -14,7 +14,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 public class UserContactInfoResource {

@@ -38,7 +38,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"USER", "EXTERNAL", "EDITOR", "CXO", "SALES", "VTV", "ACCOUNTING", "MANAGER", "PARTNER", "ADMIN"})
+@RolesAllowed({"SYSTEM"})
 public class ProjectResource {
 
     @Inject

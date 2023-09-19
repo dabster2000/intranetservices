@@ -19,7 +19,7 @@ import java.util.List;
 @Tag(name = "keypurpose")
 @Path("/keypurposes")
 @RequestScoped
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class KeyPurposeResource {
 

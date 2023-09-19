@@ -34,7 +34,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 public class ContractResource {
 
     @Inject
@@ -60,6 +60,7 @@ public class ContractResource {
     }
 
     @GET
+    @Path("/search/findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn")
     public List<Contract> listAll(@QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate, @QueryParam("statuslist") String statuslist) {
         log.debug("ContractResource.listAll");
         log.debug("fromdate = " + fromdate + ", todate = " + todate + ", statuslist = " + statuslist);
@@ -94,13 +95,11 @@ public class ContractResource {
     }
 
     @POST
-    @RolesAllowed({"SALES"})
     public void save(Contract contract) {
         contractService.save(contract);
     }
 
     @POST
-    @RolesAllowed({"SALES"})
     @Path("/{contractuuid}/extend")
     public Contract extendContract(@PathParam("contractuuid") String contractuuid) {
         log.info("ContractResource.extendContract");
@@ -109,14 +108,12 @@ public class ContractResource {
     }
 
     @PUT
-    @RolesAllowed({"SALES"})
     public void updateContract(Contract contract) {
         contractService.update(contract);
     }
 
     @DELETE
     @Path("/{contractuuid}")
-    @RolesAllowed({"SALES"})
     public void deleteContract(@PathParam("contractuuid") String contractuuid) {
         log.info("ContractResource.deleteContract");
         log.info("contractuuid = " + contractuuid);
@@ -124,35 +121,30 @@ public class ContractResource {
     }
 
     @POST
-    @RolesAllowed({"SALES"})
     @Path("/{contractuuid}/projects/{projectuuid}")
     public void addProject(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
         contractService.addProject(contractuuid, projectuuid);
     }
 
     @DELETE
-    @RolesAllowed({"SALES"})
     @Path("/{contractuuid}/projects/{projectuuid}")
     public void removeProject(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
         contractService.removeProject(contractuuid, projectuuid);
     }
 
     @POST
-    @RolesAllowed({"SALES"})
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     public void addConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         contractService.addConsultant(contractuuid, consultantuuid, contractConsultant);
     }
 
     @PUT
-    @RolesAllowed({"SALES"})
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     public void updateConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         contractService.updateConsultant(contractuuid, consultantuuid, contractConsultant);
     }
 
     @DELETE
-    @RolesAllowed({"SALES"})
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     public void removeConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid) {
         contractService.removeConsultant(contractuuid, consultantuuid);

@@ -25,7 +25,7 @@ import java.util.Optional;
 @NoArgsConstructor
 @Entity
 @Table(name = "consultant")
-public class Consultant extends PanacheEntityBase {
+public class Employee extends PanacheEntityBase {
 
     @Id
     public String uuid;
@@ -63,8 +63,11 @@ public class Consultant extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     private ConsultantType consultanttype;
     private int salary;
+    @OneToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "uuid")
+    private User user;
 
-    public static Optional<Consultant> findByUsername(String username) {
+    public static Optional<Employee> findByUsername(String username) {
         return find("username", username).firstResultOptional();
     }
 
@@ -72,7 +75,7 @@ public class Consultant extends PanacheEntityBase {
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
-        Consultant user = (Consultant) o;
+        Employee user = (Employee) o;
         return getUuid().equals(user.getUuid());
     }
 

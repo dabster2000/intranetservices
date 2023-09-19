@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.userservice.services;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.userservice.model.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.User;

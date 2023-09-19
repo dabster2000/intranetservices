@@ -1,8 +1,9 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.aggregateservices.messaging.DateRangeMap;
-import dk.trustworks.intranet.aggregateservices.messaging.MessageEmitter;
-import dk.trustworks.intranet.aggregateservices.messaging.UserDateMap;
+import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
+import dk.trustworks.intranet.messaging.dto.DateRangeMap;
+import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
+import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
@@ -10,10 +11,11 @@ import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.model.EmployeeDataPerDay;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.scheduler.Scheduled;
 import io.vertx.core.json.JsonObject;
+import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -24,12 +26,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.aggregateservices.messaging.MessageEmitter.*;
+import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.READ_USER_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.*;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.*;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.EXTERNAL;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.STUDENT;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
 
+@JBossLog
 @ApplicationScoped
 public class AvailabilityCalculatingExecutor {
 
@@ -47,6 +51,7 @@ public class AvailabilityCalculatingExecutor {
         DateRangeMap dateRangeMap = message.mapTo(DateRangeMap.class);
         LocalDate startDate = dateRangeMap.getFromDate();
         LocalDate endDate = dateRangeMap.getEndDate();
+        log.info("AvailabilityCalculatingExecutor.process - Start for period" + startDate + " - " + endDate);
 
         int day = 0;
 
@@ -67,14 +72,14 @@ public class AvailabilityCalculatingExecutor {
         } catch (Exception e) {
             e.printStackTrace();
         }
+        log.info("AvailabilityCalculatingExecutor.process - Done for period " + startDate + " - " + endDate);
     }
 
     @Transactional
-    @Incoming(READ_USER_CHANGE_EVENT)
-    public void createAvailabilityDocumentByUser(String useruuid) {
-        System.out.println("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUser");
-        System.out.println("useruuid = " + useruuid);
-        User user = userService.findById(useruuid, false);
+    @Incoming(READ_USER_EVENT)
+    public void createAvailabilityDocumentByUser(AggregateRootChangeEvent event) {
+        log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUser -> event = " + event);
+        User user = userService.findById(event.getAggregateRootUUID(), false);
         LocalDate year = DateUtils.getCompanyStartDate();
         LocalDate endDate = DateUtils.getCurrentFiscalStartDate().plusYears(3);
         int day = 0;
@@ -82,7 +87,7 @@ public class AvailabilityCalculatingExecutor {
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(year, endDate, user.getUuid());
 
         EmployeeDataPerDay.delete("user = ?1", user);
-        System.out.println("1");
+        log.info("1");
         try {
             ArrayList<EmployeeDataPerDay> list = new ArrayList<>();
             do {
@@ -92,15 +97,17 @@ public class AvailabilityCalculatingExecutor {
                 day++;
             } while (year.plusDays(day).isBefore(endDate));
             EmployeeDataPerDay.persist(list);
-            System.out.println("2");
+            log.info("2");
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error(e);
         }
     }
 
     @Transactional
     @Incoming(READ_USER_DAY_CHANGE_EVENT)
     public void createAvailabilityDocumentByUserAndDate(JsonObject message) {
+        log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUserAndDate");
+        log.info("message = " + message.encodePrettily());
         UserDateMap userDateMap = message.mapTo(UserDateMap.class);
         String useruuid = userDateMap.getUseruuid();
         LocalDate testDay = userDateMap.getDate();
@@ -119,7 +126,8 @@ public class AvailabilityCalculatingExecutor {
 
     private EmployeeDataPerDay createAvailabilityDocumentByUserAndDate(User user, LocalDate testDay, List<WorkFull> workList) {
         UserStatus userStatus = userService.getUserStatus(user, testDay);
-        int userSalary = userService.getUserSalary(user, testDay).getSalary();
+        int userSalary = user.getSalary(testDay).getSalary();//userService.getUserSalary(user, testDay).getSalary();
+
         if(userStatus.getType().equals(STUDENT) || userStatus.getType().equals(EXTERNAL)) userSalary = 0;
         if(userStatus.getStatus().equals(NON_PAY_LEAVE) || userStatus.getStatus().equals(TERMINATED)) userSalary = 0;
 
@@ -158,8 +166,8 @@ public class AvailabilityCalculatingExecutor {
     //@Scheduled(every = "24h")
     @Scheduled(cron = "0 0 1 * * ?")
     public void recalculateAvailability() {
-        LocalDate testFiscalYear = DateUtils.getCurrentFiscalStartDate().minusYears(2);
-
+        employedUsers = userService.listAll(false);
+        employedUsers.forEach(user -> System.out.println("user.getSalaries().size() = " + user.getSalaries().size()));
         LocalDate companyStartDate = DateUtils.getCompanyStartDate();
         int monthCount = 0;
         do {

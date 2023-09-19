@@ -19,7 +19,6 @@ import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.persistence.EntityManager;
 import javax.transaction.Transactional;
-import javax.ws.rs.core.Response;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.*;
@@ -311,8 +310,7 @@ public class InvoiceService {
     public void uploadToEconomics(Invoice invoice) {
         if(invoice.invoicenumber == 0) return;
         try {
-            Response response = economicsInvoiceService.sendVoucher(invoice);
-            response.close();
+            economicsInvoiceService.sendVoucher(invoice);
         } catch (IOException e) {
             e.printStackTrace();
             throw new RuntimeException(e);

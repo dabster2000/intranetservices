@@ -12,9 +12,9 @@ import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.services.SalaryService;
+import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.userservice.services.TeamService;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.NumberUtils;
 import lombok.extern.jbosslog.JBossLog;
@@ -92,7 +92,7 @@ public class RevenueService {
 
     public List<GraphKeyValue> getSumOfRegisteredRevenueByClient() {
         Map<String, GraphKeyValue> clientRevenueMap = new HashMap<>();
-        List<Client> clients = clientService.listAll();
+        List<Client> clients = clientService.listAllClients();
         List<KeyValueDTO> keyValueDTOS = getRegisteredRevenuePerClient(clients.stream().map(Client::getUuid).collect(Collectors.toList()));
         for (KeyValueDTO keyValueDTO : keyValueDTOS) {
             String key = keyValueDTO.getKey();

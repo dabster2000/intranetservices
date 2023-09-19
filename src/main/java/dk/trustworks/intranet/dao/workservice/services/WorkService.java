@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
 
-import dk.trustworks.intranet.aggregateservices.messaging.MessageEmitter;
-import dk.trustworks.intranet.aggregateservices.messaging.UserDateMap;
+import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
+import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.GraphKeyValue;

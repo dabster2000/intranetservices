@@ -3,7 +3,6 @@ package dk.trustworks.intranet.expenseservice.resources;
 import dk.trustworks.intranet.expenseservice.model.ExpenseAccount;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import lombok.extern.jbosslog.JBossLog;
-import org.jboss.resteasy.annotations.jaxrs.PathParam;
 
 import javax.enterprise.context.RequestScoped;
 import javax.transaction.Transactional;

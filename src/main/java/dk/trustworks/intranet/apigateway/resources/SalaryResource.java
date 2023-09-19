@@ -1,12 +1,15 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
+import dk.trustworks.intranet.aggregates.users.events.CreateSalaryEvent;
+import dk.trustworks.intranet.aggregates.users.events.DeleteSalaryEvent;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.Team;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.RoleType;
-import dk.trustworks.intranet.userservice.services.SalaryService;
+import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.userservice.services.TeamService;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.Claim;
 import org.eclipse.microprofile.jwt.Claims;
@@ -30,7 +33,7 @@ import static dk.trustworks.intranet.userservice.model.enums.TeamMemberType.SPON
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM", "CXO", "ADMIN"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class SalaryResource {
 
@@ -49,6 +52,9 @@ public class SalaryResource {
     SalaryService salaryService;
 
     @Inject
+    AggregateCommand aggregateCommand;
+
+    @Inject
     TeamService teamService;
 
     @Inject
@@ -56,7 +62,6 @@ public class SalaryResource {
 
     @GET
     @Path("/{useruuid}/salaries")
-    @RolesAllowed({"USER", "TEAMLEAD", "CXO", "ADMIN"})
     public List<Salary> listAll(@PathParam("useruuid") String useruuid) {
         List<RoleType> roles = jwt.getGroups().stream().map(RoleType::valueOf).toList();
 
@@ -66,7 +71,7 @@ public class SalaryResource {
             return salaryService.listAll(useruuid);
         }
 
-        if(roles.stream().anyMatch(roleType -> roleType.equals(RoleType.ADMIN) || roleType.equals(RoleType.CXO))) return salaryService.listAll(useruuid);
+        if(roles.stream().anyMatch(roleType -> roleType.equals(RoleType.ADMIN) || roleType.equals(RoleType.CXO) || roleType.equals(RoleType.SYSTEM))) return salaryService.listAll(useruuid);
 
         LocalDate date = LocalDate.now().withDayOfMonth(1);
         User leader = userService.findByUsername(username, true);
@@ -79,12 +84,17 @@ public class SalaryResource {
     @POST
     @Path("/{useruuid}/salaries")
     public void create(@PathParam("useruuid") String useruuid, @Valid Salary salary) {
-        salaryService.create(useruuid, salary);
+        salary.setUseruuid(useruuid);
+        CreateSalaryEvent createSalaryEvent = new CreateSalaryEvent(useruuid, salary);
+        aggregateCommand.handleEvent(createSalaryEvent);
+        //salaryService.create(salary);
     }
 
     @DELETE
     @Path("/{useruuid}/salaries/{salaryuuid}")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("salaryuuid") String salaryuuid) {
-        salaryService.delete(useruuid, salaryuuid);
+        DeleteSalaryEvent deleteSalaryEvent = new DeleteSalaryEvent(useruuid, salaryuuid);
+        aggregateCommand.handleEvent(deleteSalaryEvent);
+        //salaryService.delete(useruuid, salaryuuid);
     }
 }

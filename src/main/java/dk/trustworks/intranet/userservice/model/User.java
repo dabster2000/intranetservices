@@ -93,7 +93,7 @@ public class User extends PanacheEntityBase {
     }
 
     public Salary getSalary(LocalDate date) {
-        return getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
+        return getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date) || value.getActivefrom().isEqual(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
     }
 
     public LocalDate getEmployedDate() {

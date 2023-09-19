@@ -46,7 +46,7 @@ public class PhotoService {
                 byte[] file = baos.toByteArray();
                 photo.setFile(file);
             }  catch (S3Exception e) {
-                log.error("Error loading "+photo.getUuid()+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+                //log.error("Error loading "+photo.getUuid()+" from S3: "+e.awsErrorDetails().errorMessage(), e);
             } catch (Exception e) {
                 log.error(e.getMessage());
             }
@@ -63,7 +63,7 @@ public class PhotoService {
 
                 newPhoto.setFile(file);
             }  catch (S3Exception e) {
-                log.error("Error loading "+type+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+                //log.error("Error loading "+type+" from S3: "+e.awsErrorDetails().errorMessage(), e);
             } catch (Exception e) {
                 log.error(e.getMessage());
             }
@@ -87,9 +87,9 @@ public class PhotoService {
                 byte[] file = baos.toByteArray();
                 photo.get().setFile(file);
             }  catch (S3Exception e) {
-                log.error("Error loading "+relateduuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+                //log.error("Error loading "+relateduuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
             } catch (Exception e) {
-                log.error(e.getMessage());
+                //log.error(e.getMessage());
             }
         }
         return photo.orElseGet(() -> {

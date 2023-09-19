@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.userservice.model;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
@@ -33,7 +32,6 @@ public class Salary extends PanacheEntityBase {
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate activefrom;
 
-    @JsonIgnore
     private String useruuid;
 
     public Salary() {

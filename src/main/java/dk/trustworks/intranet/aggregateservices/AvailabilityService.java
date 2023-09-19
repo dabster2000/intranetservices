@@ -18,7 +18,7 @@ import dk.trustworks.intranet.dto.UserProjectBooking;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.NumberUtils;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -142,6 +142,7 @@ public class AvailabilityService {
                                 UserProjectBooking newUserProjectBooking = new UserProjectBooking(client.getName(), client.getUuid(), monthsInFuture, false);
                                 userProjectBookingMap.put(key, newUserProjectBooking);
                                 userBooking.addSubProject(newUserProjectBooking);
+
                             }
                             UserProjectBooking userProjectBooking = userProjectBookingMap.get(key);
 
@@ -172,10 +173,12 @@ public class AvailabilityService {
 
                 List<Budget> budgets = budgetService.findByMonthAndYear(currentDate);
                 for (Budget budget : budgets) {
+                    LocalDate finalCurrentDate = currentDate;
+                    int finalI = i;
                     ContractConsultant consultant = contractConsultantService.findByUUID(budget.getConsultantuuid());
+                    if(!consultant.getUseruuid().equals(user.getUuid())) continue;
                     Project project = projectService.findByUuid(budget.getProjectuuid());
                     Client client = clientService.findByUuid(project.getClientuuid());
-                    if(!consultant.getUseruuid().equals(user.getUuid())) continue;
 
                     String key = consultant.getUseruuid()+budget.getProjectuuid();
                     if(!userProjectBookingMap.containsKey(key)) {
@@ -185,14 +188,14 @@ public class AvailabilityService {
                     }
                     UserProjectBooking userProjectBooking = userProjectBookingMap.get(key);
 
-                    double workDaysInMonth = workService.getWorkDaysInMonth(user.getUuid(), currentDate);
+                    double workDaysInMonth = workService.getWorkDaysInMonth(user.getUuid(), finalCurrentDate);
                     double preBooking = 0.0;
                     double hourBudget = 0.0;
                     double booking;
 
-                    if(i < monthsInPast) {
+                    if(finalI < monthsInPast) {
                         hourBudget = NumberUtils.round(budget.getBudget() / consultant.getRate(), 2);
-                        preBooking = Optional.ofNullable(workService.findHoursRegisteredOnContractByPeriod(consultant.getContractuuid(), consultant.getUseruuid(), getFirstDayOfMonth(currentDate), getLastDayOfMonth(currentDate))).orElse(0.0);
+                        preBooking = Optional.ofNullable(workService.findHoursRegisteredOnContractByPeriod(consultant.getContractuuid(), consultant.getUseruuid(), getFirstDayOfMonth(finalCurrentDate), getLastDayOfMonth(finalCurrentDate))).orElse(0.0);
                         booking = NumberUtils.round((preBooking / hourBudget) * 100.0, 2);
                     } else {
                         if (contractService.findByUuid(consultant.getContractuuid()).getStatus().equals(ContractStatus.BUDGET)) {
@@ -203,9 +206,9 @@ public class AvailabilityService {
                         booking = NumberUtils.round(((hourBudget) / (workDaysInMonth * 7)) * 100.0, 2);
                     }
 
-                    userProjectBooking.setAmountItemsPerProjects(hourBudget, i);
-                    userProjectBooking.setAmountItemsPerPrebooking(preBooking, i);
-                    userProjectBooking.setBookingPercentage(booking, i);
+                    userProjectBooking.setAmountItemsPerProjects(hourBudget, finalI);
+                    userProjectBooking.setAmountItemsPerPrebooking(preBooking, finalI);
+                    userProjectBooking.setBookingPercentage(booking, finalI);
                 }
 
                 currentDate = currentDate.plusMonths(1);

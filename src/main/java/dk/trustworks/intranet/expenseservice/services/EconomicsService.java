@@ -2,13 +2,13 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIAccount;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIFile;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
-import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
@@ -51,8 +51,11 @@ public class EconomicsService {
 
         Voucher voucher = buildJSONRequest(expense, userAccount, journal, text);
 
+        ObjectMapper o = new ObjectMapper();
+        String json = o.writeValueAsString(voucher);
+        System.out.println("json = " + json);
         // call e-conomics endpoint
-        Response response = economicsAPI.postVoucher(journal.getJournalNumber(), voucher);
+        Response response = economicsAPI.postVoucher(journal.getJournalNumber(), json);
 
         // extract voucher number from reponse
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {

@@ -21,7 +21,7 @@ import java.util.List;
 @Tag(name = "Sales")
 @Path("/sales/leads")
 @RequestScoped
-@RolesAllowed({"SYSTEM", "SALES"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class SalesResource {
 
@@ -30,8 +30,13 @@ public class SalesResource {
 
     @GET
     @Transactional
-    public List<SalesLead> findAll() {
-        List<SalesLead> salesLeads = salesService.findAll();
+    public List<SalesLead> findAll(@QueryParam("status") String status) {
+        List<SalesLead> salesLeads;
+        if(status!=null && !status.isEmpty()) {
+            salesLeads = salesService.findByStatus(Arrays.stream(status.split(",")).map(SalesStatus::valueOf).toArray((SalesStatus[]::new)));
+        } else {
+            salesLeads = salesService.findAll();
+        }
         for (SalesLead salesLead : salesLeads) {
             testCloseDate(salesLead);
         }
@@ -46,7 +51,7 @@ public class SalesResource {
         testCloseDate(salesLead);
         return salesLead;
     }
-
+/*
     @GET
     public List<SalesLead> findByStatus(@QueryParam("status") String status) {
         List<SalesLead> salesLeads = salesService.findByStatus(Arrays.stream(status.split(",")).map(SalesStatus::valueOf).toArray((SalesStatus[]::new)));
@@ -54,7 +59,7 @@ public class SalesResource {
             testCloseDate(salesLead);
         }
         return salesLeads;
-    }
+    }*/
 
     @POST
     @Path("/{uuid}/consultant")

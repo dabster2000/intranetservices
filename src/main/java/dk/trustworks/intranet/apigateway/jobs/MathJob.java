@@ -6,7 +6,7 @@ import dk.trustworks.intranet.aggregateservices.RevenueService;
 import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.services.SalaryService;
+import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import lombok.extern.jbosslog.JBossLog;
 

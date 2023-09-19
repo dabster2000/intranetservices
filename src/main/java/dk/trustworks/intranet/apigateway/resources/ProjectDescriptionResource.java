@@ -17,7 +17,7 @@ import java.util.List;
 @JBossLog
 @SecurityRequirement(name = "jwt")
 @ClientHeaderParam(name="Authorization", value="{generateRequestId}")
-@RolesAllowed({"USER"})
+@RolesAllowed({"SYSTEM", "USER"})
 @Path("/knowledge/projects")
 public class ProjectDescriptionResource {
 

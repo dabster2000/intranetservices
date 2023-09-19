@@ -10,13 +10,12 @@ import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.NumberUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.annotation.PostConstruct;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.persistence.EntityManager;
@@ -199,7 +198,7 @@ public class CompanyDataService {
 
 
 
-    @Scheduled(every = "1h", delay = 6)
+    @Scheduled(every = "1h", delay = 60)
     public void updateAllData() {
         log.info("CompanyDataService.updateAllData...STARTED!");
         long l = System.currentTimeMillis();
@@ -231,7 +230,7 @@ public class CompanyDataService {
         log.info("CompanyDataService Time: "+(System.currentTimeMillis()-l));
     }
 
-    @PostConstruct
+    //@PostConstruct
     public void init() {
         log.info("CompanyDataService.init");
         LocalDate lookupDate = startDate;

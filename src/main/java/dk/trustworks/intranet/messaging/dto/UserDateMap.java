@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.messaging;
+package dk.trustworks.intranet.messaging.dto;
 
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import lombok.Data;

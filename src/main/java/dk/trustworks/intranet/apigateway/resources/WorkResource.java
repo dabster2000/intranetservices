@@ -4,9 +4,10 @@ import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 
 import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
@@ -24,8 +25,8 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@ClientHeaderParam(name="Authorization", value="{generateRequestId}")
-@RolesAllowed({"SYSTEM", "USER", "EXTERNAL", "EDITOR", "CXO", "SALES", "VTV", "ACCOUNTING", "MANAGER", "PARTNER", "ADMIN"})
+@RolesAllowed({"SYSTEM"})
+@SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class WorkResource {
 
     @Inject
@@ -76,7 +77,7 @@ public class WorkResource {
     }
 
     @GET
-    @Path("/tasks/{uuid}/work")
+    //@Path("/tasks/{uuid}/work")
     public List<WorkFull> getWorkByTask(@PathParam("uuid") String taskuuid) {
         return workAPI.findByTask(taskuuid);
     }

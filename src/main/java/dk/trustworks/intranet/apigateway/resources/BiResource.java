@@ -26,7 +26,7 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @Tag(name = "BI")
 @Path("/bi")
 @RequestScoped
-@RolesAllowed({"SYSTEM", "USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class BiResource {
 
@@ -55,9 +55,14 @@ public class BiResource {
     @GET
     @Path("/employees/v2")
     public List<EmployeeDataPerMonth> getEmployeeDataPerMonthV2(@QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
+        System.out.println("BiResource.getEmployeeDataPerMonthV2");
+        System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
-        List<EmployeeDataPerMonth> list = EmployeeDataPerMonth.list("(year = ?1 AND month >= ?2) OR (year = ?3 AND month <= ?4)", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
+        List<EmployeeDataPerMonth> list = EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
+                "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
+                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d')", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
+        //list.forEach(e -> System.out.println("e = " + e));
         return list;
     }
 }

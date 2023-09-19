@@ -9,8 +9,8 @@ import dk.trustworks.intranet.marginservice.dto.ClientMarginResult;
 import dk.trustworks.intranet.marginservice.dto.MarginResult;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import dk.trustworks.intranet.userservice.services.SalaryService;
-import dk.trustworks.intranet.userservice.services.UserService;
+import dk.trustworks.intranet.aggregates.users.services.SalaryService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 
 import javax.enterprise.context.ApplicationScoped;

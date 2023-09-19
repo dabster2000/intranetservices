@@ -45,9 +45,12 @@ public class EconomicsInvoiceService {
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
         Voucher voucher = buildJSONRequest(invoice, journal, text);
+        ObjectMapper o = new ObjectMapper();
+        String json = o.writeValueAsString(voucher);
+        System.out.println("json = " + json);
 
         // call e-conomics endpoint
-        Response response = economicsAPI.postVoucher(journal.getJournalNumber(), voucher);
+        Response response = economicsAPI.postVoucher(journal.getJournalNumber(), json);
 
         // extract voucher number from reponse
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {

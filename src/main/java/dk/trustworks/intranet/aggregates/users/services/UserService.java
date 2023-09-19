@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.userservice.services;
+package dk.trustworks.intranet.aggregates.users.services;
 
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
@@ -7,6 +7,7 @@ import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
+import dk.trustworks.intranet.userservice.services.LoginService;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
 import io.vertx.mutiny.core.eventbus.EventBus;
@@ -43,7 +44,8 @@ public class UserService {
     @Inject
     MailResource mailAPI;
 
-    @Inject LoginService loginService;
+    @Inject
+    LoginService loginService;
 
     @CacheResult(cacheName = "user-cache")
     public List<User> listAll(boolean shallow) {
@@ -196,7 +198,6 @@ public class UserService {
         log.info("Create user: "+user);
         if(User.find("username like ?1", user.getUsername()).count() > 0) throw new EntityExistsException("User already exists");
         log.info("User does not exist");
-        if(user.getUuid()==null || user.getUuid().isBlank()) user.setUuid(UUID.randomUUID().toString());
         user.setActive(true);
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
@@ -212,8 +213,7 @@ public class UserService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
-    public void updateOne(String uuid, User user) {
-        log.info("User updated ("+uuid+"): "+user);
+    public void updateOne(User user) {
         User.update("active = ?1, " +
                         "email = ?2, " +
                         "firstname = ?3, " +
@@ -249,7 +249,7 @@ public class UserService {
                 user.getDefects(),
                 user.isPhotoconsent(),
                 user.getOther(),
-                uuid);
+                user.getUuid());
     }
 
     @Transactional

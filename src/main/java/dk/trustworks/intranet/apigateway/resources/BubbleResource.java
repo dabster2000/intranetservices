@@ -23,7 +23,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 @Timed(histogram = true)
 public class BubbleResource {
@@ -55,7 +55,6 @@ public class BubbleResource {
 
     @DELETE
     @Path("/{bubbleuuid}")
-    @RolesAllowed({"CXO"})
     public void delete(@PathParam("bubbleuuid") String bubbleuuid) throws SlackApiException, IOException {
         bubbleService.delete(bubbleuuid);
     }

@@ -26,7 +26,7 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @Path("/invoices")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM", "SALES"})
+@RolesAllowed({"SYSTEM"})
 @ClientHeaderParam(name="Authorization", value="{generateRequestId}")
 public class InvoiceResource {
 
@@ -37,12 +37,8 @@ public class InvoiceResource {
     InvoiceGeneratorService invoiceGeneratorService;
 
     @GET
-    public List<Invoice> findAll() {
-        return invoiceService.findAll();
-    }
-
-    @GET
     public List<Invoice> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        if (fromdate == null || todate == null) return invoiceService.findAll();
         return InvoiceService.findWithFilter(dateIt(fromdate), dateIt(todate));
     }
 

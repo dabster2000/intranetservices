@@ -19,7 +19,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
@@ -36,14 +36,12 @@ public class RoleResource {
 
     @POST
     @Path("/{uuid}/roles")
-    @RolesAllowed({"CXO", "PARTNER", "ADMIN"})
     public void create(@PathParam("uuid") String useruuid, @Valid Role role) {
         roleService.create(useruuid, role);
     }
 
     @DELETE
     @Path("/{uuid}/roles")
-    @RolesAllowed({"CXO", "PARTNER", "ADMIN"})
     @Operation(summary = "Delete all user roles")
     public void delete(@PathParam("uuid") String useruuid) {
         roleService.delete(useruuid);
@@ -51,7 +49,6 @@ public class RoleResource {
 
     @DELETE
     @Path("/{uuid}/roles/{roleuuid}")
-    @RolesAllowed({"CXO", "PARTNER", "ADMIN"})
     @Operation(summary = "Delete a specifik user role")
     @Transactional
     public void delete(@PathParam("uuid") String useruuid, @PathParam("roleuuid") String roleuuid) {

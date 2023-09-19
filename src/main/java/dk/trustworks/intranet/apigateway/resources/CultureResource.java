@@ -19,7 +19,7 @@ import java.util.List;
 @Tag(name = "culture")
 @Path("/culture")
 @RequestScoped
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class CultureResource {
 

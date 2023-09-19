@@ -27,7 +27,7 @@ import java.util.Optional;
 @Path("/accounting")
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"USER"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class ExpenseResource {
 
@@ -109,6 +109,7 @@ public class ExpenseResource {
     @GET
     @Path("/user-accounts/search/findByAccountNumber")
     public UserAccount getAccount(@QueryParam("account") int account) throws IOException {
+        if(account<=0) return new UserAccount(0, "No account found");
         return userAccountAPI.getAccount(account);
     }
 

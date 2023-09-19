@@ -1,15 +1,12 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import com.fasterxml.jackson.annotation.JsonView;
 import dk.trustworks.intranet.aggregateservices.AvailabilityService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.UserBooking;
-import dk.trustworks.intranet.security.Views;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import io.micrometer.core.annotation.Timed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -30,10 +27,8 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"USER", "EXTERNAL"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
-@Timed(histogram = true)
-@JsonView(Views.User.class)
 public class AvailabilityResource {
 
     @Inject
@@ -43,13 +38,11 @@ public class AvailabilityResource {
     AvailabilityService availabilityService;
 
     @GET
-    @JsonView(Views.User.class)
     public List<AvailabilityDocument> getAvailabilityDocumentsByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return availabilityService.getAvailabilityDocumentsByPeriod(dateIt(fromdate), dateIt(todate));
     }
 
     @GET
-    @JsonView(Views.User.class)
     @Path("/months/{datemonth}/users/{useruuid}")
     public AvailabilityDocument getConsultantAvailabilityByMonth(@PathParam("useruuid") String useruuid, @PathParam("datemonth") String datemonth) {
         return availabilityService.getConsultantAvailabilityByMonth(useruuid, dateIt(datemonth));

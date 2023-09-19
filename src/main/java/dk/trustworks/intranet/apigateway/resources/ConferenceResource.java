@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import dk.trustworks.intranet.knowledgeservice.model.enums.ConferenceApplicationStatus;
 import dk.trustworks.intranet.knowledgeservice.model.enums.ConferenceType;
@@ -12,7 +12,6 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.*;
-import javax.ws.rs.core.Form;
 import javax.ws.rs.core.MediaType;
 import java.util.Comparator;
 import java.util.List;
@@ -40,7 +39,7 @@ public class ConferenceResource {
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)
     public void receiveForm(@FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
-                            @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke, Form form) {
+                            @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke) {
         conferenceService.addParticipant(new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke), ConferenceType.CONFERENCE,
                 ConferenceApplicationStatus.WAITING));
     }

@@ -3,7 +3,9 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregateservices.AvailabilityCalculatingExecutor;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import javax.annotation.security.RolesAllowed;
@@ -20,8 +22,9 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"PARTNER"})
 @SecurityRequirement(name = "jwt")
+@RolesAllowed({"SYSTEM"})
+@SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class YourPartOfTrustworksResource {
 
     @Inject

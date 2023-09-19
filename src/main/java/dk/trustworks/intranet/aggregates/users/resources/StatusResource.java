@@ -1,7 +1,10 @@
-package dk.trustworks.intranet.apigateway.resources;
+package dk.trustworks.intranet.aggregates.users.resources;
 
+import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
+import dk.trustworks.intranet.aggregates.users.events.CreateUserStatusEvent;
+import dk.trustworks.intranet.aggregates.users.events.DeleteUserStatusEvent;
 import dk.trustworks.intranet.userservice.model.UserStatus;
-import dk.trustworks.intranet.userservice.services.StatusService;
+import dk.trustworks.intranet.aggregates.users.services.StatusService;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
@@ -19,11 +22,14 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM", "USER", "EXTERNAL", "EDITOR", "CXO", "SALES", "VTV", "ACCOUNTING", "MANAGER", "PARTNER", "ADMIN"})
+@RolesAllowed({"SYSTEM"})
 public class StatusResource {
 
     @Inject
     StatusService statusService;
+
+    @Inject
+    AggregateCommand aggregateCommand;
 
     @GET
     @Path("/{useruuid}/statuses")
@@ -45,15 +51,16 @@ public class StatusResource {
 
     @POST
     @Path("/{useruuid}/statuses")
-    @RolesAllowed({"CXO", "PARTNER", "ADMIN"})
     public void create(@PathParam("useruuid") String useruuid, UserStatus status) {
-        statusService.create(useruuid, status);
+        status.setUseruuid(useruuid);
+        CreateUserStatusEvent event = new CreateUserStatusEvent(useruuid, status);
+        aggregateCommand.handleEvent(event);
     }
 
     @DELETE
-    @Path("/{useruuid}/statuses/{statusuuid}")
-    @RolesAllowed({"CXO", "PARTNER", "ADMIN"})
+    @Path("/{useruuid}/status/{statusuuid}")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("statusuuid") String statusuuid) {
-        statusService.delete(useruuid, statusuuid);
+        DeleteUserStatusEvent event = new DeleteUserStatusEvent(useruuid, statusuuid);
+        aggregateCommand.handleEvent(event);
     }
 }

@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.jobs;
 
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.userservice.model.Consultant;
+import dk.trustworks.intranet.userservice.model.Employee;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -21,17 +21,17 @@ public class BirthdayNotificationJob {
     @Inject
     SlackService slackService;
 
-    @Scheduled(cron = "0 0 7 * * ?")
+    @Scheduled(cron = "0 0 5 * * ?")
     public void sendBirthdayNotifications() {
-        List<Consultant> consultants = em.createNativeQuery("select * from twservices.consultant c " +
+        List<Employee> employees = em.createNativeQuery("select * from twservices.consultant c " +
                 "         where " +
                 "             c.status like 'ACTIVE' and " +
                 "             c.type not like 'EXTERNAL' and " +
                 "             MONTH(birthday) = MONTH(CURDATE()) and " +
-                "             DAY(birthday) = DAY(CURDATE());", Consultant.class).getResultList();
-        for (Consultant consultant : consultants) {
-            slackService.sendMessage(consultant.getSlackusername(), getRandomWish(consultant.getFirstname()+" "+consultant.getLastname(), consultant.getGender()));
-            slackService.sendMessage("#general", getRandomWish(consultant.getFirstname()+" "+consultant.getLastname(), consultant.getGender()));
+                "             DAY(birthday) = DAY(CURDATE());", Employee.class).getResultList();
+        for (Employee employee : employees) {
+            slackService.sendMessage(employee.getSlackusername(), getRandomWish(employee.getFirstname()+" "+ employee.getLastname(), employee.getGender()));
+            slackService.sendMessage("#general", getRandomWish(employee.getFirstname()+" "+ employee.getLastname(), employee.getGender()));
         }
     }
 
@@ -105,3 +105,130 @@ public class BirthdayNotificationJob {
 
 
 }
+
+/*
+Absolutely, here's another 20 fun Slack greetings with the `:flag-dk:` Slack shortcode:
+
+```java
+    private static final String[] WISHES = {
+        // ... (existing messages)
+
+        ":flag-dk::alarm_clock: [Name], if birthdays had snooze buttons! But hey, rise and celebrate! :birthday:",
+        ":flag-dk::hatching_chick: A little birdie told me it's [Name]'s birthday! Tweet Tweet Hooray! :bird:",
+        ":flag-dk::video_game: Level up! [Name], your game just got an update! :trophy:",
+        ":flag-dk::musical_note: Let the birthday beats drop, [Name]! Dance like nobody's pinging you! :headphones:",
+        ":flag-dk::balloon: Pop goes the birthday! [Name], you're the party everyone wants to join! :confetti_ball:",
+        ":flag-dk::sunglasses: Age is all about perspective, [Name]. From here, you're looking great! :camera_with_flash:",
+        ":flag-dk::memo: Note to everyone: Clear your afternoon. It’s [Name]'s cake-eating time! :fork_and_knife:",
+        ":flag-dk::rainbow: Somewhere over the birthday rainbow, [Name] is celebrating! :unicorn_face:",
+        ":flag-dk::roller_coaster: Another wild trip around the sun! Hold tight, [Name]! :earth_americas:",
+        ":flag-dk::clinking_glasses: Cheers to [Name], the reason we're all looking forward to the cake today! :beer:",
+        ":flag-dk::book: [Name], your life’s story just got another exciting chapter! :pen_fountain:",
+        ":flag-dk::rocket: 3... 2... 1... Blast off to [Name]'s next adventure-filled year! :stars:",
+        ":flag-dk::gift_heart: Unwrapping the day with joy, it's [Name]'s special moment! :ribbon:",
+        ":flag-dk::spiral_calendar_pad: Mark your calendars, folks! Today, [Name] gets the spotlight! :flashlight:",
+        ":flag-dk::mage: May [Name]'s day be spellbinding and magical! :crystal_ball:",
+        ":flag-dk::trophy: Celebrating [Name], the champion of birthdays! Keep winning! :medal:",
+        ":flag-dk::beers: Age gets better with beer! [Name], pour yourself some birthday cheer! :tumbler_glass:",
+        ":flag-dk::sparkler: Light up the day, [Name]! It’s your time to shine! :sun_with_face:",
+        ":flag-dk::pizza: Like a fine pizza, [Name] only gets better with time! Slice slice baby! :knife_fork_plate:",
+        ":flag-dk::zany_face: Wilder, wackier, and wonderfully older! Dive into the fun, [Name]!"
+    };
+```
+
+Remember to integrate this into the existing WISHES array. The greetings use a mix of humor and common Slack icons for a fun birthday experience.
+ */
+
+/*
+Of course, playful teasing can make the greetings even more fun and memorable. Here's a revised list that carries a light-hearted teasing tone:
+
+```java
+    private static final String[] WISHES = {
+        // ... (existing messages)
+
+        ":flag-dk::alarm_clock: [Name], another year closer to using senior citizen discounts! No need for the snooze button today! :birthday:",
+        ":flag-dk::hatching_chick: A little birdie said [Name]'s getting older? Can't tell by the dance moves! :bird:",
+        ":flag-dk::video_game: [Name], you’ve leveled up in age! Maybe now you'll level up in wisdom too? :trophy:",
+        ":flag-dk::musical_note: [Name], aging like a fine...cheese? Dance the stink away! :headphones:",
+        ":flag-dk::balloon: [Name]'s age might be rising, but thankfully, so are our cake portions! :confetti_ball:",
+        ":flag-dk::sunglasses: [Name], adding another wrinkle to the story? At least it’s in HD! :camera_with_flash:",
+        ":flag-dk::memo: [Name], another year older and... another year of stealing office cake! :fork_and_knife:",
+        ":flag-dk::rainbow: [Name], chasing youth like we chase rainbows! Keep running! :unicorn_face:",
+        ":flag-dk::roller_coaster: [Name], that age rollercoaster is going up! Hold on for another wild year! :earth_americas:",
+        ":flag-dk::clinking_glasses: A toast to [Name], who makes gray hairs look fashionable! :beer:",
+        ":flag-dk::book: [Name]'s life – another year, another... wrinkle in the plot? :pen_fountain:",
+        ":flag-dk::rocket: Ready for liftoff, [Name]? Your age is now in another stratosphere! :stars:",
+        ":flag-dk::gift_heart: [Name], you're the gift that keeps on aging! Keep unwrapping! :ribbon:",
+        ":flag-dk::spiral_calendar_pad: Calendar Alert: [Name]'s annual “Feel Young” day! Get in the spirit! :flashlight:",
+        ":flag-dk::mage: [Name], may your day be as enchanting as your... emerging gray strands! :crystal_ball:",
+        ":flag-dk::trophy: Celebrating [Name], the undisputed champion of 'getting older gracefully'... or at least trying to! :medal:",
+        ":flag-dk::beers: [Name], they say age gets better with beer. Drink up and blur those lines! :tumbler_glass:",
+        ":flag-dk::sparkler: [Name], setting the world on fire with every new candle! Burn bright! :sun_with_face:",
+        ":flag-dk::pizza: [Name], aging is like pizza: sometimes cheesy, but always delightful! Dig in! :knife_fork_plate:",
+        ":flag-dk::zany_face: [Name], another year zanier? At least you're consistent! Dive into the madness!"
+    };
+```
+
+The greetings playfully nod to common themes of aging but keep the vibe fun and light-hearted.
+ */
+
+/*
+    private static final String[] WISHES = {
+        // ... (existing messages)
+
+        ":flag-dk::alarm_clock: [Name], another year and STILL not wiser? Let's hope those candles bring some enlightenment! :birthday:",
+        ":flag-dk::hatching_chick: [Name], you're not getting older, just more... seasoned. Peppered with wisdom, perhaps? :bird:",
+        ":flag-dk::video_game: Leveled up in age, [Name]? But are your gaming skills leveling up too? :trophy:",
+        ":flag-dk::musical_note: [Name], you may be hitting high age notes, but can you still hit the dance floor notes? Challenge accepted? :headphones:",
+        ":flag-dk::balloon: [Name], balloons for your birthday? Or are they for your ever-expanding age ego? :confetti_ball:",
+        ":flag-dk::sunglasses: [Name], you say age is just a number, but it's starting to sound like a phone number, isn't it? :camera_with_flash:",
+        ":flag-dk::memo: Older, bolder, and... just plain older. But who's counting? Oh right, we are. Happy Birthday, [Name]! :fork_and_knife:",
+        ":flag-dk::rainbow: Somewhere over the rainbow, [Name]'s youth is on the run! Keep chasing! :unicorn_face:",
+        ":flag-dk::roller_coaster: [Name], getting old is like a roller coaster. Lots of screams, some fun, and a few unexpected drops! Enjoy the ride! :earth_americas:",
+        ":flag-dk::clinking_glasses: A toast to [Name]! Like wine, aging but... also, like wine, possibly better left in the cellar? :beer:",
+        ":flag-dk::book: Another year, another wrinkle, [Name]. Think of them as life's bookmarks! :pen_fountain:",
+        ":flag-dk::rocket: [Name], your age's reaching new heights. Maybe it’s time it came back to Earth? :stars:",
+        ":flag-dk::gift_heart: [Name], you're a vintage model now. But remember, classic doesn't mean obsolete... yet! :ribbon:",
+        ":flag-dk::spiral_calendar_pad: [Name], on your special day, remember: age is just a high score in the game of life. And you're winning! :flashlight:",
+        ":flag-dk::mage: [Name], may your day be as magical as the mystery of your true age! :crystal_ball:",
+        ":flag-dk::trophy: [Name], here's to you, the MVP of making gray hair look... intentional! Go champ! :medal:",
+        ":flag-dk::beers: [Name], remember, beers may get stale with age, but you? You're... fermenting? Cheers! :tumbler_glass:",
+        ":flag-dk::sparkler: [Name], like a rare coin, you're gaining value. Too bad it's in laugh lines! Celebrate! :sun_with_face:",
+        ":flag-dk::pizza: [Name], you're a slice above the rest. A slightly older, crustier slice, but still our favorite! :knife_fork_plate:",
+        ":flag-dk::zany_face: [Name], you're not older – you're just a classic edition with added... character! Enjoy your day!"
+    };
+
+ */
+
+/*
+Alright, let's go for some playful mischief! Here's an "evil" twist to the greetings, all in good fun:
+
+```java
+    private static final String[] WISHES = {
+        // ... (existing messages)
+
+        ":flag-dk::alarm_clock: [Name], don't you love birthdays? Another year closer to looking like your passport photo. :birthday:",
+        ":flag-dk::hatching_chick: Heard [Name]'s aging like a fine wine. That explains the sour notes! :bird:",
+        ":flag-dk::video_game: Ding! [Name] leveled up in age! Still waiting for that charisma boost though... :trophy:",
+        ":flag-dk::musical_note: [Name], if age was a song, you'd be a lengthy opera by now! Care for a solo? :headphones:",
+        ":flag-dk::balloon: [Name], those aren't birthday balloons. They're your age’s SOS signals! :confetti_ball:",
+        ":flag-dk::sunglasses: [Name], with age comes wisdom. Or in your case, more audacity to wear those clothes! :camera_with_flash:",
+        ":flag-dk::memo: Remember when [Name] was young and spry? Me neither. Happy Birthday anyway! :fork_and_knife:",
+        ":flag-dk::rainbow: [Name], you’re the pot of... aged gold at the end of the rainbow. Still shiny, right? :unicorn_face:",
+        ":flag-dk::roller_coaster: [Name]'s age is like a roller coaster: surprising, a bit scary, and probably should come with height restrictions. :earth_americas:",
+        ":flag-dk::clinking_glasses: Raising a glass to [Name], the poster child for 'Aged. Not Matured.' Cheers! :beer:",
+        ":flag-dk::book: [Name]'s life is a book. A fantasy novel where age pretends to be just a number! :pen_fountain:",
+        ":flag-dk::rocket: [Name], your age is shooting for the stars! Hope the memory's not too spaced out yet! :stars:",
+        ":flag-dk::gift_heart: [Name], like old cheese, you’ve got that... distinct aroma of maturity! Relish it! :ribbon:",
+        ":flag-dk::spiral_calendar_pad: Reminder: [Name]'s annual ‘Pretend I'm Not Aging’ fest! Join the delusion! :flashlight:",
+        ":flag-dk::mage: [Name], may your day be as unforgettable as your... last attempt to karaoke. Pure magic! :crystal_ball:",
+        ":flag-dk::trophy: [Name], older, bolder, and still not the holder of any real adult skills. Keep rocking! :medal:",
+        ":flag-dk::beers: [Name], the secret to looking young is low lighting and good beer. Guzzle up! :tumbler_glass:",
+        ":flag-dk::sparkler: [Name], they say age is illuminating. That’s just the candles setting your cake on fire! :sun_with_face:",
+        ":flag-dk::pizza: [Name], like cold pizza on a hungover morning, you're... surprisingly still good! Cheers to another year! :knife_fork_plate:",
+        ":flag-dk::zany_face: [Name], aging like a banana. Still sweet, just a bit more... spotted!"
+    };
+```
+
+These are meant to be light-hearted and funny, but always ensure that the recipient has a good sense of humor and that these won't be perceived as too mean. Context and the relationship with the birthday person matter a lot!
+ */

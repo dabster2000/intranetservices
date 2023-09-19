@@ -2,6 +2,7 @@ package dk.trustworks.intranet.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -26,6 +27,11 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     private int month;
 
     private String useruuid; // done
+
+    @Column(name = "consultant_type")
+    @Enumerated(EnumType.STRING)
+    @JsonProperty("consultantType")
+    private ConsultantType consultantType;
 
     @Column(name = "gross_available_hours", precision = 7, scale = 4)
     @JsonProperty("grossAvailableHours")
