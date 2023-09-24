@@ -4,17 +4,19 @@ import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 import javax.persistence.Entity;
 
-import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType.CREATE_USER_SALARY;
+import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType.DELETE_USER_SALARY;
 
 @Data
+@ToString(callSuper = true)
 @NoArgsConstructor
-@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
+@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = true)
 @Entity
 public class DeleteSalaryEvent extends AggregateRootChangeEvent {
     public DeleteSalaryEvent(String aggregateRootUUID, String salaryUUID) {
-        super(aggregateRootUUID, CREATE_USER_SALARY, salaryUUID);
+        super(aggregateRootUUID, DELETE_USER_SALARY, salaryUUID);
     }
 }

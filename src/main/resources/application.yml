@@ -38,6 +38,11 @@ quarkus:
       level: INFO
     level: INFO
     min-level: INFO
+    handler:
+      gelf:
+        enabled: true
+        host: localhost
+        port: 12201
   s3:
     sync-client:
       type: APACHE
