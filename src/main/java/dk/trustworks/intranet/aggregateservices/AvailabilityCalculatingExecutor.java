@@ -80,6 +80,7 @@ public class AvailabilityCalculatingExecutor {
     public void createAvailabilityDocumentByUser(AggregateRootChangeEvent event) {
         log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUser -> event = " + event);
         User user = userService.findById(event.getAggregateRootUUID(), false);
+        if(user==null) return;
         LocalDate year = DateUtils.getCompanyStartDate();
         LocalDate endDate = DateUtils.getCurrentFiscalStartDate().plusYears(3);
         int day = 0;
@@ -112,6 +113,7 @@ public class AvailabilityCalculatingExecutor {
         String useruuid = userDateMap.getUseruuid();
         LocalDate testDay = userDateMap.getDate();
         User user = userService.findById(useruuid, false);
+        if(user==null) return;
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(testDay, testDay.plusDays(1), user.getUuid());
 
         EmployeeDataPerDay.delete("user = ?1 and month = ?2", user, testDay);

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.userservice.model.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.User;
@@ -47,73 +48,78 @@ public class TeamResource {
     @GET
     @Path("/{teamuuid}/users")
     public List<User> getUsersByTeam(@PathParam("teamuuid") String teamuuid) {
-        return teamService.getUsersByTeam(teamuuid);
+        return getUsers(teamService.getUsersByTeam(teamuuid));
+    }
+
+    private static List<User> getUsers(List<User> usersByTeam) {
+        usersByTeam.forEach(UserService::addChildrenToUser);
+        return usersByTeam;
     }
 
     @GET
     @Path("/{teamuuid}/users/search/findByMonth")
     public List<User> getUsersByTeamAndMonth(@PathParam("teamuuid") String teamuuid, @QueryParam("month") String month) {
-        return teamService.getUsersByTeam(teamuuid, dateIt(month));
+        return getUsers(teamService.getUsersByTeam(teamuuid, dateIt(month)));
     }
 
     @GET
     @Path("/{teamuuid}/users/search/findTeamleadersByMonth")
     public List<User> getTeamLeadersByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("month") String month) {
-        return teamService.getTeamLeadersByTeam(teamuuid, dateIt(month));
+        return getUsers(teamService.getTeamLeadersByTeam(teamuuid, dateIt(month)));
     }
 
     @GET
     @Path("/{teamuuid}/users/search/findByFiscalYear")
     public List<User> getUsersByTeamAndFiscalYear(@PathParam("teamuuid") String teamuuid, @QueryParam("fiscalyear") String fiscalyear) {
-        return teamService.getUsersByTeamAndFiscalYear(teamuuid, Integer.parseInt(fiscalyear));
+        return getUsers(teamService.getUsersByTeamAndFiscalYear(teamuuid, Integer.parseInt(fiscalyear)));
     }
 
     @GET
     @Path("/teamleadbonustrue/users")
     public List<User> getTeammembersByTeamleadBonusEnabled() {
-        return teamService.getTeammembersByTeamleadBonusEnabled();
+        return getUsers(teamService.getTeammembersByTeamleadBonusEnabled());
     }
 
     @GET
     @Path("/teamleadbonustrue/users/search/findByMonth")
     public List<User> getTeammembersByTeamleadBonusEnabledByMonth(@QueryParam("month") String month) {
-        return teamService.getTeammembersByTeamleadBonusEnabledByMonth(dateIt(month));
+        return getUsers(teamService.getTeammembersByTeamleadBonusEnabledByMonth(dateIt(month)));
     }
 
     @GET
     @Path("/teamleadbonusfalse/users")
     public List<User> getTeammembersByTeamleadBonusDisabled() {
-        return teamService.getTeammembersByTeamleadBonusDisabled();
+        return getUsers(teamService.getTeammembersByTeamleadBonusDisabled());
     }
 
     @GET
     @Path("/teamleadbonusfalse/users/search/findByMonth")
     public List<User> getTeammembersByTeamleadBonusDisabledByMonth(@QueryParam("month") String month) {
-        return teamService.getTeammembersByTeamleadBonusDisabledByMonth(dateIt(month));
+        return getUsers(teamService.getTeammembersByTeamleadBonusDisabledByMonth(dateIt(month)));
     }
 
     @GET
     @Path("/owners")
     public List<User> getOwners() {
-        return teamService.getOwners();
+        return getUsers(teamService.getOwners());
     }
 
     @GET
     @Path("/owners/search/findByMonth")
     public List<User> getOwnersByMonth(@QueryParam("month") String month) {
-        return teamService.getOwnersByMonth(dateIt(month));
+        return getUsers(teamService.getOwnersByMonth(dateIt(month)));
     }
 
     @GET
     @Path("/teamops")
     public List<User> getTeamOps() {
-        return teamService.getTeamOps();
+        return getUsers(teamService.getTeamOps());
     }
 
     @GET
     @Path("/teamops/search/findByMonth")
     public List<User> getTeamOpsByMonth(@QueryParam("month") String month) {
-        return teamService.getTeamOpsByMonth(dateIt(month));
+        return getUsers(teamService.getTeamOpsByMonth(dateIt(month)));
     }
 
     @POST

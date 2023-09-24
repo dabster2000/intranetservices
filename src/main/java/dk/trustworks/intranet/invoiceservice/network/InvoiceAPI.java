@@ -17,7 +17,7 @@ public interface InvoiceAPI {
 
     @POST
     @Produces(APPLICATION_JSON)
-    byte[] createInvoicePDF(InvoiceDTO invoiceDTO);
+    byte[] createInvoicePDF(String invoiceDTO);
 
     /*
     public byte[] createInvoicePDF(Invoice invoice) {

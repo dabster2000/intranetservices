@@ -33,5 +33,4 @@ public class AggregateMessageEmitter {
             case DELETE_USER_SALARY -> userEventEmitter.send(aggregateRootChangeEvent);
         }
     }
-
 }

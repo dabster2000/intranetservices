@@ -6,6 +6,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
+import javax.transaction.Transactional;
 
 @RequestScoped
 public class AggregateCommand {
@@ -13,6 +14,7 @@ public class AggregateCommand {
     @Inject
     AggregateMessageEmitter messageEmitter;
 
+    @Transactional
     public void handleEvent(AggregateRootChangeEvent event) {
         persistEvent(event);
         messageEmitter.sendAggregateEvent(event);

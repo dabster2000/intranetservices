@@ -53,7 +53,6 @@ public class EconomicsService {
 
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
-        System.out.println("json = " + json);
         // call e-conomics endpoint
         Response response = economicsAPI.postVoucher(journal.getJournalNumber(), json);
 

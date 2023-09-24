@@ -3,7 +3,6 @@ package dk.trustworks.intranet.apigateway.resources;
 import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.services.BubbleService;
-import io.micrometer.core.annotation.Timed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -25,7 +24,6 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @Consumes(APPLICATION_JSON)
 @RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
-@Timed(histogram = true)
 public class BubbleResource {
 
     @Inject

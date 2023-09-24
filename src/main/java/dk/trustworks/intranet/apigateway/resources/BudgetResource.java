@@ -4,7 +4,6 @@ import dk.trustworks.intranet.aggregateservices.BudgetService;
 import dk.trustworks.intranet.contracts.model.Budget;
 import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
-import io.micrometer.core.annotation.Timed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -30,7 +29,6 @@ import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 @RequestScoped
 @RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
-@Timed(histogram = true)
 public class BudgetResource {
 
     @Inject

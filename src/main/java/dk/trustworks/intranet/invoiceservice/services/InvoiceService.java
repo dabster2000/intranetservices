@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.invoiceservice.services;
 
-import dk.trustworks.intranet.dto.GraphKeyValue;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
@@ -61,11 +62,10 @@ public class InvoiceService {
         return result;
     }
 
-    @SuppressWarnings("unchecked")
     /**
-     * @Param fromdate Date is included
-     * @Param todate Date is not included
-     * @Param type
+     * {@code @Param} fromdate Date is included
+     * {@code @Param} todate Date is not included
+     * @return  type
      */
     public List<Invoice> findByBookingDate(LocalDate fromdate, LocalDate todate) {
         //String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT"};
@@ -100,15 +100,6 @@ public class InvoiceService {
         Object singleResult = em.createNativeQuery(sql).getSingleResult();
         return singleResult!=null?((Number) singleResult).doubleValue():0.0;
     }
-
-    public List<GraphKeyValue> calculateInvoiceSumByPeriod() {
-        String sql = "SELECT i.uuid uuid, EXTRACT(YEAR_MONTH FROM if(i.bookingdate != '1900-01-01', i.bookingdate, i.invoicedate)) as description, if(type = 0, sum(ii.rate*ii.hours), -sum(ii.rate*ii.hours)) value from invoiceitems ii " +
-                "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE status != 'DRAFT' " +
-                "GROUP BY cmonth ORDER BY cmonth; ";
-        return (List<GraphKeyValue>) em.createNativeQuery(sql, GraphKeyValue.class).getResultList();
-    }
-
 
     @SuppressWarnings("unchecked")
     public List<Invoice> findInvoicesForSingleMonth(LocalDate month, String... type) {
@@ -209,7 +200,7 @@ public class InvoiceService {
     }
 
 
-    public Invoice createInvoice(Invoice draftInvoice) {
+    public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = getMaxInvoiceNumber() + 1;
@@ -221,7 +212,7 @@ public class InvoiceService {
     }
 
     @Transactional
-    public Invoice createPhantomInvoice(Invoice draftInvoice) {
+    public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = 0;
@@ -277,14 +268,17 @@ public class InvoiceService {
         return creditNote;
     }
 
-    public byte[] createInvoicePdf(Invoice invoice) {
-        InvoiceDTO invoiceDTO = new InvoiceDTO(invoice);
-        return invoiceAPI.createInvoicePDF(invoiceDTO);
+    public byte[] createInvoicePdf(Invoice invoice) throws JsonProcessingException {
+        ObjectMapper o = new ObjectMapper();
+        String json = o.writeValueAsString(new InvoiceDTO(invoice));
+        return invoiceAPI.createInvoicePDF(json);
     }
 
-    public void regenerateInvoicePdf(String invoiceuuid) {
+    public void regenerateInvoicePdf(String invoiceuuid) throws JsonProcessingException {
         Invoice invoice = Invoice.findById(invoiceuuid);
-        invoice.pdf = invoiceAPI.createInvoicePDF(new InvoiceDTO(invoice));
+        ObjectMapper o = new ObjectMapper();
+        String json = o.writeValueAsString(new InvoiceDTO(invoice));
+        invoice.pdf = invoiceAPI.createInvoicePDF(json);
         invoice.persist();
     }
 
@@ -315,25 +309,5 @@ public class InvoiceService {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
-    }
-
-    int invoicePage = 1;
-
-    @Transactional
-    //@Scheduled(every = "3m")
-    public void init() {
-        int skipCount = (invoicePage - 1) * 10;
-        log.info("InvoiceService scheduler started, (skipCount = "+skipCount+"), (invoicePage = "+invoicePage+")...");
-        Stream<Invoice> invoices = Invoice.streamAll(Sort.by("invoicedate").descending().and("uuid").ascending());
-        invoices
-                .filter(invoice -> !invoice.getStatus().equals(InvoiceStatus.DRAFT) && invoice.pdf != null && !invoice.getContractuuid().equals("receipt"))
-                .skip(skipCount)
-                .limit(10)
-                .forEach(invoice -> {
-            log.info("Processing invoice: "+invoice.uuid);
-            regenerateInvoicePdf(invoice.uuid);
-            log.info("...saved");
-        });
-        invoicePage++;
     }
 }

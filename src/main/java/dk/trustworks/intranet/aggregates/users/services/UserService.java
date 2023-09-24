@@ -17,7 +17,6 @@ import org.mindrot.jbcrypt.BCrypt;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
-import javax.persistence.EntityExistsException;
 import javax.persistence.EntityManager;
 import javax.transaction.Transactional;
 import javax.ws.rs.NotAllowedException;
@@ -57,7 +56,7 @@ public class UserService {
     @CacheResult(cacheName = "user-cache")
     public User findById(String uuid, boolean shallow) {
         User user = User.findById(uuid);
-        if(!shallow) return UserService.addChildrenToUser(user);
+        if(user!=null && !shallow) return UserService.addChildrenToUser(user);
         return user;
     }
 
@@ -194,9 +193,9 @@ public class UserService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
-    public User createUser(User user) {
+    public void createUser(User user) {
         log.info("Create user: "+user);
-        if(User.find("username like ?1", user.getUsername()).count() > 0) throw new EntityExistsException("User already exists");
+        if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) return;
         log.info("User does not exist");
         user.setActive(true);
         user.setCreated(LocalDate.now());
@@ -208,12 +207,12 @@ public class UserService {
         User.persist(user);
         Role.persist(new Role(UUID.randomUUID().toString(), RoleType.USER, user.getUuid()));
         UserContactinfo.persist(userContactinfo);
-        return user;
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateOne(User user) {
+        if(User.findByUsername(user.getUsername()).isPresent()) return;
         User.update("active = ?1, " +
                         "email = ?2, " +
                         "firstname = ?3, " +
@@ -296,20 +295,16 @@ public class UserService {
 
     public List<User> clearSalaries(List<User> users) {
         List<RoleType> roles = jwt.getGroups().stream().map(RoleType::valueOf).toList();
-        List<String> validRoles = List.of("CXO", "ADMIN");
-        users.forEach(user -> {
-            //log.info("user.getUsername() = " + user.getUsername());
-            //user.getSalaries().forEach(salary -> log.info("salary = " + salary));
-        });
+        List<String> validRoles = List.of("SYSTEM","CXO", "ADMIN");
         if (roles.stream().noneMatch(roleType -> validRoles.contains(roleType.name()))) {
-            //log.info("None match!");
             users.forEach(user -> user.getSalaries().clear());
         }
         return users;
     }
 
     public User clearSalaries(User user) {
-        return clearSalaries(List.of(user)).get(0);
+        return user;
+        //return clearSalaries(List.of(user)).get(0);
     }
 
     @Inject

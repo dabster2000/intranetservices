@@ -3,13 +3,10 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
 import dk.trustworks.intranet.aggregates.users.events.CreateSalaryEvent;
 import dk.trustworks.intranet.aggregates.users.events.DeleteSalaryEvent;
-import dk.trustworks.intranet.userservice.model.Salary;
-import dk.trustworks.intranet.userservice.model.Team;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
-import dk.trustworks.intranet.userservice.services.TeamService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.userservice.model.Salary;
+import dk.trustworks.intranet.userservice.services.TeamService;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.Claim;
 import org.eclipse.microprofile.jwt.Claims;
@@ -22,12 +19,7 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.validation.Valid;
 import javax.ws.rs.*;
-import java.time.LocalDate;
-import java.util.Collections;
 import java.util.List;
-
-import static dk.trustworks.intranet.userservice.model.enums.TeamMemberType.LEADER;
-import static dk.trustworks.intranet.userservice.model.enums.TeamMemberType.SPONSOR;
 
 @Tag(name = "user")
 @Path("/users")
@@ -63,6 +55,8 @@ public class SalaryResource {
     @GET
     @Path("/{useruuid}/salaries")
     public List<Salary> listAll(@PathParam("useruuid") String useruuid) {
+        return salaryService.findByUseruuid(useruuid);
+        /*
         List<RoleType> roles = jwt.getGroups().stream().map(RoleType::valueOf).toList();
 
         // Check if this is only a user and then if the user requests own salary
@@ -79,6 +73,8 @@ public class SalaryResource {
             if(teamService.getUsersByTeam(team.getUuid(), date).stream().anyMatch(user -> user.getUuid().equals(useruuid))) return salaryService.listAll(useruuid);
         }
         return Collections.singletonList(new Salary(LocalDate.now().withDayOfMonth(1), 0, useruuid));
+
+         */
     }
 
     @POST

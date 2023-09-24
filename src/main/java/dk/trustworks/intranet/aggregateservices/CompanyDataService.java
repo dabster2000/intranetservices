@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -10,12 +11,12 @@ import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.NumberUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
+import javax.annotation.PostConstruct;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.persistence.EntityManager;
@@ -230,7 +231,7 @@ public class CompanyDataService {
         log.info("CompanyDataService Time: "+(System.currentTimeMillis()-l));
     }
 
-    //@PostConstruct
+    @PostConstruct
     public void init() {
         log.info("CompanyDataService.init");
         LocalDate lookupDate = startDate;

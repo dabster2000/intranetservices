@@ -38,18 +38,7 @@ quarkus:
       level: INFO
     level: INFO
     min-level: INFO
-    category:
-      "org.hibernate":
-        level: INFO
-      "org.mariadb.jdbc.client":
-        level: INFO
-        min-level: INFO
-    file:
-      enable: true
-      level: INFO
-      "org.mariadb.jdbc.client":
-        level: INFO
-    s3:
+  s3:
     sync-client:
       type: APACHE
     aws:

@@ -2,7 +2,6 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.newsservice.model.News;
 import dk.trustworks.intranet.newsservice.resources.NewsService;
-import io.micrometer.core.annotation.Timed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -21,7 +20,6 @@ import java.util.List;
 @RequestScoped
 @RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
-@Timed(histogram = true)
 public class NewsResource {
 
     @Inject

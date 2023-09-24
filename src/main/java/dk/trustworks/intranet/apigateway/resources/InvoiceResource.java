@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregateservices.InvoiceGeneratorService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.ProjectSummary;
@@ -94,20 +95,20 @@ public class InvoiceResource {
 
     @POST
     @Transactional
-    public Invoice createInvoice(Invoice draftInvoice) {
+    public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         return invoiceService.createInvoice(draftInvoice);
     }
 
     @POST
     @Path("/regenerate/{invoiceuuid}")
     @Transactional
-    public void regenerateInvoicePdf(@PathParam("invoiceuuid") String invoiceuuid) {
+    public void regenerateInvoicePdf(@PathParam("invoiceuuid") String invoiceuuid) throws JsonProcessingException {
         invoiceService.regenerateInvoicePdf(invoiceuuid);
     }
 
     @POST
     @Path("/phantoms")
-    public Invoice createPhantomInvoice(Invoice draftInvoice) {
+    public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
         return invoiceService.createPhantomInvoice(draftInvoice);
     }
 

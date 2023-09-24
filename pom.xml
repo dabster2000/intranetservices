@@ -46,6 +46,12 @@
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-rest-client</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.jboss.slf4j</groupId>
+          <artifactId>slf4j-jboss-logmanager</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
 
@@ -54,11 +60,12 @@
       <groupId>com.slack.api</groupId>
       <artifactId>slack-api-client</artifactId>
       <version>1.29.1</version>
-    </dependency>
-    <dependency>
-      <groupId>com.echobox</groupId>
-      <artifactId>ebx-linkedin-sdk</artifactId>
-      <version>4.2.0</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api:jar</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
@@ -124,10 +131,6 @@
     </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-micrometer</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
     </dependency>
 
@@ -143,10 +146,6 @@
       <version>1.2.1</version>
     </dependency>
     -->
-    <dependency>
-      <groupId>org.jboss.logging</groupId>
-      <artifactId>commons-logging-jboss-logging</artifactId>
-    </dependency>
 
 
     <!-- EVENT DRIVEN -->
@@ -210,6 +209,12 @@
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-scheduler</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.jboss.slf4j</groupId>
+          <artifactId>slf4j-jboss-logmanager</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>

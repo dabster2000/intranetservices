@@ -1,15 +1,13 @@
 package dk.trustworks.intranet.aggregateservices;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
 import dk.trustworks.intranet.userservice.dto.Capacity;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.services.CapacityService;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
-import io.micrometer.core.annotation.Counted;
-import io.micrometer.core.annotation.Timed;
 import io.quarkus.cache.CacheResult;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -36,8 +34,6 @@ public class AvailabilityServiceCache {
     @Inject
     WorkService workService;
 
-    @Timed
-    @Counted
     @CacheResult(cacheName = "availability-cache")
     public List<AvailabilityDocument> getAvailabilityData() {
         log.debug("AvailabilityService.createAvailabilityData");
