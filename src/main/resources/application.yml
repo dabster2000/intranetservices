@@ -33,16 +33,19 @@ quarkus:
       pattern: common
     port: 9093 #registry.hub.docker.com/
   log:
-    console:
-      format: "%d{HH:mm:ss} %-5p [%c{2.}] (%t) %s%e%n"
-      level: INFO
     level: INFO
-    min-level: INFO
-    handler:
-      gelf:
-        enabled: true
-        host: localhost
-        port: 12201
+    console:
+      enable: true
+      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{2.}] (%t) %s%e%n"
+      color: true
+      level: DEBUG
+    handlers:
+      - console
+    categories:
+      "io.quarkus":
+        level: INFO
+      "org.hibernate":
+        level: WARN
   s3:
     sync-client:
       type: APACHE
@@ -61,6 +64,8 @@ mp:
         location: META-INF/resources/publicKey.pem
   messaging:
     incoming:
+      budget-update-events:
+        connector: smallrye-kafka
       browser-events:
         connector: smallrye-kafka
         broadcast: true
@@ -68,6 +73,9 @@ mp:
         connector: smallrye-kafka
         broadcast: true
       user-events:
+        connector: smallrye-kafka
+        broadcast: true
+      conference-events:
         connector: smallrye-kafka
         broadcast: true
       read-client-event:
@@ -102,7 +110,12 @@ mp:
         exchange:
           name: send-budget-update-month-calculate
     outgoing:
+      send-budget-update-events:
+        merge: true
+        connector: smallrye-kafka
+        topic: budget-update-events
       send-browser-events:
+        merge: true
         connector: smallrye-kafka
         topic: browser-events
       send-client-events:
@@ -111,6 +124,9 @@ mp:
       send-user-events:
         connector: smallrye-kafka
         topic: user-events
+      send-conference-events:
+        connector: smallrye-kafka
+        topic: conference-events
       send-availability-year-calculate:
         connector: smallrye-rabbitmq
         exchange:

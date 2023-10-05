@@ -1,8 +1,11 @@
-package dk.trustworks.intranet.aggregates;
+package dk.trustworks.intranet.aggregates.sender;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
+import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
+import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
+import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
 import dk.trustworks.intranet.aggregates.users.events.*;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -31,7 +34,10 @@ import java.util.UUID;
         @JsonSubTypes.Type(value = CreateUserStatusEvent.class, name = "CreateUserStatusEvent"),
         @JsonSubTypes.Type(value = DeleteUserStatusEvent.class, name = "DeleteUserStatusEvent"),
         @JsonSubTypes.Type(value = CreateSalaryEvent.class, name = "CreateSalaryEvent"),
-        @JsonSubTypes.Type(value = DeleteSalaryEvent.class, name = "DeleteSalaryEvent")
+        @JsonSubTypes.Type(value = DeleteSalaryEvent.class, name = "DeleteSalaryEvent"),
+        @JsonSubTypes.Type(value = CreateParticipantEvent.class, name = "CreateParticipantEvent"),
+        @JsonSubTypes.Type(value = UpdateParticipantDataEvent.class, name = "UpdateParticipantDataEvent"),
+        @JsonSubTypes.Type(value = ChangeParticipantPhaseEvent.class, name = "ChangeParticipantPhaseEvent")
 })
 public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
 

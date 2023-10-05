@@ -165,8 +165,9 @@ public class InvoiceService {
                         "invoicenumber = ?18, " +
                         "type = ?19, " +
                         "year = ?20, " +
-                        "zipcity = ?21 " +
-                        "WHERE uuid like ?22 ",
+                        "zipcity = ?21, " +
+                        "company = ?22 " +
+                        "WHERE uuid like ?23 ",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -188,6 +189,7 @@ public class InvoiceService {
                 invoice.getType(),
                 invoice.getYear(),
                 invoice.getZipcity(),
+                invoice.getCompany(),
                 invoice.getUuid());
 
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
@@ -203,7 +205,7 @@ public class InvoiceService {
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
-        draftInvoice.invoicenumber = getMaxInvoiceNumber() + 1;
+        draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         saveInvoice(draftInvoice);
         uploadToEconomics(draftInvoice);
@@ -255,7 +257,7 @@ public class InvoiceService {
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(),
-                invoice.getProjectref(), invoice.getContractref(),
+                invoice.getProjectref(), invoice.getContractref(), invoice.getCompany(),
                 "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber));
 
         creditNote.invoicenumber = 0;
@@ -282,9 +284,10 @@ public class InvoiceService {
         invoice.persist();
     }
 
-    public Integer getMaxInvoiceNumber() {
-        Optional<Invoice> latestInvoice = Invoice.findAll(Sort.descending("invoicenumber")).firstResultOptional();
-        return latestInvoice.map(invoice -> invoice.invoicenumber).orElse(1);
+    public Integer getMaxInvoiceNumber(Invoice invoice) {
+        Optional<Invoice> latestInvoice = Invoice.find("company = ?1", Sort.descending("invoicenumber"), invoice.getCompany()).firstResultOptional();
+        //Optional<Invoice> latestInvoice = Invoice.findAll(Sort.descending("invoicenumber")).firstResultOptional();
+        return latestInvoice.map(i -> i.invoicenumber).orElse(1);
     }
 
     @Transactional

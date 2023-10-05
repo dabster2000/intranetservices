@@ -2,7 +2,7 @@ package dk.trustworks.intranet.apigateway.resources;
 
 
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
-import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
+import dk.trustworks.intranet.aggregates.sender.AggregateSender;
 import dk.trustworks.intranet.aggregateservices.BudgetService;
 import dk.trustworks.intranet.aggregateservices.RevenueService;
 import dk.trustworks.intranet.contracts.model.Contract;
@@ -45,7 +45,7 @@ public class ClientResource {
     ClientService clientAPI;
 
     @Inject
-    AggregateCommand aggregateCommand;
+    AggregateSender aggregateSender;
 
     @Inject
     ProjectService projectService;
@@ -109,7 +109,7 @@ public class ClientResource {
     @POST
     public void save(Client client) {
         CreateClientEvent createClientEvent = new CreateClientEvent(client.getUuid(), client);
-        aggregateCommand.handleEvent(createClientEvent);
+        aggregateSender.handleEvent(createClientEvent);
     }
 
     @PUT

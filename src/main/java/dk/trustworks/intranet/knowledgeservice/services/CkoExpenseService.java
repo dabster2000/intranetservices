@@ -61,14 +61,7 @@ public class CkoExpenseService {
                 ckoExpense.getDescription(),
                 ckoExpense.getPrice(),
                 ckoExpense.getComment(),
-                ckoExpense.getDays(),
-                ckoExpense.getType(),
                 ckoExpense.getStatus(),
-                ckoExpense.getPurpose(),
-                ckoExpense.getRating(),
-                ckoExpense.getRating_comment(),
-                ckoExpense.getCertification(),
-                ckoExpense.getCertified(),
                 ckoExpense.getUuid());
     }
 

@@ -66,6 +66,7 @@ public class Invoice extends PanacheEntityBase {
     public InvoiceType type;
     @Enumerated(EnumType.STRING)
     public InvoiceStatus status;
+    public String company;
     @Lob
     public byte[] pdf;
 
@@ -81,7 +82,7 @@ public class Invoice extends PanacheEntityBase {
         this.errors = false;
     }
 
-    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, String specificdescription) {
+    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, String company, String specificdescription) {
         this();
         this.type = type;
         this.bookingdate = LocalDate.of(1900,1,1);
@@ -103,6 +104,7 @@ public class Invoice extends PanacheEntityBase {
         this.attention = attention;
         this.invoicedate = invoicedate;
         this.projectref = projectref;
+        this.company = company;
         this.specificdescription = specificdescription;
         uuid = UUID.randomUUID().toString();
     }

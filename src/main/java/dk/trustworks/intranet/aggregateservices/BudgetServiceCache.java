@@ -1,8 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import com.slack.api.methods.SlackApiException;
-import dk.trustworks.intranet.messaging.dto.DateRangeMap;
-import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.contracts.model.Budget;
 import dk.trustworks.intranet.contracts.model.Contract;
@@ -13,25 +11,17 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
 import dk.trustworks.intranet.dto.BudgetDocument;
+import dk.trustworks.intranet.messaging.dto.DateRangeMap;
+import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
 import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.scheduler.Scheduled;
-import io.vertx.core.json.JsonObject;
 import lombok.extern.jbosslog.JBossLog;
-import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
-import javax.transaction.Transactional;
-import java.io.IOException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
-
-import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.READ_BUDGET_UPDATE_MONTH_EVENT;
 
 @JBossLog
 @ApplicationScoped
@@ -58,13 +48,15 @@ public class BudgetServiceCache {
     @Inject
     MessageEmitter messageEmitter;
 
-    @Scheduled(every = "1h", delay = 10000)
+    /*
+    @Scheduled(every = "3h", delay = 1)
     public void refreshBudgetData() {
+        System.out.println("prnt - BudgetServiceCache.refreshBudgetData");
         log.info("BudgetServiceCache.refreshBudgetData");
 
         log.info("Creating all budgets...");
         long l = System.currentTimeMillis();
-        LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
+        LocalDate lookupMonth = LocalDate.of(2024, 7, 1);
         do {
             try {
                 QuarkusTransaction.begin();
@@ -80,10 +72,12 @@ public class BudgetServiceCache {
                 throw new RuntimeException(e);
             }
 
-            lookupMonth = lookupMonth.plusMonths(1);
+            lookupMonth = lookupMonth.minusMonths(1);
         } while (lookupMonth.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
         log.info("...budgets created: "+(System.currentTimeMillis()-l));
     }
+
+     */
 
     //@CacheResult(cacheName = "budget-cache")
     public List<BudgetDocument> findAllBudgetData() {
@@ -94,33 +88,39 @@ public class BudgetServiceCache {
         return BudgetDocument.find("useruuid like ?1 and month >= ?2 and month < ?3", useruuid, startDate, endDate).list();
     }
 
-    @Transactional
-    @Incoming(READ_BUDGET_UPDATE_MONTH_EVENT)
-    public void calcBudgets(JsonObject message) {
-        DateRangeMap dateRangeMap = message.mapTo(DateRangeMap.class);
+    public void calcBudgets(DateRangeMap dateRangeMap) {
         LocalDate startDate = dateRangeMap.getFromDate();
         log.info("BudgetServiceCache.calcBudgets, lookupMonth = " + startDate);
+        QuarkusTransaction.begin();
         BudgetDocument.delete("month >= ?1 and month < ?2", startDate, startDate.plusMonths(1));
+        QuarkusTransaction.commit();
         List<Client> clientList = clientService.listAllClients();
         //Uni<List<Client>> clientsListUni = clientService.listAllClients().collect().asList();
-        clientList.forEach(client -> {
+        //clientList.forEach(client -> {
             List<User> userList = userService.listAll(true);
             List<Budget> budgets = budgetAPI.findByMonthAndYear(startDate);
             List<Contract> contracts = contractService.findByPeriod(startDate, startDate.plusMonths(1));
             List<BudgetDocument> budgetDocumentList = new ArrayList<>();
+            QuarkusTransaction.begin();
             for (User user : userList) {
+                //if(user.getUsername().equals("hans.lassen")) System.out.println("user.getUsername() = " + user.getUsername());
                 List<Contract> activeContracts = contractService.getContractsByDate(contracts, user, startDate);
                 for (Contract contract : activeContracts) {
+                    //if(user.getUsername().equals("hans.lassen")) System.out.println("contract = " + contract);
                     if(contract.getContractType().equals(ContractType.PERIOD)) {
+                        //if(user.getUsername().equals("hans.lassen")) System.out.println("PERIOD");
                         ContractConsultant userContract = contract.findByUser(user);
                         if(userContract == null) continue;
 
                         BudgetDocument budgetDocument = createBudgetDocument(user, startDate, contract, userContract, clientList);
+                        //if(user.getUsername().equals("hans.lassen")) System.out.println("budgetDocument = " + budgetDocument);
                         if (budgetDocument == null) {
                             continue;
                         }
+                        if(budgetDocument.getBudgetHours()==0) continue;
                         budgetDocumentList.add(budgetDocument);
                     } else {
+                        //if(user.getUsername().equals("hans.lassen")) System.out.println("AMOUNT");
                         ContractConsultant userContract = contract.findByUser(user);
                         if(userContract == null || userContract.getRate() == 0.0) continue;
                         double budget = budgets.stream()
@@ -130,13 +130,16 @@ public class BudgetServiceCache {
                                                 (budgetNew.getMonth()+1) == startDate.getMonthValue())
                                 .mapToDouble(budgetNew -> budgetNew.getBudget() / userContract.getRate()).sum();
 
-                    BudgetDocument budgetDocument = new BudgetDocument(startDate, getClient(clientList, contract), user, contract, budget, budget, contract.findByUser(user).getRate());
+                        if(budget==0) continue;
+                        BudgetDocument budgetDocument = new BudgetDocument(startDate, getClient(clientList, contract), user, contract, budget, budget, contract.findByUser(user).getRate());
+                        //if(user.getUsername().equals("hans.lassen")) System.out.println("budgetDocument = " + budgetDocument);
                         budgetDocumentList.add(budgetDocument);
                     }
                 }
             }
             BudgetDocument.persist(adjustForAvailability(budgetDocumentList, userList, startDate));
-        });
+            QuarkusTransaction.commit();
+        //});
     }
 
     private List<BudgetDocument> adjustForAvailability(List<BudgetDocument> budgetDocumentList, List<User> userList, LocalDate lookupMonth) {

@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
+import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
 import dk.trustworks.intranet.messaging.dto.UserDateMap;

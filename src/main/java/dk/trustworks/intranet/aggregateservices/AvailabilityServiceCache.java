@@ -9,6 +9,7 @@ import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.services.CapacityService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheResult;
+import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -36,7 +37,7 @@ public class AvailabilityServiceCache {
 
     @CacheResult(cacheName = "availability-cache")
     public List<AvailabilityDocument> getAvailabilityData() {
-        log.debug("AvailabilityService.createAvailabilityData");
+        log.info("AvailabilityService.createAvailabilityData");
         Map<String, Capacity> capacityMap = new HashMap<>();
         for (Capacity capacity : capacityService.calculateCapacityByPeriod(LocalDate.of(2014, 7, 1), DateUtils.getCurrentFiscalStartDate().plusYears(2))) {
             capacityMap.put(capacity.getUseruuid()+":"+stringIt(capacity.getMonth().withDayOfMonth(1)), capacity);
@@ -65,5 +66,10 @@ public class AvailabilityServiceCache {
             } while (startDate.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
         }
         return availabilityDocumentList;
+    }
+
+    @Scheduled(every = "3h", delay = 0)
+    public void job() {
+        getAvailabilityData();
     }
 }

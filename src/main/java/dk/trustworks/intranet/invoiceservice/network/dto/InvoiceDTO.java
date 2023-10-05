@@ -56,15 +56,9 @@ public class InvoiceDTO {
         logo = "";
         due_date = dueDate;
         currency = "DKK";
-        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. 5470, account number 3965795\nPayment due in 1 month";
         this.from = from;
         this.to = to;
         this.date = date;
-    }
-
-    public InvoiceDTO(String from, String to, String date, String dueDate, List<InvoiceItemDTO> items) {
-        this(from, to, date, dueDate);
-        this.items = items;
     }
 
     private InvoiceDTO(String header, InvoiceFieldsDTO invoiceFieldsDTO, String from, String to, String number, String date, String dueDate, double discounts, String notes) {
@@ -76,21 +70,13 @@ public class InvoiceDTO {
         this.notes = notes;
     }
 
-    public InvoiceDTO(String header, InvoiceFieldsDTO invoiceFieldsDTO, String from, String to, String number, String date, String dueDate, List<InvoiceItemDTO> items, String notes) {
-        this(from, to, date, dueDate, items);
-        this.header = header;
-        this.fields = invoiceFieldsDTO;
-        this.number = number;
-        this.notes = notes;
-    }
-
     public InvoiceDTO(Invoice invoice) {
         this(invoice.getType().name(),
                 new InvoiceFieldsDTO((invoice.getDiscount()>0.0?"%":"false"), false),
-                "Trustworks A/S\n" +
-                        "Amagertorv 29a, 3rd floor\n" +
-                        "1160 Copenhagen K, Denmark\n" +
-                        "CVR: 35648941\n\n"+
+                (invoice.getCompany().equals("d8894494-2fb4-4f72-9e05-e6032e6dd691")?"Trustworks A/S\n":"Trustworks Technology ApS\n") +
+                        "Pustervig 3, 4th floor\n" +
+                        "1126 Copenhagen K, Denmark\n" +
+                        (invoice.getCompany().equals("d8894494-2fb4-4f72-9e05-e6032e6dd691")?"CVR: 35648941\n\n":"CVR: 44232855\n\n")+
                         "Phone: +45 2366 5345\n"+
                         "Email: faktura@trustworks.dk",
                 invoice.getClientname()+"\n"+
@@ -109,6 +95,8 @@ public class InvoiceDTO {
         for (InvoiceItem invoiceItem : invoice.getInvoiceitems()) {
             items.add(new InvoiceItemDTO(invoiceItem.itemname, invoiceItem.hours, invoiceItem.rate, invoiceItem.description));
         }
+        terms = invoice.getCompany().equals("d8894494-2fb4-4f72-9e05-e6032e6dd691")?"Payment via bank transfer to the following account: Nykredit, reg.nr. 5470, account number 3965795\nPayment due in 1 month":
+        "Payment via bank transfer to the following account: Nykredit, reg.nr. 5470, account number 4058023\nPayment due in 1 month";
     }
 
     public String getHeader() {

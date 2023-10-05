@@ -4,9 +4,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
-import dk.trustworks.intranet.knowledgeservice.model.enums.CKOExpensePurpose;
 import dk.trustworks.intranet.knowledgeservice.model.enums.CKOExpenseStatus;
-import dk.trustworks.intranet.knowledgeservice.model.enums.CKOExpenseType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -37,25 +35,25 @@ public class CKOExpense extends PanacheEntityBase {
 
     private String comment;
 
-    private double days;
+    //private double days;
 
-    @Enumerated(EnumType.STRING)
-    private CKOExpenseType type;
+    //@Enumerated(EnumType.STRING)
+    //private CKOExpenseType type;
 
     @Column(name = "status")
     @Enumerated(EnumType.STRING)
     private CKOExpenseStatus status;
 
-    @Column(name = "purpose")
-    @Enumerated(EnumType.STRING)
-    private CKOExpensePurpose purpose;
+    //@Column(name = "purpose")
+    //@Enumerated(EnumType.STRING)
+    //private CKOExpensePurpose purpose;
 
-    private double rating;
+    //private double rating;
 
-    private String rating_comment;
+    //private String rating_comment;
 
-    private int certification;
-    private int certified;
+    //private int certification;
+    //private int certified;
 
 }
 

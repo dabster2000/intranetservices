@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.resources;
 
-import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
+import dk.trustworks.intranet.aggregates.sender.AggregateSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateSalaryEvent;
 import dk.trustworks.intranet.aggregates.users.events.DeleteSalaryEvent;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
@@ -43,7 +43,7 @@ public class SalaryResource {
     SalaryService salaryService;
 
     @Inject
-    AggregateCommand aggregateCommand;
+    AggregateSender aggregateSender;
 
     @Inject
     TeamService teamService;
@@ -62,13 +62,13 @@ public class SalaryResource {
     public void create(@PathParam("useruuid") String useruuid, Salary salary) {
         salary.setUseruuid(useruuid);
         CreateSalaryEvent createSalaryEvent = new CreateSalaryEvent(useruuid, salary);
-        aggregateCommand.handleEvent(createSalaryEvent);
+        aggregateSender.handleEvent(createSalaryEvent);
     }
 
     @DELETE
     @Path("/{useruuid}/salaries/{salaryuuid}")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("salaryuuid") String salaryuuid) {
         DeleteSalaryEvent deleteSalaryEvent = new DeleteSalaryEvent(useruuid, salaryuuid);
-        aggregateCommand.handleEvent(deleteSalaryEvent);
+        aggregateSender.handleEvent(deleteSalaryEvent);
     }
 }

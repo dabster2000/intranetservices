@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.events;
 
-import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
+import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;

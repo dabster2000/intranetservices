@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.client.query;
 
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
-import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
+import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import io.vertx.core.json.JsonObject;

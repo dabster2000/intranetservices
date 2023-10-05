@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.events;
 
-import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
+import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import io.vertx.core.json.JsonObject;
 import lombok.Data;

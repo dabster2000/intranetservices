@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.query;
 
-import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
+import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;

@@ -44,13 +44,11 @@ public class ClientDataResource {
     }
 
     @POST
-    @RolesAllowed({"SALES"})
     public Clientdata save(Clientdata clientdata) {
         return clientDataService.save(clientdata);
     }
 
     @PUT
-    @RolesAllowed({"SALES"})
     public void update(Clientdata clientdata) {
         clientDataService.updateOne(clientdata);
     }

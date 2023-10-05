@@ -10,7 +10,6 @@ import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
-import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.mindrot.jbcrypt.BCrypt;
@@ -297,7 +296,7 @@ public class UserService {
         List<RoleType> roles = jwt.getGroups().stream().map(RoleType::valueOf).toList();
         List<String> validRoles = List.of("SYSTEM","CXO", "ADMIN");
         if (roles.stream().noneMatch(roleType -> validRoles.contains(roleType.name()))) {
-            users.forEach(user -> user.getSalaries().clear());
+            // users.forEach(user -> user.getSalaries().clear());
         }
         return users;
     }
@@ -306,7 +305,4 @@ public class UserService {
         return user;
         //return clearSalaries(List.of(user)).get(0);
     }
-
-    @Inject
-    EventBus bus;
 }

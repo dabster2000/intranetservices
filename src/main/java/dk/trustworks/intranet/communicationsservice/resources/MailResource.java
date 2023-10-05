@@ -58,22 +58,50 @@ public class MailResource {
 
     @Blocking
     @Transactional
-    public void sendingWaitingListMail(String mailTo) {
-        TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "DU ER NU PÅ VENTELISTE TIL FOREFRONT 2023",
-                "<div style='width: 600px'>\n" +
-                        "  <img src=\"cid:forefront@trustworks.dk\" />" +
-                        "  <p>&nbsp;</p>\n" +
-                        "  <p>Vi oplever meget stor interesse for FOREFRONT 2023, som nu er fuldt booket. Du er derfor kommet på venteliste.</p>\n" +
-                        "  <p>Du får besked hurtigst muligt hvis du får en plads.</p>\n" +
-                        "  <p>Endnu en gang tak for din interesse i FOREFRONT!</p>\n" +
-                        "  <p>Venligst,</p>\n" +
-                        "  <p>Trustworks</p>\n" +
-                        "  <p>&nbsp;</p>\n" +
-                        "  <img src=\"cid:trustworks@trustworks.dk\" />" +
-                        "  <p>&nbsp;</p>\n" +
-                        "  <p><span style=\"font-size:10px\"><em>Hvis du har takket ja&nbsp;til at modtage e-mails&nbsp;med tilbud om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;<a href=\"“mailto:forefrontkonf@trustworks.dk”\">forefrontkonf@trustworks.dk</a>, s&aring; skal vi nok afmelde dig.&nbsp;Har du sp&oslash;rgsm&aring;l, som ikke er besvaret i vores <a href=\"“https://forefront.trustworks.dk/faq/”\">FAQ</a>, bedes du ligeledes kontakte os.&nbsp;</em></span></p>\n" +
-                        "</div>");
+    public void sendingNis2Mail(String mailTo) {
+        TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "DU ER NU TILMELDT NIS2 GÅ-HJEM MØDE",
+                "<p>K&aelig;re tilmelder</p>\n" +
+                        "\n" +
+                        "<p>Tusind tak for din interesse. Du er hermed skrevet op til NIS2 g&aring;-hjem-m&oslash;de d. 16.<br />\n" +
+                        "november 2023. &Oslash;nsker du at blive klogere p&aring; NIS2 allerede nu, er du meget<br />\n" +
+                        "velkommen til at l&aelig;se vores artikel her:</p>\n" +
+                        "\n" +
+                        "<p><a href=\"https://www.trustworks.dk/wp-content/uploads/2023/05/NIS2-ARTIKEL.pdf\">https://www.trustworks.dk/wp-content/uploads/2023/05/NIS2-ARTIKEL.pdf</a></p>\n" +
+                        "\n" +
+                        "<p>Hvis du har nogle sp&oslash;rgsm&aring;l vedr&oslash;rende m&oslash;det eller Trustworks, er du mere end<br />\n" +
+                        "velkommen til at kontakte [Navn] p&aring; [mail].</p>\n" +
+                        "\n" +
+                        "<p>Vi ser frem til at hilse p&aring; dig.</p>\n" +
+                        "\n" +
+                        "<p><strong>Trustworks</strong></p>\n" +
+                        "\n" +
+                        "<p><em>Vi hj&aelig;lper vores kunder med at f&aring; succes med deres it-transformationsprojekter fra<br />\n" +
+                        "start til overgang. Trustworks er en konsulentvirksomhed, der fokuserer p&aring; at bygge<br />\n" +
+                        "bro mellem forretning og IT for at hj&aelig;lpe kunder med at realisere m&aring;lbar<br />\n" +
+                        "forretningsv&aelig;rdi fra deres it-aktiverede investeringer.</em></p>\n" +
+                        "\n" +
+                        "<p>Pustervig 3, 1126 K&oslash;benhavn K</p>");
 
+        mailer.send(Mail.withHtml(
+                        mail.getTo(),
+                        mail.getSubject(),
+                        mail.getBody())
+        );
+        mail.setStatus(MailStatus.SENT);
+        mail.persist();
+    }
+
+    @Blocking
+    @Transactional
+    public void sendingWaitingListMail(String mailTo) {
+        TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "BEKRÆFTELSE PÅ EARLY BIRD OPSKRIVNING",
+                "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Du er nu skrevet op til vores Early Bird-venteliste til FOREFRONT24! Du vil v&aelig;re blandt de f&oslash;rste til at f&aring; besked via e-mail, n&aring;r tilmeldingerne &aring;bner til n&aelig;ste &aring;rs konference.</span></span></span></p>\n" +
+                        "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Tak for din interesse i FOREFRONT!</span></span></span></p>\n" +
+                        "<p>&nbsp;</p>\n" +
+                        "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Venligst, </span></span></span></p>\n" +
+                        "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Trustworks</span></span></span></p>\n" +
+                        "<p>&nbsp;</p>\n" +
+                        "<p><span style=\"font-size:12pt\"><span style=\"font-family:Calibri,sans-serif\"><em><span style=\"font-size:10.0pt\"><span style=\"font-family:&quot;Helvetica&quot;,sans-serif\">Hvis du har takket ja&nbsp;til at modtage e-mails med tilbud&nbsp;om kommende konferencer, men ikke l&aelig;ngere &oslash;nsker at modtage disse, bedes du&nbsp;skrive&nbsp;til&nbsp;forefrontkonf@trustworks.dk, s&aring; skal vi nok afmelde dig. </span></span></em></span></span></p>");
         log.info("MailResource.sendingHTML");
         log.info("mail = " + mail);
         log.info("username = " + username);
@@ -202,6 +230,16 @@ public class MailResource {
                 .addInlineAttachment("trustworks-logo.png", photoService.findPhotoByRelatedUUID("91af1119-7725-4309-8ae8-131463d8d23c").getFile(), "image/png", "<trustworks@trustworks.dk>")
         );
         mail.setStatus(MailStatus.SENT);
+        mail.persist();
+    }
+
+
+    public void sendingMail(String to, String subject, String body) {
+        log.info("MailResource.sendingMail");
+        log.info("to = " + to);
+        log.info("subject = " + subject);
+        TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), to, subject, body);
+        mail.setStatus(MailStatus.READY);
         mail.persist();
     }
 }

@@ -2,7 +2,7 @@ package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 import dk.trustworks.intranet.achievementservice.services.AchievementService;
-import dk.trustworks.intranet.aggregates.commands.AggregateCommand;
+import dk.trustworks.intranet.aggregates.sender.AggregateSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateUserEvent;
 import dk.trustworks.intranet.aggregates.users.events.UpdateUserEvent;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
@@ -69,7 +69,7 @@ public class UserResource {
     UserService userAPI;
 
     @Inject
-    AggregateCommand aggregateCommand;
+    AggregateSender aggregateSender;
 
     @Inject
     CkoExpenseService knowledgeExpenseAPI;
@@ -259,13 +259,13 @@ public class UserResource {
     @Path("/{uuid}")
     public void updateOne(@PathParam("uuid") String uuid, User user) {
         UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
-        aggregateCommand.handleEvent(event);
+        aggregateSender.handleEvent(event);
     }
 
     @POST
     public void createUser(User user) {
         CreateUserEvent event = new CreateUserEvent(user.getUuid(), user);
-        aggregateCommand.handleEvent(event);
+        aggregateSender.handleEvent(event);
     }
 
     @SneakyThrows
@@ -287,7 +287,7 @@ public class UserResource {
     @Path("/{uuid}/birthday")
     public void updateBirthday(@PathParam("uuid") String uuid, User user) {
         UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
-        aggregateCommand.handleEvent(event);
+        aggregateSender.handleEvent(event);
         //userAPI.updateBirthday(uuid, user);
     }
 

@@ -1,6 +1,5 @@
-package dk.trustworks.intranet.aggregates.commands;
+package dk.trustworks.intranet.aggregates.sender;
 
-import dk.trustworks.intranet.aggregates.AggregateRootChangeEvent;
 import dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 
@@ -8,7 +7,7 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 
 @RequestScoped
-public class AggregateCommand {
+public class AggregateSender {
 
     @Inject
     AggregateMessageEmitter messageEmitter;
