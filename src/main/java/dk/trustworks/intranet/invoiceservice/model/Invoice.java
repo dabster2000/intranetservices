@@ -7,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
+import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -66,7 +67,9 @@ public class Invoice extends PanacheEntityBase {
     public InvoiceType type;
     @Enumerated(EnumType.STRING)
     public InvoiceStatus status;
-    public String company;
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    public Company company;
     @Lob
     public byte[] pdf;
 
@@ -82,7 +85,7 @@ public class Invoice extends PanacheEntityBase {
         this.errors = false;
     }
 
-    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, String company, String specificdescription) {
+    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, Company company, String specificdescription) {
         this();
         this.type = type;
         this.bookingdate = LocalDate.of(1900,1,1);

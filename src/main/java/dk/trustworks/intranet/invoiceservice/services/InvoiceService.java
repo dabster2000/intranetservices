@@ -77,19 +77,6 @@ public class InvoiceService {
 
         invoices.addAll(Invoice.find("bookingdate >= ?1 AND bookingdate < ?2",
                 finalFromdate, finalTodate).list());
-
-
-        /*
-        String sql = "SELECT * FROM invoices i WHERE " +
-                "i.invoicedate >= " + stringIt(finalFromdate) + " AND i.invoicedate < " + stringIt(finalTodate) +
-                " AND i.bookingdate = '1900-01-01' " +
-                "AND i.status IN ('"+String.join("','", finalType)+"');";
-        List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
-        invoices.addAll(em.createNativeQuery("SELECT * FROM invoices i WHERE " +
-                "i.bookingdate >= " + stringIt(finalFromdate) + " AND i.bookingdate <= "+ stringIt(finalTodate) +" " +
-                "AND i.status IN ('"+String.join("','", finalType)+"');", Invoice.class).getResultList());
-
-         */
         return invoices;
     }
 

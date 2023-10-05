@@ -73,12 +73,12 @@ public class InvoiceDTO {
     public InvoiceDTO(Invoice invoice) {
         this(invoice.getType().name(),
                 new InvoiceFieldsDTO((invoice.getDiscount()>0.0?"%":"false"), false),
-                (invoice.getCompany().equals("d8894494-2fb4-4f72-9e05-e6032e6dd691")?"Trustworks A/S\n":"Trustworks Technology ApS\n") +
-                        "Pustervig 3, 4th floor\n" +
-                        "1126 Copenhagen K, Denmark\n" +
-                        (invoice.getCompany().equals("d8894494-2fb4-4f72-9e05-e6032e6dd691")?"CVR: 35648941\n\n":"CVR: 44232855\n\n")+
-                        "Phone: +45 2366 5345\n"+
-                        "Email: faktura@trustworks.dk",
+                invoice.getCompany().getName() + "\n" +
+                        invoice.getCompany().getAddress() + "\n" +
+                        invoice.getCompany().getZipcode() + " " + invoice.getCompany().getCity() + ", "+invoice.getCompany().getCountry()+"\n" +
+                        "CVR: "+invoice.getCompany().getCvr()+"\n\n"+
+                        "Phone: "+invoice.getCompany().getPhone()+"\n"+
+                        "Email: "+invoice.getCompany().getEmail(),
                 invoice.getClientname()+"\n"+
                         invoice.getClientaddresse()+"\n"+
                         invoice.getZipcity()+"\n"+
@@ -95,8 +95,7 @@ public class InvoiceDTO {
         for (InvoiceItem invoiceItem : invoice.getInvoiceitems()) {
             items.add(new InvoiceItemDTO(invoiceItem.itemname, invoiceItem.hours, invoiceItem.rate, invoiceItem.description));
         }
-        terms = invoice.getCompany().equals("d8894494-2fb4-4f72-9e05-e6032e6dd691")?"Payment via bank transfer to the following account: Nykredit, reg.nr. 5470, account number 3965795\nPayment due in 1 month":
-        "Payment via bank transfer to the following account: Nykredit, reg.nr. 5470, account number 4058023\nPayment due in 1 month";
+        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\nPayment due in 1 month";
     }
 
     public String getHeader() {

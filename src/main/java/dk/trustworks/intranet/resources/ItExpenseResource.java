@@ -15,7 +15,7 @@ import java.util.List;
 @ApplicationScoped
 //@Tag(name = "ItBudget")
 @Path("/users/{useruuid}/itexpense")
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class ItExpenseResource {
 

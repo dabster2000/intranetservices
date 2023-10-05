@@ -198,7 +198,7 @@ public class InvoiceGeneratorService {
                                 clientdata.getContactperson(),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
                                 project.getCustomerreference(),
-                                contract.getRefid(), "d8894494-2fb4-4f72-9e05-e6032e6dd691",
+                                contract.getRefid(), contract.getCompany(),
                                 "");
                         log.info("Created new invoice: " + invoice);
                     }

@@ -18,7 +18,7 @@ import java.util.Set;
 @JBossLog
 @Path("/taskboards")
 @RequestScoped
-@RolesAllowed({"USER", "SYSTEM"})
+@RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
 public class TaskboardResource {
 
