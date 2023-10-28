@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.budgets.events;
 
+import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import io.vertx.core.json.JsonObject;
 import lombok.Data;

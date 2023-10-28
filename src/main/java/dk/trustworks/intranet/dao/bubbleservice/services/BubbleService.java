@@ -44,6 +44,10 @@ public class BubbleService {
         return Bubble.find("owner like ?1 AND active = true", ownerUseruuid).list();
     }
 
+    public Bubble findByUUID(String uuid) {
+        return Bubble.findById(uuid);
+    }
+
     public List<Bubble> findBubblesByActiveTrueOrderByCreatedDesc() {
         return Bubble.find("active = 1", Sort.descending("created")).list();
     }

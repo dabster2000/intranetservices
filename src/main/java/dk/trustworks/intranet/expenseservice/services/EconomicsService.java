@@ -11,6 +11,7 @@ import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIFile;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
@@ -30,7 +31,7 @@ import java.util.List;
 
 @JBossLog
 @RequestScoped
-public class EconomicsService {
+public class  EconomicsService {
 
     @Inject
     @RestClient
@@ -44,9 +45,12 @@ public class EconomicsService {
     @RestClient
     EconomicsAPIAccount economicsAPIAccount;
 
+    @ConfigProperty(name = "e-conomics.expense-journal-number")
+    int journalNumber;
+
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
 
-        Journal journal = new Journal(16);
+        Journal journal = new Journal(journalNumber);
         String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
 
         Voucher voucher = buildJSONRequest(expense, userAccount, journal, text);

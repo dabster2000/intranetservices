@@ -167,7 +167,7 @@ public class UserService {
     public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String statusList, String consultantTypes, boolean shallow) {
         String[] statusArray = split(statusList);
         String[] consultantTypesArray = split(consultantTypes);
-        return findUsersByDateAndStatusListAndTypes(date, statusArray, consultantTypesArray, shallow).stream().collect(Collectors.toList());
+        return new ArrayList<>(findUsersByDateAndStatusListAndTypes(date, statusArray, consultantTypesArray, shallow));
     }
 
     @CacheResult(cacheName = "user-cache")

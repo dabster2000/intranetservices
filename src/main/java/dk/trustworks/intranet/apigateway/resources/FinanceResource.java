@@ -49,7 +49,6 @@ public class FinanceResource {
         return financeAPI.listAll();
     }
 
-    @RolesAllowed({"CXO", "PARTNER", "SALES"})
     @GET
     @Path("/expenses/entries/{accountGroup}")
     public List<FinanceDetails> listAll(@PathParam("accountGroup") String accountGroup) {

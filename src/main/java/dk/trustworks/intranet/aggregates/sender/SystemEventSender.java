@@ -1,6 +1,5 @@
-package dk.trustworks.intranet.aggregates.budgets.commands;
+package dk.trustworks.intranet.aggregates.sender;
 
-import dk.trustworks.intranet.aggregates.budgets.events.SystemChangeEvent;
 import dk.trustworks.intranet.messaging.emitters.SystemMessageEmitter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 
@@ -8,7 +7,7 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 
 @RequestScoped
-public class SystemCommand {
+public class SystemEventSender {
 
     @Inject
     SystemMessageEmitter messageEmitter;
@@ -19,8 +18,6 @@ public class SystemCommand {
     }
 
     private void persistEvent(SystemChangeEvent event) {
-        QuarkusTransaction.begin();
-        event.persist();
-        QuarkusTransaction.commit();
+        QuarkusTransaction.requiringNew().run(event::persist);
     }
 }

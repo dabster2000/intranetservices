@@ -28,8 +28,9 @@ public class FinanceLoadJob {
     @Inject
     InvoiceService invoiceAPI;
 
-    private final String[] periods = {"2016_6_2017", "2017_6_2018", "2018_6_2019", "2019_6_2020", "2020_6_2021", "2021_6_2022", "2022_6_2023"};
+    private final String[] periods = {"2016_6_2017", "2017_6_2018", "2018_6_2019", "2019_6_2020", "2020_6_2021", "2021_6_2022", "2022_6_2023", "2023_6_2024"};
 
+    @Scheduled(every="5m")
     @Scheduled(cron="0 0 21 * * ?")
     void loadEconomicsData() {
         log.debug("ExpenseLoadJob.loadEconomicsData");
@@ -46,8 +47,8 @@ public class FinanceLoadJob {
         }
     }
 
-    //@Scheduled(every="5m")
-    @Scheduled(cron = "0 0 22 * * ?")
+    @Scheduled(every="5m")
+    //@Scheduled(cron = "0 0 22 * * ?")
     public void synchronizeInvoices() {
         log.info("ExpenseLoadJob.synchronizeInvoices");
         List<FinanceDetails> expenseList = FinanceDetails.find("accountnumber >= ?1 and accountnumber <= ?2", EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMinimum(), EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMaximum()).list();//EconomicAccountGroup.OMSAETNING_ACCOUNTS);

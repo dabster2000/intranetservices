@@ -1,20 +1,19 @@
 package dk.trustworks.intranet.aggregates.conference.query;
 
-import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceService;
+import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
-import io.smallrye.reactive.messaging.annotations.Blocking;
+import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
+import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.reactive.messaging.Incoming;
-import org.eclipse.microprofile.reactive.messaging.Outgoing;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.READ_CONFERENCE_EVENT;
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.SEND_BROWSER_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.BROWSER_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.CONFERENCE_EVENT;
 
 @JBossLog
 @ApplicationScoped
@@ -23,17 +22,18 @@ public class ConferenceEventHandler {
     @Inject
     ConferenceService conferenceService;
 
-    @Blocking
-    @Incoming(READ_CONFERENCE_EVENT)
-    @Outgoing(SEND_BROWSER_EVENT)
-    public String readConferenceEvent(AggregateRootChangeEvent event) {
+    @Inject
+    EventBus eventBus;
+
+    @ConsumeEvent(value = CONFERENCE_EVENT, blocking = true)
+    public void readConferenceEvent(AggregateRootChangeEvent event) {
         AggregateEventType type = event.getEventType();
         switch (type) {
             case CREATE_CONFERENCE_PARTICIPANT -> createConferenceParticipant(event);
             case UPDATE_CONFERENCE_PARTICIPANT -> updateConferenceParticipantData(event);
             case CHANGE_CONFERENCE_PARTICIPANT_PHASE -> changeConferenceParticipantPhase(event);
         }
-        return event.getAggregateRootUUID();
+        eventBus.publish(BROWSER_EVENT, event.getAggregateRootUUID());
     }
 
     private void createConferenceParticipant(AggregateRootChangeEvent event) {

@@ -1,5 +1,4 @@
-
-package dk.trustworks.intranet.financeservice.remote.dto.economics;
+package dk.trustworks.intranet.expenseservice.remote.dto.economics;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -9,15 +8,16 @@ import lombok.Data;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({
-        "accountNumber",
+        "customerNumber",
         "self"
 })
 @JsonIgnoreProperties(ignoreUnknown = true)
 @Data
-public class Account {
+public class Customer {
 
-    @JsonProperty("accountNumber")
-    public int accountNumber;
+    @JsonProperty("customerNumber")
+    public int customerNumber;
     @JsonProperty("self")
     public String self;
+
 }

@@ -1,12 +1,11 @@
 package dk.trustworks.intranet.jobs;
 
 import com.slack.api.methods.SlackApiException;
-import dk.trustworks.intranet.aggregates.budgets.commands.SystemCommand;
 import dk.trustworks.intranet.aggregates.budgets.events.UpdateBudgetEvent;
+import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
-import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.exception.ExceptionUtils;
@@ -25,7 +24,7 @@ public class UpdateBudgetDocumentsJob {
     @Inject
     UserService userService;
     @Inject
-    SystemCommand systemCommand;
+    SystemEventSender systemEventSender;
 
     @Scheduled(every = "3h", delay = 1)
     public void refreshBudgetData() {
@@ -37,7 +36,7 @@ public class UpdateBudgetDocumentsJob {
         LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
         do {
             try {
-                systemCommand.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
+                systemEventSender.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
             } catch (Exception e) {
                 try {
                     log.error(e);
@@ -49,7 +48,7 @@ public class UpdateBudgetDocumentsJob {
             }
 
             lookupMonth = lookupMonth.plusMonths(1);
-        } while (lookupMonth.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(2)));
+        } while (lookupMonth.isBefore(LocalDate.now().plusYears(2)));
 
         log.info("...budgets created: "+(System.currentTimeMillis()-l));
     }

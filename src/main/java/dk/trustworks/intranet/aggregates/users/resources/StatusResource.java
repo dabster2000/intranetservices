@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.resources;
 
-import dk.trustworks.intranet.aggregates.sender.AggregateSender;
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateUserStatusEvent;
 import dk.trustworks.intranet.aggregates.users.events.DeleteUserStatusEvent;
 import dk.trustworks.intranet.userservice.model.UserStatus;
@@ -29,7 +29,7 @@ public class StatusResource {
     StatusService statusService;
 
     @Inject
-    AggregateSender aggregateSender;
+    AggregateEventSender aggregateEventSender;
 
     @GET
     @Path("/{useruuid}/statuses")
@@ -54,13 +54,13 @@ public class StatusResource {
     public void create(@PathParam("useruuid") String useruuid, UserStatus status) {
         status.setUseruuid(useruuid);
         CreateUserStatusEvent event = new CreateUserStatusEvent(useruuid, status);
-        aggregateSender.handleEvent(event);
+        aggregateEventSender.handleEvent(event);
     }
 
     @DELETE
     @Path("/{useruuid}/status/{statusuuid}")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("statusuuid") String statusuuid) {
         DeleteUserStatusEvent event = new DeleteUserStatusEvent(useruuid, statusuuid);
-        aggregateSender.handleEvent(event);
+        aggregateEventSender.handleEvent(event);
     }
 }

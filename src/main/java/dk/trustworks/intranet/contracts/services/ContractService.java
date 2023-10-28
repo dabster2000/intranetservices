@@ -173,12 +173,13 @@ public class ContractService {
                         "status = ?4, " +
                         "note = ?5, " +
                         "clientdatauuid = ?6, " +
-                        "refid = ?7 " +
-                        "WHERE uuid like ?8 ",
+                        "refid = ?7, " +
+                        "company = ?8 " +
+                        "WHERE uuid like ?9 ",
                 stringIt(contract.getActiveFrom()), stringIt(contract.getActiveTo()),
                 contract.getAmount(), contract.getStatus(),
                 contract.getNote(), contract.getClientdatauuid(),
-                contract.getRefid(), contract.getUuid());
+                contract.getRefid(), contract.getCompany(), contract.getUuid());
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
     }
 

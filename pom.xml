@@ -106,6 +106,10 @@
       <artifactId>quarkus-flyway</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-mysql</artifactId>
+    </dependency>
+    <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-container-image-docker</artifactId>
     </dependency>
@@ -117,6 +121,7 @@
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-jdbc-mysql</artifactId>
     </dependency>
+    <!--
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-smallrye-reactive-messaging-rabbitmq</artifactId>
@@ -125,6 +130,7 @@
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-smallrye-reactive-messaging-kafka</artifactId>
     </dependency>
+    -->
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-jdbc-mariadb</artifactId>

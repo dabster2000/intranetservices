@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import javax.persistence.Entity;
 import javax.persistence.Id;
@@ -18,14 +20,17 @@ import java.util.UUID;
  * Created by hans on 23/06/2017.
  */
 
+@Data
+@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
 @Entity
 @Table(name = "salary")
 public class Salary extends PanacheEntityBase {
 
     @Id
+    @EqualsAndHashCode.Include
     private String uuid;
 
-    @Min(message="Salary must be higher or equal to zero", value=0)
+    @Min(message = "Salary must be higher or equal to zero", value = 0)
     private int salary;
 
     @JsonDeserialize(using = LocalDateDeserializer.class)
@@ -51,50 +56,8 @@ public class Salary extends PanacheEntityBase {
         this.useruuid = useruuid;
     }
 
-    public String getUuid() {
-        return uuid;
-    }
-
-    public void setUuid(String uuid) {
-        this.uuid = uuid;
-    }
-
-    public int getSalary() {
-        return salary;
-    }
-
-    public void setSalary(int salary) {
-        this.salary = salary;
-    }
-
-    public LocalDate getActivefrom() {
-        return activefrom;
-    }
-
-    public void setActivefrom(LocalDate activefrom) {
-        this.activefrom = activefrom;
-    }
-
-    public String getUseruuid() {
-        return useruuid;
-    }
-
-    public void setUseruuid(String useruuid) {
-        this.useruuid = useruuid;
-    }
-
-    public static List<Salary> findByUseruuid(String useruuid){
+    public static List<Salary> findByUseruuid(String useruuid) {
         List<Salary> salaries = find("useruuid", useruuid).list();
         return salaries; // salaries.stream().peek(s -> s.setSalary(0)).collect(Collectors.toList());
-    }
-
-    @Override
-    public String toString() {
-        return "Salary{" +
-                "uuid='" + uuid + '\'' +
-                ", salary=" + salary +
-                ", activefrom=" + activefrom +
-                ", useruuid='" + useruuid + '\'' +
-                '}';
     }
 }

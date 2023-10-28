@@ -1,34 +1,38 @@
 package dk.trustworks.intranet.aggregateservices;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
-import dk.trustworks.intranet.messaging.dto.DateRangeMap;
-import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
-import dk.trustworks.intranet.messaging.dto.UserDateMap;
+import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
+import dk.trustworks.intranet.messaging.dto.DateRangeMap;
+import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.model.EmployeeDataPerDay;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
+import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.transaction.Transactional;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.READ_USER_EVENT;
-import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.*;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.*;
+import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.YEAR_CHANGE_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.SystemMessageEmitter.WORK_UPDATE_EVENT;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.EXTERNAL;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.STUDENT;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
@@ -38,25 +42,24 @@ import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
 public class AvailabilityCalculatingExecutor {
 
     private List<User> employedUsers = new ArrayList<>();
-
     @Inject
     UserService userService;
-
     @Inject
     WorkService workService;
 
-    @Transactional
-    @Incoming(READ_YEAR_CHANGE_EVENT)
-    public void process(JsonObject message) throws Exception {
-        DateRangeMap dateRangeMap = message.mapTo(DateRangeMap.class);
+    @ConsumeEvent(value = YEAR_CHANGE_EVENT, blocking = true)
+    public void process(DateRangeMap dateRangeMap) throws Exception {
         LocalDate startDate = dateRangeMap.getFromDate();
         LocalDate endDate = dateRangeMap.getEndDate();
+
         log.info("AvailabilityCalculatingExecutor.process - Start for period" + startDate + " - " + endDate);
 
         int day = 0;
 
         List<WorkFull> workList = workService.findByPeriod(startDate, endDate);
-        EmployeeDataPerDay.delete("month >= ?1 and month < ?2", startDate, endDate);
+        QuarkusTransaction.begin();
+        EmployeeDataPerDay.delete("documentDate >= ?1 and documentDate < ?2", startDate, endDate);
+        QuarkusTransaction.commit();
 
         try {
             ArrayList<EmployeeDataPerDay> list = new ArrayList<>();
@@ -68,15 +71,16 @@ public class AvailabilityCalculatingExecutor {
                 }
                 day++;
             } while (startDate.plusDays(day).isBefore(endDate));
+            QuarkusTransaction.begin();
             EmployeeDataPerDay.persist(list);
+            QuarkusTransaction.commit();
         } catch (Exception e) {
             e.printStackTrace();
         }
         log.info("AvailabilityCalculatingExecutor.process - Done for period " + startDate + " - " + endDate);
     }
 
-    @Transactional
-    @Incoming(READ_USER_EVENT)
+    @ConsumeEvent(value = USER_EVENT, blocking = true)
     public void createAvailabilityDocumentByUser(AggregateRootChangeEvent event) {
         log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUser -> event = " + event);
         User user = userService.findById(event.getAggregateRootUUID(), false);
@@ -87,8 +91,9 @@ public class AvailabilityCalculatingExecutor {
 
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(year, endDate, user.getUuid());
 
+        QuarkusTransaction.begin();
         EmployeeDataPerDay.delete("user = ?1", user);
-        log.info("1");
+        QuarkusTransaction.commit();
         try {
             ArrayList<EmployeeDataPerDay> list = new ArrayList<>();
             do {
@@ -97,30 +102,33 @@ public class AvailabilityCalculatingExecutor {
                 list.add(document);
                 day++;
             } while (year.plusDays(day).isBefore(endDate));
+            QuarkusTransaction.begin();
             EmployeeDataPerDay.persist(list);
-            log.info("2");
+            QuarkusTransaction.commit();
         } catch (Exception e) {
             log.error(e);
         }
     }
 
-    @Transactional
-    @Incoming(READ_USER_DAY_CHANGE_EVENT)
-    public void createAvailabilityDocumentByUserAndDate(JsonObject message) {
+    @ConsumeEvent(value = WORK_UPDATE_EVENT, blocking = true)
+    public void createAvailabilityDocumentByUserAndDate(SystemChangeEvent event) {
         log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUserAndDate");
-        log.info("message = " + message.encodePrettily());
-        UserDateMap userDateMap = message.mapTo(UserDateMap.class);
+        UserDateMap userDateMap = new JsonObject(event.getEventContent()).mapTo(UserDateMap.class);
         String useruuid = userDateMap.getUseruuid();
         LocalDate testDay = userDateMap.getDate();
         User user = userService.findById(useruuid, false);
         if(user==null) return;
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(testDay, testDay.plusDays(1), user.getUuid());
 
-        EmployeeDataPerDay.delete("user = ?1 and month = ?2", user, testDay);
+        QuarkusTransaction.begin();
+        EmployeeDataPerDay.delete("user = ?1 and documentDate = ?2", user, testDay);
+        QuarkusTransaction.commit();
 
         try {
+            QuarkusTransaction.begin();
             EmployeeDataPerDay document = createAvailabilityDocumentByUserAndDate(userService.findById(user.getUuid(), false), testDay, workList);
             EmployeeDataPerDay.persist(document);
+            QuarkusTransaction.commit();
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -153,30 +161,49 @@ public class AvailabilityCalculatingExecutor {
         double registeredAmount = workByDay.stream().filter(w -> w.getRate() > 0).mapToDouble(workFull -> workFull.getWorkduration() * workFull.getRate()).sum();
 
         double unavailableHours = (DateUtils.isFriday(testDay))?Math.min(2.0,fullAvailability):0.0;
-        //if (DateUtils.isFriday(testDay)) fullAvailability = Math.max(0, fullAvailability - 2);
 
-        return new EmployeeDataPerDay(testDay, user, fullAvailability, unavailableHours, vacationHoursPerDay, sicknessHoursPerDay, maternityLeaveHoursPerDay, nonPaydLeaveHoursPerday, paidLeaveHoursPerDay, registeredBillableHours, helpedColleagueBillableHours, registeredAmount, 0.0, userStatus.getType(), userStatus.getStatus(), userSalary, userStatus.isTwBonusEligible());
+        return new EmployeeDataPerDay(userStatus.getCompany(), testDay, user, fullAvailability, unavailableHours, vacationHoursPerDay, sicknessHoursPerDay, maternityLeaveHoursPerDay, nonPaydLeaveHoursPerday, paidLeaveHoursPerDay, registeredBillableHours, helpedColleagueBillableHours, registeredAmount, 0.0, userStatus.getType(), userStatus.getStatus(), userSalary, userStatus.isTwBonusEligible());
     }
 
     @Inject
-    MessageEmitter messageEmitter;
+    EventBus eventBus;
 
     /**
      * This method is called every night at 1:00
      */
-    @Transactional
-    //@Scheduled(every = "24h")
-    @Scheduled(cron = "0 0 1 * * ?")
+    //@Transactional
+    @Scheduled(every = "30s")
+    //@Scheduled(cron = "0 0 1 * * ?")
     public void recalculateAvailability() {
+        System.out.println("AvailabilityCalculatingExecutor.recalculateAvailability");
         employedUsers = userService.listAll(false);
-        employedUsers.forEach(user -> System.out.println("user.getSalaries().size() = " + user.getSalaries().size()));
         LocalDate companyStartDate = DateUtils.getCompanyStartDate();
+        LocalDate testDate = companyStartDate;
+        do {
+            if(EmployeeDataPerDay.find("year = ?1 and month = ?2", testDate.getYear(), testDate.getMonthValue()).count()==0) {
+                System.out.println("foundMissingMonth = " + testDate);
+                eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(testDate, testDate.plusMonths(1)));
+                return;
+            }
+            testDate = testDate.plusMonths(1);
+        } while (testDate.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
+
+        System.out.println("Finding last update");
+        EmployeeDataPerDay.find("lastUpdate < ?1", LocalDateTime.now().minusDays(1)).firstResultOptional().ifPresent(employeeDataPerDay -> {
+            System.out.println("found employeeDataPerDay = " + employeeDataPerDay);
+            LocalDate lastUpdate = ((EmployeeDataPerDay) employeeDataPerDay).getDocumentDate();
+            eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(lastUpdate, lastUpdate.plusMonths(1)));
+        });
+        System.out.println("Done");
+        /*
         int monthCount = 0;
         do {
             LocalDate testDate = companyStartDate.plusMonths(monthCount);
-            messageEmitter.sendYearChange(new DateRangeMap(testDate, testDate.plusMonths(1)));
+            eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(testDate, testDate.plusMonths(1)));
             monthCount++;
         }  while (companyStartDate.plusMonths(monthCount).isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
+
+         */
     }
 
     @Transactional

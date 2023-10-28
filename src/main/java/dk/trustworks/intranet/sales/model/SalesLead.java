@@ -23,6 +23,11 @@ public class SalesLead extends PanacheEntityBase {
 
     @Id
     private String uuid;
+    @OneToMany(fetch = EAGER)
+    @JoinColumn(name = "salesleaduuid")
+    private Set<SalesLead> children;
+    @Column(name = "child_lead")
+    private boolean child;
     @ManyToOne(fetch = EAGER)
     @JoinColumn(name = "clientuuid")
     private Client client;
@@ -49,7 +54,6 @@ public class SalesLead extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @Column(name = "lost_reason")
     private LostReason lostReason;
-
     @OneToMany(mappedBy = "lead", fetch = EAGER)
     Set<SalesLeadConsultant> salesLeadConsultants;
 

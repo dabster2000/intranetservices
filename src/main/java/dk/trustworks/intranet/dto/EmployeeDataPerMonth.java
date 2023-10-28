@@ -3,6 +3,7 @@ package dk.trustworks.intranet.dto;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
+import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -32,6 +33,10 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @JsonProperty("consultantType")
     private ConsultantType consultantType;
+
+    @Column(name = "status_type")
+    @Enumerated(EnumType.STRING)
+    private StatusType status;
 
     @Column(name = "gross_available_hours", precision = 7, scale = 4)
     @JsonProperty("grossAvailableHours")
@@ -71,16 +76,6 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @Column(name = "registered_amount", precision = 9, scale = 4)
     private BigDecimal registeredAmount; // done
 
-    @Column(name = "budget_hours", precision = 7, scale = 4)
-    private BigDecimal budgetHours;
-
-    @Column(name = "budget_hours_with_no_availability_adjustment")
-    private BigDecimal budgetHoursWithNoAvailabilityAdjustment;
-
-    @JsonProperty("contractUtilization")
-    @Column(name = "contract_utilization", precision = 7, scale = 4)
-    private BigDecimal contractUtilization;
-
     @JsonProperty("avgSalary")
     @Column(name = "avg_salary", precision = 14, scale = 4)
     private BigDecimal avgSalary;
@@ -100,6 +95,7 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @JsonIgnore
     public Double getActualUtilization() {
         // (5.4 / 7.4) * 100.0
-        return ((registeredBillableHours.doubleValue() + helpedColleagueBillableHours.doubleValue()) / getNetAvailableHours()) / 100.0;
+        return ((registeredBillableHours.doubleValue() + helpedColleagueBillableHours.doubleValue()) / getNetAvailableHours());
     }
+
 }

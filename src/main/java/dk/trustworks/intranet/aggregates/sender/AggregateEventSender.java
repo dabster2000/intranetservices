@@ -7,7 +7,7 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 
 @RequestScoped
-public class AggregateSender {
+public class AggregateEventSender {
 
     @Inject
     AggregateMessageEmitter messageEmitter;
@@ -18,8 +18,6 @@ public class AggregateSender {
     }
 
     private void persistEvent(AggregateRootChangeEvent event) {
-        QuarkusTransaction.begin();
-        event.persist();
-        QuarkusTransaction.commit();
+        QuarkusTransaction.requiringNew().run(event::persist);
     }
 }

@@ -3,6 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregateservices.BudgetService;
 import dk.trustworks.intranet.contracts.model.Budget;
 import dk.trustworks.intranet.dto.BudgetDocument;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -11,10 +12,13 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
+import javax.persistence.EntityManager;
+import javax.persistence.Tuple;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.QueryParam;
+import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -33,6 +37,25 @@ public class BudgetResource {
 
     @Inject
     BudgetService budgetService;
+
+    @Inject
+    EntityManager em;
+
+    @GET
+    @Path("/all")
+    public List<DateValueDTO> getAllBudgets() {
+        return ((List<Tuple>) em.createNativeQuery("select " +
+                "    b.month as date, (sum(b.budgetHours * b.rate)) as value " +
+                "from " +
+                "    budget_document b " +
+                "group by " +
+                "    b.month;", Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate(),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
+    }
 
     @GET
     @Path("/datemonths")

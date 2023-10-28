@@ -1,7 +1,8 @@
-package dk.trustworks.intranet.aggregates.budgets.events;
+package dk.trustworks.intranet.aggregates.sender;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import dk.trustworks.intranet.aggregates.budgets.events.UpdateBudgetEvent;
 import dk.trustworks.intranet.messaging.emitters.enums.SystemEventType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;

@@ -12,6 +12,6 @@ import java.time.LocalDate;
 public class DateValueDTO {
 
     private LocalDate date;
+    private Double value;
 
-    private double value;
 }

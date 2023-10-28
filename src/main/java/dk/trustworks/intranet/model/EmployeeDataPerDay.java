@@ -31,10 +31,19 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @GeneratedValue(strategy= GenerationType.IDENTITY)
     private int id;
 
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    private Company company;
+
     @JsonProperty("month")
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
-    private LocalDate month; // done
+    @Column(name = "document_date")
+    private LocalDate documentDate; // done
+
+    private int year;
+    private int month;
+    private int day;
 
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "useruuid")
@@ -79,12 +88,6 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @Column(name = "registered_amount", precision = 9, scale = 4)
     private BigDecimal registeredAmount; // done
 
-    @Column(name = "budget_hours", precision = 7, scale = 4)
-    private BigDecimal budgetHours;
-
-    @Column(name = "budget_hours_with_no_availability_adjustment")
-    private BigDecimal budgetHoursWithNoAvailabilityAdjustment;
-
     @Column(name = "contract_utilization", precision = 7, scale = 4)
     private BigDecimal contractUtilization;
 
@@ -110,9 +113,13 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
 
-    public EmployeeDataPerDay(LocalDate month, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, double registeredBillableHours, double helpedColleagueBillableHours, double registeredAmount, double contractUtilization, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
+    public EmployeeDataPerDay(Company company, LocalDate documentDate, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, double registeredBillableHours, double helpedColleagueBillableHours, double registeredAmount, double contractUtilization, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
+        this.company = company;
         this.lastUpdate = LocalDateTime.now();
-        this.month = month;
+        this.documentDate = documentDate;
+        this.year = documentDate.getYear();
+        this.month = documentDate.getMonthValue();
+        this.day = documentDate.getDayOfMonth();
         this.user = user;
         this.grossAvailableHours = BigDecimal.valueOf(grossAvailableHours);
         this.unavavailableHours = BigDecimal.valueOf(unavailableHours);
@@ -125,8 +132,6 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
         this.helpedColleagueBillableHours = BigDecimal.valueOf(helpedColleagueBillableHours);
         this.registeredAmount = BigDecimal.valueOf(registeredAmount);
         this.contractUtilization = BigDecimal.valueOf(contractUtilization);
-        this.budgetHours = BigDecimal.valueOf(0);
-        this.budgetHoursWithNoAvailabilityAdjustment = BigDecimal.valueOf(0);
         this.consultantType = consultantType;
         this.statusType = statusType;
         this.salary = salary;
@@ -153,7 +158,7 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @Override
     public String toString() {
         return "AvailabilityPerDayDocument{" +
-                "month=" + month +
+                "month=" + documentDate +
                 ", grossAvailableHours=" + grossAvailableHours +
                 ", vacationHours=" + vacationHours +
                 ", sickHours=" + sickHours +

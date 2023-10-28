@@ -82,6 +82,10 @@ public final class DateUtils {
         return weekDays - getVacationDaysInPeriod(dateFrom, dateTo);
     }
 
+    public static int getWeeksInMonth(LocalDate date) {
+        return (int) Math.ceil((double) date.lengthOfMonth() / 7.0);
+    }
+
     public static boolean isWeekendDay(LocalDate localDate) {
         return localDate.getDayOfWeek().equals(DayOfWeek.SATURDAY) || localDate.getDayOfWeek().equals(DayOfWeek.SUNDAY);
     }

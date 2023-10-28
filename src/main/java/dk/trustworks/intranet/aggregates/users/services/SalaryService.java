@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
 import dk.trustworks.intranet.userservice.model.Salary;
-import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -36,7 +35,7 @@ public class SalaryService {
     }
 
     private void updateSalary(Salary salary) {
-        User.update("salary = ?1, " +
+        Salary.update("salary = ?1, " +
                         "activefrom = ?2 " +
                         "WHERE uuid LIKE ?3 ",
                 salary.getSalary(),

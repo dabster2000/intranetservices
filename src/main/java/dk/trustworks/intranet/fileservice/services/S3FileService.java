@@ -63,14 +63,18 @@ public class S3FileService {
         } else {
             file = new File(uuid, "", "", "", "", null, null);
         }
+        System.out.println("file = " + file);
         try{
             Tika tika = new Tika();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(uuid).build(), ResponseTransformer.toOutputStream(baos));
             byte[] bytes = baos.toByteArray();
+            System.out.println("bytes.length = " + bytes.length);
             String fileType = tika.detect(bytes);
+            System.out.println("fileType = " + fileType);
             file.setFile(bytes);
             file.setType(fileType);
+            System.out.println("Returning...");
             return file;//new File(uuid, "", "DOCUMENT", "", "", null, file);
         }  catch (S3Exception e) {
             log.error("Error loading "+uuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);

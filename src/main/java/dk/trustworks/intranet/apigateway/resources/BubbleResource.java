@@ -40,6 +40,12 @@ public class BubbleResource {
         return bubbleService.findBubblesByActiveTrueOrderByCreatedDesc();
     }
 
+    @GET
+    @Path("/{uuid}")
+    public Bubble findByUUID(@PathParam("uuid") String uuid) {
+        return bubbleService.findByUUID(uuid);
+    }
+
     @POST
     public void save(Bubble bubble) throws SlackApiException, IOException {
         bubbleService.save(bubble);

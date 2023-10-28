@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.financeservice.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
@@ -7,6 +9,7 @@ import dk.trustworks.intranet.financeservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.financeservice.remote.EconomicsPagingAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.EconomicsInvoice;
+import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
@@ -35,6 +38,7 @@ public class EconomicsService {
 
     public static final int[] PERSONALE = {3505, 3560, 3570, 3575, 3580, 3583, 3585, 3586, 3589, 3594};
 
+    @SneakyThrows
     public Map<Range<Integer>, List<Collection>> getAllEntries(String date) {
         Map<Range<Integer>, List<Collection>> collectionResultMap = new HashMap<>();
         collectionResultMap.put(OMSAETNING_ACCOUNTS.getRange(), new ArrayList<>());
@@ -50,7 +54,8 @@ public class EconomicsService {
         int page = 0;
         List<FinanceDetails> financeDetails = new ArrayList<>();
 
-        EconomicsInvoice economicsInvoice = economicsAPI.getEntries(date, 1000, page);
+        ObjectMapper objectMapper = new ObjectMapper();
+        EconomicsInvoice economicsInvoice = objectMapper.readValue(economicsAPI.getEntries(date, 1000, page).readEntity(String.class), EconomicsInvoice.class);
 
         String url;
         do {
@@ -107,12 +112,13 @@ public class EconomicsService {
         return map;
     }
 
-    public EconomicsInvoice doWorkAgainstApi(URI apiUri) {
+    public EconomicsInvoice doWorkAgainstApi(URI apiUri) throws JsonProcessingException {
         EconomicsInvoice economicsInvoice;
             EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                     .baseUri(apiUri)
                     .build(EconomicsPagingAPI.class);
-            economicsInvoice = remoteApi.getNextPage();
+        ObjectMapper objectMapper = new ObjectMapper();
+        economicsInvoice = objectMapper.readValue(remoteApi.getNextPage().readEntity(String.class), EconomicsInvoice.class);
 
         return economicsInvoice;
     }

@@ -4,6 +4,7 @@ package dk.trustworks.intranet.userservice.model;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
@@ -46,7 +47,9 @@ public class UserStatus extends PanacheEntityBase {
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
 
-    private int cvr;
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    private Company company;
 
     public UserStatus() {
     }

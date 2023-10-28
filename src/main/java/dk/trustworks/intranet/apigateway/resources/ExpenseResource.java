@@ -27,7 +27,7 @@ import java.util.Optional;
 @Path("/accounting")
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"SYSTEM", "USER"})
 @SecurityRequirement(name = "jwt")
 public class ExpenseResource {
 

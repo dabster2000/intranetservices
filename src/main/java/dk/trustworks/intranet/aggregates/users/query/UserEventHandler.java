@@ -8,17 +8,16 @@ import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
-import io.smallrye.reactive.messaging.annotations.Blocking;
+import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
+import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.reactive.messaging.Incoming;
-import org.eclipse.microprofile.reactive.messaging.Outgoing;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.READ_USER_EVENT;
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.SEND_BROWSER_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.BROWSER_EVENT;
+import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
 
 @JBossLog
 @ApplicationScoped
@@ -33,10 +32,14 @@ public class UserEventHandler {
     @Inject
     SalaryService salaryService;
 
-    @Blocking
-    @Incoming(READ_USER_EVENT)
-    @Outgoing(SEND_BROWSER_EVENT)
-    public String readUserEvent(AggregateRootChangeEvent event) {
+    @Inject
+    EventBus eventBus;
+
+    //@Blocking
+    //@Incoming(READ_USER_EVENT)
+    //@Outgoing(SEND_BROWSER_EVENT)
+    @ConsumeEvent(value = USER_EVENT, blocking = true)
+    public void readUserEvent(AggregateRootChangeEvent event) {
         log.info("UserEventHandler.readUserEvent -> event = " + event);
         AggregateEventType type = event.getEventType();
         switch (type) {
@@ -47,7 +50,8 @@ public class UserEventHandler {
             case CREATE_USER_SALARY -> createUserSalary(event);
             case DELETE_USER_SALARY -> deleteUserSalary(event);
         }
-        return event.getAggregateRootUUID();
+        eventBus.publish(BROWSER_EVENT, event.getAggregateRootUUID());
+        //return event.getAggregateRootUUID();
     }
 
     private void deleteUserSalary(AggregateRootChangeEvent event) {

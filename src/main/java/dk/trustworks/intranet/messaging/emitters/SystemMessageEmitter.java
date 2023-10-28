@@ -1,23 +1,24 @@
 package dk.trustworks.intranet.messaging.emitters;
 
-import dk.trustworks.intranet.aggregates.budgets.events.SystemChangeEvent;
-import org.eclipse.microprofile.reactive.messaging.Channel;
-import org.eclipse.microprofile.reactive.messaging.Emitter;
+import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
+import io.vertx.mutiny.core.eventbus.EventBus;
 
 import javax.enterprise.context.ApplicationScoped;
+import javax.inject.Inject;
 
 @ApplicationScoped
 public class SystemMessageEmitter {
 
-    public static final String SEND_BUDGET_UPDATE_EVENT = "send-budget-update-events";
-    public static final String READ_BUDGET_UPDATE_EVENT = "budget-update-events";
+    public static final String BUDGET_UPDATE_EVENT = "send-budget-update-events";
+    public static final String WORK_UPDATE_EVENT = "work-update-events";
 
-    @Channel(SEND_BUDGET_UPDATE_EVENT)
-    Emitter<SystemChangeEvent> budgetEventEmitter;
+    @Inject
+    EventBus eventBus;
 
     public void sendAggregateEvent(SystemChangeEvent systemChangeEvent) {
         switch (systemChangeEvent.getEventType()) {
-            case UPDATE_BUDGET -> budgetEventEmitter.send(systemChangeEvent);
+            case UPDATE_BUDGET -> eventBus.publish(BUDGET_UPDATE_EVENT, systemChangeEvent);
+            case UPDATE_WORK -> eventBus.publish(WORK_UPDATE_EVENT, systemChangeEvent);
         }
     }
 }

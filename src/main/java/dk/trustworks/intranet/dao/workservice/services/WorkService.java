@@ -1,11 +1,12 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
 
-import dk.trustworks.intranet.messaging.emitters.MessageEmitter;
-import dk.trustworks.intranet.messaging.dto.UserDateMap;
+import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
+import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.GraphKeyValue;
+import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
@@ -223,7 +224,7 @@ public class WorkService {
     }
 
     @Inject
-    MessageEmitter messageEmitter;
+    SystemEventSender sender;
 
     @Transactional
     @CacheInvalidateAll(cacheName = "work-cache")
@@ -238,9 +239,9 @@ public class WorkService {
             Work.persist(work);
             log.info("Saving work: "+work);
         }
-        messageEmitter.sendUserDayChange(new UserDateMap(work.getUseruuid(), work.getRegistered()));
+        sender.handleEvent(new UpdateWorkEvent(new UserDateMap(work.getUseruuid(), work.getRegistered())));
         if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
-            messageEmitter.sendUserDayChange(new UserDateMap(work.getWorkas(), work.getRegistered()));
+            sender.handleEvent(new UpdateWorkEvent(new UserDateMap(work.getWorkas(), work.getRegistered())));
     }
 
     public List<WorkFull> findBillableWorkByUser(String useruuid) {

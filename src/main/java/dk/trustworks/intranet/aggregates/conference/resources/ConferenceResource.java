@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.conference.resources;
 
-import dk.trustworks.intranet.aggregates.sender.AggregateSender;
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
@@ -31,7 +31,7 @@ import java.util.UUID;
 public class ConferenceResource {
 
     @Inject
-    AggregateSender aggregateSender;
+    AggregateEventSender aggregateEventSender;
 
     @Inject
     ConferenceService conferenceService;
@@ -61,7 +61,6 @@ public class ConferenceResource {
     @Path("/{conferenceuuid}/phases")
     public List<ConferencePhase> findAllConferencePhases(@PathParam("conferenceuuid") String conferenceuuid) {
         List<ConferencePhase> list = ConferencePhase.list("conferenceuuid", conferenceuuid);
-        list.forEach(cp -> System.out.println("cp = " + cp));
         return list.stream().sorted(Comparator.comparing(ConferencePhase::getStep)).toList();
     }
 
@@ -109,7 +108,7 @@ public class ConferenceResource {
         conferenceParticipant.setConferencePhase(conferenceService.findConferencePhase(conferenceUUID, phaseNumber));
 
         CreateParticipantEvent event = new CreateParticipantEvent(conferenceUUID, conferenceParticipant);
-        aggregateSender.handleEvent(event);
+        aggregateEventSender.handleEvent(event);
     }
 
     @PUT
@@ -119,7 +118,7 @@ public class ConferenceResource {
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
         UpdateParticipantDataEvent event = new UpdateParticipantDataEvent(conferenceUUID, conferenceParticipant);
-        aggregateSender.handleEvent(event);
+        aggregateEventSender.handleEvent(event);
     }
 
     @POST
@@ -131,7 +130,7 @@ public class ConferenceResource {
             conferenceParticipant.setConferenceuuid(conferenceUUID);
             conferenceParticipant.setConferencePhase(conferenceService.findConferencePhase(conferenceUUID, phaseNumber));
             ChangeParticipantPhaseEvent event = new ChangeParticipantPhaseEvent(conferenceUUID, conferenceParticipant);
-            aggregateSender.handleEvent(event);
+            aggregateEventSender.handleEvent(event);
         });
     }
 
