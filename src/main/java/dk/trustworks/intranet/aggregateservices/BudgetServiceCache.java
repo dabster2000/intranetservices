@@ -48,6 +48,8 @@ public class BudgetServiceCache {
     }
 
     public void calcBudgets(DateRangeMap dateRangeMap) {
+        System.out.println("BudgetServiceCache.calcBudgets");
+        System.out.println("dateRangeMap = " + dateRangeMap);
         LocalDate startDate = dateRangeMap.getFromDate();
         log.info("BudgetServiceCache.calcBudgets, lookupMonth = " + startDate);
         QuarkusTransaction.requiringNew().run(() -> {

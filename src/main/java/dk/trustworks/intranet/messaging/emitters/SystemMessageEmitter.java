@@ -5,9 +5,10 @@ import io.vertx.mutiny.core.eventbus.EventBus;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import java.util.concurrent.SubmissionPublisher;
 
 @ApplicationScoped
-public class SystemMessageEmitter {
+public class SystemMessageEmitter extends SubmissionPublisher<SystemChangeEvent> {
 
     public static final String BUDGET_UPDATE_EVENT = "send-budget-update-events";
     public static final String WORK_UPDATE_EVENT = "work-update-events";
@@ -17,8 +18,9 @@ public class SystemMessageEmitter {
 
     public void sendAggregateEvent(SystemChangeEvent systemChangeEvent) {
         switch (systemChangeEvent.getEventType()) {
-            case UPDATE_BUDGET -> eventBus.publish(BUDGET_UPDATE_EVENT, systemChangeEvent);
+            case UPDATE_BUDGET -> submit(systemChangeEvent);//eventBus.publish(BUDGET_UPDATE_EVENT, systemChangeEvent);
             case UPDATE_WORK -> eventBus.publish(WORK_UPDATE_EVENT, systemChangeEvent);
         }
+
     }
 }

@@ -177,8 +177,7 @@ public class AvailabilityCalculatingExecutor {
     public void recalculateAvailability() {
         System.out.println("AvailabilityCalculatingExecutor.recalculateAvailability");
         employedUsers = userService.listAll(false);
-        LocalDate companyStartDate = DateUtils.getCompanyStartDate();
-        LocalDate testDate = companyStartDate;
+        LocalDate testDate = DateUtils.getCompanyStartDate();
         do {
             if(EmployeeDataPerDay.find("year = ?1 and month = ?2", testDate.getYear(), testDate.getMonthValue()).count()==0) {
                 System.out.println("foundMissingMonth = " + testDate);

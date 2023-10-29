@@ -2,14 +2,17 @@ package dk.trustworks.intranet.jobs;
 
 import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.aggregates.budgets.events.UpdateBudgetEvent;
+import dk.trustworks.intranet.aggregates.budgets.query.BudgetEventHandler;
 import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
+import dk.trustworks.intranet.messaging.emitters.SystemMessageEmitter;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 
+import javax.annotation.PostConstruct;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import java.io.IOException;
@@ -25,6 +28,17 @@ public class UpdateBudgetDocumentsJob {
     UserService userService;
     @Inject
     SystemEventSender systemEventSender;
+
+    @Inject
+    SystemMessageEmitter emitter;
+
+    @Inject
+    BudgetEventHandler handler;
+
+    @PostConstruct
+    public void init() {
+        emitter.subscribe(handler);
+    }
 
     @Scheduled(every = "3h", delay = 1)
     public void refreshBudgetData() {

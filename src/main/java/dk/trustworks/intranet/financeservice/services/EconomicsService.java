@@ -18,6 +18,7 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.transaction.*;
+import javax.ws.rs.core.Response;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -54,8 +55,17 @@ public class EconomicsService {
         int page = 0;
         List<FinanceDetails> financeDetails = new ArrayList<>();
 
-        ObjectMapper objectMapper = new ObjectMapper();
-        EconomicsInvoice economicsInvoice = objectMapper.readValue(economicsAPI.getEntries(date, 1000, page).readEntity(String.class), EconomicsInvoice.class);
+        EconomicsInvoice economicsInvoice = null;
+        Response entries = null;
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            entries = economicsAPI.getEntries(date, 1000, page);
+            economicsInvoice = objectMapper.readValue(entries.readEntity(String.class), EconomicsInvoice.class);
+        } finally {
+            if (entries != null) {
+                entries.close(); // Close the response to free up resources
+            }
+        }
 
         String url;
         do {
@@ -114,6 +124,26 @@ public class EconomicsService {
 
     public EconomicsInvoice doWorkAgainstApi(URI apiUri) throws JsonProcessingException {
         EconomicsInvoice economicsInvoice;
+        Response response = null;
+        try {
+            EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
+                    .baseUri(apiUri)
+                    .build(EconomicsPagingAPI.class);
+
+            response = remoteApi.getNextPage(); // Get the response
+
+            ObjectMapper objectMapper = new ObjectMapper();
+            economicsInvoice = objectMapper.readValue(response.readEntity(String.class), EconomicsInvoice.class);
+        } finally {
+            if (response != null) {
+                response.close(); // Close the response to free up resources
+            }
+            // If you've created a new client instance, close it here
+            // client.close();
+        }
+        return economicsInvoice;
+        /*
+        EconomicsInvoice economicsInvoice;
             EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                     .baseUri(apiUri)
                     .build(EconomicsPagingAPI.class);
@@ -121,6 +151,8 @@ public class EconomicsService {
         economicsInvoice = objectMapper.readValue(remoteApi.getNextPage().readEntity(String.class), EconomicsInvoice.class);
 
         return economicsInvoice;
+
+         */
     }
 
     @Transactional
