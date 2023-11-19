@@ -2,6 +2,7 @@ package dk.trustworks.intranet.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -11,6 +12,7 @@ import lombok.NoArgsConstructor;
 
 import javax.persistence.*;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 @Data
 @Entity
@@ -26,6 +28,10 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     private int year; // done
 
     private int month;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    private Company company;
 
     private String useruuid; // done
 
@@ -84,6 +90,10 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
 
+    @JsonIgnore
+    public LocalDate getDate() {
+        return LocalDate.of(year, month, 1);
+    }
 
     @Transient
     @JsonIgnore

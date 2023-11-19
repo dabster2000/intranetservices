@@ -11,6 +11,7 @@ import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
 import dk.trustworks.intranet.invoiceservice.network.InvoiceAPI;
 import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
+import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
 import lombok.extern.jbosslog.JBossLog;
@@ -292,7 +293,7 @@ public class InvoiceService {
     }
 
     public void uploadToEconomics(Invoice invoice) {
-        if(invoice.invoicenumber == 0) return;
+        if(invoice.invoicenumber == 0 || !invoice.getCompany().getCvr().equals("35648941")) return;
         try {
             economicsInvoiceService.sendVoucher(invoice);
         } catch (IOException e) {

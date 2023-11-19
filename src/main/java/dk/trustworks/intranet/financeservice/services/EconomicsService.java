@@ -4,11 +4,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
+import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
+import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
 import dk.trustworks.intranet.financeservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.financeservice.remote.EconomicsPagingAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.EconomicsInvoice;
+import dk.trustworks.intranet.model.Company;
 import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
@@ -21,7 +24,10 @@ import javax.transaction.*;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup.*;
 
@@ -36,10 +42,8 @@ public class EconomicsService {
     @Inject
     TransactionManager tm;
 
-    public static final int[] PERSONALE = {3505, 3560, 3570, 3575, 3580, 3583, 3585, 3586, 3589, 3594};
-
     @SneakyThrows
-    public Map<Range<Integer>, List<Collection>> getAllEntries(String date) {
+    public Map<Range<Integer>, List<Collection>> getAllEntries(Company company, String date) {
         Map<Range<Integer>, List<Collection>> collectionResultMap = new HashMap<>();
         collectionResultMap.put(OMSAETNING_ACCOUNTS.getRange(), new ArrayList<>());
         collectionResultMap.put(PRODUKTION_ACCOUNTS.getRange(), new ArrayList<>());
@@ -50,30 +54,27 @@ public class EconomicsService {
         collectionResultMap.put(SALG_ACCOUNTS.getRange(), new ArrayList<>());
         collectionResultMap.put(ADMINISTRATION_ACCOUNTS.getRange(), new ArrayList<>());
 
+        String url = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "url").firstResult().getValue();
+        String appSecretToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AppSecretToken").firstResult().getValue();
+        String agreementGrantToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AgreementGrantToken").firstResult().getValue();
 
-        int page = 0;
         List<FinanceDetails> financeDetails = new ArrayList<>();
 
-        ObjectMapper objectMapper = new ObjectMapper();
-        EconomicsInvoice economicsInvoice = objectMapper.readValue(economicsAPI.getEntries(date, 1000, page).readEntity(String.class), EconomicsInvoice.class);
+        EconomicsInvoice economicsInvoice = getFirstPage(date, URI.create(url), appSecretToken, agreementGrantToken);
 
-        String url;
         do {
             try {
                 assert economicsInvoice != null;
                 for (Collection collection : economicsInvoice.getCollection()) {
-                    int accountNumber = collection.getAccount().getAccountNumber();
-                    if(Arrays.binarySearch(PERSONALE, accountNumber) > -1) {
-                        collection.getAccount().setAccountNumber(accountNumber-LOENNINGER_ACCOUNTS.getRange().getMinimum()+PERSONALE_ACCOUNTS.getRange().getMinimum());
-                    }
                     collectionResultMap.keySet().forEach(integerRange -> {
                         if(integerRange.contains(collection.getAccount().getAccountNumber())) collectionResultMap.get(integerRange).add(collection);
                     });
-                    financeDetails.add(new FinanceDetails(collection.getEntryNumber(), collection.getAccount().getAccountNumber(), collection.getInvoiceNumber(), collection.getAmount(), LocalDate.parse(collection.getDate(), DateTimeFormatter.ofPattern("yyyy-MM-dd")).withDayOfMonth(1), collection.getText()));
+                    if(collection.getEntryNumber()==78991) System.out.println("collection = " + collection);
+                    financeDetails.add(new FinanceDetails(company, collection.getEntryNumber(), collection.getAccount().getAccountNumber(), collection.getInvoiceNumber(), collection.getAmount(), LocalDate.parse(collection.getDate(), DateTimeFormatter.ofPattern("yyyy-MM-dd")).withDayOfMonth(1), collection.getText()));
                 }
                 url = economicsInvoice.getPagination().getNextPage();
                 if(url!=null) {
-                    economicsInvoice = doWorkAgainstApi(URI.create(url));
+                    economicsInvoice = getNextPage(URI.create(url), appSecretToken, agreementGrantToken);
                 }
             } catch (Exception e) {
                 throw new RuntimeException(e);
@@ -112,10 +113,25 @@ public class EconomicsService {
         return map;
     }
 
-    public EconomicsInvoice doWorkAgainstApi(URI apiUri) throws JsonProcessingException {
+    public EconomicsInvoice getFirstPage(String date, URI apiUri, String appSecretToken, String agreementGrantToken) throws JsonProcessingException {
+        System.out.println("EconomicsService.getFirstPage");
+        System.out.println("date = " + date + ", apiUri = " + apiUri + ", appSecretToken = " + appSecretToken + ", agreementGrantToken = " + agreementGrantToken);
+        EconomicsInvoice economicsInvoice;
+        EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
+                .baseUri(apiUri)
+                .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
+                .build(EconomicsPagingAPI.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        economicsInvoice = objectMapper.readValue(remoteApi.getEntries(date, 1000, 0).readEntity(String.class), EconomicsInvoice.class);
+
+        return economicsInvoice;
+    }
+
+    public EconomicsInvoice getNextPage(URI apiUri, String appSecretToken, String agreementGrantToken) throws JsonProcessingException {
         EconomicsInvoice economicsInvoice;
             EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                     .baseUri(apiUri)
+                    .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
                     .build(EconomicsPagingAPI.class);
         ObjectMapper objectMapper = new ObjectMapper();
         economicsInvoice = objectMapper.readValue(remoteApi.getNextPage().readEntity(String.class), EconomicsInvoice.class);

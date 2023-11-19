@@ -5,11 +5,18 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
 
 import javax.persistence.*;
 import java.time.LocalDate;
 
+@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
+@Data
+@NoArgsConstructor
 @Entity
 @Table(name = "finance_details")
 public class FinanceDetails extends PanacheEntityBase {
@@ -17,7 +24,12 @@ public class FinanceDetails extends PanacheEntityBase {
     @Id
     @JsonIgnore
     @GeneratedValue(strategy= GenerationType.IDENTITY)
+    @EqualsAndHashCode.Include
     private int id;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    private Company company;
 
     private int entrynumber;
 
@@ -33,73 +45,14 @@ public class FinanceDetails extends PanacheEntityBase {
 
     private String text;
 
-    public FinanceDetails() {
-    }
-
-    public FinanceDetails(int entrynumber, int accountnumber, int invoicenumber, double amount, LocalDate expensedate, String text) {
+    public FinanceDetails(Company company, int entrynumber, int accountnumber, int invoicenumber, double amount, LocalDate expensedate, String text) {
+        this.company = company;
         this.invoicenumber = invoicenumber;
         this.id = id;
         this.entrynumber = entrynumber;
         this.accountnumber = accountnumber;
         this.amount = amount;
         this.expensedate = expensedate;
-        this.text = text;
-    }
-/*
-    public static List<ExpenseDetails> findByExpensedateAndAccountnumberInOrderByAmountDesc(LocalDate expensedate, int... accountnumber) {
-
-    }
-*/
-
-    public int getInvoicenumber() {
-        return invoicenumber;
-    }
-
-    public void setInvoicenumber(int invoicenumber) {
-        this.invoicenumber = invoicenumber;
-    }
-
-    public int getId() {
-        return id;
-    }
-
-    public int getEntrynumber() {
-        return entrynumber;
-    }
-
-    public void setEntrynumber(int entrynumber) {
-        this.entrynumber = entrynumber;
-    }
-
-    public int getAccountnumber() {
-        return accountnumber;
-    }
-
-    public void setAccountnumber(int accountnumber) {
-        this.accountnumber = accountnumber;
-    }
-
-    public double getAmount() {
-        return amount;
-    }
-
-    public void setAmount(double amount) {
-        this.amount = amount;
-    }
-
-    public LocalDate getExpensedate() {
-        return expensedate;
-    }
-
-    public void setExpensedate(LocalDate expensedate) {
-        this.expensedate = expensedate;
-    }
-
-    public String getText() {
-        return text;
-    }
-
-    public void setText(String text) {
         this.text = text;
     }
 

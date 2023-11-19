@@ -32,6 +32,7 @@ public class SalesService {
     public void persist(SalesLead salesLead) {
         log.info("SalesService.persist");
         log.info("salesLead = " + salesLead);
+        System.out.println("salesLead = " + salesLead);
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
             salesLead.setUuid(UUID.randomUUID().toString());
             salesLead.persist();

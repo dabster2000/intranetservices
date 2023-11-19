@@ -4,16 +4,14 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 
-import javax.persistence.Column;
-import javax.persistence.Entity;
-import javax.persistence.Id;
-import javax.persistence.Table;
+import javax.persistence.*;
 import java.time.LocalDate;
 
 @Data
@@ -26,6 +24,11 @@ public class CompanyAggregateData extends PanacheEntityBase {
     @Id
     @NonNull
     private String uuid;
+
+    @NonNull
+    @ManyToOne
+    @JoinColumn(name = "companyuuid")
+    private Company company;
 
     @NonNull
     @JsonSerialize(using = LocalDateSerializer.class)

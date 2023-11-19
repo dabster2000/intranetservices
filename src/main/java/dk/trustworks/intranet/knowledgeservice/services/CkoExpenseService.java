@@ -48,15 +48,8 @@ public class CkoExpenseService {
                 "description = ?2, " +
                 "price = ?3, " +
                 "comment = ?4, " +
-                "days = ?5, " +
-                "type = ?6, " +
-                "status = ?7, " +
-                "purpose = ?8, " +
-                "rating = ?9, " +
-                "rating_comment = ?10, " +
-                "certification = ?11, " +
-                "certified = ?12 " +
-                "where uuid like ?13 ",
+                "status = ?5 " +
+                "where uuid like ?6 ",
                 ckoExpense.getEventdate(),
                 ckoExpense.getDescription(),
                 ckoExpense.getPrice(),

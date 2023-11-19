@@ -1,15 +1,6 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
-import dk.trustworks.intranet.expenseservice.model.ExpenseAccount;
-import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
-import lombok.extern.jbosslog.JBossLog;
-
-import javax.enterprise.context.RequestScoped;
-import javax.transaction.Transactional;
-import javax.validation.Valid;
-import javax.ws.rs.*;
-import java.util.List;
-
+/*
 @JBossLog
 @Path("/account-plan")
 @RequestScoped
@@ -119,3 +110,5 @@ public class AccountPlanResource {
     }
 
 }
+
+ */

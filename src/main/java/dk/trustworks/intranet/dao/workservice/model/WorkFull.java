@@ -24,7 +24,7 @@ public class WorkFull extends PanacheEntityBase {
 
     @Id
     private String uuid;
-
+    private String companyuuid;
     @JsonSerialize(using = LocalDateSerializer.class)
     @JsonDeserialize(using = LocalDateDeserializer.class)
     private LocalDate registered;

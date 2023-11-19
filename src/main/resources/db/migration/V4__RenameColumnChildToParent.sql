@@ -1,0 +1,1 @@
+alter table sales_lead change child_lead parent_lead tinyint(1) default 0 not null;

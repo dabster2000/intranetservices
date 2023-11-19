@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.*;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
+import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 import static io.smallrye.config.common.utils.StringUtil.split;
 
 @JBossLog
@@ -44,6 +45,34 @@ public class UserService {
 
     @Inject
     LoginService loginService;
+
+    /** V2.0 **/
+    public List<User> findByDate(LocalDate date) {
+        return em.createNativeQuery("SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname, " +
+                "u.gender, u.type, u.password, u.username, u.slackusername, u.birthday, u.cpr, u.phone, u.pension, " +
+                "u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.primaryskilltype, us.status, " +
+                "us.allocation, us.type, s.salary " +
+                "FROM user u " +
+                "JOIN ( " +
+                "    SELECT useruuid, " +
+                "           MAX(statusdate) AS max_statusdate " +
+                "    FROM userstatus " +
+                "    WHERE statusdate <= '"+ stringIt(date) +"' " +
+                "    GROUP BY useruuid " +
+                ") max_status ON u.uuid = max_status.useruuid " +
+                "JOIN userstatus us ON u.uuid = us.useruuid AND max_status.max_statusdate = us.statusdate " +
+                "JOIN ( " +
+                "    SELECT useruuid, " +
+                "           MAX(activefrom) AS max_statusdate " +
+                "    FROM salary " +
+                "    WHERE activefrom <= '"+ stringIt(date) +"' " +
+                "    GROUP BY useruuid " +
+                ") max_salary ON u.uuid = max_salary.useruuid " +
+                "JOIN salary s ON u.uuid = s.useruuid AND max_salary.max_statusdate = s.activefrom; ", User.class).getResultList();
+    }
+
+
+    /** V1.0 **/
 
     @CacheResult(cacheName = "user-cache")
     public List<User> listAll(boolean shallow) {
@@ -211,7 +240,7 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateOne(User user) {
-        if(User.findByUsername(user.getUsername()).isPresent()) return;
+        if(User.findByUsername(user.getUsername()).isEmpty()) return;
         User.update("active = ?1, " +
                         "email = ?2, " +
                         "firstname = ?3, " +
@@ -278,12 +307,17 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void confirmPasswordChange(String key) {
+        System.out.println("UserService.confirmPasswordChange");
+        System.out.println("key = " + key);
         PasswordChange passwordChange = PasswordChange.findById(key);
         if(passwordChange.getCreated().isAfter(LocalDateTime.now().plusHours(1))) throw new NotAllowedException("Password change too late");
+        System.out.println("Updating password for user "+passwordChange.getUseruuid());
         User.update("password = ?1 where uuid like ?2",
                 passwordChange.getPassword(),
                 passwordChange.getUseruuid());
+        System.out.println("Updated");
         PasswordChange.deleteById(key);
+        System.out.println("Cleaned");
     }
 
     @Transactional

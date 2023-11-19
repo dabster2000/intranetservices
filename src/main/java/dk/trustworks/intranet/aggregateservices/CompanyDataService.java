@@ -9,6 +9,7 @@ import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.utils.NumberUtils;
@@ -84,7 +85,7 @@ public class CompanyDataService {
         LocalDate lookupDate = companyAggregateData.getMonth();
         companyAggregateData.setRegisteredHours(0);
         companyAggregateData.setRegisteredAmount(0);
-        for (WorkFull work : workService.findByPeriod(lookupDate, lookupDate.plusMonths(1))) {
+        for (WorkFull work : workService.findByPeriod(lookupDate, lookupDate.plusMonths(1)).stream().filter(w -> w.getCompanyuuid().equals(companyAggregateData.getCompany().getUuid())).toList()) {
             if(work.getRate() > 0 && work.getRegistered().getYear()!=lookupDate.getYear() && work.getRegistered().getMonthValue()!= lookupDate.getMonthValue()) continue;
             companyAggregateData.addWorkDuration(work.getWorkduration());
             companyAggregateData.addRegisteredAmount(work.getWorkduration() * work.getRate());
@@ -119,10 +120,10 @@ public class CompanyDataService {
         LocalDate lookupDate = companyAggregateData.getMonth();
 
         List<Invoice> invoices = invoiceService.findByBookingDate(lookupDate.withDayOfMonth(1), lookupDate.withDayOfMonth(1).plusMonths(1)).stream()
-                .filter(invoice -> invoice.getStatus().equals(CREATED) ||
+                .filter(invoice -> (invoice.getStatus().equals(CREATED) ||
                         invoice.getStatus().equals(CREDIT_NOTE) ||
                         invoice.getStatus().equals(SUBMITTED) ||
-                        invoice.getStatus().equals(PAID)).toList();
+                        invoice.getStatus().equals(PAID)) && invoice.getCompany().equals(companyAggregateData.getCompany())).toList();
 
         double invoicedAmount = 0.0;
         for (Invoice invoice : invoices) {
@@ -210,21 +211,25 @@ public class CompanyDataService {
                 });
             //CompanyAggregateData.deleteAll()});
 
-        for (LocalDate reloadDate : reloadMonthRevenueDates) {
-            String id = UUID.randomUUID().toString();
-            CompanyAggregateData data = new CompanyAggregateData(id, reloadDate);
+        for (Company company : Company.<Company>listAll()) {
+            for (LocalDate reloadDate : reloadMonthRevenueDates) {
+                String id = UUID.randomUUID().toString();
+                CompanyAggregateData data = new CompanyAggregateData(id, company, reloadDate);
 
-            //dataMap.putIfAbsent(reloadDate, new CompanyAggregateData(reloadDate));
+                //dataMap.putIfAbsent(reloadDate, new CompanyAggregateData(reloadDate));
 
-            updateWorkData(data);
-            updateBudgetData(data);
-            updateFinanceData(data);
-            updateInvoiceData(data);
-            updateEmployeeCountData(data);
-            updateAvailabilityData(data);
-            updateUtilizationData(data);
-            QuarkusTransaction.requiringNew().run(data::persist);
+                updateWorkData(data);
+                updateBudgetData(data);
+                updateFinanceData(data);
+                updateInvoiceData(data);
+                updateEmployeeCountData(data);
+                updateAvailabilityData(data);
+                updateUtilizationData(data);
+                QuarkusTransaction.requiringNew().run(data::persist);
+            }
         }
+
+
 
         //reloadMonthRevenueDates.clear();
         log.info("CompanyDataService.updateAllData...DONE!");

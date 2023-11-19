@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.aggregateservices;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.BudgetDocument;
+import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
 import dk.trustworks.intranet.userservice.dto.Capacity;
 import dk.trustworks.intranet.userservice.model.Team;
@@ -13,7 +15,6 @@ import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.services.CapacityService;
 import dk.trustworks.intranet.userservice.services.TeamRoleService;
 import dk.trustworks.intranet.userservice.services.TeamService;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.mutiny.core.eventbus.EventBus;
@@ -301,6 +302,12 @@ public class EmployeeDataService {
 
     public List<EmployeeAggregateData> getDataMap(LocalDate fromdate, LocalDate todate) {
         return EmployeeAggregateData.find("month >= ?1 and month < ?2", fromdate, todate).list();
+    }
+
+    public List<EmployeeDataPerMonth> getEmployeeDataPerMonth(LocalDate fromdate, LocalDate todate) {
+        return EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
+                "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
+                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d')", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
     }
 
 

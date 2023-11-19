@@ -26,8 +26,8 @@ public class SalesLead extends PanacheEntityBase {
     @OneToMany(fetch = EAGER)
     @JoinColumn(name = "salesleaduuid")
     private Set<SalesLead> children;
-    @Column(name = "child_lead")
-    private boolean child;
+    @Column(name = "parent_lead")
+    private boolean isParent;
     @ManyToOne(fetch = EAGER)
     @JoinColumn(name = "clientuuid")
     private Client client;
@@ -70,6 +70,27 @@ public class SalesLead extends PanacheEntityBase {
     @Override
     public int hashCode() {
         return uuid.hashCode();
+    }
+
+    @Override
+    public String toString() {
+        return "SalesLead{" +
+                "uuid='" + uuid + '\'' +
+                ", children=" + (children!=null?children.size():"0") +
+                ", parent=" + isParent +
+                ", client=" + client.getUuid() +
+                ", description='" + description + '\'' +
+                ", contactInformation='" + contactInformation + '\'' +
+                ", status=" + status +
+                ", rate=" + rate +
+                ", closeDate=" + closeDate +
+                ", period=" + period +
+                ", allocation=" + allocation +
+                ", competencies=" + competencies +
+                ", consultantLevel=" + consultantLevel +
+                ", extension=" + extension +
+                ", lostReason=" + lostReason +
+                '}';
     }
 }
 /*

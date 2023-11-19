@@ -59,10 +59,6 @@ public class BiResource {
         System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
-        List<EmployeeDataPerMonth> list = EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
-                "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
-                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d')", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
-        //list.forEach(e -> System.out.println("e = " + e));
-        return list;
+        return employeeDataService.getEmployeeDataPerMonth(fromdate, todate);
     }
 }
