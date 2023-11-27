@@ -1,12 +1,18 @@
 package dk.trustworks.intranet.contracts.model;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 
+import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.Id;
 import javax.persistence.Table;
+import java.time.LocalDate;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -23,9 +29,17 @@ public class ContractConsultant extends PanacheEntityBase {
 
     private String useruuid;
 
-    private double rate;
+    @Column(name = "activefrom")
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    private LocalDate activeFrom;
 
-    private double budget;
+    @Column(name = "activeto")
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    private LocalDate activeTo;
+
+    private double rate;
 
     private double hours;
 
@@ -37,7 +51,6 @@ public class ContractConsultant extends PanacheEntityBase {
         contractuuid = c.getUuid();
         useruuid = cc.getUseruuid();
         rate = cc.getRate();
-        budget = cc.getBudget();
         hours = cc.getHours();
     }
 

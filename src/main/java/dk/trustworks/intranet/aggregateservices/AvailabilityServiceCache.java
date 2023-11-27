@@ -24,6 +24,7 @@ import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 @JBossLog
 @ApplicationScoped
+@Deprecated
 public class AvailabilityServiceCache {
 
     @Inject

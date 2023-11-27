@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices;
+package dk.trustworks.intranet.aggregateservices.v2;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
@@ -48,7 +48,7 @@ public class AvailabilityCalculatingExecutor {
     WorkService workService;
 
     @ConsumeEvent(value = YEAR_CHANGE_EVENT, blocking = true)
-    public void process(DateRangeMap dateRangeMap) throws Exception {
+    public void process(DateRangeMap dateRangeMap) {
         LocalDate startDate = dateRangeMap.getFromDate();
         LocalDate endDate = dateRangeMap.getEndDate();
 
@@ -162,7 +162,7 @@ public class AvailabilityCalculatingExecutor {
 
         double unavailableHours = (DateUtils.isFriday(testDay))?Math.min(2.0,fullAvailability):0.0;
 
-        return new EmployeeDataPerDay(userStatus.getCompany(), testDay, user, fullAvailability, unavailableHours, vacationHoursPerDay, sicknessHoursPerDay, maternityLeaveHoursPerDay, nonPaydLeaveHoursPerday, paidLeaveHoursPerDay, registeredBillableHours, helpedColleagueBillableHours, registeredAmount, 0.0, userStatus.getType(), userStatus.getStatus(), userSalary, userStatus.isTwBonusEligible());
+        return new EmployeeDataPerDay(userStatus.getCompany(), testDay, user, fullAvailability, unavailableHours, vacationHoursPerDay, sicknessHoursPerDay, maternityLeaveHoursPerDay, nonPaydLeaveHoursPerday, paidLeaveHoursPerDay, userStatus.getType(), userStatus.getStatus(), userSalary, userStatus.isTwBonusEligible());
     }
 
     @Inject

@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregateservices.AvailabilityCalculatingExecutor;
+import dk.trustworks.intranet.aggregateservices.v2.AvailabilityCalculatingExecutor;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;

@@ -32,6 +32,6 @@ public class BudgetEventHandler {
 
     private void updateBudget(SystemChangeEvent event) {
         DateRangeMap dateRangeMap = new JsonObject(event.getEventContent()).mapTo(DateRangeMap.class);
-        budgetServiceCache.calcBudgets(dateRangeMap);
+        budgetServiceCache.calcBudgetsV2(dateRangeMap);
     }
 }

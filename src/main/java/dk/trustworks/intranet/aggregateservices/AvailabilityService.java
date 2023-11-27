@@ -33,6 +33,7 @@ import static dk.trustworks.intranet.utils.DateUtils.getLastDayOfMonth;
 
 @JBossLog
 @ApplicationScoped
+@Deprecated
 public class AvailabilityService {
 
     @Inject

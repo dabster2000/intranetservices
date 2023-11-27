@@ -3,6 +3,8 @@ package dk.trustworks.intranet.achievementservice.jobs;
 import dk.trustworks.intranet.achievementservice.AchievementPersistenceManager;
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 import dk.trustworks.intranet.achievementservice.model.enums.AchievementType;
+import dk.trustworks.intranet.aggregates.users.services.StatusService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.BudgetService;
 import dk.trustworks.intranet.aggregateservices.RevenueService;
 import dk.trustworks.intranet.dao.bubbleservice.services.BubbleService;
@@ -13,9 +15,6 @@ import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.aggregates.users.services.StatusService;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -55,7 +54,7 @@ public class AchievementCheckerJob {
     @Inject
     AchievementPersistenceManager persistenceManager;
 
-    @Scheduled(every="24h")
+    //@Scheduled(every="24h")
     void checkAchievements() {
         log.debug("AchievementCheckerJob.checkAchievements");
         for (User user : userResource.findCurrentlyEmployedUsers(ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT)) {

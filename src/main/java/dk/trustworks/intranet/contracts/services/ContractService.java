@@ -206,13 +206,16 @@ public class ContractService {
 
     @Transactional
     public void updateConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
-        ContractConsultant.update("budget = ?1, " +
-                        "hours = ?2, " +
-                        "rate = ?3 " +
-                        "WHERE uuid like ?4 ",
-                contractConsultant.getBudget(),
+        ContractConsultant.update(
+                        "hours = ?1, " +
+                        "rate = ?2, " +
+                        "activefrom = ?3, " +
+                        "activeto = ?4 " +
+                        "WHERE uuid like ?5 ",
                 contractConsultant.getHours(),
                 contractConsultant.getRate(),
+                stringIt(contractConsultant.getActiveFrom()),
+                stringIt(contractConsultant.getActiveTo()),
                 contractConsultant.getUuid());
     }
 

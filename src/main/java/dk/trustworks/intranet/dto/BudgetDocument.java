@@ -7,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
@@ -36,9 +37,15 @@ public class BudgetDocument extends PanacheEntityBase {
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "clientuuid")
     private Client client;
+
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "useruuid")
     private User user;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    private Company company;
+
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "contractuuid")
     private Contract contract;

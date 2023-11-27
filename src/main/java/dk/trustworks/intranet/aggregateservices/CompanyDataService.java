@@ -85,7 +85,7 @@ public class CompanyDataService {
         LocalDate lookupDate = companyAggregateData.getMonth();
         companyAggregateData.setRegisteredHours(0);
         companyAggregateData.setRegisteredAmount(0);
-        for (WorkFull work : workService.findByPeriod(lookupDate, lookupDate.plusMonths(1)).stream().filter(w -> w.getCompanyuuid().equals(companyAggregateData.getCompany().getUuid())).toList()) {
+        for (WorkFull work : workService.findByPeriod(lookupDate, lookupDate.plusMonths(1)).stream().filter(w -> w.getConsultant_company_uuid().equals(companyAggregateData.getCompany().getUuid())).toList()) {
             if(work.getRate() > 0 && work.getRegistered().getYear()!=lookupDate.getYear() && work.getRegistered().getMonthValue()!= lookupDate.getMonthValue()) continue;
             companyAggregateData.addWorkDuration(work.getWorkduration());
             companyAggregateData.addRegisteredAmount(work.getWorkduration() * work.getRate());
