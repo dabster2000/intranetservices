@@ -1,9 +1,13 @@
-package dk.trustworks.intranet.aggregateservices;
+package dk.trustworks.intranet.aggregateservices.v2;
 
+import dk.trustworks.intranet.aggregates.users.services.SalaryService;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.aggregateservices.FinanceService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.KeyValueDTO;
@@ -12,25 +16,22 @@ import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.userservice.services.TeamService;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
-import dk.trustworks.intranet.utils.NumberUtils;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
-import javax.persistence.ColumnResult;
-import javax.persistence.ConstructorResult;
-import javax.persistence.EntityManager;
-import javax.persistence.SqlResultSetMapping;
+import javax.persistence.*;
+import java.math.BigDecimal;
+import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.utils.DateUtils.stringIt;
+import static dk.trustworks.intranet.utils.DateUtils.*;
 
 @JBossLog
 @ApplicationScoped
@@ -61,9 +62,6 @@ public class RevenueService {
     ClientService clientService;
 
     @Inject
-    AvailabilityService availabilityService;
-
-    @Inject
     FinanceService financeService;
 
     @Inject
@@ -75,14 +73,26 @@ public class RevenueService {
     @Inject
     TeamService teamService;
 
-    public double getRegisteredRevenueForSingleMonth(LocalDate month) {
-        return workService.getRegisteredRevenueForSingleMonth(month);
+    public DateValueDTO getRegisteredRevenueForSingleMonth(String companyuuid, LocalDate month) {
+        return getRegisteredRevenueByPeriod(companyuuid, month, month.plusMonths(1)).get(0);
     }
 
-    public List<KeyValueDTO> getRegisteredRevenuePerClient(List<String> clientuuids) {
+    public List<DateValueDTO> getRegisteredRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
+        String sql = "select w.registered, sum(ifnull(w.rate, 0) * w.workduration) AS total_billed from work_full w " +
+                "where `w`.`rate` > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= " + stringIt(fromdate) + " and registered < " + stringIt(todate) + " " +
+                "group by w.consultant_company_uuid, year(`w`.`registered`), month(`w`.`registered`);";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate(),
+                        ((BigDecimal) tuple.get("value")).doubleValue()
+                ))
+                .toList();
+    }
+
+    public List<KeyValueDTO> getRegisteredRevenuePerClient(String companyuuid, List<String> clientuuids) {
         List<Object[]> resultList = em.createNativeQuery(
                 "select w.clientuuid clientuuid, sum(w.rate * w.workduration) as amount from work_full w " +
-                "where registered >= '2021-07-01' and registered < '2022-07-01' and clientuuid in ('" + String.join("','", clientuuids) + "') group by w.clientuuid").getResultList();
+                "where w.consultant_company_uuid = '"+companyuuid+"' registered >= '2021-07-01' and registered < '2022-07-01' and clientuuid in ('" + String.join("','", clientuuids) + "') group by w.clientuuid").getResultList();
         List<KeyValueDTO> result = new ArrayList<>();
         for (Object[] objects : resultList) {
             result.add(new KeyValueDTO((String)objects[0], ""+objects[1]));
@@ -90,10 +100,10 @@ public class RevenueService {
         return result;
     }
 
-    public List<GraphKeyValue> getSumOfRegisteredRevenueByClient() {
+    public List<GraphKeyValue> getSumOfRegisteredRevenueByClient(String companyuuid) {
         Map<String, GraphKeyValue> clientRevenueMap = new HashMap<>();
         List<Client> clients = clientService.listAllClients();
-        List<KeyValueDTO> keyValueDTOS = getRegisteredRevenuePerClient(clients.stream().map(Client::getUuid).collect(Collectors.toList()));
+        List<KeyValueDTO> keyValueDTOS = getRegisteredRevenuePerClient(companyuuid, clients.stream().map(Client::getUuid).collect(Collectors.toList()));
         for (KeyValueDTO keyValueDTO : keyValueDTOS) {
             String key = keyValueDTO.getKey();
             clientRevenueMap.putIfAbsent(key, new GraphKeyValue(key, clients.stream().filter(client -> client.getUuid().equalsIgnoreCase(key)).findFirst().orElse(new Client()).getName(), 0));
@@ -102,38 +112,35 @@ public class RevenueService {
         return List.copyOf(clientRevenueMap.values());
     }
 
-    public List<GraphKeyValue> getSumOfRegisteredRevenueByClientByFiscalYear(int fiscalYear) {
+    public List<GraphKeyValue> getSumOfRegisteredRevenueByClientByFiscalYear(String companyuuid, int fiscalYear) {
         LocalDate fiscalYearDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
         Map<String, GraphKeyValue> clientRevenueMap = new HashMap<>();
         Map<String, Double> workList = workService.findByPeriod(fiscalYearDate, fiscalYearDate.plusYears(1)).stream()
-                .filter(work -> work.getRate()>0)
+                .filter(work -> work.getConsultant_company_uuid().equals(companyuuid) && work.getRate()>0)
                 .collect(Collectors.groupingBy(WorkFull::getClientuuid, Collectors.summingDouble(work -> work.getWorkduration()*work.getRate())));
         return workList.keySet().stream().map(s -> new GraphKeyValue(s, "", workList.get(s))).collect(Collectors.toList());
     }
 
-    public List<GraphKeyValue> getRegisteredHoursPerConsultantForSingleMonth(LocalDate month) {
-        return workService.getRegisteredHoursPerConsultantForSingleMonth(month);
+    public List<GraphKeyValue> getRegisteredHoursPerConsultantForSingleMonth(String companyuuid, LocalDate month) {
+        List<WorkFull> workFullList = WorkFull.find("registered >= ?1 AND registered < ?2 and rate > 0.0 and consultant_company_uuid = ?3", month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1), companyuuid).list();
+        return workFullList.stream().map(work -> new GraphKeyValue(work.getUseruuid(), stringIt(month), work.getWorkduration())).collect(Collectors.toList());
     }
 
-    public double getRegisteredHoursForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
-        return workService.getRegisteredHoursForSingleMonthAndSingleConsultant(useruuid, month);
+    public double getRegisteredHoursForSingleMonthAndSingleConsultant(String companyuuid, String useruuid, LocalDate month) {
+        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1), companyuuid).list();
+        return workFullList.stream().mapToDouble(WorkFull::getWorkduration).sum();
     }
 
-    public double getRegisteredRevenueForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
-        return workService.getRegisteredRevenueForSingleMonthAndSingleConsultant(useruuid, month);
-        /*
-        List<WorkDocument> workDocumentList = getCachedData();
-        return workDocumentList.stream()
-                .filter(workDocument -> (workDocument.getUser().getUuid().equals(useruuid) && workDocument.getMonth().isEqual(month.withDayOfMonth(1))))
-                .mapToDouble(workDocument -> workDocument.getRate() * workDocument.getWorkHours()).sum();
-         */
+    public double getRegisteredRevenueForSingleMonthAndSingleConsultant(String companyuuid, String useruuid, LocalDate month) {
+        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1), companyuuid).list();
+        return workFullList.stream().mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
     }
 
-    public GraphKeyValue getTotalTeamProfits(LocalDate fiscalYear, List<String> teams) {
-        return getTotalTeamProfits(fiscalYear, fiscalYear.plusYears(1).minusMonths(1), teams);
+    public GraphKeyValue getTotalTeamProfits(String companyuuid, LocalDate fiscalYear, List<String> teams) {
+        return getTotalTeamProfits(companyuuid, fiscalYear, fiscalYear.plusYears(1).minusMonths(1), teams);
     }
 
-    public GraphKeyValue getTotalTeamProfits(LocalDate fromdate, LocalDate todate, List<String> teams) {
+    public GraphKeyValue getTotalTeamProfits(String companyuuid, LocalDate fromdate, LocalDate todate, List<String> teams) {
         // Find de konsulenter der har været i de respektive teams i den angivne periode. Filtrer eventuelle dubletter.
         Map<String, User> allConsultantsInPeriod = new HashMap<>();
         for (String team : teams) {
@@ -147,7 +154,7 @@ public class RevenueService {
         double consultantRevenue = 0.0;
         log.info("Consultant revenue:");
         for (User user : allConsultantsInPeriod.values()) {
-            double singleConsultantRevenue = getRegisteredRevenueByPeriodAndSingleConsultant(user.getUuid(), stringIt(fromdate), stringIt(todate)).values().stream().mapToDouble(value -> value).sum();
+            double singleConsultantRevenue = getRegisteredRevenueByPeriodAndSingleConsultant(companyuuid, user.getUuid(), stringIt(fromdate), stringIt(todate)).values().stream().mapToDouble(value -> value).sum();
             consultantRevenue += singleConsultantRevenue;
             log.info(user.getUsername()+": "+singleConsultantRevenue);
         }
@@ -167,11 +174,20 @@ public class RevenueService {
         return new GraphKeyValue(UUID.randomUUID().toString(), "profits", consultantRevenue - sumExpenses);
     }
 
-    public HashMap<String, Double> getRegisteredRevenueByPeriodAndSingleConsultant(String useruuid, String periodFrom, String periodTo) {
-        return workService.getRegisteredRevenueByPeriodAndSingleConsultant(useruuid, periodFrom, periodTo);
+    public HashMap<String, Double> getRegisteredRevenueByPeriodAndSingleConsultant(String companyuuid, String useruuid, String periodFrom, String periodTo) {
+        HashMap<String, Double> resultMap = new HashMap<>();
+        try (Stream<WorkFull> workStream = WorkFull.stream("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, dateIt(periodFrom).withDayOfMonth(1), dateIt(periodTo).withDayOfMonth(1).plusMonths(1), companyuuid)) {
+            workStream.forEach(work -> {
+                String date = stringIt(work.getRegistered().withDayOfMonth(1));
+                resultMap.putIfAbsent(date, 0.0);
+                resultMap.put(date, resultMap.get(date)+(work.getWorkduration()*work.getRate()));
+            });
+            //.mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
+        }
+        return resultMap;
     }
 
-    public List<GraphKeyValue> getRegisteredProfitsForSingleConsultant(String useruuid, LocalDate periodStart, LocalDate periodEnd, int interval) {
+    public List<GraphKeyValue> getRegisteredProfitsForSingleConsultant(String companyuuid, String useruuid, LocalDate periodStart, LocalDate periodEnd, int interval) {
         int months = (int) ChronoUnit.MONTHS.between(periodStart, periodEnd);
         double revenueSum = 0.0;
         int count = 1;
@@ -189,7 +205,7 @@ public class RevenueService {
                 continue;
             }
 
-            double revenue = getRegisteredRevenueForSingleMonthAndSingleConsultant(useruuid, currentDate);
+            double revenue = getRegisteredRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, currentDate);
             double userSalary = salaryService.getUserSalaryByMonth(useruuid, currentDate).getSalary();
             double consultantSalaries = userService.calcMonthSalaries(currentDate, ConsultantType.CONSULTANT.toString());
             double partOfTotalSalary = userSalary / consultantSalaries;
@@ -211,12 +227,12 @@ public class RevenueService {
         return result;
     }
 
-    public List<GraphKeyValue> getInvoicedOrRegisteredRevenueByPeriod(LocalDate periodStart, LocalDate periodEnd) {
+    public List<GraphKeyValue> getInvoicedOrRegisteredRevenueByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {
         Map<LocalDate, Double> invoicedOrRegisteredRevenueMap = new HashMap<>();
         int months = (int) ChronoUnit.MONTHS.between(periodStart, periodEnd);
         for (int i = 0; i < months; i++) {
             LocalDate currentDate = periodStart.plusMonths(i);
-            double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonth(currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
+            double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonth(companyuuid, currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
             if(invoicedAmountByMonth > 0.0) {
                 invoicedOrRegisteredRevenueMap.put(currentDate, invoicedAmountByMonth);
             } else {
@@ -232,13 +248,13 @@ public class RevenueService {
         return result;
     }
 
-    public List<GraphKeyValue> getProfitsByPeriod(LocalDate periodStart, LocalDate periodEnd) {
+    public List<GraphKeyValue> getProfitsByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {
         int months = (int)ChronoUnit.MONTHS.between(periodStart, periodEnd);
         final List<GraphKeyValue> result = new ArrayList<>();
         for (int i = 0; i < months; i++) {
             final LocalDate currentDate = periodStart.plusMonths(i).withDayOfMonth(1);
 
-            final double invoicedAmountByMonth = getInvoicedRevenueForSingleMonth(currentDate);
+            final double invoicedAmountByMonth = getInvoicedRevenueForSingleMonth(companyuuid, currentDate);
             final double expense = financeService.getSumOfExpensesForSingleMonth(currentDate);// getAllUserExpensesByMonth(currentDate.withDayOfMonth(1));
             result.add(new GraphKeyValue(UUID.randomUUID().toString(), stringIt(currentDate), invoicedAmountByMonth-expense));
 
@@ -246,46 +262,16 @@ public class RevenueService {
         return result;
     }
 
-    public double getInvoicedRevenueForSingleMonth(LocalDate month) {
+    public double getInvoicedRevenueForSingleMonth(String companyuuid, LocalDate month) {
         log.info("RevenueService.getInvoicedRevenueForSingleMonth");
         log.info("month = " + month);
-        return invoiceService.calculateInvoiceSumByMonth(month);
+        return invoiceService.calculateInvoiceSumByMonth(companyuuid, month);
     }
 
     public double getRegisteredHoursForSingleMonth(LocalDate month) {
-        return workService.getRegisteredHoursForSingleMonth(month);
-    }
-
-    public List<GraphKeyValue> findConsultantBillableHoursByPeriod(LocalDate fromDate, LocalDate toDate) {
-        List<WorkFull> workList = workService.findByPeriod(fromDate, toDate);
-        Map<String, GraphKeyValue> result = new HashMap<>();
-        for (WorkFull work : workList) {
-            if(work.getWorkduration() == 0) continue;
-            result.putIfAbsent(work.getUseruuid(), new GraphKeyValue(work.getUseruuid(), userService.findUserByUuid(work.getUseruuid(), true).getUsername(), 0.0));
-            result.get(work.getUseruuid()).addValue(work.getWorkduration());
+        try (Stream<WorkFull> workStream = WorkFull.stream("registered >= ?1 AND registered < ?2 and rate > 0.0", month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1))) {
+            return workStream.mapToDouble(WorkFull::getWorkduration).sum();
         }
-        return new ArrayList<>(result.values());
     }
 
-    public GraphKeyValue[] getExpectedBonusByPeriod(LocalDate periodStart, LocalDate periodEnd) {
-        double forecastedExpenses = 43000;
-        double forecastedSalaries = 64000;
-        double forecastedConsultants = availabilityService.countActiveEmployeeTypesByMonth(periodEnd, ConsultantType.CONSULTANT, ConsultantType.STAFF);
-        double totalForecastedExpenses = (forecastedExpenses + forecastedSalaries) * forecastedConsultants;
-
-        double totalCumulativeRevenue = 0.0;
-        GraphKeyValue[] payout = new GraphKeyValue[12];
-
-        for (int i = 0; i < 12; i++) {
-            LocalDate currentDate = periodStart.plusMonths(i);
-            if(!currentDate.isBefore(periodEnd)) break;
-
-            totalCumulativeRevenue += getRegisteredRevenueForSingleMonth(currentDate);
-            double grossMargin = totalCumulativeRevenue - totalForecastedExpenses;
-            double grossMarginPerConsultant = grossMargin / forecastedConsultants;
-            double consultantPayout = grossMarginPerConsultant * 0.1;
-            payout[i] = new GraphKeyValue(UUID.randomUUID().toString(), i+"", NumberUtils.round((consultantPayout / forecastedSalaries) * 100.0 - 100.0, 2));
-        }
-        return payout;
-    }
 }

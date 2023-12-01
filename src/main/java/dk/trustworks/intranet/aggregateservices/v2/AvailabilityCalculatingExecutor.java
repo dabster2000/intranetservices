@@ -5,11 +5,11 @@ import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
-import dk.trustworks.intranet.model.EmployeeDataPerDay;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerDay;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -172,38 +172,23 @@ public class AvailabilityCalculatingExecutor {
      * This method is called every night at 1:00
      */
     //@Transactional
-    @Scheduled(every = "30s")
+    @Scheduled(every = "1m")
     //@Scheduled(cron = "0 0 1 * * ?")
     public void recalculateAvailability() {
-        System.out.println("AvailabilityCalculatingExecutor.recalculateAvailability");
         employedUsers = userService.listAll(false);
-        LocalDate companyStartDate = DateUtils.getCompanyStartDate();
-        LocalDate testDate = companyStartDate;
+        LocalDate testDate = DateUtils.getCompanyStartDate();
         do {
             if(EmployeeDataPerDay.find("year = ?1 and month = ?2", testDate.getYear(), testDate.getMonthValue()).count()==0) {
-                System.out.println("foundMissingMonth = " + testDate);
                 eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(testDate, testDate.plusMonths(1)));
                 return;
             }
             testDate = testDate.plusMonths(1);
         } while (testDate.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
 
-        System.out.println("Finding last update");
         EmployeeDataPerDay.find("lastUpdate < ?1", LocalDateTime.now().minusDays(1)).firstResultOptional().ifPresent(employeeDataPerDay -> {
-            System.out.println("found employeeDataPerDay = " + employeeDataPerDay);
             LocalDate lastUpdate = ((EmployeeDataPerDay) employeeDataPerDay).getDocumentDate();
             eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(lastUpdate, lastUpdate.plusMonths(1)));
         });
-        System.out.println("Done");
-        /*
-        int monthCount = 0;
-        do {
-            LocalDate testDate = companyStartDate.plusMonths(monthCount);
-            eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(testDate, testDate.plusMonths(1)));
-            monthCount++;
-        }  while (companyStartDate.plusMonths(monthCount).isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
-
-         */
     }
 
     @Transactional

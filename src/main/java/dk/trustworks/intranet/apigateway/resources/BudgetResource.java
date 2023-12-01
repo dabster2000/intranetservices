@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.BudgetService;
+import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
 import dk.trustworks.intranet.contracts.model.Budget;
-import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import lombok.extern.jbosslog.JBossLog;
@@ -18,7 +18,6 @@ import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.QueryParam;
-import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -45,13 +44,12 @@ public class BudgetResource {
     @Path("/all")
     public List<DateValueDTO> getAllBudgets() {
         return ((List<Tuple>) em.createNativeQuery("select " +
-                "    b.month as date, (sum(b.budgetHours * b.rate)) as value " +
+                "    b.year as year, b.month as month, (sum(b.budgetHours * b.rate)) as value " +
                 "from " +
-                "    budget_document b " +
+                "    budget_data_per_month b " +
                 "group by " +
-                "    b.month;", Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
+                "    b.year, b.month;", Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(LocalDate.of((int) tuple.get("year"), (int) tuple.get("month"), 1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -77,18 +75,18 @@ public class BudgetResource {
 
     @GET
     @Path("/users/{useruuid}/datemonths/{datemonth}/documents")
-    public List<BudgetDocument> getConsultantBudgetHoursByMonthDocuments(@PathParam("useruuid") String useruuid, @PathParam("datemonth") String datemonth) {
+    public List<BudgetDocumentPerDay> getConsultantBudgetHoursByMonthDocuments(@PathParam("useruuid") String useruuid, @PathParam("datemonth") String datemonth) {
         return budgetService.getConsultantBudgetDataByMonth(useruuid, dateIt(datemonth));
     }
 
     @GET
-    public List<BudgetDocument> getConsultantBudgetHoursByPeriodDocuments(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+    public List<BudgetDocumentPerDay> getConsultantBudgetHoursByPeriodDocuments(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return budgetService.getBudgetDataByPeriod(dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/users/{useruuid}")
-    public List<BudgetDocument> getConsultantBudgetHoursByUserAndPeriodDocuments(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+    public List<BudgetDocumentPerDay> getConsultantBudgetHoursByUserAndPeriodDocuments(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return budgetService.getBudgetDataByUserAndPeriod(useruuid, dateIt(fromdate), dateIt(todate));
     }
 
@@ -107,9 +105,9 @@ public class BudgetResource {
     @GET
     @Path("/clients")
     public List<GraphKeyValue> calcClientBudgets(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        List<BudgetDocument> budgetDocumentList = budgetService.getBudgetDataByPeriod(dateIt(fromdate), dateIt(todate));
+        List<BudgetDocumentPerDay> budgetDocumentPerDayList = budgetService.getBudgetDataByPeriod(dateIt(fromdate), dateIt(todate));
         Map<String, Double> result = new HashMap<>();
-        budgetDocumentList.forEach(budgetDocument -> {
+        budgetDocumentPerDayList.forEach(budgetDocument -> {
             double temp = result.getOrDefault(budgetDocument.getClient().getName(), 0.0);
             temp += (budgetDocument.getBudgetHours() * budgetDocument.getRate());
             result.put(budgetDocument.getClient().getName(), temp);

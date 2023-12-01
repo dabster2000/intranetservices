@@ -1,35 +1,22 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.contracts.model.Budget;
-import dk.trustworks.intranet.contracts.model.Contract;
-import dk.trustworks.intranet.contracts.model.ContractConsultant;
-import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.services.ContractConsultantService;
 import dk.trustworks.intranet.contracts.services.ContractService;
-import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
-import dk.trustworks.intranet.dto.UserBooking;
-import dk.trustworks.intranet.dto.UserProjectBooking;
-import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.utils.NumberUtils;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
 import java.util.stream.Collectors;
-
-import static dk.trustworks.intranet.utils.DateUtils.getFirstDayOfMonth;
-import static dk.trustworks.intranet.utils.DateUtils.getLastDayOfMonth;
 
 @JBossLog
 @ApplicationScoped
@@ -123,6 +110,7 @@ public class AvailabilityService {
                 .count();
     }
 
+    /*
     public List<UserBooking> getUserBooking(int monthsInPast, int monthsInFuture) {
         List<UserBooking> userBookings = new ArrayList<>();
         Map<String, UserProjectBooking> userProjectBookingMap = new HashMap<>();
@@ -241,4 +229,6 @@ public class AvailabilityService {
         }
         return userBookings;
     }
+
+     */
 }

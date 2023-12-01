@@ -1,9 +1,8 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.FinanceService;
-import dk.trustworks.intranet.aggregateservices.RevenueService;
+import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
 import dk.trustworks.intranet.dto.FinanceDocument;
-import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
@@ -84,12 +83,6 @@ public class FinanceResource {
     @Path("/expenses/entries/search/findByExpenseMonthAndAccountnumbers")
     public List<FinanceDetails> findByExpenseMonthAndAccountnumber(@QueryParam("month") String month, @QueryParam("accountNumbers") String accountNumberString) {
         return financeAPI.findByExpenseMonthAndAccountnumber(dateIt(month), accountNumberString);
-    }
-
-    @GET
-    @Path("/bonus")
-    public GraphKeyValue[] bonusPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return revenueService.getExpectedBonusByPeriod(dateIt(fromdate), dateIt(todate));
     }
 
     @GET

@@ -33,7 +33,9 @@ public class UpdateBudgetDocumentsJob {
 
         log.info("Creating all budgets...");
         long l = System.currentTimeMillis();
-        LocalDate lookupMonth = LocalDate.of(2024, 1, 1);
+        LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
+        //systemEventSender.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
+
         do {
             try {
                 systemEventSender.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
@@ -49,6 +51,8 @@ public class UpdateBudgetDocumentsJob {
 
             lookupMonth = lookupMonth.plusMonths(1);
         } while (lookupMonth.isBefore(LocalDate.now().plusYears(2)));
+
+
 
         log.info("...budgets created: "+(System.currentTimeMillis()-l));
     }

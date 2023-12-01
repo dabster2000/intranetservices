@@ -2,7 +2,6 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
-import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
@@ -18,10 +17,8 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.*;
 import java.time.LocalDate;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
@@ -59,6 +56,7 @@ public class ContractResource {
         return contractService.findByPeriod(dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))));
     }
 
+    /*
     @GET
     @Path("/search/findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn")
     public List<Contract> listAll(@QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate, @QueryParam("statuslist") String statuslist) {
@@ -69,6 +67,7 @@ public class ContractResource {
                 .collect(Collectors.toList());
         return contractService.findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn(dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))), contractStatuses);
     }
+     */
 
     @GET
     @Path("/{contractuuid}/registeredamount")

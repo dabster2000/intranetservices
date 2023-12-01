@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.utilization.resources;
 
 import dk.trustworks.intranet.dto.DateValueDTO;
-import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -37,9 +37,20 @@ public class UtilizationResource {
     @Inject
     EntityManager em;
 
+    private final String sql = "SELECT " +
+            "    ed.useruuid, ed.year, ed.month, " +
+            "    (100 * (wd.workduration / (ed.gross_available_hours - ed.paid_leave_hours - ed.non_payd_leave_hours - ed.non_payd_leave_hours - ed.maternity_leave_hours - ed.sick_hours - ed.vacation_hours - ed.unavailable_hours))) as actual_utilization, " +
+            "    (100 * (bd.budgetHours / (ed.gross_available_hours - ed.paid_leave_hours - ed.non_payd_leave_hours - ed.non_payd_leave_hours - ed.maternity_leave_hours - ed.sick_hours - ed.vacation_hours - ed.unavailable_hours))) as contract_utilization " +
+            "FROM employee_data_per_month ed " +
+            "LEFT JOIN " +
+            "    (select wdpm.useruuid, wdpm.year, wdpm.month, sum(wdpm.workduration) workduration from work_data_per_month wdpm where useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and year = 2023 and month = 11 group by year, month, useruuid) wd on ed.month = wd.month and ed.year = wd.year and ed.useruuid = wd.useruuid " +
+            "LEFT JOIN " +
+            "    (select bdpm.useruuid, bdpm.year, bdpm.month, sum(bdpm.budgetHours) budgetHours from budget_data_per_month bdpm where useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and year = 2023 and month = 11 group by year, month, useruuid) bd on ed.month = bd.month and ed.year = bd.year and ed.useruuid = bd.useruuid " +
+            "where ed.useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and ed.year = 2023 and ed.month = 11;";
+
     @GET
     @Path("/budget")
-    public List<DateValueDTO> getBudgetUtilizationPerMonth() {
+    public List<DateValueDTO> getBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         List<DateValueDTO> availabilityPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
                 "    cast(concat(e.year,'-',e.month,'-01') as date) as date, (sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) as value " +
                 "from " +
@@ -53,13 +64,12 @@ public class UtilizationResource {
                 ))
                 .toList();
         List<DateValueDTO> budgetsPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
-                "    b.month as date, (sum(b.budgetHours)) as value " +
+                "    b.year as year, b.month as month, (sum(b.budgetHours)) as value " +
                 "from " +
-                "    budget_document b " +
+                "    budget_data_per_month b " +
                 "group by " +
-                "    b.month;", Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
+                "    b.year, b.month;", Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(LocalDate.of((int) tuple.get("year"), (int) tuple.get("month"), 1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -164,18 +174,24 @@ public class UtilizationResource {
 
     @GET
     @Path("/actual")
+    // TODO: MOVE TO NEW UTILIZATION CALCULATOR
     public List<DateValueDTO> getActualUtilizationPerMonth() {
-        return ((List<Tuple>) em.createNativeQuery("select " +
+        String sql = "select " +
                 "    cast(concat(e.year,'-',e.month,'-01') as date) as date, " +
                 "    sum(e.registered_billable_hours) / sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours) as value " +
                 "from availability_document e " +
                 "where e.status_type = 'ACTIVE' and e.consultant_type = 'CONSULTANT' " +
-                "group by year, month;", Tuple.class).getResultList()).stream()
+                "group by year, month;";
+        return new ArrayList<>();
+        /*
+                ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         ((Date) tuple.get("date")).toLocalDate(),
                         ((BigDecimal) tuple.get("value")).doubleValue()
                 ))
                 .toList();
+
+         */
     }
 
     @GET

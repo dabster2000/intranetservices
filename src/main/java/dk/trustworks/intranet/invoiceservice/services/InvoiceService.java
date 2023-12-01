@@ -11,7 +11,6 @@ import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
 import dk.trustworks.intranet.invoiceservice.network.InvoiceAPI;
 import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
-import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
 import lombok.extern.jbosslog.JBossLog;
@@ -81,10 +80,10 @@ public class InvoiceService {
         return invoices;
     }
 
-    public double calculateInvoiceSumByMonth(LocalDate month) {
+    public double calculateInvoiceSumByMonth(String companyuuid, LocalDate month) {
         String sql = "select sum(if(type = 0, (ii.rate*ii.hours), -(ii.rate*ii.hours))) sum from invoiceitems ii " +
                 "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE status NOT LIKE 'DRAFT' AND EXTRACT(YEAR_MONTH FROM if(i.bookingdate != '1900-01-01', i.bookingdate, i.invoicedate)) = "+stringIt(month, "yyyyMM")+"; ";
+                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = '"+companyuuid+"' AND EXTRACT(YEAR_MONTH FROM if(i.bookingdate != '1900-01-01', i.bookingdate, i.invoicedate)) = "+stringIt(month, "yyyyMM")+"; ";
         Object singleResult = em.createNativeQuery(sql).getSingleResult();
         return singleResult!=null?((Number) singleResult).doubleValue():0.0;
     }

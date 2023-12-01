@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.dto;
+package dk.trustworks.intranet.aggregateservices.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;

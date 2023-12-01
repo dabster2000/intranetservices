@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.budgets.query;
 
 import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
-import dk.trustworks.intranet.aggregateservices.BudgetServiceCache;
+import dk.trustworks.intranet.aggregateservices.v2.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.messaging.emitters.enums.SystemEventType;
 import io.quarkus.vertx.ConsumeEvent;
@@ -19,7 +19,7 @@ import static dk.trustworks.intranet.messaging.emitters.SystemMessageEmitter.BUD
 public class BudgetEventHandler {
 
     @Inject
-    BudgetServiceCache budgetServiceCache;
+    BudgetCalculatingExecutor budgetCalculatingExecutor;
 
     @ConsumeEvent(value = BUDGET_UPDATE_EVENT, blocking = true)
     @ActivateRequestContext
@@ -32,6 +32,6 @@ public class BudgetEventHandler {
 
     private void updateBudget(SystemChangeEvent event) {
         DateRangeMap dateRangeMap = new JsonObject(event.getEventContent()).mapTo(DateRangeMap.class);
-        budgetServiceCache.calcBudgetsV2(dateRangeMap);
+        budgetCalculatingExecutor.calcBudgetsV2(dateRangeMap);
     }
 }

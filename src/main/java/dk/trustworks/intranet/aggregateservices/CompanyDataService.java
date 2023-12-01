@@ -1,11 +1,11 @@
 package dk.trustworks.intranet.aggregateservices;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
 import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
-import dk.trustworks.intranet.dto.BudgetDocument;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
@@ -34,8 +34,6 @@ import static dk.trustworks.intranet.utils.DateUtils.getCurrentFiscalStartDate;
 public class CompanyDataService {
 
     private final LocalDate startDate = LocalDate.of(2014, 2, 1);
-
-    //private final Map<LocalDate, CompanyAggregateData> dataMap = Collections.synchronizedMap(new HashMap<>());
 
     @PersistenceContext
     EntityManager entityManager;
@@ -138,10 +136,10 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateBudgetData(CompanyAggregateData companyAggregateData) {
-        List<BudgetDocument> budgetDocuments = budgetService.calcBudgets(companyAggregateData.getMonth());
+        List<BudgetDocumentPerDay> budgetDocumentPerDays = budgetService.calcBudgets(companyAggregateData.getMonth());
 
-        double budgetHours = budgetDocuments.stream().mapToDouble(BudgetDocument::getBudgetHours).sum();
-        double budgetAmount = budgetDocuments.stream().mapToDouble(b -> b.getBudgetHours() * b.getRate()).sum();
+        double budgetHours = budgetDocumentPerDays.stream().mapToDouble(BudgetDocumentPerDay::getBudgetHours).sum();
+        double budgetAmount = budgetDocumentPerDays.stream().mapToDouble(b -> b.getBudgetHours() * b.getRate()).sum();
 
         companyAggregateData.setBudgetAmount((int)budgetAmount);
         companyAggregateData.setBudgetHours((int)budgetHours);
@@ -178,12 +176,12 @@ public class CompanyDataService {
         double monthAvailabilites = 0.0;
 
         List<AvailabilityDocument> availabilityDocuments = availabilityService.getConsultantAvailabilityByMonth(companyAggregateData.getMonth());
-        List<BudgetDocument> budgetDocuments = budgetService.getBudgetDataByPeriod(companyAggregateData.getMonth());
+        List<BudgetDocumentPerDay> budgetDocumentPerDays = budgetService.getBudgetDataByPeriod(companyAggregateData.getMonth());
 
         for (User user : userService.findWorkingUsersByDate(companyAggregateData.getMonth(), ConsultantType.CONSULTANT)) {
             if(user.getUsername().equals("hans.lassen") || user.getUsername().equals("tobias.kjoelsen") || user.getUsername().equals("lars.albert") || user.getUsername().equals("thomas.gammelvind")) continue;
-            double budget = budgetDocuments.stream().filter(b -> b.getUser().getUuid().equals(user.getUuid()) && b.getMonth().isEqual(companyAggregateData.getMonth().withDayOfMonth(1)))
-                    .mapToDouble(BudgetDocument::getBudgetHours).sum();
+            double budget = budgetDocumentPerDays.stream().filter(b -> b.getUser().getUuid().equals(user.getUuid()) && b.getDocumentDate().isEqual(companyAggregateData.getMonth().withDayOfMonth(1)))
+                    .mapToDouble(BudgetDocumentPerDay::getBudgetHours).sum();
             monthAvailabilites += budget;
             Optional<AvailabilityDocument> document = availabilityDocuments.stream().filter(availabilityDocument ->
                     availabilityDocument.getMonth().isEqual(companyAggregateData.getMonth()) && availabilityDocument.getUser().getUuid().equals(user.getUuid())).findAny();

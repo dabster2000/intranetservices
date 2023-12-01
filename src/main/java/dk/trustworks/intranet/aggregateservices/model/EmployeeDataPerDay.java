@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.model;
+package dk.trustworks.intranet.aggregateservices.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
@@ -148,7 +149,7 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @Transient
     @JsonIgnore
     public Double getNetAvailableHours() {
-        return Math.max(grossAvailableHours.doubleValue() - unavavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
+        return grossAvailableHours!=null?Math.max(grossAvailableHours.doubleValue() - unavavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0):0.0;
     }
 
     /*

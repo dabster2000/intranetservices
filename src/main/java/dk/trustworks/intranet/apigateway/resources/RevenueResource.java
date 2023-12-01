@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.FinanceService;
-import dk.trustworks.intranet.aggregateservices.RevenueService;
+import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
+import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import lombok.extern.jbosslog.JBossLog;
@@ -15,8 +17,10 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.*;
 import java.time.LocalDate;
-import java.time.temporal.ChronoUnit;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
@@ -25,13 +29,16 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @JBossLog
 @Tag(name = "revenue")
-@Path("/revenue")
+@Path("/company/{companyuuid}/revenue")
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
 @RolesAllowed({"SYSTEM"})
 public class RevenueResource {
+    
+    @PathParam("companyuuid")
+    private String companyuuid;
 
     @Inject
     RevenueService revenueService;
@@ -44,20 +51,14 @@ public class RevenueResource {
 
     @GET
     @Path("/registered")
-    public List<GraphKeyValue> getRegisteredRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        List<GraphKeyValue> revenue = new ArrayList<>();
-        int months = (int) ChronoUnit.MONTHS.between(dateIt(fromdate), dateIt(todate));
-        for (int i = 0; i < months; i++) {
-            LocalDate currentDate = dateIt(fromdate).plusMonths(i);
-            revenue.add(new GraphKeyValue(UUID.randomUUID().toString(), stringIt(currentDate, "MMM-yyyy"), revenueService.getRegisteredRevenueForSingleMonth(currentDate)));
-        }
-        return revenue;
+    public List<DateValueDTO> getRegisteredRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        return revenueService.getRegisteredRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/registered/months/{month}")
-    public GraphKeyValue getRegisteredRevenueForSingleMonth(@PathParam("month") String month) {
-        return new GraphKeyValue(UUID.randomUUID().toString(), "Registered Revenue for "+month, revenueService.getRegisteredRevenueForSingleMonth(dateIt(month)));
+    public DateValueDTO getRegisteredRevenueForSingleMonth(@PathParam("month") String month) {
+        return revenueService.getRegisteredRevenueForSingleMonth(companyuuid, dateIt(month));
     }
 
     @GET
@@ -71,57 +72,62 @@ public class RevenueResource {
     @GET
     @Path("/registered/clients")
     public List<GraphKeyValue> getSumOfRegisteredRevenueByClient() {
-        return revenueService.getSumOfRegisteredRevenueByClient();
+        return revenueService.getSumOfRegisteredRevenueByClient(companyuuid);
+    }
+
+    @GET
+    @Path("/registered/clients")
+    public List<KeyValueDTO> revenuePerClient(@QueryParam("clientuuids") String clientuuids) {
+        return revenueService.getRegisteredRevenuePerClient(companyuuid, Arrays.stream(clientuuids.split(",")).toList());
     }
 
     @GET
     @Path("/registered/clients/fiscalyear/{fiscalyear}")
     public List<GraphKeyValue> getSumOfRegisteredRevenueByClientByFiscalYear(@PathParam("fiscalyear") int fiscalYear) {
-        return revenueService.getSumOfRegisteredRevenueByClientByFiscalYear(fiscalYear);
+        return revenueService.getSumOfRegisteredRevenueByClientByFiscalYear(companyuuid, fiscalYear);
     }
 
     @GET
     @Path("/registered/consultants/{useruuid}/months/{month}")
     public GraphKeyValue getRegisteredRevenueForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return new GraphKeyValue(useruuid, "Consultant revenue hours per month", revenueService.getRegisteredRevenueForSingleMonthAndSingleConsultant(useruuid, dateIt(month)));
+        return new GraphKeyValue(useruuid, "Consultant revenue hours per month", revenueService.getRegisteredRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
     }
 
     @GET
     @Path("/registered/consultants/{useruuid}")
     public HashMap<String, Double> getRegisteredRevenueByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("periodFrom") String periodFrom, @QueryParam("periodTo") String periodTo) {
-        return revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(useruuid, periodFrom, periodTo);
+        return revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(companyuuid, useruuid, periodFrom, periodTo);
     }
 
     @GET
     @Path("/registered/consultants/hours")
     public List<GraphKeyValue> getRegisteredHoursPerConsultantForSingleMonth(@QueryParam("month") String month) {
-        return revenueService.getRegisteredHoursPerConsultantForSingleMonth(dateIt(month));
-        //return new GraphKeyValue(useruuid, "Consultant revenue per month", revenueService.getRegisteredHoursForSingleMonthAndSingleConsultant(useruuid, dateIt(month)));
+        return revenueService.getRegisteredHoursPerConsultantForSingleMonth(companyuuid, dateIt(month));
     }
 
     @GET
     @Path("/registered/consultants/{useruuid}/hours")
     public GraphKeyValue getRegisteredHoursForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("month") String month) {
-        return new GraphKeyValue(useruuid, "Consultant revenue per month", revenueService.getRegisteredHoursForSingleMonthAndSingleConsultant(useruuid, dateIt(month)));
+        return new GraphKeyValue(useruuid, "Consultant revenue per month", revenueService.getRegisteredHoursForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
     }
 
     @GET
     @Path("/invoiced")
     public List<GraphKeyValue> getInvoicedOrRegisteredRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return revenueService.getInvoicedOrRegisteredRevenueByPeriod(dateIt(fromdate), dateIt(todate));
+        return revenueService.getInvoicedOrRegisteredRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/invoiced/months/{month}")
     public GraphKeyValue getInvoicedRevenueForSingleMonth(@PathParam("month") String month) {
-        return new GraphKeyValue(UUID.randomUUID().toString(), month, revenueService.getInvoicedRevenueForSingleMonth(dateIt(month)));
+        return new GraphKeyValue(UUID.randomUUID().toString(), month, revenueService.getInvoicedRevenueForSingleMonth(companyuuid, dateIt(month)));
     }
 
     @GET
     @Path("/profits")
     @RolesAllowed({"PARTNER", "ADMIN"})
     public List<GraphKeyValue> getProfitsByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return revenueService.getProfitsByPeriod(dateIt(fromdate), dateIt(todate));
+        return revenueService.getProfitsByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET
@@ -133,10 +139,10 @@ public class RevenueResource {
 
         if(intFiscalYear != null) {
             log.info("Search by fiscalYear");
-            return revenueService.getTotalTeamProfits(LocalDate.of(intFiscalYear, 7,1), teams);
+            return revenueService.getTotalTeamProfits(companyuuid, LocalDate.of(intFiscalYear, 7,1), teams);
         }
         log.info("Search by period");
-        GraphKeyValue totalTeamProfits = revenueService.getTotalTeamProfits(dateIt(fromdate), dateIt(todate), teams);
+        GraphKeyValue totalTeamProfits = revenueService.getTotalTeamProfits(companyuuid, dateIt(fromdate), dateIt(todate), teams);
         log.info("totalTeamProfits = " + totalTeamProfits);
         return totalTeamProfits;
     }
@@ -144,7 +150,7 @@ public class RevenueResource {
     @GET
     @Path("/profits/consultants/{useruuid}")
     public List<GraphKeyValue> getRegisteredProfitsForSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodStart, @QueryParam("todate") String periodEnd, @QueryParam("interval") String interval) {
-        return revenueService.getRegisteredProfitsForSingleConsultant(useruuid, dateIt(periodStart), dateIt(periodEnd), Integer.parseInt(interval));
+        return revenueService.getRegisteredProfitsForSingleConsultant(companyuuid, useruuid, dateIt(periodStart), dateIt(periodEnd), Integer.parseInt(interval));
     }
 
     // Profits generated by consultants in a team. Not including owners, sales, partners or teamleads
@@ -163,7 +169,7 @@ public class RevenueResource {
 
         double revenue = 0.0;
         for (User user : teamService.getTeammembersByTeamleadBonusEnabled()) {
-            HashMap<String, Double> registeredRevenueByPeriodAndSingleConsultant = revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(user.getUuid(), strDatefrom, strDateto);
+            HashMap<String, Double> registeredRevenueByPeriodAndSingleConsultant = revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(companyuuid, user.getUuid(), strDatefrom, strDateto);
             for (Double value : registeredRevenueByPeriodAndSingleConsultant.values()) {
                 revenue += value;
             }

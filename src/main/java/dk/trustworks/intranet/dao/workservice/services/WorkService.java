@@ -5,7 +5,6 @@ import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
-import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -25,7 +24,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.utils.DateUtils.*;
@@ -66,49 +64,6 @@ public class WorkService {
             log.error("Beware of month issues!!: "+todate);
         }
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3", fromdate, todate, useruuid).list();
-    }
-
-    public double getRegisteredHoursForSingleMonth(LocalDate month) {
-        try (Stream<WorkFull> workStream = WorkFull.stream("registered >= ?1 AND registered < ?2 and rate > 0.0", month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1))) {
-            return workStream.mapToDouble(WorkFull::getWorkduration).sum();
-        }
-    }
-
-    public double getRegisteredRevenueForSingleMonth(LocalDate month) {
-        List<WorkFull> workFullList = WorkFull.find("registered >= ?1 AND registered < ?2 and rate > 0.0", month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
-        return workFullList.stream().mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
-    }
-
-    public List<GraphKeyValue> getRegisteredHoursPerConsultantForSingleMonth(LocalDate month) {
-        List<WorkFull> workFullList = WorkFull.find("registered >= ?1 AND registered < ?2 and rate > 0.0", month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
-        return workFullList.stream().map(work -> new GraphKeyValue(work.getUseruuid(), stringIt(month), work.getWorkduration())).collect(Collectors.toList());
-    }
-
-    public double getRegisteredHoursForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
-        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
-        return workFullList.stream().mapToDouble(WorkFull::getWorkduration).sum();
-    }
-
-    public double getRegisteredRevenueForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
-        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
-        return workFullList.stream().mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
-    }
-
-    public HashMap<String, Double> getRegisteredRevenueByPeriodAndSingleConsultant(String useruuid, String periodFrom, String periodTo) {
-        HashMap<String, Double> resultMap = new HashMap<>();
-        try (Stream<WorkFull> workStream = WorkFull.stream("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, dateIt(periodFrom).withDayOfMonth(1), dateIt(periodTo).withDayOfMonth(1).plusMonths(1))) {
-            workStream.forEach(work -> {
-                String date = stringIt(work.getRegistered().withDayOfMonth(1));
-                resultMap.putIfAbsent(date, 0.0);
-                resultMap.put(date, resultMap.get(date)+(work.getWorkduration()*work.getRate()));
-            });
-            //.mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
-        }
-        return resultMap;
-    }
-
-    public List<WorkFull> findWorkOnContract(String contractuuid) {
-        return WorkFull.find("contractuuid like ?1", contractuuid).list();
     }
 
     public List<WorkFull> findByPeriodAndProject(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate, @QueryParam("projectuuid") String projectuuid) {

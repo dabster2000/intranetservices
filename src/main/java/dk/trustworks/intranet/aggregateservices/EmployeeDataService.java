@@ -4,8 +4,8 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.dto.BudgetDocument;
-import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
 import dk.trustworks.intranet.userservice.dto.Capacity;
 import dk.trustworks.intranet.userservice.model.Team;
@@ -138,13 +138,13 @@ public class EmployeeDataService {
         employeeAggregateData.setBudgetHoursWithNoAvailabilityAdjustment(0);
         //employeeAggregateData.setBudgetDocuments(new ArrayList<>());
 
-        List<BudgetDocument> budgetDocuments = budgetService.getConsultantBudgetDataByMonth(user.getUuid(), refreshDate);
+        List<BudgetDocumentPerDay> budgetDocumentPerDays = budgetService.getConsultantBudgetDataByMonth(user.getUuid(), refreshDate);
 
-        for (BudgetDocument budgetDocument : budgetDocuments) {
+        for (BudgetDocumentPerDay budgetDocumentPerDay : budgetDocumentPerDays) {
             //EmployeeAggregateData employeeAggregateData = getEmployeeAggregateData(budgetDocument.getMonth(), budgetDocument.getUser().getUuid());
-            employeeAggregateData.addBudgetHours(budgetDocument.getBudgetHours());
-            employeeAggregateData.addBudgetHoursWithNoAvailabilityAdjustment(budgetDocument.getBudgetHoursWithNoAvailabilityAdjustment());
-            employeeAggregateData.addBudgetAmount(budgetDocument.getBudgetHours()*budgetDocument.getRate());
+            employeeAggregateData.addBudgetHours(budgetDocumentPerDay.getBudgetHours());
+            employeeAggregateData.addBudgetHoursWithNoAvailabilityAdjustment(budgetDocumentPerDay.getBudgetHoursWithNoAvailabilityAdjustment());
+            employeeAggregateData.addBudgetAmount(budgetDocumentPerDay.getBudgetHours()* budgetDocumentPerDay.getRate());
             //employeeAggregateData.addBudgetDocument(budgetDocument);
         }
     }

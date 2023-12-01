@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
-import dk.trustworks.intranet.dto.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;

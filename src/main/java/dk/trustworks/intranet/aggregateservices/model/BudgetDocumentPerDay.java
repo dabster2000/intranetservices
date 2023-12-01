@@ -1,6 +1,7 @@
-package dk.trustworks.intranet.dto;
+package dk.trustworks.intranet.aggregateservices.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
@@ -23,16 +24,22 @@ import java.time.LocalDate;
 @Table(name = "budget_document")
 @NoArgsConstructor
 @AllArgsConstructor
-public class BudgetDocument extends PanacheEntityBase {
+public class BudgetDocumentPerDay extends PanacheEntityBase {
 
     @Id
     @JsonIgnore
     @GeneratedValue(strategy= GenerationType.IDENTITY)
     private int id;
 
+    @JsonProperty("documentDate")
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
-    private LocalDate month;
+    @Column(name = "document_date")
+    private LocalDate documentDate; // done
+
+    private int year;
+    private int month;
+    private int day;
 
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "clientuuid")
@@ -53,8 +60,11 @@ public class BudgetDocument extends PanacheEntityBase {
     private double budgetHoursWithNoAvailabilityAdjustment;
     private double rate;
 
-    public BudgetDocument(LocalDate month, Client client, User user, Contract contract, double budgetHours, double budgetHoursWithNoAvailabilityAdjustment, double rate) {
-        this.month = month;
+    public BudgetDocumentPerDay(LocalDate documentDate, Client client, User user, Contract contract, double budgetHours, double budgetHoursWithNoAvailabilityAdjustment, double rate) {
+        this.documentDate = documentDate;
+        this.year = documentDate.getYear();
+        this.month = documentDate.getMonthValue();
+        this.day = documentDate.getDayOfMonth();
         this.client = client;
         this.user = user;
         this.contract = contract;
@@ -65,6 +75,6 @@ public class BudgetDocument extends PanacheEntityBase {
 
     @Transactional
     public void truncate() {
-        BudgetDocument.deleteAll();
+        BudgetDocumentPerDay.deleteAll();
     }
 }
