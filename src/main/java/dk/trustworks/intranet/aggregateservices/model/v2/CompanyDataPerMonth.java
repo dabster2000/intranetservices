@@ -1,10 +1,8 @@
-package dk.trustworks.intranet.aggregateservices.model;
+package dk.trustworks.intranet.aggregateservices.model.v2;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -16,10 +14,10 @@ import java.time.LocalDate;
 
 @Data
 @Entity
-@Table(name = "employee_data_per_month")
+@Table(name = "company_data_per_month")
 @NoArgsConstructor
 @AllArgsConstructor
-public class EmployeeDataPerMonth extends PanacheEntityBase {
+public class CompanyDataPerMonth extends PanacheEntityBase {
 
     @Id
     @JsonIgnore
@@ -32,17 +30,6 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "companyuuid")
     private Company company;
-
-    private String useruuid; // done
-
-    @Column(name = "consultant_type")
-    @Enumerated(EnumType.STRING)
-    @JsonProperty("consultantType")
-    private ConsultantType consultantType;
-
-    @Column(name = "status_type")
-    @Enumerated(EnumType.STRING)
-    private StatusType status;
 
     @Column(name = "gross_available_hours", precision = 7, scale = 4)
     @JsonProperty("grossAvailableHours")
@@ -73,22 +60,9 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @JsonProperty("paidLeaveHours")
     private BigDecimal paidLeaveHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
-    @Column(name = "registered_billable_hours", precision = 7, scale = 4)
-    private BigDecimal registeredBillableHours; // done
-
-    @Column(name = "helped_colleague_billable_hours", precision = 7, scale = 4)
-    private BigDecimal helpedColleagueBillableHours;
-
-    @Column(name = "registered_amount", precision = 9, scale = 4)
-    private BigDecimal registeredAmount; // done
-
     @JsonProperty("avgSalary")
     @Column(name = "avg_salary", precision = 14, scale = 4)
     private BigDecimal avgSalary;
-
-    @Column(name = "is_tw_bonus_eligible")
-    @JsonProperty("isTwBonusEligible")
-    private boolean isTwBonusEligible;
 
     @JsonIgnore
     public LocalDate getDate() {
@@ -99,13 +73,6 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @JsonIgnore
     public Double getNetAvailableHours() {
         return Math.max(grossAvailableHours.doubleValue() - unavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
-    }
-
-    @Transient
-    @JsonIgnore
-    public Double getActualUtilization() {
-        // (5.4 / 7.4) * 100.0
-        return ((registeredBillableHours.doubleValue() + helpedColleagueBillableHours.doubleValue()) / getNetAvailableHours());
     }
 
 }

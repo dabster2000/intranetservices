@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.jobs;
 
-import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.aggregates.budgets.events.UpdateBudgetEvent;
 import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
@@ -8,12 +7,13 @@ import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
-import org.apache.commons.lang3.exception.ExceptionUtils;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
-import java.io.IOException;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
 
 @JBossLog
 @ApplicationScoped
@@ -26,34 +26,31 @@ public class UpdateBudgetDocumentsJob {
     @Inject
     SystemEventSender systemEventSender;
 
-    @Scheduled(every = "3h", delay = 1)
-    public void refreshBudgetData() {
-        System.out.println("prnt - BudgetServiceCache.refreshBudgetData");
-        log.info("BudgetServiceCache.refreshBudgetData");
+    private final Map<LocalDate, LocalDateTime> tasks = new HashMap<>();
+    private final int updateRateInHours = 3;
+    private final int delayInSeconds = 10;
 
-        log.info("Creating all budgets...");
-        long l = System.currentTimeMillis();
+    @Scheduled(every = "24h", delay = 0)
+    public void createTasks() {
+        log.info("BudgetServiceCache.createTasks");
+        tasks.clear();
         LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
-        //systemEventSender.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
-
+        int i = 0;
         do {
-            try {
-                systemEventSender.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
-            } catch (Exception e) {
-                try {
-                    log.error(e);
-                    slackService.sendMessage(userService.findByUsername("hans.lassen", true), ExceptionUtils.getStackTrace(e));
-                } catch (SlackApiException | IOException ex) {
-                    throw new RuntimeException(ex);
-                }
-                throw new RuntimeException(e);
-            }
-
+            tasks.put(lookupMonth, LocalDateTime.now().minusHours(updateRateInHours).plusSeconds(((long) i*delayInSeconds)));
+            i++;
             lookupMonth = lookupMonth.plusMonths(1);
         } while (lookupMonth.isBefore(LocalDate.now().plusYears(2)));
+    }
 
+    @Scheduled(every = "20s", delay = 1)
+    public void refreshBudgetData() {
+        log.info("BudgetServiceCache.refreshBudgetData");
+        tasks.values().stream().filter(localDateTime -> localDateTime.isBefore(LocalDateTime.now().minusHours(updateRateInHours))).forEach(localDateTime -> {
+            LocalDate lookupMonth = tasks.entrySet().stream().filter(entry -> entry.getValue().equals(localDateTime)).findFirst().get().getKey();
+            systemEventSender.handleEvent(new UpdateBudgetEvent(new DateRangeMap(lookupMonth, lookupMonth.plusMonths(1))));
+            tasks.put(lookupMonth, LocalDateTime.now());
+        });
 
-
-        log.info("...budgets created: "+(System.currentTimeMillis()-l));
     }
 }

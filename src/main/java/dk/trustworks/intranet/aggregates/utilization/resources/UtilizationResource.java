@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.aggregates.utilization.resources;
 
+import dk.trustworks.intranet.aggregateservices.model.v2.CompanyBudgetPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.v2.CompanyDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.v2.CompanyWorkPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.DateValueDTO;
-import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -21,11 +24,12 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
+import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Tag(name = "utilization")
 @JBossLog
-@Path("/utilization")
+@Path("/company/{companyuuid}/utilization")
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
@@ -34,51 +38,45 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class UtilizationResource {
 
+    @PathParam("companyuuid")
+    String companyuuid;
+
     @Inject
     EntityManager em;
-
-    private final String sql = "SELECT " +
-            "    ed.useruuid, ed.year, ed.month, " +
-            "    (100 * (wd.workduration / (ed.gross_available_hours - ed.paid_leave_hours - ed.non_payd_leave_hours - ed.non_payd_leave_hours - ed.maternity_leave_hours - ed.sick_hours - ed.vacation_hours - ed.unavailable_hours))) as actual_utilization, " +
-            "    (100 * (bd.budgetHours / (ed.gross_available_hours - ed.paid_leave_hours - ed.non_payd_leave_hours - ed.non_payd_leave_hours - ed.maternity_leave_hours - ed.sick_hours - ed.vacation_hours - ed.unavailable_hours))) as contract_utilization " +
-            "FROM employee_data_per_month ed " +
-            "LEFT JOIN " +
-            "    (select wdpm.useruuid, wdpm.year, wdpm.month, sum(wdpm.workduration) workduration from work_data_per_month wdpm where useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and year = 2023 and month = 11 group by year, month, useruuid) wd on ed.month = wd.month and ed.year = wd.year and ed.useruuid = wd.useruuid " +
-            "LEFT JOIN " +
-            "    (select bdpm.useruuid, bdpm.year, bdpm.month, sum(bdpm.budgetHours) budgetHours from budget_data_per_month bdpm where useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and year = 2023 and month = 11 group by year, month, useruuid) bd on ed.month = bd.month and ed.year = bd.year and ed.useruuid = bd.useruuid " +
-            "where ed.useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and ed.year = 2023 and ed.month = 11;";
 
     @GET
     @Path("/budget")
     public List<DateValueDTO> getBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        List<DateValueDTO> availabilityPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
-                "    cast(concat(e.year,'-',e.month,'-01') as date) as date, (sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) as value " +
-                "from " +
-                "    availability_document e " +
-                "     WHERE consultant_type = 'CONSULTANT' " +
-                "     AND status_type != 'TERMINATED' " +
-                "group by e.year, e.month;", Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
-                        ((BigDecimal) tuple.get("value")).doubleValue()
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+        List<CompanyBudgetPerMonth> companyBudgetPerMonthList = CompanyBudgetPerMonth.list("companyuuid = ?1 " +
+                "AND ( " +
+                "       (year > " + fromDate.getYear() + ")  " +
+                "    OR (year = " + fromDate.getYear() + " AND month >= " + fromDate.getMonthValue() + ") " +
+                "  ) " +
+                "  AND ( " +
+                "       (year < " + toDate.getYear() + ")  " +
+                "    OR (year = " + toDate.getYear() + " AND month <= " + toDate.getMonthValue() + ") " +
+                "  )", companyuuid);
+
+        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("companyuuid = ?1" +
+                "AND ( " +
+                "       ( year > " + fromDate.getYear() + ")  " +
+                "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
+                "  ) " +
+                "  AND ( " +
+                "       ( year < " + toDate.getYear() + ")  " +
+                "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
+                "  )", companyuuid);
+
+        return dataPerMonthList.stream()
+                .map(dataPerMonth -> new DateValueDTO(
+                        LocalDate.of(dataPerMonth.getYear(), dataPerMonth.getMonth(), 1),
+                        companyBudgetPerMonthList.stream()
+                                .filter(workPerMonth -> workPerMonth.getYear() == dataPerMonth.getYear() && workPerMonth.getMonth() == dataPerMonth.getMonth())
+                                .mapToDouble(CompanyBudgetPerMonth::getBudgetHours)
+                                .sum() / dataPerMonth.getNetAvailableHours()
                 ))
-                .toList();
-        List<DateValueDTO> budgetsPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
-                "    b.year as year, b.month as month, (sum(b.budgetHours)) as value " +
-                "from " +
-                "    budget_data_per_month b " +
-                "group by " +
-                "    b.year, b.month;", Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(LocalDate.of((int) tuple.get("year"), (int) tuple.get("month"), 1),
-                        (Double) tuple.get("value")
-                ))
-                .toList();
-        return availabilityPerMonth
-                .stream()
-                .peek(availability -> budgetsPerMonth.stream()
-                        .filter(budget -> budget.getDate().equals(availability.getDate()))
-                        .findFirst()
-                        .ifPresentOrElse(bud -> availability.setValue(bud.getValue() / availability.getValue()), () -> availability.setValue(0.0)))
                 .toList();
     }
 
@@ -174,24 +172,38 @@ public class UtilizationResource {
 
     @GET
     @Path("/actual")
-    // TODO: MOVE TO NEW UTILIZATION CALCULATOR
-    public List<DateValueDTO> getActualUtilizationPerMonth() {
-        String sql = "select " +
-                "    cast(concat(e.year,'-',e.month,'-01') as date) as date, " +
-                "    sum(e.registered_billable_hours) / sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours) as value " +
-                "from availability_document e " +
-                "where e.status_type = 'ACTIVE' and e.consultant_type = 'CONSULTANT' " +
-                "group by year, month;";
-        return new ArrayList<>();
-        /*
-                ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
-                        ((BigDecimal) tuple.get("value")).doubleValue()
+    public List<DateValueDTO> getActualUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+        List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("consultant_company_uuid = ?1 " +
+                "AND ( " +
+                "       ( year > " + fromDate.getYear() + ")  " +
+                "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
+                "  ) " +
+                "  AND ( " +
+                "       ( year < " + toDate.getYear() + ")  " +
+                "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
+                "  )", companyuuid);
+
+        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("companyuuid = ?1" +
+                "AND ( " +
+                "       ( year > " + fromDate.getYear() + ")  " +
+                "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
+                "  ) " +
+                "  AND ( " +
+                "       ( year < " + toDate.getYear() + ")  " +
+                "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
+                "  )", companyuuid);
+
+        return dataPerMonthList.stream()
+                .map(dataPerMonth -> new DateValueDTO(
+                        LocalDate.of(dataPerMonth.getYear(), dataPerMonth.getMonth(), 1),
+                        workPerMonthList.stream()
+                                .filter(workPerMonth -> workPerMonth.getYear() == dataPerMonth.getYear() && workPerMonth.getMonth() == dataPerMonth.getMonth())
+                                .mapToDouble(CompanyWorkPerMonth::getWorkDuration)
+                                .sum() / dataPerMonth.getNetAvailableHours()
                 ))
                 .toList();
-
-         */
     }
 
     @GET
@@ -242,7 +254,43 @@ public class UtilizationResource {
                 .<EmployeeDataPerMonth>stream("consultantType = 'CONSULTANT' AND status != 'TERMINATED' AND useruuid = ?1", useruuid)
                 .map(employeeDataPerMonth -> new DateValueDTO(
                         LocalDate.of(employeeDataPerMonth.getYear(), employeeDataPerMonth.getMonth(), 1),
-                        employeeDataPerMonth.getActualUtilization()
+                        employeeDataPerMonth.getNetAvailableHours()
+                ))
+                .toList();
+    }
+
+    @GET
+    @Path("/gross")
+    public List<DateValueDTO> getGrossUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+        List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("consultant_company_uuid = ?1 " +
+                "AND ( " +
+                "       ( year > " + fromDate.getYear() + ")  " +
+                "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
+                "  ) " +
+                "  AND ( " +
+                "       ( year < " + toDate.getYear() + ")  " +
+                "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
+                "  )", companyuuid);
+
+        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("companyuuid = ?1" +
+                "AND ( " +
+                "       ( year > " + fromDate.getYear() + ")  " +
+                "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
+                "  ) " +
+                "  AND ( " +
+                "       ( year < " + toDate.getYear() + ")  " +
+                "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
+                "  )", companyuuid);
+
+        return dataPerMonthList.stream()
+                .map(dataPerMonth -> new DateValueDTO(
+                        LocalDate.of(dataPerMonth.getYear(), dataPerMonth.getMonth(), 1),
+                        workPerMonthList.stream()
+                                .filter(workPerMonth -> workPerMonth.getYear() == dataPerMonth.getYear() && workPerMonth.getMonth() == dataPerMonth.getMonth())
+                                .mapToDouble(CompanyWorkPerMonth::getWorkDuration)
+                                .sum() / dataPerMonth.getGrossAvailableHours().doubleValue()
                 ))
                 .toList();
     }

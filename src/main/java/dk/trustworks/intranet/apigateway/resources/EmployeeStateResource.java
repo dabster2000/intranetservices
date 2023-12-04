@@ -1,8 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregateservices.CompanyDataService;
 import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
-import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -12,6 +11,7 @@ import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
 import javax.ws.rs.QueryParam;
 import java.time.LocalDate;
 import java.util.List;
@@ -24,10 +24,10 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @RequestScoped
 @RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
-public class BiResource {
+public class EmployeeStateResource {
 
-    @Inject
-    CompanyDataService companyDataService;
+    @PathParam("companyuuid")
+    String companyuuid;
 
     @Inject
     EmployeeDataService employeeDataService;
@@ -53,10 +53,10 @@ public class BiResource {
     @GET
     @Path("/employees")
     public List<EmployeeDataPerMonth> getEmployeeDataPerMonthV2(@QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
-        System.out.println("BiResource.getEmployeeDataPerMonthV2");
+        System.out.println("EmployeeStateResource.getEmployeeDataPerMonthV2");
         System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
-        return employeeDataService.getEmployeeDataPerMonth(fromdate, todate);
+        return employeeDataService.getEmployeeDataPerMonth(companyuuid, fromdate, todate);
     }
 }

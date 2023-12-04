@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.model;
+package dk.trustworks.intranet.aggregateservices.model.v2;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -24,7 +24,7 @@ import java.time.LocalDate;
 @Table(name = "budget_document")
 @NoArgsConstructor
 @AllArgsConstructor
-public class BudgetDocumentPerDay extends PanacheEntityBase {
+public class EmployeeBudgetPerDay extends PanacheEntityBase {
 
     @Id
     @JsonIgnore
@@ -60,7 +60,7 @@ public class BudgetDocumentPerDay extends PanacheEntityBase {
     private double budgetHoursWithNoAvailabilityAdjustment;
     private double rate;
 
-    public BudgetDocumentPerDay(LocalDate documentDate, Client client, User user, Contract contract, double budgetHours, double budgetHoursWithNoAvailabilityAdjustment, double rate) {
+    public EmployeeBudgetPerDay(LocalDate documentDate, Client client, User user, Contract contract, double budgetHours, double budgetHoursWithNoAvailabilityAdjustment, double rate) {
         this.documentDate = documentDate;
         this.year = documentDate.getYear();
         this.month = documentDate.getMonthValue();
@@ -75,6 +75,6 @@ public class BudgetDocumentPerDay extends PanacheEntityBase {
 
     @Transactional
     public void truncate() {
-        BudgetDocumentPerDay.deleteAll();
+        EmployeeBudgetPerDay.deleteAll();
     }
 }

@@ -14,7 +14,7 @@ import java.io.IOException;
 public class HeaderInterceptor implements ContainerRequestFilter {
 
     @Context
-    private HttpHeaders headers;
+    HttpHeaders headers;
 
     @Inject
     JsonWebToken jwt;

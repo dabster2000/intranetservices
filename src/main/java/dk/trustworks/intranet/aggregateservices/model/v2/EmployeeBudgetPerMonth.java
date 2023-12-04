@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.model;
+package dk.trustworks.intranet.aggregateservices.model.v2;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import dk.trustworks.intranet.contracts.model.Contract;
@@ -14,10 +14,10 @@ import javax.persistence.*;
 
 @Data
 @Entity
-@Table(name = "budget_data_per_month")
+@Table(name = "employee_budget_per_month")
 @NoArgsConstructor
 @AllArgsConstructor
-public class BudgetDocumentPerMonth extends PanacheEntityBase {
+public class EmployeeBudgetPerMonth extends PanacheEntityBase {
 
     @Id
     @JsonIgnore

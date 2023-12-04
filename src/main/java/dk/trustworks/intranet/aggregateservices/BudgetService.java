@@ -1,20 +1,25 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
 import dk.trustworks.intranet.aggregateservices.v2.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.contracts.model.Budget;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.persistence.EntityManager;
 import javax.persistence.PersistenceUnit;
+import javax.persistence.Tuple;
 import javax.transaction.Transactional;
+import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 
 @JBossLog
@@ -30,48 +35,117 @@ public class BudgetService {
     @PersistenceUnit
     EntityManager em;
 
-    public List<BudgetDocumentPerDay> calcBudgets(LocalDate lookupMonth) {
+    public List<DateValueDTO> getBudgetRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
+        String sql = "SELECT ad.document_date                           AS date,  " +
+                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
+                "FROM twservices.budget_document ad  " +
+                "WHERE ad.budgetHours > 0  " +
+                "  AND ad.companyuuid = '"+companyuuid+"'  " +
+                "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
+                "  AND ad.document_date < '" + stringIt(todate) + "' " +
+                "  GROUP BY ad.companyuuid, ad.year, ad.month;";
+
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
+    }
+
+    public DateValueDTO getBudgetRevenueForSingleMonth(String companyuuid, LocalDate date) {
+        String sql = "SELECT ad.document_date                           AS date,  " +
+                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
+                "FROM twservices.budget_document ad  " +
+                "WHERE ad.budgetHours > 0  " +
+                "  AND ad.companyuuid = '"+companyuuid+"'  " +
+                "  AND ad.year = " + date.getYear() + " " +
+                "  AND ad.month = " + date.getMonthValue() + " " +
+                "GROUP BY ad.companyuuid, ad.year, ad.month;";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                )).findAny().orElse(new DateValueDTO(date, 0.0));
+    }
+
+    public List<DateValueDTO> getBudgetRevenueByPeriodAndSingleConsultant(String companyuuid, String useruuid, LocalDate fromdate, LocalDate todate) {
+        String sql = "SELECT ad.document_date                           AS date,  " +
+                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
+                "FROM twservices.budget_document ad  " +
+                "WHERE ad.budgetHours > 0  " +
+                "  AND ad.companyuuid = '"+companyuuid+"'  " +
+                "  AND ad.useruuid = '"+useruuid+"'  " +
+                "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
+                "  AND ad.document_date < '" + stringIt(todate) + "' " +
+                "  GROUP BY ad.companyuuid, ad.year, ad.month;";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
+    }
+
+    public DateValueDTO getBudgetRevenueForSingleMonthAndSingleConsultant(String companyuuid, String useruuid, LocalDate date) {
+        String sql = "SELECT ad.document_date                           AS date,  " +
+                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
+                "FROM twservices.budget_document ad  " +
+                "WHERE ad.budgetHours > 0  " +
+                "  AND ad.companyuuid = '"+companyuuid+"'  " +
+                "  AND ad.useruuid = '"+useruuid+"'  " +
+                "  AND ad.year = " + date.getYear() + " " +
+                "  AND ad.month = " + date.getMonthValue() + " " +
+                "GROUP BY ad.companyuuid, ad.year, ad.month;";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                )).findAny().orElse(new DateValueDTO(date, 0.0));
+    }
+
+    public List<EmployeeBudgetPerDay> calcBudgets(LocalDate lookupMonth) {
         return budgetCalculatingExecutor.findAllBudgetData().stream().filter(budgetDocument -> budgetDocument.getDocumentDate().withDayOfMonth(1).isEqual(lookupMonth.withDayOfMonth(1))).collect(Collectors.toList());
     }
 
     public double getConsultantBudgetByMonth(User user, LocalDate month) {
-        List<BudgetDocumentPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
+        List<EmployeeBudgetPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
         return budgetData.stream()
                 .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(user.getUuid()) && budgetDocument.getDocumentDate().isEqual(month.withDayOfMonth(1)))
                 .mapToDouble(budgetDocument -> budgetDocument.getBudgetHours() * budgetDocument.getRate()).sum();
     }
 
-    public List<BudgetDocumentPerDay> getConsultantBudgetDataByMonth(String useruuid, LocalDate month) {
-        List<BudgetDocumentPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
+    public List<EmployeeBudgetPerDay> getConsultantBudgetDataByMonth(String useruuid, LocalDate month) {
+        List<EmployeeBudgetPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
         return budgetData.stream()
                 .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(useruuid) && budgetDocument.getDocumentDate().isEqual(month.withDayOfMonth(1)))
                 .collect(Collectors.toList());
     }
 
-    public List<BudgetDocumentPerDay> getBudgetDataByPeriod(LocalDate startDate, LocalDate endDate) {
-        List<BudgetDocumentPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
+    public List<EmployeeBudgetPerDay> getBudgetDataByPeriod(LocalDate startDate, LocalDate endDate) {
+        List<EmployeeBudgetPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
         return budgetData.stream().filter(budgetDocument ->
                 !budgetDocument.getDocumentDate().withDayOfMonth(1).isBefore(startDate) &&
                         !budgetDocument.getDocumentDate().withDayOfMonth(1).isAfter(endDate)
         ).collect(Collectors.toList());
     }
 
-    public List<BudgetDocumentPerDay> getBudgetDataByUserAndPeriod(String useruuid, LocalDate startDate, LocalDate endDate) {
+    public List<EmployeeBudgetPerDay> getBudgetDataByUserAndPeriod(String useruuid, LocalDate startDate, LocalDate endDate) {
         return budgetCalculatingExecutor.findAllBudgetDataByUserAndPeriod(useruuid, startDate, endDate);
     }
 
-    public List<BudgetDocumentPerDay> getBudgetDataByPeriod(LocalDate month) {
-        List<BudgetDocumentPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
+    public List<EmployeeBudgetPerDay> getBudgetDataByPeriod(LocalDate month) {
+        List<EmployeeBudgetPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
         return budgetData.stream().filter(budgetDocument ->
                 budgetDocument.getDocumentDate().withDayOfMonth(1).isEqual(month.withDayOfMonth(1))
         ).collect(Collectors.toList());
     }
 
     public double getConsultantBudgetHoursByMonth(String useruuid, LocalDate month) {
-        List<BudgetDocumentPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
+        List<EmployeeBudgetPerDay> budgetData = budgetCalculatingExecutor.findAllBudgetData();
         return budgetData.stream()
                 .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(useruuid) && budgetDocument.getDocumentDate().isEqual(month.withDayOfMonth(1)))
-                .mapToDouble(BudgetDocumentPerDay::getBudgetHours).sum();
+                .mapToDouble(EmployeeBudgetPerDay::getBudgetHours).sum();
     }
 
     public double getMonthBudget(LocalDate month) {

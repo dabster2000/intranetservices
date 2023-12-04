@@ -23,7 +23,6 @@ import lombok.extern.jbosslog.JBossLog;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
 import javax.persistence.*;
-import java.math.BigDecimal;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
@@ -31,7 +30,8 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.utils.DateUtils.*;
+import static dk.trustworks.intranet.utils.DateUtils.dateIt;
+import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 @JBossLog
 @ApplicationScoped
@@ -78,13 +78,14 @@ public class RevenueService {
     }
 
     public List<DateValueDTO> getRegisteredRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "select w.registered, sum(ifnull(w.rate, 0) * w.workduration) AS total_billed from work_full w " +
-                "where `w`.`rate` > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= " + stringIt(fromdate) + " and registered < " + stringIt(todate) + " " +
-                "group by w.consultant_company_uuid, year(`w`.`registered`), month(`w`.`registered`);";
+        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration) AS value from work_full w " +
+                "where w.rate > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= '" + stringIt(fromdate) + "' and registered < '" + stringIt(todate) + "' " +
+                "group by w.consultant_company_uuid, year(w.registered), month(w.registered);";
+        log.info("getRegisteredRevenueByPeriod sql: "+sql);
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
-                        ((BigDecimal) tuple.get("value")).doubleValue()
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
                 ))
                 .toList();
     }
@@ -114,8 +115,7 @@ public class RevenueService {
 
     public List<GraphKeyValue> getSumOfRegisteredRevenueByClientByFiscalYear(String companyuuid, int fiscalYear) {
         LocalDate fiscalYearDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
-        Map<String, GraphKeyValue> clientRevenueMap = new HashMap<>();
-        Map<String, Double> workList = workService.findByPeriod(fiscalYearDate, fiscalYearDate.plusYears(1)).stream()
+                Map<String, Double> workList = workService.findByPeriod(fiscalYearDate, fiscalYearDate.plusYears(1)).stream()
                 .filter(work -> work.getConsultant_company_uuid().equals(companyuuid) && work.getRate()>0)
                 .collect(Collectors.groupingBy(WorkFull::getClientuuid, Collectors.summingDouble(work -> work.getWorkduration()*work.getRate())));
         return workList.keySet().stream().map(s -> new GraphKeyValue(s, "", workList.get(s))).collect(Collectors.toList());
@@ -227,6 +227,7 @@ public class RevenueService {
         return result;
     }
 
+    // TODO: Make this add registered revenue for months that are not invoiced yet
     public List<GraphKeyValue> getInvoicedOrRegisteredRevenueByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {
         Map<LocalDate, Double> invoicedOrRegisteredRevenueMap = new HashMap<>();
         int months = (int) ChronoUnit.MONTHS.between(periodStart, periodEnd);
@@ -245,6 +246,17 @@ public class RevenueService {
             result.add(new GraphKeyValue(UUID.randomUUID().toString(), stringIt(localDate), invoicedOrRegisteredRevenueMap.get(localDate)));
         });
 
+        return result;
+    }
+
+    public List<DateValueDTO> getInvoicedRevenueByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {
+        List<DateValueDTO> result = new ArrayList<>();
+        int months = (int) ChronoUnit.MONTHS.between(periodStart, periodEnd);
+        for (int i = 0; i < months; i++) {
+            LocalDate currentDate = periodStart.plusMonths(i);
+            double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonth(companyuuid, currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
+            result.add(new DateValueDTO(currentDate, invoicedAmountByMonth));
+        }
         return result;
     }
 

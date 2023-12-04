@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregateservices.BudgetService;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
 import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
 import dk.trustworks.intranet.dto.DateValueDTO;
@@ -44,10 +45,37 @@ public class RevenueResource {
     RevenueService revenueService;
 
     @Inject
+    BudgetService budgetService;
+
+    @Inject
     FinanceService financeService;
 
     @Inject
     TeamService teamService;
+
+    @GET
+    @Path("/budgets")
+    public List<DateValueDTO> getBudgetRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        return budgetService.getBudgetRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
+    }
+
+    @GET
+    @Path("/budgets/months/{month}")
+    public DateValueDTO getBudgetRevenueForSingleMonth(@PathParam("month") String month) {
+        return budgetService.getBudgetRevenueForSingleMonth(companyuuid, dateIt(month));
+    }
+
+    @GET
+    @Path("/budgets/consultants/{useruuid}/months/{month}")
+    public DateValueDTO getBudgetRevenueForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
+        return budgetService.getBudgetRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month));
+    }
+
+    @GET
+    @Path("/budgets/consultants/{useruuid}")
+    public List<DateValueDTO> getRBudgetRevenueByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("periodFrom") String periodFrom, @QueryParam("periodTo") String periodTo) {
+        return budgetService.getBudgetRevenueByPeriodAndSingleConsultant(companyuuid, useruuid, dateIt(periodFrom), dateIt(periodTo));
+    }
 
     @GET
     @Path("/registered")
@@ -75,8 +103,8 @@ public class RevenueResource {
         return revenueService.getSumOfRegisteredRevenueByClient(companyuuid);
     }
 
-    @GET
-    @Path("/registered/clients")
+    //@GET
+    //@Path("/registered/clients")
     public List<KeyValueDTO> revenuePerClient(@QueryParam("clientuuids") String clientuuids) {
         return revenueService.getRegisteredRevenuePerClient(companyuuid, Arrays.stream(clientuuids.split(",")).toList());
     }
@@ -113,8 +141,8 @@ public class RevenueResource {
 
     @GET
     @Path("/invoiced")
-    public List<GraphKeyValue> getInvoicedOrRegisteredRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return revenueService.getInvoicedOrRegisteredRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
+    public List<DateValueDTO> getInvoicedRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        return revenueService.getInvoicedRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET

@@ -2,10 +2,10 @@ package dk.trustworks.intranet.aggregateservices;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
-import dk.trustworks.intranet.aggregateservices.model.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
 import dk.trustworks.intranet.userservice.dto.Capacity;
 import dk.trustworks.intranet.userservice.model.Team;
@@ -138,13 +138,13 @@ public class EmployeeDataService {
         employeeAggregateData.setBudgetHoursWithNoAvailabilityAdjustment(0);
         //employeeAggregateData.setBudgetDocuments(new ArrayList<>());
 
-        List<BudgetDocumentPerDay> budgetDocumentPerDays = budgetService.getConsultantBudgetDataByMonth(user.getUuid(), refreshDate);
+        List<EmployeeBudgetPerDay> employeeBudgetPerDays = budgetService.getConsultantBudgetDataByMonth(user.getUuid(), refreshDate);
 
-        for (BudgetDocumentPerDay budgetDocumentPerDay : budgetDocumentPerDays) {
+        for (EmployeeBudgetPerDay employeeBudgetPerDay : employeeBudgetPerDays) {
             //EmployeeAggregateData employeeAggregateData = getEmployeeAggregateData(budgetDocument.getMonth(), budgetDocument.getUser().getUuid());
-            employeeAggregateData.addBudgetHours(budgetDocumentPerDay.getBudgetHours());
-            employeeAggregateData.addBudgetHoursWithNoAvailabilityAdjustment(budgetDocumentPerDay.getBudgetHoursWithNoAvailabilityAdjustment());
-            employeeAggregateData.addBudgetAmount(budgetDocumentPerDay.getBudgetHours()* budgetDocumentPerDay.getRate());
+            employeeAggregateData.addBudgetHours(employeeBudgetPerDay.getBudgetHours());
+            employeeAggregateData.addBudgetHoursWithNoAvailabilityAdjustment(employeeBudgetPerDay.getBudgetHoursWithNoAvailabilityAdjustment());
+            employeeAggregateData.addBudgetAmount(employeeBudgetPerDay.getBudgetHours()* employeeBudgetPerDay.getRate());
             //employeeAggregateData.addBudgetDocument(budgetDocument);
         }
     }
@@ -308,6 +308,13 @@ public class EmployeeDataService {
         return EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
                 "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
                 "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d')", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
+    }
+
+    public List<EmployeeDataPerMonth> getEmployeeDataPerMonth(String companyuuid, LocalDate fromdate, LocalDate todate) {
+        return EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
+                "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
+                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') " +
+                "      AND companyuuid = ?5", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), companyuuid);
     }
 
 

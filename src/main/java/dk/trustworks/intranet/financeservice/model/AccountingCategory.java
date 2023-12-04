@@ -19,6 +19,7 @@ public class AccountingCategory  extends PanacheEntityBase {
     private String accountCode;
     @Column(name = "groupname")
     private String accountname;
+    //@JsonIgnore
     @OneToMany(mappedBy = "accountingCategory", fetch = FetchType.EAGER)
     private List<AccountingAccount> accounts;
     @Transient

@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.BudgetService;
-import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
 import dk.trustworks.intranet.contracts.model.Budget;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
@@ -31,6 +31,7 @@ import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 @Path("/cached/budgets")
 @RequestScoped
 @RolesAllowed({"SYSTEM"})
+@Deprecated
 @SecurityRequirement(name = "jwt")
 public class BudgetResource {
 
@@ -46,7 +47,7 @@ public class BudgetResource {
         return ((List<Tuple>) em.createNativeQuery("select " +
                 "    b.year as year, b.month as month, (sum(b.budgetHours * b.rate)) as value " +
                 "from " +
-                "    budget_data_per_month b " +
+                "    employee_budget_per_month b " +
                 "group by " +
                 "    b.year, b.month;", Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(LocalDate.of((int) tuple.get("year"), (int) tuple.get("month"), 1),
@@ -75,18 +76,18 @@ public class BudgetResource {
 
     @GET
     @Path("/users/{useruuid}/datemonths/{datemonth}/documents")
-    public List<BudgetDocumentPerDay> getConsultantBudgetHoursByMonthDocuments(@PathParam("useruuid") String useruuid, @PathParam("datemonth") String datemonth) {
+    public List<EmployeeBudgetPerDay> getConsultantBudgetHoursByMonthDocuments(@PathParam("useruuid") String useruuid, @PathParam("datemonth") String datemonth) {
         return budgetService.getConsultantBudgetDataByMonth(useruuid, dateIt(datemonth));
     }
 
     @GET
-    public List<BudgetDocumentPerDay> getConsultantBudgetHoursByPeriodDocuments(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+    public List<EmployeeBudgetPerDay> getConsultantBudgetHoursByPeriodDocuments(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return budgetService.getBudgetDataByPeriod(dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/users/{useruuid}")
-    public List<BudgetDocumentPerDay> getConsultantBudgetHoursByUserAndPeriodDocuments(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+    public List<EmployeeBudgetPerDay> getConsultantBudgetHoursByUserAndPeriodDocuments(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return budgetService.getBudgetDataByUserAndPeriod(useruuid, dateIt(fromdate), dateIt(todate));
     }
 
@@ -105,9 +106,9 @@ public class BudgetResource {
     @GET
     @Path("/clients")
     public List<GraphKeyValue> calcClientBudgets(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        List<BudgetDocumentPerDay> budgetDocumentPerDayList = budgetService.getBudgetDataByPeriod(dateIt(fromdate), dateIt(todate));
+        List<EmployeeBudgetPerDay> employeeBudgetPerDayList = budgetService.getBudgetDataByPeriod(dateIt(fromdate), dateIt(todate));
         Map<String, Double> result = new HashMap<>();
-        budgetDocumentPerDayList.forEach(budgetDocument -> {
+        employeeBudgetPerDayList.forEach(budgetDocument -> {
             double temp = result.getOrDefault(budgetDocument.getClient().getName(), 0.0);
             temp += (budgetDocument.getBudgetHours() * budgetDocument.getRate());
             result.put(budgetDocument.getClient().getName(), temp);

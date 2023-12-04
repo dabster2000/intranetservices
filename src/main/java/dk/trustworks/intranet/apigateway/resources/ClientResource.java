@@ -4,7 +4,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregateservices.BudgetService;
-import dk.trustworks.intranet.aggregateservices.model.BudgetDocumentPerDay;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
 import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
@@ -125,12 +125,12 @@ public class ClientResource {
     public List<GraphKeyValue> getClientBudgetSum(@PathParam("fiscalyear") int fiscalYear) {
         LocalDate startDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
         LocalDate endDate = startDate.plusYears(1).minusMonths(1);
-        List<BudgetDocumentPerDay> budgetDocumentPerDayList = budgetService.getBudgetDataByPeriod(startDate, endDate);
+        List<EmployeeBudgetPerDay> employeeBudgetPerDayList = budgetService.getBudgetDataByPeriod(startDate, endDate);
         Map<String, GraphKeyValue> clientBudgets = new HashMap<>();
-        for (BudgetDocumentPerDay budgetDocumentPerDay : budgetDocumentPerDayList) {
-            Client client = budgetDocumentPerDay.getClient();
+        for (EmployeeBudgetPerDay employeeBudgetPerDay : employeeBudgetPerDayList) {
+            Client client = employeeBudgetPerDay.getClient();
             clientBudgets.putIfAbsent(client.getUuid(), new GraphKeyValue(client.getUuid(), client.getName(), 0.0));
-            clientBudgets.get(client.getUuid()).addValue(budgetDocumentPerDay.getRate()* budgetDocumentPerDay.getBudgetHours());
+            clientBudgets.get(client.getUuid()).addValue(employeeBudgetPerDay.getRate()* employeeBudgetPerDay.getBudgetHours());
         }
         return new ArrayList<>(clientBudgets.values());
     }
