@@ -1,7 +1,9 @@
 package dk.trustworks.intranet.expenseservice.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
@@ -9,9 +11,13 @@ import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIAccount;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIFile;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
+import dk.trustworks.intranet.financeservice.model.IntegrationKey;
+import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
+import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
@@ -23,7 +29,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Date;
@@ -32,6 +40,9 @@ import java.util.List;
 @JBossLog
 @RequestScoped
 public class  EconomicsService {
+
+    @Inject
+    UserService userService;
 
     @Inject
     @RestClient
@@ -45,19 +56,20 @@ public class  EconomicsService {
     @RestClient
     EconomicsAPIAccount economicsAPIAccount;
 
-    @ConfigProperty(name = "e-conomics.expense-journal-number")
-    int journalNumber;
+    //@ConfigProperty(name = "e-conomics.expense-journal-number")
+    //int journalNumber;
 
-    public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
+    public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException,  JsonProcessingException {
 
         // get company
-        /*
-        User.<User>findById(expense.getUseruuid());
+        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(LocalDate.now());
+        Company company = userStatus.getCompany();
+
         String url = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "url").firstResult().getValue();
         String appSecretToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AppSecretToken").firstResult().getValue();
         String agreementGrantToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AgreementGrantToken").firstResult().getValue();
+        int journalNumber = Integer.parseInt(IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "expense-journal-number").firstResult().getValue());
 
-         */
 
         Journal journal = new Journal(journalNumber);
         String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
@@ -67,7 +79,11 @@ public class  EconomicsService {
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
         // call e-conomics endpoint
-        Response response = economicsAPI.postVoucher(journal.getJournalNumber(), json);
+        EconomicsAPI remoteApi = RestClientBuilder.newBuilder()
+                .baseUri(URI.create(url))
+                .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
+                .build(EconomicsAPI.class);
+        Response response =  economicsAPI.postVoucher(journal.getJournalNumber(), json);
 
         // extract voucher number from reponse
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
@@ -85,6 +101,10 @@ public class  EconomicsService {
             log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher + ", response: " + response);
                 return response;
         }
+    }
+
+    public Response postVoucher(Journal journal, String json, URI apiUri, String appSecretToken, String agreementGrantToken) {
+
     }
 
     public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
