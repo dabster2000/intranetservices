@@ -3,7 +3,6 @@ package dk.trustworks.intranet.financeservice.jobs;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup;
-import dk.trustworks.intranet.financeservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.services.EconomicsService;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
@@ -13,7 +12,6 @@ import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.event.Observes;
@@ -30,10 +28,6 @@ public class FinanceLoadJob {
 
     @Inject
     InvoiceService invoiceAPI;
-
-    @Inject
-    @RestClient
-    EconomicsAPI economicsAPI;
 
     //private final String[] periods = {"2016_6_2017", "2017_6_2018", "2018_6_2019", "2019_6_2020", "2020_6_2021", "2021_6_2022", "2022_6_2023", "2023_6_2024"};
     private final String[] periods = {"2023_6_2024"};

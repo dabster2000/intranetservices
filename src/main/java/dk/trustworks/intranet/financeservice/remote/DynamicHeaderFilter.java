@@ -16,8 +16,6 @@ public class DynamicHeaderFilter implements ClientRequestFilter {
 
     @Override
     public void filter(ClientRequestContext requestContext) throws IOException {
-        System.out.println("DynamicHeaderFilter.filter");
-        System.out.println("requestContext = " + requestContext);
         MultivaluedMap<String, Object> headers = requestContext.getHeaders();
         headers.add("X-AppSecretToken", appSecretToken);
         headers.add("X-AgreementGrantToken", agreementGrantToken);

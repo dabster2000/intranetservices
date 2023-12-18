@@ -7,7 +7,6 @@ import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
 import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
-import dk.trustworks.intranet.financeservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.financeservice.remote.EconomicsPagingAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.EconomicsInvoice;
@@ -16,7 +15,6 @@ import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
@@ -34,10 +32,6 @@ import static dk.trustworks.intranet.financeservice.model.enums.EconomicAccountG
 @JBossLog
 @ApplicationScoped
 public class EconomicsService {
-
-    @Inject
-    @RestClient
-    EconomicsAPI economicsAPI;
 
     @Inject
     TransactionManager tm;
@@ -114,8 +108,6 @@ public class EconomicsService {
     }
 
     public EconomicsInvoice getFirstPage(String date, URI apiUri, String appSecretToken, String agreementGrantToken) throws JsonProcessingException {
-        System.out.println("EconomicsService.getFirstPage");
-        System.out.println("date = " + date + ", apiUri = " + apiUri + ", appSecretToken = " + appSecretToken + ", agreementGrantToken = " + agreementGrantToken);
         EconomicsInvoice economicsInvoice;
         EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                 .baseUri(apiUri)

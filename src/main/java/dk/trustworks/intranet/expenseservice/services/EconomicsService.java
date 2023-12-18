@@ -50,6 +50,15 @@ public class  EconomicsService {
 
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
 
+        // get company
+        /*
+        User.<User>findById(expense.getUseruuid());
+        String url = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "url").firstResult().getValue();
+        String appSecretToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AppSecretToken").firstResult().getValue();
+        String agreementGrantToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AgreementGrantToken").firstResult().getValue();
+
+         */
+
         Journal journal = new Journal(journalNumber);
         String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
 

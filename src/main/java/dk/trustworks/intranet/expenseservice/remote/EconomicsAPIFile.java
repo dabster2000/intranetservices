@@ -16,7 +16,7 @@ import javax.ws.rs.core.Response;
 //@ClientHeaderParam(name="X-AgreementGrantToken", value = "${xAgreementGrantToken}") //value="{xAgreementGrantToken}")
 @ClientHeaderParam(name="X-AppSecretToken", value = "GCCmf2TIXfrY3D9jEiqss8gUPa59rvBFbYAEjF1h7zQ1") //value="{xAppSecretToken}")
 @ClientHeaderParam(name="X-AgreementGrantToken", value = "B03oSVDidmk53uOIdMV9ptnI2hlVQykGdTvmisrtFq01") //value="{xAgreementGrantToken}")
-public interface EconomicsAPIFile {
+public interface EconomicsAPIFile extends AutoCloseable {
 
     // /journals/:journalNumber/vouchers/:accountingYear-voucherNumber/attachment/file
     @POST

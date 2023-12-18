@@ -1,14 +1,14 @@
 package dk.trustworks.intranet.expenseservice.services;
 
+import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
-import dk.trustworks.intranet.dto.ExpenseFile;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import lombok.extern.jbosslog.JBossLog;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
-import javax.transaction.TransactionManager;
 import javax.transaction.Transactional;
 import javax.ws.rs.NotAllowedException;
 import javax.ws.rs.core.Response;
@@ -23,9 +23,6 @@ public class ExpenseService {
 
     @Inject
     EconomicsService economicsService;
-
-    @Inject
-    TransactionManager tm;
 
     @Transactional
     public void processExpense(Expense expense) throws IOException {
@@ -57,7 +54,7 @@ public class ExpenseService {
 
                 } else {
                     log.error("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
-                    tm.setRollbackOnly();
+                    QuarkusTransaction.setRollbackOnly();
                     throw new IOException("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
                 }
 
@@ -72,8 +69,6 @@ public class ExpenseService {
 
     @Transactional
     public void sendExpense(Expense expense, ExpenseFile expenseFile, UserAccount userAccount) throws IOException {
-        System.out.println("ExpenseService.sendExpense");
-
         Response response = economicsService.sendVoucher(expense, expenseFile, userAccount);
 
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {

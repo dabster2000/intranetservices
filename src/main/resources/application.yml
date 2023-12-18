@@ -89,9 +89,6 @@ dk:
           EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
           EconomicsAPIFile/mp-rest/url: https://restapi.e-conomic.com
           EconomicsAPIAccount/mp-rest/url: https://restapi.e-conomic.com
-      financeservice:
-        remote:
-          EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
       invoiceservice:
         network:
           InvoiceAPI/mp-rest/url: https://invoice-generator.com
