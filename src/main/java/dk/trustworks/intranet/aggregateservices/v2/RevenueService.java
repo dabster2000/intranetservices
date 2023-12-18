@@ -126,6 +126,11 @@ public class RevenueService {
         return workFullList.stream().map(work -> new GraphKeyValue(work.getUseruuid(), stringIt(month), work.getWorkduration())).collect(Collectors.toList());
     }
 
+    public List<DateValueDTO> getRegisteredHoursPerSingleConsultantByPeriod(String companyuuid, String useruuid, LocalDate fromdate, LocalDate todate) {
+        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, fromdate, todate, companyuuid).list();
+        return workFullList.stream().map(work -> new DateValueDTO(work.getRegistered().withDayOfMonth(1), work.getWorkduration())).toList();
+    }
+
     public double getRegisteredHoursForSingleMonthAndSingleConsultant(String companyuuid, String useruuid, LocalDate month) {
         List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1), companyuuid).list();
         return workFullList.stream().mapToDouble(WorkFull::getWorkduration).sum();

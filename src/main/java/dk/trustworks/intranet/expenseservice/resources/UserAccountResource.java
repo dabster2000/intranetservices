@@ -5,6 +5,7 @@ import dk.trustworks.intranet.expenseservice.services.EconomicsService;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import lombok.extern.jbosslog.JBossLog;
 
+import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.transaction.Transactional;
@@ -17,6 +18,7 @@ import java.io.IOException;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
+@RolesAllowed({"USER", "SYSTEM"})
 public class UserAccountResource {
 
     @Inject

@@ -1,9 +1,6 @@
 package dk.trustworks.intranet.aggregates.utilization.resources;
 
-import dk.trustworks.intranet.aggregateservices.model.v2.CompanyBudgetPerMonth;
-import dk.trustworks.intranet.aggregateservices.model.v2.CompanyDataPerMonth;
-import dk.trustworks.intranet.aggregateservices.model.v2.CompanyWorkPerMonth;
-import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregateservices.model.v2.*;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
@@ -150,7 +147,7 @@ public class UtilizationResource {
                 ))
                 .toList();
         List<DateValueDTO> budgetsPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
-                "    b.month as date, (sum(b.budgetHours)) as value " +
+                "    b.document_date as date, (sum(b.budgetHours)) as value " +
                 "from " +
                 "    budget_document b " +
                 "    WHERE useruuid = '"+useruuid+"' " +
@@ -250,11 +247,12 @@ public class UtilizationResource {
     @GET
     @Path("/actual/users/{useruuid}")
     public List<DateValueDTO> getActualUtilizationPerMonthByConsultant(@PathParam("useruuid") String useruuid) {
+        List<EmployeeWorkPerMonth> employeeWorkPerMonthList = EmployeeWorkPerMonth.list("useruuid = ?1", useruuid);
         return EmployeeDataPerMonth
                 .<EmployeeDataPerMonth>stream("consultantType = 'CONSULTANT' AND status != 'TERMINATED' AND useruuid = ?1", useruuid)
-                .map(employeeDataPerMonth -> new DateValueDTO(
-                        LocalDate.of(employeeDataPerMonth.getYear(), employeeDataPerMonth.getMonth(), 1),
-                        employeeDataPerMonth.getNetAvailableHours()
+                .map(edpm -> new DateValueDTO(
+                        LocalDate.of(edpm.getYear(), edpm.getMonth(), 1),
+                        employeeWorkPerMonthList.stream().filter(ewpm -> ewpm.getYear() == edpm.getYear() && ewpm.getMonth() == edpm.getMonth()).findAny().orElse(new EmployeeWorkPerMonth()).getWorkDuration() / edpm.getNetAvailableHours() * 100.0
                 ))
                 .toList();
     }

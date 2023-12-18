@@ -28,8 +28,8 @@ public class Expense extends PanacheEntityBase {
     private Double amount;
     private String account;
     private String accountname;
-    private String description;
-    private String projectuuid;
+    private String description = "";
+    private String projectuuid = "";
 
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)

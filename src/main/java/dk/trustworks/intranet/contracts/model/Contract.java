@@ -45,18 +45,6 @@ public class Contract extends PanacheEntityBase {
 
     private String clientuuid;
 
-    /*
-    @Column(name = "activefrom")
-    @JsonSerialize(using = LocalDateSerializer.class)
-    @JsonDeserialize(using = LocalDateDeserializer.class)
-    private LocalDate activeFrom;
-
-    @Column(name = "activeto")
-    @JsonSerialize(using = LocalDateSerializer.class)
-    @JsonDeserialize(using = LocalDateDeserializer.class)
-    private LocalDate activeTo;
-     */
-
     @Column(name = "parentuuid")
     private String parentuuid;
 

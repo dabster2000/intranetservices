@@ -5,9 +5,11 @@ import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import io.quarkus.panache.common.Page;
+import io.quarkus.panache.common.Sort;
 import lombok.extern.jbosslog.JBossLog;
 import org.jboss.resteasy.annotations.jaxrs.PathParam;
 
+import javax.annotation.security.RolesAllowed;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.transaction.Transactional;
@@ -23,6 +25,7 @@ import java.util.List;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
+@RolesAllowed({"USER", "SYSTEM"})
 public class ExpenseResource {
 
     @Inject
@@ -48,7 +51,7 @@ public class ExpenseResource {
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid, @QueryParam("limit") String limit, @QueryParam("page") String page) {
         int pageInt = Integer.parseInt(page);
         int limitInt = Integer.parseInt(limit);
-        return Expense.find("useruuid", useruuid).page(Page.of(pageInt, limitInt)).list();
+        return Expense.find("useruuid", Sort.by("expensedate").descending(), useruuid).page(Page.of(pageInt, limitInt)).list();
     }
 
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid) {
