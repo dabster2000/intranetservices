@@ -3,9 +3,9 @@ package dk.trustworks.intranet.achievementservice.services;
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
-import javax.ws.rs.POST;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.POST;
 import java.util.List;
 import java.util.UUID;
 

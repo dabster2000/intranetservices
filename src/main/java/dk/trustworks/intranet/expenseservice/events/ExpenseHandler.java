@@ -8,10 +8,10 @@ import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.transaction.SystemException;
-import javax.transaction.TransactionManager;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.SystemException;
+import jakarta.transaction.TransactionManager;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 

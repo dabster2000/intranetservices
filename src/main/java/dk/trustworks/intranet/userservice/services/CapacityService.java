@@ -2,11 +2,11 @@ package dk.trustworks.intranet.userservice.services;
 
 import dk.trustworks.intranet.userservice.dto.Capacity;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.persistence.EntityManager;
-import javax.persistence.Query;
-import javax.persistence.Tuple;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+import jakarta.persistence.Tuple;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;

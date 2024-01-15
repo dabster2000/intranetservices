@@ -3,8 +3,8 @@ package dk.trustworks.intranet.contracts.services;
 import dk.trustworks.intranet.contracts.model.Budget;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;

@@ -2,7 +2,7 @@ package dk.trustworks.intranet.security;
 
 import lombok.Data;
 
-import javax.enterprise.context.RequestScoped;
+import jakarta.enterprise.context.RequestScoped;
 
 @Data
 @RequestScoped

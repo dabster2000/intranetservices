@@ -2,7 +2,7 @@ package dk.trustworks.intranet.userservice.services;
 
 import dk.trustworks.intranet.userservice.model.TeamRole;
 
-import javax.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 
 @ApplicationScoped

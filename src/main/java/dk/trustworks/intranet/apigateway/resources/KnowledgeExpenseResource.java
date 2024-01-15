@@ -2,14 +2,14 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
+import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import javax.annotation.security.RolesAllowed;
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.ws.rs.*;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
 import java.util.List;
 
 @JBossLog

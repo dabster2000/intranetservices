@@ -2,8 +2,8 @@ package dk.trustworks.intranet.achievementservice;
 
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 
 @ApplicationScoped
 public class AchievementPersistenceManager {

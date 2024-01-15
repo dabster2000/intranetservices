@@ -2,14 +2,14 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.knowledgeservice.model.Faq;
 import dk.trustworks.intranet.knowledgeservice.services.FaqService;
+import jakarta.annotation.security.RolesAllowed;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import javax.annotation.security.RolesAllowed;
-import javax.enterprise.context.RequestScoped;
-import javax.inject.Inject;
-import javax.transaction.Transactional;
-import javax.ws.rs.*;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.*;
 import java.util.List;
 import java.util.UUID;
 

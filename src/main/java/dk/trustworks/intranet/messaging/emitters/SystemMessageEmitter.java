@@ -3,8 +3,8 @@ package dk.trustworks.intranet.messaging.emitters;
 import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
 import io.vertx.mutiny.core.eventbus.EventBus;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 
 @ApplicationScoped
 public class SystemMessageEmitter {

@@ -2,8 +2,8 @@ package dk.trustworks.intranet.cultureservice.services;
 
 import dk.trustworks.intranet.cultureservice.model.KeyPurpose;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.util.List;
 
 /**

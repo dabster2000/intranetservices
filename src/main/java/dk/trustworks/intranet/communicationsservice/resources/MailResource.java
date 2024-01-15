@@ -6,13 +6,12 @@ import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import io.quarkus.mailer.Mail;
 import io.quarkus.mailer.Mailer;
 import io.quarkus.scheduler.Scheduled;
-import io.smallrye.common.annotation.Blocking;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.transaction.Transactional;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -32,7 +31,6 @@ public class MailResource {
     @ConfigProperty(name = "quarkus.mailer.password")
     String password;
 
-    @Blocking
     @Transactional
     public void sendingHTML(TrustworksMail mail) {
         log.info("MailResource.sendingHTML");
@@ -56,7 +54,6 @@ public class MailResource {
         });
     }
 
-    @Blocking
     @Transactional
     public void sendingNis2Mail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "DU ER NU TILMELDT NIS2 GÅ-HJEM MØDE",
@@ -91,7 +88,6 @@ public class MailResource {
         mail.persist();
     }
 
-    @Blocking
     @Transactional
     public void sendingWaitingListMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "BEKRÆFTELSE PÅ EARLY BIRD OPSKRIVNING",
@@ -118,7 +114,6 @@ public class MailResource {
         mail.persist();
     }
 
-    @Blocking
     @Transactional
     public void sendingInvitationMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "TILLYKKE, DU HAR FÅET EN PLADS",
@@ -163,7 +158,6 @@ public class MailResource {
         mail.persist();
     }
 
-    @Blocking
     @Transactional
     public void sendingDenyMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "TUSIND TAK FOR DIN INTERESSE",
@@ -198,7 +192,6 @@ public class MailResource {
         mail.persist();
     }
 
-    @Blocking
     @Transactional
     public void sendingWithdrawMail(String mailTo) {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), mailTo, "BEKRÆFTELSE PÅ AFMELDING",

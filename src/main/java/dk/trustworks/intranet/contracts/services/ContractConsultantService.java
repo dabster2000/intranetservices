@@ -3,8 +3,8 @@ package dk.trustworks.intranet.contracts.services;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.ws.rs.PathParam;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.ws.rs.PathParam;
 
 @JBossLog
 @ApplicationScoped

@@ -6,22 +6,22 @@ import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
+import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.faulttolerance.Fallback;
 import org.eclipse.microprofile.faulttolerance.Retry;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import javax.annotation.security.RolesAllowed;
-import javax.enterprise.context.RequestScoped;
-import javax.inject.Inject;
-import javax.ws.rs.*;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @JBossLog
 @Tag(name = "company")

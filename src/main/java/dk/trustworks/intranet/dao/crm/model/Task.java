@@ -3,7 +3,7 @@ package dk.trustworks.intranet.dao.crm.model;
 import dk.trustworks.intranet.dao.crm.model.enums.TaskType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 import java.util.UUID;
 
 @Entity

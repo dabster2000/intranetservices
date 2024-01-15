@@ -2,7 +2,7 @@ package dk.trustworks.intranet.cultureservice.model;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 
 /**
  * Created by hans on 23/06/2017.

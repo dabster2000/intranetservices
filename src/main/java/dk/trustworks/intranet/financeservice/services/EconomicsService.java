@@ -16,9 +16,9 @@ import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.transaction.*;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.*;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;

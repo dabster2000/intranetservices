@@ -7,9 +7,9 @@ import dk.trustworks.intranet.knowledgeservice.model.ConferencePhase;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.codec.binary.Base64;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import java.util.List;
 
 @JBossLog

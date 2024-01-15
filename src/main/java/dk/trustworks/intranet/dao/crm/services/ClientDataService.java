@@ -3,9 +3,9 @@ package dk.trustworks.intranet.dao.crm.services;
 import dk.trustworks.intranet.dao.crm.model.Clientdata;
 import io.quarkus.panache.common.Sort;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
-import javax.ws.rs.PathParam;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.PathParam;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;

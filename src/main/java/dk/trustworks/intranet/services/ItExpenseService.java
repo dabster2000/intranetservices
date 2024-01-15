@@ -3,8 +3,8 @@ package dk.trustworks.intranet.services;
 import dk.trustworks.intranet.model.ItExpenseItem;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.util.List;
 
 @JBossLog

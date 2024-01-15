@@ -8,12 +8,12 @@ import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.persistence.EntityManager;
-import javax.persistence.PersistenceUnit;
-import javax.persistence.Tuple;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceUnit;
+import jakarta.persistence.Tuple;
+import jakarta.transaction.Transactional;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;

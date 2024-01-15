@@ -6,7 +6,7 @@ import dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
 import io.quarkus.cache.CacheResult;
 
-import javax.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;

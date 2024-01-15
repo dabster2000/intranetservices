@@ -2,10 +2,10 @@ package dk.trustworks.intranet.userservice.services;
 
 import dk.trustworks.intranet.userservice.model.Role;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
-import javax.validation.Valid;
-import javax.ws.rs.PathParam;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
+import jakarta.ws.rs.PathParam;
 import java.util.List;
 import java.util.UUID;
 

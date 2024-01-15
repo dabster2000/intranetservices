@@ -5,11 +5,11 @@ import dk.trustworks.intranet.cultureservice.model.LessonRole;
 import dk.trustworks.intranet.cultureservice.model.PerformanceGroups;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.annotation.security.RolesAllowed;
-import javax.enterprise.context.RequestScoped;
-import javax.persistence.EntityNotFoundException;
-import javax.transaction.Transactional;
-import javax.ws.rs.*;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.persistence.EntityNotFoundException;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.*;
 import java.util.List;
 import java.util.UUID;
 

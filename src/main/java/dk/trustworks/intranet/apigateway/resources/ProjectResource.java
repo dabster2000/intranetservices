@@ -13,15 +13,15 @@ import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.utils.DateUtils;
+import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import javax.annotation.security.RolesAllowed;
-import javax.enterprise.context.RequestScoped;
-import javax.inject.Inject;
-import javax.transaction.Transactional;
-import javax.ws.rs.*;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -29,7 +29,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @JBossLog
 @Tag(name = "crm")

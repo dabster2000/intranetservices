@@ -15,14 +15,14 @@ import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.utils.NumberUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.annotation.PostConstruct;
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.persistence.EntityManager;
-import javax.persistence.PersistenceContext;
-import javax.persistence.Query;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.Query;
 import java.time.LocalDate;
 import java.util.*;
 

@@ -3,7 +3,7 @@ package dk.trustworks.intranet.knowledgeservice.model;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 
-import javax.persistence.*;
+import jakarta.persistence.*;
 import java.util.List;
 
 @Data

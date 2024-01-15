@@ -3,8 +3,8 @@ package dk.trustworks.intranet.aggregates.sender;
 import dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 
-import javax.enterprise.context.RequestScoped;
-import javax.inject.Inject;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
 
 @RequestScoped
 public class AggregateEventSender {

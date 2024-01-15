@@ -4,7 +4,7 @@ import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
-import javax.ws.rs.*;
+import jakarta.ws.rs.*;
 import java.util.List;
 
 @Path("/invoices")

@@ -7,8 +7,8 @@ import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.CLIENT_EVENT;
 

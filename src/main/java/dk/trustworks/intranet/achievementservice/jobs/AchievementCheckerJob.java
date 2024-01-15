@@ -17,8 +17,8 @@ import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.time.LocalDate;
 import java.time.temporal.ChronoField;
 import java.util.HashMap;

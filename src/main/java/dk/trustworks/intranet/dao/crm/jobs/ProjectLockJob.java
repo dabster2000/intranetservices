@@ -3,8 +3,8 @@ package dk.trustworks.intranet.dao.crm.jobs;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import io.quarkus.scheduler.Scheduled;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 
 @ApplicationScoped
 public class ProjectLockJob {

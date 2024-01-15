@@ -4,8 +4,8 @@ import dk.trustworks.intranet.model.TaskboardItem;
 import dk.trustworks.intranet.model.TaskboardItemWorker;
 import dk.trustworks.intranet.userservice.model.User;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.util.*;
 import java.util.stream.Stream;
 

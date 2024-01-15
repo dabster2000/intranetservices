@@ -1,23 +1,22 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import io.quarkus.vertx.web.Route;
 import io.smallrye.common.annotation.Blocking;
 import io.vertx.ext.web.RoutingContext;
+import jakarta.annotation.security.PermitAll;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.annotation.security.PermitAll;
-import javax.enterprise.context.RequestScoped;
-import javax.inject.Inject;
-import javax.ws.rs.Consumes;
-import javax.ws.rs.Produces;
-
-import static io.quarkus.vertx.web.Route.HttpMethod.POST;
-import static javax.ws.rs.core.MediaType.APPLICATION_FORM_URLENCODED;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_FORM_URLENCODED;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @JBossLog
 @RequestScoped
@@ -30,7 +29,8 @@ public class SlackResource {
     @Blocking
     @Produces(APPLICATION_JSON)
     @Consumes(APPLICATION_JSON)
-    @Route(path = "/slack/events", methods = POST)
+    @Path("/slack/events")
+    @POST
     public String challenge(RoutingContext rc) {
         log.debug("SlackResource.challenge");
         log.debug("payload = " + rc.getBodyAsString());
@@ -45,7 +45,8 @@ public class SlackResource {
     @Blocking
     @Produces(APPLICATION_JSON)
     @Consumes(APPLICATION_FORM_URLENCODED)
-    @Route(path = "/slack/action", methods = POST)
+    @Path("/slack/action")
+    @POST
     public String challenge2(RoutingContext rc) {
         String signature = rc.request().getHeader("X-Slack-Signature");
         String timestamp = rc.request().getHeader("X-Slack-Request-Timestamp");

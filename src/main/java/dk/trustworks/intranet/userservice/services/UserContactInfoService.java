@@ -2,8 +2,8 @@ package dk.trustworks.intranet.userservice.services;
 
 import dk.trustworks.intranet.userservice.model.UserContactinfo;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.util.UUID;
 
 @ApplicationScoped

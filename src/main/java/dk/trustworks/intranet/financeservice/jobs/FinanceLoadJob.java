@@ -13,9 +13,9 @@ import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.enterprise.event.Observes;
-import javax.inject.Inject;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 

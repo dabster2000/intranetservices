@@ -9,7 +9,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.Claims;
 import org.jboss.logging.Logger;
 
-import javax.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 

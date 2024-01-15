@@ -3,9 +3,9 @@ package dk.trustworks.intranet.aggregates.users.services;
 import dk.trustworks.intranet.userservice.model.Salary;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
-import javax.validation.Valid;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;

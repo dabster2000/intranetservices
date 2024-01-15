@@ -6,8 +6,8 @@ import dk.trustworks.intranet.sales.model.SalesLeadConsultant;
 import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;

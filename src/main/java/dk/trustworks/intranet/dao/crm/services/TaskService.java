@@ -4,8 +4,8 @@ import dk.trustworks.intranet.dao.crm.model.Task;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import io.quarkus.panache.common.Sort;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;

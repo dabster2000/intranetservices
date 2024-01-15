@@ -7,7 +7,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-import javax.persistence.Entity;
+import jakarta.persistence.Entity;
 
 import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType.UPDATE_CONFERENCE_PARTICIPANT;
 

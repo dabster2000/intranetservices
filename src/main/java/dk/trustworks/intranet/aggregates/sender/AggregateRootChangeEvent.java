@@ -14,8 +14,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-import javax.enterprise.inject.spi.CDI;
-import javax.persistence.*;
+import jakarta.enterprise.inject.spi.CDI;
+import jakarta.persistence.*;
 import java.util.UUID;
 
 @Data

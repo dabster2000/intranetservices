@@ -1,13 +1,12 @@
 package dk.trustworks.intranet.invoiceservice.network;
 
-import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
 
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Path("")
 @RegisterRestClient

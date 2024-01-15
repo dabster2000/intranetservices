@@ -6,7 +6,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
 
-import javax.persistence.Entity;
+import jakarta.persistence.Entity;
 
 import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType.DELETE_USER_SALARY;
 

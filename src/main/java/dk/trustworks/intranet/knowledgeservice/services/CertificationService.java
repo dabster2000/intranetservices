@@ -4,9 +4,9 @@ import dk.trustworks.intranet.knowledgeservice.model.Certification;
 import dk.trustworks.intranet.knowledgeservice.model.UserCertification;
 import lombok.extern.jbosslog.JBossLog;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.persistence.EntityManager;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import java.util.List;
 
 @JBossLog

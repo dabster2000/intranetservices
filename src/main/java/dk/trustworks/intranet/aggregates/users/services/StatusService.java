@@ -3,9 +3,9 @@ package dk.trustworks.intranet.aggregates.users.services;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.transaction.Transactional;
-import javax.validation.Valid;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
