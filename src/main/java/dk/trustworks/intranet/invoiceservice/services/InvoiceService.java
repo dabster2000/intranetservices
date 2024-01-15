@@ -160,7 +160,7 @@ public class InvoiceService {
                         "discount = ?7, " +
                         "ean = ?8, " +
                         "invoicedate = ?9, " +
-                        "invoice_ref = ?10, " +
+                        "invoiceref = ?10, " +
                         "month = ?11, " +
                         "otheraddressinfo = ?12, " +
                         "projectname = ?13, " +

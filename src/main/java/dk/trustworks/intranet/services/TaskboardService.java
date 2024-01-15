@@ -25,7 +25,7 @@ public class TaskboardService {
         badges.add("Socialt årshjul");
         badges.add("Vidensdag");
         badges.add("Vidensdeling");
-        Stream<TaskboardItem> stream = TaskboardItem.streamAll();
+        Stream<TaskboardItem> stream = TaskboardItem.<TaskboardItem>listAll().stream();
         stream.forEach(t -> {
             badges.addAll(Arrays.asList(t.getBadges().split(",")));
         });

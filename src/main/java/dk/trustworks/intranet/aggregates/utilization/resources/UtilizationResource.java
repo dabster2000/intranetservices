@@ -2,19 +2,20 @@ package dk.trustworks.intranet.aggregates.utilization.resources;
 
 import dk.trustworks.intranet.aggregateservices.model.v2.*;
 import dk.trustworks.intranet.dto.DateValueDTO;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.utils.DateUtils;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
-import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Tuple;
 import jakarta.ws.rs.*;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
 import java.math.BigDecimal;
 import java.sql.Date;
 import java.time.LocalDate;
@@ -47,7 +48,8 @@ public class UtilizationResource {
     public List<DateValueDTO> getBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
-        List<CompanyBudgetPerMonth> companyBudgetPerMonthList = CompanyBudgetPerMonth.list("companyuuid = ?1 " +
+        Company company = Company.findById(companyuuid);
+        List<CompanyBudgetPerMonth> companyBudgetPerMonthList = CompanyBudgetPerMonth.list("company = ?1 " +
                 "AND ( " +
                 "       (year > " + fromDate.getYear() + ")  " +
                 "    OR (year = " + fromDate.getYear() + " AND month >= " + fromDate.getMonthValue() + ") " +
@@ -55,9 +57,9 @@ public class UtilizationResource {
                 "  AND ( " +
                 "       (year < " + toDate.getYear() + ")  " +
                 "    OR (year = " + toDate.getYear() + " AND month <= " + toDate.getMonthValue() + ") " +
-                "  )", companyuuid);
+                "  )", company);
 
-        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("companyuuid = ?1" +
+        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("company = ?1" +
                 "AND ( " +
                 "       ( year > " + fromDate.getYear() + ")  " +
                 "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
@@ -65,7 +67,7 @@ public class UtilizationResource {
                 "  AND ( " +
                 "       ( year < " + toDate.getYear() + ")  " +
                 "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
-                "  )", companyuuid);
+                "  )", company);
 
         return dataPerMonthList.stream()
                 .map(dataPerMonth -> new DateValueDTO(
@@ -173,7 +175,8 @@ public class UtilizationResource {
     public List<DateValueDTO> getActualUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
-        List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("consultant_company_uuid = ?1 " +
+        Company company = Company.findById(companyuuid);
+        List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("company = ?1 " +
                 "AND ( " +
                 "       ( year > " + fromDate.getYear() + ")  " +
                 "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
@@ -181,9 +184,9 @@ public class UtilizationResource {
                 "  AND ( " +
                 "       ( year < " + toDate.getYear() + ")  " +
                 "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
-                "  )", companyuuid);
+                "  )", company);
 
-        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("companyuuid = ?1" +
+        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("company = ?1" +
                 "AND ( " +
                 "       ( year > " + fromDate.getYear() + ")  " +
                 "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
@@ -191,7 +194,7 @@ public class UtilizationResource {
                 "  AND ( " +
                 "       ( year < " + toDate.getYear() + ")  " +
                 "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
-                "  )", companyuuid);
+                "  )", company);
 
         return dataPerMonthList.stream()
                 .map(dataPerMonth -> new DateValueDTO(
@@ -263,7 +266,8 @@ public class UtilizationResource {
     public List<DateValueDTO> getGrossUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
-        List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("consultant_company_uuid = ?1 " +
+        Company company = Company.findById(companyuuid);
+        List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("company = ?1 " +
                 "AND ( " +
                 "       ( year > " + fromDate.getYear() + ")  " +
                 "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
@@ -271,9 +275,9 @@ public class UtilizationResource {
                 "  AND ( " +
                 "       ( year < " + toDate.getYear() + ")  " +
                 "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
-                "  )", companyuuid);
+                "  )", company);
 
-        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("companyuuid = ?1" +
+        List<CompanyDataPerMonth> dataPerMonthList = CompanyDataPerMonth.list("company = ?1" +
                 "AND ( " +
                 "       ( year > " + fromDate.getYear() + ")  " +
                 "    OR ( year = " + fromDate.getYear() + " AND  month >= " + fromDate.getMonthValue() + ") " +
@@ -281,7 +285,7 @@ public class UtilizationResource {
                 "  AND ( " +
                 "       ( year < " + toDate.getYear() + ")  " +
                 "    OR ( year = " + toDate.getYear() + " AND  month <= " + toDate.getMonthValue() + ") " +
-                "  )", companyuuid);
+                "  )", company);
 
         return dataPerMonthList.stream()
                 .map(dataPerMonth -> new DateValueDTO(

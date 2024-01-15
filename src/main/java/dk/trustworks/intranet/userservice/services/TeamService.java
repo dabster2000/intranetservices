@@ -30,7 +30,7 @@ public class TeamService {
         log.info("useruuid = " + useruuid + ", strDate = " + strDate + ", roles = " + Arrays.deepToString(roles));
         List<Team> list = Team.find("select t from Team t " +
                 "join TeamRole tu on tu.teamuuid = t.uuid " +
-                "where membertype in ('" + String.join("','", roles) + "') " +
+                "where teammembertype in ('" + String.join("','", roles) + "') " +
                 "AND useruuid like ?1 " +
                 "AND startdate <= ?2 AND (enddate > ?2 OR enddate is null)", useruuid, strDate).list();
         log.info("list = " + list.size());
@@ -40,14 +40,14 @@ public class TeamService {
     public List<User> getUsersByTeam(String teamuuid) {
         return User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "tu.teamuuid like ?1", teamuuid).list();
     }
 
     public List<User> getUsersByTeam(String teamuuid, LocalDate month) {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "tu.teamuuid like ?1 AND " +
                 "tu.startdate <= ?2 AND (tu.enddate > ?2 OR tu.enddate is null)", teamuuid, month).list();
         return userService.filterForActiveTeamMembers(month, users);
@@ -56,7 +56,7 @@ public class TeamService {
     public List<User> getTeamLeadersByTeam(String teamuuid, LocalDate month) {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'LEADER' AND " +
+                "where teammembertype like 'LEADER' AND " +
                 "tu.teamuuid like ?1 AND " +
                 "tu.startdate <= ?2 AND (tu.enddate > ?2 OR tu.enddate is null)", teamuuid, month).list();
         return userService.filterForActiveTeamMembers(month, users);
@@ -66,7 +66,7 @@ public class TeamService {
         return User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
                 "join Team t on t.uuid = tu.teamuuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "t.teamleadbonus is true").list();
     }
 
@@ -74,7 +74,7 @@ public class TeamService {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
                 "join Team t on t.uuid = tu.teamuuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "t.teamleadbonus is true AND " +
                 "startdate <= ?1 AND " +
                 "(enddate > ?1 OR enddate is null)", month).list();

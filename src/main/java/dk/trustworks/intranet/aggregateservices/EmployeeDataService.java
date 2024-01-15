@@ -7,6 +7,7 @@ import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.Capacity;
 import dk.trustworks.intranet.userservice.model.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
@@ -314,7 +315,7 @@ public class EmployeeDataService {
         return EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
                 "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
                 "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') " +
-                "      AND companyuuid = ?5", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), companyuuid);
+                "      AND company = ?5", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), Company.findById(companyuuid));
     }
 
 

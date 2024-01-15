@@ -49,7 +49,7 @@ public class BubbleService {
     }
 
     public List<Bubble> findBubblesByActiveTrueOrderByCreatedDesc() {
-        return Bubble.find("active = 1", Sort.descending("created")).list();
+        return Bubble.find("active = true", Sort.descending("created")). list();
     }
 
     public List<Bubble> findActiveBubblesByUseruuid(String useruuid) {

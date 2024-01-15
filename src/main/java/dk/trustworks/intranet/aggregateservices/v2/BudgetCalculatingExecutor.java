@@ -41,7 +41,7 @@ public class BudgetCalculatingExecutor {
     public List<EmployeeBudgetPerDay> findAllBudgetDataByUserAndPeriod(String useruuid, LocalDate startDate, LocalDate endDate) {
         return EmployeeBudgetPerMonth.<EmployeeBudgetPerMonth>list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
                 "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
-                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and useruuid = ?5", startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), useruuid)
+                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and user = ?5", startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), User.findById(useruuid))
                 .stream().map(bdm -> new EmployeeBudgetPerDay(LocalDate.of(bdm.getYear(), bdm.getMonth(), 1), bdm.getClient(), bdm.getUser(), bdm.getContract(), bdm.getBudgetHours(), bdm.getBudgetHours(), bdm.getRate())).toList();
     }
 

@@ -8,6 +8,7 @@ import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
@@ -17,6 +18,7 @@ import jakarta.persistence.*;
 @Table(name = "employee_budget_per_month")
 @NoArgsConstructor
 @AllArgsConstructor
+@EqualsAndHashCode(callSuper = true)
 public class EmployeeBudgetPerMonth extends PanacheEntityBase {
 
     @Id
@@ -27,11 +29,11 @@ public class EmployeeBudgetPerMonth extends PanacheEntityBase {
     private int year;
     private int month;
 
-    @OneToOne(fetch = FetchType.EAGER)
+    @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "clientuuid")
     private Client client;
 
-    @OneToOne(fetch = FetchType.EAGER)
+    @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "useruuid")
     private User user;
 
