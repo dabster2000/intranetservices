@@ -45,14 +45,6 @@ public class  EconomicsService {
     @Inject
     UserService userService;
 
-    //@Inject
-    //@RestClient
-    //EconomicsAPI economicsAPI;
-
-    //@Inject
-    //@RestClient
-    //EconomicsAPIFile economicsAPIFile;
-
     @Inject
     @RestClient
     EconomicsAPIAccount economicsAPIAccount;
