@@ -20,6 +20,7 @@ import java.sql.Date;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -220,7 +221,7 @@ public class UtilizationResource {
                     "group by year, month;", Tuple.class).getResultList()).stream()
                     .map(tuple -> new DateValueDTO(
                             ((Date) tuple.get("date")).toLocalDate(),
-                            ((BigDecimal) tuple.get("value")).doubleValue()
+                            Optional.ofNullable(tuple.get("value", BigDecimal.class)).orElse(new BigDecimal(0)).doubleValue()
                     ))
                     .toList());
         }

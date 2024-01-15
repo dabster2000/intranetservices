@@ -9,7 +9,6 @@ import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIAccount;
-import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIFile;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
@@ -37,6 +36,8 @@ import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 
+import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
+
 @JBossLog
 @RequestScoped
 public class  EconomicsService {
@@ -44,34 +45,23 @@ public class  EconomicsService {
     @Inject
     UserService userService;
 
-    @Inject
-    @RestClient
-    EconomicsAPI economicsAPI;
+    //@Inject
+    //@RestClient
+    //EconomicsAPI economicsAPI;
 
-    @Inject
-    @RestClient
-    EconomicsAPIFile economicsAPIFile;
+    //@Inject
+    //@RestClient
+    //EconomicsAPIFile economicsAPIFile;
 
     @Inject
     @RestClient
     EconomicsAPIAccount economicsAPIAccount;
 
-    //@ConfigProperty(name = "e-conomics.expense-journal-number")
-    //int journalNumber;
-
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException,  JsonProcessingException {
 
-        // get company
-        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(LocalDate.now());
-        Company company = userStatus.getCompany();
+        IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
 
-        String url = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "url").firstResult().getValue();
-        String appSecretToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AppSecretToken").firstResult().getValue();
-        String agreementGrantToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AgreementGrantToken").firstResult().getValue();
-        int journalNumber = Integer.parseInt(IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "expense-journal-number").firstResult().getValue());
-
-
-        Journal journal = new Journal(journalNumber);
+        Journal journal = new Journal(result.expenseJournalNumber());
         String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
 
         Voucher voucher = buildJSONRequest(expense, userAccount, journal, text);
@@ -79,11 +69,8 @@ public class  EconomicsService {
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
         // call e-conomics endpoint
-        EconomicsAPI remoteApi = RestClientBuilder.newBuilder()
-                .baseUri(URI.create(url))
-                .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
-                .build(EconomicsAPI.class);
-        Response response =  economicsAPI.postVoucher(journal.getJournalNumber(), json);
+        EconomicsAPI remoteApi = getEconomicsAPI(result);
+        Response response =  remoteApi.postVoucher(journal.getJournalNumber(), json);
 
         // extract voucher number from reponse
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
@@ -101,10 +88,6 @@ public class  EconomicsService {
             log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher + ", response: " + response);
                 return response;
         }
-    }
-
-    public Response postVoucher(Journal journal, String json, URI apiUri, String appSecretToken, String agreementGrantToken) {
-
     }
 
     public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
@@ -127,7 +110,9 @@ public class  EconomicsService {
         upload.addFormData("fileContent", targetStream, MediaType.APPLICATION_OCTET_STREAM_TYPE, "output.jpg");
 
         // call e-conomics endpoint
-        Response fileResponse = economicsAPIFile.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), upload);
+        IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
+        EconomicsAPI remoteApi = getEconomicsAPI(result);
+        Response fileResponse = remoteApi.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), upload);
         if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
             log.error("file not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + expense.getVouchernumber() + ", response: " + fileResponse);
         }
@@ -159,7 +144,7 @@ public class  EconomicsService {
     public Boolean validateAccount(Expense expense) {
         int account = Integer.parseInt(expense.getAccount());
         try {
-            Response response = economicsAPIAccount.getAccount(account);
+            economicsAPIAccount.getAccount(account);
             return true;
         } catch (Exception e){
             return false;
@@ -170,8 +155,6 @@ public class  EconomicsService {
         // call e-conomics endpoint
         String response = null;
         try (Response accountResponse = economicsAPIAccount.getAccount(account)) {
-
-            //extract username from response
             response = accountResponse.readEntity(String.class);
         } catch (Exception e) {
             log.error("account = "+account);
@@ -181,5 +164,19 @@ public class  EconomicsService {
         ObjectMapper objectMapper = new ObjectMapper();
         JsonNode jsonNode = objectMapper.readTree(response);
         return jsonNode.get("name").asText();
+    }
+
+    private static EconomicsAPI getEconomicsAPI(IntegrationKey.IntegrationKeyValue result) {
+        return RestClientBuilder.newBuilder()
+                .baseUri(URI.create(result.url()))
+                .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .build(EconomicsAPI.class);
+    }
+
+    private IntegrationKey.IntegrationKeyValue getIntegrationKey(Expense expense) {
+        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(LocalDate.now());
+        Company company = userStatus.getCompany();
+
+        return getIntegrationKeyValue(company);
     }
 }

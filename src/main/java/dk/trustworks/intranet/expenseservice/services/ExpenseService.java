@@ -10,7 +10,6 @@ import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import javax.enterprise.context.RequestScoped;
 import javax.inject.Inject;
 import javax.transaction.Transactional;
-import javax.ws.rs.NotAllowedException;
 import javax.ws.rs.core.Response;
 import java.io.IOException;
 
@@ -28,7 +27,7 @@ public class ExpenseService {
     public void processExpense(Expense expense) throws IOException {
 
         //validate account
-        if (economicsService.validateAccount(expense)) {
+        //if (economicsService.validateAccount(expense)) {
 
             try {
                 expense.setStatus("oprettet");
@@ -62,9 +61,12 @@ public class ExpenseService {
                 log.error("exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
                 throw new IOException("exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);//Response.status(500).entity(e).build();
             }
+            /*
         } else {
             throw new NotAllowedException("Account not valid: " + expense.getAccount());
         }
+
+             */
     }
 
     @Transactional

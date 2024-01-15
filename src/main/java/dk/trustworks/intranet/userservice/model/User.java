@@ -85,7 +85,7 @@ public class User extends PanacheEntityBase {
     }
 
     public static Optional<User> findByUsername(String username) {
-        return find("username", username).firstResultOptional();
+        return find("username like ?1", username).firstResultOptional();
     }
 
     public UserStatus getUserStatus(LocalDate date) {
@@ -110,23 +110,15 @@ public class User extends PanacheEntityBase {
                 .collect(Collectors.toList());
     }
 
+    public String getFullname() {
+        return firstname + " " + lastname;
+    }
+
     public Boolean checkPassword(String passwordPlainText) {
-        //Span span = GlobalTracer.get().buildSpan("checkPassword").start();
-        //try (Scope ignored = GlobalTracer.get().scopeManager().activate(span)) {
-            //span.log(ImmutableMap.of("param", "value", "password", password));
             if (password.trim().equals("")) {
-                //span.log("Failed login attempt (no password) by " + getUsername());
                 return false;
             }
-        //span.log("Login by " + getUsername());
-        //span.log("Failed login attempt (wrong password) by " + getUsername());
         return BCrypt.checkpw(passwordPlainText, password);
-        //} catch (Exception e) {
-        //    span.log(e.toString());
-        //} finally {
-          //  span.finish();
-        //}
-        //return false;
     }
 
     @Override

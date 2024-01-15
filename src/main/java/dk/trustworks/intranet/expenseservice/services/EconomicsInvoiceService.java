@@ -3,24 +3,24 @@ package dk.trustworks.intranet.expenseservice.services;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
-import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIFile;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
+import dk.trustworks.intranet.financeservice.model.IntegrationKey;
+import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
+import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
 import javax.enterprise.context.RequestScoped;
-import javax.inject.Inject;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,20 +28,14 @@ import java.util.List;
 @RequestScoped
 public class EconomicsInvoiceService {
 
-    @Inject
-    @RestClient
-    EconomicsAPI economicsAPI;
-
-    @Inject
-    @RestClient
-    EconomicsAPIFile economicsAPIFile;
-
-    @ConfigProperty(name = "e-conomics.journal-number")
-    int journalNumber;
+    private IntegrationKey.IntegrationKeyValue integrationKeyValue;
 
     public Response sendVoucher(Invoice invoice) throws IOException {
+        System.out.println("EconomicsInvoiceService.sendVoucher");
 
-        Journal journal = new Journal(journalNumber);
+        integrationKeyValue = IntegrationKey.getIntegrationKeyValue(invoice.getCompany());
+
+        Journal journal = new Journal(integrationKeyValue.invoiceJournalNumber());
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
         Voucher voucher = buildJSONRequest(invoice, journal, text);
@@ -50,7 +44,9 @@ public class EconomicsInvoiceService {
         System.out.println("json = " + json);
 
         // call e-conomics endpoint
+        EconomicsAPI economicsAPI = getEconomicsAPI(integrationKeyValue);
         Response response = economicsAPI.postVoucher(journal.getJournalNumber(), json);
+        System.out.println("response = " + response);
 
         // extract voucher number from reponse
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
@@ -65,11 +61,13 @@ public class EconomicsInvoiceService {
             return sendFile(invoice, voucher, voucherNumber);
         } else {
             log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", response: " + response);
-                return response;
+            return response;
         }
     }
 
     public Response sendFile(Invoice invoice, Voucher voucher, int voucherNumber) throws IOException {
+        System.out.println("EconomicsInvoiceService.sendFile");
+        System.out.println("invoice = " + invoice + ", voucher = " + voucher + ", voucherNumber = " + voucherNumber);
         // format accountingYear to URL output
         String year = voucher.getAccountingYear().getYear();
         String[] arrOfStr = year.split("/", 2);
@@ -88,7 +86,9 @@ public class EconomicsInvoiceService {
         upload.addFormData("fileContent", targetStream, MediaType.APPLICATION_OCTET_STREAM_TYPE, "invoice.pdf");
 
         // call e-conomics endpoint
+        EconomicsAPI economicsAPIFile = getEconomicsAPI(integrationKeyValue);
         Response fileResponse = economicsAPIFile.postFile(voucher.getJournal().getJournalNumber(), urlYear, voucherNumber, upload);
+        System.out.println("fileResponse = " + fileResponse);
         if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
             log.error("file not posted successfully to e-conomics. Expenseuuid: " + invoice.getUuid() + ", voucher: " + voucher.getJournal().getJournalNumber() + ", response: " + fileResponse);
         }
@@ -115,6 +115,14 @@ public class EconomicsInvoiceService {
         voucher.setEntries(entries);
 
         return voucher;
+    }
+
+
+    private static EconomicsAPI getEconomicsAPI(IntegrationKey.IntegrationKeyValue result) {
+        return RestClientBuilder.newBuilder()
+                .baseUri(URI.create(result.url()))
+                .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .build(EconomicsAPI.class);
     }
 
 }

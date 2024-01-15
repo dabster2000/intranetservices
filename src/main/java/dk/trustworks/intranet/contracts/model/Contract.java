@@ -124,12 +124,14 @@ public class Contract extends PanacheEntityBase {
     public String toString() {
         return "Contract{" +
                 "uuid='" + uuid + '\'' +
+                ", company=" + company.getName() +
                 ", amount=" + amount +
                 ", contractType=" + contractType +
                 ", refid='" + refid + '\'' +
                 ", status=" + status +
                 ", clientuuid='" + clientuuid + '\'' +
                 ", parentuuid='" + parentuuid + '\'' +
+                ", leaduuid='" + leaduuid + '\'' +
                 ", created=" + created +
                 ", name='" + name + '\'' +
                 ", clientdatauuid='" + clientdatauuid + '\'' +

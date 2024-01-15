@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
 import static dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup.*;
 
 @JBossLog
@@ -48,14 +49,12 @@ public class EconomicsService {
         collectionResultMap.put(SALG_ACCOUNTS.getRange(), new ArrayList<>());
         collectionResultMap.put(ADMINISTRATION_ACCOUNTS.getRange(), new ArrayList<>());
 
-        String url = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "url").firstResult().getValue();
-        String appSecretToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AppSecretToken").firstResult().getValue();
-        String agreementGrantToken = IntegrationKey.<IntegrationKey>find("company = ?1 and key = ?2", company, "X-AgreementGrantToken").firstResult().getValue();
+        IntegrationKey.IntegrationKeyValue result = getIntegrationKeyValue(company);
 
         List<FinanceDetails> financeDetails = new ArrayList<>();
 
-        EconomicsInvoice economicsInvoice = getFirstPage(date, URI.create(url), appSecretToken, agreementGrantToken);
-
+        EconomicsInvoice economicsInvoice = getFirstPage(date, URI.create(result.url()), result.appSecretToken(), result.agreementGrantToken());
+        String url = "";
         do {
             try {
                 assert economicsInvoice != null;
@@ -63,14 +62,16 @@ public class EconomicsService {
                     collectionResultMap.keySet().forEach(integerRange -> {
                         if(integerRange.contains(collection.getAccount().getAccountNumber())) collectionResultMap.get(integerRange).add(collection);
                     });
-                    if(collection.getEntryNumber()==78991) System.out.println("collection = " + collection);
                     financeDetails.add(new FinanceDetails(company, collection.getEntryNumber(), collection.getAccount().getAccountNumber(), collection.getInvoiceNumber(), collection.getAmount(), LocalDate.parse(collection.getDate(), DateTimeFormatter.ofPattern("yyyy-MM-dd")).withDayOfMonth(1), collection.getText()));
                 }
                 url = economicsInvoice.getPagination().getNextPage();
                 if(url!=null) {
-                    economicsInvoice = getNextPage(URI.create(url), appSecretToken, agreementGrantToken);
+                    economicsInvoice = getNextPage(URI.create(url), result.appSecretToken(), result.agreementGrantToken());
                 }
             } catch (Exception e) {
+                System.out.println("url = " + url);
+                System.out.println("result = " + result);
+                System.out.println("economicsInvoice = " + economicsInvoice.pagination.getNextPage());
                 throw new RuntimeException(e);
             }
         } while (url != null);

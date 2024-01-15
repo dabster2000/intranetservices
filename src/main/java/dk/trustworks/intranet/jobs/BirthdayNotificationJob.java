@@ -36,6 +36,8 @@ public class BirthdayNotificationJob {
     }
 
     private static final String[] WISHES = {
+            /** NICE AND FRIENDLY */
+            /*
             ":flag-dk::tada::cake: [Name], congrats on leveling up in the game of life! :tada: P.S. Is that cake I see at your desk? :flag-dk:",
             ":flag-dk::balloon: [Name], another spin around the sun and you're just glowing! :sunglasses: Hope your day is all about less :email: and more :cake:! :flag-dk:",
             ":flag-dk::tada: Happy [Name]'s Day! :partyparrot: May your cake be bug-free, unlike some of our code. :flag-dk:",
@@ -94,7 +96,24 @@ public class BirthdayNotificationJob {
             ":flag-dk::beers: Age gets better with beer! [Name], pour yourself some birthday cheer! :tumbler_glass:",
             ":flag-dk::sparkler: Light up the day, [Name]! It’s your time to shine! :sun_with_face:",
             ":flag-dk::pizza: Like a fine pizza, [Name] only gets better with time! Slice slice baby! :knife_fork_plate:",
-            ":flag-dk::zany_face: Wilder, wackier, and wonderfully older! Dive into the fun, [Name]!"
+            ":flag-dk::zany_face: Wilder, wackier, and wonderfully older! Dive into the fun, [Name]!"*/
+            ":flag-dk::alarm_clock: [Name], another year and STILL not wiser? Let's hope those candles bring some enlightenment! :birthday:",
+            ":flag-dk::hatching_chick: [Name], you're not getting older, just more... seasoned. Peppered with wisdom, perhaps? :bird:",
+            ":flag-dk::video_game: Leveled up in age, [Name]? But are your gaming skills leveling up too? :trophy:",
+            ":flag-dk::balloon: [Name], balloons for your birthday? Or are they for your ever-expanding age ego? :confetti_ball:",
+            ":flag-dk::sunglasses: [Name], you say age is just a number, but it's starting to sound like a phone number, isn't it? :camera_with_flash:",
+            ":flag-dk::memo: Older, bolder, and... just plain older. But who's counting? Oh right, we are. Happy Birthday, [Name]! :fork_and_knife:",
+            ":flag-dk::roller_coaster: [Name], getting old is like a roller coaster. Lots of screams, some fun, and a few unexpected drops! Enjoy the ride! :earth_americas:",
+            ":flag-dk::clinking_glasses: A toast to [Name]! Like wine, aging but... also, like wine, possibly better left in the cellar? :beer:",
+            ":flag-dk::book: Another year, another wrinkle, [Name]. Think of them as life's bookmarks! :pen_fountain:",
+            ":flag-dk::rocket: [Name], your age's reaching new heights. Maybe it’s time it came back to Earth? :stars:",
+            ":flag-dk::gift_heart: [Name], you're a vintage model now. But remember, classic doesn't mean obsolete... yet! :ribbon:",
+            ":flag-dk::spiral_calendar_pad: [Name], on your special day, remember: age is just a high score in the game of life. And you're winning! :flashlight:",
+            ":flag-dk::trophy: [Name], here's to you, the MVP of making gray hair look... intentional! Go champ! :medal:",
+            ":flag-dk::beers: [Name], remember, beers may get stale with age, but you? You're... fermenting? Cheers! :tumbler_glass:",
+            ":flag-dk::sparkler: [Name], like a rare coin, you're gaining value. Too bad it's in laugh lines! Celebrate! :sun_with_face:",
+            ":flag-dk::pizza: [Name], you're a slice above the rest. A slightly older, crustier slice, but still our favorite! :knife_fork_plate:",
+            ":flag-dk::zany_face: [Name], you're not older – you're just a classic edition with added... character! Enjoy your day!"
     };
 
     public static String getRandomWish(String name, String gender) {
@@ -179,18 +198,15 @@ The greetings playfully nod to common themes of aging but keep the vibe fun and 
         ":flag-dk::alarm_clock: [Name], another year and STILL not wiser? Let's hope those candles bring some enlightenment! :birthday:",
         ":flag-dk::hatching_chick: [Name], you're not getting older, just more... seasoned. Peppered with wisdom, perhaps? :bird:",
         ":flag-dk::video_game: Leveled up in age, [Name]? But are your gaming skills leveling up too? :trophy:",
-        ":flag-dk::musical_note: [Name], you may be hitting high age notes, but can you still hit the dance floor notes? Challenge accepted? :headphones:",
         ":flag-dk::balloon: [Name], balloons for your birthday? Or are they for your ever-expanding age ego? :confetti_ball:",
         ":flag-dk::sunglasses: [Name], you say age is just a number, but it's starting to sound like a phone number, isn't it? :camera_with_flash:",
         ":flag-dk::memo: Older, bolder, and... just plain older. But who's counting? Oh right, we are. Happy Birthday, [Name]! :fork_and_knife:",
-        ":flag-dk::rainbow: Somewhere over the rainbow, [Name]'s youth is on the run! Keep chasing! :unicorn_face:",
         ":flag-dk::roller_coaster: [Name], getting old is like a roller coaster. Lots of screams, some fun, and a few unexpected drops! Enjoy the ride! :earth_americas:",
         ":flag-dk::clinking_glasses: A toast to [Name]! Like wine, aging but... also, like wine, possibly better left in the cellar? :beer:",
         ":flag-dk::book: Another year, another wrinkle, [Name]. Think of them as life's bookmarks! :pen_fountain:",
         ":flag-dk::rocket: [Name], your age's reaching new heights. Maybe it’s time it came back to Earth? :stars:",
         ":flag-dk::gift_heart: [Name], you're a vintage model now. But remember, classic doesn't mean obsolete... yet! :ribbon:",
         ":flag-dk::spiral_calendar_pad: [Name], on your special day, remember: age is just a high score in the game of life. And you're winning! :flashlight:",
-        ":flag-dk::mage: [Name], may your day be as magical as the mystery of your true age! :crystal_ball:",
         ":flag-dk::trophy: [Name], here's to you, the MVP of making gray hair look... intentional! Go champ! :medal:",
         ":flag-dk::beers: [Name], remember, beers may get stale with age, but you? You're... fermenting? Cheers! :tumbler_glass:",
         ":flag-dk::sparkler: [Name], like a rare coin, you're gaining value. Too bad it's in laugh lines! Celebrate! :sun_with_face:",

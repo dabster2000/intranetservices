@@ -63,7 +63,7 @@ public class InvoiceResource {
     }
 
     @GET
-    @Path("drafts")
+    @Path("/drafts")
     public List<Invoice> findDraftsByPeriod(@QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate) {
         if(fromdate.isPresent() && todate.isPresent())
             return InvoiceService.findWithFilter(dateIt(fromdate.get()), dateIt(todate.get()));
@@ -84,6 +84,8 @@ public class InvoiceResource {
     @PUT
     @Path("/drafts")
     public Invoice updateDraftInvoice(Invoice draftInvoice) {
+        System.out.println("InvoiceResource.updateDraftInvoice");
+        System.out.println("draftInvoice = " + draftInvoice);
         return invoiceService.updateDraftInvoice(draftInvoice);
     }
 
@@ -96,6 +98,8 @@ public class InvoiceResource {
     @POST
     @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
+        System.out.println("InvoiceResource.createInvoice");
+        System.out.println("draftInvoice = " + draftInvoice);
         return invoiceService.createInvoice(draftInvoice);
     }
 

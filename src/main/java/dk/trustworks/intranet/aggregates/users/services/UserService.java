@@ -222,8 +222,10 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void createUser(User user) {
+        System.out.println("UserService.createUser");
         log.info("Create user: "+user);
         if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) return;
+        System.out.println("User does not exist");
         log.info("User does not exist");
         user.setActive(true);
         user.setCreated(LocalDate.now());
@@ -235,48 +237,56 @@ public class UserService {
         User.persist(user);
         Role.persist(new Role(UUID.randomUUID().toString(), RoleType.USER, user.getUuid()));
         UserContactinfo.persist(userContactinfo);
+        System.out.println("User created");
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateOne(User user) {
-        if(User.findByUsername(user.getUsername()).isEmpty()) return;
-        User.update("active = ?1, " +
-                        "email = ?2, " +
-                        "firstname = ?3, " +
-                        "lastname = ?4, " +
-                        "username = ?5, " +
-                        "slackusername = ?6, " +
-                        "birthday = ?7, " +
-                        "gender = ?8, " +
-                        "cpr = ?9, " +
-                        "phone = ?10, " +
-                        "pension = ?11, " +
-                        "healthcare = ?12, " +
-                        "pensiondetails = ?13, " +
-                        "birthday = ?14, " +
-                        "defects = ?15, " +
-                        "photoconsent = ?16, " +
-                        "other = ?17 " +
-                        "WHERE uuid like ?18 ",
-                user.isActive(),
-                user.getEmail(),
-                user.getFirstname(),
-                user.getLastname(),
-                user.getUsername(),
-                user.getSlackusername(),
-                user.getBirthday(),
-                user.getGender(),
-                user.getCpr(),
-                user.getPhone(),
-                user.isPension(),
-                user.isHealthcare(),
-                user.getPensiondetails(),
-                user.getBirthday(),
-                user.getDefects(),
-                user.isPhotoconsent(),
-                user.getOther(),
-                user.getUuid());
+        System.out.println("UserService.updateOne");
+        //if(User.findByUsername(user.getUsername()).isEmpty()) return;
+        System.out.println("User exists");
+        try {
+            User.update("active = ?1, " +
+                            "email = ?2, " +
+                            "firstname = ?3, " +
+                            "lastname = ?4, " +
+                            "username = ?5, " +
+                            "slackusername = ?6, " +
+                            "birthday = ?7, " +
+                            "gender = ?8, " +
+                            "cpr = ?9, " +
+                            "phone = ?10, " +
+                            "pension = ?11, " +
+                            "healthcare = ?12, " +
+                            "pensiondetails = ?13, " +
+                            "birthday = ?14, " +
+                            "defects = ?15, " +
+                            "photoconsent = ?16, " +
+                            "other = ?17 " +
+                            "WHERE uuid like ?18 ",
+                    user.isActive(),
+                    user.getEmail(),
+                    user.getFirstname(),
+                    user.getLastname(),
+                    user.getUsername(),
+                    user.getSlackusername(),
+                    user.getBirthday(),
+                    user.getGender(),
+                    user.getCpr(),
+                    user.getPhone(),
+                    user.isPension(),
+                    user.isHealthcare(),
+                    user.getPensiondetails(),
+                    user.getBirthday(),
+                    user.getDefects(),
+                    user.isPhotoconsent(),
+                    user.getOther(),
+                    user.getUuid());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        System.out.println("User updated");
     }
 
     @Transactional

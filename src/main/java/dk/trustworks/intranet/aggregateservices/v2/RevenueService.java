@@ -259,7 +259,7 @@ public class RevenueService {
         int months = (int) ChronoUnit.MONTHS.between(periodStart, periodEnd);
         for (int i = 0; i < months; i++) {
             LocalDate currentDate = periodStart.plusMonths(i);
-            double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonth(companyuuid, currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
+            double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonthWorkWasDone(companyuuid, currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
             result.add(new DateValueDTO(currentDate, invoicedAmountByMonth));
         }
         return result;

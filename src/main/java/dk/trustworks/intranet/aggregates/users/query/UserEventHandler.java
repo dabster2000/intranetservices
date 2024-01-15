@@ -74,11 +74,11 @@ public class UserEventHandler {
 
     private void updateUser(AggregateRootChangeEvent event) {
         User user = new JsonObject(event.getEventContent()).mapTo(User.class);
-        userService.updateOne(user);
+        //userService.updateOne(user);
     }
 
     private void createUser(AggregateRootChangeEvent event) {
         User user = new JsonObject(event.getEventContent()).mapTo(User.class);
-        userService.createUser(user);
+        //userService.createUser(user);
     }
 }

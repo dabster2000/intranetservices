@@ -11,6 +11,7 @@ import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
+import lombok.extern.jbosslog.JBossLog;
 
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
@@ -26,6 +27,7 @@ import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
+@JBossLog
 @ApplicationScoped
 public class ContractService {
 
@@ -195,6 +197,9 @@ WHERE
 
     @Transactional
     public void save(Contract contract) {
+        log.info("ContractService.save");
+        log.info("contract = " + contract);
+        contract.setContractConsultants(new HashSet<>());
         if(contract.getUuid()==null || contract.getUuid().trim().equals("")) contract.setUuid(UUID.randomUUID().toString());
         Contract.persist(contract);
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());

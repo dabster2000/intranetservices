@@ -2,6 +2,7 @@ package dk.trustworks.intranet.invoiceservice.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
@@ -11,6 +12,7 @@ import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
 import dk.trustworks.intranet.invoiceservice.network.InvoiceAPI;
 import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
+import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
 import lombok.extern.jbosslog.JBossLog;
@@ -31,6 +33,9 @@ import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 @JBossLog
 @ApplicationScoped
 public class InvoiceService {
+
+    @Inject
+    UserService userService;
 
     @Inject
     EntityManager em;
@@ -80,6 +85,14 @@ public class InvoiceService {
         return invoices;
     }
 
+    public double calculateInvoiceSumByMonthWorkWasDone(String companyuuid, LocalDate month) {
+        String sql = "select sum(if(type = 0, (ii.rate*ii.hours), -(ii.rate*ii.hours))) sum from invoiceitems ii " +
+                "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
+                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = '"+companyuuid+"' AND year = "+month.getYear()+" AND month = "+(month.getMonthValue()-1)+"; ";
+        Object singleResult = em.createNativeQuery(sql).getSingleResult();
+        return singleResult!=null?((Number) singleResult).doubleValue():0.0;
+    }
+
     public double calculateInvoiceSumByMonth(String companyuuid, LocalDate month) {
         String sql = "select sum(if(type = 0, (ii.rate*ii.hours), -(ii.rate*ii.hours))) sum from invoiceitems ii " +
                 "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
@@ -104,6 +117,10 @@ public class InvoiceService {
         String sql = "SELECT * FROM invoices i WHERE i.projectuuid like '"+projectuuid+"' AND i.status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC;";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
+    }
+
+    public List<Invoice> findContractInvoices(String contractuuid) {
+        return Invoice.find("contractuuid = ?1 AND status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC", contractuuid).list();
     }
 
     @SuppressWarnings("unchecked")
@@ -131,7 +148,9 @@ public class InvoiceService {
 
     @Transactional
     public Invoice updateDraftInvoice(Invoice invoice) {
+        System.out.println("InvoiceService.updateDraftInvoice");
         //if(!isDraft(invoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+invoice.getUuid());
+        System.out.println("Updating invoice...");
         Invoice.update("attention = ?1, " +
                         "bookingdate = ?2, " +
                         "clientaddresse = ?3, " +
@@ -178,12 +197,14 @@ public class InvoiceService {
                 invoice.getZipcity(),
                 invoice.getCompany(),
                 invoice.getUuid());
-
+        System.out.println("Updating invoice items...");
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
         invoice.getInvoiceitems().forEach(invoiceItem -> {
             invoiceItem.setInvoiceuuid(invoice.uuid);
         });
+        System.out.println("Persisting invoice items...");
         InvoiceItem.persist(invoice.invoiceitems);
+        System.out.println("Invoice updated: "+invoice.getUuid());
 
         return invoice;
     }
@@ -194,9 +215,28 @@ public class InvoiceService {
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
+        System.out.println("Saving invoice...");
         saveInvoice(draftInvoice);
+        System.out.println("Invoice saved: "+draftInvoice.getUuid());
+        System.out.println("Uploading invoice to economics...");
         uploadToEconomics(draftInvoice);
-        //createEmitter.send(draftInvoice);
+        System.out.println("Invoice uploaded to economics: "+draftInvoice.getUuid());
+
+        // Create internal invoice drafts
+        List<User> users = userService.listAll(true);
+        Invoice internalInvoice = new Invoice(InvoiceType.INVOICE, draftInvoice.getContractuuid(), draftInvoice.getProjectuuid(),
+                draftInvoice.getProjectname(), draftInvoice.getDiscount(), draftInvoice.getYear(), draftInvoice.getMonth(), draftInvoice.getCompany().getName(),
+                draftInvoice.getCompany().getAddress(), "", draftInvoice.getCompany().getZipcode() + " " + draftInvoice.getCompany().getCity(),
+                "", draftInvoice.getCompany().getCvr(), "", draftInvoice.getInvoicedate(),
+                draftInvoice.getProjectref(), draftInvoice.getContractref(), draftInvoice.getCompany(),
+                "Intern faktura knyttet til " + draftInvoice.getInvoicenumber());
+        for (InvoiceItem invoiceitem : draftInvoice.getInvoiceitems()) {
+            if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
+            Optional<User> optionalUser = users.stream().filter(u -> u.getFullname().equals(invoiceitem.getItemname())).findFirst();
+            if(optionalUser.isEmpty()) continue;
+            User user = optionalUser.get();
+        }
+
         return draftInvoice;
     }
 
@@ -300,4 +340,5 @@ public class InvoiceService {
             throw new RuntimeException(e);
         }
     }
+
 }

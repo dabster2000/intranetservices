@@ -258,13 +258,19 @@ public class UserResource {
     @PUT
     @Path("/{uuid}")
     public void updateOne(@PathParam("uuid") String uuid, User user) {
+        System.out.println("UserResource.updateOne");
+        System.out.println("uuid = " + uuid + ", user = " + user);
         UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
+        userService.updateOne(user);
         aggregateEventSender.handleEvent(event);
     }
 
     @POST
     public void createUser(User user) {
+        System.out.println("UserResource.createUser");
+        System.out.println("user = " + user);
         CreateUserEvent event = new CreateUserEvent(user.getUuid(), user);
+        userService.createUser(user);
         aggregateEventSender.handleEvent(event);
     }
 

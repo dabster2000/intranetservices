@@ -4,10 +4,12 @@ import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Project;
-import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.KeyValueDTO;
+import dk.trustworks.intranet.invoiceservice.model.Invoice;
+import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -18,6 +20,7 @@ import javax.inject.Inject;
 import javax.ws.rs.*;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
@@ -41,7 +44,7 @@ public class ContractResource {
     WorkService workService;
 
     @Inject
-    ProjectService projectService;
+    InvoiceService invoiceService;
 
     @GET
     @Path("/{contractuuid}")
@@ -82,9 +85,22 @@ public class ContractResource {
     }
 
     @GET
+    @Path("/{contractuuid}/invoices")
+    public List<Invoice> findContractInvoices(@PathParam("contractuuid") String contractuuid) {
+        return invoiceService.findContractInvoices(contractuuid);
+    }
+
+    @GET
     @Path("/{contractuuid}/work")
     public List<WorkFull> findContractWork(@PathParam("contractuuid") String contractuuid) {
         return workService.findByContract(contractuuid);
+    }
+
+    @GET
+    @Path("/{contractuuid}/work/monthly")
+    public Map<KeyValueDTO, List<DateValueDTO>> findContractWorkMonthly(@PathParam("contractuuid") String contractuuid) {
+        List<WorkFull> workList = workService.findByContract(contractuuid);
+        return null;
     }
 
     @GET
