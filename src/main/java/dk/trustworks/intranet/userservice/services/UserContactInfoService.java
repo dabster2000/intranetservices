@@ -24,7 +24,7 @@ public class UserContactInfoService {
         UserContactinfo.update("city = ?1, " +
                         "phone = ?2, " +
                         "postalcode = ?3, " +
-                        "street = ?4 " +
+                        "streetname = ?4 " +
                         "where uuid like ?5 and useruuid like ?6 ",
                 userContactinfo.getCity(),
                 userContactinfo.getPhone(),

@@ -244,8 +244,6 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateOne(User user) {
         System.out.println("UserService.updateOne");
-        //if(User.findByUsername(user.getUsername()).isEmpty()) return;
-        System.out.println("User exists");
         try {
             User.update("active = ?1, " +
                             "email = ?2, " +

@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.expenseservice.services;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
@@ -15,15 +14,14 @@ import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.rest.client.RestClientBuilder;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
-import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
-
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.rest.client.RestClientBuilder;
+import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -45,11 +43,7 @@ public class  EconomicsService {
     @Inject
     UserService userService;
 
-    @Inject
-    @RestClient
-    EconomicsAPIAccount economicsAPIAccount;
-
-    public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException,  JsonProcessingException {
+    public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
 
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
 
@@ -136,17 +130,18 @@ public class  EconomicsService {
     public Boolean validateAccount(Expense expense) {
         int account = Integer.parseInt(expense.getAccount());
         try {
-            economicsAPIAccount.getAccount(account);
+            //economicsAPIAccount.getAccount(account);
             return true;
         } catch (Exception e){
             return false;
         }
     }
 
-    public String getAccount(Integer account) throws IOException{
+    public String getAccount(String companyuuid, Integer account) throws IOException{
         // call e-conomics endpoint
         String response = null;
-        try (Response accountResponse = economicsAPIAccount.getAccount(account)) {
+        EconomicsAPIAccount economicsAccountAPI = getEconomicsAccountAPI(getIntegrationKeyValue(Company.findById(companyuuid)));
+        try (Response accountResponse = economicsAccountAPI.getAccount(account)) {
             response = accountResponse.readEntity(String.class);
         } catch (Exception e) {
             log.error("account = "+account);
@@ -163,6 +158,13 @@ public class  EconomicsService {
                 .baseUri(URI.create(result.url()))
                 .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
                 .build(EconomicsAPI.class);
+    }
+
+    private static EconomicsAPIAccount getEconomicsAccountAPI(IntegrationKey.IntegrationKeyValue result) {
+        return RestClientBuilder.newBuilder()
+                .baseUri(URI.create(result.url()))
+                .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .build(EconomicsAPIAccount.class);
     }
 
     private IntegrationKey.IntegrationKeyValue getIntegrationKey(Expense expense) {

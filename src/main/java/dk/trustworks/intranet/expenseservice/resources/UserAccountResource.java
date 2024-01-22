@@ -35,8 +35,8 @@ public class UserAccountResource {
 
     @GET
     @Path("/search/findByAccountNumber")
-    public UserAccount getAccount(@QueryParam("account") int account) throws IOException {
-        String username = economicsService.getAccount(account);
+    public UserAccount getAccount(@QueryParam("companyuuid") String companyuuid, @QueryParam("account") int account) throws IOException {
+        String username = economicsService.getAccount(companyuuid, account);
         return new UserAccount(account, username);
     }
 

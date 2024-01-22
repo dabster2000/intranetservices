@@ -42,15 +42,9 @@ quarkus:
     console:
       enable: true
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{2.}] (%t) %s%e%n"
-      color: true
       level: DEBUG
     handlers:
       - console
-    categories:
-      "io.quarkus":
-        level: INFO
-      "org.hibernate":
-        level: WARN
   s3:
     sync-client:
       type: APACHE
