@@ -11,8 +11,6 @@ import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -21,11 +19,11 @@ import jakarta.persistence.NonUniqueResultException;
 import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.PathParam;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
-
-import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 @JBossLog
 @ApplicationScoped
@@ -265,13 +263,13 @@ WHERE
         ContractConsultant.update(
                         "hours = ?1, " +
                         "rate = ?2, " +
-                        "activefrom = ?3, " +
-                        "activeto = ?4 " +
+                        "activeFrom = ?3, " +
+                        "activeTo = ?4 " +
                         "WHERE uuid like ?5 ",
                 contractConsultant.getHours(),
                 contractConsultant.getRate(),
-                stringIt(contractConsultant.getActiveFrom()),
-                stringIt(contractConsultant.getActiveTo()),
+                contractConsultant.getActiveFrom(),
+                contractConsultant.getActiveTo(),
                 contractConsultant.getUuid());
     }
 
