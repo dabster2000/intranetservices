@@ -1,19 +1,11 @@
 package dk.trustworks.intranet.expenseservice.events;
 
-import dk.trustworks.intranet.dto.ExpenseFile;
-import dk.trustworks.intranet.expenseservice.model.Expense;
-import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
-import io.quarkus.scheduler.Scheduled;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.transaction.SystemException;
 import jakarta.transaction.TransactionManager;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
+import lombok.extern.jbosslog.JBossLog;
 
 @JBossLog
 @ApplicationScoped
@@ -28,7 +20,8 @@ public class ExpenseHandler {
     @Inject
     TransactionManager tm;
 
-    @Scheduled(every = "30m")
+    //@Scheduled(every = "30m")
+    /*
     public void consumeCreate() {
         List<Expense> expenses = Expense.find("status", "oprettet").list();
         AtomicInteger expensesProcessed = new AtomicInteger();
@@ -40,7 +33,7 @@ public class ExpenseHandler {
                 tm.begin();
                 ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
                 List<UserAccount> userAccounts = UserAccount.find("useruuid = ?1", expense.getUseruuid()).list();
-                if (userAccounts.size() == 0) {
+                if (userAccounts.isEmpty()) {
                     log.warn("No user accounts found for expense "+expense);
                     tm.commit();
                     continue;
@@ -61,6 +54,8 @@ public class ExpenseHandler {
 
         log.info("Expenses processed: " + expensesProcessed.get());
     }
+
+     */
 }
 
 

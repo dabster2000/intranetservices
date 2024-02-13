@@ -51,18 +51,18 @@ public class InvoiceDTO {
     String notes; //Notes - any extra information not included elsewhere	null
     String terms; //Terms and conditions - all the details	null
 
-    private InvoiceDTO(String from, String to, String date, String dueDate) {
-        tax = 25;
+    private InvoiceDTO(String from, String to, String date, String dueDate, String currency) {
         logo = "";
         due_date = dueDate;
-        currency = "DKK";
+        this.currency = currency;
+        tax = "DKK".equals(currency)?25:0;
         this.from = from;
         this.to = to;
         this.date = date;
     }
 
-    private InvoiceDTO(String header, InvoiceFieldsDTO invoiceFieldsDTO, String from, String to, String number, String date, String dueDate, double discounts, String notes) {
-        this(from, to, date, dueDate);
+    private InvoiceDTO(String header, InvoiceFieldsDTO invoiceFieldsDTO, String from, String to, String number, String date, String dueDate, double discounts, String currency, String notes) {
+        this(from, to, date, dueDate, currency);
         this.header = header;
         this.fields = invoiceFieldsDTO;
         this.number = number;
@@ -88,7 +88,7 @@ public class InvoiceDTO {
                 StringUtils.convertInvoiceNumberToString(invoice.invoicenumber),
                 invoice.getInvoicedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
                 invoice.getInvoicedate().plusMonths(1).format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
-                invoice.getDiscount(),
+                invoice.getDiscount(), invoice.getCurrency(),
                 ((invoice.contractref!=null && !invoice.contractref.equals(""))?invoice.getContractref()+"\n":"")+
                         ((invoice.projectref!=null && !invoice.projectref.equals(""))?invoice.getProjectref()+"\n":"")+
                         ((invoice.specificdescription!=null && !invoice.specificdescription.equals(""))?invoice.getSpecificdescription():""));

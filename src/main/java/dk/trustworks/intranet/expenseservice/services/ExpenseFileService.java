@@ -37,7 +37,7 @@ public class ExpenseFileService {
                 RequestBody.fromString(expenseFile.getExpensefile()));
     }
 
-    public ExpenseFile getFileById(String uuid) {
+    public ExpenseFile getFileById(String uuid) throws S3Exception {
         ExpenseFile file = new ExpenseFile(uuid,"");
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try{
@@ -47,7 +47,8 @@ public class ExpenseFileService {
             file.setExpensefile(str);
 
         }  catch (S3Exception e) {
-            System.err.println(e.awsErrorDetails().errorMessage());
+            log.error("Could not load file from S3", e.fillInStackTrace());
+            throw e;
         }
         return file;
     }

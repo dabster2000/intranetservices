@@ -199,6 +199,7 @@ public class InvoiceGeneratorService {
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
                                 project.getCustomerreference(),
                                 contract.getRefid(), contract.getCompany(),
+                                "DKK",
                                 "");
                         log.info("Created new invoice: " + invoice);
                     }
@@ -208,7 +209,7 @@ public class InvoiceGeneratorService {
                         throw new RuntimeException("Rate could not be found for user (link: " + user.getUuid() + ") and task (link: " + workFull.getTaskuuid() + ")");
                     }
                     if (!invoiceItemMap.containsKey(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid())) {
-                        InvoiceItem invoiceItem = new InvoiceItem(user.getFirstname() + " " + user.getLastname(),
+                        InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), user.getFirstname() + " " + user.getLastname(),
                                 task.getName(),
                                 workFull.getRate(),
                                 0.0, invoice.uuid);

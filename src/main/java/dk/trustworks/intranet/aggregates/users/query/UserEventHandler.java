@@ -8,6 +8,7 @@ import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
+import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
 import io.vertx.mutiny.core.eventbus.EventBus;
@@ -39,6 +40,7 @@ public class UserEventHandler {
     //@Incoming(READ_USER_EVENT)
     //@Outgoing(SEND_BROWSER_EVENT)
     @ConsumeEvent(value = USER_EVENT, blocking = true)
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void readUserEvent(AggregateRootChangeEvent event) {
         log.info("UserEventHandler.readUserEvent -> event = " + event);
         AggregateEventType type = event.getEventType();

@@ -4,14 +4,16 @@ import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import lombok.extern.jbosslog.JBossLog;
-import software.amazon.awssdk.services.s3.model.PutObjectResponse;
-
+import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+
 import java.io.IOException;
+import java.util.List;
 
 @JBossLog
 @RequestScoped
@@ -25,48 +27,49 @@ public class ExpenseService {
 
     @Transactional
     public void processExpense(Expense expense) throws IOException {
+        try {
+            //save expense to db
+            expense.setStatus("CREATED");
+            expense.persist();
 
-        //validate account
-        //if (economicsService.validateAccount(expense)) {
+            //save expense file to AWS
+            ExpenseFile expenseFile = new ExpenseFile(expense.getUuid(), expense.getExpensefile());
+            PutObjectResponse awsResponse = expenseFileService.saveFile(expenseFile);
 
-            try {
-                expense.setStatus("oprettet");
-
-                //save expense to db
-                expense.persistAndFlush();
-
-                //save expense file to AWS
-                ExpenseFile expenseFile = new ExpenseFile(expense.getUuid(), expense.getExpensefile());
-                PutObjectResponse awsResponse = expenseFileService.saveFile(expenseFile);
-
-                // if user has account and file is stored at AWS send files to e-conomics
-                if (awsResponse != null ) {
-
-                    UserAccount user = UserAccount.findById(expense.getUseruuid());
-                    if (user != null) {
-                        //send expense to economics
-                        sendExpense(expense, expenseFile, user);
-                    } else {
-                        //user does not have an economics account - await userAccount creation
-                        log.info("unknown user created expense: "+ expense.getUseruuid());
-                    }
-
-                } else {
-                    log.error("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
-                    QuarkusTransaction.setRollbackOnly();
-                    throw new IOException("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
-                }
-
-            }catch (Exception e) {
-                log.error("exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
-                throw new IOException("exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);//Response.status(500).entity(e).build();
+            if(awsResponse==null) {
+                log.error("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
+                QuarkusTransaction.setRollbackOnly();
+                throw new IOException("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
             }
-            /*
-        } else {
-            throw new NotAllowedException("Account not valid: " + expense.getAccount());
-        }
 
-             */
+        } catch (Exception e) {
+            log.error("exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
+            throw new IOException("exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);//Response.status(500).entity(e).build();
+        }
+    }
+
+    @Transactional
+    @Scheduled(every = "1m")
+    public void consumeCreate() throws IOException {
+        List<Expense> expenses = Expense.find("status", "CREATED").list();
+        log.info("Expenses found with status CREATED: " + expenses.size());
+        if(expenses.isEmpty()) return;
+        Expense expense = expenses.get(0);
+
+        ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
+        if(expenseFile==null || expenseFile.getExpensefile().isEmpty()) {
+            log.error("No expense file found for expense "+expense);
+            updateStatus(expense, "NO_FILE");
+            return;
+        }
+        List<UserAccount> userAccounts = UserAccount.find("useruuid = ?1", expense.getUseruuid()).list();
+        if (userAccounts.size() != 1) {
+            log.warn("No single user account found for expense " + expense);
+            updateStatus(expense, "NO_USER");
+            return;
+        }
+        UserAccount userAccount = userAccounts.get(0);
+        sendExpense(expense, expenseFile, userAccount);
     }
 
     @Transactional
@@ -74,14 +77,39 @@ public class ExpenseService {
         Response response = economicsService.sendVoucher(expense, expenseFile, userAccount);
 
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
-            //update expense in db
-            expense.setStatus("afsendt");
-            Expense.update("status = ?1, " + "vouchernumber = ?2 " + "WHERE uuid like ?3 ", expense.getStatus(), expense.getVouchernumber(), expense.getUuid());
-            log.info("Updated expense "+expense);
+            updateStatus(expense, "PROCESSED");
         } else {
             log.error("unable to send voucher to economics: " + expense);
+            updateStatus(expense, "UP_FAILED");
             throw new IOException("Economics error on uploading file. Expense : "+ expense +", response: "+ response);
         }
     }
 
+    private void updateStatus(Expense expense, String status) {
+        expense.setStatus(status);
+        Expense.update("status = ?1, " + "vouchernumber = ?2 " + "WHERE uuid like ?3 ", expense.getStatus(), expense.getVouchernumber(), expense.getUuid());
+        log.info("Updated expense " + expense);
+    }
+
 }
+
+
+// if user has account and file is stored at AWS send files to e-conomics
+            /*
+            if (awsResponse != null ) {
+                UserAccount user = UserAccount.findById(expense.getUseruuid());
+                if (user != null) {
+                    //send expense to economics
+                    sendExpense(expense, expenseFile, user);
+                } else {
+                    //user does not have an economics account - await userAccount creation
+                    log.info("unknown user created expense: "+ expense.getUseruuid());
+                }
+
+            } else {
+                log.error("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
+                QuarkusTransaction.setRollbackOnly();
+                throw new IOException("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
+            }
+
+             */

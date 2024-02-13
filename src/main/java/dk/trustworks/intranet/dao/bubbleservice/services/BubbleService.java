@@ -83,8 +83,8 @@ public class BubbleService {
                         "application = ?3, " +
                         "slackchannel = ?4, " +
                         "owner = ?5, " +
-                        "co_owner = ?6, " +
-                        "meeting_form = ?7, " +
+                        "coowner = ?6, " +
+                        "meetingform = ?7, " +
                         "preconditions = ?8, " +
                         "active = ?9 " +
                         "WHERE uuid like ?10 ",

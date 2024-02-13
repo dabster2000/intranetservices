@@ -39,6 +39,9 @@ quarkus:
     port: 9093 #registry.hub.docker.com/
   log:
     level: INFO
+    category:
+      "org.jboss.resteasy.resteasy_client":
+        level: DEBUG
     console:
       enable: true
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{2.}] (%t) %s%e%n"

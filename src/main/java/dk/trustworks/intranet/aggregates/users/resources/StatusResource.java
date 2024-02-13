@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.users.events.CreateUserStatusEvent;
 import dk.trustworks.intranet.aggregates.users.events.DeleteUserStatusEvent;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
+import io.quarkus.cache.CacheInvalidateAll;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
@@ -51,6 +52,7 @@ public class StatusResource {
 
     @POST
     @Path("/{useruuid}/statuses")
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void create(@PathParam("useruuid") String useruuid, UserStatus status) {
         status.setUseruuid(useruuid);
         CreateUserStatusEvent event = new CreateUserStatusEvent(useruuid, status);
@@ -59,6 +61,7 @@ public class StatusResource {
 
     @DELETE
     @Path("/{useruuid}/status/{statusuuid}")
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("statusuuid") String statusuuid) {
         DeleteUserStatusEvent event = new DeleteUserStatusEvent(useruuid, statusuuid);
         aggregateEventSender.handleEvent(event);

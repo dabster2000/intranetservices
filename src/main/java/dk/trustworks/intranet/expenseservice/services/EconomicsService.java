@@ -14,8 +14,10 @@ import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
+import dk.trustworks.intranet.utils.ImageProcessor;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -23,16 +25,12 @@ import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.text.SimpleDateFormat;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.Date;
-import java.util.List;
+import java.util.*;
 
 import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
 
@@ -46,9 +44,14 @@ public class  EconomicsService {
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
 
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
+        log.info("Voucher target = " + result);
 
         Journal journal = new Journal(result.expenseJournalNumber());
         String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
+
+        if(getCompanyFromExpense(expense).getCvr().equals("44232855")) {
+            expense.setAccount(String.valueOf(convertKontokode(Integer.parseInt(expense.getAccount()))));
+        }
 
         Voucher voucher = buildJSONRequest(expense, userAccount, journal, text);
 
@@ -56,10 +59,17 @@ public class  EconomicsService {
         String json = o.writeValueAsString(voucher);
         // call e-conomics endpoint
         EconomicsAPI remoteApi = getEconomicsAPI(result);
-        Response response =  remoteApi.postVoucher(journal.getJournalNumber(), json);
+        log.info("Voucher payload = " + json);
+        Response response = null;
+        try {
+            response = remoteApi.postVoucher(journal.getJournalNumber(), json);
+        } catch (Exception e) {
+            log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
+            throw e;
+        }
 
         // extract voucher number from reponse
-        if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
+        if ((Objects.requireNonNull(response).getStatus() > 199) & (response.getStatus() < 300)) {
             ObjectMapper objectMapper = new ObjectMapper();
             String responseAsString = response.readEntity(String.class);
             JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
@@ -72,23 +82,19 @@ public class  EconomicsService {
 
         } else {
             log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher + ", response: " + response);
-                return response;
+            return response;
         }
     }
 
     public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
+        System.out.println("EconomicsService.sendFile");
         // format accountingYear to URL output
         String year = voucher.getAccountingYear().getYear();
         String[] arrOfStr = year.split("/", 2);
         String urlYear = arrOfStr[0]+ "_6_" +arrOfStr[1];
 
-        // format file to outputstream as MultipartFormDataOutput
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-
         String imageString = expensefile.getExpensefile();
-        outputStream.write(Base64.getDecoder().decode(imageString));
-
-        byte [] finalByteArray = outputStream.toByteArray();
+        byte[] finalByteArray = ImageProcessor.convertBase64ToImageAndCompress(imageString);
 
         InputStream targetStream = new ByteArrayInputStream(finalByteArray);
 
@@ -97,11 +103,37 @@ public class  EconomicsService {
 
         // call e-conomics endpoint
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
+        System.out.println("File upload data = " + result);
         EconomicsAPI remoteApi = getEconomicsAPI(result);
+
+        Response fileResponse = null;
+        try {
+            fileResponse = remoteApi.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), upload);
+            // Check the response status code to ensure it's within the 2xx range indicating success.
+            if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
+                log.error("File not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() +
+                        ", voucher: " + expense.getVouchernumber() + ", response: " + fileResponse);
+            }
+        } catch (WebApplicationException e) {
+            // Extract response from the exception
+            Response response = e.getResponse();
+            String errorMessage = response.readEntity(String.class); // Assuming the error message is in plain text or JSON format
+            log.error("Failed to post file. Status code: " + response.getStatus() + ", Error: " + errorMessage +
+                    ", Expenseuuid: " + expense.getUseruuid() + ", Voucher: " + expense.getVouchernumber());
+            // Optionally rethrow or handle the exception as needed
+            throw e;
+        } catch (Exception e) {
+            // Log unexpected exceptions
+            log.error("Unexpected error when posting file", e);
+        }
+        /*
         Response fileResponse = remoteApi.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), upload);
         if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
             log.error("file not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + expense.getVouchernumber() + ", response: " + fileResponse);
         }
+
+         */
+        if(fileResponse==null) throw new IOException("Upload failed, fileResponse is null");
         return fileResponse;
     }
 
@@ -168,9 +200,45 @@ public class  EconomicsService {
     }
 
     private IntegrationKey.IntegrationKeyValue getIntegrationKey(Expense expense) {
-        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(LocalDate.now());
-        Company company = userStatus.getCompany();
+        Company company = getCompanyFromExpense(expense);
 
         return getIntegrationKeyValue(company);
+    }
+
+    private Company getCompanyFromExpense(Expense expense) {
+        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(LocalDate.now());
+        return userStatus.getCompany();
+    }
+
+    private static final Map<Integer, Integer> conversionMap = new HashMap<>();
+
+    static {
+        conversionMap.put(4003, 2800);
+        conversionMap.put(4008, 2754);
+        conversionMap.put(5218, 3604);
+        conversionMap.put(5219, 3603);
+        conversionMap.put(5214, 3605);
+        conversionMap.put(4055, 2779);
+        conversionMap.put(4030, 2770);
+        conversionMap.put(4050, 2777);
+        conversionMap.put(3560, 2245);
+        conversionMap.put(3585, 2250);
+        conversionMap.put(3591, 2260);
+        conversionMap.put(4006, 2753);
+        conversionMap.put(4020, 2720);
+        conversionMap.put(5222, 3617);
+        conversionMap.put(5233, 3600);
+        conversionMap.put(5242, 3620);
+        conversionMap.put(3575, 2258);
+        conversionMap.put(5234, 2780);
+        conversionMap.put(4007, 2781);
+        conversionMap.put(4040, 2782);
+        conversionMap.put(4042, 2783);
+    }
+
+    public static int convertKontokode(int kontokode) {
+        // Check if the kontokode exists in the map and return the converted value.
+        // If the kontokode does not exist in the map, return the input as is or handle as needed.
+        return conversionMap.getOrDefault(kontokode, kontokode);
     }
 }

@@ -23,16 +23,21 @@ import java.util.UUID;
  */
 
 @Data
-@EqualsAndHashCode(callSuper = true)
+@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
 @Table(name = "invoices")
 public class Invoice extends PanacheEntityBase {
 
     @Id
+    @EqualsAndHashCode.Include
     public String uuid;
     public String contractuuid;
     public String projectuuid;
     public String projectname;
+    @Column(name = "bonus_consultant")
+    public String bonusConsultant;
+    @Column(name = "bonus_consultant_approved")
+    public boolean isBonusConsultantApproved;
     public int year;
     public int month;
     public double discount;
@@ -46,7 +51,8 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "invoice_ref")
     public int invoiceref;
     public int invoicenumber;
-
+    public String currency;
+    public double vat;
     @Column(name = "referencenumber")
     public int referencenumber;
     @JsonDeserialize(using = LocalDateDeserializer.class)
@@ -85,9 +91,10 @@ public class Invoice extends PanacheEntityBase {
         this.errors = false;
     }
 
-    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, Company company, String specificdescription) {
+    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, Company company, String currency, String specificdescription) {
         this();
         this.type = type;
+        this.currency = currency;
         this.bookingdate = LocalDate.of(1900,1,1);
         if(type.equals(InvoiceType.CREDIT_NOTE)) invoiceref = invoicenumber;
         this.contractuuid = contractuuid;
@@ -110,5 +117,11 @@ public class Invoice extends PanacheEntityBase {
         this.company = company;
         this.specificdescription = specificdescription;
         uuid = UUID.randomUUID().toString();
+    }
+
+    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, Company company, String currency, String specificdescription, String bonusConsultant, boolean isBonusConsultantApproved) {
+        this(type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, projectref, contractref, company, currency, specificdescription);
+        this.bonusConsultant = bonusConsultant;
+        this.isBonusConsultantApproved = isBonusConsultantApproved;
     }
 }

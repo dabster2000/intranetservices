@@ -172,8 +172,11 @@ public class InvoiceService {
                         "type = ?19, " +
                         "year = ?20, " +
                         "zipcity = ?21, " +
-                        "company = ?22 " +
-                        "WHERE uuid like ?23 ",
+                        "company = ?22, " +
+                        "currency = ?23, " +
+                        "bonusConsultant = ?24, " +
+                        "isBonusConsultantApproved = ?25 " +
+                        "WHERE uuid like ?26 ",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -196,6 +199,9 @@ public class InvoiceService {
                 invoice.getYear(),
                 invoice.getZipcity(),
                 invoice.getCompany(),
+                invoice.getCurrency(),
+                invoice.getBonusConsultant(),
+                invoice.isBonusConsultantApproved(),
                 invoice.getUuid());
         System.out.println("Updating invoice items...");
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
@@ -228,7 +234,7 @@ public class InvoiceService {
                 draftInvoice.getProjectname(), draftInvoice.getDiscount(), draftInvoice.getYear(), draftInvoice.getMonth(), draftInvoice.getCompany().getName(),
                 draftInvoice.getCompany().getAddress(), "", draftInvoice.getCompany().getZipcode() + " " + draftInvoice.getCompany().getCity(),
                 "", draftInvoice.getCompany().getCvr(), "", draftInvoice.getInvoicedate(),
-                draftInvoice.getProjectref(), draftInvoice.getContractref(), draftInvoice.getCompany(),
+                draftInvoice.getProjectref(), draftInvoice.getContractref(), draftInvoice.getCompany(), draftInvoice.getCurrency(),
                 "Intern faktura knyttet til " + draftInvoice.getInvoicenumber());
         for (InvoiceItem invoiceitem : draftInvoice.getInvoiceitems()) {
             if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
@@ -284,8 +290,8 @@ public class InvoiceService {
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(),
-                invoice.getProjectref(), invoice.getContractref(), invoice.getCompany(),
-                "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber));
+                invoice.getProjectref(), invoice.getContractref(), invoice.getCompany(), invoice.getCurrency(),
+                "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.isBonusConsultantApproved());
 
         creditNote.invoicenumber = 0;
         for (InvoiceItem invoiceitem : invoice.invoiceitems) {

@@ -2,23 +2,11 @@ version: "3.8"
 services:
   intranet2.0:
     container_name: intranet2.0
-    image: trustworks/intranet2.0:prod
+    image: trustworks/intranet2.0:test
     env_file:
       - docker-env-intranet.env
     ports:
-      - "9000:8085"
-    networks:
-      - frontend
-      - services
-    depends_on:
-      - twservices
-  intranet:
-    container_name: intranet
-    image: trustworks/intranet:prod
-    env_file:
-      - docker-env-intranet.env
-    ports:
-      - "80:8085"
+      - "8085:8085"
     networks:
       - frontend
       - services
@@ -26,7 +14,7 @@ services:
       - twservices
   twservices:
     container_name: twservices
-    image: trustworks/twservices:prod
+    image: trustworks/twservices:test
     env_file:
       - docker-env-twservices.env
       - userpass.env
@@ -36,11 +24,48 @@ services:
     networks:
       - services
       - backend
+  mongodb:
+    image: mongo:4.2
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - services
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch-oss:7.10.2
+    environment:
+      - http.host=0.0.0.0
+      - transport.host=localhost
+      - network.host=0.0.0.0
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - services
+  graylog:
+    image: graylog/graylog:4.0
+    environment:
+      - GRAYLOG_PASSWORD_SECRET=somepasswordpepper
+      - GRAYLOG_ROOT_PASSWORD_SHA2=yourhashedpassword
+      - GRAYLOG_HTTP_EXTERNAL_URI=http://127.0.0.1:9000/
+      -
+    links:
+      - mongodb:mongo
+      - elasticsearch
+    depends_on:
+      - mongodb
+      - elasticsearch
+    ports:
+      - "9000:9000" # Graylog web interface
+      - "12201:12201/udp" # GELF UDP
+      - "1514:1514/udp" # Syslog UDP
+    networks:
+      - services
+volumes:
+  mongo_data:
+  es_data:
 networks:
   frontend:
   backend:
   services:
-    external:
-      name: services_network
 
 

@@ -82,14 +82,12 @@ public class ExpenseResource {
         return Expense.find("datecreated >= ?1 and expensedate <= ?2", localFromDate, localToDate).list();
     }
 
+    /// ** FIX ME!!! ***
     @POST
     @Transactional
-    public void saveExpense(@Valid Expense expense) throws IOException, InterruptedException {
+    public void saveExpense(@Valid Expense expense) throws IOException {
         log.info("ExpenseResource.saveExpense");
         log.info("expense = " + expense);
-        if(expense.getUseruuid().equals("173ee0b6-4ee5-11e7-b114-b2f933d5fe66")) {
-            Thread.sleep(500);
-        }
         expenseService.processExpense(expense);
     }
 
