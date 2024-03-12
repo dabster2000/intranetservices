@@ -175,8 +175,10 @@ public class InvoiceService {
                         "company = ?22, " +
                         "currency = ?23, " +
                         "bonusConsultant = ?24, " +
-                        "isBonusConsultantApproved = ?25 " +
-                        "WHERE uuid like ?26 ",
+                        "bonusConsultantApprovedStatus = ?25, " +
+                        "bonusOverrideAmount = ?26, " +
+                        "bonusOverrideNote = ?27 " +
+                        "WHERE uuid like ?28 ",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -201,7 +203,9 @@ public class InvoiceService {
                 invoice.getCompany(),
                 invoice.getCurrency(),
                 invoice.getBonusConsultant(),
-                invoice.isBonusConsultantApproved(),
+                invoice.getBonusConsultantApprovedStatus(),
+                invoice.getBonusOverrideAmount(),
+                invoice.getBonusOverrideNote(),
                 invoice.getUuid());
         System.out.println("Updating invoice items...");
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
@@ -291,7 +295,7 @@ public class InvoiceService {
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(),
                 invoice.getProjectref(), invoice.getContractref(), invoice.getCompany(), invoice.getCurrency(),
-                "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.isBonusConsultantApproved());
+                "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.getBonusConsultantApprovedStatus());
 
         creditNote.invoicenumber = 0;
         for (InvoiceItem invoiceitem : invoice.invoiceitems) {
@@ -319,7 +323,6 @@ public class InvoiceService {
 
     public Integer getMaxInvoiceNumber(Invoice invoice) {
         Optional<Invoice> latestInvoice = Invoice.find("company = ?1", Sort.descending("invoicenumber"), invoice.getCompany()).firstResultOptional();
-        //Optional<Invoice> latestInvoice = Invoice.findAll(Sort.descending("invoicenumber")).firstResultOptional();
         return latestInvoice.map(i -> i.invoicenumber).orElse(1);
     }
 
@@ -338,7 +341,7 @@ public class InvoiceService {
     }
 
     public void uploadToEconomics(Invoice invoice) {
-        if(invoice.invoicenumber == 0 || !invoice.getCompany().getCvr().equals("35648941")) return;
+        if(invoice.invoicenumber == 0) return;
         try {
             economicsInvoiceService.sendVoucher(invoice);
         } catch (IOException e) {

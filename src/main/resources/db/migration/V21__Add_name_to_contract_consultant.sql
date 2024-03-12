@@ -1,0 +1,1 @@
+alter table contract_consultants add name VARCHAR(150) null after useruuid;

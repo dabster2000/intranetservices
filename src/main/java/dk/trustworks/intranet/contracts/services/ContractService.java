@@ -259,17 +259,19 @@ WHERE
     }
 
     @Transactional
-    public void updateConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
+    public void updateConsultant(ContractConsultant contractConsultant) {
         ContractConsultant.update(
-                        "hours = ?1, " +
+                "hours = ?1, " +
                         "rate = ?2, " +
                         "activeFrom = ?3, " +
-                        "activeTo = ?4 " +
-                        "WHERE uuid like ?5 ",
+                        "activeTo = ?4, " +
+                        "name = ?5 " +
+                        "WHERE uuid like ?6 ",
                 contractConsultant.getHours(),
                 contractConsultant.getRate(),
                 contractConsultant.getActiveFrom(),
                 contractConsultant.getActiveTo(),
+                contractConsultant.getName(),
                 contractConsultant.getUuid());
     }
 
@@ -409,9 +411,20 @@ WHERE
         }
 
         QuarkusTransaction.begin();
-        updatedContractConsultants.forEach(cc -> updateConsultant("", "", cc));
+        updatedContractConsultants.forEach(this::updateConsultant);
         QuarkusTransaction.commit();
 
         System.out.println("ContractService.updateContractStatus END");
+    }
+
+    @Transactional
+    public void addContractTypeItem(String contractuuid, ContractTypeItem contractTypeItem) {
+        contractTypeItem.setContractuuid(contractuuid);
+        contractTypeItem.persist();
+    }
+
+    @Transactional
+    public void updateContractTypeItem(ContractTypeItem contractTypeItem) {
+        ContractTypeItem.update("key = ?1, value = ?2 where id = ?3", contractTypeItem.getKey(), contractTypeItem.getValue(), contractTypeItem.getId());
     }
 }

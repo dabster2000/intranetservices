@@ -1,11 +1,12 @@
 package dk.trustworks.intranet.expenseservice.model;
 
+import com.fasterxml.jackson.annotation.JsonGetter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
 import lombok.Data;
 
-import jakarta.persistence.*;
 import java.util.List;
-import java.util.UUID;
 
 @Data
 @Entity
@@ -13,16 +14,24 @@ import java.util.UUID;
 public class ExpenseCategory extends PanacheEntityBase {
 
     @Id
+    @JsonIgnore
     private String uuid;
-    private String category_name;
-    private Boolean internal_expense;
-    private Boolean is_active;
+    @Column(name = "category_name")
+    private String categoryName;
+    @JsonIgnore
+    @Column(name = "active")
+    private boolean active;
 
-    @OneToMany(fetch = FetchType.EAGER, mappedBy = "expense_category_uuid", cascade = CascadeType.ALL)
+    @OneToMany(fetch = FetchType.EAGER, cascade = CascadeType.ALL)
+    @JoinColumn(name = "expense_category_uuid") // This should match the column name in the expense_account table
     private List<ExpenseAccount> expenseAccounts;
 
-    public ExpenseCategory() {
-        uuid = UUID.randomUUID().toString();
+    public void removeExpenseAccountByCompany(String companyuuid) {
+        expenseAccounts.removeIf(expenseAccount -> expenseAccount.getCompanyuuid().equals(companyuuid));
     }
 
+    @JsonGetter
+    public boolean defaultCategory() {
+        return expenseAccounts.stream().anyMatch(ExpenseAccount::isDefaultAccount);
+    }
 }

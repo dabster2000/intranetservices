@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregateservices;
 
 import com.google.common.collect.Lists;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
@@ -22,14 +23,15 @@ import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -170,13 +172,15 @@ public class InvoiceGeneratorService {
 
                     User user = userService.findUserByUuid(workFull.getUseruuid(), true);
 
-                    if (contract.getClientdatauuid() == null || contract.getClientdatauuid().trim().equals("")) {
-                        log.debug("clientdata null: " + contract);
-                    }
-
                     if(contract.getClientdatauuid() == null || contract.getClientdatauuid().isEmpty()) {
                         log.warn("No Client Data attached to contract");
-                        throw new BadRequestException("No Client Data attached to contract");
+                        Response response = Response
+                                .status(Response.Status.BAD_REQUEST)
+                                .entity("No client contact information on the contract")
+                                .type(MediaType.TEXT_PLAIN) // or MediaType.APPLICATION_JSON for JSON response
+                                .build();
+                        throw new WebApplicationException(response);
+                        //throw new BadRequestException("No client contact information on the contract");
                     }
                     Clientdata clientdata = clientdataAPI.findByUuid(contract.getClientdatauuid());
                     if (clientdata == null) clientdata = new Clientdata();
@@ -206,10 +210,15 @@ public class InvoiceGeneratorService {
 
                     if (workFull.getRate() == 0) {
                         log.error("Rate could not be found for user (link: " + user.getUuid() + ") and task (link: " + workFull.getTaskuuid() + ")");
-                        throw new RuntimeException("Rate could not be found for user (link: " + user.getUuid() + ") and task (link: " + workFull.getTaskuuid() + ")");
+                        Response response = Response
+                                .status(Response.Status.BAD_REQUEST)
+                                .entity("Rate could not be found for " + user.getFullname() + " on the project '"+project.getName()+"' and task '" + task.getName() + "'")
+                                .type(MediaType.TEXT_PLAIN) // or MediaType.APPLICATION_JSON for JSON response
+                                .build();
+                        throw new WebApplicationException(response);
                     }
                     if (!invoiceItemMap.containsKey(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid())) {
-                        InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), user.getFirstname() + " " + user.getLastname(),
+                        InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFirstname() + " " + user.getLastname(),
                                 task.getName(),
                                 workFull.getRate(),
                                 0.0, invoice.uuid);
@@ -224,7 +233,6 @@ public class InvoiceGeneratorService {
         }
         log.info("draftInvoice: "+invoice);
         assert invoice != null;
-        System.out.println("invoice = " + invoice);
         return invoiceService.createDraftInvoice(invoice);
     }
 }

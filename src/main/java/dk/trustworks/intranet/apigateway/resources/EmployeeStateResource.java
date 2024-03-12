@@ -3,16 +3,16 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
 import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import jakarta.annotation.security.RolesAllowed;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
-import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
 import java.time.LocalDate;
 import java.util.List;
 
@@ -31,6 +31,8 @@ public class EmployeeStateResource {
 
     @Inject
     EmployeeDataService employeeDataService;
+
+
 /*
     @GET
     @Path("/company")
@@ -57,6 +59,26 @@ public class EmployeeStateResource {
         System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
-        return employeeDataService.getEmployeeDataPerMonth(companyuuid, fromdate, todate);
+        return employeeDataService.getAllEmployeeDataPerMonth(companyuuid, fromdate, todate);
     }
+
+    @GET
+    @Path("/employees/{useruuid}")
+    public List<EmployeeDataPerMonth> getEmployeeDataPerMonthV2(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
+        System.out.println("EmployeeStateResource.getEmployeeDataPerMonthV2");
+        System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
+        LocalDate fromdate = dateIt(strFromdate);
+        LocalDate todate = dateIt(strTodate);
+        return employeeDataService.getEmployeeDataPerMonth(useruuid, fromdate, todate);
+    }
+
+    /*
+    @GET
+    @Path("/employees/{useruuid}")
+    public List<EmployeeWorkPerMonth> getEmployeeDataPerMonthByUser(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
+        LocalDate fromdate = dateIt(strFromdate);
+        LocalDate todate = dateIt(strTodate);
+        return EmployeeWorkPerMonth.<EmployeeWorkPerMonth>stream("useruuid = ?1", useruuid).filter(m -> m.getDate().isAfter(fromdate) && m.getDate().isBefore(todate)).toList();
+    }
+     */
 }

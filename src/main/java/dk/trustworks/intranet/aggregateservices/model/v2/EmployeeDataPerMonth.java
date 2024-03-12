@@ -73,6 +73,15 @@ public class EmployeeDataPerMonth extends PanacheEntityBase {
     @JsonProperty("paidLeaveHours")
     private BigDecimal paidLeaveHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
+    @Column(name = "registered_billable_hours", precision = 7, scale = 4)
+    private BigDecimal registeredBillableHours; // done
+
+    @Column(name = "registered_amount", precision = 9, scale = 4)
+    private BigDecimal registeredAmount; // done
+
+    @Column(name = "budget_hours", precision = 7, scale = 4)
+    private BigDecimal budgetHours; // done
+
     @JsonProperty("avgSalary")
     @Column(name = "avg_salary", precision = 14, scale = 4)
     private BigDecimal avgSalary;

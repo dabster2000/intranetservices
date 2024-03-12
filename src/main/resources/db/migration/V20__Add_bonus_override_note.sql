@@ -1,0 +1,1 @@
+alter table invoices add bonus_override_note text default '' null after bonus_override_amount;

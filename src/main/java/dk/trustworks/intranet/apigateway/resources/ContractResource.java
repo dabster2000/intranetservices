@@ -2,6 +2,7 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
+import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
@@ -10,14 +11,14 @@ import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
-import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -156,12 +157,24 @@ public class ContractResource {
     @PUT
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     public void updateConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
-        contractService.updateConsultant(contractuuid, consultantuuid, contractConsultant);
+        contractService.updateConsultant(contractConsultant);
     }
 
     @DELETE
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     public void removeConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid) {
         contractService.removeConsultant(contractuuid, consultantuuid);
+    }
+
+    @POST
+    @Path("/{contractuuid}/contracttypeitems")
+    public void addContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
+        contractService.addContractTypeItem(contractuuid, contractTypeItem);
+    }
+
+    @PUT
+    @Path("/{contractuuid}/contracttypeitems")
+    public void updateContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
+        contractService.updateContractTypeItem(contractTypeItem);
     }
 }

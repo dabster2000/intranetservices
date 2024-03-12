@@ -60,5 +60,4 @@ public class Expense extends PanacheEntityBase {
         datemodified = LocalDate.now();
     }
 
-
 }

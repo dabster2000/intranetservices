@@ -10,13 +10,12 @@ import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
 import io.quarkus.panache.common.Page;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.GET;
 import jakarta.ws.rs.QueryParam;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -37,7 +36,6 @@ public class WorkService {
     public static final String SICKNESS = "02bf71c5-f588-46cf-9695-5864020eb1c4";
     public static final String MATERNITY = "da2f89fc-9aef-4029-8ac2-7486be60e9b9";
 
-    @GET
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
     }
@@ -66,20 +64,20 @@ public class WorkService {
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3", fromdate, todate, useruuid).list();
     }
 
-    public List<WorkFull> findByPeriodAndProject(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate, @QueryParam("projectuuid") String projectuuid) {
+    public List<WorkFull> findByPeriodAndProject(String fromdate, String todate, String projectuuid) {
         if(dateIt(todate).getDayOfMonth()>1) log.error("Beware of month issues!!: "+todate);
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND projectuuid LIKE ?3", dateIt(fromdate), dateIt(todate), projectuuid).list();
     }
 
-    public List<WorkFull> findByTasks(@QueryParam("taskuuids") List<String> taskuuids) {
+    public List<WorkFull> findByTasks(List<String> taskuuids) {
         return WorkFull.find("taskuuid IN (?1)", taskuuids).list();
     }
 
-    public List<WorkFull> findByTask(@QueryParam("taskuuid") String taskuuid) {
+    public List<WorkFull> findByTask(String taskuuid) {
         return WorkFull.find("taskuuid LIKE ?1", taskuuid).list();
     }
 
-    public List<WorkFull> findByContract(@QueryParam("contractuuid") String contractuuid) {
+    public List<WorkFull> findByContract(String contractuuid) {
         return WorkFull.find("contractuuid LIKE ?1", contractuuid).list();
     }
 
@@ -117,7 +115,7 @@ public class WorkService {
         int weekDays = DateUtils.getWeekdaysInPeriod(getFirstDayOfMonth(month), getFirstDayOfMonth(month).plusMonths(1));
         List<WorkFull> workList = findByPeriodAndUserAndTasks(stringIt(getFirstDayOfMonth(month.getYear(), month.getMonthValue())), getLastDayOfMonth(month.getYear(), month.getMonthValue()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), userUUID,"02bf71c5-f588-46cf-9695-5864020eb1c4, f585f46f-19c1-4a3a-9ebd-1a4f21007282");
         double vacationAndSickdays = workList.stream().mapToDouble(WorkFull::getWorkduration).sum() / 7.4;
-        weekDays -= vacationAndSickdays;
+        weekDays -= (int) vacationAndSickdays;
         return weekDays;
     }
 

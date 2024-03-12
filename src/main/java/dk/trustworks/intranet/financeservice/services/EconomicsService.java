@@ -110,25 +110,29 @@ public class EconomicsService {
 
     public EconomicsInvoice getFirstPage(String date, URI apiUri, String appSecretToken, String agreementGrantToken) throws JsonProcessingException {
         EconomicsInvoice economicsInvoice;
-        EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
+        try (EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                 .baseUri(apiUri)
                 .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
-                .build(EconomicsPagingAPI.class);
-        ObjectMapper objectMapper = new ObjectMapper();
-        economicsInvoice = objectMapper.readValue(remoteApi.getEntries(date, 1000, 0).readEntity(String.class), EconomicsInvoice.class);
-
+                .build(EconomicsPagingAPI.class)) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            economicsInvoice = objectMapper.readValue(remoteApi.getEntries(date, 1000, 0).readEntity(String.class), EconomicsInvoice.class);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         return economicsInvoice;
     }
 
     public EconomicsInvoice getNextPage(URI apiUri, String appSecretToken, String agreementGrantToken) throws JsonProcessingException {
         EconomicsInvoice economicsInvoice;
-            EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
-                    .baseUri(apiUri)
-                    .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
-                    .build(EconomicsPagingAPI.class);
-        ObjectMapper objectMapper = new ObjectMapper();
-        economicsInvoice = objectMapper.readValue(remoteApi.getNextPage().readEntity(String.class), EconomicsInvoice.class);
-
+        try(EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
+                .baseUri(apiUri)
+                .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
+                .build(EconomicsPagingAPI.class)) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            economicsInvoice = objectMapper.readValue(remoteApi.getNextPage().readEntity(String.class), EconomicsInvoice.class);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         return economicsInvoice;
     }
 

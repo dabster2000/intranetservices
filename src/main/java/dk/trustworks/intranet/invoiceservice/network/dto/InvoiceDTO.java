@@ -1,8 +1,12 @@
 package dk.trustworks.intranet.invoiceservice.network.dto;
 
+import dk.trustworks.intranet.contracts.model.Contract;
+import dk.trustworks.intranet.contracts.model.ContractTypeItem;
+import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.model.InvoiceItem;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
+import dk.trustworks.intranet.utils.NumberUtils;
 
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -89,11 +93,21 @@ public class InvoiceDTO {
                 invoice.getInvoicedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
                 invoice.getInvoicedate().plusMonths(1).format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
                 invoice.getDiscount(), invoice.getCurrency(),
-                ((invoice.contractref!=null && !invoice.contractref.equals(""))?invoice.getContractref()+"\n":"")+
-                        ((invoice.projectref!=null && !invoice.projectref.equals(""))?invoice.getProjectref()+"\n":"")+
-                        ((invoice.specificdescription!=null && !invoice.specificdescription.equals(""))?invoice.getSpecificdescription():""));
+                ((invoice.contractref!=null && !invoice.contractref.isEmpty())?invoice.getContractref()+"\n":"")+
+                        ((invoice.projectref!=null && !invoice.projectref.isEmpty())?invoice.getProjectref()+"\n":"")+
+                        ((invoice.specificdescription!=null && !invoice.specificdescription.isEmpty())?invoice.getSpecificdescription():""));
         for (InvoiceItem invoiceItem : invoice.getInvoiceitems()) {
             items.add(new InvoiceItemDTO(invoiceItem.itemname, invoiceItem.hours, invoiceItem.rate, invoiceItem.description));
+        }
+        Contract contract = Contract.findById(invoice.contractuuid);
+        if(contract.getContractType().equals(ContractType.SKI0217_2021)) {
+            ContractTypeItem contractTypeItem = contract.getContractTypeItems().stream().findAny().get();
+            double sumNoTax = invoice.getInvoiceitems().stream().mapToDouble(value -> value.hours * value.rate).sum();
+            double keyDiscount = (sumNoTax * (NumberUtils.parseDouble(contract.getContractTypeItems().stream().findAny().get().getValue()) / 100.0));
+            items.add(new InvoiceItemDTO(contractTypeItem.getValue() + "% " + contractTypeItem.getKey(), 1, -keyDiscount, ""));
+            double adminDiscount = ((sumNoTax - keyDiscount) * 0.02);
+            items.add(new InvoiceItemDTO("2% SKI administrationsgebyr", 1, -adminDiscount, ""));
+            items.add(new InvoiceItemDTO("Faktureringsgebyr", 1, -2000, ""));
         }
         terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\nPayment due in 1 month";
     }

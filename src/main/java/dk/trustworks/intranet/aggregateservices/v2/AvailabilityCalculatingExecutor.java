@@ -156,9 +156,9 @@ public class AvailabilityCalculatingExecutor {
         double sicknessHoursPerDay = Math.min(fullAvailability, workByDay.stream().filter(w -> w.getTaskuuid().equals(SICKNESS)).mapToDouble(WorkFull::getWorkduration).sum());
         maternityLeaveHoursPerDay = Math.min(fullAvailability, maternityLeaveHoursPerDay + workByDay.stream().filter(w -> w.getTaskuuid().equals(MATERNITY)).mapToDouble(WorkFull::getWorkduration).sum());
 
-        double registeredBillableHours = workByDay.stream().filter(w -> w.getRate() > 0 && w.getWorkas() == null).mapToDouble(WorkFull::getWorkduration).sum();
-        double helpedColleagueBillableHours = workByDay.stream().filter(w -> w.getRate() > 0 && w.getWorkas() != null).mapToDouble(WorkFull::getWorkduration).sum();
-        double registeredAmount = workByDay.stream().filter(w -> w.getRate() > 0).mapToDouble(workFull -> workFull.getWorkduration() * workFull.getRate()).sum();
+        //double registeredBillableHours = workByDay.stream().filter(w -> w.getRate() > 0 && w.getWorkas() == null).mapToDouble(WorkFull::getWorkduration).sum();
+        //double helpedColleagueBillableHours = workByDay.stream().filter(w -> w.getRate() > 0 && w.getWorkas() != null).mapToDouble(WorkFull::getWorkduration).sum();
+        //double registeredAmount = workByDay.stream().filter(w -> w.getRate() > 0).mapToDouble(workFull -> workFull.getWorkduration() * workFull.getRate()).sum();
 
         double unavailableHours = (DateUtils.isFriday(testDay))?Math.min(2.0,fullAvailability):0.0;
 

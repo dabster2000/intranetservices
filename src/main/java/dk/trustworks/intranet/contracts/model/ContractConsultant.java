@@ -31,6 +31,8 @@ public class ContractConsultant extends PanacheEntityBase {
 
     private String useruuid;
 
+    private String name;
+
     @Column(name = "activefrom")
     @JsonSerialize(using = LocalDateSerializer.class)
     @JsonDeserialize(using = LocalDateDeserializer.class)

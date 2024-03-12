@@ -13,6 +13,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 import jakarta.persistence.*;
+import lombok.ToString;
+
 import java.time.LocalDate;
 import java.util.LinkedList;
 import java.util.List;
@@ -37,7 +39,11 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "bonus_consultant")
     public String bonusConsultant;
     @Column(name = "bonus_consultant_approved")
-    public boolean isBonusConsultantApproved;
+    public int bonusConsultantApprovedStatus;
+    @Column(name = "bonus_override_amount")
+    public double bonusOverrideAmount;
+    @Column(name = "bonus_override_note")
+    public String bonusOverrideNote;
     public int year;
     public int month;
     public double discount;
@@ -77,6 +83,7 @@ public class Invoice extends PanacheEntityBase {
     @JoinColumn(name = "companyuuid")
     public Company company;
     @Lob
+    @ToString.Exclude
     public byte[] pdf;
 
     @JsonIgnore
@@ -119,9 +126,9 @@ public class Invoice extends PanacheEntityBase {
         uuid = UUID.randomUUID().toString();
     }
 
-    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, Company company, String currency, String specificdescription, String bonusConsultant, boolean isBonusConsultantApproved) {
+    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, Company company, String currency, String specificdescription, String bonusConsultant, int bonusConsultantApprovedStatus) {
         this(type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, projectref, contractref, company, currency, specificdescription);
         this.bonusConsultant = bonusConsultant;
-        this.isBonusConsultantApproved = isBonusConsultantApproved;
+        this.bonusConsultantApprovedStatus = bonusConsultantApprovedStatus;
     }
 }

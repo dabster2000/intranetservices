@@ -48,6 +48,10 @@ quarkus:
       level: DEBUG
     handlers:
       - console
+  cache:
+    caffeine:
+      "employee-data-per-month-cache":
+        expire-after-write: 3H
   s3:
     sync-client:
       type: APACHE

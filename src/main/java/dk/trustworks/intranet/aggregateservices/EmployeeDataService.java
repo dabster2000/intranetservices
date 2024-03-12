@@ -3,11 +3,10 @@ package dk.trustworks.intranet.aggregateservices;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.model.EmployeeAggregateData;
 import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
+import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
-import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.Capacity;
 import dk.trustworks.intranet.userservice.model.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
@@ -17,10 +16,10 @@ import dk.trustworks.intranet.userservice.services.CapacityService;
 import dk.trustworks.intranet.userservice.services.TeamRoleService;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import dk.trustworks.intranet.utils.DateUtils;
+import io.quarkus.cache.CacheKey;
+import io.quarkus.cache.CacheResult;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.vertx.mutiny.core.eventbus.EventBus;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -28,6 +27,8 @@ import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.Query;
 import jakarta.transaction.TransactionManager;
 import jakarta.transaction.Transactional;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.LocalDate;
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -305,24 +306,155 @@ public class EmployeeDataService {
         return EmployeeAggregateData.find("month >= ?1 and month < ?2", fromdate, todate).list();
     }
 
-    public List<EmployeeDataPerMonth> getEmployeeDataPerMonth(LocalDate fromdate, LocalDate todate) {
+    public List<EmployeeDataPerMonth> getAllEmployeeDataPerMonth(LocalDate fromdate, LocalDate todate) {
         return EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
                 "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
                 "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d')", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue());
     }
 
-    public List<EmployeeDataPerMonth> getEmployeeDataPerMonth(String companyuuid, LocalDate fromdate, LocalDate todate) {
-        return EmployeeDataPerMonth.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') " +
-                "      BETWEEN STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') " +
-                "      AND STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') " +
-                "      AND company = ?5", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), Company.findById(companyuuid));
+
+    @CacheResult(cacheName = "employee-data-per-month-cache")
+    public List<EmployeeDataPerMonth> getAllEmployeeDataPerMonth(@CacheKey String companyuuid, @CacheKey LocalDate fromdate, @CacheKey LocalDate todate) {
+        Query nativeQuery = entityManager.createNativeQuery("SELECT " +
+                "    ad_agg.id, " +
+                "    ad_agg.useruuid, " +
+                "    ad_agg.consultant_type, " +
+                "    ad_agg.status_type, " +
+                "    ad_agg.companyuuid, " +
+                "    ad_agg.year, " +
+                "    ad_agg.month, " +
+                "    ad_agg.gross_available_hours, " +
+                "    ad_agg.unavailable_hours, " +
+                "    ad_agg.vacation_hours, " +
+                "    ad_agg.sick_hours, " +
+                "    ad_agg.maternity_leave_hours, " +
+                "    ad_agg.non_payd_leave_hours, " +
+                "    ad_agg.paid_leave_hours, " +
+                "    COALESCE(ww.workduration, 0) AS registered_billable_hours, " +
+                "    COALESCE(ww.total_billed, 0) AS registered_amount, " +
+                "    COALESCE(bb.budgetHours, 0) AS budget_hours, " +
+                "    ad_agg.avg_salary, " +
+                "    ad_agg.is_tw_bonus_eligible " +
+                "FROM ( " +
+                "    SELECT " +
+                "        MIN(ad.id) AS id, " +
+                "        ad.useruuid, " +
+                "        ad.consultant_type, " +
+                "        ad.status_type, " +
+                "        ad.companyuuid, " +
+                "        ad.year, " +
+                "        ad.month, " +
+                "        SUM(ad.gross_available_hours) AS gross_available_hours, " +
+                "        SUM(ad.unavailable_hours) AS unavailable_hours, " +
+                "        SUM(ad.vacation_hours) AS vacation_hours, " +
+                "        SUM(ad.sick_hours) AS sick_hours, " +
+                "        SUM(ad.maternity_leave_hours) AS maternity_leave_hours, " +
+                "        SUM(ad.non_payd_leave_hours) AS non_payd_leave_hours, " +
+                "        SUM(ad.paid_leave_hours) AS paid_leave_hours, " +
+                "        AVG(ad.salary) AS avg_salary, " +
+                "        MAX(ad.is_tw_bonus_eligible) AS is_tw_bonus_eligible " +
+                "    FROM twservices.availability_document ad " +
+                "    WHERE companyuuid = :companyuuid and document_date >= :startDate and document_date < :endDate " +
+                "    GROUP BY ad.useruuid, ad.year, ad.month, ad.companyuuid " +
+                ") ad_agg " +
+                "LEFT JOIN ( " +
+                "    SELECT " +
+                "        w.useruuid, " +
+                "        YEAR(w.registered) AS year, " +
+                "        MONTH(w.registered) AS month, " +
+                "        SUM(w.workduration) AS workduration, " +
+                "        SUM(IFNULL(w.rate, 0) * w.workduration) AS total_billed " +
+                "    FROM twservices.work_full w " +
+                "    WHERE w.rate > 0 and consultant_company_uuid = :companyuuid and registered >= :startDate and registered < :endDate " +
+                "    GROUP BY w.useruuid, YEAR(w.registered), MONTH(w.registered) " +
+                ") ww ON ww.year = ad_agg.year AND ww.month = ad_agg.month AND ww.useruuid = ad_agg.useruuid " +
+                "LEFT JOIN ( " +
+                "    select " +
+                "       `ad`.`useruuid`, " +
+                "       `ad`.`year`             AS `year`, " +
+                "       `ad`.`month`            AS `month`, " +
+                "       sum(`ad`.`budgetHours`) AS `budgetHours` " +
+                "from `twservices`.`budget_document` `ad` " +
+                "where companyuuid = :companyuuid and document_date >= :startDate and document_date < :endDate " +
+                "group by `ad`.`useruuid`, `ad`.`year`, `ad`.`month` " +
+                ") bb ON bb.year = ad_agg.year AND bb.month = ad_agg.month AND bb.useruuid = ad_agg.useruuid " +
+                "ORDER BY ad_agg.year, ad_agg.month;", EmployeeDataPerMonth.class);
+        nativeQuery.setParameter("companyuuid", companyuuid);
+        nativeQuery.setParameter("startDate", fromdate);
+        nativeQuery.setParameter("endDate", todate);
+        return nativeQuery.getResultList();
     }
 
-
-    //private EmployeeAggregateData getEmployeeAggregateData(LocalDate refreshDate, String uuid) {
-        //return dataMap.get(uuid).get(refreshDate);
-    //}
-
+    public List<EmployeeDataPerMonth> getEmployeeDataPerMonth(String useruuid, LocalDate fromdate, LocalDate todate) {
+        Query nativeQuery = entityManager.createNativeQuery("SELECT " +
+                "    ad_agg.id, " +
+                "    ad_agg.useruuid, " +
+                "    ad_agg.consultant_type, " +
+                "    ad_agg.status_type, " +
+                "    ad_agg.companyuuid, " +
+                "    ad_agg.year, " +
+                "    ad_agg.month, " +
+                "    ad_agg.gross_available_hours, " +
+                "    ad_agg.unavailable_hours, " +
+                "    ad_agg.vacation_hours, " +
+                "    ad_agg.sick_hours, " +
+                "    ad_agg.maternity_leave_hours, " +
+                "    ad_agg.non_payd_leave_hours, " +
+                "    ad_agg.paid_leave_hours, " +
+                "    COALESCE(ww.workduration, 0) AS registered_billable_hours, " +
+                "    COALESCE(ww.total_billed, 0) AS registered_amount, " +
+                "    COALESCE(bb.budgetHours, 0) AS budget_hours, " +
+                "    ad_agg.avg_salary, " +
+                "    ad_agg.is_tw_bonus_eligible " +
+                "FROM ( " +
+                "    SELECT " +
+                "        MIN(ad.id) AS id, " +
+                "        ad.useruuid, " +
+                "        ad.consultant_type, " +
+                "        ad.status_type, " +
+                "        ad.companyuuid, " +
+                "        ad.year, " +
+                "        ad.month, " +
+                "        SUM(ad.gross_available_hours) AS gross_available_hours, " +
+                "        SUM(ad.unavailable_hours) AS unavailable_hours, " +
+                "        SUM(ad.vacation_hours) AS vacation_hours, " +
+                "        SUM(ad.sick_hours) AS sick_hours, " +
+                "        SUM(ad.maternity_leave_hours) AS maternity_leave_hours, " +
+                "        SUM(ad.non_payd_leave_hours) AS non_payd_leave_hours, " +
+                "        SUM(ad.paid_leave_hours) AS paid_leave_hours, " +
+                "        AVG(ad.salary) AS avg_salary, " +
+                "        MAX(ad.is_tw_bonus_eligible) AS is_tw_bonus_eligible " +
+                "    FROM twservices.availability_document ad " +
+                "    WHERE useruuid = :useruuid and document_date >= :startDate and document_date < :endDate " +
+                "    GROUP BY ad.useruuid, ad.year, ad.month, ad.companyuuid " +
+                ") ad_agg " +
+                "LEFT JOIN ( " +
+                "    SELECT " +
+                "        w.useruuid, " +
+                "        YEAR(w.registered) AS year, " +
+                "        MONTH(w.registered) AS month, " +
+                "        SUM(w.workduration) AS workduration, " +
+                "        SUM(IFNULL(w.rate, 0) * w.workduration) AS total_billed " +
+                "    FROM twservices.work_full w " +
+                "    WHERE w.rate > 0 and useruuid = :useruuid and registered >= :startDate and registered < :endDate " +
+                "    GROUP BY w.useruuid, YEAR(w.registered), MONTH(w.registered) " +
+                ") ww ON ww.year = ad_agg.year AND ww.month = ad_agg.month AND ww.useruuid = ad_agg.useruuid " +
+                "LEFT JOIN ( " +
+                "    select " +
+                "       `ad`.`useruuid`, " +
+                "       `ad`.`year`             AS `year`, " +
+                "       `ad`.`month`            AS `month`, " +
+                "       sum(`ad`.`budgetHours`) AS `budgetHours` " +
+                "from `twservices`.`budget_document` `ad` " +
+                "where useruuid = :useruuid and document_date >= :startDate and document_date < :endDate " +
+                "group by `ad`.`useruuid`, `ad`.`year`, `ad`.`month` " +
+                ") bb ON bb.year = ad_agg.year AND bb.month = ad_agg.month AND bb.useruuid = ad_agg.useruuid " +
+                "ORDER BY ad_agg.year, ad_agg.month;", EmployeeDataPerMonth.class);
+        nativeQuery.setParameter("useruuid", useruuid);
+        nativeQuery.setParameter("startDate", fromdate);
+        nativeQuery.setParameter("endDate", todate);
+        return nativeQuery.getResultList();
+    }
 }
 
 

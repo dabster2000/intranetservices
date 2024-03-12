@@ -74,6 +74,11 @@ public class Contract extends PanacheEntityBase {
     @JoinColumn(name = "contractuuid")
     private Set<ContractProject> contractProjects = new HashSet<>();
 
+    @OneToMany(fetch = FetchType.EAGER)
+    @JoinColumn(name = "contractuuid")
+    @JsonProperty("contractTypeItems")
+    private Set<ContractTypeItem> contractTypeItems = new HashSet<>();
+
     public Contract() {
         uuid = UUID.randomUUID().toString();
     }

@@ -62,7 +62,7 @@ public class AccountingResource {
         LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
         LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
 
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getEmployeeDataPerMonth(datefrom, dateto);
+        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(datefrom, dateto);
         Company company = Company.findById(companyuuid);
 
         List<AccountingCategory> allAccountingCategories = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
@@ -375,7 +375,7 @@ public class AccountingResource {
         LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
         LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
 
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getEmployeeDataPerMonth(datefrom, dateto);
+        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(datefrom, dateto);
         Company company = Company.findById(companyuuid);
 
         List<AccountingCategory> list = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
@@ -461,7 +461,7 @@ public class AccountingResource {
         LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
         int monthsBetween = DateUtils.countMonthsBetween(datefrom, dateto);
 
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getEmployeeDataPerMonth(datefrom, dateto);
+        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(datefrom, dateto);
         Company company = Company.findById(companyuuid);
 
         // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
@@ -613,7 +613,7 @@ public class AccountingResource {
         Company company = Company.findById(companyuuid);
         AccountingCategory category = AccountingCategory.findById(uuid);
         List<FinanceDetails> financeDetails = FinanceDetails.list("expensedate between ?1 and ?2", date1, date2);
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getEmployeeDataPerMonth(date1, date2);
+        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(date1, date2);
         AtomicInteger sum = new AtomicInteger();
         LocalDate date = date1;
         while(date.isBefore(date2)) {

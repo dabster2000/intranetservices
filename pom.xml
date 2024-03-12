@@ -12,7 +12,7 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
     <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
-    <quarkus.platform.version>3.6.6</quarkus.platform.version>
+    <quarkus.platform.version>3.8.2</quarkus.platform.version>
     <skipITs>true</skipITs>
     <quarkus-amazon-services.version>2.5.1</quarkus-amazon-services.version>
   </properties>
@@ -39,7 +39,7 @@
     <!-- REST CLIENT -->
     <dependency>
       <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-rest-client</artifactId>
+      <artifactId>quarkus-resteasy-client</artifactId>
       <exclusions>
         <exclusion>
           <groupId>org.jboss.slf4j</groupId>

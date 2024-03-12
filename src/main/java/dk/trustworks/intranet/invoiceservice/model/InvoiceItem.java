@@ -47,13 +47,4 @@ public class InvoiceItem extends PanacheEntityBase {
         this.consultantuuid = useruuid;
     }
 
-    @Override
-    public String toString() {
-        return "InvoiceItem{" + "uuid='" + uuid + '\'' +
-                ", itemname='" + itemname + '\'' +
-                ", description='" + description + '\'' +
-                ", rate=" + rate +
-                ", hours=" + hours +
-                '}';
-    }
 }

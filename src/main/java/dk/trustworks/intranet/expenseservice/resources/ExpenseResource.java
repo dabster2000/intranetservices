@@ -1,20 +1,26 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
+import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
-import lombok.extern.jbosslog.JBossLog;
-import org.jboss.resteasy.annotations.jaxrs.PathParam;
-
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
+import lombok.extern.jbosslog.JBossLog;
+import org.jboss.resteasy.annotations.jaxrs.PathParam;
+
 import java.io.IOException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -32,7 +38,13 @@ public class ExpenseResource {
     ExpenseService expenseService;
 
     @Inject
+    UserService userService;
+
+    @Inject
     ExpenseFileService expenseFileService;
+
+    @Inject
+    EntityManager em;
 
     @GET
     @Path("/{uuid}")
@@ -59,7 +71,7 @@ public class ExpenseResource {
     }
 
     @GET
-    @Path("project/{projectuuid}/search/period")
+    @Path("/project/{projectuuid}/search/period")
     public List<Expense> findByProjectAndPeriod(@PathParam("projectuuid") String projectuuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
@@ -67,7 +79,7 @@ public class ExpenseResource {
     }
 
     @GET
-    @Path("user/{useruuid}/search/period")
+    @Path("/user/{useruuid}/search/period")
     public List<Expense> findByUserAndPeriod(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
@@ -75,14 +87,38 @@ public class ExpenseResource {
     }
 
     @GET
-    @Path("search/period")
+    @Path("/search/period")
     public List<Expense> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         return Expense.find("datecreated >= ?1 and expensedate <= ?2", localFromDate, localToDate).list();
     }
 
-    /// ** FIX ME!!! ***
+    @GET
+    @Path("/categories")
+    public List<ExpenseCategory> getCategories(@QueryParam("useruuid") String useruuid) {
+        User user = userService.findById(useruuid, false);
+        Company company = userService.getUserStatus(user, LocalDate.now()).getCompany();
+
+        int mostFrequentAccount = findMostFrequentAccount();
+
+        List<ExpenseCategory> expenseCategories = ExpenseCategory.listAll();
+        expenseCategories.forEach(expenseCategory -> expenseCategory.getExpenseAccounts().removeIf(expenseAccount -> !expenseAccount.isActive() || !expenseAccount.getCompanyuuid().equals(company.getUuid())));
+        return expenseCategories
+                .stream()
+                .filter(expenseCategory -> expenseCategory.isActive() && !expenseCategory.getExpenseAccounts().isEmpty())
+                .peek(expenseCategory -> expenseCategory.getExpenseAccounts().forEach(expenseAccount -> expenseAccount.setDefaultAccount(expenseAccount.getAccountNumber() == mostFrequentAccount)))
+                .toList();
+    }
+
+    @Transactional
+    public int findMostFrequentAccount() {
+        Query query = em.createQuery("SELECT e.account, COUNT(e) AS occurrences FROM Expense e GROUP BY e.account ORDER BY occurrences DESC");
+        query.setMaxResults(1);
+        Object result = query.getSingleResult();
+        return Integer.parseInt(result != null ? (String) ((Object[]) result)[0] : null); // Cast and return the account
+    }
+
     @POST
     @Transactional
     public void saveExpense(@Valid Expense expense) throws IOException {
