@@ -1,15 +1,6 @@
 package dk.trustworks.intranet.aggregateservices.v2;
 
-import dk.trustworks.intranet.userservice.model.User;
-
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
-import java.time.LocalDate;
-import java.util.List;
-
-import static dk.trustworks.intranet.utils.DateUtils.stringIt;
-
+/*
 @ApplicationScoped
 public class UserStatusService {
     @Inject
@@ -39,3 +30,6 @@ public class UserStatusService {
                 "JOIN salary s ON u.uuid = s.useruuid AND max_salary.max_statusdate = s.activefrom; ", User.class).getResultList();
     }
 }
+
+
+ */

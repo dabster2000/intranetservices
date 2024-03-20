@@ -10,8 +10,6 @@ import java.time.LocalDate;
 @NoArgsConstructor
 @AllArgsConstructor
 public class DateValueDTO {
-
     private LocalDate date;
     private Double value;
-
 }

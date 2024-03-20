@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.model;
+package dk.trustworks.intranet.aggregates.model;
 
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import lombok.Data;

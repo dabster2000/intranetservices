@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregateservices.BudgetService;
-import dk.trustworks.intranet.contracts.model.Budget;
+import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Project;
@@ -14,14 +13,13 @@ import dk.trustworks.intranet.invoiceservice.model.Invoice;
 import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
-import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -122,7 +120,7 @@ public class ProjectResource {
     public List<Invoice> findProjectInvoices(@PathParam("projectuuid") String projectuuid) {
         return invoiceAPI.findProjectInvoices(projectuuid);
     }
-
+/*
     @GET
     @Path("/{projectuuid}/budgets")
     public List<Budget> findByConsultantAndProject(@PathParam("projectuuid") String projectuuid, @QueryParam("consultantuuid") String consultantuuid) {
@@ -141,6 +139,8 @@ public class ProjectResource {
         }
         budgetService.saveBudget(budget);
     }
+
+ */
 
     @POST
     public Project save(Project project) {

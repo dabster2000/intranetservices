@@ -1,34 +1,6 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
-import dk.trustworks.intranet.aggregateservices.model.CompanyAggregateData;
-import dk.trustworks.intranet.dao.workservice.model.WorkFull;
-import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.dto.AvailabilityDocument;
-import dk.trustworks.intranet.dto.FinanceDocument;
-import dk.trustworks.intranet.invoiceservice.model.Invoice;
-import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
-import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.utils.NumberUtils;
-import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.scheduler.Scheduled;
-import jakarta.annotation.PostConstruct;
-import lombok.extern.jbosslog.JBossLog;
-
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
-import jakarta.persistence.Query;
-import java.time.LocalDate;
-import java.util.*;
-
-import static dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus.*;
-import static dk.trustworks.intranet.utils.DateUtils.getCurrentFiscalStartDate;
-
+/*
 @JBossLog
 @ApplicationScoped
 public class CompanyDataService {
@@ -58,26 +30,6 @@ public class CompanyDataService {
 
     private final List<LocalDate> reloadMonthRevenueDates = Collections.synchronizedList(new ArrayList<>());
 
-    /*
-    public List<CompanyAggregateData> getMonthRevenueData() {
-        LocalDate lookupDate = startDate;
-        List<CompanyAggregateData> result = new ArrayList<>();
-        do {
-            CompanyAggregateData companyAggregateData = new CompanyAggregateData(lookupDate);
-            result.add(companyAggregateData);
-            for (WorkFull work : workService.findByPeriod(lookupDate, lookupDate.plusMonths(1))) {
-                if(work.getRegistered().getYear()!=lookupDate.getYear() && work.getRegistered().getMonthValue()!= lookupDate.getMonthValue()) continue;
-                companyAggregateData.addWorkDuration(work.getWorkduration());
-                companyAggregateData.addRegisteredAmount(work.getWorkduration() * work.getRate());
-            }
-
-            lookupDate = lookupDate.plusMonths(1);
-        } while (lookupDate.isBefore(getCurrentFiscalStartDate().plusYears(1)));
-
-        return result;
-    }
-
-     */
 
     public CompanyAggregateData updateWorkData(CompanyAggregateData companyAggregateData) {
         LocalDate lookupDate = companyAggregateData.getMonth();
@@ -136,10 +88,10 @@ public class CompanyDataService {
     }
 
     public CompanyAggregateData updateBudgetData(CompanyAggregateData companyAggregateData) {
-        List<EmployeeBudgetPerDay> employeeBudgetPerDays = budgetService.calcBudgets(companyAggregateData.getMonth());
+        List<EmployeeBudgetPerDayAggregate> employeeBudgetPerDayAggregates = budgetService.calcBudgets(companyAggregateData.getMonth());
 
-        double budgetHours = employeeBudgetPerDays.stream().mapToDouble(EmployeeBudgetPerDay::getBudgetHours).sum();
-        double budgetAmount = employeeBudgetPerDays.stream().mapToDouble(b -> b.getBudgetHours() * b.getRate()).sum();
+        double budgetHours = employeeBudgetPerDayAggregates.stream().mapToDouble(EmployeeBudgetPerDayAggregate::getBudgetHours).sum();
+        double budgetAmount = employeeBudgetPerDayAggregates.stream().mapToDouble(b -> b.getBudgetHours() * b.getRate()).sum();
 
         companyAggregateData.setBudgetAmount((int)budgetAmount);
         companyAggregateData.setBudgetHours((int)budgetHours);
@@ -176,12 +128,12 @@ public class CompanyDataService {
         double monthAvailabilites = 0.0;
 
         List<AvailabilityDocument> availabilityDocuments = availabilityService.getConsultantAvailabilityByMonth(companyAggregateData.getMonth());
-        List<EmployeeBudgetPerDay> employeeBudgetPerDays = budgetService.getBudgetDataByPeriod(companyAggregateData.getMonth());
+        List<EmployeeBudgetPerDayAggregate> employeeBudgetPerDayAggregates = budgetService.getBudgetDataByPeriod(companyAggregateData.getMonth());
 
         for (User user : userService.findWorkingUsersByDate(companyAggregateData.getMonth(), ConsultantType.CONSULTANT)) {
             if(user.getUsername().equals("hans.lassen") || user.getUsername().equals("tobias.kjoelsen") || user.getUsername().equals("lars.albert") || user.getUsername().equals("thomas.gammelvind")) continue;
-            double budget = employeeBudgetPerDays.stream().filter(b -> b.getUser().getUuid().equals(user.getUuid()) && b.getDocumentDate().isEqual(companyAggregateData.getMonth().withDayOfMonth(1)))
-                    .mapToDouble(EmployeeBudgetPerDay::getBudgetHours).sum();
+            double budget = employeeBudgetPerDayAggregates.stream().filter(b -> b.getUser().getUuid().equals(user.getUuid()) && b.getDocumentDate().isEqual(companyAggregateData.getMonth().withDayOfMonth(1)))
+                    .mapToDouble(EmployeeBudgetPerDayAggregate::getBudgetHours).sum();
             monthAvailabilites += budget;
             Optional<AvailabilityDocument> document = availabilityDocuments.stream().filter(availabilityDocument ->
                     availabilityDocument.getMonth().isEqual(companyAggregateData.getMonth()) && availabilityDocument.getUser().getUuid().equals(user.getUuid())).findAny();
@@ -254,5 +206,7 @@ public class CompanyDataService {
     }
 
 }
+
+ */
 
 

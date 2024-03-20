@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.model.v2;
+package dk.trustworks.intranet.aggregates.availability.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -13,6 +13,7 @@ import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
@@ -22,14 +23,16 @@ import java.time.LocalDateTime;
 
 @Data
 @Entity
-@Table(name = "availability_document")
+@Table(name = "bi_availability_per_day")
 @NoArgsConstructor
 @AllArgsConstructor
-public class EmployeeDataPerDay extends PanacheEntityBase {
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
+public class EmployeeAvailabiltyPerDayAggregate extends PanacheEntityBase {
 
     @Id
     @JsonIgnore
     @GeneratedValue(strategy= GenerationType.IDENTITY)
+    @EqualsAndHashCode.Include
     private int id;
 
     @ManyToOne(fetch = FetchType.EAGER)
@@ -79,19 +82,6 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @Column(name = "paid_leave_hours", precision = 7, scale = 4)
     @JsonProperty("paidLeaveHours")
     private BigDecimal paidLeaveHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
-/*
-    @Column(name = "registered_billable_hours", precision = 7, scale = 4)
-    private BigDecimal registeredBillableHours; // done
-
-    @Column(name = "helped_colleague_billable_hours", precision = 7, scale = 4)
-    private BigDecimal helpedColleagueBillableHours;
-
-    @Column(name = "registered_amount", precision = 9, scale = 4)
-    private BigDecimal registeredAmount; // done
-
-    @Column(name = "contract_utilization", precision = 7, scale = 4)
-    private BigDecimal contractUtilization;
- */
 
     @Column(name = "consultant_type")
     @JsonProperty("consultantType")
@@ -115,7 +105,7 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
 
-    public EmployeeDataPerDay(Company company, LocalDate documentDate, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
+    public EmployeeAvailabiltyPerDayAggregate(Company company, LocalDate documentDate, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
         this.company = company;
         this.lastUpdate = LocalDateTime.now();
         this.documentDate = documentDate;
@@ -130,12 +120,6 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
         this.maternityLeaveHours = BigDecimal.valueOf(maternityLeaveHours);
         this.nonPaydLeaveHours = BigDecimal.valueOf(nonPaydLeaveHours);
         this.paidLeaveHours = BigDecimal.valueOf(paidLeaveHours);
-        /*
-        this.registeredBillableHours = BigDecimal.valueOf(registeredBillableHours);
-        this.helpedColleagueBillableHours = BigDecimal.valueOf(helpedColleagueBillableHours);
-        this.registeredAmount = BigDecimal.valueOf(registeredAmount);
-        this.contractUtilization = BigDecimal.valueOf(contractUtilization);
-         */
         this.consultantType = consultantType;
         this.statusType = statusType;
         this.salary = salary;
@@ -152,15 +136,6 @@ public class EmployeeDataPerDay extends PanacheEntityBase {
         return grossAvailableHours!=null?Math.max(grossAvailableHours.doubleValue() - unavavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0):0.0;
     }
 
-    /*
-    @Transient
-    @JsonIgnore
-    public Double getActualUtilization() {
-        // (5.4 / 7.4) * 100.0
-        return ((registeredBillableHours.doubleValue() + helpedColleagueBillableHours.doubleValue()) / getNetAvailableHours()) / 100.0;
-    }
-
-     */
 
     @Override
     public String toString() {

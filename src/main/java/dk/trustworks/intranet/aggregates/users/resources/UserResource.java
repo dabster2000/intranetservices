@@ -2,9 +2,11 @@ package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 import dk.trustworks.intranet.achievementservice.services.AchievementService;
+import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateUserEvent;
 import dk.trustworks.intranet.aggregates.users.events.UpdateUserEvent;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
@@ -27,7 +29,12 @@ import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
+import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.*;
 import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -36,12 +43,6 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.jboss.resteasy.annotations.GZIP;
 
-import jakarta.annotation.security.PermitAll;
-import jakarta.annotation.security.RolesAllowed;
-import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
-import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -56,8 +57,8 @@ import static java.net.URLDecoder.decode;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 @Tag(name = "user")
-@JBossLog
 @Path("/users")
+@JBossLog
 @RequestScoped
 @SecurityRequirement(name = "jwt")
 @RolesAllowed({"SYSTEM"})
@@ -103,6 +104,9 @@ public class UserResource {
 
     @Inject
     UserService userService;
+
+    @Inject
+    BudgetService budgetService;
 
     @GET
     public List<User> listAll(@QueryParam("username") Optional<String> username, @QueryParam("shallow") Optional<String> shallow) {
@@ -341,4 +345,5 @@ public class UserResource {
             }
         }
     }
+
 }

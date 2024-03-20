@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
-import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
+import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.dto.DateAccountCategoriesDTO;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
@@ -53,7 +53,7 @@ public class AccountingResource {
     UserAccountResource userAccountAPI;
 
     @Inject
-    EmployeeDataService employeeDataService;
+    AvailabilityService availabilityService;
 
     @GET
     @Path("/categories/csv")
@@ -62,7 +62,7 @@ public class AccountingResource {
         LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
         LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
 
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(datefrom, dateto);
+        List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
         Company company = Company.findById(companyuuid);
 
         List<AccountingCategory> allAccountingCategories = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
@@ -73,16 +73,7 @@ public class AccountingResource {
 
 
         LocalDate date = datefrom;
-        /*
-        List<String> lines = new ArrayList<>();
-        lines.add("Name;Number"); // Date header
-        for (AccountingCategory accountingCategory : allAccountingCategories) {
-            for (AccountingAccount account : accountingCategory.getAccounts().stream().filter(ac -> ac.getCompany().equals(company)).toList()) {
-                lines.add(account.getAccountDescription().trim() + ";" + account.getAccountCode());
-            }
-            lines.add(accountingCategory.getAccountname().trim() + ";");
-        }
-         */
+
         Map<LocalDate, DateAccountCategoriesDTO> result = new HashMap<>();
         do {
             // For use ind streams
@@ -91,17 +82,17 @@ public class AccountingResource {
             result.putIfAbsent(finalDate, new DateAccountCategoriesDTO(finalDate, new ArrayList<>()));
 
             // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
-            double primaryCompanySalarySum = calculateSalarySum(company, finalDate, employeeDataPerMonthList);
+            double primaryCompanySalarySum = calculateSalarySum(company, finalDate, employeeAvailabilityPerMonthList);
 
             // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
-            double primaryCompanyConsultant = calculateConsultantCount(company, finalDate, employeeDataPerMonthList);
+            double primaryCompanyConsultant = calculateConsultantCount(company, finalDate, employeeAvailabilityPerMonthList);
 
             // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
             AtomicReference<Double> secondaryCompanyConsultant = new AtomicReference<>(0.0);
             AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
             Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
-                secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, finalDate, employeeDataPerMonthList));
-                secondaryCompanyConsultant.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, finalDate, employeeDataPerMonthList));
+                secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
+                secondaryCompanyConsultant.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
             });
 
             double totalNumberOfConsultants = primaryCompanyConsultant + secondaryCompanyConsultant.get();
@@ -375,7 +366,7 @@ public class AccountingResource {
         LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
         LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
 
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(datefrom, dateto);
+        List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
         Company company = Company.findById(companyuuid);
 
         List<AccountingCategory> list = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
@@ -384,17 +375,17 @@ public class AccountingResource {
         do {
             LocalDate finalDate = date;
             // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
-            double primaryCompanySalarySum = calculateSalarySum(company, date, employeeDataPerMonthList);
+            double primaryCompanySalarySum = calculateSalarySum(company, date, employeeAvailabilityPerMonthList);
 
             // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
-            double primaryCompanyConsultantAvg = calculateConsultantCount(company, date, employeeDataPerMonthList);
+            double primaryCompanyConsultantAvg = calculateConsultantCount(company, date, employeeAvailabilityPerMonthList);
 
             // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
             AtomicReference<Double> secondaryCompanyConsultantAvg = new AtomicReference<>(0.0);
             AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
             Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
-                secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, finalDate, employeeDataPerMonthList));
-                secondaryCompanyConsultantAvg.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, finalDate, employeeDataPerMonthList));
+                secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
+                secondaryCompanyConsultantAvg.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
             });
 
             double totalNumberOfConsultants = primaryCompanyConsultantAvg + secondaryCompanyConsultantAvg.get();
@@ -461,23 +452,23 @@ public class AccountingResource {
         LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
         int monthsBetween = DateUtils.countMonthsBetween(datefrom, dateto);
 
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(datefrom, dateto);
+        List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
         Company company = Company.findById(companyuuid);
 
         // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
-        double primaryCompanySalarySum = calculateSalarySum(company, employeeDataPerMonthList.stream().filter(e -> e.getDate().isBefore(LocalDate.now().withDayOfMonth(1))).toList());
+        double primaryCompanySalarySum = calculateSalarySum(company, employeeAvailabilityPerMonthList.stream().filter(e -> e.getDate().isBefore(LocalDate.now().withDayOfMonth(1))).toList());
         System.out.println("primaryCompanySalarySum = " + primaryCompanySalarySum);
 
         // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
-        Double primaryCompanyConsultantAvg = calculateConsultantCount(company, employeeDataPerMonthList) / monthsBetween;
+        Double primaryCompanyConsultantAvg = calculateConsultantCount(company, employeeAvailabilityPerMonthList) / monthsBetween;
         System.out.println("primaryCompanyConsultantAvg = " + primaryCompanyConsultantAvg);
 
         // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
         AtomicReference<Double> secondaryCompanyConsultantAvg = new AtomicReference<>(0.0);
         AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
         Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
-            secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, employeeDataPerMonthList.stream().filter(e -> e.getDate().isBefore(LocalDate.now().withDayOfMonth(1))).toList()));
-            secondaryCompanyConsultantAvg.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, employeeDataPerMonthList) / monthsBetween);
+            secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, employeeAvailabilityPerMonthList.stream().filter(e -> e.getDate().isBefore(LocalDate.now().withDayOfMonth(1))).toList()));
+            secondaryCompanyConsultantAvg.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, employeeAvailabilityPerMonthList) / monthsBetween);
         });
         System.out.println("secondaryCompanyConsultantAvg = " + secondaryCompanyConsultantAvg.get());
 
@@ -537,7 +528,7 @@ public class AccountingResource {
         return list;
     }
 
-    private double calculateSalarySum(Company company, LocalDate date, List<EmployeeDataPerMonth> data) {
+    private double calculateSalarySum(Company company, LocalDate date, List<EmployeeAvailabilityPerMonth> data) {
         System.out.println("company = " + company.getName() + ", date = " + date + ", data = " + data.size());
         AtomicReference<Double> sum = new AtomicReference<>(0.0);
         data.stream().filter(employeeDataPerMonth ->
@@ -554,7 +545,7 @@ public class AccountingResource {
         return sum.get();
     }
 
-    private Double calculateConsultantCount(Company company, LocalDate date, List<EmployeeDataPerMonth> data) {
+    private Double calculateConsultantCount(Company company, LocalDate date, List<EmployeeAvailabilityPerMonth> data) {
         AtomicReference<Double> sum = new AtomicReference<>(0.0);
         data.stream().filter(employeeDataPerMonth ->
                 employeeDataPerMonth.getYear() == date.getYear() &&
@@ -570,7 +561,7 @@ public class AccountingResource {
         return sum.get();
     }
 
-    private double calculateSalarySum(Company company, List<EmployeeDataPerMonth> data) {
+    private double calculateSalarySum(Company company, List<EmployeeAvailabilityPerMonth> data) {
         AtomicReference<Double> sum = new AtomicReference<>(0.0);
         data.stream().filter(employeeDataPerMonth ->
                 employeeDataPerMonth.getCompany()!=null &&
@@ -584,7 +575,7 @@ public class AccountingResource {
         return sum.get();
     }
 
-    private Double calculateConsultantCount(Company company, List<EmployeeDataPerMonth> data) {
+    private Double calculateConsultantCount(Company company, List<EmployeeAvailabilityPerMonth> data) {
         AtomicReference<Double> sum = new AtomicReference<>(0.0);
         data.stream().filter(employeeDataPerMonth ->
                 employeeDataPerMonth.getCompany()!=null &&
@@ -607,13 +598,13 @@ public class AccountingResource {
 
     @GET
     @Path("/categories/{uuid}/expenses/sum")
-    public void getExpenses(@QueryParam("companyuuid") String companyuuid, @PathParam("uuid") String uuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+    public String getExpenses(@QueryParam("companyuuid") String companyuuid, @PathParam("uuid") String uuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate date1 = DateUtils.dateIt(fromdate);
         LocalDate date2 = DateUtils.dateIt(todate);
         Company company = Company.findById(companyuuid);
         AccountingCategory category = AccountingCategory.findById(uuid);
         List<FinanceDetails> financeDetails = FinanceDetails.list("expensedate between ?1 and ?2", date1, date2);
-        List<EmployeeDataPerMonth> employeeDataPerMonthList = employeeDataService.getAllEmployeeDataPerMonth(date1, date2);
+        List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(date1, date2);
         AtomicInteger sum = new AtomicInteger();
         LocalDate date = date1;
         while(date.isBefore(date2)) {
@@ -626,7 +617,7 @@ public class AccountingResource {
             Map<Company, Integer> numberOfConsultantsPerCompany = new HashMap<>();
             for (Company c : Company.<Company>listAll()) {
                 numberOfConsultantsPerCompany.put(c, 0);
-                employeeDataPerMonthList.stream()
+                employeeAvailabilityPerMonthList.stream()
                         .filter(e -> LocalDate.of(e.getYear(), e.getMonth(), 1).equals(finalDate) &&
                                 !e.getStatus().equals(StatusType.TERMINATED) &&
                                 !e.getStatus().equals(StatusType.NON_PAY_LEAVE) &&
@@ -675,6 +666,7 @@ public class AccountingResource {
             });
             date = date.plusMonths(1);
         }
+        return null; //TODO replace this stub to something useful
     }
 
     @Data

@@ -163,13 +163,13 @@
       <version>0.4.3</version>
     </dependency>
 
+
     <!-- LOGGING -->
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-logging-gelf</artifactId>
     </dependency>
 
-    <!-- Amazon S3 -->
     <!-- Amazon S3 -->
     <dependency>
       <groupId>org.jboss.resteasy</groupId>

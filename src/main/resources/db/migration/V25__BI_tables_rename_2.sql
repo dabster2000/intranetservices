@@ -1,0 +1,1 @@
+rename table availability_document to bi_availability_per_day;

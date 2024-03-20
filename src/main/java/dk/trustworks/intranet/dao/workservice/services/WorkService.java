@@ -200,4 +200,8 @@ public class WorkService {
     public List<WorkFull> findBillableWorkByUser(String useruuid) {
         return WorkFull.find("useruuid like ?1", useruuid).list();
     }
+
+    public double sumBillableByUserAndTasks(String useruuid, LocalDate localDate) {
+        return WorkFull.<WorkFull>find("useruuid like ?1 AND rate > 0 AND registered >= ?2 AND registered < ?3", useruuid, localDate, localDate.plusMonths(1)).stream().mapToDouble(WorkFull::getWorkduration).sum();
+    }
 }

@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregateservices.v2.AvailabilityCalculatingExecutor;
+import dk.trustworks.intranet.aggregates.availability.jobs.AvailabilityCalculatingExecutor;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;

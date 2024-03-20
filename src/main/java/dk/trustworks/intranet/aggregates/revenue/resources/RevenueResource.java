@@ -1,8 +1,7 @@
-package dk.trustworks.intranet.apigateway.resources;
+package dk.trustworks.intranet.aggregates.revenue.resources;
 
-import dk.trustworks.intranet.aggregateservices.BudgetService;
+import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
-import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
@@ -10,13 +9,13 @@ import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
-import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -45,37 +44,11 @@ public class RevenueResource {
     RevenueService revenueService;
 
     @Inject
-    BudgetService budgetService;
-
-    @Inject
     FinanceService financeService;
 
     @Inject
     TeamService teamService;
 
-    @GET
-    @Path("/budgets")
-    public List<DateValueDTO> getBudgetRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return budgetService.getBudgetRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
-    }
-
-    @GET
-    @Path("/budgets/months/{month}")
-    public DateValueDTO getBudgetRevenueForSingleMonth(@PathParam("month") String month) {
-        return budgetService.getBudgetRevenueForSingleMonth(companyuuid, dateIt(month));
-    }
-
-    @GET
-    @Path("/budgets/consultants/{useruuid}/months/{month}")
-    public DateValueDTO getBudgetRevenueForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return budgetService.getBudgetRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month));
-    }
-
-    @GET
-    @Path("/budgets/consultants/{useruuid}")
-    public List<DateValueDTO> getRBudgetRevenueByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("periodFrom") String periodFrom, @QueryParam("periodTo") String periodTo) {
-        return budgetService.getBudgetRevenueByPeriodAndSingleConsultant(companyuuid, useruuid, dateIt(periodFrom), dateIt(periodTo));
-    }
 
     @GET
     @Path("/registered")

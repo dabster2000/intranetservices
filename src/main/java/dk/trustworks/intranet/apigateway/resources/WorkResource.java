@@ -3,16 +3,18 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import dk.trustworks.intranet.dto.KeyValueDTO;
+import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
-import jakarta.ws.rs.*;
 import java.util.List;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
@@ -66,8 +68,14 @@ public class WorkResource {
 
     @GET
     @Path("/work/workduration/sum")
-    public double sumWorkdurationByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
-        return workAPI.countByUserAndTasks(useruuid, taskuuids);
+    public KeyValueDTO sumWorkdurationByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
+        return new KeyValueDTO("", Double.toString(workAPI.countByUserAndTasks(useruuid, taskuuids)));
+    }
+
+    @GET
+    @Path("/work/billable/sum")
+    public double sumBillableByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("month") String month) {
+        return workAPI.sumBillableByUserAndTasks(useruuid, DateUtils.dateIt(month));
     }
 
     @POST

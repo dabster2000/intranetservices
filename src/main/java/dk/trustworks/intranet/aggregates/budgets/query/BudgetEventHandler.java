@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.budgets.query;
 
 import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
-import dk.trustworks.intranet.aggregateservices.v2.BudgetCalculatingExecutor;
+import dk.trustworks.intranet.aggregates.budgets.jobs.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.messaging.emitters.enums.SystemEventType;
 import io.quarkus.vertx.ConsumeEvent;

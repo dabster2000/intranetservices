@@ -1,18 +1,13 @@
 package dk.trustworks.intranet.contracts.services;
 
-import dk.trustworks.intranet.contracts.model.Budget;
+import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
 
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.transaction.Transactional;
-import java.time.LocalDate;
-import java.util.List;
-import java.util.UUID;
-
 @JBossLog
+@Deprecated
 @ApplicationScoped
 public class BudgetService {
-
+/*
     public List<Budget> getBudgets(int year) {
         return Budget.find("year = ?1", year).list();
     }
@@ -46,4 +41,6 @@ public class BudgetService {
                 budget.getConsultantuuid());
         Budget.persist(budget);
     }
+
+ */
 }

@@ -1,14 +1,6 @@
 package dk.trustworks.intranet.contracts.model;
 
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-
+/*
 @Data
 @Entity
 @NoArgsConstructor
@@ -25,3 +17,6 @@ public class Budget extends PanacheEntityBase {
     private String projectuuid;
 
 }
+
+
+ */

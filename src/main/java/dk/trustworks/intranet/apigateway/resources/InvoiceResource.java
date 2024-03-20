@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import dk.trustworks.intranet.aggregateservices.InvoiceGeneratorService;
+import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.invoiceservice.model.Invoice;
@@ -35,7 +35,7 @@ public class InvoiceResource {
     InvoiceService invoiceService;
 
     @Inject
-    InvoiceGeneratorService invoiceGeneratorService;
+    InvoiceGenerator invoiceGenerator;
 
     @GET
     public List<Invoice> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
@@ -59,7 +59,7 @@ public class InvoiceResource {
     @Path("/candidates/months/{month}")
     public List<ProjectSummary> loadProjectSummaryByYearAndMonth(@PathParam("month") String strMonth) {
         LocalDate month = dateIt(strMonth).withDayOfMonth(1);
-        return invoiceGeneratorService.loadProjectSummaryByYearAndMonth(month);
+        return invoiceGenerator.loadProjectSummaryByYearAndMonth(month);
     }
 
     @GET
@@ -78,7 +78,7 @@ public class InvoiceResource {
         System.out.println("InvoiceResource.createDraftInvoice");
         System.out.println("contractuuid = " + contractuuid + ", projectuuid = " + projectuuid + ", month = " + month + ", type = " + type);
         LocalDate localDate = dateIt(month);
-        return invoiceGeneratorService.createDraftInvoiceFromProject(contractuuid, projectuuid, localDate, type);
+        return invoiceGenerator.createDraftInvoiceFromProject(contractuuid, projectuuid, localDate, type);
     }
 
     @PUT

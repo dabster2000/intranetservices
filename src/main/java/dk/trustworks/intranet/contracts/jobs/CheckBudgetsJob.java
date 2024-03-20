@@ -1,27 +1,13 @@
 package dk.trustworks.intranet.contracts.jobs;
 
-import dk.trustworks.intranet.contracts.model.Budget;
-import dk.trustworks.intranet.contracts.model.Contract;
-import dk.trustworks.intranet.contracts.model.ContractConsultant;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
-import dk.trustworks.intranet.contracts.services.BudgetService;
-import dk.trustworks.intranet.contracts.services.ContractService;
-import dk.trustworks.intranet.dao.workservice.model.WorkFull;
-import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
 
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
-
 @JBossLog
+@Deprecated
 @ApplicationScoped
 public class CheckBudgetsJob {
-
+/*
     @Inject
     WorkService workService;
 
@@ -33,6 +19,7 @@ public class CheckBudgetsJob {
 
     //@Scheduled(cron = "0 1 * * *")
     //@Scheduled(every = "10m")
+
     public void updateEndOfMonthBudgetsJob() {
         LocalDate startDate = LocalDate.of(2014, 2, 1);
         LocalDate endDate = LocalDate.now().withDayOfMonth(1);
@@ -76,4 +63,6 @@ public class CheckBudgetsJob {
             startDate = startDate.plusMonths(1);
         } while (startDate.isBefore(endDate));
     }
+
+     */
 }

@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregateservices.FinanceService;
-import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
+import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.financeservice.model.Finance;

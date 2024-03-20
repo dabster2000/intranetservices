@@ -1,18 +1,12 @@
 package dk.trustworks.intranet.aggregateservices;
 
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.contracts.services.ContractConsultantService;
-import dk.trustworks.intranet.contracts.services.ContractService;
-import dk.trustworks.intranet.dao.crm.services.ClientService;
-import dk.trustworks.intranet.dao.crm.services.ProjectService;
-import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
@@ -22,27 +16,6 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 @Deprecated
 public class AvailabilityService {
-
-    @Inject
-    UserService userService;
-
-    @Inject
-    WorkService workService;
-
-    @Inject
-    ContractService contractService;
-
-    @Inject
-    ContractConsultantService contractConsultantService;
-
-    @Inject
-    BudgetService budgetService;
-
-    @Inject
-    ClientService clientService;
-
-    @Inject
-    ProjectService projectService;
 
     @Inject
     AvailabilityServiceCache availabilityServiceCache;

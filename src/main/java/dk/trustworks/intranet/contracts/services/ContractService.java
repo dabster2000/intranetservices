@@ -4,13 +4,8 @@ import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
-import dk.trustworks.intranet.dao.workservice.model.WorkFull;
-import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
 import dk.trustworks.intranet.userservice.model.User;
-import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.vertx.core.Vertx;
-import io.vertx.core.VertxOptions;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -198,7 +193,7 @@ WHERE
         log.info("ContractService.save");
         log.info("contract = " + contract);
         contract.setContractConsultants(new HashSet<>());
-        if(contract.getUuid()==null || contract.getUuid().trim().equals("")) contract.setUuid(UUID.randomUUID().toString());
+        if(contract.getUuid()==null || contract.getUuid().trim().isEmpty()) contract.setUuid(UUID.randomUUID().toString());
         Contract.persist(contract);
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
     }
@@ -307,114 +302,6 @@ WHERE
         salesConsultant.ifPresent(contract::setSalesconsultant);
         contract.setContractConsultants(contractConsultants);
         return contract;
-    }
-
-    /*
-    public List<Contract> findActiveContractsByDate(LocalDate activeDate, ContractStatus... statusList) {
-        return findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn(activeDate, activeDate, Arrays.stream(statusList).toList());
-    }
-
-     */
-
-    /*
-    private boolean isValidContract(Contract contract) {
-        boolean isValid = true;
-        for (Contract contractTest : findByClientuuid(contract.getClientuuid())) {
-            boolean isOverlapped = false;
-            if(contract.getUuid().equals(contractTest.getUuid())) continue;
-            if((contract.getActiveFrom().isBefore(contractTest.getActiveTo()) || contract.getActiveFrom().isEqual(contractTest.getActiveTo())) &&
-                    (contract.getActiveTo().isAfter(contractTest.getActiveFrom()) || contract.getActiveTo().isEqual(contractTest.getActiveFrom()))) {
-                isOverlapped = true;
-            }
-
-            boolean hasProject = false;
-            for (ContractProject contractProject : getContractProjects(contract.getUuid())) {
-                for (ContractProject contractTestProject : contractTest.getContractProjects()) {
-                    if(contractProject.getProjectuuid().equals(contractTestProject.getProjectuuid())) {
-                        hasProject = true;
-                        break;
-                    }
-                }
-                if(hasProject) break;
-            }
-
-            boolean hasConsultant = false;
-            for (ContractConsultant contractConsultant : findContractConsultant(contract.getUuid())) {
-                for (ContractConsultant contractTestConsultant : contractTest.getContractConsultants()) {
-                    if(contractConsultant.getUseruuid().equals(contractTestConsultant.getUseruuid())) {
-                        hasConsultant = true;
-                        break;
-                    }
-                }
-                if(hasConsultant) break;
-            }
-            if(isOverlapped && hasProject && hasConsultant) isValid = false;
-        }
-        return isValid;
-    }
-     */
-
-    @Inject
-    WorkService workService;
-
-    //@Scheduled(every = "1h")
-    public void updateContractStatus() {
-        VertxOptions options = new VertxOptions().setBlockedThreadCheckInterval(300000); // 120 seconds
-        Vertx vertx = Vertx.vertx(options);
-
-
-        System.out.println("ContractService.updateContractStatus START");
-        List<ContractConsultant> contractConsultants = ContractConsultant.listAll();
-        List<ContractConsultant> updatedContractConsultants = new ArrayList<>();
-        List<Budget> budgets = Budget.<Budget>stream("budget > 0").toList();
-        System.out.println("Load workfull");
-        List<WorkFull> workFullList = WorkFull.<WorkFull>find("contractuuid is not null and useruuid is not null and workduration > 0").list();
-        System.out.println("workFullList.size() = " + workFullList.size());
-
-        Map<String, List<Budget>> budgetMap = budgets.stream().collect(Collectors.groupingBy(Budget::getConsultantuuid));
-        int i = 0;
-        System.out.println("budgetMap.keySet().size() = " + budgetMap.keySet().size());
-        for (String key : budgetMap.keySet().stream().sorted().toList()) {
-            Optional<ContractConsultant> ccOptional = contractConsultants.stream().filter(contractConsultant -> contractConsultant.getUuid().equals(key)).findAny();
-            if(ccOptional.isEmpty()) continue;
-            ContractConsultant cc = ccOptional.get();
-            //System.out.println("ContractConsultant = " + cc);
-            //System.out.println("min = " + budgetMap.get(key).stream().map(b -> LocalDate.of(b.getYear(), b.getMonth()+1, 1)).min(LocalDate::compareTo).orElse(null));
-            //System.out.println("max = " + budgetMap.get(key).stream().map(b -> LocalDate.of(b.getYear(), b.getMonth()+1, 1)).max(LocalDate::compareTo).orElse(null));
-            double max = Math.round(budgetMap.get(key).stream().mapToDouble(b -> (((b.getBudget()*12)/52.0/cc.getRate()/7.4)*7.4)).max().orElse(0.0));
-            if(max>=30) max = 37;
-            if(max>25 && max<30) max = 30;
-            if(max>20 && max<=25) max = 25;
-            if(max>10 && max<=15) max = 15;
-            cc.setHours(max);
-            cc.setActiveFrom(budgetMap.get(key).stream().map(b -> LocalDate.of(b.getYear(), b.getMonth()+1, 1)).min(LocalDate::compareTo).orElse(LocalDate.of(1900,1,1)));
-            if(!cc.getActiveFrom().isAfter(LocalDate.now())) {
-                //Optional singleResult = em.createNativeQuery("select * from work_full where contractuuid = '" + cc.getContractuuid() + "' and useruuid = '" + cc.getUseruuid() + "' order by registered asc limit 1; ", WorkFull.class).getResultStream().findAny();
-                Optional<WorkFull> singleResult = workFullList.stream().filter(wf -> wf.getContractuuid().equals(cc.getContractuuid()) && wf.getUseruuid().equals(cc.getUseruuid())).min(Comparator.comparing(WorkFull::getRegistered));
-                if(singleResult.isPresent()) {
-                    LocalDate workMin = singleResult.get().getRegistered();
-                    if (workMin.isBefore(cc.getActiveFrom())) cc.setActiveFrom(workMin);
-                }
-            }
-            cc.setActiveTo(budgetMap.get(key).stream().map(b -> LocalDate.of(b.getYear(), b.getMonth()+1, 1)).max(LocalDate::compareTo).orElse(LocalDate.of(2100,1,1)));
-            if(!cc.getActiveTo().isAfter(LocalDate.now())) {
-                //Optional singleResult = em.createNativeQuery("select * from work_full where contractuuid = '" + cc.getContractuuid() + "' and useruuid = '" + cc.getUseruuid() + "' order by registered desc limit 1; ", WorkFull.class).getResultStream().findAny();
-                Optional<WorkFull> singleResult = workFullList.stream().filter(wf -> wf.getContractuuid().equals(cc.getContractuuid()) && wf.getUseruuid().equals(cc.getUseruuid())).max(Comparator.comparing(WorkFull::getRegistered));
-                if(singleResult.isPresent()) {
-                    LocalDate workMax = singleResult.get().getRegistered();
-                    if (workMax.isAfter(cc.getActiveTo())) cc.setActiveTo(workMax);
-                }
-            }
-            updatedContractConsultants.add(cc);
-            System.out.println(cc);
-            System.out.println("i = " + (++i));
-        }
-
-        QuarkusTransaction.begin();
-        updatedContractConsultants.forEach(this::updateConsultant);
-        QuarkusTransaction.commit();
-
-        System.out.println("ContractService.updateContractStatus END");
     }
 
     @Transactional

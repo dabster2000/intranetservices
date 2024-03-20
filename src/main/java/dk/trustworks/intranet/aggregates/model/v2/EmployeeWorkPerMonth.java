@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.model.v2;
+package dk.trustworks.intranet.aggregates.model.v2;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import dk.trustworks.intranet.model.Company;
@@ -12,10 +12,10 @@ import java.time.LocalDate;
 
 @Data
 @Entity
-@Table(name = "company_work_per_month")
+@Table(name = "employee_work_per_month")
 @NoArgsConstructor
 @AllArgsConstructor
-public class CompanyWorkPerMonth extends PanacheEntityBase {
+public class EmployeeWorkPerMonth extends PanacheEntityBase {
 
     @Id
     private String uuid;
@@ -24,14 +24,22 @@ public class CompanyWorkPerMonth extends PanacheEntityBase {
 
     private int month;
 
+    private String useruuid; // done
+
+    private boolean workas;
+
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "contract_company_uuid")
+    private Company contractCompany;
+
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "consultant_company_uuid")
-    private Company company;
+    private Company consultantCompany;
 
-    @Column(name = "hours")
+    @Column(name = "workduration")
     private double workDuration;
 
-    @Column(name = "billed")
+    @Column(name = "total_billed")
     private double totalBilled;
 
     @JsonIgnore

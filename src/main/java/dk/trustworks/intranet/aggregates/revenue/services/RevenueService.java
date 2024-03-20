@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.v2;
+package dk.trustworks.intranet.aggregates.revenue.services;
 
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;

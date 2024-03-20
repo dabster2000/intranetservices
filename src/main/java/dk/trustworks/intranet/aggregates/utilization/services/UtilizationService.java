@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices.v2;
+package dk.trustworks.intranet.aggregates.utilization.services;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -24,5 +24,7 @@ public class UtilizationService {
                 "where ed.useruuid = '67874df9-7629-4dee-8ab5-4547e63b310e' and ed.year = 2023 and ed.month = 11;";
 
     }
+
+
     
 }

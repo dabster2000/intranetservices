@@ -1,11 +1,11 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 
+import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonth;
+import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
+import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
-import dk.trustworks.intranet.aggregateservices.BudgetService;
-import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeBudgetPerDay;
-import dk.trustworks.intranet.aggregateservices.v2.RevenueService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
@@ -15,16 +15,16 @@ import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.utils.DateUtils;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import jakarta.annotation.security.RolesAllowed;
-import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
-import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -125,12 +125,12 @@ public class ClientResource {
     public List<GraphKeyValue> getClientBudgetSum(@PathParam("fiscalyear") int fiscalYear) {
         LocalDate startDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
         LocalDate endDate = startDate.plusYears(1).minusMonths(1);
-        List<EmployeeBudgetPerDay> employeeBudgetPerDayList = budgetService.getBudgetDataByPeriod(startDate, endDate);
+        List<EmployeeBudgetPerMonth> employeeBudgetPerMonthList = budgetService.getBudgetDataByPeriod(startDate, endDate);
         Map<String, GraphKeyValue> clientBudgets = new HashMap<>();
-        for (EmployeeBudgetPerDay employeeBudgetPerDay : employeeBudgetPerDayList) {
-            Client client = employeeBudgetPerDay.getClient();
+        for (EmployeeBudgetPerMonth employeeBudgetPerMonth : employeeBudgetPerMonthList) {
+            Client client = employeeBudgetPerMonth.getClient();
             clientBudgets.putIfAbsent(client.getUuid(), new GraphKeyValue(client.getUuid(), client.getName(), 0.0));
-            clientBudgets.get(client.getUuid()).addValue(employeeBudgetPerDay.getRate()* employeeBudgetPerDay.getBudgetHours());
+            clientBudgets.get(client.getUuid()).addValue(employeeBudgetPerMonth.getRate()* employeeBudgetPerMonth.getBudgetHours());
         }
         return new ArrayList<>(clientBudgets.values());
     }

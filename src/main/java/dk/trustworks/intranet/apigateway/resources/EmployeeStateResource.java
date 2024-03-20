@@ -1,26 +1,17 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregateservices.EmployeeDataService;
-import dk.trustworks.intranet.aggregateservices.model.v2.EmployeeDataPerMonth;
+import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.GET;
-import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
-import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.time.LocalDate;
-import java.util.List;
-
-import static dk.trustworks.intranet.utils.DateUtils.dateIt;
-
 @JBossLog
 @Tag(name = "BI")
-@Path("/company/{companyuuid}")
+//@Path("/company/{companyuuid}")
 @RequestScoped
 @RolesAllowed({"SYSTEM"})
 @SecurityRequirement(name = "jwt")
@@ -30,7 +21,7 @@ public class EmployeeStateResource {
     String companyuuid;
 
     @Inject
-    EmployeeDataService employeeDataService;
+    AvailabilityService availabilityService;
 
 
 /*
@@ -51,20 +42,20 @@ public class EmployeeStateResource {
     }
 
  */
-
+/*
     @GET
     @Path("/employees")
-    public List<EmployeeDataPerMonth> getEmployeeDataPerMonthV2(@QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
+    public List<EmployeeAvailabilityPerMonth> getEmployeeDataPerMonthV2(@QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
         System.out.println("EmployeeStateResource.getEmployeeDataPerMonthV2");
         System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);
         LocalDate todate = dateIt(strTodate);
-        return employeeDataService.getAllEmployeeDataPerMonth(companyuuid, fromdate, todate);
+        return availabilityService.getCompanyAvailabilityByPeriod(Company.findById(companyuuid), fromdate, todate);
     }
 
     @GET
     @Path("/employees/{useruuid}")
-    public List<EmployeeDataPerMonth> getEmployeeDataPerMonthV2(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
+    public List<EmployeeAvailabilityPerMonth> getEmployeeDataPerMonthV2(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String strFromdate, @QueryParam("todate") String strTodate) {
         System.out.println("EmployeeStateResource.getEmployeeDataPerMonthV2");
         System.out.println("strFromdate = " + strFromdate + ", strTodate = " + strTodate);
         LocalDate fromdate = dateIt(strFromdate);

@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.aggregateservices;
+package dk.trustworks.intranet.aggregates.invoice;
 
 import com.google.common.collect.Lists;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
@@ -40,7 +40,7 @@ import static dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus.CR
 
 @JBossLog
 @ApplicationScoped
-public class InvoiceGeneratorService {
+public class InvoiceGenerator {
 
     @Inject
     UserService userService;
