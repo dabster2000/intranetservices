@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.availability.jobs;
 
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabiltyPerDayAggregate;
+import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
@@ -28,7 +28,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.dao.workservice.services.WorkService.*;
+import static dk.trustworks.intranet.dao.workservice.services.WorkService.SICKNESS;
+import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
 import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.YEAR_CHANGE_EVENT;
 import static dk.trustworks.intranet.messaging.emitters.SystemMessageEmitter.WORK_UPDATE_EVENT;
@@ -57,21 +58,21 @@ public class AvailabilityCalculatingExecutor {
 
         List<WorkFull> workList = workService.findByPeriod(startDate, endDate);
         QuarkusTransaction.begin();
-        EmployeeAvailabiltyPerDayAggregate.delete("documentDate >= ?1 and documentDate < ?2", startDate, endDate);
+        EmployeeAvailabilityPerDayAggregate.delete("documentDate >= ?1 and documentDate < ?2", startDate, endDate);
         QuarkusTransaction.commit();
 
         try {
-            ArrayList<EmployeeAvailabiltyPerDayAggregate> list = new ArrayList<>();
+            ArrayList<EmployeeAvailabilityPerDayAggregate> list = new ArrayList<>();
             do {
                 LocalDate testDay = startDate.plusDays(day);
                 for (User user : employedUsers) {
-                    EmployeeAvailabiltyPerDayAggregate document = createAvailabilityDocumentByUserAndDate(user, testDay, workList);
+                    EmployeeAvailabilityPerDayAggregate document = createAvailabilityDocumentByUserAndDate(user, testDay, workList);
                     list.add(document);
                 }
                 day++;
             } while (startDate.plusDays(day).isBefore(endDate));
             QuarkusTransaction.begin();
-            EmployeeAvailabiltyPerDayAggregate.persist(list);
+            EmployeeAvailabilityPerDayAggregate.persist(list);
             QuarkusTransaction.commit();
         } catch (Exception e) {
             e.printStackTrace();
@@ -91,18 +92,18 @@ public class AvailabilityCalculatingExecutor {
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(year, endDate, user.getUuid());
 
         QuarkusTransaction.begin();
-        EmployeeAvailabiltyPerDayAggregate.delete("user = ?1", user);
+        EmployeeAvailabilityPerDayAggregate.delete("user = ?1", user);
         QuarkusTransaction.commit();
         try {
-            ArrayList<EmployeeAvailabiltyPerDayAggregate> list = new ArrayList<>();
+            ArrayList<EmployeeAvailabilityPerDayAggregate> list = new ArrayList<>();
             do {
                 LocalDate testDay = year.plusDays(day);
-                EmployeeAvailabiltyPerDayAggregate document = createAvailabilityDocumentByUserAndDate(user, testDay, workList);
+                EmployeeAvailabilityPerDayAggregate document = createAvailabilityDocumentByUserAndDate(user, testDay, workList);
                 list.add(document);
                 day++;
             } while (year.plusDays(day).isBefore(endDate));
             QuarkusTransaction.begin();
-            EmployeeAvailabiltyPerDayAggregate.persist(list);
+            EmployeeAvailabilityPerDayAggregate.persist(list);
             QuarkusTransaction.commit();
         } catch (Exception e) {
             log.error(e);
@@ -120,20 +121,20 @@ public class AvailabilityCalculatingExecutor {
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(testDay, testDay.plusDays(1), user.getUuid());
 
         QuarkusTransaction.begin();
-        EmployeeAvailabiltyPerDayAggregate.delete("user = ?1 and documentDate = ?2", user, testDay);
+        EmployeeAvailabilityPerDayAggregate.delete("user = ?1 and documentDate = ?2", user, testDay);
         QuarkusTransaction.commit();
 
         try {
             QuarkusTransaction.begin();
-            EmployeeAvailabiltyPerDayAggregate document = createAvailabilityDocumentByUserAndDate(userService.findById(user.getUuid(), false), testDay, workList);
-            EmployeeAvailabiltyPerDayAggregate.persist(document);
+            EmployeeAvailabilityPerDayAggregate document = createAvailabilityDocumentByUserAndDate(userService.findById(user.getUuid(), false), testDay, workList);
+            EmployeeAvailabilityPerDayAggregate.persist(document);
             QuarkusTransaction.commit();
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private EmployeeAvailabiltyPerDayAggregate createAvailabilityDocumentByUserAndDate(User user, LocalDate testDay, List<WorkFull> workList) {
+    private EmployeeAvailabilityPerDayAggregate createAvailabilityDocumentByUserAndDate(User user, LocalDate testDay, List<WorkFull> workList) {
         UserStatus userStatus = userService.getUserStatus(user, testDay);
         int userSalary = user.getSalary(testDay).getSalary();//userService.getUserSalary(user, testDay).getSalary();
 
@@ -153,7 +154,7 @@ public class AvailabilityCalculatingExecutor {
 
         double vacationHoursPerDay = Math.min(fullAvailability, workByDay.stream().filter(w -> w.getTaskuuid().equals(VACATION)).mapToDouble(WorkFull::getWorkduration).sum());
         double sicknessHoursPerDay = Math.min(fullAvailability, workByDay.stream().filter(w -> w.getTaskuuid().equals(SICKNESS)).mapToDouble(WorkFull::getWorkduration).sum());
-        maternityLeaveHoursPerDay = Math.min(fullAvailability, maternityLeaveHoursPerDay + workByDay.stream().filter(w -> w.getTaskuuid().equals(MATERNITY)).mapToDouble(WorkFull::getWorkduration).sum());
+        maternityLeaveHoursPerDay = Math.min(fullAvailability, maternityLeaveHoursPerDay + workByDay.stream().filter(w -> w.getTaskuuid().equals(MATERNITY_LEAVE.getTaskuuid())).mapToDouble(WorkFull::getWorkduration).sum());
 
         //double registeredBillableHours = workByDay.stream().filter(w -> w.getRate() > 0 && w.getWorkas() == null).mapToDouble(WorkFull::getWorkduration).sum();
         //double helpedColleagueBillableHours = workByDay.stream().filter(w -> w.getRate() > 0 && w.getWorkas() != null).mapToDouble(WorkFull::getWorkduration).sum();
@@ -161,7 +162,7 @@ public class AvailabilityCalculatingExecutor {
 
         double unavailableHours = (DateUtils.isFriday(testDay))?Math.min(2.0,fullAvailability):0.0;
 
-        return new EmployeeAvailabiltyPerDayAggregate(userStatus.getCompany(), testDay, user, fullAvailability, unavailableHours, vacationHoursPerDay, sicknessHoursPerDay, maternityLeaveHoursPerDay, nonPaydLeaveHoursPerday, paidLeaveHoursPerDay, userStatus.getType(), userStatus.getStatus(), userSalary, userStatus.isTwBonusEligible());
+        return new EmployeeAvailabilityPerDayAggregate(userStatus.getCompany(), testDay, user, fullAvailability, unavailableHours, vacationHoursPerDay, sicknessHoursPerDay, maternityLeaveHoursPerDay, nonPaydLeaveHoursPerday, paidLeaveHoursPerDay, userStatus.getType(), userStatus.getStatus(), userSalary, userStatus.isTwBonusEligible());
     }
 
     @Inject
@@ -177,15 +178,15 @@ public class AvailabilityCalculatingExecutor {
         employedUsers = userService.listAll(false);
         LocalDate testDate = DateUtils.getCompanyStartDate();
         do {
-            if(EmployeeAvailabiltyPerDayAggregate.find("year = ?1 and month = ?2", testDate.getYear(), testDate.getMonthValue()).count()==0) {
+            if(EmployeeAvailabilityPerDayAggregate.find("year = ?1 and month = ?2", testDate.getYear(), testDate.getMonthValue()).count()==0) {
                 eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(testDate, testDate.plusMonths(1)));
                 return;
             }
             testDate = testDate.plusMonths(1);
         } while (testDate.isBefore(DateUtils.getCurrentFiscalStartDate().plusYears(3)));
 
-        EmployeeAvailabiltyPerDayAggregate.find("lastUpdate < ?1", LocalDateTime.now().minusDays(1)).firstResultOptional().ifPresent(employeeDataPerDay -> {
-            LocalDate lastUpdate = ((EmployeeAvailabiltyPerDayAggregate) employeeDataPerDay).getDocumentDate();
+        EmployeeAvailabilityPerDayAggregate.find("lastUpdate < ?1", LocalDateTime.now().minusDays(1)).firstResultOptional().ifPresent(employeeDataPerDay -> {
+            LocalDate lastUpdate = ((EmployeeAvailabilityPerDayAggregate) employeeDataPerDay).getDocumentDate();
             eventBus.publish(YEAR_CHANGE_EVENT, new DateRangeMap(lastUpdate, lastUpdate.plusMonths(1)));
         });
     }
@@ -200,8 +201,8 @@ public class AvailabilityCalculatingExecutor {
         employedUsers.forEach(user -> {
             //boolean foundUser = false;
             if(employeeBonusEligibilityList.stream().noneMatch(e -> e.getUser().getUuid().equals(user.getUuid()))) {
-                Stream<EmployeeAvailabiltyPerDayAggregate> stream = EmployeeAvailabiltyPerDayAggregate.stream("((year = ?1 AND month >= ?2) OR (year = ?3 AND month <= ?4)) and useruuid like ?5", testFiscalYear.getYear(), testFiscalYear.getMonthValue(), testFiscalYear.plusYears(1).getYear(), testFiscalYear.plusYears(1).getMonthValue(), user.getUuid());
-                double sum = stream.mapToDouble(EmployeeAvailabiltyPerDayAggregate::getSalary).sum();
+                Stream<EmployeeAvailabilityPerDayAggregate> stream = EmployeeAvailabilityPerDayAggregate.stream("((year = ?1 AND month >= ?2) OR (year = ?3 AND month <= ?4)) and useruuid like ?5", testFiscalYear.getYear(), testFiscalYear.getMonthValue(), testFiscalYear.plusYears(1).getYear(), testFiscalYear.plusYears(1).getMonthValue(), user.getUuid());
+                double sum = stream.mapToDouble(EmployeeAvailabilityPerDayAggregate::getSalary).sum();
                 if(sum >0) {
                     EmployeeBonusEligibility.persist(new EmployeeBonusEligibility(user, testFiscalYear.getYear(), true, false, false, false, false, false, false, false, false, false, false, false, false));
                 }

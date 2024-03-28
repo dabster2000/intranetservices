@@ -123,6 +123,12 @@ public class InvoiceResource {
     }
 
     @POST
+    @Path("/internal/companies/{companyuuid}")
+    public void createInternalInvoiceDraft(@PathParam("companyuuid") String companyuuid, Invoice invoice) {
+        invoiceService.createInternalInvoiceDraft(companyuuid, invoice);
+    }
+
+    @POST
     @Path("/{invoiceuuid}/reference")
     public void updateInvoiceReference(@PathParam("invoiceuuid") String invoiceuuid, InvoiceReference invoiceReference) {
         log.info("InvoiceResource.updateInvoiceReference");

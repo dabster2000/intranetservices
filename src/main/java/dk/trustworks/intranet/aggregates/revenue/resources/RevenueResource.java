@@ -18,7 +18,6 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -89,21 +88,16 @@ public class RevenueResource {
     }
 
     @GET
-    @Path("/registered/consultants/{useruuid}/months/{month}")
-    public GraphKeyValue getRegisteredRevenueForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return new GraphKeyValue(useruuid, "Consultant revenue hours per month", revenueService.getRegisteredRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
-    }
-
-    @GET
-    @Path("/registered/consultants/{useruuid}")
-    public HashMap<String, Double> getRegisteredRevenueByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("periodFrom") String periodFrom, @QueryParam("periodTo") String periodTo) {
-        return revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(companyuuid, useruuid, periodFrom, periodTo);
-    }
-
-    @GET
     @Path("/registered/consultants/hours")
     public List<GraphKeyValue> getRegisteredHoursPerConsultantForSingleMonth(@QueryParam("month") String month) {
         return revenueService.getRegisteredHoursPerConsultantForSingleMonth(companyuuid, dateIt(month));
+    }
+
+/*
+    @GET
+    @Path("/registered/consultants/{useruuid}/months/{month}")
+    public GraphKeyValue getRegisteredRevenueForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
+        return new GraphKeyValue(useruuid, "Consultant revenue hours per month", revenueService.getRegisteredRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
     }
 
     @GET
@@ -117,6 +111,8 @@ public class RevenueResource {
     public GraphKeyValue getRegisteredHoursForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("month") String month) {
         return new GraphKeyValue(useruuid, "Consultant revenue per month", revenueService.getRegisteredHoursForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
     }
+
+ */
 
     @GET
     @Path("/invoiced")
@@ -176,9 +172,10 @@ public class RevenueResource {
 
         double revenue = 0.0;
         for (User user : teamService.getTeammembersByTeamleadBonusEnabled()) {
-            HashMap<String, Double> registeredRevenueByPeriodAndSingleConsultant = revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(companyuuid, user.getUuid(), strDatefrom, strDateto);
-            for (Double value : registeredRevenueByPeriodAndSingleConsultant.values()) {
-                revenue += value;
+            List<DateValueDTO> registeredRevenueByPeriodAndSingleConsultant = revenueService.getRegisteredRevenueByPeriodAndSingleConsultant(user.getUuid(), strDatefrom, strDateto);
+            for (DateValueDTO value : registeredRevenueByPeriodAndSingleConsultant)
+            {
+                revenue += value.getValue();
             }
         }
         return List.of(new GraphKeyValue("d", "e", revenue-sum));

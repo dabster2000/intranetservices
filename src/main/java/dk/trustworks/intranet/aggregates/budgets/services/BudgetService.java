@@ -17,10 +17,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.sql.Date;
 import java.time.LocalDate;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
@@ -73,14 +70,14 @@ public class BudgetService {
     }
 
     public List<DateValueDTO> getBudgetAmountByPeriodAndSingleConsultant(String useruuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "SELECT ad.document_date                           AS date,  " +
+        String sql = "SELECT ad.document_date AS date,  " +
                 "       SUM(ad.budgetHours * ad.rate)     AS value  " +
                 "FROM bi_budget_per_day ad  " +
                 "WHERE ad.budgetHours > 0  " +
                 "  AND ad.useruuid = '"+useruuid+"'  " +
                 "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
                 "  AND ad.document_date < '" + stringIt(todate) + "' " +
-                "  GROUP BY ad.companyuuid, ad.year, ad.month;";
+                "  GROUP BY ad.year, ad.month;";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
@@ -103,6 +100,23 @@ public class BudgetService {
                         ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).findAny().orElse(new DateValueDTO(date, 0.0));
+    }
+
+    public List<DateValueDTO> getBudgetHoursByPeriodAndSingleConsultant(String useruuid, LocalDate fromdate, LocalDate todate) {
+        String sql = "SELECT ad.document_date AS date,  " +
+                "       SUM(ad.budgetHours) AS value  " +
+                "FROM bi_budget_per_day ad  " +
+                "WHERE ad.budgetHours > 0  " +
+                "  AND ad.useruuid = '"+useruuid+"'  " +
+                "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
+                "  AND ad.document_date < '" + stringIt(todate) + "' " +
+                "  GROUP BY ad.year, ad.month;";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
     }
 
     public List<EmployeeBudgetPerMonth> getConsultantBudgetDataByMonth(String useruuid, LocalDate month) {
@@ -146,7 +160,10 @@ public class BudgetService {
         return new ArrayList<>(EmployeeBudgetPerDayAggregate.<EmployeeBudgetPerDayAggregate>list(sql, startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), company)
                 .stream()
                 .collect(Collectors.groupingBy(
-                        e -> new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()),
+                        e -> new AbstractMap.SimpleEntry<>(
+                                Arrays.asList(e.getYear(), e.getMonth(), e.getClient(), e.getContract()), // Key now includes year, month, client, and contract
+                                e
+                        ),
                         Collectors.collectingAndThen(Collectors.toList(), list -> {
                             // In this block, we process each group to create a CompanyBudgetPerMonth object
 
@@ -172,12 +189,23 @@ public class BudgetService {
         return aggregates
                 .stream()
                 .collect(Collectors.groupingBy(
-                        e -> new AbstractMap.SimpleEntry<>(new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()), e.getUser()),
-                        Collectors.collectingAndThen(Collectors.toList(), list -> {
+                        e -> new AbstractMap.SimpleEntry<>(
+                                new AbstractMap.SimpleEntry<>(
+                                        new AbstractMap.SimpleEntry<>(
+                                                new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()),
+                                                e.getUser()
+                                        ),
+                                        e.getClient()
+                                ),
+                                e.getContract()
+                        ),Collectors.collectingAndThen(Collectors.toList(), list -> {
                             // In this block, we process each group to create a CompanyBudgetPerMonth object
-
                             // Assuming year, month, client, company, and contract are the same for all entries in the group
                             EmployeeBudgetPerDayAggregate example = list.get(0);
+                            if(example.getUser().equals("cdc04391-cf46-4bbc-a20d-6fa54fae8674")) {
+                                log.info("example = " + example);
+                                log.info("list = " + list);
+                            }
                             int year = example.getYear();
                             int month = example.getMonth();
                             User user = example.getUser();

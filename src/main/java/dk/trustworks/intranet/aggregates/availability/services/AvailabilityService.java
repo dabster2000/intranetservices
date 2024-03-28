@@ -1,22 +1,23 @@
 package dk.trustworks.intranet.aggregates.availability.services;
 
 import dk.trustworks.intranet.aggregates.availability.model.CompanyAvailabilityPerMonth;
+import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabiltyPerDayAggregate;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
+import dk.trustworks.intranet.utils.NumberUtils;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-import jakarta.persistence.Query;
 import lombok.extern.jbosslog.JBossLog;
 import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.AbstractMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -29,54 +30,26 @@ public class AvailabilityService {
     EntityManager em;
 
     public List<EmployeeAvailabilityPerMonth> getAllEmployeeAvailabilityByPeriod(LocalDate fromdate, LocalDate todate) {
-        return EmployeeAvailabiltyPerDayAggregate.<EmployeeAvailabiltyPerDayAggregate>list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d')", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue())
-                .stream()
-                .map(bdm ->
-                        new EmployeeAvailabilityPerMonth(
-                            bdm.getYear(),
-                            bdm.getMonth(),
-                            bdm.getCompany(),
-                            bdm.getUser().getUuid(),
-                            bdm.getConsultantType(),
-                            bdm.getStatusType(),
-                            bdm.getGrossAvailableHours(),
-                            bdm.getUnavavailableHours(),
-                            bdm.getVacationHours(),
-                            bdm.getSickHours(),
-                            bdm.getMaternityLeaveHours(),
-                            bdm.getNonPaydLeaveHours(),
-                            bdm.getPaidLeaveHours(),
-                            BigDecimal.valueOf(bdm.getSalary()),
-                            bdm.isTwBonusEligible()))
-                .toList();
+        return getEmployeeAvailabilityPerMonths(EmployeeAvailabilityPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and consultantType = 'CONSULTANT' and statusType != 'TERMINATED'", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue()));
     }
 
     public List<EmployeeAvailabilityPerMonth> getCompanyEmployeeAvailabilityByPeriod(Company company, LocalDate fromdate, LocalDate todate) {
-        System.out.println("company = " + company + ", fromdate = " + fromdate + ", todate = " + todate);
-        return getEmployeeAvailabilityPerMonths(EmployeeAvailabiltyPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), company));
+        return getEmployeeAvailabilityPerMonths(EmployeeAvailabilityPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5 and consultantType = 'CONSULTANT' and statusType != 'TERMINATED'", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), company));
     }
 
     public List<CompanyAvailabilityPerMonth> getCompanyAvailabilityByPeriod(Company company, LocalDate startDate, LocalDate endDate) {
-        return EmployeeAvailabiltyPerDayAggregate.<EmployeeAvailabiltyPerDayAggregate>list(("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5"), startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), company)
-                .stream()
-                .map(bdm ->
-                        new CompanyAvailabilityPerMonth(
-                                bdm.getYear(),
-                                bdm.getMonth(),
-                                company,
-                                bdm.getGrossAvailableHours(),
-                                bdm.getUnavavailableHours(),
-                                bdm.getVacationHours(),
-                                bdm.getSickHours(),
-                                bdm.getMaternityLeaveHours(),
-                                bdm.getNonPaydLeaveHours(),
-                                bdm.getPaidLeaveHours(),
-                                bdm.getSalary()))
-                .toList();
+        String sql = "STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5 and consultantType = 'CONSULTANT' and statusType != 'TERMINATED'";
+        System.out.println("sql = " + sql);
+        return getEmployeeAvailabilityPerMonths(company, startDate, endDate, sql);
     }
 
     public List<EmployeeAvailabilityPerMonth> getEmployeeAvailability(User user) {
-        return getEmployeeAvailabilityPerMonths(EmployeeAvailabiltyPerDayAggregate.list("consultantType = ?1 AND statusType != ?2 AND user = ?3", ConsultantType.CONSULTANT, StatusType.TERMINATED,user));
+        return getEmployeeAvailabilityPerMonths(EmployeeAvailabilityPerDayAggregate.list("consultantType = ?1 AND statusType != ?2 AND user = ?3", ConsultantType.CONSULTANT, StatusType.TERMINATED,user));
+    }
+
+
+    public List<EmployeeAvailabilityPerDayAggregate> getEmployeeDataPerDay(String useruuid, LocalDate fromDate, LocalDate toDate) {
+        return EmployeeAvailabilityPerDayAggregate.list("documentDate >= ?1 AND documentDate < ?2 AND user = ?3", fromDate, toDate, User.findById(useruuid));
     }
 
     public double getSumOfAvailableHoursByUsersAndMonth(LocalDate localDate, String... uuids) {
@@ -88,6 +61,8 @@ public class AvailabilityService {
     }
 
     public List<EmployeeAvailabilityPerMonth> getEmployeeDataPerMonth(String useruuid, LocalDate fromdate, LocalDate todate) {
+        return getEmployeeAvailabilityPerMonths(getEmployeeDataPerDay(useruuid, fromdate, todate));
+        /*
         Query nativeQuery = em.createNativeQuery("SELECT " +
                 "    ad_agg.id, " +
                 "    ad_agg.useruuid, " +
@@ -156,10 +131,46 @@ public class AvailabilityService {
         nativeQuery.setParameter("startDate", fromdate);
         nativeQuery.setParameter("endDate", todate);
         return nativeQuery.getResultList();
+
+         */
     }
 
     @NotNull
-    private List<EmployeeAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(List<EmployeeAvailabiltyPerDayAggregate> aggregates) {
+    private ArrayList<CompanyAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(Company company, LocalDate startDate, LocalDate endDate, String sql) {
+        return new ArrayList<>(EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>list(sql, startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), company)
+                .stream()
+                .collect(Collectors.groupingBy(
+                        e -> new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()),
+                        Collectors.collectingAndThen(Collectors.toList(), list -> {
+                            // In this block, we process each group to create a CompanyBudgetPerMonth object
+
+                            // Assuming year, month, client, company, and contract are the same for all entries in the group
+                            EmployeeAvailabilityPerDayAggregate example = list.get(0);
+                            int year = example.getYear();
+                            int month = example.getMonth();
+                            User user = example.getUser();
+                            //Company company = example.getCompany();
+                            ConsultantType consultantType = example.getConsultantType();
+                            StatusType status = example.getStatusType();
+
+                            double grossAvailableHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getGrossAvailableHours().doubleValue()).sum();
+                            double unavavailableHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getUnavavailableHours().doubleValue()).sum();
+                            double vacationHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getVacationHours().doubleValue()).sum();
+                            double sickHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getSickHours().doubleValue()).sum();
+                            double maternityLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getMaternityLeaveHours().doubleValue()).sum();
+                            double nonPaydLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getNonPaydLeaveHours().doubleValue()).sum();
+                            double paidLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getPaidLeaveHours().doubleValue()).sum();
+                            double salary = list.stream().mapToInt(EmployeeAvailabilityPerDayAggregate::getSalary).average().orElse(0.0);
+
+
+                            return new CompanyAvailabilityPerMonth(year, month, company, BigDecimal.valueOf(grossAvailableHours), BigDecimal.valueOf(unavavailableHours), BigDecimal.valueOf(vacationHours), BigDecimal.valueOf(sickHours), BigDecimal.valueOf(maternityLeaveHours), BigDecimal.valueOf(nonPaydLeaveHours), BigDecimal.valueOf(paidLeaveHours), NumberUtils.convertDoubleToInt(salary));
+                        })
+                ))
+                .values());
+    }
+
+    @NotNull
+    private List<EmployeeAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(List<EmployeeAvailabilityPerDayAggregate> aggregates) {
         return aggregates
                 .stream()
                 .collect(Collectors.groupingBy(
@@ -168,7 +179,7 @@ public class AvailabilityService {
                             // In this block, we process each group to create a CompanyBudgetPerMonth object
 
                             // Assuming year, month, client, company, and contract are the same for all entries in the group
-                            EmployeeAvailabiltyPerDayAggregate example = list.get(0);
+                            EmployeeAvailabilityPerDayAggregate example = list.get(0);
                             int year = example.getYear();
                             int month = example.getMonth();
                             User user = example.getUser();
@@ -176,15 +187,15 @@ public class AvailabilityService {
                             ConsultantType consultantType = example.getConsultantType();
                             StatusType status = example.getStatusType();
 
-                            double grossAvailableHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getGrossAvailableHours().doubleValue()).sum();
-                            double unavavailableHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getUnavavailableHours().doubleValue()).sum();
-                            double vacationHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getVacationHours().doubleValue()).sum();
-                            double sickHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getSickHours().doubleValue()).sum();
-                            double maternityLeaveHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getMaternityLeaveHours().doubleValue()).sum();
-                            double nonPaydLeaveHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getNonPaydLeaveHours().doubleValue()).sum();
-                            double paidLeaveHours = list.stream().mapToDouble(employeeAvailabiltyPerDayAggregate -> employeeAvailabiltyPerDayAggregate.getPaidLeaveHours().doubleValue()).sum();
-                            double salary = list.stream().mapToDouble(EmployeeAvailabiltyPerDayAggregate::getSalary).average().orElse(0.0);
-                            boolean isTwBonusEligible = list.stream().allMatch(EmployeeAvailabiltyPerDayAggregate::isTwBonusEligible);
+                            double grossAvailableHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getGrossAvailableHours().doubleValue()).sum();
+                            double unavavailableHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getUnavavailableHours().doubleValue()).sum();
+                            double vacationHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getVacationHours().doubleValue()).sum();
+                            double sickHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getSickHours().doubleValue()).sum();
+                            double maternityLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getMaternityLeaveHours().doubleValue()).sum();
+                            double nonPaydLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getNonPaydLeaveHours().doubleValue()).sum();
+                            double paidLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getPaidLeaveHours().doubleValue()).sum();
+                            double salary = list.stream().mapToDouble(EmployeeAvailabilityPerDayAggregate::getSalary).average().orElse(0.0);
+                            boolean isTwBonusEligible = list.stream().allMatch(EmployeeAvailabilityPerDayAggregate::isTwBonusEligible);
 
 
                             return new EmployeeAvailabilityPerMonth(year, month, company, user.getUuid(), consultantType, status, BigDecimal.valueOf(grossAvailableHours), BigDecimal.valueOf(unavavailableHours), BigDecimal.valueOf(vacationHours), BigDecimal.valueOf(sickHours), BigDecimal.valueOf(maternityLeaveHours), BigDecimal.valueOf(nonPaydLeaveHours), BigDecimal.valueOf(paidLeaveHours), BigDecimal.valueOf(salary), isTwBonusEligible);
@@ -192,5 +203,4 @@ public class AvailabilityService {
                 ))
                 .values().stream().toList();
     }
-
 }

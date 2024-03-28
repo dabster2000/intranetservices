@@ -5,6 +5,6 @@ package dk.trustworks.intranet.invoiceservice.model.enums;
  */
 public enum InvoiceType {
 
-    INVOICE, CREDIT_NOTE, PHANTOM
+    INVOICE, CREDIT_NOTE, PHANTOM, INTERNAL
 
 }

@@ -6,17 +6,18 @@ import dk.trustworks.intranet.model.Company;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
 @Data
+@ToString(onlyExplicitlyIncluded = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class CompanyAvailabilityPerMonth {
 
     private int year; // done
-
     private int month;
     private Company company;
     @JsonProperty("grossAvailableHours")
@@ -37,10 +38,12 @@ public class CompanyAvailabilityPerMonth {
     @JsonProperty("avgSalary")
     private int avgSalary;
     @JsonIgnore
+    @ToString.Include
     public LocalDate getDate() {
         return LocalDate.of(year, month, 1);
     }
     @JsonIgnore
+    @ToString.Include
     public Double getNetAvailableHours() {
         return Math.max(grossAvailableHours.doubleValue() - unavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
     }

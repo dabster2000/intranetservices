@@ -27,7 +27,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
-public class EmployeeAvailabiltyPerDayAggregate extends PanacheEntityBase {
+public class EmployeeAvailabilityPerDayAggregate extends PanacheEntityBase {
 
     @Id
     @JsonIgnore
@@ -39,7 +39,6 @@ public class EmployeeAvailabiltyPerDayAggregate extends PanacheEntityBase {
     @JoinColumn(name = "companyuuid")
     private Company company;
 
-    @JsonProperty("month")
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     @Column(name = "document_date")
@@ -105,7 +104,7 @@ public class EmployeeAvailabiltyPerDayAggregate extends PanacheEntityBase {
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
 
-    public EmployeeAvailabiltyPerDayAggregate(Company company, LocalDate documentDate, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
+    public EmployeeAvailabilityPerDayAggregate(Company company, LocalDate documentDate, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
         this.company = company;
         this.lastUpdate = LocalDateTime.now();
         this.documentDate = documentDate;

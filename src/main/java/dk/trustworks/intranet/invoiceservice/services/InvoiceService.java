@@ -12,16 +12,16 @@ import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
 import dk.trustworks.intranet.invoiceservice.network.InvoiceAPI;
 import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
+
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.*;
@@ -149,7 +149,6 @@ public class InvoiceService {
     @Transactional
     public Invoice updateDraftInvoice(Invoice invoice) {
         System.out.println("InvoiceService.updateDraftInvoice");
-        //if(!isDraft(invoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+invoice.getUuid());
         System.out.println("Updating invoice...");
         Invoice.update("attention = ?1, " +
                         "bookingdate = ?2, " +
@@ -232,21 +231,6 @@ public class InvoiceService {
         uploadToEconomics(draftInvoice);
         System.out.println("Invoice uploaded to economics: "+draftInvoice.getUuid());
 
-        // Create internal invoice drafts
-        List<User> users = userService.listAll(true);
-        Invoice internalInvoice = new Invoice(InvoiceType.INVOICE, draftInvoice.getContractuuid(), draftInvoice.getProjectuuid(),
-                draftInvoice.getProjectname(), draftInvoice.getDiscount(), draftInvoice.getYear(), draftInvoice.getMonth(), draftInvoice.getCompany().getName(),
-                draftInvoice.getCompany().getAddress(), "", draftInvoice.getCompany().getZipcode() + " " + draftInvoice.getCompany().getCity(),
-                "", draftInvoice.getCompany().getCvr(), "", draftInvoice.getInvoicedate(),
-                draftInvoice.getProjectref(), draftInvoice.getContractref(), draftInvoice.getCompany(), draftInvoice.getCurrency(),
-                "Intern faktura knyttet til " + draftInvoice.getInvoicenumber());
-        for (InvoiceItem invoiceitem : draftInvoice.getInvoiceitems()) {
-            if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
-            Optional<User> optionalUser = users.stream().filter(u -> u.getFullname().equals(invoiceitem.getItemname())).findFirst();
-            if(optionalUser.isEmpty()) continue;
-            User user = optionalUser.get();
-        }
-
         return draftInvoice;
     }
 
@@ -290,7 +274,7 @@ public class InvoiceService {
         invoice.status = InvoiceStatus.CREDIT_NOTE;
         updateDraftInvoice(invoice);
 
-        Invoice creditNote = new Invoice(InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
+        Invoice creditNote = new Invoice(invoice.getInvoicenumber(), InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(),
@@ -299,12 +283,43 @@ public class InvoiceService {
 
         creditNote.invoicenumber = 0;
         for (InvoiceItem invoiceitem : invoice.invoiceitems) {
-            creditNote.getInvoiceitems().add(new InvoiceItem(invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), invoice.uuid));
+            creditNote.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), invoice.uuid));
         }
         Invoice.persist(creditNote);
         creditNote.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
-        uploadToEconomics(creditNote);
         return creditNote;
+    }
+
+    @Transactional
+    public void createInternalInvoiceDraft(String companyuuid, Invoice invoice) {
+        Invoice internalInvoice = new Invoice(
+                invoice.getInvoicenumber(),
+                InvoiceType.INTERNAL,
+                invoice.getContractuuid(),
+                invoice.getProjectuuid(),
+                invoice.getProjectname(),
+                invoice.getDiscount(),
+                invoice.getYear(),
+                invoice.getMonth(),
+                invoice.getCompany().getName(),
+                invoice.getCompany().getAddress(),
+                "",
+                invoice.getCompany().getZipcode(),
+                "",
+                invoice.getCompany().getCvr(),
+                "Tobias Kjølsen",
+                LocalDate.now(),
+                invoice.getProjectref(),
+                invoice.getContractref(),
+                Company.findById(companyuuid),
+                invoice.getCurrency(),
+                "Intern faktura knyttet til " + invoice.getInvoicenumber());
+        for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
+            if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
+            internalInvoice.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), invoice.uuid));
+        }
+        Invoice.persist(internalInvoice);
+        internalInvoice.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
     }
 
     public byte[] createInvoicePdf(Invoice invoice) throws JsonProcessingException {
@@ -328,11 +343,15 @@ public class InvoiceService {
 
     @Transactional
     public void deleteDraftInvoice(String invoiceuuid) {
-        if(isDraft(invoiceuuid)) Invoice.deleteById(invoiceuuid);
+        if(isDraftOrPhantom(invoiceuuid)) Invoice.deleteById(invoiceuuid);
     }
 
     private boolean isDraft(String invoiceuuid) {
         return Invoice.find("uuid LIKE ?1 AND status LIKE ?2", invoiceuuid, InvoiceStatus.DRAFT).count() > 0;
+    }
+
+    private boolean isDraftOrPhantom(String invoiceuuid) {
+        return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 AND type = ?3)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
     }
 
     @Transactional
@@ -349,5 +368,4 @@ public class InvoiceService {
             throw new RuntimeException(e);
         }
     }
-
 }

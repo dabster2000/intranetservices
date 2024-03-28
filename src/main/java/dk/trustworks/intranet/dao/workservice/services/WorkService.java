@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -12,10 +13,13 @@ import io.quarkus.cache.CacheResult;
 import io.quarkus.panache.common.Page;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Tuple;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.sql.Date;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -25,6 +29,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static dk.trustworks.intranet.userservice.model.enums.StatusType.MATERNITY_LEAVE;
 import static dk.trustworks.intranet.utils.DateUtils.*;
 
 
@@ -34,7 +39,10 @@ public class WorkService {
 
     public static final String VACATION = "f585f46f-19c1-4a3a-9ebd-1a4f21007282";
     public static final String SICKNESS = "02bf71c5-f588-46cf-9695-5864020eb1c4";
-    public static final String MATERNITY = "da2f89fc-9aef-4029-8ac2-7486be60e9b9";
+
+    @Inject
+    EntityManager em;
+
 
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
@@ -62,6 +70,26 @@ public class WorkService {
             log.error("Beware of month issues!!: "+todate);
         }
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3", fromdate, todate, useruuid).list();
+    }
+
+    public List<DateValueDTO> findWorkHoursByUserAndPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
+        String sql = "select " +
+                "    MAKEDATE(YEAR(wf.registered), 1) + INTERVAL (MONTH(wf.registered) - 1) MONTH AS date, " +
+                "    SUM(wf.workduration) as value " +
+                "from " +
+                "    work_full wf " +
+                "where " +
+                "    useruuid = '"+useruuid+"' and " +
+                "    wf.workduration > 0 and " +
+                "    wf.rate > 0 " +
+                "    and wf.registered >= '"+DateUtils.stringIt(fromdate)+"' and wf.registered < '"+DateUtils.stringIt(todate)+"' " +
+                "group by " +
+                "    YEAR(wf.registered), MONTH(wf.registered); ";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                )).toList();
     }
 
     public List<WorkFull> findByPeriodAndProject(String fromdate, String todate, String projectuuid) {
@@ -103,11 +131,11 @@ public class WorkService {
     }
 
     public List<WorkFull> findMaternityLeaveByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, MATERNITY);
+        return findByUserAndTasks(useruuid, MATERNITY_LEAVE.getTaskuuid());
     }
 
     public Map<String, Map<String, Double>> findMaternityLeaveSumByMonth() {
-        return findByUserAndTasksSumByMonth(MATERNITY);
+        return findByUserAndTasksSumByMonth(MATERNITY_LEAVE.getTaskuuid());
     }
 
     @CacheResult(cacheName = "work-cache")

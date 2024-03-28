@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.budgets.jobs;
 
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerDayAggregate;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabiltyPerDayAggregate;
+import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
@@ -75,16 +75,16 @@ public class BudgetCalculatingExecutor {
     }
 
     private List<EmployeeBudgetPerDayAggregate> adjustForAvailability(List<EmployeeBudgetPerDayAggregate> employeeBudgetPerDayAggregateList, LocalDate lookupMonth) {
-        List<EmployeeAvailabiltyPerDayAggregate> employeeAvailabiltyPerDayAggregate = EmployeeAvailabiltyPerDayAggregate.<EmployeeAvailabiltyPerDayAggregate>stream("documentDate = ?1 AND consultantType = 'CONSULTANT'", lookupMonth).toList();
+        List<EmployeeAvailabilityPerDayAggregate> employeeAvailabilityPerDayAggregate = EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>stream("documentDate = ?1 AND consultantType = 'CONSULTANT'", lookupMonth).toList();
         List<String> userList = employeeBudgetPerDayAggregateList.stream().map(b -> b.getUser().getUuid()).distinct().toList();
         for (String useruuid : userList) {
             List<EmployeeBudgetPerDayAggregate> employeeBudgetPerDayAggregates = employeeBudgetPerDayAggregateList
                     .stream()
                     .filter(budgetDocument -> budgetDocument.getUser().getUuid().equals(useruuid) && budgetDocument.getDocumentDate().isEqual(lookupMonth))
                     .toList();
-            EmployeeAvailabiltyPerDayAggregate employeeData = employeeAvailabiltyPerDayAggregate
+            EmployeeAvailabilityPerDayAggregate employeeData = employeeAvailabilityPerDayAggregate
                     .stream()
-                    .filter(a -> a.getUser().getUuid().equals(useruuid)).findFirst().orElse(new EmployeeAvailabiltyPerDayAggregate());
+                    .filter(a -> a.getUser().getUuid().equals(useruuid)).findFirst().orElse(new EmployeeAvailabilityPerDayAggregate());
 
             double sum = employeeBudgetPerDayAggregates.stream().mapToDouble(EmployeeBudgetPerDayAggregate::getBudgetHours).sum();
 

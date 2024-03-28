@@ -32,7 +32,8 @@ quarkus:
     mock: false
   http:
     limits:
-      max-body-size: 25M
+      max-body-size: 40M
+      max-form-attribute-size: 40M
     access-log:
       enabled: true
       pattern: common
@@ -52,12 +53,7 @@ quarkus:
     caffeine:
       "employee-data-per-month-cache":
         expire-after-write: 3H
-  oidc:
-    auth-server-url: https://login.microsoftonline.com/03e13e90-dbbf-42af-a531-a318d4fd96bd/oauth2/v2.0/authorize
-    client-id: c6f48d19-07b0-4894-8a40-0cedd068f13f
-    credentials:
-      secret: _Lr8Q~DEGn3EdmwduH2y7mRWgCrppZfZ9C3.tcje
-    application-type: web-app
+
 
   s3:
     sync-client:

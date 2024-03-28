@@ -1,16 +1,13 @@
 package dk.trustworks.intranet.aggregates.utilization.resources;
 
 import dk.trustworks.intranet.aggregates.availability.model.CompanyAvailabilityPerMonth;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.model.v2.CompanyBudgetPerMonth;
 import dk.trustworks.intranet.aggregates.model.v2.CompanyWorkPerMonth;
-import dk.trustworks.intranet.aggregates.model.v2.EmployeeWorkPerMonth;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -24,8 +21,6 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.math.BigDecimal;
-import java.sql.Date;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +29,7 @@ import java.util.Objects;
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
-@Tag(name = "utilization")
+@Tag(name = "Company Utilization")
 @JBossLog
 @Path("/company/{companyuuid}/utilization")
 @RequestScoped
@@ -67,8 +62,10 @@ public class UtilizationResource {
         LocalDate toDate = dateIt(todate);
         Company company = Company.findById(companyuuid);
         List<CompanyBudgetPerMonth> companyBudgetPerMonthList = budgetService.getCompanyBudgetsByPeriod(company, fromDate, toDate);
+        companyBudgetPerMonthList.forEach(companyBudgetPerMonth -> log.info(companyBudgetPerMonth.toString()));
 
         List<CompanyAvailabilityPerMonth> dataPerMonthList = availabilityService.getCompanyAvailabilityByPeriod(company, fromDate, toDate);
+        dataPerMonthList.forEach(dataPerMonth -> log.info(dataPerMonth.toString()));
 
         return dataPerMonthList.stream()
                 .map(dataPerMonth -> new DateValueDTO(
@@ -108,44 +105,6 @@ public class UtilizationResource {
         }
 
         return utilizationPerMonth;
-    }
-
-    @GET
-    @Path("/budget/users/{useruuid}")
-    public List<DateValueDTO> getBudgetUtilizationPerMonthByConsultant(@PathParam("useruuid") String useruuid) {
-        List<DateValueDTO> availabilityPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
-                "    cast(concat(e.year,'-',e.month,'-01') as date) as date, " +
-                "    (sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) as value " +
-                "from " +
-                "    bi_availability_per_day e " +
-                "     WHERE consultant_type = 'CONSULTANT' " +
-                "     AND status_type = 'ACTIVE' " +
-                "     AND useruuid = '"+useruuid+"' " +
-                "group by e.year, e.month;", Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
-                        ((BigDecimal) tuple.get("value")).doubleValue()
-                ))
-                .toList();
-        List<DateValueDTO> budgetsPerMonth = ((List<Tuple>) em.createNativeQuery("select " +
-                "    b.document_date as date, (sum(b.budgetHours)) as value " +
-                "from " +
-                "    bi_budget_per_day b " +
-                "    WHERE useruuid = '"+useruuid+"' " +
-                "group by " +
-                "    b.month;", Tuple.class).getResultList()).stream()
-                .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate(),
-                        (Double) tuple.get("value")
-                ))
-                .toList();
-        return availabilityPerMonth
-                .stream()
-                .peek(availability -> budgetsPerMonth.stream()
-                        .filter(budget -> budget.getDate().equals(availability.getDate()))
-                        .findFirst()
-                        .ifPresentOrElse(bud -> availability.setValue(bud.getValue() / availability.getValue()), () -> availability.setValue(0.0)))
-                .toList();
     }
 
     @GET
@@ -221,20 +180,6 @@ public class UtilizationResource {
                         ((String) tuple.get("useruuid"))
                 ))
                 .toArray(String[]::new);
-    }
-
-    @GET
-    @Path("/actual/users/{useruuid}")
-    public List<DateValueDTO> getActualUtilizationPerMonthByConsultant(@PathParam("useruuid") String useruuid) {
-        List<EmployeeWorkPerMonth> employeeWorkPerMonthList = EmployeeWorkPerMonth.list("useruuid = ?1", useruuid);
-        List<EmployeeAvailabilityPerMonth> employeeAvailabilityList = availabilityService.getEmployeeAvailability(User.findById(useruuid));
-        return employeeAvailabilityList
-                .<EmployeeAvailabilityPerMonth>stream()
-                .map(edpm -> new DateValueDTO(
-                        LocalDate.of(edpm.getYear(), edpm.getMonth(), 1),
-                        employeeWorkPerMonthList.stream().filter(ewpm -> ewpm.getYear() == edpm.getYear() && ewpm.getMonth() == edpm.getMonth()).findAny().orElse(new EmployeeWorkPerMonth()).getWorkDuration() / edpm.getNetAvailableHours() * 100.0
-                ))
-                .toList();
     }
 
     @GET

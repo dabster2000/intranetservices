@@ -18,11 +18,11 @@ import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import dk.trustworks.intranet.utils.DateUtils;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.*;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
@@ -30,7 +30,6 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 @JBossLog
@@ -126,18 +125,17 @@ public class RevenueService {
         return workFullList.stream().map(work -> new GraphKeyValue(work.getUseruuid(), stringIt(month), work.getWorkduration())).collect(Collectors.toList());
     }
 
-    public List<DateValueDTO> getRegisteredHoursPerSingleConsultantByPeriod(String companyuuid, String useruuid, LocalDate fromdate, LocalDate todate) {
-        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, fromdate, todate, companyuuid).list();
-        return workFullList.stream().map(work -> new DateValueDTO(work.getRegistered().withDayOfMonth(1), work.getWorkduration())).toList();
+    public List<DateValueDTO> getRegisteredHoursPerSingleConsultantByPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
+        return workService.findWorkHoursByUserAndPeriod(useruuid, fromdate, todate);
     }
 
-    public double getRegisteredHoursForSingleMonthAndSingleConsultant(String companyuuid, String useruuid, LocalDate month) {
-        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1), companyuuid).list();
+    public double getRegisteredHoursForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
+        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
         return workFullList.stream().mapToDouble(WorkFull::getWorkduration).sum();
     }
 
-    public double getRegisteredRevenueForSingleMonthAndSingleConsultant(String companyuuid, String useruuid, LocalDate month) {
-        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1), companyuuid).list();
+    public double getRegisteredRevenueForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
+        List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
         return workFullList.stream().mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
     }
 
@@ -159,7 +157,7 @@ public class RevenueService {
         double consultantRevenue = 0.0;
         log.info("Consultant revenue:");
         for (User user : allConsultantsInPeriod.values()) {
-            double singleConsultantRevenue = getRegisteredRevenueByPeriodAndSingleConsultant(companyuuid, user.getUuid(), stringIt(fromdate), stringIt(todate)).values().stream().mapToDouble(value -> value).sum();
+            double singleConsultantRevenue = getRegisteredRevenueByPeriodAndSingleConsultant(user.getUuid(), stringIt(fromdate), stringIt(todate)).stream().mapToDouble(DateValueDTO::getValue).sum();
             consultantRevenue += singleConsultantRevenue;
             log.info(user.getUsername()+": "+singleConsultantRevenue);
         }
@@ -179,17 +177,17 @@ public class RevenueService {
         return new GraphKeyValue(UUID.randomUUID().toString(), "profits", consultantRevenue - sumExpenses);
     }
 
-    public HashMap<String, Double> getRegisteredRevenueByPeriodAndSingleConsultant(String companyuuid, String useruuid, String periodFrom, String periodTo) {
-        HashMap<String, Double> resultMap = new HashMap<>();
-        try (Stream<WorkFull> workStream = WorkFull.stream("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0 and consultant_company_uuid = ?4", useruuid, dateIt(periodFrom).withDayOfMonth(1), dateIt(periodTo).withDayOfMonth(1).plusMonths(1), companyuuid)) {
-            workStream.forEach(work -> {
-                String date = stringIt(work.getRegistered().withDayOfMonth(1));
-                resultMap.putIfAbsent(date, 0.0);
-                resultMap.put(date, resultMap.get(date)+(work.getWorkduration()*work.getRate()));
-            });
-            //.mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
-        }
-        return resultMap;
+    public List<DateValueDTO> getRegisteredRevenueByPeriodAndSingleConsultant(String useruuid, String periodFrom, String periodTo) {
+        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration) AS value from work_full w " +
+                "where w.rate > 0 and w.useruuid = '"+useruuid+"' and registered >= '" + periodFrom + "' and registered < '" + periodTo + "' " +
+                "group by year(w.registered), month(w.registered);";
+        log.info("getRegisteredRevenueByPeriod sql: "+sql);
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
     }
 
     public List<GraphKeyValue> getRegisteredProfitsForSingleConsultant(String companyuuid, String useruuid, LocalDate periodStart, LocalDate periodEnd, int interval) {
@@ -210,7 +208,7 @@ public class RevenueService {
                 continue;
             }
 
-            double revenue = getRegisteredRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, currentDate);
+            double revenue = getRegisteredRevenueForSingleMonthAndSingleConsultant(useruuid, currentDate);
             double userSalary = salaryService.getUserSalaryByMonth(useruuid, currentDate).getSalary();
             double consultantSalaries = userService.calcMonthSalaries(currentDate, ConsultantType.CONSULTANT.toString());
             double partOfTotalSalary = userSalary / consultantSalaries;

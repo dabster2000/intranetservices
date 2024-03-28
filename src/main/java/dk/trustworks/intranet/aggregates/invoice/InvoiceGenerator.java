@@ -186,7 +186,7 @@ public class InvoiceGenerator {
                     if (clientdata == null) clientdata = new Clientdata();
 
                     if (invoice == null) {
-                        invoice = new Invoice(InvoiceType.INVOICE,
+                        invoice = new Invoice(0, InvoiceType.INVOICE,
                                 contract.getUuid(),
                                 project.getUuid(),
                                 project.getName(),
