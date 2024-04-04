@@ -55,4 +55,5 @@ public class Company extends PanacheEntityBase {
     @JsonSerialize(using = LocalDateTimeSerializer.class)
     @JsonDeserialize(using = LocalDateTimeDeserializer.class)
     private LocalDateTime created;
+
 }

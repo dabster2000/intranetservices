@@ -1,11 +1,11 @@
-package dk.trustworks.intranet.apigateway.resources;
+package dk.trustworks.intranet.aggregates.invoice.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.ProjectSummary;
-import dk.trustworks.intranet.invoiceservice.model.Invoice;
-import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -134,5 +134,11 @@ public class InvoiceResource {
         log.info("InvoiceResource.updateInvoiceReference");
         log.info("invoiceuuid = " + invoiceuuid + ", invoiceReference = " + invoiceReference);
         invoiceService.updateInvoiceReference(invoiceuuid, invoiceReference);
+    }
+
+    @POST
+    @Path("/internalservices")
+    public void createInternalServiceInvoiceDraft(@QueryParam("fromCompany") String fromCompanyuuid, @QueryParam("toCompany") String toCompanyuuid, @QueryParam("month") String month) {
+        invoiceService.createInternalServiceInvoiceDraft(fromCompanyuuid, toCompanyuuid, dateIt(month));
     }
 }

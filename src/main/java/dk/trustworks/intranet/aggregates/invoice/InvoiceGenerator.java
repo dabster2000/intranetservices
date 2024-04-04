@@ -17,11 +17,11 @@ import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.dto.enums.ProjectSummaryType;
 import dk.trustworks.intranet.exceptions.InconsistantDataException;
-import dk.trustworks.intranet.invoiceservice.model.Invoice;
-import dk.trustworks.intranet.invoiceservice.model.InvoiceItem;
-import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus;
-import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
-import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -36,7 +36,7 @@ import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus.CREATED;
+import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus.CREATED;
 
 @JBossLog
 @ApplicationScoped

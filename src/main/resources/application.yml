@@ -47,8 +47,6 @@ quarkus:
       enable: true
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{2.}] (%t) %s%e%n"
       level: DEBUG
-    handlers:
-      - console
   cache:
     caffeine:
       "employee-data-per-month-cache":
@@ -82,6 +80,8 @@ e-conomics:
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
   journal-number: ${JOURNALNUMBER:15}
   expense-journal-number: ${EXPENSEJOURNALNUMBER:15}
+currencyapi:
+  key: ${API_KEY:xx}
 bucket:
   expenses: expensefiles
   files: trustworksfiles
@@ -93,7 +93,9 @@ dk:
           EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
           EconomicsAPIFile/mp-rest/url: https://restapi.e-conomic.com
           EconomicsAPIAccount/mp-rest/url: https://restapi.e-conomic.com
-      invoiceservice:
-        network:
-          InvoiceAPI/mp-rest/url: https://invoice-generator.com
+      aggregates:
+        invoice:
+          network:
+            InvoiceAPI/mp-rest/url: https://invoice-generator.com
+            CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
 

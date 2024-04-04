@@ -1,11 +1,11 @@
-package dk.trustworks.intranet.invoiceservice.network.dto;
+package dk.trustworks.intranet.aggregates.invoice.network.dto;
 
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
-import dk.trustworks.intranet.invoiceservice.model.Invoice;
-import dk.trustworks.intranet.invoiceservice.model.InvoiceItem;
-import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.NumberUtils;
 
 import java.time.format.DateTimeFormatter;
@@ -100,7 +100,7 @@ public class InvoiceDTO {
             items.add(new InvoiceItemDTO(invoiceItem.itemname, invoiceItem.hours, invoiceItem.rate, invoiceItem.description));
         }
         Contract contract = Contract.findById(invoice.contractuuid);
-        if(contract.getContractType().equals(ContractType.SKI0217_2021)) {
+        if(contract != null && contract.getContractType().equals(ContractType.SKI0217_2021)) { // null happens when invoice is an internal service invoice
             ContractTypeItem contractTypeItem = contract.getContractTypeItems().stream().findAny().get();
             double sumNoTax = invoice.getInvoiceitems().stream().mapToDouble(value -> value.hours * value.rate).sum();
             double keyDiscount = (sumNoTax * (NumberUtils.parseDouble(contract.getContractTypeItems().stream().findAny().get().getValue()) / 100.0));
@@ -109,7 +109,10 @@ public class InvoiceDTO {
             items.add(new InvoiceItemDTO("2% SKI administrationsgebyr", 1, -adminDiscount, ""));
             items.add(new InvoiceItemDTO("Faktureringsgebyr", 1, -2000, ""));
         }
-        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\nPayment due in 1 month";
+        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\nPayment due in 1 month. ";
+        if(invoice.getCompany().getUuid().equals("44592d3b-2be5-4b29-bfaf-4fafc60b0fa3")) {
+            terms += "IBAN: DK1054700004058023, SWIFT: NYKBDKKK";
+        }
     }
 
     public String getHeader() {

@@ -2,7 +2,7 @@ package dk.trustworks.intranet.dto;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dto.enums.ProjectSummaryType;
-import dk.trustworks.intranet.invoiceservice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 

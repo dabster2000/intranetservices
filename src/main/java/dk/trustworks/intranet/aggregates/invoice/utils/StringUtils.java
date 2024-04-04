@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.invoiceservice.utils;
+package dk.trustworks.intranet.aggregates.invoice.utils;
 
 import java.text.NumberFormat;
 

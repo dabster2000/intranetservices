@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.revenue.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregateservices.FinanceService;
@@ -13,7 +14,7 @@ import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
-import dk.trustworks.intranet.invoiceservice.services.InvoiceService;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.TeamService;
@@ -253,14 +254,12 @@ public class RevenueService {
     }
 
     public List<DateValueDTO> getInvoicedRevenueByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {
-        List<DateValueDTO> result = new ArrayList<>();
-        int months = (int) ChronoUnit.MONTHS.between(periodStart, periodEnd);
-        for (int i = 0; i < months; i++) {
-            LocalDate currentDate = periodStart.plusMonths(i);
-            double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonthWorkWasDone(companyuuid, currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
-            result.add(new DateValueDTO(currentDate, invoicedAmountByMonth));
+        try {
+            return invoiceService.calculateInvoiceSumByPeriodAndWorkDate(companyuuid, periodStart, periodEnd);
+        } catch (JsonProcessingException e) {
+            e.printStackTrace();
+            throw new RuntimeException(e);
         }
-        return result;
     }
 
     public List<GraphKeyValue> getProfitsByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {

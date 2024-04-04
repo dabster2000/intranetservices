@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.invoiceservice.network.dto;
+package dk.trustworks.intranet.aggregates.invoice.network.dto;
 
 public class InvoiceItemDTO {
 

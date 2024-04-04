@@ -62,10 +62,8 @@ public class UtilizationResource {
         LocalDate toDate = dateIt(todate);
         Company company = Company.findById(companyuuid);
         List<CompanyBudgetPerMonth> companyBudgetPerMonthList = budgetService.getCompanyBudgetsByPeriod(company, fromDate, toDate);
-        companyBudgetPerMonthList.forEach(companyBudgetPerMonth -> log.info(companyBudgetPerMonth.toString()));
 
         List<CompanyAvailabilityPerMonth> dataPerMonthList = availabilityService.getCompanyAvailabilityByPeriod(company, fromDate, toDate);
-        dataPerMonthList.forEach(dataPerMonth -> log.info(dataPerMonth.toString()));
 
         return dataPerMonthList.stream()
                 .map(dataPerMonth -> new DateValueDTO(
@@ -88,18 +86,14 @@ public class UtilizationResource {
             LocalDate localDate = currentFiscalStartDate.plusMonths(i);
 
             String[] uuids = findUseruuidsPerTeam(teamuuid, localDate);
-            System.out.println("uuids = '" + String.join("','", uuids) + "'");
 
             double availableHours = availabilityService.getSumOfAvailableHoursByUsersAndMonth(localDate, uuids);
-            System.out.println("availableHours = " + availableHours);
 
             double budgetHours = ((Number) em.createNativeQuery("select sum(e.budgetHours) as value " +
                     "from bi_budget_per_day e " +
                     "where e.useruuid in ('" + String.join("','", uuids) + "') " +
                     "     AND e.year = " + localDate.getYear() + " " +
                     "     AND e.month = " + localDate.getMonthValue() + "; ").getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
-
-            System.out.println("budgetHours = " + budgetHours);
 
             utilizationPerMonth.add(new DateValueDTO(localDate, (budgetHours / availableHours)));
         }

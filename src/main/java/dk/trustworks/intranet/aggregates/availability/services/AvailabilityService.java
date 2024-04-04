@@ -20,6 +20,7 @@ import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 @JBossLog
@@ -62,77 +63,6 @@ public class AvailabilityService {
 
     public List<EmployeeAvailabilityPerMonth> getEmployeeDataPerMonth(String useruuid, LocalDate fromdate, LocalDate todate) {
         return getEmployeeAvailabilityPerMonths(getEmployeeDataPerDay(useruuid, fromdate, todate));
-        /*
-        Query nativeQuery = em.createNativeQuery("SELECT " +
-                "    ad_agg.id, " +
-                "    ad_agg.useruuid, " +
-                "    ad_agg.consultant_type, " +
-                "    ad_agg.status_type, " +
-                "    ad_agg.companyuuid, " +
-                "    ad_agg.year, " +
-                "    ad_agg.month, " +
-                "    ad_agg.gross_available_hours, " +
-                "    ad_agg.unavailable_hours, " +
-                "    ad_agg.vacation_hours, " +
-                "    ad_agg.sick_hours, " +
-                "    ad_agg.maternity_leave_hours, " +
-                "    ad_agg.non_payd_leave_hours, " +
-                "    ad_agg.paid_leave_hours, " +
-                "    COALESCE(ww.workduration, 0) AS registered_billable_hours, " +
-                "    COALESCE(ww.total_billed, 0) AS registered_amount, " +
-                "    COALESCE(bb.budgetHours, 0) AS budget_hours, " +
-                "    ad_agg.avg_salary, " +
-                "    ad_agg.is_tw_bonus_eligible " +
-                "FROM ( " +
-                "    SELECT " +
-                "        MIN(ad.id) AS id, " +
-                "        ad.useruuid, " +
-                "        ad.consultant_type, " +
-                "        ad.status_type, " +
-                "        ad.companyuuid, " +
-                "        ad.year, " +
-                "        ad.month, " +
-                "        SUM(ad.gross_available_hours) AS gross_available_hours, " +
-                "        SUM(ad.unavailable_hours) AS unavailable_hours, " +
-                "        SUM(ad.vacation_hours) AS vacation_hours, " +
-                "        SUM(ad.sick_hours) AS sick_hours, " +
-                "        SUM(ad.maternity_leave_hours) AS maternity_leave_hours, " +
-                "        SUM(ad.non_payd_leave_hours) AS non_payd_leave_hours, " +
-                "        SUM(ad.paid_leave_hours) AS paid_leave_hours, " +
-                "        AVG(ad.salary) AS avg_salary, " +
-                "        MAX(ad.is_tw_bonus_eligible) AS is_tw_bonus_eligible " +
-                "    FROM twservices.bi_availability_per_day ad " +
-                "    WHERE useruuid = :useruuid and document_date >= :startDate and document_date < :endDate " +
-                "    GROUP BY ad.useruuid, ad.year, ad.month, ad.companyuuid " +
-                ") ad_agg " +
-                "LEFT JOIN ( " +
-                "    SELECT " +
-                "        w.useruuid, " +
-                "        YEAR(w.registered) AS year, " +
-                "        MONTH(w.registered) AS month, " +
-                "        SUM(w.workduration) AS workduration, " +
-                "        SUM(IFNULL(w.rate, 0) * w.workduration) AS total_billed " +
-                "    FROM twservices.work_full w " +
-                "    WHERE w.rate > 0 and useruuid = :useruuid and registered >= :startDate and registered < :endDate " +
-                "    GROUP BY w.useruuid, YEAR(w.registered), MONTH(w.registered) " +
-                ") ww ON ww.year = ad_agg.year AND ww.month = ad_agg.month AND ww.useruuid = ad_agg.useruuid " +
-                "LEFT JOIN ( " +
-                "    select " +
-                "       `ad`.`useruuid`, " +
-                "       `ad`.`year`             AS `year`, " +
-                "       `ad`.`month`            AS `month`, " +
-                "       sum(`ad`.`budgetHours`) AS `budgetHours` " +
-                "from `twservices`.`bi_budget_per_day` `ad` " +
-                "where useruuid = :useruuid and document_date >= :startDate and document_date < :endDate " +
-                "group by `ad`.`useruuid`, `ad`.`year`, `ad`.`month` " +
-                ") bb ON bb.year = ad_agg.year AND bb.month = ad_agg.month AND bb.useruuid = ad_agg.useruuid " +
-                "ORDER BY ad_agg.year, ad_agg.month;", EmployeeAvailabilityPerMonth.class);
-        nativeQuery.setParameter("useruuid", useruuid);
-        nativeQuery.setParameter("startDate", fromdate);
-        nativeQuery.setParameter("endDate", todate);
-        return nativeQuery.getResultList();
-
-         */
     }
 
     @NotNull
@@ -202,5 +132,66 @@ public class AvailabilityService {
                         })
                 ))
                 .values().stream().toList();
+    }
+
+    public double calculateSalarySum(Company company, LocalDate date, List<EmployeeAvailabilityPerMonth> data) {
+        AtomicReference<Double> sum = new AtomicReference<>(0.0);
+        data.stream().filter(employeeDataPerMonth ->
+                        employeeDataPerMonth.getYear() == date.getYear() &&
+                                employeeDataPerMonth.getMonth() == date.getMonthValue() &&
+                                employeeDataPerMonth.getCompany()!=null &&
+                                employeeDataPerMonth.getCompany().getUuid().equals(company.getUuid()) &&
+                                !employeeDataPerMonth.getStatus().equals(StatusType.TERMINATED) &&
+                                !employeeDataPerMonth.getStatus().equals(StatusType.NON_PAY_LEAVE) &&
+                                employeeDataPerMonth.getConsultantType().equals(ConsultantType.CONSULTANT))
+                //.peek(em -> System.out.println("User = " + User.<User>findById(em.getUseruuid()).getFullname() + ": " + em.getAvgSalary()))
+                .forEach(employeeDataPerMonth -> {
+                    sum.updateAndGet(v -> v + employeeDataPerMonth.getAvgSalary().doubleValue());
+                });
+        return sum.get();
+    }
+
+    public Double calculateConsultantCount(Company company, LocalDate date, List<EmployeeAvailabilityPerMonth> data) {
+        AtomicReference<Double> sum = new AtomicReference<>(0.0);
+        data.stream().filter(employeeDataPerMonth ->
+                employeeDataPerMonth.getYear() == date.getYear() &&
+                        employeeDataPerMonth.getMonth() == date.getMonthValue() &&
+                        employeeDataPerMonth.getCompany()!=null &&
+                        employeeDataPerMonth.getCompany().getUuid().equals(company.getUuid()) &&
+                        !employeeDataPerMonth.getStatus().equals(StatusType.TERMINATED) &&
+                        !employeeDataPerMonth.getStatus().equals(StatusType.NON_PAY_LEAVE) &&
+                        employeeDataPerMonth.getConsultantType().equals(ConsultantType.CONSULTANT)
+        ).forEach(employeeDataPerMonth -> {
+            sum.updateAndGet(v -> v + 1);
+        });
+        return sum.get();
+    }
+
+    public double calculateSalarySum(Company company, List<EmployeeAvailabilityPerMonth> data) {
+        AtomicReference<Double> sum = new AtomicReference<>(0.0);
+        data.stream().filter(employeeDataPerMonth ->
+                employeeDataPerMonth.getCompany()!=null &&
+                        employeeDataPerMonth.getCompany().getUuid().equals(company.getUuid()) &&
+                        !employeeDataPerMonth.getStatus().equals(StatusType.TERMINATED) &&
+                        !employeeDataPerMonth.getStatus().equals(StatusType.NON_PAY_LEAVE) &&
+                        employeeDataPerMonth.getConsultantType().equals(ConsultantType.CONSULTANT)
+        ).forEach(employeeDataPerMonth -> {
+            sum.updateAndGet(v -> v + employeeDataPerMonth.getAvgSalary().doubleValue());
+        });
+        return sum.get();
+    }
+
+    public Double calculateConsultantCount(Company company, List<EmployeeAvailabilityPerMonth> data) {
+        AtomicReference<Double> sum = new AtomicReference<>(0.0);
+        data.stream().filter(employeeDataPerMonth ->
+                employeeDataPerMonth.getCompany()!=null &&
+                        employeeDataPerMonth.getCompany().getUuid().equals(company.getUuid()) &&
+                        !employeeDataPerMonth.getStatus().equals(StatusType.TERMINATED) &&
+                        !employeeDataPerMonth.getStatus().equals(StatusType.NON_PAY_LEAVE) &&
+                        employeeDataPerMonth.getConsultantType().equals(ConsultantType.CONSULTANT)
+        ).forEach(employeeDataPerMonth -> {
+            sum.updateAndGet(v -> v + 1);
+        });
+        return sum.get();
     }
 }

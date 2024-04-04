@@ -1,41 +1,53 @@
-package dk.trustworks.intranet.invoiceservice.services;
+package dk.trustworks.intranet.aggregates.invoice.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
+import com.speedment.jpastreamer.application.JPAStreamer;
+import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
+import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.network.CurrencyAPI;
+import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
+import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
+import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
+import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
-import dk.trustworks.intranet.invoiceservice.model.Invoice;
-import dk.trustworks.intranet.invoiceservice.model.InvoiceItem;
-import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceStatus;
-import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
-import dk.trustworks.intranet.invoiceservice.network.InvoiceAPI;
-import dk.trustworks.intranet.invoiceservice.network.dto.InvoiceDTO;
-import dk.trustworks.intranet.invoiceservice.utils.StringUtils;
+import dk.trustworks.intranet.financeservice.model.AccountLumpSum;
+import dk.trustworks.intranet.financeservice.model.AccountingAccount;
+import dk.trustworks.intranet.financeservice.model.AccountingCategory;
+import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.Tuple;
+import jakarta.persistence.TupleElement;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.io.IOException;
+import java.sql.Date;
 import java.time.LocalDate;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
+import static java.util.stream.Collectors.toList;
 
 @JBossLog
 @ApplicationScoped
 public class InvoiceService {
-
-    @Inject
-    UserService userService;
 
     @Inject
     EntityManager em;
@@ -45,7 +57,20 @@ public class InvoiceService {
     InvoiceAPI invoiceAPI;
 
     @Inject
+    @RestClient
+    CurrencyAPI currencyAPI;
+
+    @ConfigProperty(name = "currencyapi.key")
+    String apiKey;
+
+    @Inject
     EconomicsInvoiceService economicsInvoiceService;
+
+    @Inject
+    AvailabilityService availabilityService;
+
+    @Inject
+    JPAStreamer jpaStreamer;
 
     public List<Invoice> findAll() {
         return Invoice.findAll().list();
@@ -61,7 +86,7 @@ public class InvoiceService {
                             (invoice.getInvoicedate().isAfter(finalFromdate) || invoice.getInvoicedate().equals(finalFromdate)) &&
                                     (invoice.getInvoicedate().isBefore(finalTodate) ||invoice.getInvoicedate().isEqual(finalTodate)) &&
                                     Arrays.stream(finalType).anyMatch(s -> s.equals(invoice.getStatus().name())))
-                    .collect(Collectors.toList());
+                    .collect(toList());
 
         }
         return result;
@@ -85,12 +110,88 @@ public class InvoiceService {
         return invoices;
     }
 
-    public double calculateInvoiceSumByMonthWorkWasDone(String companyuuid, LocalDate month) {
-        String sql = "select sum(if(type = 0, (ii.rate*ii.hours), -(ii.rate*ii.hours))) sum from invoiceitems ii " +
-                "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = '"+companyuuid+"' AND year = "+month.getYear()+" AND month = "+(month.getMonthValue()-1)+"; ";
-        Object singleResult = em.createNativeQuery(sql).getSingleResult();
-        return singleResult!=null?((Number) singleResult).doubleValue():0.0;
+    // v1/historical?apikey=fca_live_MWLySUOkVOu5dLGEvNUwjZL7exzXT6lBThOUGYZ2&date=2023-10-01& base_currency=EUR&currencies=DKK
+    public List<DateValueDTO> calculateInvoiceSumByPeriodAndWorkDate(String companyuuid, LocalDate fromdate, LocalDate todate) throws JsonProcessingException {
+        Response response = currencyAPI.getExchangeRate(stringIt(fromdate), "EUR", "DKK", apiKey);
+        double exchangeRate = 1.0;
+        if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            CurrencyData currencyData = objectMapper.readValue(response.readEntity(String.class), CurrencyData.class);
+            exchangeRate = currencyData.getExchangeRate(stringIt(fromdate), "DKK");
+        }
+        System.out.println("exchangeRate = " + exchangeRate);
+        String sql = "select " +
+                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') date, sum(if((i.type = 0 OR i.type = 3), (ii.rate*ii.hours * if(i.currency='DKK', 1, "+exchangeRate+")), -(ii.rate*ii.hours * if(i.currency='DKK', 1, "+exchangeRate+")))) value " +
+                "from " +
+                "    invoiceitems ii " +
+                "LEFT JOIN " +
+                "    invoices i on i.uuid = ii.invoiceuuid " +
+                "WHERE " +
+                "    i.type != 3 AND i.type != 4 AND " +
+                "    i.status NOT LIKE 'DRAFT' AND " +
+                "    i.companyuuid = '"+companyuuid+"' AND " +
+                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') >= '"+ stringIt(fromdate) +"' AND " +
+                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') < '"+ stringIt(todate)+"' " +
+                "GROUP BY " +
+                "    i.month, i.year;";
+
+        String sql2 = "select " +
+                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') date, sum(ii.rate*ii.hours * if(i.currency='DKK', 1, "+exchangeRate+")) value " +
+                "from " +
+                "    invoiceitems ii " +
+                "LEFT JOIN " +
+                "    invoices i on i.uuid = ii.invoiceuuid " +
+                "WHERE " +
+                "    i.type = 3 AND " +
+                "    i.invoice_ref IN ( " +
+                "        SELECT " +
+                "            i.invoicenumber " +
+                "        FROM " +
+                "            invoices i " +
+                "        WHERE " +
+                "            i.status NOT LIKE 'DRAFT' AND " +
+                "            i.companyuuid = '"+companyuuid+"' AND " +
+                "            STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') >= '"+ stringIt(fromdate) +"' AND " +
+                "            STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') < '"+ stringIt(todate)+"') " +
+                "GROUP BY " +
+                "    i.month, i.year;";
+
+
+        List<Tuple> invoicedTupleList = ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList());
+        List<DateValueDTO> invoicedSumList = invoicedTupleList.stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
+
+        List<Tuple> internalTupleList = em.createNativeQuery(sql2, Tuple.class).getResultList();
+        List<DateValueDTO> internalInvoicedSumList = new ArrayList<>();
+        if(!internalTupleList.isEmpty()) {
+            internalTupleList.stream().forEach(tuple -> {
+                List<TupleElement<?>> elements = tuple.getElements();
+            });
+            internalInvoicedSumList = internalTupleList.stream()
+                    .map(tuple -> {
+                        return new DateValueDTO(
+                                ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                                (Double) tuple.get("value")
+                        );
+                    })
+                    .toList();
+        }
+
+        LocalDate testDate = fromdate;
+        List<DateValueDTO> result = new ArrayList<>();
+        do {
+            LocalDate finalTestDate = testDate;
+            double invoicedSum = invoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
+            double internalInvoicedSum = internalInvoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
+            result.add(new DateValueDTO(testDate, invoicedSum - internalInvoicedSum));
+
+            testDate = testDate.plusMonths(1);
+        } while (testDate.isBefore(todate));
+        return result;
     }
 
     public double calculateInvoiceSumByMonth(String companyuuid, LocalDate month) {
@@ -121,20 +222,6 @@ public class InvoiceService {
 
     public List<Invoice> findContractInvoices(String contractuuid) {
         return Invoice.find("contractuuid = ?1 AND status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC", contractuuid).list();
-    }
-
-    @SuppressWarnings("unchecked")
-    public List<Invoice> findInvoicesForSingleMonthByBookingDate(LocalDate month, String... type) {
-        LocalDate date = month.withDayOfMonth(1);
-        String sql = "SELECT * FROM invoices i WHERE " +
-                "i.invoicedate >= " + stringIt(date) + " AND i.invoicedate < " + stringIt(date.plusMonths(1)) +
-                " AND i.bookingdate = '1900-01-01' " +
-                "AND i.status IN ('"+String.join("','", type)+"');";
-        List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
-        invoices.addAll(em.createNativeQuery("SELECT * FROM invoices i WHERE " +
-                "i.bookingdate >= " + stringIt(date) + " AND i.bookingdate < " + stringIt(date.plusMonths(1)) + " " +
-                "AND i.status IN ('"+String.join("','", type)+"');", Invoice.class).getResultList());
-        return Collections.unmodifiableList(invoices);
     }
 
     @Transactional
@@ -322,6 +409,86 @@ public class InvoiceService {
         internalInvoice.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
     }
 
+    @Transactional
+    public void createInternalServiceInvoiceDraft(String fromCompanyuuid, String toCompanyuuid, LocalDate month) {
+        List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(month, month.plusMonths(1));
+        Company fromCompany = Company.findById(fromCompanyuuid);
+        Company toCompany = Company.findById(toCompanyuuid);
+
+        List<AccountingCategory> allAccountingCategories = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
+        List<FinanceDetails> allFinanceDetails = FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", month, month.plusMonths(1));
+
+        List<FinanceDetails> financeDetails = allFinanceDetails.stream().filter(fd -> fd.getCompany().equals(fromCompany)).toList();
+
+        // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
+        double primaryCompanySalarySum = availabilityService.calculateSalarySum(fromCompany, month, employeeAvailabilityPerMonthList);
+
+        // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
+        double fromCompanyConsultantAvg = availabilityService.calculateConsultantCount(fromCompany, month, employeeAvailabilityPerMonthList);
+
+        double toCompanyConsultantAvg = availabilityService.calculateConsultantCount(toCompany, month, employeeAvailabilityPerMonthList);
+
+        // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
+        AtomicReference<Double> secondaryCompanyConsultant = new AtomicReference<>(0.0);
+        AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
+        Company.<Company>listAll().stream().filter(c -> !c.equals(fromCompany)).forEach(secondaryCompany -> {
+            secondaryCompanySalarySum.updateAndGet(v -> v + availabilityService.calculateSalarySum(secondaryCompany, month, employeeAvailabilityPerMonthList));
+            secondaryCompanyConsultant.updateAndGet(v -> v + availabilityService.calculateConsultantCount(secondaryCompany, month, employeeAvailabilityPerMonthList));
+        });
+        double totalNumberOfConsultants = fromCompanyConsultantAvg + secondaryCompanyConsultant.get();
+
+        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now(), "", "", fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
+        invoice.persistAndFlush();
+
+        for (AccountingCategory accountingCategory : allAccountingCategories) {
+            double accountingCategorySum = 0.0;
+            for (AccountingAccount aa : accountingCategory.getAccounts()) {
+                if (aa.getCompany().equals(fromCompany) && aa.isShared()) {
+                    double fullExpenses = financeDetails.stream()
+                            .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().equals(month))
+                            .mapToDouble(FinanceDetails::getAmount)
+                            .sum();
+
+                    // Check and skip if expenses are negative, since they are not relevant for the calculation
+                    if(fullExpenses <= 0) continue;
+
+                    // Start by making the partial expenses equal fullExpenses
+                    double partialExpenses = fullExpenses;
+
+                    // Remove lump sums from the expenses
+                    double lumpSum = AccountLumpSum.<AccountLumpSum>list("accountingAccount = ?1 and registeredDate = ?2", aa, month.withDayOfMonth(1)).stream().mapToDouble(AccountLumpSum::getAmount).sum();
+                    partialExpenses -= lumpSum;
+
+                        // Hvis kontoen er en lønkonto, så træk lønsummen fra, så den ikke deles mellem virksomhederne.
+                    if (aa.isSalary()) {
+                        AtomicReference<Double> otherSalarySources = new AtomicReference<>(0.0);
+                        accountingCategory.getAccounts().stream()
+                                .filter(value -> value.getCompany().equals(fromCompany) && !value.isShared() && value.isSalary())
+                                        .forEach(value -> {
+                                            otherSalarySources.updateAndGet(v -> v + financeDetails.stream()
+                                                    .filter(fd -> fd.getAccountnumber() == value.getAccountCode() && fd.getExpensedate().equals(month))
+                                                    .mapToDouble(FinanceDetails::getAmount)
+                                                    .sum());
+                                        });
+                        partialExpenses += otherSalarySources.get();
+                        partialExpenses = (Math.max(0, partialExpenses - (primaryCompanySalarySum * 1.02)));
+                    }
+                    if(partialExpenses <= 0) continue;
+
+                    // partial fullExpenses should only account for the part of the fullExpenses equal to the share of consultants in the primary company
+                    partialExpenses *= (toCompanyConsultantAvg / totalNumberOfConsultants);
+
+                    // The loan is the difference between the fullExpenses and the partialExpenses
+                    accountingCategorySum += (Math.max(0, partialExpenses));
+                }
+            }
+            if(accountingCategorySum <= 0) continue;
+            InvoiceItem invoiceItem = new InvoiceItem(accountingCategory.getAccountname(), "", accountingCategorySum, 1, invoice.getUuid());
+            invoice.getInvoiceitems().add(invoiceItem);
+            invoiceItem.persist();
+        }
+    }
+
     public byte[] createInvoicePdf(Invoice invoice) throws JsonProcessingException {
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(new InvoiceDTO(invoice));
@@ -351,7 +518,7 @@ public class InvoiceService {
     }
 
     private boolean isDraftOrPhantom(String invoiceuuid) {
-        return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 AND type = ?3)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
+        return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 OR type = ?3)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
     }
 
     @Transactional

@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.invoiceservice.model.enums;
+package dk.trustworks.intranet.aggregates.invoice.model.enums;
 
 /**
  * Created by hans on 11/07/2017.

@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.invoiceservice.model;
+package dk.trustworks.intranet.aggregates.invoice.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;

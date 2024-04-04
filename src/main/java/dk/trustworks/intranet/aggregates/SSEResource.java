@@ -3,16 +3,17 @@ package dk.trustworks.intranet.aggregates;
 import io.quarkus.vertx.ConsumeEvent;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.operators.multi.processors.BroadcastProcessor;
-import org.jboss.resteasy.reactive.RestStreamElementType;
-
+import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
+import org.jboss.resteasy.reactive.RestStreamElementType;
 
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.BROWSER_EVENT;
 
 @Path("/sse")
+@ApplicationScoped
 public class SSEResource {
 
     private final BroadcastProcessor<String> broadcastProcessor = BroadcastProcessor.create();
@@ -32,17 +33,4 @@ public class SSEResource {
         broadcastProcessor.onNext(aggregateUUID);
     }
 
-    /*
-    @Channel(READ_BROWSER_EVENT)
-    Multi<String> aggregateUUID;
-
-    @GET
-    @Produces(MediaType.SERVER_SENT_EVENTS)
-    @RestStreamElementType(MediaType.TEXT_PLAIN)
-    public Multi<String> stream() {
-        System.out.println("SSEResource.stream");
-        return aggregateUUID;
-    }
-
-     */
 }

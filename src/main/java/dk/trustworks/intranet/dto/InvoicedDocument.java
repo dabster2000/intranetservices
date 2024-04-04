@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
-import dk.trustworks.intranet.invoiceservice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 
 import java.time.LocalDate;
 

@@ -93,27 +93,6 @@ public class RevenueResource {
         return revenueService.getRegisteredHoursPerConsultantForSingleMonth(companyuuid, dateIt(month));
     }
 
-/*
-    @GET
-    @Path("/registered/consultants/{useruuid}/months/{month}")
-    public GraphKeyValue getRegisteredRevenueForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return new GraphKeyValue(useruuid, "Consultant revenue hours per month", revenueService.getRegisteredRevenueForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
-    }
-
-    @GET
-    @Path("/registered/consultants/hours/{useruuid}")
-    public List<DateValueDTO> getRegisteredHoursPerSingleConsultantByPeriod(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return revenueService.getRegisteredHoursPerSingleConsultantByPeriod(companyuuid, useruuid, dateIt(fromdate), dateIt(todate));
-    }
-
-    @GET
-    @Path("/registered/consultants/{useruuid}/hours")
-    public GraphKeyValue getRegisteredHoursForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("month") String month) {
-        return new GraphKeyValue(useruuid, "Consultant revenue per month", revenueService.getRegisteredHoursForSingleMonthAndSingleConsultant(companyuuid, useruuid, dateIt(month)));
-    }
-
- */
-
     @GET
     @Path("/invoiced")
     public List<DateValueDTO> getInvoicedRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
