@@ -43,4 +43,15 @@ public class File extends PanacheEntityBase {
     @Transient
     private byte[] file;
 
+    @Override
+    public String toString() {
+        return "File{" +
+                "uuid='" + uuid + '\'' +
+                ", relateduuid='" + relateduuid + '\'' +
+                ", type='" + type + '\'' +
+                ", name='" + name + '\'' +
+                ", filename='" + filename + '\'' +
+                ", uploaddate=" + uploaddate +
+                '}';
+    }
 }

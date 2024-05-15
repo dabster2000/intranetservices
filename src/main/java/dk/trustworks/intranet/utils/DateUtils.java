@@ -159,7 +159,7 @@ public final class DateUtils {
         vacationDayList.add(easterFriday);
         vacationDayList.add(easterDay);
         vacationDayList.add(secondEasterday);
-        vacationDayList.add(prayerday);
+        if(year < 2024) vacationDayList.add(prayerday);
         vacationDayList.add(assendenceDay);
         vacationDayList.add(whitSun);
         vacationDayList.add(whitMon);
@@ -196,6 +196,17 @@ public final class DateUtils {
     public static LocalDate getLastDayOfMonth(LocalDate localDate) {
         YearMonth month = YearMonth.from(localDate);
         return month.atEndOfMonth();
+    }
+
+    public static LocalDate getFirstWeekdayOfMonth(LocalDate date) {
+        LocalDate firstDayOfMonth = getFirstDayOfMonth(date);
+        LocalDate currentDate = firstDayOfMonth;
+
+        while (!isWorkday(currentDate)) {
+            currentDate = currentDate.plusDays(1);
+        }
+
+        return currentDate;
     }
 
     /**
@@ -247,6 +258,17 @@ public final class DateUtils {
 
     public static LocalDate getFiscalStartDateBasedOnDate(LocalDate date) {
         return (date.getMonthValue()>6 && date.getMonthValue()<13)?date.withMonth(7).withDayOfMonth(1):date.minusYears(1).withMonth(7).withDayOfMonth(1);
+    }
+
+    public static LocalDate getTwentieth(LocalDate date) {
+        // Tjekker om den indsendte dato er den 20. eller efter i måneden
+        if (date.getDayOfMonth() >= 20) {
+            // Hvis det er den 20. eller senere, returner den 20. i samme måned
+            return LocalDate.of(date.getYear(), date.getMonth(), 20);
+        } else {
+            // Hvis det er før den 20., returner den 20. i forrige måned
+            return date.minusMonths(1).withDayOfMonth(20);
+        }
     }
 
     public static LocalDate getCompanyStartDate() {

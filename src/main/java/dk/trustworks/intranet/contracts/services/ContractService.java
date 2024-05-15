@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.services;
 
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.dao.crm.model.Project;
@@ -234,6 +235,7 @@ WHERE
 
     @Transactional
     public void delete(String contractuuid) {
+        if(Invoice.find("contractuuid like ?1", contractuuid).count()>0) throw new RuntimeException("Cannot delete contract with invoices");
         Contract.deleteById(contractuuid);
     }
 

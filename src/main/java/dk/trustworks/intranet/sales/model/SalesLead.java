@@ -7,11 +7,12 @@ import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import jakarta.persistence.*;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Set;
 
 import static jakarta.persistence.FetchType.EAGER;
@@ -56,6 +57,8 @@ public class SalesLead extends PanacheEntityBase {
     private LostReason lostReason;
     @OneToMany(mappedBy = "lead", fetch = EAGER)
     Set<SalesLeadConsultant> salesLeadConsultants;
+    @Column(name = "created")
+    private LocalDateTime created;
 
     @Override
     public boolean equals(Object o) {

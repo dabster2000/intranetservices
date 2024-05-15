@@ -37,7 +37,8 @@ import java.util.UUID;
         @JsonSubTypes.Type(value = DeleteSalaryEvent.class, name = "DeleteSalaryEvent"),
         @JsonSubTypes.Type(value = CreateParticipantEvent.class, name = "CreateParticipantEvent"),
         @JsonSubTypes.Type(value = UpdateParticipantDataEvent.class, name = "UpdateParticipantDataEvent"),
-        @JsonSubTypes.Type(value = ChangeParticipantPhaseEvent.class, name = "ChangeParticipantPhaseEvent")
+        @JsonSubTypes.Type(value = ChangeParticipantPhaseEvent.class, name = "ChangeParticipantPhaseEvent"),
+        @JsonSubTypes.Type(value = CreateBankInfoEvent.class, name = "CreateBankInfoEvent")
 })
 public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
 

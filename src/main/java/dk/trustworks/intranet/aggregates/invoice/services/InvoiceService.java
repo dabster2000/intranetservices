@@ -14,6 +14,7 @@ import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
+import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
@@ -22,6 +23,7 @@ import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.configuration.ProfileManager;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -72,6 +74,17 @@ public class InvoiceService {
     @Inject
     JPAStreamer jpaStreamer;
 
+    private static DateValueDTO apply(Invoice invoice, double exchangeRate) {
+        double sum = switch (invoice.getType()) {
+            case INVOICE -> invoice.getSumWithNoTaxInDKK(exchangeRate);
+            case PHANTOM -> invoice.getSumWithNoTaxInDKK(exchangeRate);
+            case INTERNAL -> invoice.getSumWithNoTaxInDKK(exchangeRate);
+            case CREDIT_NOTE -> -invoice.getSumWithNoTaxInDKK(exchangeRate);
+            default -> 0.0;
+        };
+        return new DateValueDTO(LocalDate.of(invoice.getYear(), invoice.getMonth() + 1, 1), sum);
+    }
+
     public List<Invoice> findAll() {
         return Invoice.findAll().list();
     }
@@ -110,7 +123,6 @@ public class InvoiceService {
         return invoices;
     }
 
-    // v1/historical?apikey=fca_live_MWLySUOkVOu5dLGEvNUwjZL7exzXT6lBThOUGYZ2&date=2023-10-01& base_currency=EUR&currencies=DKK
     public List<DateValueDTO> calculateInvoiceSumByPeriodAndWorkDate(String companyuuid, LocalDate fromdate, LocalDate todate) throws JsonProcessingException {
         Response response = currencyAPI.getExchangeRate(stringIt(fromdate), "EUR", "DKK", apiKey);
         double exchangeRate = 1.0;
@@ -127,7 +139,7 @@ public class InvoiceService {
                 "LEFT JOIN " +
                 "    invoices i on i.uuid = ii.invoiceuuid " +
                 "WHERE " +
-                "    i.type != 3 AND i.type != 4 AND " +
+                "    i.type != 4 AND " +
                 "    i.status NOT LIKE 'DRAFT' AND " +
                 "    i.companyuuid = '"+companyuuid+"' AND " +
                 "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') >= '"+ stringIt(fromdate) +"' AND " +
@@ -180,6 +192,43 @@ public class InvoiceService {
                     })
                     .toList();
         }
+
+        LocalDate testDate = fromdate;
+        List<DateValueDTO> result = new ArrayList<>();
+        do {
+            LocalDate finalTestDate = testDate;
+            double invoicedSum = invoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
+            double internalInvoicedSum = internalInvoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
+            result.add(new DateValueDTO(testDate, invoicedSum - internalInvoicedSum));
+
+            testDate = testDate.plusMonths(1);
+        } while (testDate.isBefore(todate));
+        return result;
+    }
+
+    @Transactional
+    public List<DateValueDTO> calculateInvoiceSumByPeriodAndWorkDateV2(String companyuuid, LocalDate fromdate, LocalDate todate) throws JsonProcessingException {
+        Response response = currencyAPI.getExchangeRate(stringIt(fromdate), "EUR", "DKK", apiKey);
+        double exchangeRate;
+        if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            CurrencyData currencyData = objectMapper.readValue(response.readEntity(String.class), CurrencyData.class);
+            exchangeRate = currencyData.getExchangeRate(stringIt(fromdate), "DKK");
+        } else {
+            exchangeRate = 1.0;
+        }
+        List<Invoice> invoiceList = Invoice.<Invoice>find("company = ?1 AND invoicedate >= ?2 AND invoicedate < ?3 AND type != 4 AND status NOT LIKE ?4", Company.<Company>findById(companyuuid), fromdate, todate, InvoiceStatus.DRAFT).list();
+        List<DateValueDTO> invoicedSumList = invoiceList.stream()
+                .map((Invoice i) -> apply(i, exchangeRate))
+                .toList();
+
+        List<DateValueDTO> internalInvoicedSumList = jpaStreamer.stream(Invoice.class)
+                .filter(invoice -> !invoice.getCompany().getUuid().equals(companyuuid))
+                .filter(invoice -> invoice.getType().equals(InvoiceType.INTERNAL))
+                .filter(invoice -> !invoice.getStatus().equals(InvoiceStatus.DRAFT))
+                .filter(invoice -> invoiceList.stream().anyMatch(i -> i.getInvoicenumber() == invoice.getInvoiceref()))
+                .map((Invoice i) -> apply(i, exchangeRate))
+                .toList();
 
         LocalDate testDate = fromdate;
         List<DateValueDTO> result = new ArrayList<>();
@@ -305,7 +354,6 @@ public class InvoiceService {
         return invoice;
     }
 
-
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
@@ -326,6 +374,7 @@ public class InvoiceService {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = 0;
+        draftInvoice.setType(InvoiceType.PHANTOM);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         saveInvoice(draftInvoice);
         if(!"dev".equals(ProfileManager.getActiveProfile())) {
@@ -365,7 +414,7 @@ public class InvoiceService {
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(),
-                invoice.getProjectref(), invoice.getContractref(), invoice.getCompany(), invoice.getCurrency(),
+                invoice.getProjectref(), invoice.getContractref(), invoice.contractType, invoice.getCompany(), invoice.getCurrency(),
                 "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.getBonusConsultantApprovedStatus());
 
         creditNote.invoicenumber = 0;
@@ -398,6 +447,7 @@ public class InvoiceService {
                 LocalDate.now(),
                 invoice.getProjectref(),
                 invoice.getContractref(),
+                invoice.contractType,
                 Company.findById(companyuuid),
                 invoice.getCurrency(),
                 "Intern faktura knyttet til " + invoice.getInvoicenumber());
@@ -437,7 +487,7 @@ public class InvoiceService {
         });
         double totalNumberOfConsultants = fromCompanyConsultantAvg + secondaryCompanyConsultant.get();
 
-        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now(), "", "", fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
+        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now(), "", "", ContractType.PERIOD, fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
         invoice.persistAndFlush();
 
         for (AccountingCategory accountingCategory : allAccountingCategories) {
@@ -518,7 +568,7 @@ public class InvoiceService {
     }
 
     private boolean isDraftOrPhantom(String invoiceuuid) {
-        return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 OR type = ?3)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
+        return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 OR type = ?3 OR invoicenumber = 0)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
     }
 
     @Transactional
@@ -534,5 +584,10 @@ public class InvoiceService {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
+    }
+
+    @Transactional
+    public void updateInvoiceStatus(String invoiceuuid, SalesApprovalStatus status) {
+        Invoice.update("bonusConsultantApprovedStatus = ?1 WHERE uuid like ?2", status, invoiceuuid);
     }
 }

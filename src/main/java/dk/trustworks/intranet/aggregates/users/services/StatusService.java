@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.users.services;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 
+import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
@@ -32,6 +33,7 @@ public class StatusService {
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void create(@Valid UserStatus status) {
         if(status.getUuid().isEmpty()) return;
         Optional<UserStatus> existingStatus = UserStatus.findByIdOptional(status.getUuid());
@@ -65,6 +67,7 @@ public class StatusService {
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(String statusuuid) {
         System.out.println("StatusService.delete");
         System.out.println("statusuuid = " + statusuuid);

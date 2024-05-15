@@ -1,0 +1,1 @@
+alter table finance_details add remainder double default 0.0 null after amount;

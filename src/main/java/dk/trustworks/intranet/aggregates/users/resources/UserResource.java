@@ -2,7 +2,6 @@ package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.achievementservice.model.Achievement;
 import dk.trustworks.intranet.achievementservice.services.AchievementService;
-import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateUserEvent;
 import dk.trustworks.intranet.aggregates.users.events.UpdateUserEvent;
@@ -19,6 +18,8 @@ import dk.trustworks.intranet.dao.workservice.services.WeekService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
+import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
@@ -106,7 +107,7 @@ public class UserResource {
     UserService userService;
 
     @Inject
-    BudgetService budgetService;
+    ExpenseService expenseService;
 
     @GET
     public List<User> listAll(@QueryParam("username") Optional<String> username, @QueryParam("shallow") Optional<String> shallow) {
@@ -233,6 +234,12 @@ public class UserResource {
     public List<UserFinanceDocument> getConsultantsExpensesByMonth(@QueryParam("month") String month) {
         List<User> users = userAPI.findUsersByDateAndStatusListAndTypes(dateIt(month), "ACTIVE, NON_PAY_LEAVE", "CONSULTANT", true);
         return financeService.getUserFinanceData().stream().filter(userFinanceDocument -> users.stream().map(User::getUuid).anyMatch(s -> s.equals(userFinanceDocument.getUser().getUuid()))).collect(Collectors.toList());
+    }
+
+    @GET
+    @Path("{useruuid}/expenses")
+    public List<Expense> findExpensesByUser(@PathParam("useruuid") String useruuid) {
+        return expenseService.findByUserLimited(useruuid);
     }
 
     @GET

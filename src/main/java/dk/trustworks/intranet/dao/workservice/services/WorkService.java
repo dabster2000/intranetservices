@@ -118,6 +118,10 @@ public class WorkService {
         return findByUserAndTasks(useruuid, VACATION);
     }
 
+    public double calculateVacationByUserInMonth(String useruuid, LocalDate fromDate, LocalDate toDate) {
+        return findByPeriodAndUserAndTasks(fromDate, toDate, useruuid, VACATION).stream().mapToDouble(WorkFull::getWorkduration).sum();
+    }
+
     public Map<String, Map<String, Double>> findVacationSumByMonth() {
         return findByUserAndTasksSumByMonth(VACATION);
     }
@@ -136,15 +140,6 @@ public class WorkService {
 
     public Map<String, Map<String, Double>> findMaternityLeaveSumByMonth() {
         return findByUserAndTasksSumByMonth(MATERNITY_LEAVE.getTaskuuid());
-    }
-
-    @CacheResult(cacheName = "work-cache")
-    public int getWorkDaysInMonth(String userUUID, LocalDate month) {
-        int weekDays = DateUtils.getWeekdaysInPeriod(getFirstDayOfMonth(month), getFirstDayOfMonth(month).plusMonths(1));
-        List<WorkFull> workList = findByPeriodAndUserAndTasks(stringIt(getFirstDayOfMonth(month.getYear(), month.getMonthValue())), getLastDayOfMonth(month.getYear(), month.getMonthValue()).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), userUUID,"02bf71c5-f588-46cf-9695-5864020eb1c4, f585f46f-19c1-4a3a-9ebd-1a4f21007282");
-        double vacationAndSickdays = workList.stream().mapToDouble(WorkFull::getWorkduration).sum() / 7.4;
-        weekDays -= (int) vacationAndSickdays;
-        return weekDays;
     }
 
     /*
@@ -177,9 +172,9 @@ public class WorkService {
         }
     }
 
-    public List<WorkFull> findByPeriodAndUserAndTasks(String fromdate, String todate, String useruuid, String taskuuids) {
-        if(dateIt(todate).getDayOfMonth()>1) log.error("Beware of month issues!!: "+todate);
-        return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3 AND taskuuid IN (?4)", dateIt(fromdate), dateIt(todate), useruuid, taskuuids).list();
+    public List<WorkFull> findByPeriodAndUserAndTasks(LocalDate fromdate, LocalDate todate, String useruuid, String taskuuids) {
+        if(todate.getDayOfMonth()>1) log.error("Beware of month issues!!: "+todate);
+        return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3 AND taskuuid IN (?4)", fromdate, todate, useruuid, taskuuids).list();
     }
 
 
@@ -197,13 +192,6 @@ public class WorkService {
         return findByContract(contractuuid).stream().mapToDouble(value -> value.getRate()*value.getWorkduration()).sum();
     }
 
-
-    public Double findHoursRegisteredOnContractByPeriod(String contractuuid, String useruuid, LocalDate fromdate, LocalDate todate) {
-        List<WorkFull> workFullList = WorkFull.find("contractuuid like ?1 and useruuid like ? and registered >= ?3 and registered < ?4", contractuuid, useruuid, fromdate, todate).list();
-        return workFullList.stream().mapToDouble(WorkFull::getWorkduration).sum();
-
-    }
-
     @Inject
     SystemEventSender sender;
 
@@ -211,7 +199,7 @@ public class WorkService {
     @CacheInvalidateAll(cacheName = "work-cache")
     public void saveWork(Work work) {
         List<Work> workList = Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", work.getRegistered(), work.getUseruuid(), work.getTaskuuid()).list();
-        if(workList.size()>0) {
+        if(!workList.isEmpty()) {
             work.setUuid(workList.stream().findFirst().get().getUuid());
             Work.update("workduration = ?1 WHERE registered = ?2 AND useruuid LIKE ?3 AND taskuuid LIKE ?4", work.getWorkduration(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
             log.info("Updating work via save: "+work);

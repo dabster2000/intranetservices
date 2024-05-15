@@ -31,7 +31,10 @@ public class EconomicsInvoiceService {
     private IntegrationKey.IntegrationKeyValue integrationKeyValue;
 
     public Response sendVoucher(Invoice invoice) throws IOException {
+        log.info("EconomicsInvoiceService.sendVoucher");
+        log.info("Sending invoice number " + invoice.invoicenumber);
         integrationKeyValue = IntegrationKey.getIntegrationKeyValue(invoice.getCompany());
+        log.info("integrationKeyValue = " + integrationKeyValue);
 
         Journal journal = new Journal(integrationKeyValue.invoiceJournalNumber());
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
@@ -39,6 +42,7 @@ public class EconomicsInvoiceService {
         Voucher voucher = buildJSONRequest(invoice, journal, text, integrationKeyValue);
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
+        log.info("json = " + json);
 
         // call e-conomics endpoint
         try {
@@ -55,19 +59,21 @@ public class EconomicsInvoiceService {
                 //expense.setVouchernumber(voucherNumber);
 
                 //upload file to e-conomics voucher
+                log.info("voucher posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", voucherNumber: " + voucherNumber);
                 return sendFile(invoice, voucher, voucherNumber);
             } else {
                 log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", response: " + response);
                 return response;
             }
         } catch (Exception e) {
+            e.printStackTrace();
             throw new RuntimeException(e);
         }
     }
 
     public Response sendFile(Invoice invoice, Voucher voucher, int voucherNumber) throws IOException {
-        System.out.println("EconomicsInvoiceService.sendFile");
-        System.out.println("invoice = " + invoice + ", voucher = " + voucher + ", voucherNumber = " + voucherNumber);
+        log.info("EconomicsInvoiceService.sendFile");
+        log.info("invoice = " + invoice + ", voucher = " + voucher + ", voucherNumber = " + voucherNumber);
         // format accountingYear to URL output
         String year = voucher.getAccountingYear().getYear();
         String[] arrOfStr = year.split("/", 2);
@@ -100,15 +106,21 @@ public class EconomicsInvoiceService {
     }
 
     public Voucher buildJSONRequest(Invoice invoice, Journal journal, String text, IntegrationKey.IntegrationKeyValue integrationKeyValue){
-
+        System.out.println("EconomicsInvoiceService.buildJSONRequest");
         ContraAccount contraAccount = new ContraAccount(integrationKeyValue.invoiceAccountNumber());
+        System.out.println("contraAccount = " + contraAccount.getAccountNumber());
         ExpenseAccount account = new ExpenseAccount(integrationKeyValue.invoiceAccountNumber());
+        System.out.println("account = " + account.getAccountNumber());
         String s = DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()).getYear() + "/" + DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()).plusYears(1).getYear();
+        System.out.println("s = " + s);
         AccountingYear accountingYear = new AccountingYear(s);//new AccountingYear(DateUtils.getCurrentFiscalStartDate().getYear()+"/"+DateUtils.getCurrentFiscalStartDate().plusYears(1).getYear());
+        System.out.println("accountingYear = " + accountingYear.getYear());
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 
+        System.out.println("Creating manual customer invoice");
         ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getSumWithTax(), contraAccount, date);
+        System.out.println("manualCustomerInvoice = " + manualCustomerInvoice.text);
         List<ManualCustomerInvoice> manualCustomerInvoices = new ArrayList<>();
         manualCustomerInvoices.add(manualCustomerInvoice);
 
@@ -123,6 +135,7 @@ public class EconomicsInvoiceService {
 
 
     private static EconomicsAPI getEconomicsAPI(IntegrationKey.IntegrationKeyValue result) {
+        log.info("EconomicsInvoiceService.getEconomicsAPI");
         return RestClientBuilder.newBuilder()
                 .baseUri(URI.create(result.url()))
                 .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))

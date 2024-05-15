@@ -6,6 +6,7 @@ import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -140,5 +141,11 @@ public class InvoiceResource {
     @Path("/internalservices")
     public void createInternalServiceInvoiceDraft(@QueryParam("fromCompany") String fromCompanyuuid, @QueryParam("toCompany") String toCompanyuuid, @QueryParam("month") String month) {
         invoiceService.createInternalServiceInvoiceDraft(fromCompanyuuid, toCompanyuuid, dateIt(month));
+    }
+
+    @PUT
+    @Path("/{invoiceuuid}/bonusstatus/{bonusStatus}")
+    public void updateInvoiceStatus(@PathParam("invoiceuuid") String invoiceuuid, @PathParam("bonusStatus") String bonusStatus) {
+        invoiceService.updateInvoiceStatus(invoiceuuid, SalesApprovalStatus.valueOf(bonusStatus));
     }
 }

@@ -37,7 +37,7 @@ public class UserAccountResource {
     @Path("/search/findByAccountNumber")
     public UserAccount getAccount(@QueryParam("companyuuid") String companyuuid, @QueryParam("account") int account) throws IOException {
         String username = economicsService.getAccount(companyuuid, account);
-        return new UserAccount(account, username);
+        return new UserAccount(account, "", username);
     }
 
     // should probably be validated against user service
@@ -52,10 +52,12 @@ public class UserAccountResource {
     @Path("/{useruuid}")
     @Transactional
     public void updateAccount(@PathParam("useruuid") String useruuid, UserAccount userAccount) {
-        UserAccount.update("account = ?1, " +
-                        "username = ?2" +
-                        "WHERE useruuid like ?3 ",
-                userAccount.getAccount(),
+        UserAccount.update("economics = ?1, " +
+                        "danlon = ?2, " +
+                        "username = ?3" +
+                        "WHERE useruuid like ?4 ",
+                userAccount.getEconomics(),
+                userAccount.getDanlon(),
                 userAccount.getUsername(),
                 useruuid);
     }

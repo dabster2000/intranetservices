@@ -255,7 +255,7 @@ public class RevenueService {
 
     public List<DateValueDTO> getInvoicedRevenueByPeriod(String companyuuid, LocalDate periodStart, LocalDate periodEnd) {
         try {
-            return invoiceService.calculateInvoiceSumByPeriodAndWorkDate(companyuuid, periodStart, periodEnd);
+            return invoiceService.calculateInvoiceSumByPeriodAndWorkDateV2(companyuuid, periodStart, periodEnd);
         } catch (JsonProcessingException e) {
             e.printStackTrace();
             throw new RuntimeException(e);

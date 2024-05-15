@@ -139,12 +139,12 @@ public class BubbleService {
         log.info("bubbleuuid = " + bubbleuuid + ", useruuid = " + useruuid);
         Bubble bubble = Bubble.findById(bubbleuuid);
         slackService.removeUserFromChannel(userService.findById(useruuid, true), bubble.getSlackchannel());
-        BubbleMember.delete("bubbleuuid like ?1 and useruuid like ?2", bubbleuuid, useruuid);
+        BubbleMember.delete("bubble = ?1 and useruuid like ?2", bubble, useruuid);
     }
 
     @Transactional
     public void removeBubbleMembers(String bubbleuuid) {
-        BubbleMember.delete("bubbleuuid like ?1", bubbleuuid);
+        BubbleMember.delete("bubble = ?1", Bubble.findById(bubbleuuid));
     }
 
     @Scheduled(every = "10m")

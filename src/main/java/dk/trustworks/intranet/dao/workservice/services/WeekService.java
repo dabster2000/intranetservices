@@ -2,13 +2,12 @@ package dk.trustworks.intranet.dao.workservice.services;
 
 import dk.trustworks.intranet.dao.workservice.model.Week;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.WeekFields;
 import java.util.List;
 import java.util.Locale;
@@ -43,8 +42,8 @@ public class WeekService {
                 .with(weekFields.weekOfYear(), week.getWeeknumber())
                 .with(weekFields.dayOfWeek(), 7);
         List<WorkFull> workList = workService.findByPeriodAndUserAndTasks(
-                mondayDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                fridayDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                mondayDate,//.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                fridayDate,//.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
                 week.getUseruuid(),
                 week.getTaskuuid());
         if(workList.stream().mapToDouble(WorkFull::getWorkduration).sum() <= 0.0) Week.deleteById(uuid);

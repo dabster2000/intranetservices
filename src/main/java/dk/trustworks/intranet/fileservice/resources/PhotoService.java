@@ -1,8 +1,26 @@
 package dk.trustworks.intranet.fileservice.resources;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.fileservice.model.File;
 import io.quarkus.narayana.jta.QuarkusTransaction;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.client.Client;
+import jakarta.ws.rs.client.ClientBuilder;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.apache.http.HttpEntity;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.ResponseHandler;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.mime.HttpMultipartMode;
+import org.apache.http.entity.mime.MultipartEntityBuilder;
+import org.apache.http.impl.client.BasicResponseHandler;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
@@ -14,10 +32,9 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.transaction.Transactional;
-import jakarta.ws.rs.PathParam;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -30,11 +47,18 @@ public class PhotoService {
     @ConfigProperty(name = "bucket.files")
     String bucketName;
 
+    @ConfigProperty(name = "claid.ai.apikey")
+    String claidApiKey;
+
     Region regionNew = Region.EU_WEST_1;
 
     ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
     ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder().proxyConfiguration(proxyConfig.build());
     S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
+
+    //@Inject
+    //@RestClient
+    //PhotoAPI service;
 
     public File findPhotoByType(String type) {
         List<File> photos = File.find("type like ?1", type).list();
@@ -139,9 +163,97 @@ public class PhotoService {
     }
 
     @Transactional
+    public void updatePortrait(File photo) throws IOException {
+        HttpClient httpClient = HttpClientBuilder.create().build();
+        HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
+        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+
+        // Explicit boundary setting (if necessary)
+        builder.setBoundary("Boundary-Unique-Identifier");
+        builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
+
+        // Adding file part
+        builder.addBinaryBody(
+                "file",
+                new ByteArrayInputStream(photo.getFile()),
+                ContentType.APPLICATION_OCTET_STREAM,
+                photo.getName()
+        );
+
+        // Adding JSON data part
+        String jsonData = "{\n" +
+                "    \"operations\": {\n" +
+                "        \"resizing\": {\n" +
+                "            \"width\": 800,\n" +
+                "            \"height\": 400,\n" +
+                "            \"fit\": \"outpaint\"\n" +
+                "        }\n" +
+                "    },\n" +
+                "    \"output\": {\n" +
+                "\t  \"metadata\": {\n" +
+                "\t\t\t\"dpi\": 72\n" +
+                "\t\t},\n" +
+                "        \"format\": {\n" +
+                "            \"type\": \"jpeg\",\n" +
+                "            \"quality\": 80,\n" +
+                "            \"progressive\": true\n" +
+                "        }\n" +
+                "    }\n" +
+                "}"; // Your JSON string here
+        builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
+
+        HttpEntity multipart = builder.build();
+        uploadFile.setEntity(multipart);
+        uploadFile.setHeader("Authorization", "Bearer "+claidApiKey); //264d028e952a443ba5cbd1d086b24ca5
+
+        // Letting HttpClient set the Content-Type
+        ResponseHandler<String> responseHandler = new BasicResponseHandler();
+        String response = httpClient.execute(uploadFile, responseHandler);
+
+        log.info("Response: " + response);
+        photo.setFile(downloadImageFromJson(response));
+        update(photo);
+        log.info("Photo updated");
+    }
+
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
+    public byte[] downloadImageFromJson(String jsonResponse) {
+        try {
+            // Parse the JSON response
+            JsonNode rootNode = objectMapper.readTree(jsonResponse);
+            JsonNode tmpUrlNode = rootNode.path("data").path("output").path("tmp_url");
+            String tmpUrl = tmpUrlNode.asText();
+
+            if (tmpUrl == null || tmpUrl.isEmpty()) {
+                throw new IllegalArgumentException("tmp_url is missing in the JSON response.");
+            }
+
+            // Fetch the image using a HTTP client
+            Client client = ClientBuilder.newClient();
+            Response response = client.target(tmpUrl)
+                    .request(MediaType.APPLICATION_OCTET_STREAM)
+                    .get();
+
+            if (response.getStatus() != 200) {
+                throw new RuntimeException("Failed to download image: HTTP error code " + response.getStatus());
+            }
+
+            // Convert the response to byte array
+            byte[] imageBytes = response.readEntity(byte[].class);
+            response.close(); // Important to close the response
+            return imageBytes;
+
+        } catch (IOException e) {
+            throw new RuntimeException("Error processing JSON or fetching the image.", e);
+        }
+    }
+
+    @Transactional
     public void delete(@PathParam("uuid") String uuid) {
         File.deleteById(uuid);
         //s3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(uuid).build());
     }
+
 
 }

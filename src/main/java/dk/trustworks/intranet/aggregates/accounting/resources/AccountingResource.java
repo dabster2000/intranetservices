@@ -29,11 +29,9 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.io.IOException;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
@@ -219,62 +217,6 @@ public class AccountingResource {
         } while (date.isBefore(dateto));
 
         return result.values().stream().toList();
-
-    }
-
-    public static String createCsv(Map<LocalDate, List<AccountingCategory>> result, LocalDate datefrom, LocalDate dateto, Function<AccountingAccount, Double> sumFunction) {
-        List<String> csvLines = new ArrayList<>();
-        StringBuilder header = new StringBuilder("Description;Account Code");
-
-        // Create header with month names
-        LocalDate tempDate = datefrom;
-        while (!tempDate.isAfter(dateto)) {
-            header.append(";").append(tempDate.format(DateTimeFormatter.ofPattern("MMM yyyy")));
-            tempDate = tempDate.plusMonths(1);
-        }
-        csvLines.add(header.toString());
-
-        // Map to hold sums for each AccountingAccount
-        Map<String, Map<String, Double>> accountSums = new HashMap<>();
-
-        // Iterate over each month and collect data
-        tempDate = datefrom;
-        while (!tempDate.isAfter(dateto)) {
-            String monthKey = tempDate.format(DateTimeFormatter.ofPattern("MMM yyyy"));
-            if (result.containsKey(tempDate)) {
-                for (AccountingCategory ac : result.get(tempDate)) {
-                    for (AccountingAccount aa : ac.getAccounts()) {
-                        String accountKey = aa.getAccountDescription().trim() + ";" + aa.getAccountCode();
-                        accountSums.putIfAbsent(accountKey, new LinkedHashMap<>());
-                        Map<String, Double> monthlySums = accountSums.get(accountKey);
-                        monthlySums.merge(monthKey, sumFunction.apply(aa), Double::sum);
-                    }
-                }
-            }
-            tempDate = tempDate.plusMonths(1);
-        }
-
-        // Build CSV lines from the map
-        for (Map.Entry<String, Map<String, Double>> entry : accountSums.entrySet()) {
-            StringBuilder line = new StringBuilder(entry.getKey()); // Description and Account Code
-
-            tempDate = datefrom;
-            while (!tempDate.isAfter(dateto)) {
-                String monthKey = tempDate.format(DateTimeFormatter.ofPattern("MMM yyyy"));
-                line.append(";").append(entry.getValue().getOrDefault(monthKey, 0.0));
-                tempDate = tempDate.plusMonths(1);
-            }
-
-            csvLines.add(line.toString());
-        }
-        return String.join("\n", csvLines);
-    }
-
-    @Data
-    static class Container {
-        private String accounting_data;
-        private String economics_accounting_data;
-        private String adjusted;
     }
 
     @GET
@@ -451,8 +393,6 @@ public class AccountingResource {
     }
 
 
-
-
     @GET
     @Path("/categories/{uuid}")
     public AccountingCategory findAccountingCategoryByUuid(@PathParam("uuid") String uuid) {
@@ -617,7 +557,7 @@ public class AccountingResource {
     @GET
     @Path("/user-accounts/search/findByAccountNumber")
     public UserAccount getAccount(@QueryParam("companyuuid") String companyuuid, @QueryParam("account") int account) throws IOException {
-        if(account<=0) return new UserAccount(0, "No account found");
+        if(account<=0) return new UserAccount(0, "", "No account found");
         return userAccountAPI.getAccount(companyuuid, account);
     }
 

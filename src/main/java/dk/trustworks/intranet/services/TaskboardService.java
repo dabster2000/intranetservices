@@ -3,10 +3,11 @@ package dk.trustworks.intranet.services;
 import dk.trustworks.intranet.model.TaskboardItem;
 import dk.trustworks.intranet.model.TaskboardItemWorker;
 import dk.trustworks.intranet.userservice.model.User;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
+
 import java.util.*;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @ApplicationScoped
@@ -25,11 +26,12 @@ public class TaskboardService {
         badges.add("Socialt årshjul");
         badges.add("Vidensdag");
         badges.add("Vidensdeling");
+        badges.add("Technology");
         Stream<TaskboardItem> stream = TaskboardItem.<TaskboardItem>listAll().stream();
         stream.forEach(t -> {
             badges.addAll(Arrays.asList(t.getBadges().split(",")));
         });
-        return badges;
+        return badges.stream().map(String::trim).collect(Collectors.toUnmodifiableSet());
     }
 
     @Transactional

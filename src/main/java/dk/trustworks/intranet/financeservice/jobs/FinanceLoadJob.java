@@ -8,6 +8,7 @@ import dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.services.EconomicsService;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -30,10 +31,9 @@ public class FinanceLoadJob {
     InvoiceService invoiceService;
 
     //private final String[] periods = {"2016_6_2017", "2017_6_2018", "2018_6_2019", "2019_6_2020", "2020_6_2021", "2021_6_2022", "2022_6_2023", "2023_6_2024"};
-    private final String[] periods = {"2023_6_2024"};
+    private final String[] periods = {"2021_6_2022", "2022_6_2023", "2023_6_2024"};
 
-
-    @Scheduled(every="5m")
+    //@Scheduled(every="1h")
     @Scheduled(cron="0 0 21 * * ?")
     void loadEconomicsData() {
         log.debug("ExpenseLoadJob.loadEconomicsData");
@@ -41,6 +41,23 @@ public class FinanceLoadJob {
         List<Company> companies = Company.listAll();
         economicsService.clean();
         log.debug("Clean done!");
+        for (Company company : companies) {
+            int year = company.getCreated().getYear();
+            for (int i = year; i <= DateUtils.getCurrentFiscalStartDate().getYear(); i++) {
+                log.info("Load data from periode: "+(i+"_6_"+(i+1))+" for company "+company.getUuid());
+                Map<Range<Integer>, List<Collection>> allEntries;
+                try {
+                    allEntries = economicsService.getAllEntries(company, (i + "_6_" + (i + 1)));
+                    economicsService.persistExpenses(allEntries);
+                    log.info("allEntries.size() = " + allEntries.size());
+                    log.info("Entries for period " + (i + "_6_" + (i + 1)) + " persisted!");
+                } catch (Exception e) {
+                    log.error("Error loading data for company "+company.getUuid(), e);
+                }
+            }
+        }
+
+
         for (String period : periods) {
             for(Company company : companies) {
                 log.info("Load data from periode: "+period);
@@ -53,8 +70,8 @@ public class FinanceLoadJob {
         }
     }
 
-    @Scheduled(every="5m")
-    //@Scheduled(cron = "0 0 22 * * ?")
+    //@Scheduled(every="5m")
+    @Scheduled(cron = "0 0 22 * * ?")
     public void synchronizeInvoices() {
         log.info("ExpenseLoadJob.synchronizeInvoices");
         List<FinanceDetails> expenseList = FinanceDetails.find("accountnumber >= ?1 and accountnumber <= ?2", EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMinimum(), EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMaximum()).list();//EconomicAccountGroup.OMSAETNING_ACCOUNTS);

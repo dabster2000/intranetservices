@@ -202,7 +202,7 @@ public class InvoiceGenerator {
                                 clientdata.getContactperson(),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
                                 project.getCustomerreference(),
-                                contract.getRefid(), contract.getCompany(),
+                                contract.getRefid(), contract.getContractType(), contract.getCompany(),
                                 "DKK",
                                 "");
                         log.info("Created new invoice: " + invoice);

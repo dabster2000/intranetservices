@@ -1,12 +1,15 @@
 package dk.trustworks.intranet.aggregates.users.query;
 
+import com.slack.api.methods.SlackApiException;
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.userservice.model.UserBankInfo;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.vertx.ConsumeEvent;
@@ -16,6 +19,8 @@ import lombok.extern.jbosslog.JBossLog;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+
+import java.io.IOException;
 
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.BROWSER_EVENT;
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
@@ -32,6 +37,9 @@ public class UserEventHandler {
 
     @Inject
     SalaryService salaryService;
+
+    @Inject
+    SlackService slackService;
 
     @Inject
     EventBus eventBus;
@@ -51,27 +59,37 @@ public class UserEventHandler {
             case DELETE_USER_STATUS -> deleteUserStatus(event);
             case CREATE_USER_SALARY -> createUserSalary(event);
             case DELETE_USER_SALARY -> deleteUserSalary(event);
+            case CREATE_BANK_INFO -> createBankInfo(event);
         }
         eventBus.publish(BROWSER_EVENT, event.getAggregateRootUUID());
-        //return event.getAggregateRootUUID();
+    }
+
+    private void createBankInfo(AggregateRootChangeEvent event) {
+        UserBankInfo userBankInfo = new JsonObject(event.getEventContent()).mapTo(UserBankInfo.class);
+        try {
+            slackService.sendMessage(User.findByUsername("hans.lassen").get(), "*"+userBankInfo.getFullname()+"* has submitted new bank account information for approval.");
+            if(!userBankInfo.getFullname().equals("Hans Ernst Lassen")) slackService.sendMessage(User.findByUsername("marie.myssing").get(), "*"+userBankInfo.getFullname()+"* has submitted new bank account information for approval.");
+        } catch (SlackApiException | IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private void deleteUserSalary(AggregateRootChangeEvent event) {
-        salaryService.delete(event.getEventContent());
+        //
     }
 
     private void createUserSalary(AggregateRootChangeEvent event) {
         Salary salary = new JsonObject(event.getEventContent()).mapTo(Salary.class);
-        salaryService.create(salary);
+        //salaryService.create(salary);
     }
 
     private void deleteUserStatus(AggregateRootChangeEvent event) {
-        statusService.delete(event.getEventContent());
+        //
     }
 
     private void createUserStatus(AggregateRootChangeEvent event) {
         UserStatus userStatus = new JsonObject(event.getEventContent()).mapTo(UserStatus.class);
-        statusService.create(userStatus);
+
     }
 
     private void updateUser(AggregateRootChangeEvent event) {

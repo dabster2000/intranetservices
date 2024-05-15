@@ -49,7 +49,12 @@ public class EmployeeAvailabilityPerMonth {
     }
 
     @JsonIgnore
-    public Double getNetAvailableHours() {
+    public double getSalaryAwardingHours() {
+        return Math.max(grossAvailableHours.doubleValue() - nonPaydLeaveHours.doubleValue(), 0.0);
+    }
+
+    @JsonIgnore
+    public double getNetAvailableHours() {
         return Math.max(grossAvailableHours.doubleValue() - unavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0);
     }
 

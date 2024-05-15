@@ -53,9 +53,10 @@ public class StatusResource {
     @POST
     @Path("/{useruuid}/statuses")
     @CacheInvalidateAll(cacheName = "user-cache")
-    public void create(@PathParam("useruuid") String useruuid, UserStatus status) {
-        status.setUseruuid(useruuid);
-        CreateUserStatusEvent event = new CreateUserStatusEvent(useruuid, status);
+    public void create(@PathParam("useruuid") String useruuid, UserStatus userStatus) {
+        userStatus.setUseruuid(useruuid);
+        statusService.create(userStatus);
+        CreateUserStatusEvent event = new CreateUserStatusEvent(useruuid, userStatus);
         aggregateEventSender.handleEvent(event);
     }
 
@@ -63,6 +64,7 @@ public class StatusResource {
     @Path("/{useruuid}/status/{statusuuid}")
     @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("statusuuid") String statusuuid) {
+        statusService.delete(statusuuid);
         DeleteUserStatusEvent event = new DeleteUserStatusEvent(useruuid, statusuuid);
         aggregateEventSender.handleEvent(event);
     }

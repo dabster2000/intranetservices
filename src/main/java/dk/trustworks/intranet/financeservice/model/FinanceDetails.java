@@ -39,19 +39,21 @@ public class FinanceDetails extends PanacheEntityBase {
 
     private double amount;
 
+    private double remainder;
+
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate expensedate;
 
     private String text;
 
-    public FinanceDetails(Company company, int entrynumber, int accountnumber, int invoicenumber, double amount, LocalDate expensedate, String text) {
+    public FinanceDetails(Company company, int entrynumber, int accountnumber, int invoicenumber, double amount, double remainder, LocalDate expensedate, String text) {
         this.company = company;
         this.invoicenumber = invoicenumber;
-        this.id = id;
         this.entrynumber = entrynumber;
         this.accountnumber = accountnumber;
         this.amount = amount;
+        this.remainder = remainder;
         this.expensedate = expensedate;
         this.text = text;
     }

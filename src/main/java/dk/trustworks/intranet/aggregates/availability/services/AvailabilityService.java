@@ -16,10 +16,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -50,7 +47,7 @@ public class AvailabilityService {
 
 
     public List<EmployeeAvailabilityPerDayAggregate> getEmployeeDataPerDay(String useruuid, LocalDate fromDate, LocalDate toDate) {
-        return EmployeeAvailabilityPerDayAggregate.list("documentDate >= ?1 AND documentDate < ?2 AND user = ?3", fromDate, toDate, User.findById(useruuid));
+        return EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>stream("documentDate >= ?1 AND documentDate < ?2 AND user = ?3", fromDate, toDate, User.findById(useruuid)).sorted(Comparator.comparing(EmployeeAvailabilityPerDayAggregate::getDocumentDate)).toList();
     }
 
     public double getSumOfAvailableHoursByUsersAndMonth(LocalDate localDate, String... uuids) {

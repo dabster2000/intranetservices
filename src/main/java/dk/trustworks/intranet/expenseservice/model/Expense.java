@@ -44,6 +44,7 @@ public class Expense extends PanacheEntityBase {
     private LocalDate expensedate;
 
     private String status;
+    private Boolean paid;
     private boolean customerexpense;
 
     @Transient

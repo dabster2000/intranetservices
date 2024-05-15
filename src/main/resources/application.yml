@@ -23,7 +23,7 @@ quarkus:
     always-include: true
   mailer:
     auth-methods: LOGIN
-    from: event@trustworks.dk
+    from: no-reply@trustworks.dk
     host: ${SMTPSERVER:email-smtp.eu-west-1.amazonaws.com}
     port: 587
     start-tls: REQUIRED
@@ -41,6 +41,8 @@ quarkus:
   log:
     level: INFO
     category:
+      "io.quarkus.http":
+        level: DEBUG
       "org.jboss.resteasy.resteasy_client":
         level: DEBUG
     console:
@@ -85,9 +87,16 @@ currencyapi:
 bucket:
   expenses: expensefiles
   files: trustworksfiles
+claid:
+  ai:
+    apikey: ${CLAID_APIKEY:xx}
 dk:
   trustworks:
     intranet:
+      #fileservice:
+       # network:
+          #PhotoAPI/mp-rest/url: https://api.claid.ai
+          #PhotoAPI/mp-rest/providers=dk.trustworks.intranet.network.BearerTokenFilter:
       expenseservice:
         remote:
           EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
@@ -98,4 +107,3 @@ dk:
           network:
             InvoiceAPI/mp-rest/url: https://invoice-generator.com
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
-

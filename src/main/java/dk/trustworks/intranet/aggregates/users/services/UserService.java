@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.users.services;
 
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
+import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
@@ -139,6 +140,8 @@ public class UserService {
         user.setUserContactinfo(UserContactinfo.findByUseruuid(user.getUuid()));
         user.getStatuses().addAll(UserStatus.findByUseruuid(user.getUuid()));
         user.getSalaries().addAll(Salary.findByUseruuid(user.getUuid()));
+        user.getUserBankInfos().addAll(UserBankInfo.findByUseruuid(user.getUuid()));
+        user.setUserAccount(UserAccount.findById(user.getUuid()));
         return user;
     }
 

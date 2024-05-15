@@ -62,7 +62,7 @@ public class EconomicsService {
                     collectionResultMap.keySet().forEach(integerRange -> {
                         if(integerRange.contains(collection.getAccount().getAccountNumber())) collectionResultMap.get(integerRange).add(collection);
                     });
-                    financeDetails.add(new FinanceDetails(company, collection.getEntryNumber(), collection.getAccount().getAccountNumber(), collection.getInvoiceNumber(), collection.getAmount(), LocalDate.parse(collection.getDate(), DateTimeFormatter.ofPattern("yyyy-MM-dd")).withDayOfMonth(1), collection.getText()));
+                    financeDetails.add(new FinanceDetails(company, collection.getEntryNumber(), collection.getAccount().getAccountNumber(), collection.getInvoiceNumber(), collection.getAmountInBaseCurrency(), collection.getRemainderInBaseCurrency(), LocalDate.parse(collection.getDate(), DateTimeFormatter.ofPattern("yyyy-MM-dd")).withDayOfMonth(1), collection.getText()));
                 }
                 url = economicsInvoice.getPagination().getNextPage();
                 if(url!=null) {
@@ -103,7 +103,7 @@ public class EconomicsService {
         collectionList.forEach(collection -> {
             LocalDate period = LocalDate.parse(collection.getDate(), DateTimeFormatter.ofPattern("yyyy-MM-dd")).withDayOfMonth(1);
             if(!map.containsKey(period)) map.put(period, new Finance(period, excelType, 0.0));
-            map.get(period).setAmount(map.get(period).getAmount() + collection.getAmount());
+            map.get(period).setAmount(map.get(period).getAmount() + collection.getAmountInBaseCurrency());
         });
         return map;
     }

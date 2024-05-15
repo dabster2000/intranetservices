@@ -2,16 +2,19 @@ package dk.trustworks.intranet.userservice.model;
 
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
 import jakarta.validation.constraints.Min;
+import org.hibernate.annotations.ColumnDefault;
+
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -30,14 +33,21 @@ public class Salary extends PanacheEntityBase {
     @EqualsAndHashCode.Include
     private String uuid;
 
-    @Min(message = "Salary must be higher or equal to zero", value = 0)
-    private int salary;
+    private String useruuid;
 
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate activefrom;
 
-    private String useruuid;
+    @Size(max = 30)
+    @NotNull
+    @ColumnDefault("MONTHLY")
+    @Enumerated(EnumType.STRING)
+    @Column(name = "type", nullable = false, length = 30)
+    private SalaryType type;
+
+    @Min(message = "Salary must be higher or equal to zero", value = 0)
+    private int salary;
 
     public Salary() {
     }
@@ -57,7 +67,17 @@ public class Salary extends PanacheEntityBase {
     }
 
     public static List<Salary> findByUseruuid(String useruuid) {
-        List<Salary> salaries = find("useruuid", useruuid).list();
-        return salaries; // salaries.stream().peek(s -> s.setSalary(0)).collect(Collectors.toList());
+        return find("useruuid", useruuid).list();
+    }
+
+    public double calculateActualWorkHours(double daysInMonth, double actualWorkDays) {
+        double monthNormHours = 160.33;
+        double dailyNormHours = monthNormHours / daysInMonth;
+        return actualWorkDays * dailyNormHours;
+    }
+
+    public double calculateMonthNormAdjustedSalary(double daysInMonth, double actualWorkDays) {
+        double monthNormHours = 160.33;
+        return (calculateActualWorkHours(daysInMonth, actualWorkDays) / monthNormHours) * salary;
     }
 }

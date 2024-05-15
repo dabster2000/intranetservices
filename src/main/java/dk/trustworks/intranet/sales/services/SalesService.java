@@ -8,6 +8,8 @@ import lombok.extern.jbosslog.JBossLog;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
+
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -30,11 +32,9 @@ public class SalesService {
 
     @Transactional
     public void persist(SalesLead salesLead) {
-        log.info("SalesService.persist");
-        log.info("salesLead = " + salesLead);
-        System.out.println("salesLead = " + salesLead);
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
             salesLead.setUuid(UUID.randomUUID().toString());
+            salesLead.setCreated(LocalDateTime.now());
             salesLead.persist();
         } else if(SalesLead.findById(salesLead.getUuid())==null) salesLead.persist();
         else update(salesLead);

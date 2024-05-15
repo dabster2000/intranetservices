@@ -1,13 +1,13 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
 import dk.trustworks.intranet.userservice.model.Salary;
-import lombok.extern.jbosslog.JBossLog;
-
+import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.time.LocalDate;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -19,16 +19,23 @@ public class SalaryService {
         return Salary.findByUseruuid(useruuid);
     }
 
-    public Salary getUserSalaryByMonth(String useruuid, LocalDate date) {
-        return Salary.findByUseruuid(useruuid).stream().filter(salary -> salary.getActivefrom().isBefore(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, useruuid));
+    public Salary getUserSalaryByMonth(String useruuid, LocalDate month) {
+        return Salary.<Salary>find("useruuid = ?1 and activefrom <= ?2 order by activefrom desc",
+                useruuid, month).firstResultOptional().orElse(new Salary(month, 0, useruuid));
+    }
+
+    public boolean isSalaryChanged(String useruuid, LocalDate month) {
+        return Salary.<Salary>find("activefrom = ?1 and useruuid = ?2", month, useruuid).firstResultOptional().isPresent();
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void create(@Valid Salary salary) {
         if(salary.getUuid().isEmpty()) return;
         Optional<Salary> existingSalary = Salary.findByIdOptional(salary.getUuid());
         existingSalary.ifPresentOrElse(s -> {
             s.setSalary(salary.getSalary());
+            s.setType(salary.getType());
             s.setActivefrom(salary.getActivefrom());
             updateSalary(s);
         }, salary::persist);
@@ -36,14 +43,17 @@ public class SalaryService {
 
     private void updateSalary(Salary salary) {
         Salary.update("salary = ?1, " +
-                        "activefrom = ?2 " +
-                        "WHERE uuid LIKE ?3 ",
+                        "activefrom = ?2, " +
+                        "type = ?3 " +
+                        "WHERE uuid LIKE ?4 ",
                 salary.getSalary(),
                 salary.getActivefrom(),
+                salary.getType(),
                 salary.getUuid());
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(String salaryuuid) {
         Salary.deleteById(salaryuuid);
     }

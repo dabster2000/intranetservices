@@ -45,7 +45,7 @@ public class WorkResource {
     @GET
     @Path("/work/search/findByPeriodAndUserAndTasks")
     public List<WorkFull> findByPeriodAndUserAndTasks(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate, @QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
-        return workAPI.findByPeriodAndUserAndTasks(fromdate, todate, useruuid, taskuuids);
+        return workAPI.findByPeriodAndUserAndTasks(dateIt(fromdate), dateIt(todate), useruuid, taskuuids);
     }
 
     @GET

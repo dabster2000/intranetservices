@@ -1,0 +1,1 @@
+alter table invoices add contract_type VARCHAR(30) default 'PERIOD' not null after contractref;

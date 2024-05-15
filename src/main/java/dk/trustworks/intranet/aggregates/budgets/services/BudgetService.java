@@ -202,10 +202,6 @@ public class BudgetService {
                             // In this block, we process each group to create a CompanyBudgetPerMonth object
                             // Assuming year, month, client, company, and contract are the same for all entries in the group
                             EmployeeBudgetPerDayAggregate example = list.get(0);
-                            if(example.getUser().equals("cdc04391-cf46-4bbc-a20d-6fa54fae8674")) {
-                                log.info("example = " + example);
-                                log.info("list = " + list);
-                            }
                             int year = example.getYear();
                             int month = example.getMonth();
                             User user = example.getUser();

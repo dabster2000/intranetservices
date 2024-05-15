@@ -52,7 +52,7 @@ public class VacationResource {
 
         User user = userService.findUserByUuid(useruuid, false);
         List<WorkFull> vacation = workAPI.findVacationByUser(useruuid);
-        LocalDate employedDate = user.getEmployedDate();
+        LocalDate employedDate = user.getHireDate();
         System.out.println("employedDate = " + employedDate);
 
         if(employedDate!= null && employedDate.isAfter(startDate)) startDate = employedDate.withDayOfMonth(1);

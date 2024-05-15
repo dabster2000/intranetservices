@@ -5,9 +5,11 @@ import java.math.RoundingMode;
 import java.text.NumberFormat;
 import java.text.ParseException;
 import java.util.Locale;
+import java.util.Optional;
 
 public class NumberUtils {
 
+    private static Locale DanishLocale = Locale.of("da", "DK");
 
     public static double round(double value, int places) {
         if (places < 0) throw new IllegalArgumentException();
@@ -22,7 +24,8 @@ public class NumberUtils {
     }
 
     public static String formatCurrency(double d) {
-        return NumberFormat.getCurrencyInstance().format(d);
+
+        return NumberFormat.getCurrencyInstance(DanishLocale).format(d);
     }
 
     public static String formatCurrency(double d, String currency) {
@@ -39,11 +42,25 @@ public class NumberUtils {
         return 0.0;
     }
 
+    public static Optional<Integer> parseInteger(String value) {
+        try {
+            return Optional.ofNullable(value)
+                    .filter(str -> !str.isEmpty())
+                    .map(Integer::parseInt);
+        } catch (NumberFormatException e) {
+            return Optional.empty();
+        }
+    }
+
     public static String formatDouble(double d) {
-        NumberFormat numberInstance = NumberFormat.getNumberInstance();
+        NumberFormat numberInstance = NumberFormat.getNumberInstance(DanishLocale);
         numberInstance.setMinimumFractionDigits(2);
         numberInstance.setMaximumFractionDigits(2);
         return numberInstance.format(d);
+    }
+
+    public static int convertAndCeilDoubleToInt(double d) {
+        return Double.valueOf(Math.ceil(d)).intValue();
     }
 
     public static int convertDoubleToInt(double d) {
@@ -51,7 +68,7 @@ public class NumberUtils {
     }
 
     public static NumberFormat getDoubleInstance() {
-        return NumberFormat.getNumberInstance();
+        return NumberFormat.getNumberInstance(DanishLocale);
     }
 
     /**

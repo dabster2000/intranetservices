@@ -75,7 +75,7 @@ public class BudgetCalculatingExecutor {
     }
 
     private List<EmployeeBudgetPerDayAggregate> adjustForAvailability(List<EmployeeBudgetPerDayAggregate> employeeBudgetPerDayAggregateList, LocalDate lookupMonth) {
-        List<EmployeeAvailabilityPerDayAggregate> employeeAvailabilityPerDayAggregate = EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>stream("documentDate = ?1 AND consultantType = 'CONSULTANT'", lookupMonth).toList();
+        List<EmployeeAvailabilityPerDayAggregate> employeeAvailabilityPerDayAggregate = EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>stream("documentDate = ?1 AND consultantType IN ('CONSULTANT', 'STUDENT')", lookupMonth).toList();
         List<String> userList = employeeBudgetPerDayAggregateList.stream().map(b -> b.getUser().getUuid()).distinct().toList();
         for (String useruuid : userList) {
             List<EmployeeBudgetPerDayAggregate> employeeBudgetPerDayAggregates = employeeBudgetPerDayAggregateList

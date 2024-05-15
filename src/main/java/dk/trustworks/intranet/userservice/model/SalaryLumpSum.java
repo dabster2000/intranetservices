@@ -1,0 +1,51 @@
+package dk.trustworks.intranet.userservice.model;
+
+import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import org.hibernate.annotations.ColumnDefault;
+
+import java.time.LocalDate;
+import java.util.List;
+
+@Data
+@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
+@Entity
+@Table(name = "salary_lump_sum")
+public class SalaryLumpSum extends PanacheEntityBase {
+    @Id
+    @Size(max = 36)
+    @EqualsAndHashCode.Include
+    @Column(name = "uuid", nullable = false, length = 36)
+    private String uuid;
+
+    private String useruuid;
+
+    @NotNull
+    @ColumnDefault("0")
+    @Column(name = "lump_sum", nullable = false)
+    private Double lumpSum;
+
+    @NotNull
+    @ColumnDefault("0")
+    @Column(name = "pension", nullable = false)
+    private Boolean pension = false;
+
+    @NotNull
+    @Column(name = "month", nullable = false)
+    private LocalDate month;
+
+    @Size(max = 255)
+    @Column(name = "description")
+    private String description;
+
+    public static List<SalaryLumpSum> findByUser(String useruuid) {
+        return SalaryLumpSum.find("useruuid", useruuid).list();
+    }
+}

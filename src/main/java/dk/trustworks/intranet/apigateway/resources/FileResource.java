@@ -10,6 +10,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
+
+import java.io.IOException;
+import java.net.URISyntaxException;
 import java.util.List;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -22,7 +25,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 public class FileResource {
 
     @Inject
-    PhotoService photoAPI;
+    PhotoService photoService;
 
     @Inject
     UserDocumentResource documentAPI;
@@ -33,39 +36,47 @@ public class FileResource {
     @GET
     @Path("/photos/{relateduuid}")
     public File findPhotoByRelatedUUID(@PathParam("relateduuid") String relateduuid) {
-        return photoAPI.findPhotoByRelatedUUID(relateduuid);
+        return photoService.findPhotoByRelatedUUID(relateduuid);
     }
 
     @GET
     @Path("/photos/{relateduuid}/jpg")
     @Produces("image/jpg")
     public Response getImage(@PathParam("relateduuid") String relateduuid) {
-        byte[] imageBytes = photoAPI.findPhotoByRelatedUUID(relateduuid).getFile(); // get the byte array for the image
+        byte[] imageBytes = photoService.findPhotoByRelatedUUID(relateduuid).getFile(); // get the byte array for the image
         return Response.ok(imageBytes).build();
     }
 
     @GET
     @Path("/photos/types/{type}")
     public File getImageByType(@PathParam("type") String type) {
-        return photoAPI.findPhotoByType(type);
+        return photoService.findPhotoByType(type);
     }
 
     @GET
     @Path("/photos/types/{type}/all")
     public List<File> getImagesByType(@PathParam("type") String type) {
-        return photoAPI.findPhotosByType(type);
+        return photoService.findPhotosByType(type);
     }
 
     @PUT
     @Path("/photos")
     public void updatePhoto(File photo) {
-        photoAPI.update(photo);
+        photoService.update(photo);
+    }
+
+    @PUT
+    @Path("/photos/portrait")
+    public void updatePortrait(File photo) throws URISyntaxException, IOException {
+        System.out.println("FileResource.updatePortrait");
+        System.out.println("photo = " + photo);
+        photoService.updatePortrait(photo);
     }
 
     @DELETE
     @Path("/photos/{uuid}")
     public void deletePhoto(@PathParam("uuid") String uuid) {
-        photoAPI.delete(uuid);
+        photoService.delete(uuid);
     }
 
     @GET

@@ -25,11 +25,24 @@ public class ExpenseService {
     @Inject
     EconomicsService economicsService;
 
+    public List<Expense> findByUser(String useruuid) {
+        return Expense.find("useruuid", useruuid).list();
+    }
+
+    public List<Expense> findByUserLimited(String useruuid) {
+        return Expense.find("useruuid = ?1 ORDER BY expensedate DESC LIMIT 40", useruuid).list();
+    }
+
+    public List<Expense> findByUserAndUnpaid(String useruuid) {
+        return Expense.find("useruuid = ?1 and paid = ?2", useruuid, false).list();
+    }
+
     @Transactional
     public void processExpense(Expense expense) throws IOException {
         try {
             //save expense to db
             expense.setStatus("CREATED");
+            expense.setPaid(false);
             expense.persist();
 
             //save expense file to AWS

@@ -139,7 +139,7 @@ public class  EconomicsService {
 
     public Voucher buildJSONRequest(Expense expense, UserAccount userAccount, Journal journal, String text){
 
-        ContraAccount contraAccount = new ContraAccount(userAccount.getAccount());
+        ContraAccount contraAccount = new ContraAccount(userAccount.getEconomics());
         ExpenseAccount expenseaccount = new ExpenseAccount(Integer.parseInt(expense.getAccount()));
         AccountingYear accountingYear = new AccountingYear(DateUtils.getCurrentFiscalStartDate().getYear()+"/"+DateUtils.getCurrentFiscalStartDate().plusYears(1).getYear());
 

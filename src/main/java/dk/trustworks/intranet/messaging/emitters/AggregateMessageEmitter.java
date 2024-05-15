@@ -29,6 +29,7 @@ public class AggregateMessageEmitter {
             case CREATE_CONFERENCE_PARTICIPANT -> eventBus.publish(CONFERENCE_EVENT, aggregateRootChangeEvent);
             case UPDATE_CONFERENCE_PARTICIPANT -> eventBus.publish(CONFERENCE_EVENT, aggregateRootChangeEvent);
             case CHANGE_CONFERENCE_PARTICIPANT_PHASE -> eventBus.publish(CONFERENCE_EVENT, aggregateRootChangeEvent);
+            case CREATE_BANK_INFO -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
         }
     }
 }
