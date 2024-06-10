@@ -112,6 +112,8 @@ public class InvoiceDTO {
         terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\nPayment due in 1 month. ";
         if(invoice.getCompany().getUuid().equals("44592d3b-2be5-4b29-bfaf-4fafc60b0fa3")) {
             terms += "IBAN: DK1054700004058023, SWIFT: NYKBDKKK";
+        } else {
+            terms += "IBAN: DK7954700003965795, SWIFT: NYKBDKKK";
         }
     }
 

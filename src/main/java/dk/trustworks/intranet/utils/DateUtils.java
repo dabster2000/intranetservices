@@ -163,7 +163,7 @@ public final class DateUtils {
         vacationDayList.add(assendenceDay);
         vacationDayList.add(whitSun);
         vacationDayList.add(whitMon);
-        vacationDayList.add(grundlovsDay);
+        //vacationDayList.add(grundlovsDay);
         vacationDayList.add(christmasEve);
         vacationDayList.add(christmasDay);
         vacationDayList.add(secondChristmasDay);

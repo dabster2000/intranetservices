@@ -280,8 +280,8 @@ public class UserResource {
     public void createUser(User user) {
         System.out.println("UserResource.createUser");
         System.out.println("user = " + user);
-        CreateUserEvent event = new CreateUserEvent(user.getUuid(), user);
         userService.createUser(user);
+        CreateUserEvent event = new CreateUserEvent(user.getUuid(), user);
         aggregateEventSender.handleEvent(event);
     }
 

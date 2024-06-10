@@ -6,7 +6,7 @@ import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
-import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
+import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
 import dk.trustworks.intranet.financeservice.remote.EconomicsPagingAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.EconomicsInvoice;
@@ -112,7 +112,7 @@ public class EconomicsService {
         EconomicsInvoice economicsInvoice;
         try (EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                 .baseUri(apiUri)
-                .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
+                .register(new EconomicsDynamicHeaderFilter(appSecretToken, agreementGrantToken))
                 .build(EconomicsPagingAPI.class)) {
             ObjectMapper objectMapper = new ObjectMapper();
             economicsInvoice = objectMapper.readValue(remoteApi.getEntries(date, 1000, 0).readEntity(String.class), EconomicsInvoice.class);
@@ -126,7 +126,7 @@ public class EconomicsService {
         EconomicsInvoice economicsInvoice;
         try(EconomicsPagingAPI remoteApi = RestClientBuilder.newBuilder()
                 .baseUri(apiUri)
-                .register(new DynamicHeaderFilter(appSecretToken, agreementGrantToken))
+                .register(new EconomicsDynamicHeaderFilter(appSecretToken, agreementGrantToken))
                 .build(EconomicsPagingAPI.class)) {
             ObjectMapper objectMapper = new ObjectMapper();
             economicsInvoice = objectMapper.readValue(remoteApi.getNextPage().readEntity(String.class), EconomicsInvoice.class);

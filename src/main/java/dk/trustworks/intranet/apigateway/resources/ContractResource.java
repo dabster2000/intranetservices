@@ -60,19 +60,6 @@ public class ContractResource {
         return contractService.findByPeriod(dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))));
     }
 
-    /*
-    @GET
-    @Path("/search/findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn")
-    public List<Contract> listAll(@QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate, @QueryParam("statuslist") String statuslist) {
-        log.debug("ContractResource.listAll");
-        log.debug("fromdate = " + fromdate + ", todate = " + todate + ", statuslist = " + statuslist);
-        List<ContractStatus> contractStatuses = Arrays.stream(statuslist.split(","))
-                .map(ContractStatus::valueOf)
-                .collect(Collectors.toList());
-        return contractService.findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn(dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))), contractStatuses);
-    }
-     */
-
     @GET
     @Path("/{contractuuid}/registeredamount")
     public KeyValueDTO calcRegistreredAmountOnContract(@PathParam("contractuuid") String contractUUID) {
@@ -95,6 +82,12 @@ public class ContractResource {
     @Path("/{contractuuid}/work")
     public List<WorkFull> findContractWork(@PathParam("contractuuid") String contractuuid) {
         return workService.findByContract(contractuuid);
+    }
+
+    @GET
+    @Path("/{contractuuid}/user/{useruuid}/work")
+    public List<WorkFull> findContractWorkByUser(@PathParam("contractuuid") String contractuuid, @PathParam("useruuid") String useruuid, @QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate) {
+        return workService.findByContractAndUser(contractuuid, useruuid, dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))));
     }
 
     @GET

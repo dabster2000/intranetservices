@@ -11,18 +11,22 @@ import lombok.Data;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import lombok.EqualsAndHashCode;
+
 import java.time.LocalDate;
 
 /**
  * Created by hans on 28/06/2017.
  */
 
+@EqualsAndHashCode(callSuper = false)
 @Data
 @Entity
 @Table(name = "work")
 public class Work extends PanacheEntityBase {
 
     @Id
+    @EqualsAndHashCode.Include
     private String uuid;
 
     @JsonSerialize(using = LocalDateSerializer.class)
@@ -36,8 +40,10 @@ public class Work extends PanacheEntityBase {
     private String useruuid;
     private String workas;
     private double rate;
+    private String comments;
     @JsonIgnore
     private boolean billable;
+    private boolean paidout;
 
 }
 

@@ -10,7 +10,7 @@ import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIAccount;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
-import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
+import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -188,14 +188,14 @@ public class  EconomicsService {
     private static EconomicsAPI getEconomicsAPI(IntegrationKey.IntegrationKeyValue result) {
         return RestClientBuilder.newBuilder()
                 .baseUri(URI.create(result.url()))
-                .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .register(new EconomicsDynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
                 .build(EconomicsAPI.class);
     }
 
     private static EconomicsAPIAccount getEconomicsAccountAPI(IntegrationKey.IntegrationKeyValue result) {
         return RestClientBuilder.newBuilder()
                 .baseUri(URI.create(result.url()))
-                .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .register(new EconomicsDynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
                 .build(EconomicsAPIAccount.class);
     }
 

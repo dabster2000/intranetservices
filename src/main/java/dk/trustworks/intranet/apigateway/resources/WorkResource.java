@@ -81,7 +81,7 @@ public class WorkResource {
     @POST
     @Path("/work")
     public void save(Work work) {
-        workAPI.saveWork(work);
+        workAPI.persistOrUpdate(work);
     }
 
     @GET

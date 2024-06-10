@@ -4,7 +4,7 @@ import lombok.Getter;
 
 @Getter
 public enum SalarySupplementType {
-    AMOUNT("Fixed amount"), PERCENTAGE("Percentage");
+    SUPPLEMENT("Salary supplement"), PREPAID("Prepaid bonus");
 
     private final String name;
 

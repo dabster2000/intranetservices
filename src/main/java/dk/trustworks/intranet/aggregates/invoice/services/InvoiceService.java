@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.network.CurrencyAPI;
 import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
+import dk.trustworks.intranet.aggregates.invoice.network.InvoiceDynamicHeaderFilter;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
@@ -35,9 +36,11 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.io.IOException;
+import java.net.URI;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.*;
@@ -54,9 +57,12 @@ public class InvoiceService {
     @Inject
     EntityManager em;
 
+    /*
     @Inject
     @RestClient
     InvoiceAPI invoiceAPI;
+
+     */
 
     @Inject
     @RestClient
@@ -64,6 +70,9 @@ public class InvoiceService {
 
     @ConfigProperty(name = "currencyapi.key")
     String apiKey;
+
+    @ConfigProperty(name = "invoice-generator.apikey")
+    String invoiceGeneratorApiKey;
 
     @Inject
     EconomicsInvoiceService economicsInvoiceService;
@@ -542,6 +551,7 @@ public class InvoiceService {
     public byte[] createInvoicePdf(Invoice invoice) throws JsonProcessingException {
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(new InvoiceDTO(invoice));
+        InvoiceAPI invoiceAPI = getInvoiceAPI();
         return invoiceAPI.createInvoicePDF(json);
     }
 
@@ -549,6 +559,7 @@ public class InvoiceService {
         Invoice invoice = Invoice.findById(invoiceuuid);
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(new InvoiceDTO(invoice));
+        InvoiceAPI invoiceAPI = getInvoiceAPI();
         invoice.pdf = invoiceAPI.createInvoicePDF(json);
         invoice.persist();
     }
@@ -589,5 +600,12 @@ public class InvoiceService {
     @Transactional
     public void updateInvoiceStatus(String invoiceuuid, SalesApprovalStatus status) {
         Invoice.update("bonusConsultantApprovedStatus = ?1 WHERE uuid like ?2", status, invoiceuuid);
+    }
+
+    private InvoiceAPI getInvoiceAPI() {
+        return RestClientBuilder.newBuilder()
+                .baseUri(URI.create("https://invoice-generator.com"))
+                .register(new InvoiceDynamicHeaderFilter(invoiceGeneratorApiKey))
+                .build(InvoiceAPI.class);
     }
 }

@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.User;
@@ -15,12 +16,13 @@ import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
 import io.vertx.mutiny.core.eventbus.EventBus;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.io.IOException;
+import java.util.List;
 
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.BROWSER_EVENT;
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
@@ -49,6 +51,7 @@ public class UserEventHandler {
     //@Outgoing(SEND_BROWSER_EVENT)
     @ConsumeEvent(value = USER_EVENT, blocking = true)
     @CacheInvalidateAll(cacheName = "user-cache")
+    @Transactional
     public void readUserEvent(AggregateRootChangeEvent event) {
         log.info("UserEventHandler.readUserEvent -> event = " + event);
         AggregateEventType type = event.getEventType();
@@ -99,6 +102,18 @@ public class UserEventHandler {
 
     private void createUser(AggregateRootChangeEvent event) {
         User user = new JsonObject(event.getEventContent()).mapTo(User.class);
-        //userService.createUser(user);
+        int nextNumber = 0;
+        List<UserAccount> userAccountList = UserAccount.<UserAccount>findAll().list();
+        for (UserAccount userAccount : userAccountList) {
+            try {
+                int danlonNumber = Integer.parseInt(userAccount.getDanlon());
+                if(danlonNumber>nextNumber) nextNumber = danlonNumber;
+            } catch (NumberFormatException e) {
+                // ignore
+            }
+        }
+
+        UserAccount userAccount = new UserAccount(user.getUuid(), -1, (nextNumber+1)+"", "");
+        userAccount.persist();
     }
 }

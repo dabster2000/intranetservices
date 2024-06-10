@@ -49,6 +49,11 @@ public class Salary extends PanacheEntityBase {
     @Min(message = "Salary must be higher or equal to zero", value = 0)
     private int salary;
 
+    private boolean lunch;
+    private boolean phone;
+    @Column(name = "prayer_day")
+    private boolean prayerDay;
+
     public Salary() {
     }
 

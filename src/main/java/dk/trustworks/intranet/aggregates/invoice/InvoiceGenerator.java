@@ -147,6 +147,7 @@ public class InvoiceGenerator {
         if (!type.equals(ProjectSummaryType.RECEIPT.toString())) {
             if (type.equals(ProjectSummaryType.CONTRACT.toString())) {
                 Optional<WorkFull> anyFaultyWork = workService.findByYearAndMonthAndProject(month.getYear(), month.getMonthValue(), projectuuid).stream()
+                        .filter(w -> w.getWorkduration() > 0)
                         .filter(w -> w.getContractuuid() == null || w.getProjectuuid() == null).findAny();
                 if(anyFaultyWork.isPresent()) {
                     WorkFull work = anyFaultyWork.get();
@@ -156,6 +157,7 @@ public class InvoiceGenerator {
                 }
 
                 List<WorkFull> workFullList = workService.findByYearAndMonthAndProject(month.getYear(), month.getMonthValue(), projectuuid).stream()
+                        .filter(w -> w.getWorkduration() > 0)
                         .filter(w -> w.getContractuuid().equals(contractuuid) && w.getProjectuuid().equals(projectuuid)).toList();
                 Map<String, InvoiceItem> invoiceItemMap = new HashMap<>();
 

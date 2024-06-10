@@ -77,6 +77,8 @@ slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
   adminSlackBotToken: ${ADMINSLACKBOTTOKEN:xx}
+invoice-generator:
+  apikey: ${INV_GENERATOR:xx}
 e-conomics:
   xAppSecretToken: ${XAPPSERCREETTOKEN:none}
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}

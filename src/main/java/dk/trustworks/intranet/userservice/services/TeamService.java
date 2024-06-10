@@ -85,7 +85,7 @@ public class TeamService {
         return User.find("select u from User u " +
                 "join Teamrole tu on u.uuid = tu.useruuid " +
                 "join Team t on t.uuid = tu.teamuuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "t.teamleadbonus is false AND " +
                 "uuid not in ('f7602dd6-9daa-43cb-8712-e9b1b99dc3a9', 'f6e80289-2604-4a16-bcff-ee72affa3745')").list();
     }
@@ -94,7 +94,7 @@ public class TeamService {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
                 "join Team t on t.uuid = tu.teamuuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "t.teamleadbonus is false AND " +
                 "uuid not in ('f7602dd6-9daa-43cb-8712-e9b1b99dc3a9', 'f6e80289-2604-4a16-bcff-ee72affa3745')" +
                 "startdate <= ?1 AND " +
@@ -105,30 +105,30 @@ public class TeamService {
     public List<User> getOwners() {
         return User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "tu.teamuuid like ?1", "f7602dd6-9daa-43cb-8712-e9b1b99dc3a9").list();
     }
 
     public List<User> getOwnersByMonth(LocalDate month) {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where tu.teammembertype like 'MEMBER' AND " +
                 "tu.teamuuid like ?1 AND " +
-                "startdate <= ?2 AND (enddate > ?2 OR enddate is null)", "f7602dd6-9daa-43cb-8712-e9b1b99dc3a9", month).list();
+                "tu.startdate <= ?2 AND (tu.enddate > ?2 OR tu.enddate is null)", "f7602dd6-9daa-43cb-8712-e9b1b99dc3a9", month).list();
         return userService.filterForActiveTeamMembers(month, users);
     }
 
     public List<User> getTeamOps() {
         return User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where tu.teammembertype like 'MEMBER' AND " +
                 "tu.teamuuid like ?1", "f6e80289-2604-4a16-bcff-ee72affa3745").list();
     }
 
     public List<User> getTeamOpsByMonth(LocalDate month) {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +
-                "where membertype like 'MEMBER' AND " +
+                "where teammembertype like 'MEMBER' AND " +
                 "tu.teamuuid like ?1 AND " +
                 "startdate <= ?2 AND (enddate > ?2 OR enddate is null)", "f6e80289-2604-4a16-bcff-ee72affa3745", month).list();
         return userService.filterForActiveTeamMembers(month, users);

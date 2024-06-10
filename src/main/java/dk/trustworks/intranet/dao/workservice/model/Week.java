@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.dao.workservice.model;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.Transient;
 import lombok.Data;
 
 import jakarta.persistence.Entity;
@@ -23,4 +24,6 @@ public class Week extends PanacheEntityBase {
     private int year;
     private int sorting;
     private String workas;
+    @Transient
+    private boolean isCommentable;
 }

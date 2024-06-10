@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.accounting.model;
 
+import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import lombok.Getter;
 
 @Getter
@@ -20,10 +21,11 @@ public class DanlonEmployee {
     String bankAccount; // Bankkonto
     String accountingGroup; // Bogføringsgruppe
     String active; // Aktiv
+    SalaryType type; // Hourly og monthly paid
 
     public DanlonEmployee(String employeeNumber, String name, String address, String address2, String postalCode,
                           String city, String countryCode, String email, String privatePhone, String mobilePhone,
-                          String cprNumber, String hireDate, String jobTitle, String bankAccount, String accountingGroup, String active) {
+                          String cprNumber, String hireDate, String jobTitle, String bankAccount, String accountingGroup, String active, SalaryType type) {
         this.employeeNumber = employeeNumber;
         this.name = name;
         this.address = address;
@@ -40,5 +42,6 @@ public class DanlonEmployee {
         this.bankAccount = bankAccount;
         this.accountingGroup = accountingGroup;
         this.active = active;
+        this.type = type;
     }
 }

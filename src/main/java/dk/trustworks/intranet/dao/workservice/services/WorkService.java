@@ -39,6 +39,7 @@ public class WorkService {
 
     public static final String VACATION = "f585f46f-19c1-4a3a-9ebd-1a4f21007282";
     public static final String SICKNESS = "02bf71c5-f588-46cf-9695-5864020eb1c4";
+    public static final String WORK_HOURS = "a7314f77-5e03-4f56-8b1c-0562e601f22f";
 
     @Inject
     EntityManager em;
@@ -69,7 +70,7 @@ public class WorkService {
         if(todate.getDayOfMonth()>1) {
             log.error("Beware of month issues!!: "+todate);
         }
-        return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3", fromdate, todate, useruuid).list();
+        return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid = ?3", fromdate, todate, useruuid).list();
     }
 
     public List<DateValueDTO> findWorkHoursByUserAndPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
@@ -103,6 +104,14 @@ public class WorkService {
 
     public List<WorkFull> findByTask(String taskuuid) {
         return WorkFull.find("taskuuid LIKE ?1", taskuuid).list();
+    }
+
+    public List<Work> findByUserAndUnpaidAndTaskuuid(String useruuid, String taskuuid) {
+        return Work.find("useruuid LIKE ?1 AND taskuuid LIKE ?2 AND paidout = ?3", useruuid, taskuuid, false).list();
+    }
+
+    public List<Work> findByUseruuidAndTaskuuidAndPeriod(String useruuid, String taskuuid, LocalDate fromdate, LocalDate todate) {
+        return WorkFull.find("useruuid LIKE ?1 AND taskuuid LIKE ?2 AND registered >= ?3 AND registered < ?4", useruuid, taskuuid, fromdate, todate).list();
     }
 
     public List<WorkFull> findByContract(String contractuuid) {
@@ -177,6 +186,9 @@ public class WorkService {
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3 AND taskuuid IN (?4)", fromdate, todate, useruuid, taskuuids).list();
     }
 
+    public List<WorkFull> findByContractAndUser(String contractuuid, String useruuid, LocalDate fromDate, LocalDate toDate) {
+        return WorkFull.find("contractuuid = ?1 AND useruuid = ?2 AND registered >= ?3 AND registered < ?4", contractuuid, useruuid, fromDate, toDate).list();
+    }
 
     public List<WorkFull> findByYearAndMonth(LocalDate month) {
         return findByPeriod(getFirstDayOfMonth(month), getFirstDayOfMonth(month).plusMonths(1));
@@ -197,11 +209,12 @@ public class WorkService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "work-cache")
-    public void saveWork(Work work) {
+    public void persistOrUpdate(Work work) {
         List<Work> workList = Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", work.getRegistered(), work.getUseruuid(), work.getTaskuuid()).list();
         if(!workList.isEmpty()) {
+            if(workList.stream().findFirst().get().isPaidout()) return;
             work.setUuid(workList.stream().findFirst().get().getUuid());
-            Work.update("workduration = ?1 WHERE registered = ?2 AND useruuid LIKE ?3 AND taskuuid LIKE ?4", work.getWorkduration(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+            Work.update("workduration = ?1, comments = ?2, paidout = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6", work.getWorkduration(), work.getComments(), work.isPaidout(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
             log.info("Updating work via save: "+work);
         } else {
             work.setUuid(UUID.randomUUID().toString());

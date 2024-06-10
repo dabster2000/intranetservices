@@ -5,11 +5,11 @@ import jakarta.ws.rs.client.ClientRequestFilter;
 import jakarta.ws.rs.core.MultivaluedMap;
 import java.io.IOException;
 
-public class DynamicHeaderFilter implements ClientRequestFilter {
+public class EconomicsDynamicHeaderFilter implements ClientRequestFilter {
     private final String appSecretToken;
     private final String agreementGrantToken;
 
-    public DynamicHeaderFilter(String appSecretToken, String agreementGrantToken) {
+    public EconomicsDynamicHeaderFilter(String appSecretToken, String agreementGrantToken) {
         this.appSecretToken = appSecretToken;
         this.agreementGrantToken = agreementGrantToken;
     }

@@ -9,7 +9,7 @@ import java.util.List;
 public class TeamRoleService {
 
     public List<TeamRole> listAll(String useruuid) {
-        return TeamRole.find("useruuid like ?1", useruuid).list();
+        return TeamRole.find("useruuid", useruuid).list();
     }
 
 }

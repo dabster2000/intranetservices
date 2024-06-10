@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailability
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.aggregates.users.services.*;
+import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
@@ -14,8 +15,8 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.NumberUtils;
+import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -32,12 +33,14 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
+import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
+import static dk.trustworks.intranet.dao.workservice.services.WorkService.WORK_HOURS;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.NON_PAY_LEAVE;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.TERMINATED;
-import static dk.trustworks.intranet.utils.DateUtils.dateIt;
-import static dk.trustworks.intranet.utils.DateUtils.stringIt;
+import static dk.trustworks.intranet.utils.DateUtils.*;
 import static dk.trustworks.intranet.utils.NumberUtils.formatCurrency;
 import static dk.trustworks.intranet.utils.NumberUtils.formatDouble;
+import static jakarta.transaction.Transactional.TxType.REQUIRED;
 
 @Tag(name = "danlon")
 @Path("/company/{companyuuid}/danlon")
@@ -93,8 +96,8 @@ public class DanlonResource {
                         user.getUserStatus(endOfMonth).getType().equals(ConsultantType.CONSULTANT) ||
                         user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STAFF) ||
                         user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STUDENT))
-                .filter(user -> // If user is not hired this month, ignore
-                        !user.getHireDate().withDayOfMonth(1).isEqual(endOfMonth.withDayOfMonth(1)))
+                //.filter(user -> // If user is hired this month, ignore
+                        //!user.getHireDate().withDayOfMonth(1).isEqual(month))
                 .toList();
 
 
@@ -108,10 +111,23 @@ public class DanlonResource {
             StringBuilder salaryNotes = new StringBuilder("Normal løn. ");
             List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDay = availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1));
 
+            Salary baseSalary = salaryService.getUserSalaryByMonth(user.getUuid(), endOfMonth);
+
+            if(user.getHireDate().withDayOfMonth(1).isEqual(month)) {
+                salaryNotes.append("Ny medarbejder: " + baseSalary.getSalary());
+            }
+
             // Check for salary changes
-            Salary baseSalary = salaryService.getUserSalaryByMonth(user.getUuid(), month);
-            if(salaryService.isSalaryChanged(user.getUuid(), month)) { // This will update the salary if it has changed (and return true if it has changed)
-                salaryNotes = new StringBuilder("Ny løn: ").append(formatCurrency(baseSalary.getSalary())+ " ");
+            if(salaryService.isSalaryChanged(user.getUuid(), month)) { // If salary has changed
+                Salary lastSalary = salaryService.getUserSalaryByMonth(user.getUuid(), month.minusMonths(1));// Get the previous salary
+                if(baseSalary.getSalary() > lastSalary.getSalary())
+                    salaryNotes = new StringBuilder("Ny løn: ").append(formatCurrency(baseSalary.getSalary())+ ". ");
+                else if (baseSalary.isLunch()!=lastSalary.isLunch())
+                    salaryNotes = new StringBuilder("Tilmeldt frokostordning: ").append(baseSalary.isLunch() ? "Ja" : "Nej" + ". ");
+                else if (baseSalary.isPhone()!=lastSalary.isPhone())
+                    salaryNotes = new StringBuilder("Fri telefon: ").append(baseSalary.isPhone() ? "Ja" : "Nej" + " ");
+                else if (baseSalary.isPrayerDay()!=lastSalary.isPrayerDay())
+                    salaryNotes = new StringBuilder("Storbededagstillæg: ").append(baseSalary.isPrayerDay() ? "Ja" : "Nej" + ". ");
             }
 
             String statusType = "";
@@ -141,8 +157,8 @@ public class DanlonResource {
             if(anyNonPayDays && !hasOnlyNonPayLeave) {
                 EmployeeAvailabilityPerMonth availability = availabilityService.getEmployeeDataPerMonth(user.uuid, month, month.plusMonths(1)).getFirst();
                 salaryNotes.append("Norm: 160.33 timer, ");
-                salaryNotes.append("Fakt: "+ NumberUtils.round(baseSalary.calculateActualWorkHours(availability.getGrossAvailableHours().doubleValue()/7.4, availability.getSalaryAwardingHours()/7.4), 2)+" timer, ");
-                salaryNotes.append("Justeret løn: " + formatCurrency(baseSalary.calculateMonthNormAdjustedSalary(availability.getGrossAvailableHours().doubleValue()/7.4, availability.getSalaryAwardingHours()/7.4)));
+                salaryNotes.append("Fakt: "+ NumberUtils.round(baseSalary.calculateActualWorkHours(getWeekdaysInPeriod(month, month.plusMonths(1)), availability.getSalaryAwardingHours()/7.4), 2)+" timer, ");
+                salaryNotes.append("Justeret løn: " + formatCurrency(baseSalary.calculateMonthNormAdjustedSalary(getWeekdaysInPeriod(month, month.plusMonths(1)), availability.getSalaryAwardingHours()/7.4)));
                 salaryNotes.append("). ");
             }
 
@@ -189,13 +205,15 @@ public class DanlonResource {
                 "",
                 user.getUserBankInfo(endOfMonth).getRegnr()+"-"+user.getUserBankInfo(endOfMonth).getAccountNr(),
                 "",
-                !user.getUserStatus(endOfMonth).getStatus().equals(TERMINATED) ? "x" : ""
+                !user.getUserStatus(endOfMonth).getStatus().equals(TERMINATED) ? "x" : "",
+                user.getSalary(endOfMonth).getType()
         )).toList();
     }
 
     @GET
     @Path("/employees/salarysupplements")
-    @Transactional
+    @Transactional(REQUIRED)
+    @CacheInvalidateAll(cacheName = "work-cache")
     public List<DanlonSalarySupplements> createSalarySupplements(@QueryParam("month") String strMonth, @QueryParam("test") String test) {
         LocalDate month = dateIt(strMonth).withDayOfMonth(1);
         LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
@@ -225,7 +243,14 @@ public class DanlonResource {
 
             if(bonus>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "41", "Bonus", "", "", formatDouble(bonus)));
 
-            double vacation = workService.calculateVacationByUserInMonth(user.getUuid(), DateUtils.getTwentieth(month), DateUtils.getTwentieth(month.plusMonths(1)));
+            List<Work> vacationList = workService.findByUserAndUnpaidAndTaskuuid(user.getUuid(), VACATION).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
+            if (!isTest) {
+                vacationList.forEach(work -> {
+                    work.setPaidout(true);
+                    workService.persistOrUpdate(work);
+                });
+            }
+            double vacation = vacationList.stream().mapToDouble(Work::getWorkduration).sum();
             if(vacation > 0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "60", "Vacation", formatDouble(vacation/7.4), "", ""));
 
             List<TransportationRegistration> unPaidRegistrations = transportationRegistrationService.findByUseruuidAndUnpaid(user.getUuid());
@@ -233,20 +258,32 @@ public class DanlonResource {
             if(!isTest) {
                 unPaidRegistrations.forEach(transportationRegistration -> {
                     transportationRegistration.setPaid(true);
-                    transportationRegistration.persist();
+                    transportationRegistrationService.persistOrUpdate(transportationRegistration);
                 });
             }
+
             if(kilometers>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "39", "Transportation", kilometers+"", "", ""));
 
             List<Expense> unPaidExpenses = expenseService.findByUserAndUnpaid(user.getUuid());
             double expenseSum = unPaidExpenses.stream().mapToDouble(Expense::getAmount).sum();
             if(!isTest) {
                 unPaidExpenses.forEach(expense -> {
-                    expense.setPaid(true);
-                    expense.persist();
+                    expenseService.setPaidAndUpdate(expense);
                 });
             }
-            if(expenseSum>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "40", "Expenses", "", "", formatCurrency(expenseSum)));
+
+            if(expenseSum>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "40", "Expenses", "", "", formatDouble(expenseSum)));
+
+            List<Work> workHoursList = workService.findByUserAndUnpaidAndTaskuuid(user.getUuid(), WORK_HOURS).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
+            System.out.println("workHoursList.size() = " + workHoursList.size());
+            if (!isTest) {
+                workHoursList.forEach(work -> {
+                    work.setPaidout(true);
+                    workService.persistOrUpdate(work);
+                });
+            }
+            double hourSalary = workHoursList.stream().mapToDouble(Work::getWorkduration).sum();
+            if(hourSalary>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "1", "Hourly salary", hourSalary+"", "", ""));
         }
 
         return result;

@@ -28,7 +28,7 @@ public class TransportationRegistrationService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
-    public void create(@Valid TransportationRegistration entity) {
+    public void persistOrUpdate(@Valid TransportationRegistration entity) {
         if(entity.getUuid()==null || entity.getUseruuid()==null) return;
         Optional<TransportationRegistration> existingEntity = TransportationRegistration.findByIdOptional(entity.getUuid());
         existingEntity.ifPresentOrElse(s -> {

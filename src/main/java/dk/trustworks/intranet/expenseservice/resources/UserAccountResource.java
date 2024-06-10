@@ -53,11 +53,9 @@ public class UserAccountResource {
     @Transactional
     public void updateAccount(@PathParam("useruuid") String useruuid, UserAccount userAccount) {
         UserAccount.update("economics = ?1, " +
-                        "danlon = ?2, " +
-                        "username = ?3" +
-                        "WHERE useruuid like ?4 ",
+                        "username = ?2" +
+                        "WHERE useruuid like ?3 ",
                 userAccount.getEconomics(),
-                userAccount.getDanlon(),
                 userAccount.getUsername(),
                 useruuid);
     }

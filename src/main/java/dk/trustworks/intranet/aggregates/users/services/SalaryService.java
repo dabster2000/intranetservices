@@ -35,6 +35,9 @@ public class SalaryService {
         Optional<Salary> existingSalary = Salary.findByIdOptional(salary.getUuid());
         existingSalary.ifPresentOrElse(s -> {
             s.setSalary(salary.getSalary());
+            s.setLunch(salary.isLunch());
+            s.setPhone(salary.isPhone());
+            s.setPrayerDay(salary.isPrayerDay());
             s.setType(salary.getType());
             s.setActivefrom(salary.getActivefrom());
             updateSalary(s);
@@ -44,11 +47,17 @@ public class SalaryService {
     private void updateSalary(Salary salary) {
         Salary.update("salary = ?1, " +
                         "activefrom = ?2, " +
-                        "type = ?3 " +
-                        "WHERE uuid LIKE ?4 ",
+                        "type = ?3, " +
+                        "lunch = ?4, " +
+                        "phone = ?5, " +
+                        "prayerDay = ?6 " +
+                        "WHERE uuid LIKE ?7 ",
                 salary.getSalary(),
                 salary.getActivefrom(),
                 salary.getType(),
+                salary.isLunch(),
+                salary.isPhone(),
+                salary.isPrayerDay(),
                 salary.getUuid());
     }
 

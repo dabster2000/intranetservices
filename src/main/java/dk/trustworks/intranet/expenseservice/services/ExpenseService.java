@@ -34,7 +34,7 @@ public class ExpenseService {
     }
 
     public List<Expense> findByUserAndUnpaid(String useruuid) {
-        return Expense.find("useruuid = ?1 and paid = ?2", useruuid, false).list();
+        return Expense.find("useruuid = ?1 and paid = ?2 and status = ?3", useruuid, false, "PROCESSED").list();
     }
 
     @Transactional
@@ -87,7 +87,14 @@ public class ExpenseService {
 
     @Transactional
     public void sendExpense(Expense expense, ExpenseFile expenseFile, UserAccount userAccount) throws IOException {
-        Response response = economicsService.sendVoucher(expense, expenseFile, userAccount);
+        Response response;
+        try {
+            response = economicsService.sendVoucher(expense, expenseFile, userAccount);
+            updateStatus(expense, "UP_FAILED");
+        } catch (Exception e) {
+            log.error("Exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
+            throw new IOException("Exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);
+        }
 
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
             updateStatus(expense, "PROCESSED");
@@ -104,6 +111,11 @@ public class ExpenseService {
         log.info("Updated expense " + expense);
     }
 
+    @Transactional
+    public void setPaidAndUpdate(Expense expense) {
+        expense.setPaid(true);
+        Expense.update("paid = ?1 WHERE uuid like ?2 ", expense.getPaid(), expense.getUuid());
+    }
 }
 
 

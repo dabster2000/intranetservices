@@ -39,7 +39,7 @@ public class TransportationRegistrationResource {
     @Path("/{useruuid}/transportation/registrations")
     public void create(@PathParam("useruuid") String useruuid, TransportationRegistration entity) {
         entity.setUseruuid(useruuid);
-        service.create(entity);
+        service.persistOrUpdate(entity);
     }
 
     @DELETE

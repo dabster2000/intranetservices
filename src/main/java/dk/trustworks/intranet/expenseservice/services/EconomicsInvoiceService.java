@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
-import dk.trustworks.intranet.financeservice.remote.DynamicHeaderFilter;
+import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -138,7 +138,7 @@ public class EconomicsInvoiceService {
         log.info("EconomicsInvoiceService.getEconomicsAPI");
         return RestClientBuilder.newBuilder()
                 .baseUri(URI.create(result.url()))
-                .register(new DynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .register(new EconomicsDynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
                 .build(EconomicsAPI.class);
     }
 
