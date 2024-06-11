@@ -26,7 +26,7 @@ import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.panache.common.Sort;
-import io.quarkus.runtime.configuration.ProfileManager;
+import io.quarkus.runtime.LaunchMode;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -386,7 +386,7 @@ public class InvoiceService {
         draftInvoice.setType(InvoiceType.PHANTOM);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         saveInvoice(draftInvoice);
-        if(!"dev".equals(ProfileManager.getActiveProfile())) {
+        if(!"dev".equals(LaunchMode.current().getProfileKey())) {
             uploadToEconomics(draftInvoice);
             log.info("Uploaded invoice to economics ("+draftInvoice.invoicenumber+"): "+draftInvoice.getUuid());
         } else {
