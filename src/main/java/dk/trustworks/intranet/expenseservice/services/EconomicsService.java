@@ -22,7 +22,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
-import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
+import org.jboss.resteasy.reactive.server.multipart.MultipartFormDataOutput;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;

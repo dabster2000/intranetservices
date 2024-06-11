@@ -42,7 +42,6 @@ import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-import org.jboss.resteasy.annotations.GZIP;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -321,7 +320,6 @@ public class UserResource {
     }
 
     @POST
-    @GZIP
     @Path("/{useruuid}/documents")
     public void saveDocument(File document) {
         documentAPI.save(document);

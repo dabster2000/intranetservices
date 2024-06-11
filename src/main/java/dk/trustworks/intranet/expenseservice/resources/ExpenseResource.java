@@ -19,7 +19,6 @@ import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
-import org.jboss.resteasy.annotations.jaxrs.PathParam;
 
 import java.io.IOException;
 import java.time.LocalDate;
@@ -66,7 +65,7 @@ public class ExpenseResource {
         return Expense.find("useruuid", Sort.by("expensedate").descending(), useruuid).page(Page.of(pageInt, limitInt)).list();
     }
 
-    public List<Expense> findByUser(@PathParam("useruuid") String useruuid) {
+    public List<Expense> findByUser(String useruuid) {
         return Expense.find("useruuid", useruuid).list();
     }
 

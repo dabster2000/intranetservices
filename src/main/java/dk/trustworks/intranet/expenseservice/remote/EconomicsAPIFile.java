@@ -1,11 +1,11 @@
 package dk.trustworks.intranet.expenseservice.remote;
 
-import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
-import org.jboss.resteasy.annotations.providers.multipart.MultipartForm;
-import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
-
+import io.smallrye.common.annotation.Blocking;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
+import org.jboss.resteasy.reactive.RestForm;
+import org.jboss.resteasy.reactive.server.multipart.MultipartFormDataOutput;
 
 @RegisterRestClient
 @Produces("application/json")
@@ -15,5 +15,6 @@ public interface EconomicsAPIFile extends AutoCloseable {
     @POST
     @Consumes("multipart/form-data; boundary=----------------------------240952202702610052022222")
     @Path("/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file")
-    Response postFile(@PathParam("journalNumber") int journalNumber, @PathParam("accountingYear") String accountingYear, @PathParam("voucherNumber") int voucherNumber, @MultipartForm MultipartFormDataOutput data);
+    @Blocking
+    Response postFile(@PathParam("journalNumber") int journalNumber, @PathParam("accountingYear") String accountingYear, @PathParam("voucherNumber") int voucherNumber, @RestForm MultipartFormDataOutput data);
 }

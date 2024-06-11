@@ -2,20 +2,20 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
-import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
-import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.rest.client.RestClientBuilder;
-import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
-
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.rest.client.RestClientBuilder;
+import org.jboss.resteasy.reactive.server.multipart.MultipartFormDataOutput;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
