@@ -42,4 +42,10 @@ public class EmployeeResource {
     public List<Employee> getAllEmployedEmployees() {
         return Employee.list("status not like ?1 and status not like ?2", TERMINATED, PREBOARDING);
     }
+
+    @GET
+    @Path("/incoming")
+    public List<Employee> getAllIncomingEmployees() {
+        return Employee.list("status like ?1", PREBOARDING);
+    }
 }

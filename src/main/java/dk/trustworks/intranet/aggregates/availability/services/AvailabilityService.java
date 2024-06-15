@@ -28,7 +28,7 @@ public class AvailabilityService {
     EntityManager em;
 
     public List<EmployeeAvailabilityPerMonth> getAllEmployeeAvailabilityByPeriod(LocalDate fromdate, LocalDate todate) {
-        return getEmployeeAvailabilityPerMonths(EmployeeAvailabilityPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and consultantType = 'CONSULTANT' and statusType != 'TERMINATED'", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue()));
+        return getEmployeeAvailabilityPerMonths(EmployeeAvailabilityPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and (consultantType = 'CONSULTANT' or consultantType = 'STUDENT') and statusType != 'TERMINATED'", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue()));
     }
 
     public List<EmployeeAvailabilityPerMonth> getCompanyEmployeeAvailabilityByPeriod(Company company, LocalDate fromdate, LocalDate todate) {

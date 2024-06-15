@@ -226,7 +226,7 @@ public class InvoiceService {
         } else {
             exchangeRate = 1.0;
         }
-        List<Invoice> invoiceList = Invoice.<Invoice>find("company = ?1 AND invoicedate >= ?2 AND invoicedate < ?3 AND type != 4 AND status NOT LIKE ?4", Company.<Company>findById(companyuuid), fromdate, todate, InvoiceStatus.DRAFT).list();
+        List<Invoice> invoiceList = Invoice.<Invoice>find("company = ?1 AND invoicedate >= ?2 AND invoicedate < ?3 AND type != ?4 AND status != ?5", Company.<Company>findById(companyuuid), fromdate, todate, InvoiceType.INTERNAL_SERVICE, InvoiceStatus.DRAFT).list();
         List<DateValueDTO> invoicedSumList = invoiceList.stream()
                 .map((Invoice i) -> apply(i, exchangeRate))
                 .toList();

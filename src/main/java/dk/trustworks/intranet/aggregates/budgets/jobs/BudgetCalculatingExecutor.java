@@ -19,6 +19,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 @JBossLog
 @ApplicationScoped
@@ -60,7 +61,10 @@ public class BudgetCalculatingExecutor {
                     if(userContract == null) continue;
                     if(userContract.getHours()==0.0) continue;
 
-                    EmployeeBudgetPerDayAggregate employeeBudgetPerDayAggregate = new EmployeeBudgetPerDayAggregate(lookupDate, getClient(clientList, contract), user, contract, userContract.getHours() / 5.0, userContract.getHours() / 5.0, userContract.getRate());
+                    AtomicReference<Double> discountModifier = new AtomicReference<>(1.0);
+                    if(contract.getContractTypeItems()!=null)
+                        contract.getContractTypeItems().forEach(cti -> discountModifier.updateAndGet(v -> (v - Double.parseDouble(cti.getValue()) / 100.0)));
+                    EmployeeBudgetPerDayAggregate employeeBudgetPerDayAggregate = new EmployeeBudgetPerDayAggregate(lookupDate, getClient(clientList, contract), user, contract, userContract.getHours() / 5.0, userContract.getHours() / 5.0, userContract.getRate() * discountModifier.get());
 
                     if(employeeBudgetPerDayAggregate.getBudgetHours()==0.0) continue;
                     employeeBudgetPerDayAggregateList.add(employeeBudgetPerDayAggregate);

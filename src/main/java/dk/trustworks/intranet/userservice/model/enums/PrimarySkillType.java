@@ -1,5 +1,5 @@
 package dk.trustworks.intranet.userservice.model.enums;
 
 public enum PrimarySkillType {
-    SA, BA, PM, DEV, UD
+    SA, BA, PM, DEV, UD, CYB
 }

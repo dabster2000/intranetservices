@@ -62,6 +62,8 @@ public class User extends PanacheEntityBase {
     private String other;
     @Enumerated(EnumType.STRING)
     private PrimarySkillType primaryskilltype;
+    @Column(name = "primary_skill_level")
+    private int primaryskilllevel;
 
     @Transient
     private List<Salary> salaries = new ArrayList<>();

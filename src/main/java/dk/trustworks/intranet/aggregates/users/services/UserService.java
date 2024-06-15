@@ -11,16 +11,16 @@ import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.jwt.JsonWebToken;
-import org.mindrot.jbcrypt.BCrypt;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotAllowedException;
 import jakarta.ws.rs.NotFoundException;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.jwt.JsonWebToken;
+import org.mindrot.jbcrypt.BCrypt;
+
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -103,7 +103,7 @@ public class UserService {
 
     @CacheResult(cacheName = "user-cache")
     public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String[] statusArray, String[] consultantTypesArray, boolean shallow) {
-        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, u.created, u.email, u.primaryskilltype, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
+        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, u.created, u.email, u.primaryskilltype, u.primary_skill_level, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
                 "FROM user as u " +
                 "LEFT OUTER JOIN salary ON u.uuid = salary.useruuid " +
                 "LEFT OUTER JOIN roles ON u.uuid = roles.useruuid " +
@@ -264,8 +264,10 @@ public class UserService {
                             "birthday = ?14, " +
                             "defects = ?15, " +
                             "photoconsent = ?16, " +
-                            "other = ?17 " +
-                            "WHERE uuid like ?18 ",
+                            "other = ?17, " +
+                            "primaryskilltype = ?18, " +
+                            "primaryskilllevel = ?19 " +
+                            "WHERE uuid like ?20 ",
                     user.isActive(),
                     user.getEmail(),
                     user.getFirstname(),
@@ -283,6 +285,8 @@ public class UserService {
                     user.getDefects(),
                     user.isPhotoconsent(),
                     user.getOther(),
+                    user.getPrimaryskilltype(),
+                    user.getPrimaryskilllevel(),
                     user.getUuid());
         } catch (Exception e) {
             e.printStackTrace();

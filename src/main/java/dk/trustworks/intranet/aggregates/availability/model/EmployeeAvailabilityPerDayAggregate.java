@@ -26,11 +26,11 @@ import java.time.LocalDateTime;
 @Table(name = "bi_availability_per_day")
 @NoArgsConstructor
 @AllArgsConstructor
-@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
+@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
 public class EmployeeAvailabilityPerDayAggregate extends PanacheEntityBase {
 
-    @Id
     @JsonIgnore
+    @Id
     @GeneratedValue(strategy= GenerationType.IDENTITY)
     @EqualsAndHashCode.Include
     private int id;

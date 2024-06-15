@@ -32,7 +32,6 @@ import static dk.trustworks.intranet.dao.workservice.services.WorkService.SICKNE
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
 import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.YEAR_CHANGE_EVENT;
-import static dk.trustworks.intranet.messaging.emitters.SystemMessageEmitter.WORK_UPDATE_EVENT;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.EXTERNAL;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.STUDENT;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
@@ -110,7 +109,7 @@ public class AvailabilityCalculatingExecutor {
         }
     }
 
-    @ConsumeEvent(value = WORK_UPDATE_EVENT, blocking = true)
+    //@ConsumeEvent(value = WORK_UPDATE_EVENT, blocking = true)
     public void createAvailabilityDocumentByUserAndDate(SystemChangeEvent event) {
         log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUserAndDate");
         UserDateMap userDateMap = new JsonObject(event.getEventContent()).mapTo(UserDateMap.class);
@@ -138,7 +137,8 @@ public class AvailabilityCalculatingExecutor {
         UserStatus userStatus = userService.getUserStatus(user, testDay);
         int userSalary = user.getSalary(testDay).getSalary();//userService.getUserSalary(user, testDay).getSalary();
 
-        if(userStatus.getType().equals(STUDENT) || userStatus.getType().equals(EXTERNAL)) userSalary = 0;
+        if(userStatus.getType().equals(EXTERNAL)) userSalary = 0;
+        if(userStatus.getType().equals(STUDENT)) userSalary = userSalary * 20 * 4;
         if(userStatus.getStatus().equals(NON_PAY_LEAVE) || userStatus.getStatus().equals(TERMINATED)) userSalary = 0;
 
         int weeklyAllocation = userStatus.getAllocation(); // fx 37 timer

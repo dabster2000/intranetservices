@@ -2,10 +2,10 @@ quarkus:
   application:
     name: trustworks-intranet
   datasource:
-    db-kind: mariadb
+    db-kind: mysql
     jdbc:
-      url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
-      driver: org.mariadb.jdbc.Driver
+      url: ${URL:jdbc:mysql://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      driver: com.mysql.cj.jdbc.Driver
       min-size: 5
       max-size: 50
       tracing:
@@ -53,8 +53,6 @@ quarkus:
     caffeine:
       "employee-data-per-month-cache":
         expire-after-write: 3H
-
-
   s3:
     sync-client:
       type: APACHE

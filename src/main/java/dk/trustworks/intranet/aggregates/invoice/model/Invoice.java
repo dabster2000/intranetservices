@@ -82,6 +82,7 @@ public class Invoice extends PanacheEntityBase {
     @Transient
     @JsonIgnore
     public boolean errors;
+    @Enumerated(EnumType.STRING)
     public InvoiceType type;
     @Enumerated(EnumType.STRING)
     public InvoiceStatus status;

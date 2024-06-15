@@ -3,16 +3,17 @@ package dk.trustworks.intranet.userservice.model;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import jakarta.persistence.*;
 import java.time.LocalDate;
 import java.util.Objects;
 import java.util.Optional;
@@ -46,7 +47,6 @@ public class Employee extends PanacheEntityBase {
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate birthday;
-
     private String cpr;
     private String phone;
     private boolean pension;
@@ -57,6 +57,8 @@ public class Employee extends PanacheEntityBase {
     private String other;
     @Enumerated(EnumType.STRING)
     private PrimarySkillType primaryskilltype;
+    @Column(name = "primary_skill_level")
+    private int primaryskilllevel;
     @Enumerated(EnumType.STRING)
     private StatusType status;
     private int allocation;
@@ -66,6 +68,9 @@ public class Employee extends PanacheEntityBase {
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "uuid")
     private User user;
+    @OneToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "companyuuid")
+    private Company company;
 
     public static Optional<Employee> findByUsername(String username) {
         return find("username", username).firstResultOptional();

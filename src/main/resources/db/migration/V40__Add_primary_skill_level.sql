@@ -1,0 +1,1 @@
+alter table user add primary_skill_level int default 3 not null after primaryskilltype;

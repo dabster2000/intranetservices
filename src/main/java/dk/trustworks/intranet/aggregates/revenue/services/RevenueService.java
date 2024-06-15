@@ -78,7 +78,7 @@ public class RevenueService {
     }
 
     public List<DateValueDTO> getRegisteredRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration) AS value from work_full w " +
+        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, 1.0 - (w.discount / 100.0), 1)) AS value from work_full w " +
                 "where w.rate > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= '" + stringIt(fromdate) + "' and registered < '" + stringIt(todate) + "' " +
                 "group by w.consultant_company_uuid, year(w.registered), month(w.registered);";
         log.info("getRegisteredRevenueByPeriod sql: "+sql);
@@ -92,7 +92,7 @@ public class RevenueService {
 
     public List<KeyValueDTO> getRegisteredRevenuePerClient(String companyuuid, List<String> clientuuids) {
         List<Object[]> resultList = em.createNativeQuery(
-                "select w.clientuuid clientuuid, sum(w.rate * w.workduration) as amount from work_full w " +
+                "select w.clientuuid clientuuid, sum(w.rate * w.workduration * if(w.discount > 0, 1.0 - (w.discount / 100.0), 1)) as amount from work_full w " +
                 "where w.consultant_company_uuid = '"+companyuuid+"' registered >= '2021-07-01' and registered < '2022-07-01' and clientuuid in ('" + String.join("','", clientuuids) + "') group by w.clientuuid").getResultList();
         List<KeyValueDTO> result = new ArrayList<>();
         for (Object[] objects : resultList) {
@@ -179,7 +179,7 @@ public class RevenueService {
     }
 
     public List<DateValueDTO> getRegisteredRevenueByPeriodAndSingleConsultant(String useruuid, String periodFrom, String periodTo) {
-        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration) AS value from work_full w " +
+        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, w.discount / 100.0, 1)) AS value from work_full w " +
                 "where w.rate > 0 and w.useruuid = '"+useruuid+"' and registered >= '" + periodFrom + "' and registered < '" + periodTo + "' " +
                 "group by year(w.registered), month(w.registered);";
         log.info("getRegisteredRevenueByPeriod sql: "+sql);

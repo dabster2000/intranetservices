@@ -37,6 +37,7 @@ public class WorkFull extends PanacheEntityBase {
     private String useruuid;
     private String workas;
     private double rate;
+    private int discount;
     private String name;
     private String comments;
     @JsonIgnore
