@@ -149,7 +149,7 @@ public class BubbleService {
 
     @Scheduled(every = "10m")
     public void cleanBubbles() {
-        List<User> users = userService.findCurrentlyEmployedUsers(ConsultantType.STUDENT, ConsultantType.CONSULTANT, ConsultantType.STAFF);
+        List<User> users = userService.findCurrentlyEmployedUsers(true, ConsultantType.STUDENT, ConsultantType.CONSULTANT, ConsultantType.STAFF);
         for (Bubble bubble : findAll()) {
             for (BubbleMember bubbleMember : bubble.getBubbleMembers()) {
                 Optional<User> optionalUser = users.stream().filter(user -> user.getUuid().equals(bubbleMember.getUseruuid())).findAny();

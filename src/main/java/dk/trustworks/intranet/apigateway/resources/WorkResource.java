@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -33,6 +35,9 @@ public class WorkResource {
 
     @Inject
     WorkService workAPI;
+
+    @Inject
+    AggregateEventSender sender;
 
     @GET
     @Path("/work")
@@ -82,12 +87,18 @@ public class WorkResource {
     @Path("/work")
     public void save(Work work) {
         workAPI.persistOrUpdate(work);
-    }
 
+        sender.handleEvent(new UpdateWorkEvent(work.getUseruuid(), work));
+        if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
+            sender.handleEvent(new UpdateWorkEvent(work.getWorkas(), work));
+    }
+/*
     @GET
-    //@Path("/tasks/{uuid}/work")
+    @Path("/tasks/{uuid}/work")
     public List<WorkFull> getWorkByTask(@PathParam("uuid") String taskuuid) {
         return workAPI.findByTask(taskuuid);
     }
+
+ */
 
 }

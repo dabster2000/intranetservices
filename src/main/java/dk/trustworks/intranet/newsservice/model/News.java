@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.newsservice.model;
 
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import dk.trustworks.intranet.newsservice.model.enums.NewsType;
 import dk.trustworks.intranet.newsservice.utils.LocalDateTimeSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
@@ -28,8 +29,9 @@ public class News extends PanacheEntityBase {
     @JsonSerialize(using = LocalDateTimeSerializer.class)
     @Column(name = "eventdate")
     private LocalDateTime eventDate;
+    @Enumerated(EnumType.STRING)
     @Column(name = "newstype")
-    private String newsType;
+    private NewsType newsType;
 
     private String description;
     private String text;
@@ -41,7 +43,7 @@ public class News extends PanacheEntityBase {
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER, orphanRemoval = true)
     private List<RelatedResource> relatedResources;
 
-    public News(LocalDateTime eventDate, String newsType, String createdBy, String text) {
+    public News(LocalDateTime eventDate, NewsType newsType, String createdBy, String text) {
         this.eventDate = eventDate;
         this.newsType = newsType;
         this.createdBy = createdBy;

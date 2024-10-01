@@ -1,5 +1,9 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
@@ -9,8 +13,7 @@ import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.KeyValueDTO;
-import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
-import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -46,6 +49,9 @@ public class ContractResource {
 
     @Inject
     InvoiceService invoiceService;
+
+    @Inject
+    AggregateEventSender aggregateEventSender;
 
     @GET
     @Path("/{contractuuid}")
@@ -110,6 +116,7 @@ public class ContractResource {
 
     @POST
     @Path("/{contractuuid}/extend")
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public Contract extendContract(@PathParam("contractuuid") String contractuuid) {
         log.info("ContractResource.extendContract");
         log.info("contractuuid = " + contractuuid);
@@ -126,7 +133,11 @@ public class ContractResource {
     public void deleteContract(@PathParam("contractuuid") String contractuuid) {
         log.info("ContractResource.deleteContract");
         log.info("contractuuid = " + contractuuid);
+        List<ContractConsultant> contractConsultants = contractService.getContractConsultants(contractuuid);
         contractService.delete(contractuuid);
+        contractConsultants.forEach(contractConsultant -> {
+            aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
+        });
     }
 
     @POST
@@ -143,20 +154,29 @@ public class ContractResource {
 
     @POST
     @Path("/{contractuuid}/consultants/{consultantuuid}")
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void addConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         contractService.addConsultant(contractuuid, consultantuuid, contractConsultant);
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
     }
 
     @PUT
     @Path("/{contractuuid}/consultants/{consultantuuid}")
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void updateConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
+        ContractConsultant existingContractConsultant = ContractConsultant.findById(contractConsultant.getUuid());
         contractService.updateConsultant(contractConsultant);
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, existingContractConsultant));
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
     }
 
     @DELETE
     @Path("/{contractuuid}/consultants/{consultantuuid}")
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void removeConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid) {
+        ContractConsultant contractConsultant = ContractConsultant.findById(consultantuuid);
         contractService.removeConsultant(contractuuid, consultantuuid);
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
     }
 
     @POST

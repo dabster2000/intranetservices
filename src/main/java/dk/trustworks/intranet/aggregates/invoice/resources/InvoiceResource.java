@@ -2,21 +2,24 @@ package dk.trustworks.intranet.aggregates.invoice.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.ProjectSummary;
-import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
-import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
+import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 
-import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
-import jakarta.ws.rs.*;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -34,6 +37,9 @@ public class InvoiceResource {
 
     @Inject
     InvoiceService invoiceService;
+
+    @Inject
+    InvoiceNotesService invoiceNotesService;
 
     @Inject
     InvoiceGenerator invoiceGenerator;
@@ -147,5 +153,17 @@ public class InvoiceResource {
     @Path("/{invoiceuuid}/bonusstatus/{bonusStatus}")
     public void updateInvoiceStatus(@PathParam("invoiceuuid") String invoiceuuid, @PathParam("bonusStatus") String bonusStatus) {
         invoiceService.updateInvoiceStatus(invoiceuuid, SalesApprovalStatus.valueOf(bonusStatus));
+    }
+
+    @GET
+    @Path("/notes")
+    public InvoiceNote getInvoiceNote(@QueryParam("contractuuid") String contractuuid, @QueryParam("projectuuid") String projectuuid, @QueryParam("month") String month) {
+        return invoiceNotesService.getInvoiceNoteByClientProjectMonth(contractuuid, projectuuid, DateUtils.dateIt(month));
+    }
+
+    @PUT
+    @Path("/notes")
+    public void createOrUpdateInvoiceNote(InvoiceNote invoiceNote) {
+        invoiceNotesService.createOrUpdateInvoiceNote(invoiceNote);
     }
 }

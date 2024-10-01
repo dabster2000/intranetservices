@@ -76,9 +76,43 @@
 #
 ###
 #FROM registry.access.redhat.com/ubi8/openjdk-17:1.14
+#FROM registry.access.redhat.com/ubi8/openjdk-21:1.18
+
+#ENV LANGUAGE='en_US:en'
+
+
+# We make four distinct layers so if there are application changes the library layers can be re-used
+#COPY --chown=185 target/quarkus-app/lib/ /deployments/lib/
+#COPY --chown=185 target/quarkus-app/*.jar /deployments/
+#COPY --chown=185 target/quarkus-app/app/ /deployments/app/
+#COPY --chown=185 target/quarkus-app/quarkus/ /deployments/quarkus/
+#COPY --chown=185 jboss-logging.properties /deployments/jboss-logging.properties
+
+#EXPOSE 8080
+#USER 185
+# -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+#ENV JAVA_OPTS="-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+#ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
+
+#ENTRYPOINT [ "/opt/jboss/container/java/run/run-java.sh" ]
+
+# Use the OpenJDK 21 base image
 FROM registry.access.redhat.com/ubi8/openjdk-21:1.18
 
 ENV LANGUAGE='en_US:en'
+
+# Download New Relic agent
+#RUN curl -o /deployments/newrelic.jar https://download.newrelic.com/newrelic/java-agent/newrelic-agent/8.13.0/newrelic-agent-8.13.0.jar
+
+# Copy the custom New Relic configuration file into the container
+#COPY --chown=185 target/classes/newrelic.yml /deployments/newrelic.yml
+
+#RUN mkdir -p /usr/local/newrelic
+#ADD ./deployments/newrelic.jar /usr/local/newrelic/newrelic.jar
+
+RUN mkdir -p /usr/local/newrelic
+ADD ./newrelic/newrelic.jar /usr/local/newrelic/newrelic.jar
+ADD ./newrelic/newrelic.yml /usr/local/newrelic/newrelic.yml
 
 
 # We make four distinct layers so if there are application changes the library layers can be re-used
@@ -86,12 +120,15 @@ COPY --chown=185 target/quarkus-app/lib/ /deployments/lib/
 COPY --chown=185 target/quarkus-app/*.jar /deployments/
 COPY --chown=185 target/quarkus-app/app/ /deployments/app/
 COPY --chown=185 target/quarkus-app/quarkus/ /deployments/quarkus/
+#ADD --chown=185 src/main/resources/newrelic.yml /usr/local/newrelic/newrelic.yml
 #COPY --chown=185 jboss-logging.properties /deployments/jboss-logging.properties
 
 EXPOSE 8080
 USER 185
-# -Djava.util.logging.manager=org.jboss.logmanager.LogManager
-ENV JAVA_OPTS="-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+
+# Add New Relic and other JVM options
+ENV JAVA_OPTS="-javaagent:/usr/local/newrelic/newrelic.jar -Xmx2g -Xms1g -Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
 ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
 
+# Set the entry point to run the application
 ENTRYPOINT [ "/opt/jboss/container/java/run/run-java.sh" ]

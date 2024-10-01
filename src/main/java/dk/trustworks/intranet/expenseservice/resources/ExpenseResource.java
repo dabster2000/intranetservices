@@ -153,6 +153,7 @@ public class ExpenseResource {
     @Path("/{uuid}")
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
-        Expense.deleteById(uuid);
+        Expense expense = Expense.findById(uuid);
+        if(!expense.isLocked()) Expense.update("status = ?1, datemodified = ?2 WHERE uuid like ?2", "DELETED", LocalDate.now(), uuid);
     }
 }

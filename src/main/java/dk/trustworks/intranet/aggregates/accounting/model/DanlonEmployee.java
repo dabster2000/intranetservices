@@ -2,7 +2,9 @@ package dk.trustworks.intranet.aggregates.accounting.model;
 
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import lombok.Getter;
+import lombok.ToString;
 
+@ToString
 @Getter
 public class DanlonEmployee {
     String employeeNumber; // Medarb.nr.

@@ -57,7 +57,7 @@ public class AchievementCheckerJob {
     //@Scheduled(every="24h")
     void checkAchievements() {
         log.debug("AchievementCheckerJob.checkAchievements");
-        for (User user : userResource.findCurrentlyEmployedUsers(ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT)) {
+        for (User user : userResource.findCurrentlyEmployedUsers(true, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT)) {
             log.debug("Checking achievement for user = " + user);
             List<Achievement> achievementList = Achievement.find("useruuid like ?1", user.getUuid()).list();
 

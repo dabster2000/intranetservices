@@ -18,6 +18,9 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "companies")
 public class Company extends PanacheEntityBase {
+    public static String TRUSTWORKS_UUID = "d8894494-2fb4-4f72-9e05-e6032e6dd691";
+    public static String TRUSTWORKS_TECHNOLOGY_UUID = "44592d3b-2be5-4b29-bfaf-4fafc60b0fa3";
+
     @Id
     @Column(name = "uuid")
     @EqualsAndHashCode.Include
@@ -25,6 +28,9 @@ public class Company extends PanacheEntityBase {
     @Basic
     @Column(name = "name")
     private String name;
+    @Basic
+    @Column(name = "abbreviation")
+    private String abbreviation;
     @Basic
     @Column(name = "cvr")
     private String cvr;

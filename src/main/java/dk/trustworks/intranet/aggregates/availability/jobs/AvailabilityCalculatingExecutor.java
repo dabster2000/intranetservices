@@ -2,12 +2,10 @@ package dk.trustworks.intranet.aggregates.availability.jobs;
 
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
-import dk.trustworks.intranet.aggregates.sender.SystemChangeEvent;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
-import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
@@ -15,7 +13,6 @@ import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.vertx.ConsumeEvent;
-import io.vertx.core.json.JsonObject;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -110,11 +107,8 @@ public class AvailabilityCalculatingExecutor {
     }
 
     //@ConsumeEvent(value = WORK_UPDATE_EVENT, blocking = true)
-    public void createAvailabilityDocumentByUserAndDate(SystemChangeEvent event) {
+    public void createAvailabilityDocumentByUserAndDate(String useruuid, LocalDate testDay) {
         log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUserAndDate");
-        UserDateMap userDateMap = new JsonObject(event.getEventContent()).mapTo(UserDateMap.class);
-        String useruuid = userDateMap.getUseruuid();
-        LocalDate testDay = userDateMap.getDate();
         User user = userService.findById(useruuid, false);
         if(user==null) return;
         List<WorkFull> workList = workService.findByPeriodAndUserUUID(testDay, testDay.plusDays(1), user.getUuid());
@@ -199,9 +193,8 @@ public class AvailabilityCalculatingExecutor {
         List<EmployeeBonusEligibility> employeeBonusEligibilityList = EmployeeBonusEligibility.find("year = ?1", testFiscalYear.getYear()).list();
 
         employedUsers.forEach(user -> {
-            //boolean foundUser = false;
             if(employeeBonusEligibilityList.stream().noneMatch(e -> e.getUser().getUuid().equals(user.getUuid()))) {
-                Stream<EmployeeAvailabilityPerDayAggregate> stream = EmployeeAvailabilityPerDayAggregate.stream("((year = ?1 AND month >= ?2) OR (year = ?3 AND month <= ?4)) and useruuid like ?5", testFiscalYear.getYear(), testFiscalYear.getMonthValue(), testFiscalYear.plusYears(1).getYear(), testFiscalYear.plusYears(1).getMonthValue(), user.getUuid());
+                Stream<EmployeeAvailabilityPerDayAggregate> stream = EmployeeAvailabilityPerDayAggregate.stream("((year = ?1 AND month >= ?2) OR (year = ?3 AND month <= ?4)) and user = ?5", testFiscalYear.getYear(), testFiscalYear.getMonthValue(), testFiscalYear.plusYears(1).getYear(), testFiscalYear.plusYears(1).getMonthValue(), user);
                 double sum = stream.mapToDouble(EmployeeAvailabilityPerDayAggregate::getSalary).sum();
                 if(sum >0) {
                     EmployeeBonusEligibility.persist(new EmployeeBonusEligibility(user, testFiscalYear.getYear(), true, false, false, false, false, false, false, false, false, false, false, false, false));

@@ -33,6 +33,11 @@ public class SalaryLumpSum extends PanacheEntityBase {
     private Double lumpSum;
 
     @NotNull
+    @ColumnDefault("40")
+    @Column(name = "salary_type", nullable = false)
+    private Integer salaryType;
+
+    @NotNull
     @ColumnDefault("0")
     @Column(name = "pension", nullable = false)
     private Boolean pension = false;

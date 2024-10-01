@@ -7,6 +7,7 @@ import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
 import dk.trustworks.intranet.userservice.model.User;
+import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -190,6 +191,7 @@ WHERE
      */
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void save(Contract contract) {
         log.info("ContractService.save");
         log.info("contract = " + contract);
@@ -200,24 +202,26 @@ WHERE
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public Contract extendContract(String contractuuid) {
         Contract c = Contract.findById(contractuuid);
         Contract contract = new Contract(c);
         contract.persist();
         for (ContractConsultant cc : getContractConsultants(contractuuid)) {
             ContractConsultant contractConsultant = ContractConsultant.createContractConsultant(cc, contract);
-            contractConsultant.persist();
+            addConsultant(contract.getUuid(), cc.getUseruuid(), contractConsultant);
             contract.getContractConsultants().add(contractConsultant);
         }
         for (ContractProject cp : getContractProjects(contractuuid)) {
             ContractProject contractProject = new ContractProject(contract.getUuid(), cp.getProjectuuid());
-            contractProject.persist();
+            addProject(contract.getUuid(), cp.getProjectuuid());
             contract.getContractProjects().add(contractProject);
         }
         return contract;
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
         Contract.update(
                         "amount = ?1, " +
@@ -225,11 +229,12 @@ WHERE
                         "note = ?3, " +
                         "clientdatauuid = ?4, " +
                         "refid = ?5, " +
-                        "company = ?6 " +
-                        "WHERE uuid like ?7 ",
+                        "company = ?6, " +
+                        "salesconsultant = ?7 " +
+                        "WHERE uuid like ?8 ",
                 contract.getAmount(), contract.getStatus(),
                 contract.getNote(), contract.getClientdatauuid(),
-                contract.getRefid(), contract.getCompany(), contract.getUuid());
+                contract.getRefid(), contract.getCompany(), contract.getSalesconsultant(), contract.getUuid());
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
     }
 
@@ -251,11 +256,13 @@ WHERE
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void addConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
         ContractConsultant.persist(contractConsultant);
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void updateConsultant(ContractConsultant contractConsultant) {
         ContractConsultant.update(
                 "hours = ?1, " +
@@ -273,6 +280,7 @@ WHERE
     }
 
     @Transactional
+    @CacheInvalidateAll(cacheName = "employee-budgets")
     public void removeConsultant(String contractuuid, String consultantuuid) {
         ContractConsultant.deleteById(consultantuuid);
     }

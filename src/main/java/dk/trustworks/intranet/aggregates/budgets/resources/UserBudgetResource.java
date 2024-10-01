@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.budgets.resources;
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonth;
 import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.dto.DateValueDTO;
+import io.quarkus.cache.CacheResult;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -34,36 +35,42 @@ public class UserBudgetResource {
 
     @GET
     @Path("/budgets")
+    @CacheResult(cacheName = "employee-budgets")
     public List<EmployeeBudgetPerMonth> getAllUserBudgetsByPeriod(@QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
         return budgetService.getBudgetDataByPeriod(dateIt(periodFrom), dateIt(periodTo));
     }
 
     @GET
     @Path("/{useruuid}/budgets")
+    @CacheResult(cacheName = "employee-budgets")
     public List<EmployeeBudgetPerMonth> getBudgetsByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
         return budgetService.getBudgetDataByUserAndPeriod(useruuid, dateIt(periodFrom), dateIt(periodTo));
     }
 
     @GET
     @Path("/{useruuid}/budgets/amount")
+    @CacheResult(cacheName = "employee-budgets-amount")
     public List<DateValueDTO> getBudgetRevenueByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("periodFrom") String periodFrom, @QueryParam("periodTo") String periodTo) {
         return budgetService.getBudgetAmountByPeriodAndSingleConsultant(useruuid, dateIt(periodFrom), dateIt(periodTo));
     }
 
     @GET
     @Path("/{useruuid}/budgets/months/{month}")
+    @CacheResult(cacheName = "employee-budgets")
     public List<EmployeeBudgetPerMonth> getBudgetsBySingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
         return budgetService.getConsultantBudgetDataByMonth(useruuid, dateIt(month));
     }
 
     @GET
     @Path("/{useruuid}/budgets/months/{month}/amount")
+    @CacheResult(cacheName = "employee-budgets-amount")
     public DateValueDTO getBudgetAmountForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
         return budgetService.getBudgetAmountForSingleMonthAndSingleConsultant(useruuid, dateIt(month));
     }
 
     @GET
     @Path("/{useruuid}/budgets/months/{month}/hours")
+    @CacheResult(cacheName = "employee-budgets-hours")
     public DateValueDTO getBudgetHoursForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
         return new DateValueDTO(dateIt(month), budgetService.getConsultantBudgetHoursByMonth(useruuid, dateIt(month)));
     }

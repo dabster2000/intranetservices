@@ -10,12 +10,13 @@ import dk.trustworks.intranet.aggregates.users.services.SalaryLumpSumService;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.SalarySupplementService;
 import dk.trustworks.intranet.aggregates.users.services.TransportationRegistrationService;
+import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.TransportationRegistration;
-import dk.trustworks.intranet.utils.DateUtils;
+import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -28,6 +29,8 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
+import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
+import static dk.trustworks.intranet.dao.workservice.services.WorkService.WORK_HOURS;
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static dk.trustworks.intranet.utils.NumberUtils.convertDoubleToInt;
 import static dk.trustworks.intranet.utils.NumberUtils.formatCurrency;
@@ -81,10 +84,18 @@ public class SalaryResource {
         EmployeeAvailabilityPerMonth availability = availabilityService.getEmployeeDataPerMonth(useruuid, date, date.plusMonths(1)).getFirst();
 
         Salary baseSalary = salaryService.getUserSalaryByMonth(useruuid, date);
-        if(availability.getGrossAvailableHours().doubleValue()>availability.getSalaryAwardingHours())
-            baseSalary.setSalary(convertDoubleToInt(
-                    baseSalary.calculateMonthNormAdjustedSalary(availability.getGrossAvailableHours().doubleValue()/7.4, availability.getSalaryAwardingHours()/7.4)));
-        payments.add(new SalaryPayment(date, "Base salary", formatCurrency(baseSalary.getSalary())));
+        if(baseSalary==null) return new ArrayList<>();
+
+        if(baseSalary.getType().equals(SalaryType.NORMAL)) {
+            if (availability.getGrossAvailableHours().doubleValue() > availability.getSalaryAwardingHours())
+                baseSalary.setSalary(convertDoubleToInt(
+                        baseSalary.calculateMonthNormAdjustedSalary(availability.getGrossAvailableHours().doubleValue() / 7.4, availability.getSalaryAwardingHours() / 7.4)));
+            payments.add(new SalaryPayment(date, "Base salary", formatCurrency(baseSalary.getSalary())));
+        } else if(baseSalary.getType().equals(SalaryType.HOURLY)) {
+            List<Work> workHoursList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(useruuid, WORK_HOURS, date).stream().filter(w -> w.getRegistered().isBefore(date.plusMonths(1).withDayOfMonth(1))).toList();
+            double sum = workHoursList.stream().mapToDouble(work -> work.getWorkduration() * baseSalary.getSalary()).sum();
+            payments.add(new SalaryPayment(date, "Hourly pay", formatCurrency(sum)));
+        }
 
         salarySupplementService.findByUseruuidAndMonth(useruuid, date).forEach(salarySupplement -> {
             payments.add(new SalaryPayment(date, salarySupplement.getDescription(), formatCurrency(salarySupplement.getValue())));
@@ -94,13 +105,14 @@ public class SalaryResource {
             payments.add(new SalaryPayment(date, salaryLumpSum.getDescription(), formatCurrency(salaryLumpSum.getLumpSum())));
         });
 
-        double vacation = workService.calculateVacationByUserInMonth(useruuid, DateUtils.getTwentieth(date), DateUtils.getTwentieth(date.plusMonths(1)));
+        List<Work> vacationList = workService.findByUserAndPaidOutMonthAndTaskuuid(useruuid, VACATION, date).stream().filter(w -> w.getRegistered().isBefore(date.plusMonths(1).withDayOfMonth(1))).toList();
+        double vacation = vacationList.stream().mapToDouble(Work::getWorkduration).sum();
         payments.add(new SalaryPayment(date, "Vacation", vacation + " hours"));
 
-        int kilometers = transportationRegistrationService.findByUseruuidAndUnpaid(useruuid).stream().mapToInt(TransportationRegistration::getKilometers).sum();
+        int kilometers = transportationRegistrationService.findByUseruuidAndPaidOutMonth(useruuid, date).stream().mapToInt(TransportationRegistration::getKilometers).sum();
         if(kilometers>0) payments.add(new SalaryPayment(date, "Transportation", kilometers + " km"));
 
-        double expenseSum = expenseService.findByUserAndUnpaid(useruuid).stream().mapToDouble(Expense::getAmount).sum();
+        double expenseSum = expenseService.findByUserAndPaidOutMonth(useruuid, date).stream().mapToDouble(Expense::getAmount).sum();
         if(expenseSum>0) payments.add(new SalaryPayment(date, "Expenses", formatCurrency(expenseSum)));
 
         return payments;

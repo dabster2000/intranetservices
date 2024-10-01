@@ -16,7 +16,6 @@ import jakarta.persistence.*;
 public class ProjectDescriptionUser extends PanacheEntityBase {
 
     @Id
-    @JsonIgnore
     @GeneratedValue(strategy= GenerationType.IDENTITY)
     private String id;
 

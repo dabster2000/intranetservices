@@ -10,7 +10,7 @@ import jakarta.inject.Inject;
 public class SystemMessageEmitter {
 
     public static final String BUDGET_UPDATE_EVENT = "send-budget-update-events";
-    public static final String WORK_UPDATE_EVENT = "work-update-events";
+    //public static final String WORK_UPDATE_EVENT = "work-update-events";
 
     @Inject
     EventBus eventBus;
@@ -18,7 +18,7 @@ public class SystemMessageEmitter {
     public void sendAggregateEvent(SystemChangeEvent systemChangeEvent) {
         switch (systemChangeEvent.getEventType()) {
             case UPDATE_BUDGET -> eventBus.publish(BUDGET_UPDATE_EVENT, systemChangeEvent);
-            case UPDATE_WORK -> eventBus.publish(WORK_UPDATE_EVENT, systemChangeEvent);
+            //case UPDATE_WORK -> eventBus.publish(WORK_UPDATE_EVENT, systemChangeEvent);
         }
     }
 }

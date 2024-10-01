@@ -2,6 +2,7 @@ package dk.trustworks.intranet.newsservice.resources;
 
 import dk.trustworks.intranet.newsservice.model.News;
 import dk.trustworks.intranet.newsservice.model.RelatedResource;
+import dk.trustworks.intranet.newsservice.model.enums.NewsType;
 import dk.trustworks.intranet.userservice.model.Employee;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -23,29 +24,27 @@ public class NewsService {
     @Inject
     EntityManager em;
 
-    @GET
     public List<News> findAll() {
         return News.listAll();
     }
 
-    @GET
-    @Path("/active")
-    public List<News> getActiveNews(@QueryParam("type") String newsType) {
-        if(newsType.equals("banner")) {
-            return News.find("?1 between startDate and endDate AND newsType like ?2", LocalDateTime.now(), newsType).list();
+    public List<News> getActiveNews(@QueryParam("category") String newsCategory) {
+        if(newsCategory.equals("banner")) {
+            return News.find("?1 between startDate and endDate AND newsType = ?2", LocalDateTime.now(), NewsType.BANNER).list();
             //5f6fac9d-f52d-462f-ab27-be7eeef1b3f3
-        } else if(newsType.equals("events")) {
-            List<News> newsList = News.find("eventDate >= ?1 and eventDate <= ?2 and newsType like ?3", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6), newsType).list();
+        } else if(newsCategory.equals("events")) {
+            List<News> newsList = News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('BIRTHDAY', 'INFO', 'NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'HQ_BOOKING', 'CLIENT_EVENT', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
             List<Employee> employees = em.createNativeQuery("select * from consultant where active = 1 and status like 'ACTIVE' and consultanttype not like 'EXTERNAL' and CURDATE() between DATE_SUB(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 1 MONTH ) and DATE_ADD(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 7 DAY)", Employee.class).getResultList();
             for (Employee employee : employees) {
-                newsList.add(new News(employee.getBirthday().withYear(LocalDate.now().getYear()).isBefore(LocalDate.now())? employee.getBirthday().withYear(LocalDate.now().getYear()).plusYears(1).atStartOfDay(): employee.getBirthday().atStartOfDay(), "events", employee.uuid, employee.getFirstname() + " " + employee.getLastname() + "'s Birthday"));
+                newsList.add(new News(employee.getBirthday().withYear(LocalDate.now().getYear()).isBefore(LocalDate.now())? employee.getBirthday().withYear(LocalDate.now().getYear()).plusYears(1).atStartOfDay(): employee.getBirthday().atStartOfDay(), NewsType.BIRTHDAY, employee.uuid, employee.getFirstname() + " " + employee.getLastname() + "'s Birthday"));
             }
             return newsList;
+        } else if (newsCategory.equals("office_display")) {
+            return News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'CLIENT_EVENT', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
         }
         return new ArrayList<>();
     }
 
-    @POST
     @Transactional
     public void save(News news) {
         if(news.getUuid() == null || news.getUuid().isBlank()) {
@@ -74,8 +73,6 @@ public class NewsService {
         news.persist();
     }
 
-    @DELETE
-    @Path("/{newsuuid}")
     @Transactional
     public void delete(@PathParam("newsuuid") String uuid) {
         News.deleteById(uuid);

@@ -1,6 +1,8 @@
 quarkus:
   application:
     name: trustworks-intranet
+  dev-ui:
+    always-include: true
   datasource:
     db-kind: mysql
     jdbc:
@@ -8,11 +10,14 @@ quarkus:
       driver: com.mysql.cj.jdbc.Driver
       min-size: 5
       max-size: 50
-      tracing:
-        enabled: false
-      #extended-leak-report: true
+      idle-removal-interval: PT1M
+      #telemetry: true
+      #tracing:
+      #  enabled: false
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
+  hibernate-orm:
+    statistics: true
   flyway:
     migrate-at-start: true
     baseline-on-migrate: true
@@ -36,7 +41,7 @@ quarkus:
       max-form-attribute-size: 40M
     access-log:
       enabled: true
-      pattern: common
+      pattern: common #"...traceId=%{X,traceId} spanId=%{X,spanId}" #common
     port: 9093 #registry.hub.docker.com/
   log:
     level: INFO
@@ -45,14 +50,25 @@ quarkus:
         level: DEBUG
       "org.jboss.resteasy.resteasy_client":
         level: DEBUG
+      #"io.opentelemetry":
+      #  level: DEBUG
     console:
       enable: true
-      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c{2.}] (%t) %s%e%n"
+      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
+      #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
+  #otel:
+  #  exporter:
+  #    otlp:
+  #      endpoint: http://jaeger:4317 #4317
   cache:
     caffeine:
       "employee-data-per-month-cache":
         expire-after-write: 3H
+      employee-budgets:
+        expire-after-write: 30M  # Expire after 30 minutes
+      employee-availability:
+        expire-after-write: 30M  # Expire after 30 minutes
   s3:
     sync-client:
       type: APACHE
@@ -107,3 +123,8 @@ dk:
           network:
             InvoiceAPI/mp-rest/url: https://invoice-generator.com
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
+hibernate:
+  jdbc:
+    batch_size: 50
+  order_inserts: true
+  order_updates: true

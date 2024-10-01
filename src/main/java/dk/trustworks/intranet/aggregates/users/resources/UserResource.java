@@ -148,12 +148,6 @@ public class UserResource {
                 .sorted(Comparator.comparing(User::getUsername))
                 .collect(Collectors.toList()));
     }
-/*
-    @GET
-    @Path("/{uuid}/work")
-    public List<WorkFull> findWorkByTaskFilterByUseruuidAndRegistered(@PathParam("uuid") String uuid, @QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate) {
-        return workService.findByPeriodAndUserUUID(dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))), uuid);
-    }*/
 
     @GET
     @Path("/{uuid}/work")

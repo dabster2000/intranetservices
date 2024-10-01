@@ -45,6 +45,7 @@ public class SalaryService {
     }
 
     private void updateSalary(Salary salary) {
+        log.info("Updating salary: " + salary);
         Salary.update("salary = ?1, " +
                         "activefrom = ?2, " +
                         "type = ?3, " +

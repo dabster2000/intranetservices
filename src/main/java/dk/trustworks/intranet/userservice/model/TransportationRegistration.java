@@ -1,5 +1,10 @@
 package dk.trustworks.intranet.userservice.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -12,6 +17,7 @@ import lombok.EqualsAndHashCode;
 import org.hibernate.annotations.ColumnDefault;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Data
@@ -47,19 +53,25 @@ public class TransportationRegistration extends PanacheEntityBase {
     @Column(name = "kilometers", nullable = false)
     private Integer kilometers;
 
-    @NotNull
-    @Column(name = "paid", nullable = false)
-    private Boolean paid = false;
+    @Column(name = "paid_out")
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime paidOut;
 
     public static List<TransportationRegistration> findByUseruuid(String useruuid) {
         return TransportationRegistration.find("useruuid", useruuid).list();
     }
 
-    public static List<TransportationRegistration> findByUseruuidAndUnpaid(String useruuid) {
-        return TransportationRegistration.find("useruuid = ?1 and paid = ?2", useruuid, false).list();
+    public static List<TransportationRegistration> findByUseruuidAndUnpaidAndMonth(String useruuid, LocalDate month) {
+        return TransportationRegistration.find("useruuid = ?1 and (paidOut is null OR YEAR(paidOut) = YEAR(?2) AND MONTH(paidOut) = MONTH(?2))", useruuid, month).list();
     }
 
-    public @NotNull Boolean isPaid() {
-        return paid;
+    public static List<TransportationRegistration> findByUseruuidAndPaidOutMonth(String useruuid, LocalDate month) {
+        return TransportationRegistration.find("useruuid = ?1 and (YEAR(paidOut) = YEAR(?2) AND MONTH(paidOut) = MONTH(?2))", useruuid, month).list();
+    }
+
+    @JsonIgnore
+    public boolean isPaidOut() {
+        return paidOut != null;
     }
 }

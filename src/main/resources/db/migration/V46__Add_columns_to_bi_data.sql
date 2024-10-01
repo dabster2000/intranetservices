@@ -1,0 +1,1 @@
+alter table bi_data_per_day add budget_hours decimal(7, 4) null after paid_leave_hours;

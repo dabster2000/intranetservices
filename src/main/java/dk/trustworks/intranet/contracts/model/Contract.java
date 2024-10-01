@@ -66,7 +66,7 @@ public class Contract extends PanacheEntityBase {
     @JoinColumn(name = "sales_consultant")
     private ContractSalesConsultant salesconsultant;
 
-    @OneToMany(fetch = FetchType.EAGER)
+    @OneToMany(fetch = FetchType.EAGER, cascade = CascadeType.ALL)
     @JoinColumn(name = "contractuuid")
     private Set<ContractConsultant> contractConsultants = new HashSet<>();
 

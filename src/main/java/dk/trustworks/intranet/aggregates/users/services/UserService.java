@@ -123,14 +123,9 @@ public class UserService {
                 "ON u.uuid = kk.useruuid " +
                 "WHERE kk.status IN ('"+String.join("','", statusArray)+"') AND kk.type IN ('"+String.join("','", consultantTypesArray)+"') " +
                 "ORDER BY u.username";
-
-        //log.info("sql = " + sql);
-
         List<User> userList = em.createNativeQuery(sql, User.class).getResultList();
-        //shallow.ifPresent(s -> {if(s.equals("true"))
         if(!shallow)
             userList.forEach(user -> addChildrenToUser(user));
-            //userList.forEach(user -> addChildrenToUser(user, jwt.getGroups().stream().map(RoleType::valueOf).collect(Collectors.toList())));
         return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
@@ -143,6 +138,10 @@ public class UserService {
         user.getUserBankInfos().addAll(UserBankInfo.findByUseruuid(user.getUuid()));
         user.setUserAccount(UserAccount.findById(user.getUuid()));
         return user;
+    }
+
+    public List<UserStatus> findUserStatuses(String useruuid) {
+        return UserStatus.findByUseruuid(useruuid);
     }
 
     @CacheResult(cacheName = "user-cache")
@@ -174,10 +173,10 @@ public class UserService {
     }
 
     @CacheResult(cacheName = "user-cache")
-    public List<User> findCurrentlyEmployedUsers(ConsultantType... consultantType) {
+    public List<User> findCurrentlyEmployedUsers(boolean shallow, ConsultantType... consultantType) {
         String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString()};
         return findUsersByDateAndStatusListAndTypes(LocalDate.now(), statusList,
-                Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), true).stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
+                Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow).stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
     @CacheResult(cacheName = "user-cache")
@@ -201,6 +200,8 @@ public class UserService {
         String[] consultantTypesArray = split(consultantTypes);
         return new ArrayList<>(findUsersByDateAndStatusListAndTypes(date, statusArray, consultantTypesArray, shallow));
     }
+
+
 
     @CacheResult(cacheName = "user-cache")
     public List<User> getActiveConsultantsByFiscalYear(String intFiscalYear) {
@@ -303,7 +304,7 @@ public class UserService {
         String key = UUID.randomUUID().toString();
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
         PasswordChange.persist(new PasswordChange(key, user.getUuid(), hashpw, "'INTRA'"));
-        mailAPI.sendingHTML(new TrustworksMail(UUID.randomUUID().toString(), user.getEmail(), "Confirm reset password request", "Click here to reset password: http://intra.trustworks.dk/#!confirmchange/"+key));
+        mailAPI.sendingHTML(new TrustworksMail(UUID.randomUUID().toString(), user.getEmail(), "Confirm reset password request", "Click here to reset password: http://intra.trustworks.dk/confirmchange/"+key));
         log.info("...mail sent");
     }
 
@@ -316,7 +317,7 @@ public class UserService {
         String key = UUID.randomUUID().toString();
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
         PasswordChange.persist(new PasswordChange(key, user.getUuid(), hashpw, "SLACK"));
-        mailAPI.sendingHTML(new TrustworksMail(UUID.randomUUID().toString(), user.getEmail(), "Confirm reset password request", "Click here to reset password: http://intra.trustworks.dk/#!confirmchange/"+key));
+        mailAPI.sendingHTML(new TrustworksMail(UUID.randomUUID().toString(), user.getEmail(), "Confirm reset password request", "Click here to reset password: http://intra.trustworks.dk/confirmchange/"+key));
     }
 
     @Transactional

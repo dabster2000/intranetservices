@@ -4,17 +4,17 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import dk.trustworks.intranet.expenseservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.expenseservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-import jakarta.persistence.Transient;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Data
@@ -44,7 +44,12 @@ public class Expense extends PanacheEntityBase {
     private LocalDate expensedate;
 
     private String status;
-    private Boolean paid;
+
+    @Column(name = "paid_out")
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime paidOut;
+
     private boolean customerexpense;
 
     @Transient
@@ -61,4 +66,13 @@ public class Expense extends PanacheEntityBase {
         datemodified = LocalDate.now();
     }
 
+    public boolean isPaidOut() {
+        return paidOut != null;
+    }
+
+    @Transient
+    @JsonProperty("isLocked")
+    public boolean isLocked() {
+        return datecreated.isBefore(LocalDate.now());
+    }
 }

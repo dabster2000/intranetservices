@@ -7,15 +7,17 @@ import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhas
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
 import dk.trustworks.intranet.aggregates.users.events.*;
+import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
+import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.enterprise.inject.spi.CDI;
+import jakarta.persistence.*;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-import jakarta.enterprise.inject.spi.CDI;
-import jakarta.persistence.*;
 import java.util.UUID;
 
 @Data
@@ -29,6 +31,7 @@ import java.util.UUID;
         property = "type")
 @JsonSubTypes({
         @JsonSubTypes.Type(value = CreateClientEvent.class, name = "CreateClientEvent"),
+        @JsonSubTypes.Type(value = ModifyContractConsultantEvent.class, name = "ModifyContractConsultantEvent"),
         @JsonSubTypes.Type(value = CreateUserEvent.class, name = "CreateUserEvent"),
         @JsonSubTypes.Type(value = UpdateUserEvent.class, name = "UpdateUserEvent"),
         @JsonSubTypes.Type(value = CreateUserStatusEvent.class, name = "CreateUserStatusEvent"),
@@ -38,7 +41,8 @@ import java.util.UUID;
         @JsonSubTypes.Type(value = CreateParticipantEvent.class, name = "CreateParticipantEvent"),
         @JsonSubTypes.Type(value = UpdateParticipantDataEvent.class, name = "UpdateParticipantDataEvent"),
         @JsonSubTypes.Type(value = ChangeParticipantPhaseEvent.class, name = "ChangeParticipantPhaseEvent"),
-        @JsonSubTypes.Type(value = CreateBankInfoEvent.class, name = "CreateBankInfoEvent")
+        @JsonSubTypes.Type(value = CreateBankInfoEvent.class, name = "CreateBankInfoEvent"),
+        @JsonSubTypes.Type(value = UpdateWorkEvent.class, name = "UpdateWorkEvent"),
 })
 public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
 

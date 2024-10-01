@@ -5,9 +5,14 @@ import dk.trustworks.intranet.aggregates.availability.services.AvailabilityServi
 import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.model.v2.CompanyBudgetPerMonth;
 import dk.trustworks.intranet.aggregates.model.v2.CompanyWorkPerMonth;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationService;
+import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
+import dk.trustworks.intranet.dto.KeyDateValueListDTO;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -49,11 +54,16 @@ public class UtilizationResource {
     @Inject
     UtilizationService utilizationService;
 
+    @Inject
+    WorkService workService;
+
     @PathParam("companyuuid")
     String companyuuid;
 
     @Inject
     EntityManager em;
+    @Inject
+    UserService userService;
 
     @GET
     @Path("/budget")
@@ -78,8 +88,8 @@ public class UtilizationResource {
 
     @GET
     @Path("/budget/teams/{teamuuid}")
-    public List<DateValueDTO> getBudgetUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid) {
-        LocalDate currentFiscalStartDate = DateUtils.getCurrentFiscalStartDate();
+    public List<DateValueDTO> getBudgetUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("fiscalYear") int fiscalYear) {
+        LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);
         List<DateValueDTO> utilizationPerMonth = new ArrayList<>();
 
         for (int i = 0; i < 12; i++) {
@@ -99,6 +109,26 @@ public class UtilizationResource {
         }
 
         return utilizationPerMonth;
+    }
+
+    @GET
+    @Path("/budget/employees")
+    public List<KeyDateValueListDTO> getEmployeeBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+
+        // List to store results
+        List<KeyDateValueListDTO> employeeUtilizationList = new ArrayList<>();
+
+        // Get all employees (this might come from the UserService or a different service)
+        List<User> users = userService.findCurrentlyEmployedUsers(false, ConsultantType.CONSULTANT).stream().filter(u -> u.getUserStatus(toDate).getCompany().getUuid().equals(companyuuid)).toList();
+
+        for (User user : users) {
+            List<DateValueDTO> dateValueDTOS = utilizationService.calculateActualUtilizationPerMonthByConsultant("useruuid", fromDate, toDate, budgetService.getBudgetHoursByPeriodAndSingleConsultant(user.getUuid(), fromDate, toDate));
+            employeeUtilizationList.add(new KeyDateValueListDTO(user.getUuid(), dateValueDTOS));
+        }
+
+        return employeeUtilizationList;
     }
 
     @GET
@@ -132,8 +162,8 @@ public class UtilizationResource {
 
     @GET
     @Path("/actual/teams/{teamuuid}")
-    public List<DateValueDTO> getActualUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid) {;
-        LocalDate currentFiscalStartDate = DateUtils.getCurrentFiscalStartDate();
+    public List<DateValueDTO> getActualUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("fiscalYear") int fiscalYear) {
+        LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);
         List<DateValueDTO> utilizationPerMonth = new ArrayList<>();
 
         for (int i = 0; i < 12; i++) {
@@ -151,12 +181,39 @@ public class UtilizationResource {
                     .setParameter("startDate", localDate)
                     .setParameter("endDate", localDate.plusMonths(1))
                     .getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
+            System.out.println("billableHours = " + billableHours);
 
             double availableHours = availabilityService.getSumOfAvailableHoursByUsersAndMonth(localDate, uuids);
+            System.out.println("availableHours = " + availableHours);
 
             utilizationPerMonth.add(new DateValueDTO(localDate, (billableHours / availableHours)));
         }
+
         return utilizationPerMonth;
+    }
+
+    @GET
+    @Path("/actual/employees")
+    public List<KeyDateValueListDTO> getEmployeeActualUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+
+        // List to store results
+        List<KeyDateValueListDTO> employeeUtilizationList = new ArrayList<>();
+
+        // Get all employees (this might come from the UserService or a different service)
+        List<User> users = userService.findCurrentlyEmployedUsers(false, ConsultantType.CONSULTANT).stream().filter(u -> u.getUserStatus(toDate).getCompany().getUuid().equals(companyuuid)).toList();
+        System.out.println("users.size() = " + users.size());
+        int i = 0;
+
+        for (User user : users) {
+            System.out.print("["+i+"] Calculating utilization for user " + user.getUsername() + "...");
+            List<DateValueDTO> dateValueDTOS = utilizationService.calculateActualUtilizationPerMonthByConsultant(user.getUuid(), fromDate, toDate, workService.findWorkHoursByUserAndPeriod(user.getUuid(), fromDate, toDate));
+            employeeUtilizationList.add(new KeyDateValueListDTO(user.getFullname(), dateValueDTOS));
+            System.out.println("done");
+        }
+
+        return employeeUtilizationList;
     }
 
 

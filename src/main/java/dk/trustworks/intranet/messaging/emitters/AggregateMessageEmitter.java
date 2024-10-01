@@ -11,6 +11,8 @@ public class AggregateMessageEmitter {
 
     public static final String BROWSER_EVENT = "send-browser-events";
     public static final String CLIENT_EVENT = "send-client-events";
+    public static final String CONTRACT_EVENT = "send-contract-events";
+    public static final String WORK_EVENT = "send-work-events";
     public static final String USER_EVENT = "send-user-events";
     public static final String CONFERENCE_EVENT = "send-conference-events";
 
@@ -20,6 +22,8 @@ public class AggregateMessageEmitter {
     public void sendAggregateEvent(AggregateRootChangeEvent aggregateRootChangeEvent) {
         switch (aggregateRootChangeEvent.getEventType()) {
             case CREATE_CLIENT -> eventBus.publish(CLIENT_EVENT, aggregateRootChangeEvent);
+            case MODIFY_CONTRACT_CONSULTANT -> eventBus.publish(CONTRACT_EVENT, aggregateRootChangeEvent);
+            case UPDATE_WORK -> eventBus.publish(WORK_EVENT, aggregateRootChangeEvent);
             case CREATE_USER -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
             case UPDATE_USER -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
             case CREATE_USER_STATUS -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);

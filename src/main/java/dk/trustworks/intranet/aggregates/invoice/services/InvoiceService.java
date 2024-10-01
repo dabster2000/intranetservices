@@ -496,7 +496,7 @@ public class InvoiceService {
         });
         double totalNumberOfConsultants = fromCompanyConsultantAvg + secondaryCompanyConsultant.get();
 
-        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now(), "", "", ContractType.PERIOD, fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
+        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now().withDayOfMonth(1).minusDays(1), "", "", ContractType.PERIOD, fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
         invoice.persistAndFlush();
 
         for (AccountingCategory accountingCategory : allAccountingCategories) {

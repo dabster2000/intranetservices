@@ -13,6 +13,8 @@ import lombok.extern.jbosslog.JBossLog;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 
 import java.io.IOException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @JBossLog
@@ -33,8 +35,14 @@ public class ExpenseService {
         return Expense.find("useruuid = ?1 ORDER BY expensedate DESC LIMIT 40", useruuid).list();
     }
 
-    public List<Expense> findByUserAndUnpaid(String useruuid) {
-        return Expense.find("useruuid = ?1 and paid = ?2 and status = ?3", useruuid, false, "PROCESSED").list();
+    public List<Expense> findByUserAndPaidOutMonth(String useruuid, LocalDate month) {
+        return Expense.find("useruuid = ?1 and status = ?2 AND " +
+                "(YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))", useruuid, "PROCESSED", month).list();
+    }
+
+    public List<Expense> findByUserAndUnpaidAndMonth(String useruuid, LocalDate month) {
+        return Expense.find("useruuid = ?1 and status = ?2 AND " +
+                "(paidOut is null OR YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))", useruuid, "PROCESSED", month).list();
     }
 
     @Transactional
@@ -42,7 +50,6 @@ public class ExpenseService {
         try {
             //save expense to db
             expense.setStatus("CREATED");
-            expense.setPaid(false);
             expense.persist();
 
             //save expense file to AWS
@@ -64,7 +71,7 @@ public class ExpenseService {
     @Transactional
     @Scheduled(every = "1m")
     public void consumeCreate() throws IOException {
-        List<Expense> expenses = Expense.find("status", "CREATED").list();
+        List<Expense> expenses = Expense.<Expense>stream("status", "CREATED").filter(e -> e.getDatecreated().isBefore(LocalDate.now())).toList();
         log.info("Expenses found with status CREATED: " + expenses.size());
         if(expenses.isEmpty()) return;
         Expense expense = expenses.get(0);
@@ -113,8 +120,14 @@ public class ExpenseService {
 
     @Transactional
     public void setPaidAndUpdate(Expense expense) {
-        expense.setPaid(true);
-        Expense.update("paid = ?1 WHERE uuid like ?2 ", expense.getPaid(), expense.getUuid());
+        expense.setPaidOut(LocalDateTime.now());
+        Expense.update("paidOut = ?1 WHERE uuid like ?2 ", expense.getPaidOut(), expense.getUuid());
+    }
+
+    @Transactional
+    public void clearPaidAndUpdate(Expense expense) {
+        expense.setPaidOut(null);
+        Expense.update("paidOut = ?1 WHERE uuid like ?2 ", expense.getPaidOut(), expense.getUuid());
     }
 }
 

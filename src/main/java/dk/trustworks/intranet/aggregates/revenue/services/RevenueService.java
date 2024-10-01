@@ -19,6 +19,7 @@ import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import dk.trustworks.intranet.utils.DateUtils;
+import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.*;
@@ -130,11 +131,13 @@ public class RevenueService {
         return workService.findWorkHoursByUserAndPeriod(useruuid, fromdate, todate);
     }
 
+    @CacheResult(cacheName = "employee-revenue")
     public double getRegisteredHoursForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
         List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
         return workFullList.stream().mapToDouble(WorkFull::getWorkduration).sum();
     }
 
+    @CacheResult(cacheName = "employee-revenue")
     public double getRegisteredRevenueForSingleMonthAndSingleConsultant(String useruuid, LocalDate month) {
         List<WorkFull> workFullList = WorkFull.find("useruuid like ?1 AND registered >= ?2 AND registered < ?3 AND rate > 0.0", useruuid, month.withDayOfMonth(1), month.withDayOfMonth(1).plusMonths(1)).list();
         return workFullList.stream().mapToDouble(value -> value.getWorkduration()*value.getRate()).sum();
@@ -178,6 +181,7 @@ public class RevenueService {
         return new GraphKeyValue(UUID.randomUUID().toString(), "profits", consultantRevenue - sumExpenses);
     }
 
+    @CacheResult(cacheName = "employee-revenue")
     public List<DateValueDTO> getRegisteredRevenueByPeriodAndSingleConsultant(String useruuid, String periodFrom, String periodTo) {
         String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, w.discount / 100.0, 1)) AS value from work_full w " +
                 "where w.rate > 0 and w.useruuid = '"+useruuid+"' and registered >= '" + periodFrom + "' and registered < '" + periodTo + "' " +

@@ -16,7 +16,6 @@ import static dk.trustworks.intranet.messaging.emitters.enums.SystemEventType.UP
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
 public class UpdateBudgetEvent extends SystemChangeEvent {
-
     public UpdateBudgetEvent(DateRangeMap item) {
         super(UPDATE_BUDGET, JsonObject.mapFrom(item).encode());
     }

@@ -1,10 +1,11 @@
 package dk.trustworks.intranet.aggregates.users.query;
 
 import com.slack.api.methods.SlackApiException;
+import dk.trustworks.intranet.aggregates.bidata.services.UserAvailabilityCalculatorService;
+import dk.trustworks.intranet.aggregates.bidata.services.UserSalaryCalculatorService;
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
-import dk.trustworks.intranet.aggregates.users.services.SalaryService;
+import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
@@ -12,13 +13,13 @@ import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserBankInfo;
 import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.io.IOException;
@@ -32,13 +33,13 @@ import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.
 public class UserEventHandler {
 
     @Inject
-    UserService userService;
+    UserAvailabilityCalculatorService userAvailabilityCalculatorService;
 
     @Inject
     StatusService statusService;
 
     @Inject
-    SalaryService salaryService;
+    UserSalaryCalculatorService userSalaryCalculatorService;
 
     @Inject
     SlackService slackService;
@@ -46,12 +47,11 @@ public class UserEventHandler {
     @Inject
     EventBus eventBus;
 
-    //@Blocking
-    //@Incoming(READ_USER_EVENT)
-    //@Outgoing(SEND_BROWSER_EVENT)
+    @Inject
+    SNSEventSender snsEventSender;
+
     @ConsumeEvent(value = USER_EVENT, blocking = true)
     @CacheInvalidateAll(cacheName = "user-cache")
-    @Transactional
     public void readUserEvent(AggregateRootChangeEvent event) {
         log.info("UserEventHandler.readUserEvent -> event = " + event);
         AggregateEventType type = event.getEventType();
@@ -78,21 +78,29 @@ public class UserEventHandler {
     }
 
     private void deleteUserSalary(AggregateRootChangeEvent event) {
-        //
+        Salary salary = new JsonObject(event.getEventContent()).mapTo(Salary.class);
+        snsEventSender.sendEvent(SNSEventSender.UserSalaryUpdateTopic, salary.getUseruuid(), salary.getActivefrom());
+        //userSalaryCalculatorService.recalculateSalary(salary.getUseruuid());
     }
 
     private void createUserSalary(AggregateRootChangeEvent event) {
         Salary salary = new JsonObject(event.getEventContent()).mapTo(Salary.class);
-        //salaryService.create(salary);
+        snsEventSender.sendEvent(SNSEventSender.UserSalaryUpdateTopic, salary.getUseruuid(), salary.getActivefrom());
+        //userSalaryCalculatorService.recalculateSalary(useruuid);
     }
 
     private void deleteUserStatus(AggregateRootChangeEvent event) {
-        //
+        String useruuid = event.getAggregateRootUUID();
+        snsEventSender.sendEvent(SNSEventSender.UserStatusUpdateTopic, useruuid, DateUtils.getCompanyStartDate());
+        //userAvailabilityCalculatorService.updateUserAvailability(useruuid);
+        //userSalaryCalculatorService.recalculateSalary(useruuid);
     }
 
     private void createUserStatus(AggregateRootChangeEvent event) {
         UserStatus userStatus = new JsonObject(event.getEventContent()).mapTo(UserStatus.class);
-
+        snsEventSender.sendEvent(SNSEventSender.UserStatusUpdateTopic, userStatus.getUseruuid(), userStatus.getStatusdate());
+        //userAvailabilityCalculatorService.updateUserAvailability(useruuid);
+        //userSalaryCalculatorService.recalculateSalary(useruuid);
     }
 
     private void updateUser(AggregateRootChangeEvent event) {

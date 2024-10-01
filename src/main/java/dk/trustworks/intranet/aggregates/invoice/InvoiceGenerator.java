@@ -220,7 +220,12 @@ public class InvoiceGenerator {
                         throw new WebApplicationException(response);
                     }
                     if (!invoiceItemMap.containsKey(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid())) {
-                        InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFirstname() + " " + user.getLastname(),
+                        String invoiceItemName = (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFirstname() + " " + user.getLastname();
+                        if(workFull.getWorkas()!=null && !workFull.getWorkas().isEmpty()) {
+                            User workAsUser = userService.findUserByUuid(workFull.getWorkas(), true);
+                            invoiceItemName = workAsUser.getFirstname() + " " + workAsUser.getLastname() + " (as " + invoiceItemName + ")";
+                        }
+                        InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,
                                 task.getName(),
                                 workFull.getRate(),
                                 0.0, invoice.uuid);

@@ -7,6 +7,8 @@ import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,8 +24,12 @@ public class TransportationRegistrationService {
         return TransportationRegistration.findByUseruuid(useruuid);
     }
 
-    public List<TransportationRegistration> findByUseruuidAndUnpaid(String useruuid) {
-        return TransportationRegistration.findByUseruuidAndUnpaid(useruuid);
+    public List<TransportationRegistration> findByUseruuidAndUnpaidAndMonth(String useruuid, LocalDate month) {
+        return TransportationRegistration.findByUseruuidAndUnpaidAndMonth(useruuid, month);
+    }
+
+    public List<TransportationRegistration> findByUseruuidAndPaidOutMonth(String useruuid, LocalDate month) {
+        return TransportationRegistration.findByUseruuidAndPaidOutMonth(useruuid, month);
     }
 
     @Transactional
@@ -32,12 +38,12 @@ public class TransportationRegistrationService {
         if(entity.getUuid()==null || entity.getUseruuid()==null) return;
         Optional<TransportationRegistration> existingEntity = TransportationRegistration.findByIdOptional(entity.getUuid());
         existingEntity.ifPresentOrElse(s -> {
-            if(s.getPaid()) return;
+            if(s.isPaidOut()) return;
             s.setDate(entity.getDate());
             s.setKilometers(entity.getKilometers());
             s.setDestination(entity.getDestination());
             s.setPurpose(entity.getPurpose());
-            s.setPaid(entity.isPaid());
+            s.setPaidOut(entity.getPaidOut());
             updateTransportationAllowance(s);
         }, entity::persist);
     }
@@ -47,20 +53,32 @@ public class TransportationRegistrationService {
                         "kilometers = ?2, " +
                         "destination = ?3, " +
                         "purpose = ?4, " +
-                        "paid = ?5 " +
+                        "paidOut = ?5 " +
                         "WHERE uuid LIKE ?6 ",
                 entity.getDate(),
                 entity.getKilometers(),
                 entity.getDestination(),
                 entity.getPurpose(),
-                entity.isPaid(),
+                entity.getPaidOut(),
                 entity.getUuid());
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(String uuid) {
-        if(TransportationRegistration.<TransportationRegistration>findById(uuid).isPaid()) return;
+        if(TransportationRegistration.<TransportationRegistration>findById(uuid).isPaidOut()) return;
         TransportationRegistration.deleteById(uuid);
+    }
+
+    @Transactional
+    public void setPaidAndUpdate(TransportationRegistration transportationRegistration) {
+        transportationRegistration.setPaidOut(LocalDateTime.now());
+        TransportationRegistration.update("paidOut = ?1 WHERE uuid like ?2 ", transportationRegistration.getPaidOut(), transportationRegistration.getUuid());
+    }
+
+    @Transactional
+    public void clearPaidAndUpdate(TransportationRegistration transportationRegistration) {
+        transportationRegistration.setPaidOut(null);
+        TransportationRegistration.update("paidOut = ?1 WHERE uuid like ?2 ", transportationRegistration.getPaidOut(), transportationRegistration.getUuid());
     }
 }

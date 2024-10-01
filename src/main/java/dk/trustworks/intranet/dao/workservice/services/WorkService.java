@@ -1,12 +1,9 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
 
-import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
-import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.DateValueDTO;
-import dk.trustworks.intranet.messaging.dto.UserDateMap;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
@@ -22,6 +19,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.sql.Date;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
@@ -44,7 +42,6 @@ public class WorkService {
     @Inject
     EntityManager em;
 
-
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
     }
@@ -56,9 +53,6 @@ public class WorkService {
      * @return List of WorkFull
      */
     public List<WorkFull> findByPeriod(LocalDate fromDate, LocalDate toDate) {
-        if(toDate.getDayOfMonth()>1) {
-            log.error("Beware of month issues!!: "+toDate);
-        }
         return WorkFull.find("registered >= ?1 AND registered < ?2", fromDate, toDate).list();
     }
 
@@ -93,6 +87,26 @@ public class WorkService {
                 )).toList();
     }
 
+    public List<DateValueDTO> findWorkRevenueByUserAndPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
+        String sql = "select " +
+                "    MAKEDATE(YEAR(wf.registered), 1) + INTERVAL (MONTH(wf.registered) - 1) MONTH AS date, " +
+                "    SUM(wf.workduration * wf.rate) as value " +
+                "from " +
+                "    work_full wf " +
+                "where " +
+                "    useruuid = '"+useruuid+"' and " +
+                "    wf.workduration > 0 and " +
+                "    wf.rate > 0 " +
+                "    and wf.registered >= '"+DateUtils.stringIt(fromdate)+"' and wf.registered < '"+DateUtils.stringIt(todate)+"' " +
+                "group by " +
+                "    YEAR(wf.registered), MONTH(wf.registered); ";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                )).toList();
+    }
+
     public List<WorkFull> findByPeriodAndProject(String fromdate, String todate, String projectuuid) {
         if(dateIt(todate).getDayOfMonth()>1) log.error("Beware of month issues!!: "+todate);
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND projectuuid LIKE ?3", dateIt(fromdate), dateIt(todate), projectuuid).list();
@@ -107,7 +121,19 @@ public class WorkService {
     }
 
     public List<Work> findByUserAndUnpaidAndTaskuuid(String useruuid, String taskuuid) {
-        return Work.find("useruuid LIKE ?1 AND taskuuid LIKE ?2 AND paidout = ?3", useruuid, taskuuid, false).list();
+        return Work.find("useruuid = ?1 AND taskuuid = ?2 AND paidOut is null", useruuid, taskuuid).list();
+    }
+
+    public List<Work> findByUserAndPaidOutMonthAndTaskuuid(String useruuid, String taskuuid, LocalDate month) {
+        return Work.find("useruuid = ?1 AND taskuuid = ?2 AND " +
+                        "(YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))",
+                useruuid, taskuuid, month).list();
+    }
+
+    public List<Work> findByUserAndUnpaidAndMonthAndTaskuuid(String useruuid, String taskuuid, LocalDate month) {
+        return Work.find("useruuid = ?1 AND taskuuid = ?2 AND " +
+                "(paidOut is null OR YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))",
+                useruuid, taskuuid, month).list();
     }
 
     public List<Work> findByUseruuidAndTaskuuidAndPeriod(String useruuid, String taskuuid, LocalDate fromdate, LocalDate todate) {
@@ -204,26 +230,23 @@ public class WorkService {
         return findByContract(contractuuid).stream().mapToDouble(value -> value.getRate()*value.getWorkduration()).sum();
     }
 
-    @Inject
-    SystemEventSender sender;
+
 
     @Transactional
     @CacheInvalidateAll(cacheName = "work-cache")
+    @CacheInvalidateAll(cacheName = "employee-availability")
     public void persistOrUpdate(Work work) {
         List<Work> workList = Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", work.getRegistered(), work.getUseruuid(), work.getTaskuuid()).list();
         if(!workList.isEmpty()) {
-            if(workList.stream().findFirst().get().isPaidout()) return;
+            if(workList.stream().findFirst().get().isPaidOut()) return;
             work.setUuid(workList.stream().findFirst().get().getUuid());
-            Work.update("workduration = ?1, comments = ?2, paidout = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6", work.getWorkduration(), work.getComments(), work.isPaidout(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+            Work.update("workduration = ?1, comments = ?2, paidOut = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6", work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
             log.info("Updating work via save: "+work);
         } else {
             work.setUuid(UUID.randomUUID().toString());
             Work.persist(work);
             log.info("Saving work: "+work);
         }
-        sender.handleEvent(new UpdateWorkEvent(new UserDateMap(work.getUseruuid(), work.getRegistered())));
-        if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
-            sender.handleEvent(new UpdateWorkEvent(new UserDateMap(work.getWorkas(), work.getRegistered())));
     }
 
     public List<WorkFull> findBillableWorkByUser(String useruuid) {
@@ -232,5 +255,17 @@ public class WorkService {
 
     public double sumBillableByUserAndTasks(String useruuid, LocalDate localDate) {
         return WorkFull.<WorkFull>find("useruuid like ?1 AND rate > 0 AND registered >= ?2 AND registered < ?3", useruuid, localDate, localDate.plusMonths(1)).stream().mapToDouble(WorkFull::getWorkduration).sum();
+    }
+
+    @Transactional
+    public void setPaidAndUpdate(Work work) {
+        work.setPaidOut(LocalDateTime.now());
+        Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
+    }
+
+    @Transactional
+    public void clearPaidAndUpdate(Work work) {
+        work.setPaidOut(null);
+        Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
     }
 }
