@@ -69,7 +69,7 @@ public class ExpenseService {
     }
 
     @Transactional
-    @Scheduled(every = "1m")
+    @Scheduled(cron = "0 0 20 * * ?")
     public void consumeCreate() throws IOException {
         List<Expense> expenses = Expense.<Expense>stream("status", "CREATED").filter(e -> e.getDatecreated().isBefore(LocalDate.now())).toList();
         log.info("Expenses found with status CREATED: " + expenses.size());

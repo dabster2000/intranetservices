@@ -66,10 +66,14 @@ public class FileResource {
     }
 
     @PUT
+    @Path("/photos/logo")
+    public void updateClientLogo(File photo) throws URISyntaxException, IOException {
+        photoService.updateLogo(photo);
+    }
+
+    @PUT
     @Path("/photos/portrait")
     public void updatePortrait(File photo) throws URISyntaxException, IOException {
-        System.out.println("FileResource.updatePortrait");
-        System.out.println("photo = " + photo);
         photoService.updatePortrait(photo);
     }
 

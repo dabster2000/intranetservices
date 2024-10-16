@@ -1,10 +1,8 @@
 package dk.trustworks.intranet.userservice.model;
 
+import dk.trustworks.intranet.userservice.model.enums.LumpSumSalaryType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -33,9 +31,9 @@ public class SalaryLumpSum extends PanacheEntityBase {
     private Double lumpSum;
 
     @NotNull
-    @ColumnDefault("40")
+    @Enumerated(EnumType.STRING)
     @Column(name = "salary_type", nullable = false)
-    private Integer salaryType;
+    private LumpSumSalaryType salaryType;
 
     @NotNull
     @ColumnDefault("0")

@@ -42,7 +42,7 @@ public class SNSEventSender {
         } catch (JsonProcessingException e) {
             e.printStackTrace();
         }
-        System.out.println("message = " + message);
+        //System.out.println("message = " + message);
 
         PublishRequest request = PublishRequest.builder()
                 .message(message)
@@ -51,6 +51,6 @@ public class SNSEventSender {
 
         PublishResponse result = snsClient.publish(request);
 
-        System.out.println("Message sent with ID: " + result.messageId());
+        //System.out.println("Message sent with ID: " + result.messageId());
     }
 }

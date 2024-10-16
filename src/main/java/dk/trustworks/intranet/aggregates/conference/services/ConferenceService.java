@@ -28,13 +28,30 @@ public class ConferenceService {
         conference.persist();
     }
 
+    @Transactional
     public List<ConferenceParticipant> findAllConferenceParticipants(String conferenceuuid) {
+        String hql = "SELECT a FROM ConferenceParticipant a " +
+                "LEFT JOIN ConferenceParticipant b " +
+                "ON a.participantuuid = b.participantuuid AND a.registered < b.registered " +
+                "WHERE b.participantuuid IS NULL AND a.conferenceuuid = ?1";
+
+        return ConferenceParticipant.find(hql, conferenceuuid).list();
+    }
+
+
+    /*
+    public List<ConferenceParticipant> findAllConferenceParticipants(String conferenceuuid) {
+        return ConferenceParticipant.list("conferenceuuid", conferenceuuid);
+        /*
         return ConferenceParticipant.getEntityManager().createNativeQuery("SELECT a.* " +
                 "FROM twservices.conference_participants a " +
                 "LEFT JOIN twservices.conference_participants b " +
                 "ON a.participantuuid = b.participantuuid AND a.registered < b.registered " +
                 "WHERE b.participantuuid IS NULL and a.conferenceuuid like '"+conferenceuuid+"'", ConferenceParticipant.class).getResultList();
+
     }
+         */
+
 
     @Transactional
     public void createParticipant(ConferenceParticipant conferenceParticipant) {

@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.bidata.model;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
+import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.*;
@@ -72,10 +74,12 @@ public class BiDataPerDay extends PanacheEntityBase {
     public BigDecimal paidLeaveHours;
 
     @Column(name = "consultant_type", length = 50)
-    public String consultantType;
+    @Enumerated(EnumType.STRING)
+    public ConsultantType consultantType;
 
     @Column(name = "status_type", length = 50)
-    public String statusType;
+    @Enumerated(EnumType.STRING)
+    public StatusType statusType;
 
     @Column(name = "contract_utilization", precision = 7, scale = 4)
     public BigDecimal contractUtilization;

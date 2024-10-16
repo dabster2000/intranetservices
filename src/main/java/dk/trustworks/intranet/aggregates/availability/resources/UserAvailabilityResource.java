@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.aggregates.availability.resources;
 
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
+import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -46,7 +46,7 @@ public class UserAvailabilityResource {
 
     @GET
     @Path("/{useruuid}/availabilities/days")
-    public List<EmployeeAvailabilityPerDayAggregate> getBudgetsBySingleDayAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
+    public List<BiDataPerDay> getBudgetsBySingleDayAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
         return availabilityService.getEmployeeDataPerDay(useruuid, dateIt(periodFrom), dateIt(periodTo));
     }
 /*

@@ -7,8 +7,11 @@ import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.NoResultException;
+import jakarta.persistence.Query;
 import org.jetbrains.annotations.NotNull;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,7 +24,8 @@ public class UtilizationService {
 
     @Inject
     AvailabilityService availabilityService;
-    
+
+
     
     public void calcUtilization(String useruuid, int year, int month) {
         String sql = "SELECT " +
@@ -53,6 +57,53 @@ public class UtilizationService {
             availabilityPerMonths.stream().filter(a -> a.getYear() == value.getDate().getYear() && a.getMonth() == value.getDate().getMonthValue()).findFirst().ifPresentOrElse(a -> value.setValue(value.getValue() / a.getNetAvailableHours()), () -> value.setValue(0.0));
         }
         return results;
+    }
+
+    public double calculateCompanyAvailabilityByPeriod(String companyuuid, LocalDate startDate, LocalDate endDate) {
+        try {
+            Query query = em.createNativeQuery(
+                    "select (SUM(b.registered_billable_hours) / " +
+                            "SUM(GREATEST(gross_available_hours " +
+                            "- COALESCE(unavailable_hours, 0) " +
+                            "- COALESCE(vacation_hours, 0) " +
+                            "- COALESCE(sick_hours, 0) " +
+                            "- COALESCE(maternity_leave_hours, 0) " +
+                            "- COALESCE(non_payd_leave_hours, 0) " +
+                            "- COALESCE(paid_leave_hours, 0), 0))) as utilization " +
+                            "from bi_data_per_day b " +
+                            "where b.document_date >= :startDate " +
+                            "and b.document_date < :endDate " +
+                            "and b.consultant_type = 'CONSULTANT' " +
+                            "and b.status_type = 'ACTIVE' " +
+                            "and b.companyuuid = :companyuuid");
+
+            query.setParameter("startDate", startDate);
+            query.setParameter("endDate", endDate);
+            query.setParameter("companyuuid", companyuuid);
+
+            BigDecimal result = (BigDecimal) query.getSingleResult();
+            return result != null ? result.doubleValue() : 0.0;
+        } catch (NoResultException e) {
+            return 0.0;
+        }
+        /*
+        return em.createNativeQuery(
+                "select (SUM(b.registered_billable_hours) / " +
+                        "SUM(GREATEST(gross_available_hours " +
+                        "- COALESCE(unavailable_hours, 0) " +
+                        "- COALESCE(vacation_hours, 0) " +
+                        "- COALESCE(sick_hours, 0) " +
+                        "- COALESCE(maternity_leave_hours, 0) " +
+                        "- COALESCE(non_payd_leave_hours, 0) " +
+                        "- COALESCE(paid_leave_hours, 0), 0))) as utilization " +
+                        "from bi_data_per_day b " +
+                        "where b.document_date >= '"+ DateUtils.stringIt(startDate) +"' " +
+                        "and b.document_date < '"+DateUtils.stringIt(endDate)+"' " +
+                        "and b.consultant_type = 'CONSULTANT' " +
+                        "and b.status_type = 'ACTIVE'" +
+                        "and b.companyuuid = '"+companyuuid+"';")
+
+         */
     }
     
 }

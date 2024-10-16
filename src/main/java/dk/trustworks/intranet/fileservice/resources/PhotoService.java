@@ -6,7 +6,6 @@ import dk.trustworks.intranet.fileservice.model.File;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.client.Client;
 import jakarta.ws.rs.client.ClientBuilder;
 import jakarta.ws.rs.core.MediaType;
@@ -50,6 +49,8 @@ public class PhotoService {
     @ConfigProperty(name = "claid.ai.apikey")
     String claidApiKey;
 
+    private static final String BASE_DIRECTORY = "/app/photos/";
+
     Region regionNew = Region.EU_WEST_1;
 
     ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
@@ -59,10 +60,29 @@ public class PhotoService {
     //@Inject
     //@RestClient
     //PhotoAPI service;
+/*
+    public File findPhotoByType(String type) {
+        List<File> photos = File.find("type like ?1", type).list();
+        if(!photos.isEmpty()) {
+            File photo = photos.get(new Random().nextInt(photos.size()));
+            try {
+                Path photoPath = Paths.get(BASE_DIRECTORY + photo.getUuid());
+                byte[] fileBytes = Files.readAllBytes(photoPath);
+                photo.setFile(fileBytes);
+            } catch (IOException e) {
+                log.error("Error loading photo from local storage", e);
+            }
+            return photo;
+        } else {
+            // Handle case where no photo is found, maybe create a new one as per your current logic
+            log.debug("No photo found, returning default photo.");
+            return new File();
+        }
+    }*/
 
     public File findPhotoByType(String type) {
         List<File> photos = File.find("type like ?1", type).list();
-        if(photos.size()>0) {
+        if(!photos.isEmpty()) {
             File photo = photos.get(new Random().nextInt(photos.size()));
             try{
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -95,9 +115,31 @@ public class PhotoService {
         }
     }
 
+
+
     public List<File> findPhotosByType(String type) {
         return File.find("type like ?1", type).list();
     }
+/*
+    public File findPhotoByRelatedUUID(String relateduuid) {
+        Optional<File> photo = File.find("relateduuid like ?1 AND type like 'PHOTO'", relateduuid).firstResultOptional();
+        if (photo.isPresent()) {
+            try {
+                Path photoPath = Paths.get(BASE_DIRECTORY + photo.get().getUuid());
+                byte[] fileBytes = Files.readAllBytes(photoPath);
+                photo.get().setFile(fileBytes);
+            } catch (IOException e) {
+                log.error("Error loading photo from local storage", e);
+            }
+        }
+        return photo.orElseGet(() -> {
+            log.debug("Photo not found, creating new photo");
+            File newPhoto = new File(UUID.randomUUID().toString(), relateduuid, "PHOTO");
+            QuarkusTransaction.run(() -> File.persist(newPhoto));
+            return newPhoto;
+        });
+    }*/
+
 
     public File findPhotoByRelatedUUID(String relateduuid) {
         log.debug("PhotoResource.findPhotoByUUID");
@@ -111,9 +153,9 @@ public class PhotoService {
                 byte[] file = baos.toByteArray();
                 photo.get().setFile(file);
             }  catch (S3Exception e) {
-                //log.error("Error loading "+relateduuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
+                log.error("Error loading "+relateduuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
             } catch (Exception e) {
-                //log.error(e.getMessage());
+                log.error(e.getMessage());
             }
         }
         return photo.orElseGet(() -> {
@@ -135,6 +177,8 @@ public class PhotoService {
             return newPhoto;
         });
     }
+
+
 /*
     @POST
     @Path("/photos")
@@ -148,6 +192,30 @@ public class PhotoService {
     }
 
  */
+/*
+    @Transactional
+    public void update(File photo) {
+        if (photo.getUuid().isEmpty()) {
+            photo.setUuid(UUID.randomUUID().toString());
+        }
+
+        // Delete the old photo
+        File.delete("relateduuid like ?1", photo.getRelateduuid());
+
+        // Persist the new photo
+        if (photo.getType() == null || photo.getType().isEmpty()) {
+            photo.setType("PHOTO");
+        }
+        File.persist(photo);
+
+        // Save the file to local storage
+        try {
+            Path photoPath = Paths.get(BASE_DIRECTORY + photo.getUuid());
+            Files.write(photoPath, photo.getFile());
+        } catch (IOException e) {
+            log.error("Error updating photo in local storage", e);
+        }
+    }*/
 
     @Transactional
     public void update(File photo) {
@@ -160,6 +228,60 @@ public class PhotoService {
 
         s3.putObject(PutObjectRequest.builder().bucket(bucketName).key(photo.getUuid()).build(),
                 RequestBody.fromBytes(photo.getFile()));
+    }
+
+
+
+    @Transactional
+    public void updateLogo(File photo) throws IOException {
+        HttpClient httpClient = HttpClientBuilder.create().build();
+        HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
+        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+
+        // Explicit boundary setting (if necessary)
+        builder.setBoundary("Boundary-Unique-Identifier");
+        builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
+
+        // Adding file part
+        builder.addBinaryBody(
+                "file",
+                new ByteArrayInputStream(photo.getFile()),
+                ContentType.APPLICATION_OCTET_STREAM,
+                photo.getName()
+        );
+
+        // Adding JSON data part
+        String jsonData = "{\n" +
+                "    \"operations\": {\n" +
+                "        \"resizing\": {\n" +
+                "            \"width\": 800,\n" +
+                "            \"height\": 400,\n" +
+                "            \"fit\": \"canvas\"\n" +
+                "        }\n" +
+                "    },\n" +
+                "    \"output\": {\n" +
+                "\t  \"metadata\": {\n" +
+                "\t\t\t\"dpi\": 72\n" +
+                "\t\t},\n" +
+                "        \"format\": {\n" +
+                "            \"type\": \"jpeg\",\n" +
+                "            \"quality\": 80,\n" +
+                "            \"progressive\": true\n" +
+                "        }\n" +
+                "    }\n" +
+                "}"; // Your JSON string here
+        builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
+
+        HttpEntity multipart = builder.build();
+        uploadFile.setEntity(multipart);
+        uploadFile.setHeader("Authorization", "Bearer "+claidApiKey); //264d028e952a443ba5cbd1d086b24ca5
+
+        // Letting HttpClient set the Content-Type
+        ResponseHandler<String> responseHandler = new BasicResponseHandler();
+        String response = httpClient.execute(uploadFile, responseHandler);
+
+        photo.setFile(downloadImageFromJson(response));
+        update(photo);
     }
 
     @Transactional
@@ -248,12 +370,27 @@ public class PhotoService {
             throw new RuntimeException("Error processing JSON or fetching the image.", e);
         }
     }
+/*
+    @Transactional
+    public void delete(String uuid) {
+        File.deleteById(uuid);
+        try {
+            Path photoPath = Paths.get(BASE_DIRECTORY + uuid);
+            Files.deleteIfExists(photoPath); // Remove file from local storage
+        } catch (IOException e) {
+            log.error("Error deleting photo from local storage", e);
+        }
+    }
+     */
+
+
 
     @Transactional
-    public void delete(@PathParam("uuid") String uuid) {
+    public void delete(String uuid) {
         File.deleteById(uuid);
         //s3.deleteObject(DeleteObjectRequest.builder().bucket(bucketName).key(uuid).build());
     }
+
 
 
 }

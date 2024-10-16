@@ -161,6 +161,15 @@ public class UtilizationResource {
     }
 
     @GET
+    @Path("/actual/fiscalyear/{fiscalYear}")
+    public DateValueDTO getBudgetUtilizationPerFiscalYear(@PathParam("fiscalYear") int fiscalYear) {
+        LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);
+        LocalDate currentFiscalEndDate = LocalDate.of(fiscalYear + 1, 7, 1);
+        if (currentFiscalEndDate.isAfter(LocalDate.now())) currentFiscalEndDate = LocalDate.now().withDayOfMonth(1);
+        return new DateValueDTO(currentFiscalStartDate, utilizationService.calculateCompanyAvailabilityByPeriod(companyuuid, currentFiscalStartDate, currentFiscalEndDate));
+    }
+
+    @GET
     @Path("/actual/teams/{teamuuid}")
     public List<DateValueDTO> getActualUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("fiscalYear") int fiscalYear) {
         LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);

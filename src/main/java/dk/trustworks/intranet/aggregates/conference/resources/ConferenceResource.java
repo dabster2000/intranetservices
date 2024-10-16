@@ -144,6 +144,15 @@ public class ConferenceResource {
     }
 
     @POST
+    @Path("/apply/forefront2025")
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Produces(MediaType.TEXT_HTML)
+    public void receiveForm3(@FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
+                             @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke) {
+        createParticipant("ebe8e716-7c1e-42bc-aaf0-43fd03ed99c4", new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
+    }
+
+    @POST
     @Path("/{conferenceuuid}/apply")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)

@@ -3,9 +3,9 @@ package dk.trustworks.intranet.aggregates.accounting.resources;
 import dk.trustworks.intranet.aggregates.accounting.model.DanlonChanges;
 import dk.trustworks.intranet.aggregates.accounting.model.DanlonEmployee;
 import dk.trustworks.intranet.aggregates.accounting.model.DanlonSalarySupplements;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
+import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.aggregates.users.services.*;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -93,8 +93,8 @@ public class DanlonResource {
             String danlonNumber = user.getUserAccount()!=null?user.getUserAccount().getDanlon():"";
             String name = user.getFullname();
             StringBuilder salaryNotes = new StringBuilder("Normal løn. ");
-            List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDayPreviousMonth = availabilityService.getEmployeeDataPerDay(user.uuid, previousMonth, previousMonth.plusMonths(1));
-            List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDayThisMonth = availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1));
+            List<BiDataPerDay> employeeDataPerDayPreviousMonth = availabilityService.getEmployeeDataPerDay(user.uuid, previousMonth, previousMonth.plusMonths(1));
+            List<BiDataPerDay> employeeDataPerDayThisMonth = availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1));
             //List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDayNextMonth = availabilityService.getEmployeeDataPerDay(user.uuid, nextMonth, nextMonth.plusMonths(1));
 
             Salary baseSalary = salaryService.getUserSalaryByMonth(user.getUuid(), endOfMonth);
@@ -262,7 +262,7 @@ public class DanlonResource {
             double bonus = 0;
 
             bonus += salarySupplementService.findByUseruuidAndMonth(user.getUuid(), month).stream().mapToDouble(SalarySupplement::getValue).sum();
-            bonus += salaryLumpSumService.findByUseruuidAndMonth(user.getUuid(), month).stream().mapToDouble(SalaryLumpSum::getLumpSum).sum();
+            bonus += salaryLumpSumService.findByUseruuidAndMonth(user.getUuid(), month).stream().filter(salaryLumpSum -> salaryLumpSum.getSalaryType().getDanloenType()==41).mapToDouble(SalaryLumpSum::getLumpSum).sum();
 
             if(bonus>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "41", "Bonus", "", "", formatDouble(bonus)));
 
@@ -334,13 +334,13 @@ public class DanlonResource {
                 .toList();
     }
 
-    private static boolean anyNonPayDays(List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDay) {
+    private static boolean anyNonPayDays(List<BiDataPerDay> employeeDataPerDay) {
         return employeeDataPerDay.stream().anyMatch(e ->
                 e.getStatusType().equals(NON_PAY_LEAVE) || e.getStatusType().equals(PREBOARDING) ||
                         e.getStatusType().equals(TERMINATED));
     }
 
-    private static boolean hasUserJustReturnedFromNonPayLeave(User user, LocalDate month, List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDay) {
+    private static boolean hasUserJustReturnedFromNonPayLeave(User user, LocalDate month, List<BiDataPerDay> employeeDataPerDay) {
         return
                 (
                         user.getUserStatus(month.minusDays(1)).getStatus().equals(NON_PAY_LEAVE) &&
@@ -348,11 +348,11 @@ public class DanlonResource {
                 ) || (user.getUserStatus(month).getStatus().equals(NON_PAY_LEAVE) && !hasOnlyNonPayLeave(employeeDataPerDay));
     }
 
-    private static boolean hasOnlyNonPayLeave(List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDay) {
+    private static boolean hasOnlyNonPayLeave(List<BiDataPerDay> employeeDataPerDay) {
         return employeeDataPerDay.stream().allMatch(e -> e.getStatusType().equals(NON_PAY_LEAVE));
     }
 
-    private static boolean hasAnyTypeOfLeave(List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDay) {
+    private static boolean hasAnyTypeOfLeave(List<BiDataPerDay> employeeDataPerDay) {
         return employeeDataPerDay.stream().anyMatch(e ->
                 e.getStatusType().equals(NON_PAY_LEAVE) ||
                         e.getStatusType().equals(StatusType.PAID_LEAVE) ||

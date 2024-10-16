@@ -5,7 +5,6 @@ import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.userservice.model.User;
-import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -47,12 +46,49 @@ public class UpdateBudgetDocumentsJob {
         }
     }
 
+    //@Scheduled(cron = "0 0 1 ? * 2-6")
+    public void updateWorkData() {
+        log.info("BudgetServiceCache.updateWorkData");
+        LocalDate startMonth = LocalDate.of(2021, 7, 1);
+        LocalDate endMonth = LocalDate.now().plusYears(1);
+        int count = 0;
+        for (User user : User.<User>streamAll().filter(user -> user.getType().equals("USER")).toList()) {
+            log.info("Starting calculating availability for user "+(count++)+" : " + user.getUuid());
+            LocalDate testDay = startMonth;
+            do {
+                snsEventSender.sendEvent(SNSEventSender.WorkUpdatePerDayTopic, user.getUuid(), testDay);
+                // Log every half year
+                //if(testDay.getMonthValue() % 6 == 0) log.info("WorkUpdatePerDayTopic: " + user.getUuid() + " - " + testDay);
+                testDay = testDay.plusDays(1);
+            } while (testDay.isBefore(endMonth));
+        }
+    }
+
+    //@Scheduled(every = "24h", delay = 0)
+    //@Scheduled(cron = "0 0 1 ? * 2-6")
+    public void updateSalaryData() {
+        log.info("BudgetServiceCache.updateSalaryData");
+        LocalDate startMonth = LocalDate.of(2014, 6, 1);
+        LocalDate endMonth = LocalDate.now().plusYears(1);
+        int count = 0;
+        for (User user : User.<User>streamAll().filter(user -> user.getType().equals("USER")).toList()) {
+            log.info("Starting calculating salary for user "+(count++)+" : " + user.getUuid());
+            LocalDate testDay = startMonth;
+            do {
+                snsEventSender.sendEvent(SNSEventSender.UserSalaryUpdatePerDayTopic, user.getUuid(), testDay);
+                // Log every half year
+                //if(testDay.getMonthValue() % 6 == 0) log.info("WorkUpdatePerDayTopic: " + user.getUuid() + " - " + testDay);
+                testDay = testDay.plusDays(1);
+            } while (testDay.isBefore(endMonth));
+        }
+    }
+
     //@Scheduled(every = "6h", delay = 0)
-    @Scheduled(cron = "0 0 5 ? * 2-6")
+    //@Scheduled(cron = "0 0 5 ? * 2-6")
     public void createTasks() {
         log.info("BudgetServiceCache.createTasks");
         tasks.clear();
-        LocalDate lookupMonth = LocalDate.of(2014, 7, 1);
+        LocalDate lookupMonth = LocalDate.of(2024, 7, 1);
         int i = 0;
         do {
             tasks.put(lookupMonth, LocalDateTime.now().minusHours(updateRateInHours).plusSeconds(((long) i*delayInSeconds)));

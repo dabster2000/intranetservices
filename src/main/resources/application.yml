@@ -4,16 +4,13 @@ quarkus:
   dev-ui:
     always-include: true
   datasource:
-    db-kind: mysql
+    db-kind: mariadb
     jdbc:
-      url: ${URL:jdbc:mysql://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
-      driver: com.mysql.cj.jdbc.Driver
+      url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      driver: org.mariadb.jdbc.Driver
       min-size: 5
-      max-size: 50
+      max-size: 10
       idle-removal-interval: PT1M
-      #telemetry: true
-      #tracing:
-      #  enabled: false
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   hibernate-orm:
@@ -43,6 +40,8 @@ quarkus:
       enabled: true
       pattern: common #"...traceId=%{X,traceId} spanId=%{X,spanId}" #common
     port: 9093 #registry.hub.docker.com/
+  smallrye-health:
+    root-path: /health
   log:
     level: INFO
     category:
@@ -50,6 +49,8 @@ quarkus:
         level: DEBUG
       "org.jboss.resteasy.resteasy_client":
         level: DEBUG
+      "io.quarkus.smallrye.health":
+        level: WARN  # This will stop logging health check INFO level messages
       #"io.opentelemetry":
       #  level: DEBUG
     console:
@@ -77,10 +78,10 @@ quarkus:
       credentials:
         type: STATIC
         static-provider:
-          access-key-id: AKIA5SCDPPSOHCY7OKPF
-          secret-access-key: 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
+          access-key-id: ${AWS_ACCESS_KEY_ID:xx}
+          secret-access-key: ${AWS_SECRET_ACCESS_KEY:xx}
 vertx:
-  worker-pool-size: 20
+  worker-pool-size: 10
 mp:
   jwt:
     verify:

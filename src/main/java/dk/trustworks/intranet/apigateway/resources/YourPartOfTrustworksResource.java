@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregates.availability.jobs.AvailabilityCalculatingExecutor;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerDayAggregate;
+import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.userservice.model.User;
@@ -44,8 +44,8 @@ public class YourPartOfTrustworksResource {
         LocalDate startDate = LocalDate.of(year, 7, 1);
         LocalDate endDate = LocalDate.of(year + 1, 6, 30);
 
-        List<EmployeeAvailabilityPerDayAggregate> availabilityPerDayList = EmployeeAvailabilityPerDayAggregate.find("SELECT av " +
-                "FROM EmployeeAvailabilityPerDayAggregate av " +
+        List<BiDataPerDay> availabilityPerDayList = BiDataPerDay.find("SELECT av " +
+                "FROM BiDataPerDay av " +
                 "LEFT JOIN user u ON av.user = u " +
                 "LEFT JOIN company c ON av.company = c " +
                 "WHERE statusType NOT IN ('TERMINATED', 'PREBOARDING') " +
@@ -53,7 +53,7 @@ public class YourPartOfTrustworksResource {
                 "  AND documentDate >= ?1 " +
                 "  AND documentDate <= ?2 ", startDate, endDate).list();
 
-        List<User> uniqueUserUUIDs = availabilityPerDayList.stream().map(EmployeeAvailabilityPerDayAggregate::getUser).distinct().toList();
+        List<User> uniqueUserUUIDs = availabilityPerDayList.stream().map(BiDataPerDay::getUser).distinct().toList();
 
         List<EmployeeBonusEligibility> result = new ArrayList<>();
 
@@ -80,7 +80,7 @@ public class YourPartOfTrustworksResource {
         return result;
     }
 
-    private static boolean isEligibleInMonth(List<EmployeeAvailabilityPerDayAggregate> availabilityPerDayList, User uniqueUser, int month) {
+    private static boolean isEligibleInMonth(List<BiDataPerDay> availabilityPerDayList, User uniqueUser, int month) {
         return availabilityPerDayList.stream().anyMatch(av -> av.getUser().equals(uniqueUser) && av.getMonth() == month && av.isTwBonusEligible() && !av.getStatusType().equals(StatusType.PREBOARDING) && !av.getStatusType().equals(StatusType.TERMINATED));
     }
 

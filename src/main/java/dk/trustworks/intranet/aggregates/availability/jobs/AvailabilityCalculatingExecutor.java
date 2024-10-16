@@ -11,12 +11,9 @@ import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.scheduler.Scheduled;
-import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -27,7 +24,6 @@ import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.SICKNESS;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
 import static dk.trustworks.intranet.messaging.emitters.MessageEmitter.YEAR_CHANGE_EVENT;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.EXTERNAL;
 import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.STUDENT;
@@ -43,7 +39,7 @@ public class AvailabilityCalculatingExecutor {
     @Inject
     WorkService workService;
 
-    @ConsumeEvent(value = YEAR_CHANGE_EVENT, blocking = true)
+    //@ConsumeEvent(value = YEAR_CHANGE_EVENT, blocking = true)
     public void process(DateRangeMap dateRangeMap) {
         LocalDate startDate = dateRangeMap.getFromDate();
         LocalDate endDate = dateRangeMap.getEndDate();
@@ -76,7 +72,7 @@ public class AvailabilityCalculatingExecutor {
         log.info("AvailabilityCalculatingExecutor.process - Done for period " + startDate + " - " + endDate);
     }
 
-    @ConsumeEvent(value = USER_EVENT, blocking = true)
+    //@ConsumeEvent(value = USER_EVENT, blocking = true)
     public void createAvailabilityDocumentByUser(AggregateRootChangeEvent event) {
         log.info("AvailabilityCalculatingExecutor.createAvailabilityDocumentByUser -> event = " + event);
         User user = userService.findById(event.getAggregateRootUUID(), false);
@@ -166,7 +162,7 @@ public class AvailabilityCalculatingExecutor {
      * This method is called every night at 1:00
      */
     //@Transactional
-    @Scheduled(every = "1m")
+    //@Scheduled(every = "1m")
     //@Scheduled(cron = "0 0 1 * * ?")
     public void recalculateAvailability() {
         employedUsers = userService.listAll(false);
@@ -185,8 +181,8 @@ public class AvailabilityCalculatingExecutor {
         });
     }
 
-    @Transactional
-    @Scheduled(cron = "0 0 0 * * ?")
+    //@Transactional
+    //@Scheduled(cron = "0 0 0 * * ?")
     public void recalculateElegibility() {
         employedUsers = userService.listAll(false); //findEmployedUsersByDate(testDate, false, ConsultantType.CONSULTANT);
         LocalDate testFiscalYear = DateUtils.getCurrentFiscalStartDate();

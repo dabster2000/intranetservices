@@ -223,7 +223,7 @@ public class InvoiceGenerator {
                         String invoiceItemName = (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFirstname() + " " + user.getLastname();
                         if(workFull.getWorkas()!=null && !workFull.getWorkas().isEmpty()) {
                             User workAsUser = userService.findUserByUuid(workFull.getWorkas(), true);
-                            invoiceItemName = workAsUser.getFirstname() + " " + workAsUser.getLastname() + " (as " + invoiceItemName + ")";
+                            invoiceItemName = workAsUser.getFirstname() + " " + workAsUser.getLastname() + " (helped " + invoiceItemName + ")";
                         }
                         InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,
                                 task.getName(),

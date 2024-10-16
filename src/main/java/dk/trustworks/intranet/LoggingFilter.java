@@ -20,10 +20,8 @@ public class LoggingFilter implements ContainerRequestFilter {
     @Override
     public void filter(ContainerRequestContext requestContext) throws IOException {
 
-        if (requestContext.getMethod().equals(HttpMethod.POST) &&
-            MediaType.APPLICATION_JSON.equals(requestContext.getMediaType().toString())) {
+        if (requestContext.getMethod().equals(HttpMethod.POST) && requestContext.getMediaType() != null && MediaType.APPLICATION_JSON.equals(requestContext.getMediaType().toString())) {
             logRequestBody(requestContext);
-
         }
     }
 

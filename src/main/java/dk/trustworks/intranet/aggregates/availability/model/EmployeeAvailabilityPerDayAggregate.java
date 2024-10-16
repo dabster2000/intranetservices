@@ -11,10 +11,7 @@ import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
 import jakarta.persistence.*;
 import java.math.BigDecimal;
@@ -56,31 +53,31 @@ public class EmployeeAvailabilityPerDayAggregate extends PanacheEntityBase {
     @Column(name = "gross_available_hours", precision = 7, scale = 4)
     @JsonProperty("grossAvailableHours")
     // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
-    private BigDecimal grossAvailableHours; // done
+    private BigDecimal grossAvailableHours = BigDecimal.ZERO; // done
 
     @Column(name = "unavailable_hours", precision = 7, scale = 4)
     @JsonProperty("unavailableHours")
-    private BigDecimal unavavailableHours; // fx fridays
+    private BigDecimal unavavailableHours = BigDecimal.ZERO; // fx fridays
 
     @Column(name = "vacation_hours", precision = 7, scale = 4)
     @JsonProperty("vacationHours")
-    private BigDecimal vacationHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
+    private BigDecimal vacationHours = BigDecimal.ZERO; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
     @Column(name = "sick_hours", precision = 7, scale = 4)
     @JsonProperty("sickHours")
-    private BigDecimal sickHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
+    private BigDecimal sickHours = BigDecimal.ZERO; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
     @Column(name = "maternity_leave_hours", precision = 7, scale = 4)
     @JsonProperty("maternityLeaveHours")
-    private BigDecimal maternityLeaveHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
+    private BigDecimal maternityLeaveHours = BigDecimal.ZERO; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
     @Column(name = "non_payd_leave_hours", precision = 7, scale = 4)
     @JsonProperty("nonPaydLeaveHours")
-    private BigDecimal nonPaydLeaveHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
+    private BigDecimal nonPaydLeaveHours = BigDecimal.ZERO; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
     @Column(name = "paid_leave_hours", precision = 7, scale = 4)
     @JsonProperty("paidLeaveHours")
-    private BigDecimal paidLeaveHours; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
+    private BigDecimal paidLeaveHours = BigDecimal.ZERO; // Total availability i henhold til ansættelseskontrakt, f.eks. 37 timer.
 
     @Column(name = "consultant_type")
     @JsonProperty("consultantType")
@@ -103,6 +100,7 @@ public class EmployeeAvailabilityPerDayAggregate extends PanacheEntityBase {
     @Column(name = "is_tw_bonus_eligible")
     @JsonProperty("isTwBonusEligible")
     private boolean isTwBonusEligible;
+
 
     public EmployeeAvailabilityPerDayAggregate(Company company, LocalDate documentDate, User user, double grossAvailableHours, double unavailableHours, double vacationHours, double sickHours, double maternityLeaveHours, double nonPaydLeaveHours, double paidLeaveHours, ConsultantType consultantType, StatusType statusType, int salary, boolean isTwBonusEligible) {
         this.company = company;
