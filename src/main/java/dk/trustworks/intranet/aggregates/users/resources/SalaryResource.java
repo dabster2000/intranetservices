@@ -17,6 +17,7 @@ import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.userservice.model.Salary;
 import dk.trustworks.intranet.userservice.model.TransportationRegistration;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
+import dk.trustworks.intranet.utils.NumberUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -107,7 +108,7 @@ public class SalaryResource {
 
         List<Work> vacationList = workService.findByUserAndPaidOutMonthAndTaskuuid(useruuid, VACATION, date).stream().filter(w -> w.getRegistered().isBefore(date.plusMonths(1).withDayOfMonth(1))).toList();
         double vacation = vacationList.stream().mapToDouble(Work::getWorkduration).sum();
-        payments.add(new SalaryPayment(date, "Vacation", vacation + " hours"));
+        payments.add(new SalaryPayment(date, "Vacation", NumberUtils.formatDouble(vacation / 7.4) + " days"));
 
         int kilometers = transportationRegistrationService.findByUseruuidAndPaidOutMonth(useruuid, date).stream().mapToInt(TransportationRegistration::getKilometers).sum();
         if(kilometers>0) payments.add(new SalaryPayment(date, "Transportation", kilometers + " km"));

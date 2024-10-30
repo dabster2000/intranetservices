@@ -1,20 +1,18 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.contracts.model.enums.SalesStatus;
 import dk.trustworks.intranet.sales.model.SalesLead;
 import dk.trustworks.intranet.sales.services.SalesService;
 import dk.trustworks.intranet.userservice.model.User;
-import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
-import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
 import java.time.LocalDate;
-import java.util.Arrays;
 import java.util.List;
 
 @JBossLog
@@ -30,6 +28,31 @@ public class SalesResource {
 
     @GET
     @Transactional
+    public List<SalesLead> findAll(
+            @QueryParam("offset") @DefaultValue("0") int offset,
+            @QueryParam("limit") @DefaultValue("50") int limit,
+            @QueryParam("sort") List<String> sort,
+            @QueryParam("filter") String filter,
+            @QueryParam("status") String status) {
+        List<SalesLead> salesLeads = salesService.findAll(offset, limit, sort, filter, status);
+        for (SalesLead salesLead : salesLeads) {
+            testCloseDate(salesLead);
+        }
+        return salesLeads;
+    }
+
+    @GET
+    @Path("/count")
+    @Transactional
+    public Long count(
+            @QueryParam("filter") String filter,
+            @QueryParam("status") String status) {
+        return salesService.count(filter, status);
+    }
+
+    /*
+    @GET
+    @Transactional
     public List<SalesLead> findAll(@QueryParam("status") String status) {
         List<SalesLead> salesLeads;
         if(status!=null && !status.isEmpty()) {
@@ -42,6 +65,8 @@ public class SalesResource {
         }
         return salesLeads;
     }
+
+     */
 
     @GET
     @Path("/{uuid}")

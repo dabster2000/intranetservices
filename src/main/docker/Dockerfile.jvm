@@ -110,9 +110,9 @@ ENV LANGUAGE='en_US:en'
 #RUN mkdir -p /usr/local/newrelic
 #ADD ./deployments/newrelic.jar /usr/local/newrelic/newrelic.jar
 
-RUN mkdir -p /usr/local/newrelic
-ADD ./newrelic/newrelic.jar /usr/local/newrelic/newrelic.jar
-ADD ./newrelic/newrelic.yml /usr/local/newrelic/newrelic.yml
+#RUN mkdir -p /usr/local/newrelic
+#ADD ./newrelic/newrelic.jar /usr/local/newrelic/newrelic.jar
+#ADD ./newrelic/newrelic.yml /usr/local/newrelic/newrelic.yml
 
 
 # We make four distinct layers so if there are application changes the library layers can be re-used
@@ -127,7 +127,7 @@ EXPOSE 8080
 USER 185
 
 # Add New Relic and other JVM options
-ENV JAVA_OPTS="-javaagent:/usr/local/newrelic/newrelic.jar -Xmx2g -Xms1g -Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+ENV JAVA_OPTS="-Xmx2g -Xms1g -Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
 ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
 
 # Set the entry point to run the application

@@ -21,9 +21,6 @@ public class ProjectDescriptionUser extends PanacheEntityBase {
 
     private String useruuid;
 
-    @Lob
-    private String description;
-
     @JsonIgnore
-    private int projectdescid;
+    private String projectdesc_uuid;
 }

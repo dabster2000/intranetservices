@@ -30,7 +30,7 @@ public class NumberUtils {
 
     public static String formatCurrency(double d, String currency) {
         if ("DKK".equals(currency)) return formatCurrency(d);
-        return NumberFormat.getCurrencyInstance(Locale.GERMANY).format(d);
+        return NumberFormat.getCurrencyInstance(DanishLocale).format(d);
     }
 
     public static double parseDouble(String d) {

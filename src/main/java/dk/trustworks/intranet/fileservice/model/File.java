@@ -14,6 +14,7 @@ import jakarta.persistence.Transient;
 import java.time.LocalDate;
 
 
+@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Data
 @NoArgsConstructor
 @RequiredArgsConstructor
@@ -24,6 +25,7 @@ public class File extends PanacheEntityBase {
 
     @Id
     @NonNull
+    @EqualsAndHashCode.Include
     private String uuid;
 
     @NonNull

@@ -41,7 +41,7 @@ public class FileResource {
 
     @GET
     @Path("/photos/{relateduuid}/jpg")
-    @Produces("image/jpg")
+    @Produces("image/webp")
     public Response getImage(@PathParam("relateduuid") String relateduuid) {
         byte[] imageBytes = photoService.findPhotoByRelatedUUID(relateduuid).getFile(); // get the byte array for the image
         return Response.ok(imageBytes).build();
@@ -61,8 +61,8 @@ public class FileResource {
 
     @PUT
     @Path("/photos")
-    public void updatePhoto(File photo) {
-        photoService.update(photo);
+    public void updatePhoto(File photo) throws IOException {
+        photoService.updatePhoto(photo);
     }
 
     @PUT

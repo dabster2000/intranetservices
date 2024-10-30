@@ -9,6 +9,7 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Data
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
@@ -23,47 +25,49 @@ import java.util.List;
 public class ProjectDescription extends PanacheEntityBase {
 
     @Id
-    @GeneratedValue(strategy= GenerationType.IDENTITY)
-    private int id;
+    @EqualsAndHashCode.Include
+    private String uuid;
 
     private String clientuuid;
 
     private String name;
 
-    @Lob
-    private String description;
+    private String purpose;
+
+    private String role;
+
+    private String learnings;
+
+    private String roles;
+
+    private String methods;
 
     @JsonSerialize(using = LocalDateSerializer.class)
     @JsonDeserialize(using = LocalDateDeserializer.class)
-    private LocalDate from;
+    @Column(name = "active_from")
+    private LocalDate fromDate;
 
     @JsonSerialize(using = LocalDateSerializer.class)
     @JsonDeserialize(using = LocalDateDeserializer.class)
-    private LocalDate to;
+    @Column(name = "active_to")
+    private LocalDate toDate;
 
-    private String offering;
-
-    @Lob
-    private String tools;
 
     @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "projectdescid", referencedColumnName="id")
+    @JoinColumn(name = "projectdesc_uuid", referencedColumnName="uuid")
     private List<ProjectDescriptionUser> projectDescriptionUserList;
 
-    @JsonProperty("offeringList")
-    public List<String> getOfferingList() {
-        System.out.println("ProjectDescription.getOfferingList");
-        if(this.offering==null || offering.isBlank()) return new ArrayList<>();
-        System.out.println("this.offering = " + this.offering);
-        String cleanedOffering = removeHashtags(this.offering);
-        System.out.println("cleanedOffering = " + cleanedOffering);
+    @JsonProperty("rolesList")
+    public List<String> getRolesList() {
+        if(this.roles==null || roles.isBlank()) return new ArrayList<>();
+        String cleanedOffering = removeHashtags(this.roles);
         return List.of(cleanedOffering.split("\\s+"));
     }
 
-    @JsonProperty("toolsList")
-    public List<String> getToolsList() {
-        if(this.tools==null || tools.isBlank()) return new ArrayList<>();
-        String cleanedTools = removeHashtags(this.tools);
+    @JsonProperty("methodsList")
+    public List<String> getMethodsList() {
+        if(this.methods==null || methods.isBlank()) return new ArrayList<>();
+        String cleanedTools = removeHashtags(this.methods);
         return List.of(cleanedTools.split("\\s+"));
     }
 

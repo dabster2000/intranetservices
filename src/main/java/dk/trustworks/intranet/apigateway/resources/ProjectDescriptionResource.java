@@ -2,6 +2,7 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.knowledgeservice.model.ProjectDescription;
 import dk.trustworks.intranet.knowledgeservice.services.ProjectDescriptionService;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -9,8 +10,7 @@ import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.GET;
-import jakarta.ws.rs.Path;
+
 import java.util.List;
 
 @Tag(name = "Knowledge")
@@ -27,6 +27,23 @@ public class ProjectDescriptionResource {
     @GET
     public List<ProjectDescription> findAll() {
         return knowledgeProjectAPI.findAll();
+    }
+
+    @POST
+    public void create(ProjectDescription projectDescription) {
+        knowledgeProjectAPI.create(projectDescription);
+    }
+
+    @PUT
+    @Path("/{uuid}")
+    public void update(@PathParam("uuid") String uuid, ProjectDescription projectDescription) {
+        knowledgeProjectAPI.update(uuid, projectDescription);
+    }
+
+    @DELETE
+    @Path("/{uuid}")
+    public void delete(@PathParam("uuid") String uuid) {
+        knowledgeProjectAPI.delete(uuid);
     }
 
 }

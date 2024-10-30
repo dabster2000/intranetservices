@@ -69,28 +69,35 @@ public class ExpenseService {
     }
 
     @Transactional
-    @Scheduled(cron = "0 0 20 * * ?")
+    @Scheduled(every = "2m")
+    //@Scheduled(cron = "0 0 20 * * ?")
     public void consumeCreate() throws IOException {
-        List<Expense> expenses = Expense.<Expense>stream("status", "CREATED").filter(e -> e.getDatecreated().isBefore(LocalDate.now())).toList();
+        List<Expense> expenses = Expense.<Expense>stream("status", "CREATED")
+                .filter(e -> e.getDatecreated().isBefore(LocalDate.now().minusDays(2)))
+                .limit(5).toList();
         log.info("Expenses found with status CREATED: " + expenses.size());
-        if(expenses.isEmpty()) return;
-        Expense expense = expenses.get(0);
+        if (expenses.isEmpty()) return;
 
-        ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
-        if(expenseFile==null || expenseFile.getExpensefile().isEmpty()) {
-            log.error("No expense file found for expense "+expense);
-            updateStatus(expense, "NO_FILE");
-            return;
+        for (Expense expense : expenses) {
+            ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
+            if (expenseFile == null || expenseFile.getExpensefile().isEmpty()) {
+                log.error("No expense file found for expense " + expense);
+                updateStatus(expense, "NO_FILE");
+                continue;
+            }
+
+            List<UserAccount> userAccounts = UserAccount.find("useruuid = ?1", expense.getUseruuid()).list();
+            if (userAccounts.size() != 1) {
+                log.warn("No single user account found for expense " + expense);
+                updateStatus(expense, "NO_USER");
+                continue;
+            }
+
+            UserAccount userAccount = userAccounts.get(0);
+            sendExpense(expense, expenseFile, userAccount);
         }
-        List<UserAccount> userAccounts = UserAccount.find("useruuid = ?1", expense.getUseruuid()).list();
-        if (userAccounts.size() != 1) {
-            log.warn("No single user account found for expense " + expense);
-            updateStatus(expense, "NO_USER");
-            return;
-        }
-        UserAccount userAccount = userAccounts.get(0);
-        sendExpense(expense, expenseFile, userAccount);
     }
+
 
     @Transactional
     public void sendExpense(Expense expense, ExpenseFile expenseFile, UserAccount userAccount) throws IOException {
