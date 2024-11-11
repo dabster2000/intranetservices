@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.userservice.model.User;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -29,10 +30,11 @@ public class UpdateBudgetDocumentsJob {
     private final int delayInSeconds = 10;
 
     //@Scheduled(every = "24h", delay = 0)
+    @Scheduled(cron = "0 0 1 ? * 2-6")
     public void updateBiData() {
         log.info("BudgetServiceCache.updateBiData");
-        LocalDate startMonth = LocalDate.of(2014, 7, 1);
-        LocalDate endMonth = LocalDate.now().plusYears(1);
+        LocalDate startMonth = LocalDate.now().minusMonths(1);//LocalDate.of(2023, 11, 1);
+        LocalDate endMonth = LocalDate.now();
         for (User user : User.<User>streamAll().filter(user -> user.getType().equals("USER")).toList()) {
             log.info("Starting calculating availability for user: " + user.getUuid());
             LocalDate testDay = startMonth;

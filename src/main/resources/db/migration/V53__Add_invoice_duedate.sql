@@ -1,0 +1,1 @@
+alter table invoices add duedate date null after invoicedate;

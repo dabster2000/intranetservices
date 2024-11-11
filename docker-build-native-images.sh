@@ -1,6 +1,6 @@
 #!/bin/bash
 # jvm, native
-buildtype="jvm"
+buildtype="native"
 # prod, latest
 targetenv="prod"
 # linux/amd64 (prod), linux/arm64 (latest)

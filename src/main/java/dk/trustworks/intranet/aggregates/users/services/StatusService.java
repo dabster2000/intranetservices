@@ -1,18 +1,27 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.users.events.CreateUserStatusEvent;
+import dk.trustworks.intranet.aggregates.users.events.DeleteUserStatusEvent;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
+@JBossLog
 @ApplicationScoped
 public class StatusService {
+
+    @Inject
+    AggregateEventSender aggregateEventSender;
 
     public List<UserStatus> listAll(String useruuid) {
         return UserStatus.findByUseruuid(useruuid);
@@ -39,6 +48,9 @@ public class StatusService {
         if(status.getUuid().isEmpty()) return;
         Optional<UserStatus> existingStatus = UserStatus.findByIdOptional(status.getUuid());
         existingStatus.ifPresentOrElse(s -> {
+            log.info("StatusService.create -> updating status");
+            log.info("status = " + status);
+            sendUpdateEvent(s);
             s.setStatus(status.getStatus());
             s.setStatusdate(status.getStatusdate());
             s.setType(status.getType());
@@ -46,8 +58,12 @@ public class StatusService {
             s.setTwBonusEligible(status.isTwBonusEligible());
             s.setAllocation(status.getAllocation());
             updateStatusType(s);
-        }, status::persist);
-
+        }, () -> {
+            log.info("StatusService.create -> creating status");
+            log.info("status = " + status);
+            status.persist();
+        });
+        sendUpdateEvent(status);
     }
 
     private void updateStatusType(UserStatus s) {
@@ -73,7 +89,15 @@ public class StatusService {
     public void delete(String statusuuid) {
         System.out.println("StatusService.delete");
         System.out.println("statusuuid = " + statusuuid);
+        UserStatus entity = UserStatus.<UserStatus>findById(statusuuid);
+
         UserStatus.deleteById(statusuuid);
-        //messageEmitter.sendUserChange(useruuid);
+        DeleteUserStatusEvent event = new DeleteUserStatusEvent(entity.getUseruuid(), statusuuid);
+        aggregateEventSender.handleEvent(event);
+    }
+
+    private void sendUpdateEvent(UserStatus status) {
+        CreateUserStatusEvent event = new CreateUserStatusEvent(status.getUseruuid(), status);
+        aggregateEventSender.handleEvent(event);
     }
 }

@@ -5,6 +5,7 @@ import dk.trustworks.intranet.newsservice.model.enums.NewsType;
 import dk.trustworks.intranet.newsservice.utils.LocalDateTimeSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
@@ -12,6 +13,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Data
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @NoArgsConstructor
 @Entity(name = "news")
 //@Inheritance(strategy = InheritanceType.SINGLE_TABLE)
@@ -19,6 +21,7 @@ import java.util.List;
 public class News extends PanacheEntityBase {
 
     @Id
+    @EqualsAndHashCode.Include
     private String uuid;
     @JsonSerialize(using = LocalDateTimeSerializer.class)
     @Column(name = "startdate")

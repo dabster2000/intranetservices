@@ -8,6 +8,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @JBossLog
 @ApplicationScoped
@@ -23,7 +24,11 @@ public class ProjectDescriptionService {
 
     @Transactional
     public ProjectDescription create(ProjectDescription projectDescription) {
+        projectDescription.setUuid(UUID.randomUUID().toString());
         projectDescription.persist();
+        projectDescription.getProjectDescriptionUserList().forEach(projectDescriptionUser -> {
+            addProjectDescriptionUser(projectDescription, projectDescriptionUser.getUseruuid());
+        });
         return projectDescription;
     }
 
@@ -41,44 +46,38 @@ public class ProjectDescriptionService {
             existingProjectDescription.setMethods(updatedProjectDescription.getMethods());
             existingProjectDescription.setFromDate(updatedProjectDescription.getFromDate());
             existingProjectDescription.setToDate(updatedProjectDescription.getToDate());
-
-            // Handle projectDescriptionUserList carefully for add/update/delete propagation
-            List<ProjectDescriptionUser> incomingUsers = updatedProjectDescription.getProjectDescriptionUserList();
-
-            // Step 1: Remove orphans (existing children that are not in the incoming list)
-            existingProjectDescription.getProjectDescriptionUserList().removeIf(existingUser ->
-                    incomingUsers.stream().noneMatch(incomingUser -> incomingUser.getId().equals(existingUser.getId()))
-            );
-
-            // Step 2: Add or update children
-            for (ProjectDescriptionUser incomingUser : incomingUsers) {
-                if (incomingUser.getId() == null) {
-                    // New child, persist with the parent
-                    existingProjectDescription.getProjectDescriptionUserList().add(incomingUser);
-                } else {
-                    // Existing child, find and update
-                    ProjectDescriptionUser existingUser = existingProjectDescription.getProjectDescriptionUserList().stream()
-                            .filter(u -> u.getId().equals(incomingUser.getId()))
-                            .findFirst()
-                            .orElse(null);
-
-                    if (existingUser != null) {
-                        // Update existing user fields
-                        existingUser.setUseruuid(incomingUser.getUseruuid());
-                    } else {
-                        // If not found, add as new
-                        existingProjectDescription.getProjectDescriptionUserList().add(incomingUser);
-                    }
-                }
-            }
         }
         return existingProjectDescription;
     }
 
+    @Transactional
+    public void delete(String uuid) {
+        ProjectDescription.deleteById(uuid);
+    }
 
     @Transactional
-    public boolean delete(String uuid) {
-        return ProjectDescription.deleteById(uuid);
+    public void addProjectDescriptionUser(String uuid, String useruuid) {
+        ProjectDescription projectDescription = ProjectDescription.findById(uuid);
+        addProjectDescriptionUser(projectDescription, useruuid);
+    }
+
+    @Transactional
+    public void addProjectDescriptionUser(ProjectDescription projectDescription, String useruuid) {
+        if(ProjectDescriptionUser.find("useruuid like ?1 and projectDescription = ?2", useruuid, projectDescription).singleResultOptional().isPresent()) return;
+        ProjectDescriptionUser projectDescriptionUser = new ProjectDescriptionUser(useruuid, projectDescription);
+        projectDescriptionUser.persist();
+    }
+
+
+    @Transactional
+    public void removeProjectDescriptionUser(String projectdesc_uuid, String useruuid) {
+        ProjectDescription projectDescription = ProjectDescription.findById(projectdesc_uuid);
+        ProjectDescriptionUser.delete("projectDescription = ?1 and useruuid like ?2", projectDescription, useruuid);
+    }
+
+    @Transactional
+    public void removeProjectDescriptionUsers(String projectdesc_uuid) {
+        ProjectDescriptionUser.delete("projectDescription = ?1", ProjectDescription.<ProjectDescription>findById(projectdesc_uuid));
     }
 
 }

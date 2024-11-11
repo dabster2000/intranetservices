@@ -82,23 +82,17 @@ public class UserService {
         return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public User findById(String uuid, boolean shallow) {
         User user = User.findById(uuid);
         if(user!=null && !shallow) return UserService.addChildrenToUser(user);
         return user;
     }
 
-    @CacheResult(cacheName = "user-cache")
     public User findByUsername(String username, boolean shallow) {
         User user = User.findByUsername(username).orElse(new User());
         if(!shallow) return UserService.addChildrenToUser(user);
         return user;
-    }
-
-    @CacheResult(cacheName = "user-cache")
-    public User findUserByUuid(String useruuid, boolean shallow) {
-        return User.findById(useruuid);
     }
 
     @CacheResult(cacheName = "user-cache")

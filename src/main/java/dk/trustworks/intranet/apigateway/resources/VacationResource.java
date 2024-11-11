@@ -50,7 +50,7 @@ public class VacationResource {
         System.out.println("VacationResource.listAll");
         System.out.println("useruuid = " + useruuid);
 
-        User user = userService.findUserByUuid(useruuid, false);
+        User user = userService.findById(useruuid, false);
         List<WorkFull> vacation = workAPI.findVacationByUser(useruuid);
         LocalDate employedDate = user.getHireDate();
         System.out.println("employedDate = " + employedDate);

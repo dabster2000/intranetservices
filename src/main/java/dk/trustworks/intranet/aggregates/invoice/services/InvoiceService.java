@@ -321,8 +321,9 @@ public class InvoiceService {
                         "bonusConsultant = ?24, " +
                         "bonusConsultantApprovedStatus = ?25, " +
                         "bonusOverrideAmount = ?26, " +
-                        "bonusOverrideNote = ?27 " +
-                        "WHERE uuid like ?28 ",
+                        "bonusOverrideNote = ?27, " +
+                        "duedate = ?28 " +
+                        "WHERE uuid like ?29 ",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -350,6 +351,7 @@ public class InvoiceService {
                 invoice.getBonusConsultantApprovedStatus(),
                 invoice.getBonusOverrideAmount(),
                 invoice.getBonusOverrideNote(),
+                invoice.getDuedate(),
                 invoice.getUuid());
         System.out.println("Updating invoice items...");
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
@@ -422,7 +424,7 @@ public class InvoiceService {
         Invoice creditNote = new Invoice(invoice.getInvoicenumber(), InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
-                invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(),
+                invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(), LocalDate.now().plusMonths(1),
                 invoice.getProjectref(), invoice.getContractref(), invoice.contractType, invoice.getCompany(), invoice.getCurrency(),
                 "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.getBonusConsultantApprovedStatus());
 
@@ -454,6 +456,7 @@ public class InvoiceService {
                 invoice.getCompany().getCvr(),
                 "Tobias Kjølsen",
                 LocalDate.now(),
+                LocalDate.now().plusMonths(1),
                 invoice.getProjectref(),
                 invoice.getContractref(),
                 invoice.contractType,
@@ -496,7 +499,7 @@ public class InvoiceService {
         });
         double totalNumberOfConsultants = fromCompanyConsultantAvg + secondaryCompanyConsultant.get();
 
-        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now().withDayOfMonth(1).minusDays(1), "", "", ContractType.PERIOD, fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
+        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now().withDayOfMonth(1).minusDays(1), LocalDate.now().withDayOfMonth(1).minusDays(1).plusMonths(1), "", "", ContractType.PERIOD, fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
         invoice.persistAndFlush();
 
         for (AccountingCategory accountingCategory : allAccountingCategories) {

@@ -13,6 +13,8 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 
 import jakarta.persistence.*;
+import lombok.EqualsAndHashCode;
+
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -22,11 +24,13 @@ import java.util.UUID;
  */
 
 @Data
+@EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @Entity
 @Table(name = "userstatus")
 public class UserStatus extends PanacheEntityBase {
 
     @Id
+    @EqualsAndHashCode.Include
     public String uuid;
 
     @Enumerated(EnumType.STRING)
@@ -74,17 +78,5 @@ public class UserStatus extends PanacheEntityBase {
 
     public static List<UserStatus> findByUseruuid(String useruuid){
         return find("useruuid", useruuid).list();
-    }
-
-    @Override
-    public String toString() {
-        return "UserStatus{" +
-                "uuid='" + uuid + '\'' +
-                ", type=" + type +
-                ", status=" + status +
-                ", statusdate=" + statusdate +
-                ", allocation=" + allocation +
-                ", useruuid='" + useruuid + '\'' +
-                '}';
     }
 }

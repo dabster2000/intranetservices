@@ -15,27 +15,7 @@ import java.util.List;
 public class InvoiceDTO {
 
     String header;
-    /*
-    String to_title;
-    String invoice_number_title;
-    String date_title;
-    String payment_terms_title;	// Payment Terms
-    String due_date_title; //Due Date
-    String purchase_order_title; //Purchase Order
-    String quantity_header; //Quantity
-    String item_header; //Item
-    String unit_cost_header; //Rate
-    String amount_header; //Amount
-    String subtotal_title; //Subtotal
-    String discounts_title; //Discounts
-    String tax_title; //Tax
-    String shipping_title; //Shipping
-    String total_title; //Total
-    String amount_paid_title; //Amount Paid
-    String balance_title; //Balance
-    String terms_title; //Terms
-    String notes_title; //Notes
-    */
+
     InvoiceFieldsDTO fields;
     String currency;
 
@@ -91,7 +71,9 @@ public class InvoiceDTO {
                         ((invoice.attention!=null && !invoice.attention.equals(""))?"ATT: "+invoice.getAttention()+"\n":""),
                 StringUtils.convertInvoiceNumberToString(invoice.invoicenumber),
                 invoice.getInvoicedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
-                invoice.getInvoicedate().plusMonths(1).format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
+                invoice.getDuedate()!=null?
+                        invoice.getDuedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")):
+                        invoice.getInvoicedate().plusMonths(1).format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
                 invoice.getDiscount(), invoice.getCurrency(),
                 ((invoice.contractref!=null && !invoice.contractref.isEmpty())?invoice.getContractref()+"\n":"")+
                         ((invoice.projectref!=null && !invoice.projectref.isEmpty())?invoice.getProjectref()+"\n":"")+
@@ -109,7 +91,7 @@ public class InvoiceDTO {
             items.add(new InvoiceItemDTO("2% SKI administrationsgebyr", 1, -adminDiscount, ""));
             items.add(new InvoiceItemDTO("Faktureringsgebyr", 1, -2000, ""));
         }
-        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\nPayment due in 1 month. ";
+        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\n ";
         if(invoice.getCompany().getUuid().equals("44592d3b-2be5-4b29-bfaf-4fafc60b0fa3")) {
             terms += "IBAN: DK1054700004058023, SWIFT: NYKBDKKK";
         } else {

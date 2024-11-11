@@ -13,8 +13,10 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
-import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 @Data
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
@@ -53,27 +55,39 @@ public class ProjectDescription extends PanacheEntityBase {
     private LocalDate toDate;
 
 
-    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "projectdesc_uuid", referencedColumnName="uuid")
+    @OneToMany(fetch = FetchType.EAGER, mappedBy = "projectDescription", cascade = CascadeType.REMOVE)
     private List<ProjectDescriptionUser> projectDescriptionUserList;
 
     @JsonProperty("rolesList")
-    public List<String> getRolesList() {
-        if(this.roles==null || roles.isBlank()) return new ArrayList<>();
-        String cleanedOffering = removeHashtags(this.roles);
-        return List.of(cleanedOffering.split("\\s+"));
+    public Set<String> getRolesList() {
+        if(this.roles==null || roles.isBlank()) return new HashSet<>();
+        return parseAndSortHashtags(this.roles);
     }
 
     @JsonProperty("methodsList")
-    public List<String> getMethodsList() {
-        if(this.methods==null || methods.isBlank()) return new ArrayList<>();
-        String cleanedTools = removeHashtags(this.methods);
-        return List.of(cleanedTools.split("\\s+"));
+    public Set<String> getMethodsList() {
+        if(this.methods==null || methods.isBlank()) return new HashSet<>();
+        return parseAndSortHashtags(this.methods);
     }
 
-    private static String removeHashtags(String input) {
-        return input.replaceAll("#", "");
-    }
+    public static Set<String> parseAndSortHashtags(String input) {
+        Set<String> result = new TreeSet<>();
 
+        if (input == null || input.isEmpty()) {
+            return result;
+        }
+
+        // Split the input string by hashtags
+        String[] parts = input.split("#");
+
+        for (String part : parts) {
+            // Trim each part and ignore any empty or whitespace-only strings
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+        }
+        return result;
+    }
 
 }

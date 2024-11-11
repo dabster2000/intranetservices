@@ -172,7 +172,7 @@ public class InvoiceGenerator {
                     if(workFull.getContractuuid()==null || workFull.getContractuuid().equals(""))
                         continue;
 
-                    User user = userService.findUserByUuid(workFull.getUseruuid(), true);
+                    User user = userService.findById(workFull.getUseruuid(), true);
 
                     if(contract.getClientdatauuid() == null || contract.getClientdatauuid().isEmpty()) {
                         log.warn("No Client Data attached to contract");
@@ -203,6 +203,7 @@ public class InvoiceGenerator {
                                 clientdata.getCvr(),
                                 clientdata.getContactperson(),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
+                                LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()).plusMonths(1),
                                 project.getCustomerreference(),
                                 contract.getRefid(), contract.getContractType(), contract.getCompany(),
                                 "DKK",
@@ -223,7 +224,7 @@ public class InvoiceGenerator {
                         String invoiceItemName = (workFull.getName()!=null && !workFull.getName().isEmpty())?workFull.getName():user.getFullname();
                         if(workFull.getWorkas()!=null && !workFull.getWorkas().isEmpty()) {
                             //User workAsUser = userService.findUserByUuid(workFull.getUseruuid(), true);
-                            User workAsUser = userService.findUserByUuid(workFull.getWorkas(), true);
+                            User workAsUser = userService.findById(workFull.getWorkas(), true);
                             invoiceItemName = user.getFullname() + " (helped " + workAsUser.getFullname() + ")";
                         }
                         InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,

@@ -69,6 +69,9 @@ public class Invoice extends PanacheEntityBase {
     public LocalDate invoicedate;
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
+    public LocalDate duedate;
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    @JsonSerialize(using = LocalDateSerializer.class)
     public LocalDate bookingdate; //date from e-conomics
     public String projectref;
     public String contractref;
@@ -98,7 +101,7 @@ public class Invoice extends PanacheEntityBase {
         this.errors = false;
     }
 
-    public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription) {
+    public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription) {
         this();
         this.type = type;
         this.contractType = contractType;
@@ -123,14 +126,15 @@ public class Invoice extends PanacheEntityBase {
         this.zipcity = zipcity;
         this.attention = attention;
         this.invoicedate = invoicedate;
+        this.duedate = duedate;
         this.projectref = projectref;
         this.company = company;
         this.specificdescription = specificdescription;
         uuid = UUID.randomUUID().toString();
     }
 
-    public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription, String bonusConsultant, SalesApprovalStatus bonusConsultantApprovedStatus) {
-        this(invoiceref, type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, projectref, contractref, contractType, company, currency, specificdescription);
+    public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription, String bonusConsultant, SalesApprovalStatus bonusConsultantApprovedStatus) {
+        this(invoiceref, type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription);
         this.bonusConsultant = bonusConsultant;
         this.bonusConsultantApprovedStatus = bonusConsultantApprovedStatus;
     }

@@ -46,4 +46,22 @@ public class ProjectDescriptionResource {
         knowledgeProjectAPI.delete(uuid);
     }
 
+    @GET
+    @Path("/{projectdesc_uuid}/consultants/{useruuid}")
+    public void addProjectDescriptionUser(@PathParam("projectdesc_uuid") String uuid, @PathParam("useruuid") String useruuid) {
+        knowledgeProjectAPI.addProjectDescriptionUser(uuid, useruuid);
+    }
+
+    @DELETE
+    @Path("/{projectdesc_uuid}/consultants/{useruuid}")
+    public void removeProjectDescriptionUser(@PathParam("projectdesc_uuid") String uuid, @PathParam("useruuid") String useruuid) {
+        knowledgeProjectAPI.removeProjectDescriptionUser(uuid, useruuid);
+    }
+
+    @DELETE
+    @Path("/{projectdesc_uuid}/consultants")
+    public void removeProjectDescriptionUsers(@PathParam("projectdesc_uuid") String uuid) {
+        knowledgeProjectAPI.removeProjectDescriptionUsers(uuid);
+    }
+
 }

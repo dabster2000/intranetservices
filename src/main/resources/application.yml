@@ -1,8 +1,6 @@
 quarkus:
   application:
     name: trustworks-intranet
-  dev-ui:
-    always-include: true
   datasource:
     db-kind: mariadb
     jdbc:

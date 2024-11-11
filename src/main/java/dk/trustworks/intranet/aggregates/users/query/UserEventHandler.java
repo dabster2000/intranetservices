@@ -15,6 +15,7 @@ import dk.trustworks.intranet.userservice.model.UserBankInfo;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
 import io.vertx.mutiny.core.eventbus.EventBus;
@@ -122,6 +123,8 @@ public class UserEventHandler {
         }
 
         UserAccount userAccount = new UserAccount(user.getUuid(), -1, (nextNumber+1)+"", "");
+        QuarkusTransaction.begin();
         userAccount.persist();
+        QuarkusTransaction.commit();
     }
 }

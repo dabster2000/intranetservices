@@ -59,7 +59,7 @@ public class UtilizationService {
         return results;
     }
 
-    public double calculateCompanyAvailabilityByPeriod(String companyuuid, LocalDate startDate, LocalDate endDate) {
+    public double calculateCompanyActualUtilizationByPeriod(String companyuuid, LocalDate startDate, LocalDate endDate) {
         try {
             Query query = em.createNativeQuery(
                     "select (SUM(b.registered_billable_hours) / " +
@@ -75,7 +75,8 @@ public class UtilizationService {
                             "and b.document_date < :endDate " +
                             "and b.consultant_type = 'CONSULTANT' " +
                             "and b.status_type = 'ACTIVE' " +
-                            "and b.companyuuid = :companyuuid");
+                            (companyuuid.equals("all")?"":"and b.companyuuid = :companyuuid")
+            );
 
             query.setParameter("startDate", startDate);
             query.setParameter("endDate", endDate);

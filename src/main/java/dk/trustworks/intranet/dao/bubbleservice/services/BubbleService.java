@@ -1,21 +1,19 @@
 package dk.trustworks.intranet.dao.bubbleservice.services;
 
 import com.slack.api.methods.SlackApiException;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.model.BubbleMember;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import io.quarkus.panache.common.Sort;
-import io.quarkus.scheduler.Scheduled;
-import lombok.extern.jbosslog.JBossLog;
-
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.DELETE;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -32,9 +30,6 @@ public class BubbleService {
 
     @Inject
     SlackService slackService;
-
-    @Inject
-    EntityManager entityManager;
 
     public List<Bubble> findAll() {
         return Bubble.findAll().list();
@@ -147,7 +142,7 @@ public class BubbleService {
         BubbleMember.delete("bubble = ?1", Bubble.findById(bubbleuuid));
     }
 
-    @Scheduled(every = "10m")
+    //@Scheduled(every = "10m")
     public void cleanBubbles() {
         List<User> users = userService.findCurrentlyEmployedUsers(true, ConsultantType.STUDENT, ConsultantType.CONSULTANT, ConsultantType.STAFF);
         for (Bubble bubble : findAll()) {

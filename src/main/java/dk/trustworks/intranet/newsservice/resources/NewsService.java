@@ -40,7 +40,7 @@ public class NewsService {
             }
             return newsList;
         } else if (newsCategory.equals("office_display")) {
-            return News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'CLIENT_EVENT', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
+            return News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'CLIENT_EVENT', 'INFO', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
         }
         return new ArrayList<>();
     }

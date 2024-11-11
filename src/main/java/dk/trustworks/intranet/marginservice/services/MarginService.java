@@ -154,7 +154,7 @@ public class MarginService {
 
         LocalDate date = getCurrentFiscalStartDate().withYear(fiscalYear);
         do {
-            User user = userService.findUserByUuid(useruuid, false);
+            User user = userService.findById(useruuid, false);
             if(!user.getUserStatus(date).getStatus().equals(StatusType.ACTIVE)) {
                 date = date.plusMonths(1);
                 continue;
