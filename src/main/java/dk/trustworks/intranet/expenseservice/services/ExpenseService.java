@@ -32,7 +32,7 @@ public class ExpenseService {
     }
 
     public List<Expense> findByUserLimited(String useruuid) {
-        return Expense.find("useruuid = ?1 ORDER BY expensedate DESC LIMIT 40", useruuid).list();
+        return Expense.find("useruuid = ?1 AND status NOT LIKE ?2 ORDER BY expensedate DESC LIMIT 40", useruuid, "DELETED").list();
     }
 
     public List<Expense> findByUserAndPaidOutMonth(String useruuid, LocalDate month) {

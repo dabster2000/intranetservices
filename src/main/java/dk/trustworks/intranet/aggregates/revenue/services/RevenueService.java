@@ -79,9 +79,11 @@ public class RevenueService {
     }
 
     public List<DateValueDTO> getRegisteredRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, 1.0 - (w.discount / 100.0), 1)) AS value from work_full w " +
-                "where w.rate > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= '" + stringIt(fromdate) + "' and registered < '" + stringIt(todate) + "' " +
-                "group by w.consultant_company_uuid, year(w.registered), month(w.registered);";
+        String sql = """
+            select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, 1.0 - (w.discount / 100.0), 1)) AS value from work_full w 
+            where w.rate > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= '" + stringIt(fromdate) + "' and registered < '" + stringIt(todate) + "' 
+            group by w.consultant_company_uuid, year(w.registered), month(w.registered);
+            """;
         log.info("getRegisteredRevenueByPeriod sql: "+sql);
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(

@@ -68,6 +68,8 @@ quarkus:
         expire-after-write: 30M  # Expire after 30 minutes
       employee-availability:
         expire-after-write: 30M  # Expire after 30 minutes
+      employee-revenue:
+        expire-after-write: 30M
   s3:
     sync-client:
       type: APACHE

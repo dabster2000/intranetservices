@@ -147,13 +147,20 @@ public class ExpenseResource {
                 uuid);
     }
 
-    //todo
-    //validate expense is found in status created, otherwise return error
     @DELETE
     @Path("/{uuid}")
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
+        log.info("Deleting expense with uuid: "+ uuid);
         Expense expense = Expense.findById(uuid);
-        if(!expense.isLocked()) Expense.update("status = ?1, datemodified = ?2 WHERE uuid like ?2", "DELETED", LocalDate.now(), uuid);
+        if (expense == null) {
+            throw new WebApplicationException("Expense not found", 404);
+        }
+        if (!expense.isLocked()) {
+            Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+        } else {
+            throw new WebApplicationException("Cannot delete a locked expense", 400);
+        }
     }
+
 }
