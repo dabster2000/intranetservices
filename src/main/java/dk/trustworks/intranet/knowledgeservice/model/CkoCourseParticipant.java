@@ -3,12 +3,16 @@ package dk.trustworks.intranet.knowledgeservice.model;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
 
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 @Entity
 @Table(name = "cko_course_participants")
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)

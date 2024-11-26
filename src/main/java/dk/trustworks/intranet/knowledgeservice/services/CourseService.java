@@ -1,17 +1,15 @@
-    package dk.trustworks.intranet.knowledgeservice.services;
+package dk.trustworks.intranet.knowledgeservice.services;
 
-    import dk.trustworks.intranet.knowledgeservice.model.CkoCourse;
-    import lombok.extern.jbosslog.JBossLog;
+import dk.trustworks.intranet.knowledgeservice.model.CkoCourse;
+import dk.trustworks.intranet.knowledgeservice.model.CkoCourseParticipant;
+import dk.trustworks.intranet.userservice.model.User;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.transaction.Transactional;
+import lombok.extern.jbosslog.JBossLog;
 
-    import jakarta.enterprise.context.ApplicationScoped;
-    import jakarta.transaction.Transactional;
-    import java.time.LocalDate;
-    import java.util.List;
-    import java.util.UUID;
-
-    /**
- * Created by hans on 27/06/2017.
- */
+import java.time.LocalDate;
+import java.util.List;
+import java.util.UUID;
 
 
 @JBossLog
@@ -41,8 +39,25 @@ public class CourseService {
 
     @Transactional
     public void update(CkoCourse course) {
-        System.out.println("Update course = " + course);
         CkoCourse.update("name = ?1, description = ?2, active = ?3 WHERE uuid like ?4 ", course.getName(), course.getDescription(), course.isActive(), course.getUuid());
     }
 
+    public List<CkoCourseParticipant> findAllSignedUpUsers(CkoCourse ckoCourse) {
+        return CkoCourseParticipant.find("ckoCourse = ?1 AND status = ?2", ckoCourse, "SIGNED_UP").list();
+    }
+
+    public List<CkoCourseParticipant> findAllParticipantsByUser(User user) {
+        return CkoCourseParticipant.find("user", user).list();
+    }
+
+    @Transactional
+    public void addParticipants(CkoCourse course, User user) {
+        CkoCourseParticipant participant = new CkoCourseParticipant(UUID.randomUUID().toString(), course, user, "SIGNED_UP", LocalDate.now());
+        participant.persist();
+    }
+
+    @Transactional
+    public void removeParticipant(String useruuid) {
+        CkoCourseParticipant.delete("user.uuid like ?1", useruuid);
+    }
 }

@@ -25,9 +25,11 @@ import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
 import dk.trustworks.intranet.knowledgeservice.model.Certification;
+import dk.trustworks.intranet.knowledgeservice.model.CkoCourseParticipant;
 import dk.trustworks.intranet.knowledgeservice.model.UserCertification;
 import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
+import dk.trustworks.intranet.knowledgeservice.services.CourseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import jakarta.annotation.security.PermitAll;
@@ -108,6 +110,9 @@ public class UserResource {
 
     @Inject
     ExpenseService expenseService;
+
+    @Inject
+    CourseService courseService;
 
     @GET
     public List<User> listAll(@QueryParam("username") Optional<String> username, @QueryParam("shallow") Optional<String> shallow) {
@@ -319,6 +324,12 @@ public class UserResource {
     @Path("/{useruuid}/documents")
     public void saveDocument(File document) {
         documentAPI.save(document);
+    }
+
+    @GET
+    @Path("/{useruuid}/courses/participants")
+    public List<CkoCourseParticipant> findAllParticipantsByUser(@PathParam("useruuid") String useruuid) {
+        return courseService.findAllParticipantsByUser(User.findById(useruuid));
     }
 
     @GET
