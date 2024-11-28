@@ -56,7 +56,7 @@ public class WorkResource {
     @GET
     @Path("/work/search/findByUserAndTasks")
     public List<WorkFull> findByUserAndTasks(@QueryParam("useruuid") String useruuid, @QueryParam("taskuuids") String taskuuids) {
-        return workAPI.findByUserAndTasks(useruuid, taskuuids);
+        return workAPI.findWorkFullByUserAndTasks(useruuid, taskuuids);
     }
 
     @GET

@@ -6,7 +6,6 @@ import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
-import io.quarkus.cache.CacheResult;
 import io.quarkus.panache.common.Page;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -144,13 +143,20 @@ public class WorkService {
         return WorkFull.find("contractuuid LIKE ?1", contractuuid).list();
     }
 
-    @CacheResult(cacheName = "work-cache")
-    public List<WorkFull> findByUserAndTasks(String useruuid, String taskuuids) {
+    public List<WorkFull> findWorkFullByUserAndTasks(String useruuid, String taskuuids) {
         return WorkFull.find("useruuid LIKE ?1 AND taskuuid IN (?2)", useruuid, taskuuids).list();
     }
 
+    public List<Work> findWorkByUserAndTasks(String useruuid, String taskuuids) {
+        return Work.find("useruuid LIKE ?1 AND taskuuid IN (?2)", useruuid, taskuuids).list();
+    }
+
     public List<WorkFull> findVacationByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, VACATION);
+        return findWorkFullByUserAndTasks(useruuid, VACATION);
+    }
+
+    public List<Work> findWorkVacationByUser(String useruuid) {
+        return findWorkByUserAndTasks(useruuid, VACATION);
     }
 
     public double calculateVacationByUserInMonth(String useruuid, LocalDate fromDate, LocalDate toDate) {
@@ -162,7 +168,7 @@ public class WorkService {
     }
 
     public List<WorkFull> findSicknessByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, SICKNESS);
+        return findWorkFullByUserAndTasks(useruuid, SICKNESS);
     }
 
     public Map<String, Map<String, Double>> findSicknessSumByMonth() {
@@ -170,7 +176,7 @@ public class WorkService {
     }
 
     public List<WorkFull> findMaternityLeaveByUser(String useruuid) {
-        return findByUserAndTasks(useruuid, MATERNITY_LEAVE.getTaskuuid());
+        return findWorkFullByUserAndTasks(useruuid, MATERNITY_LEAVE.getTaskuuid());
     }
 
     public Map<String, Map<String, Double>> findMaternityLeaveSumByMonth() {
@@ -185,7 +191,6 @@ public class WorkService {
         log.info("WorkResource.findByUserAndTasksSumByMonth");
         log.info("taskuuids = " + taskuuids);
         List<WorkFull> workList = WorkFull.find("taskuuid IN (?1)", taskuuids).list();
-        log.info("workList.size() = " + workList.size());
         Map<String, Map<String, Double>> userMap = new HashMap<>();
         for (WorkFull work : workList) {
             userMap.putIfAbsent(work.getUseruuid(), new HashMap<>());

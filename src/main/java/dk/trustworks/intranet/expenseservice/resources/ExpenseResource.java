@@ -63,11 +63,11 @@ public class ExpenseResource {
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid, @QueryParam("limit") String limit, @QueryParam("page") String page) {
         int pageInt = Integer.parseInt(page);
         int limitInt = Integer.parseInt(limit);
-        return Expense.find("useruuid", Sort.by("expensedate").descending(), useruuid).page(Page.of(pageInt, limitInt)).list();
+        return Expense.find("useruuid = ?1 and status not like ?2", Sort.by("expensedate").descending(), useruuid, "DELETED").page(Page.of(pageInt, limitInt)).list();
     }
 
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid) {
-        return Expense.find("useruuid", useruuid).list();
+        return Expense.find("useruuid = ?1 and status not like ?2", useruuid, "DELETED").list();
     }
 
     @GET

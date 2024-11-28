@@ -28,6 +28,7 @@ public class Vacation extends PanacheEntityBase {
 
     private String useruuid;
 
+    @Column(name = "type")
     @Enumerated(EnumType.STRING)
     private VacationType vacationType;
 

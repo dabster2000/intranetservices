@@ -30,10 +30,36 @@ public class AccrualService {
         log.info("Starting monthly vacation accrual process...");
         LocalDate currentDate = LocalDate.now();
         List<User> currentlyEmployedUsers = userService.findCurrentlyEmployedUsers(true, ConsultantType.CONSULTANT, ConsultantType.STAFF);
+
         currentlyEmployedUsers.forEach(user -> {
-            log.infof("Adding %f vacation days to pool %s (User : %s)", VACATION_DAYS_PER_MONTH, user.getFullname());
+            log.infof("Adding %.1f vacation days to pool for user: %s (UUID: %s)",
+                    VACATION_DAYS_PER_MONTH, user.getFullname(), user.getUuid());
             new Vacation(UUID.randomUUID().toString(), user.getUuid(), VacationType.REGULAR, currentDate, VACATION_DAYS_PER_MONTH).persist();
         });
+
         log.info("Monthly vacation accrual process completed.");
+    }
+
+    @Transactional
+    @Scheduled(every = "24h", delay = 1)
+    public void initVacation() {
+        log.info("Starting vacation initialization process...");
+        LocalDate endDate = LocalDate.of(2024, 11, 1);
+        List<User> currentlyEmployedUsers = userService.findCurrentlyEmployedUsers(false, ConsultantType.CONSULTANT, ConsultantType.STAFF);
+
+        currentlyEmployedUsers.forEach(user -> {
+            LocalDate startDate = user.getHireDate().withDayOfMonth(1);
+            log.infof("Initializing vacation accrual for user: %s (UUID: %s) from %s to %s",
+                    user.getFullname(), user.getUuid(), startDate.withDayOfMonth(1), endDate);
+
+            do {
+                log.infof("Adding %.1f vacation days to pool for user: %s (UUID: %s) on %s",
+                        VACATION_DAYS_PER_MONTH, user.getFullname(), user.getUuid(), startDate);
+                new Vacation(UUID.randomUUID().toString(), user.getUuid(), VacationType.REGULAR, startDate, VACATION_DAYS_PER_MONTH).persist();
+                startDate = startDate.plusMonths(1);
+            } while (!startDate.isAfter(endDate));
+        });
+
+        log.info("Vacation initialization process completed.");
     }
 }
