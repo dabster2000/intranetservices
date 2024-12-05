@@ -32,9 +32,8 @@ public class SlackService {
     }
 
     public void sendMessage(String channel, String message) {
-        Slack slack = Slack.getInstance();
-
         try {
+        Slack slack = Slack.getInstance();
             ChatPostMessageResponse response = slack.methods(motherSlackBotToken)
                     .chatPostMessage(req -> req
                             .channel(channel)
@@ -43,7 +42,7 @@ public class SlackService {
             if (!response.isOk()) {
                 System.err.println("Failed to send message due to error: " + response.getError());
             }
-        } catch (IOException | SlackApiException e) {
+        } catch (Exception e) {
             System.err.println("Error sending Slack message: " + e.getMessage());
         }
     }

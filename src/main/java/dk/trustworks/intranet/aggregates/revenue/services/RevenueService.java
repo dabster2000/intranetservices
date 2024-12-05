@@ -75,15 +75,14 @@ public class RevenueService {
     TeamService teamService;
 
     public DateValueDTO getRegisteredRevenueForSingleMonth(String companyuuid, LocalDate month) {
-        return getRegisteredRevenueByPeriod(companyuuid, month, month.plusMonths(1)).get(0);
+        return getRegisteredRevenueByPeriod(companyuuid, month, month.plusMonths(1)).getFirst();
     }
 
     public List<DateValueDTO> getRegisteredRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
-        String sql = """
-            select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, 1.0 - (w.discount / 100.0), 1)) AS value from work_full w 
-            where w.rate > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= '" + stringIt(fromdate) + "' and registered < '" + stringIt(todate) + "' 
-            group by w.consultant_company_uuid, year(w.registered), month(w.registered);
-            """;
+        String sql =
+            "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, 1.0 - (w.discount / 100.0), 1)) AS value from work_full w " +
+            "where w.rate > 0 and w.consultant_company_uuid = '"+companyuuid+"' and registered >= '" + stringIt(fromdate) + "' and registered < '" + stringIt(todate) + "'" +
+            "group by w.consultant_company_uuid, year(w.registered), month(w.registered); ";
         log.info("getRegisteredRevenueByPeriod sql: "+sql);
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
@@ -175,11 +174,8 @@ public class RevenueService {
                         ufd.getMonth().isBefore(todate.plusMonths(1)) &&
                         allConsultantsInPeriod.values().stream().anyMatch(user -> user.getUuid().equals(ufd.getUser().getUuid()))))
                 .peek(u -> System.out.println(u.getUser().getUsername()+" ("+ stringIt(u.getMonth())+"): "+u.getSalary()+", "+u.getSharedExpense())).mapToDouble(value -> value.getSalary() + value.getSharedExpense()).sum();
-
         log.info("All consultant expenses: "+sumExpenses);
-
         log.info("Result: "+(consultantRevenue - sumExpenses));
-
         return new GraphKeyValue(UUID.randomUUID().toString(), "profits", consultantRevenue - sumExpenses);
     }
 
@@ -244,11 +240,7 @@ public class RevenueService {
         for (int i = 0; i < months; i++) {
             LocalDate currentDate = periodStart.plusMonths(i);
             double invoicedAmountByMonth = invoiceService.calculateInvoiceSumByMonth(companyuuid, currentDate);//getInvoicedRevenueForSingleMonth(currentDate);
-            if(invoicedAmountByMonth > 0.0) {
-                invoicedOrRegisteredRevenueMap.put(currentDate, invoicedAmountByMonth);
-            } else {
-                invoicedOrRegisteredRevenueMap.put(currentDate, 0.0);
-            }
+            invoicedOrRegisteredRevenueMap.put(currentDate, Math.max(invoicedAmountByMonth, 0.0));
         }
 
         List<GraphKeyValue> result = new ArrayList<>();

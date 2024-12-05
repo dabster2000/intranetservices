@@ -21,22 +21,30 @@ public class BirthdayNotificationJob {
     @Inject
     SlackService slackService;
 
+    /**
+     * This method sends birthday notifications to employees with birthday today.
+     * It runs every day at 5:00 AM.
+     */
     @Scheduled(cron = "0 0 5 * * ?")
     public void sendBirthdayNotifications() {
-        List<Employee> employees = em.createNativeQuery("select * from twservices.consultant c " +
+        log.info("Checking for employees with birthday today");
+        @SuppressWarnings("unchecked")
+        List<Employee> employees = em.createNativeQuery("select * from consultant c " +
                 "         where " +
                 "             c.status like 'ACTIVE' and " +
-                "             c.type not like 'EXTERNAL' and " +
+                "             c.type not in ('EXTERNAL') and " +
                 "             MONTH(birthday) = MONTH(CURDATE()) and " +
-                "             DAY(birthday) = DAY(CURDATE());", Employee.class).getResultList();
+                "             DAY(birthday) = DAY(CURDATE())", Employee.class)
+                .getResultList();
+        log.info("Found " + employees.size() + " employees with birthday today");
         for (Employee employee : employees) {
-            slackService.sendMessage(employee.getSlackusername(), getRandomWish(employee.getFirstname()+" "+ employee.getLastname(), employee.getGender()));
+            log.info("Sending birthday notification: " + employee.getFirstname() + " " + employee.getLastname());
             slackService.sendMessage("#general", getRandomWish(employee.getFirstname()+" "+ employee.getLastname(), employee.getGender()));
         }
     }
 
     private static final String[] WISHES = {
-            /** NICE AND FRIENDLY */
+            /* NICE AND FRIENDLY */
             /*
             ":flag-dk::tada::cake: [Name], congrats on leveling up in the game of life! :tada: P.S. Is that cake I see at your desk? :flag-dk:",
             ":flag-dk::balloon: [Name], another spin around the sun and you're just glowing! :sunglasses: Hope your day is all about less :email: and more :cake:! :flag-dk:",
@@ -113,7 +121,27 @@ public class BirthdayNotificationJob {
             ":flag-dk::beers: [Name], remember, beers may get stale with age, but you? You're... fermenting? Cheers! :tumbler_glass:",
             ":flag-dk::sparkler: [Name], like a rare coin, you're gaining value. Too bad it's in laugh lines! Celebrate! :sun_with_face:",
             ":flag-dk::pizza: [Name], you're a slice above the rest. A slightly older, crustier slice, but still our favorite! :knife_fork_plate:",
-            ":flag-dk::zany_face: [Name], you're not older – you're just a classic edition with added... character! Enjoy your day!"
+            ":flag-dk::zany_face: [Name], you're not older – you're just a classic edition with added... character! Enjoy your day!",
+            ":flag-dk::alarm_clock: [Name], don't you love birthdays? Another year closer to looking like your passport photo. :birthday:",
+            ":flag-dk::hatching_chick: Heard [Name]'s aging like a fine wine. That explains the sour notes! :bird:",
+            ":flag-dk::video_game: Ding! [Name] leveled up in age! Still waiting for that charisma boost though... :trophy:",
+            ":flag-dk::musical_note: [Name], if age was a song, you'd be a lengthy opera by now! Care for a solo? :headphones:",
+            ":flag-dk::balloon: [Name], those aren't birthday balloons. They're your age’s SOS signals! :confetti_ball:",
+            ":flag-dk::sunglasses: [Name], with age comes wisdom. Or in your case, more audacity to wear those clothes! :camera_with_flash:",
+            ":flag-dk::memo: Remember when [Name] was young and spry? Me neither. Happy Birthday anyway! :fork_and_knife:",
+            ":flag-dk::rainbow: [Name], you’re the pot of... aged gold at the end of the rainbow. Still shiny, right? :unicorn_face:",
+            ":flag-dk::roller_coaster: [Name]'s age is like a roller coaster: surprising, a bit scary, and probably should come with height restrictions. :earth_americas:",
+            ":flag-dk::clinking_glasses: Raising a glass to [Name], the poster child for 'Aged. Not Matured.' Cheers! :beer:",
+            ":flag-dk::book: [Name]'s life is a book. A fantasy novel where age pretends to be just a number! :pen_fountain:",
+            ":flag-dk::rocket: [Name], your age is shooting for the stars! Hope the memory's not too spaced out yet! :stars:",
+            ":flag-dk::gift_heart: [Name], like old cheese, you’ve got that... distinct aroma of maturity! Relish it! :ribbon:",
+            ":flag-dk::spiral_calendar_pad: Reminder: [Name]'s annual ‘Pretend I'm Not Aging’ fest! Join the delusion! :flashlight:",
+            ":flag-dk::mage: [Name], may your day be as unforgettable as your... last attempt to karaoke. Pure magic! :crystal_ball:",
+            ":flag-dk::trophy: [Name], older, bolder, and still not the holder of any real adult skills. Keep rocking! :medal:",
+            ":flag-dk::beers: [Name], the secret to looking young is low lighting and good beer. Guzzle up! :tumbler_glass:",
+            ":flag-dk::sparkler: [Name], they say age is illuminating. That’s just the candles setting your cake on fire! :sun_with_face:",
+            ":flag-dk::pizza: [Name], like cold pizza on a hungover morning, you're... surprisingly still good! Cheers to another year! :knife_fork_plate:",
+            ":flag-dk::zany_face: [Name], aging like a banana. Still sweet, just a bit more... spotted!"
     };
 
     public static String getRandomWish(String name, String gender) {

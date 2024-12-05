@@ -88,4 +88,5 @@ public class Employee extends PanacheEntityBase {
     public int hashCode() {
         return Objects.hashCode(getUuid());
     }
+
 }

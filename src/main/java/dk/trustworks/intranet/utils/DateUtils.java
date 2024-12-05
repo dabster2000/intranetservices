@@ -95,6 +95,18 @@ public final class DateUtils {
     }
 
 
+    public static LocalDate getNextBirthday(LocalDate birthDate) {
+        // Calculate the next occurrence of the birthday
+        LocalDate today = LocalDate.now();
+        LocalDate birthdayThisYear = birthDate.withYear(today.getYear());
+
+        if (birthdayThisYear.isBefore(today) || birthdayThisYear.isEqual(today)) {
+            // Birthday has already occurred this year, so take next year's date
+            birthdayThisYear = birthdayThisYear.plusYears(1);
+        }
+        return birthdayThisYear;
+    }
+
     /**
      * @param dateFrom inclusive
      * @param dateTo exclusive
