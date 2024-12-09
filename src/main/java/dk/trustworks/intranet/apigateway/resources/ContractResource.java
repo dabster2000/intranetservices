@@ -93,7 +93,7 @@ public class ContractResource {
     @GET
     @Path("/{contractuuid}/user/{useruuid}/work")
     public List<WorkFull> findContractWorkByUser(@PathParam("contractuuid") String contractuuid, @PathParam("useruuid") String useruuid, @QueryParam("fromdate") Optional<String> fromdate, @QueryParam("todate") Optional<String> todate) {
-        return workService.findByContractAndUser(contractuuid, useruuid, dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))));
+        return workService.findByContractAndUserByPeriod(contractuuid, useruuid, dateIt(fromdate.orElse("2014-02-01")), dateIt(todate.orElse(stringIt(LocalDate.now()))));
     }
 
     @GET

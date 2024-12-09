@@ -37,6 +37,22 @@ public class BudgetService {
         return getCompanyBudgetPerMonths(company, startDate, endDate, sql);
     }
 
+    public List<DateValueDTO> getContractConsultantBudgetAmount(String contractuuid, String useruuid) {
+        String sql = "SELECT ad.document_date AS date,  " +
+                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
+                "FROM bi_budget_per_day ad  " +
+                "WHERE ad.budgetHours > 0  " +
+                "  AND ad.contractuuid = '"+contractuuid+"'  " +
+                "  AND ad.useruuid = '"+useruuid+"'  " +
+                "  GROUP BY ad.year, ad.month;";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                .map(tuple -> new DateValueDTO(
+                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        (Double) tuple.get("value")
+                ))
+                .toList();
+    }
+
     public List<DateValueDTO> getCompanyBudgetAmountByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
         String sql = "SELECT ad.document_date AS date,  " +
                 "       SUM(ad.budgetHours * ad.rate) AS value  " +

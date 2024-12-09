@@ -217,8 +217,12 @@ public class WorkService {
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3 AND taskuuid IN (?4)", fromdate, todate, useruuid, taskuuids).list();
     }
 
-    public List<WorkFull> findByContractAndUser(String contractuuid, String useruuid, LocalDate fromDate, LocalDate toDate) {
+    public List<WorkFull> findByContractAndUserByPeriod(String contractuuid, String useruuid, LocalDate fromDate, LocalDate toDate) {
         return WorkFull.find("contractuuid = ?1 AND useruuid = ?2 AND registered >= ?3 AND registered < ?4", contractuuid, useruuid, fromDate, toDate).list();
+    }
+
+    public List<WorkFull> findByContractAndUser(String contractuuid, String useruuid) {
+        return WorkFull.find("contractuuid = ?1 AND useruuid = ?2", contractuuid, useruuid).list();
     }
 
     public List<WorkFull> findByYearAndMonth(LocalDate month) {

@@ -1,7 +1,6 @@
 create table vacation
 (
-    uuid            VARCHAR(36) not null
-        primary key,
+    uuid            VARCHAR(36) not null primary key,
     useruuid        varchar(36) not null,
     type            varchar(10) not null,
     date            date        not null,
