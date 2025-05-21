@@ -31,81 +31,14 @@ public class AvailabilityService {
     @CacheResult(cacheName = "employee-availability")
     public List<EmployeeAvailabilityPerMonth> getAllEmployeeAvailabilityByPeriod(LocalDate fromdate, LocalDate todate) {
         return getEmployeeAvailabilityPerMonths(
-                BiDataPerDay.<BiDataPerDay>stream("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and (consultantType = 'CONSULTANT' or consultantType = 'STUDENT') and statusType not in ('TERMINATED','PREBOARDING') ", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue())
-                        /*
-                        .map(biDataPerDay -> {
-                            EmployeeAvailabilityPerDayAggregate employeeAvailabilityPerDayAggregate = new EmployeeAvailabilityPerDayAggregate();
-                            employeeAvailabilityPerDayAggregate.setCompany(biDataPerDay.getCompany());
-                            employeeAvailabilityPerDayAggregate.setDocumentDate(biDataPerDay.getDocumentDate());
-                            employeeAvailabilityPerDayAggregate.setYear(biDataPerDay.getYear());
-                            employeeAvailabilityPerDayAggregate.setMonth(biDataPerDay.getMonth());
-                            employeeAvailabilityPerDayAggregate.setDay(biDataPerDay.getDay());
-                            employeeAvailabilityPerDayAggregate.setUser(biDataPerDay.getUser());
-                            employeeAvailabilityPerDayAggregate.setGrossAvailableHours(biDataPerDay.getGrossAvailableHours());
-                            employeeAvailabilityPerDayAggregate.setUnavavailableHours(biDataPerDay.getUnavailableHours());
-                            employeeAvailabilityPerDayAggregate.setVacationHours(biDataPerDay.getVacationHours());
-                            employeeAvailabilityPerDayAggregate.setSickHours(biDataPerDay.getSickHours());
-                            employeeAvailabilityPerDayAggregate.setMaternityLeaveHours(biDataPerDay.getMaternityLeaveHours());
-                            employeeAvailabilityPerDayAggregate.setNonPaydLeaveHours(biDataPerDay.getNonPaydLeaveHours());
-                            employeeAvailabilityPerDayAggregate.setPaidLeaveHours(biDataPerDay.getPaidLeaveHours());
-                            employeeAvailabilityPerDayAggregate.setSalary(biDataPerDay.getSalary());
-                            employeeAvailabilityPerDayAggregate.setConsultantType(
-                                    Optional.ofNullable(biDataPerDay.getConsultantType())
-                                            .map(ConsultantType::valueOf)
-                                            .orElse(ConsultantType.CONSULTANT) // or provide a default value here if needed
-                            );
-                            employeeAvailabilityPerDayAggregate.setStatusType(
-                                    Optional.ofNullable(biDataPerDay.getStatusType())
-                                            .map(StatusType::valueOf)
-                                            .orElse(StatusType.TERMINATED) // or provide a default value here if needed
-                            );
-                            employeeAvailabilityPerDayAggregate.setTwBonusEligible(biDataPerDay.isTwBonusEligible());
-                            return employeeAvailabilityPerDayAggregate;
-                        })
-                         */
-                        .toList()
-                //EmployeeAvailabilityPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and (consultantType = 'CONSULTANT' or consultantType = 'STUDENT') and statusType not in ('TERMINATED','PREBOARDING') ", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue())
+                BiDataPerDay.<BiDataPerDay>stream("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and (consultantType = 'CONSULTANT' or consultantType = 'STUDENT') and statusType not in ('TERMINATED','PREBOARDING') ", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue()).toList()
         );
     }
 
     @CacheResult(cacheName = "employee-availability")
     public List<EmployeeAvailabilityPerMonth> getCompanyEmployeeAvailabilityByPeriod(Company company, LocalDate fromdate, LocalDate todate) {
         return getEmployeeAvailabilityPerMonths(
-                BiDataPerDay.<BiDataPerDay>stream("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5 and consultantType IN ('CONSULTANT','STAFF','STUDENT') and statusType not in ('TERMINATED','PREBOARDING') ", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), company)
-                        /*
-                        .map(biDataPerDay -> {
-                            EmployeeAvailabilityPerDayAggregate employeeAvailabilityPerDayAggregate = new EmployeeAvailabilityPerDayAggregate();
-                            employeeAvailabilityPerDayAggregate.setCompany(biDataPerDay.getCompany());
-                            employeeAvailabilityPerDayAggregate.setDocumentDate(biDataPerDay.getDocumentDate());
-                            employeeAvailabilityPerDayAggregate.setYear(biDataPerDay.getYear());
-                            employeeAvailabilityPerDayAggregate.setMonth(biDataPerDay.getMonth());
-                            employeeAvailabilityPerDayAggregate.setDay(biDataPerDay.getDay());
-                            employeeAvailabilityPerDayAggregate.setUser(biDataPerDay.getUser());
-                            employeeAvailabilityPerDayAggregate.setGrossAvailableHours(biDataPerDay.getGrossAvailableHours());
-                            employeeAvailabilityPerDayAggregate.setUnavavailableHours(biDataPerDay.getUnavailableHours());
-                            employeeAvailabilityPerDayAggregate.setVacationHours(biDataPerDay.getVacationHours());
-                            employeeAvailabilityPerDayAggregate.setSickHours(biDataPerDay.getSickHours());
-                            employeeAvailabilityPerDayAggregate.setMaternityLeaveHours(biDataPerDay.getMaternityLeaveHours());
-                            employeeAvailabilityPerDayAggregate.setNonPaydLeaveHours(biDataPerDay.getNonPaydLeaveHours());
-                            employeeAvailabilityPerDayAggregate.setPaidLeaveHours(biDataPerDay.getPaidLeaveHours());
-                            employeeAvailabilityPerDayAggregate.setSalary(biDataPerDay.getSalary());
-                            employeeAvailabilityPerDayAggregate.setConsultantType(
-                                    Optional.ofNullable(biDataPerDay.getConsultantType())
-                                            .map(ConsultantType::valueOf)
-                                            .orElse(ConsultantType.CONSULTANT) // or provide a default value here if needed
-                            );
-                            employeeAvailabilityPerDayAggregate.setStatusType(
-                                    Optional.ofNullable(biDataPerDay.getStatusType())
-                                            .map(StatusType::valueOf)
-                                            .orElse(StatusType.TERMINATED) // or provide a default value here if needed
-                            );
-                            employeeAvailabilityPerDayAggregate.setTwBonusEligible(biDataPerDay.isTwBonusEligible());
-                            return employeeAvailabilityPerDayAggregate;
-                        })
-
-                         */
-                        .toList()
-                //EmployeeAvailabilityPerDayAggregate.list("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5 and consultantType IN ('CONSULTANT','STAFF','STUDENT') and statusType not in ('TERMINATED','PREBOARDING') ", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), company)
+                BiDataPerDay.<BiDataPerDay>stream("STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') >= STR_TO_DATE(CONCAT(?1, '-', ?2, '-01'), '%Y-%m-%d') AND STR_TO_DATE(CONCAT(year, '-', month, '-01'), '%Y-%m-%d') < STR_TO_DATE(CONCAT(?3, '-', ?4, '-01'), '%Y-%m-%d') and company = ?5 and consultantType IN ('CONSULTANT','STAFF','STUDENT') and statusType not in ('TERMINATED','PREBOARDING') ", fromdate.getYear(), fromdate.getMonthValue(), todate.getYear(), todate.getMonthValue(), company).toList()
         );
     }
 
@@ -119,46 +52,11 @@ public class AvailabilityService {
     public List<BiDataPerDay> getEmployeeDataPerDay(String useruuid, LocalDate fromDate, LocalDate toDate) {
         return BiDataPerDay.<BiDataPerDay>stream("documentDate >= ?1 AND documentDate < ?2 AND user = ?3", fromDate, toDate, User.findById(useruuid))
                 .sorted(Comparator.comparing(BiDataPerDay::getDocumentDate))
-                // Map to EmployeeAvailabilityPerDayAggregate
-                /*
-                .map(biDataPerDay -> {
-                    EmployeeAvailabilityPerDayAggregate employeeAvailabilityPerDayAggregate = new EmployeeAvailabilityPerDayAggregate();
-                    employeeAvailabilityPerDayAggregate.setCompany(biDataPerDay.getCompany());
-                    employeeAvailabilityPerDayAggregate.setDocumentDate(biDataPerDay.getDocumentDate());
-                    employeeAvailabilityPerDayAggregate.setYear(biDataPerDay.getYear());
-                    employeeAvailabilityPerDayAggregate.setMonth(biDataPerDay.getMonth());
-                    employeeAvailabilityPerDayAggregate.setDay(biDataPerDay.getDay());
-                    employeeAvailabilityPerDayAggregate.setUser(biDataPerDay.getUser());
-                    employeeAvailabilityPerDayAggregate.setGrossAvailableHours(biDataPerDay.getGrossAvailableHours());
-                    employeeAvailabilityPerDayAggregate.setUnavavailableHours(biDataPerDay.getUnavailableHours());
-                    employeeAvailabilityPerDayAggregate.setVacationHours(biDataPerDay.getVacationHours());
-                    employeeAvailabilityPerDayAggregate.setSickHours(biDataPerDay.getSickHours());
-                    employeeAvailabilityPerDayAggregate.setMaternityLeaveHours(biDataPerDay.getMaternityLeaveHours());
-                    employeeAvailabilityPerDayAggregate.setNonPaydLeaveHours(biDataPerDay.getNonPaydLeaveHours());
-                    employeeAvailabilityPerDayAggregate.setPaidLeaveHours(biDataPerDay.getPaidLeaveHours());
-                    employeeAvailabilityPerDayAggregate.setSalary(biDataPerDay.getSalary());
-                    employeeAvailabilityPerDayAggregate.setConsultantType(
-                            Optional.ofNullable(biDataPerDay.getConsultantType())
-                                    .map(ConsultantType::valueOf)
-                                    .orElse(ConsultantType.CONSULTANT) // or provide a default value here if needed
-                    );
-                    employeeAvailabilityPerDayAggregate.setStatusType(
-                            Optional.ofNullable(biDataPerDay.getStatusType())
-                                    .map(StatusType::valueOf)
-                                    .orElse(StatusType.TERMINATED) // or provide a default value here if needed
-                    );
-                    employeeAvailabilityPerDayAggregate.setTwBonusEligible(biDataPerDay.isTwBonusEligible());
-                    return employeeAvailabilityPerDayAggregate;
-                })*/
                 .toList();
-
-
-        //return EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>stream("documentDate >= ?1 AND documentDate < ?2 AND user = ?3", fromDate, toDate, User.findById(useruuid)).sorted(Comparator.comparing(EmployeeAvailabilityPerDayAggregate::getDocumentDate)).toList();
     }
 
     public double getSumOfAvailableHoursByUsersAndMonth(LocalDate localDate, String... uuids) {
         return ((Number) em.createNativeQuery("select greatest(0.0, sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) as value " +
-                //"from bi_availability_per_day e " +
                 "from bi_data_per_day e " +
                 "where e.status_type = 'ACTIVE' and e.consultant_type = 'CONSULTANT' and e.useruuid in ('" + String.join("','", uuids) + "') " +
                 "     AND e.year = " + localDate.getYear() + " " +
@@ -171,40 +69,7 @@ public class AvailabilityService {
 
     @NotNull
     private ArrayList<CompanyAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(Company company, LocalDate startDate, LocalDate endDate, String sql) {
-        //return new ArrayList<>(EmployeeAvailabilityPerDayAggregate.<EmployeeAvailabilityPerDayAggregate>list(sql, startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), company)
         return new ArrayList<>(BiDataPerDay.<BiDataPerDay>stream(sql, startDate.getYear(), startDate.getMonthValue(), endDate.getYear(), endDate.getMonthValue(), company)
-                /*
-                .map(biDataPerDay -> {
-                    EmployeeAvailabilityPerDayAggregate employeeAvailabilityPerDayAggregate = new EmployeeAvailabilityPerDayAggregate();
-                    employeeAvailabilityPerDayAggregate.setCompany(biDataPerDay.getCompany());
-                    employeeAvailabilityPerDayAggregate.setDocumentDate(biDataPerDay.getDocumentDate());
-                    employeeAvailabilityPerDayAggregate.setYear(biDataPerDay.getYear());
-                    employeeAvailabilityPerDayAggregate.setMonth(biDataPerDay.getMonth());
-                    employeeAvailabilityPerDayAggregate.setDay(biDataPerDay.getDay());
-                    employeeAvailabilityPerDayAggregate.setUser(biDataPerDay.getUser());
-                    employeeAvailabilityPerDayAggregate.setGrossAvailableHours(biDataPerDay.getGrossAvailableHours());
-                    employeeAvailabilityPerDayAggregate.setUnavavailableHours(biDataPerDay.getUnavailableHours());
-                    employeeAvailabilityPerDayAggregate.setVacationHours(biDataPerDay.getVacationHours());
-                    employeeAvailabilityPerDayAggregate.setSickHours(biDataPerDay.getSickHours());
-                    employeeAvailabilityPerDayAggregate.setMaternityLeaveHours(biDataPerDay.getMaternityLeaveHours());
-                    employeeAvailabilityPerDayAggregate.setNonPaydLeaveHours(biDataPerDay.getNonPaydLeaveHours());
-                    employeeAvailabilityPerDayAggregate.setPaidLeaveHours(biDataPerDay.getPaidLeaveHours());
-                    employeeAvailabilityPerDayAggregate.setSalary(biDataPerDay.getSalary());
-                    employeeAvailabilityPerDayAggregate.setConsultantType(
-                            Optional.ofNullable(biDataPerDay.getConsultantType())
-                                    .map(ConsultantType::valueOf)
-                                    .orElse(ConsultantType.CONSULTANT) // or provide a default value here if needed
-                    );
-                    employeeAvailabilityPerDayAggregate.setStatusType(
-                            Optional.ofNullable(biDataPerDay.getStatusType())
-                                    .map(StatusType::valueOf)
-                                    .orElse(StatusType.TERMINATED) // or provide a default value here if needed
-                    );
-                    employeeAvailabilityPerDayAggregate.setTwBonusEligible(biDataPerDay.isTwBonusEligible());
-                    return employeeAvailabilityPerDayAggregate;
-                })
-                 */
-                //.stream()
                 .collect(Collectors.groupingBy(
                         e -> new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()),
                         Collectors.collectingAndThen(Collectors.toList(), list -> {
@@ -237,6 +102,74 @@ public class AvailabilityService {
 
     @NotNull
     private List<EmployeeAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(List<BiDataPerDay> aggregates) {
+        return aggregates.stream()
+                .collect(Collectors.groupingBy(
+                        e -> new AbstractMap.SimpleEntry<>(new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()), e.getUser()),
+                        Collectors.toList()
+                ))
+                .values().stream().map(list -> {
+                    int year = list.getFirst().getYear();
+                    int month = list.getFirst().getMonth();
+                    User user = list.getFirst().getUser();
+                    Company company = list.getFirst().getCompany();
+                    ConsultantType consultantType = list.getFirst().getConsultantType();
+
+                    // Filter to only include days where the employee is ACTIVE (or other statuses that count for work)
+                    List<BiDataPerDay> activeDays = list.stream()
+                            .filter(day -> day.getStatusType() != null)
+                            .filter(day -> day.getStatusType().equals(StatusType.ACTIVE)
+                                    || day.getStatusType().equals(StatusType.PAID_LEAVE)
+                                    || day.getStatusType().equals(StatusType.MATERNITY_LEAVE))
+                            .toList();
+
+                    if(activeDays.isEmpty()) {
+                        // If no active days, treat the month as terminated (or non-pay)
+                        return new EmployeeAvailabilityPerMonth(
+                                year, month, company, user.getUuid(), consultantType, StatusType.TERMINATED,
+                                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, false
+                        );
+                    } else {
+                        double grossAvailableHours = activeDays.stream()
+                                .mapToDouble(day -> day.getGrossAvailableHours().doubleValue()).sum();
+                        double unavailableHours = activeDays.stream()
+                                .mapToDouble(day -> day.getUnavailableHours().doubleValue()).sum();
+                        double vacationHours = activeDays.stream()
+                                .mapToDouble(day -> day.getVacationHours().doubleValue()).sum();
+                        double sickHours = activeDays.stream()
+                                .mapToDouble(day -> day.getSickHours().doubleValue()).sum();
+                        double maternityLeaveHours = activeDays.stream()
+                                .mapToDouble(day -> day.getMaternityLeaveHours().doubleValue()).sum();
+                        double nonPaydLeaveHours = activeDays.stream()
+                                .mapToDouble(day -> day.getNonPaydLeaveHours().doubleValue()).sum();
+                        double paidLeaveHours = activeDays.stream()
+                                .mapToDouble(day -> day.getPaidLeaveHours().doubleValue()).sum();
+                        double salary = activeDays.stream()
+                                .mapToDouble(BiDataPerDay::getSalary).average().orElse(0.0);
+                        boolean isTwBonusEligible = activeDays.stream().allMatch(BiDataPerDay::isTwBonusEligible);
+
+                        // Use ACTIVE status because there are active days in this month
+                        StatusType status = StatusType.ACTIVE;
+
+                        return new EmployeeAvailabilityPerMonth(
+                                year, month, company, user.getUuid(), consultantType, status,
+                                BigDecimal.valueOf(grossAvailableHours),
+                                BigDecimal.valueOf(unavailableHours),
+                                BigDecimal.valueOf(vacationHours),
+                                BigDecimal.valueOf(sickHours),
+                                BigDecimal.valueOf(maternityLeaveHours),
+                                BigDecimal.valueOf(nonPaydLeaveHours),
+                                BigDecimal.valueOf(paidLeaveHours),
+                                BigDecimal.valueOf(salary),
+                                isTwBonusEligible
+                        );
+                    }
+                }).collect(Collectors.toList());
+    }
+
+    /*
+    @NotNull
+    private List<EmployeeAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(List<BiDataPerDay> aggregates) {
         return aggregates
                 .stream()
                 .collect(Collectors.groupingBy(
@@ -245,7 +178,7 @@ public class AvailabilityService {
                             // In this block, we process each group to create a CompanyBudgetPerMonth object
 
                             // Assuming year, month, client, company, and contract are the same for all entries in the group
-                            BiDataPerDay example = list.get(0);
+                            BiDataPerDay example = list.getFirst();
                             int year = example.getYear();
                             int month = example.getMonth();
                             User user = example.getUser();
@@ -274,6 +207,8 @@ public class AvailabilityService {
                 ))
                 .values().stream().toList();
     }
+
+     */
 
     public double calculateSalarySum(Company company, LocalDate date, List<EmployeeAvailabilityPerMonth> data) {
         AtomicReference<Double> sum = new AtomicReference<>(0.0);

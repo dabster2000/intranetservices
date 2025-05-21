@@ -56,6 +56,11 @@ quarkus:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
       #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
+  rest-client:
+    openai-api:
+      url: https://api.openai.com
+      scope: jakarta.inject.Singleton
+      #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
   #otel:
   #  exporter:
   #    otlp:
@@ -107,6 +112,13 @@ bucket:
 claid:
   ai:
     apikey: ${CLAID_APIKEY:xx}
+edenai:
+  api:
+    key: ${EDENAI_APIKEY:xx}
+openai:
+  api:
+    key: ${OPENAI_APIKEY:xx}
+  model: gpt-4o-mini
 dk:
   trustworks:
     intranet:

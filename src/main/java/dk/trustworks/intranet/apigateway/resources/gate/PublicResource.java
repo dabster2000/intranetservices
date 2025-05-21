@@ -1,25 +1,33 @@
 package dk.trustworks.intranet.apigateway.resources.gate;
 
 
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.apigateway.dto.PublicUser;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.dao.crm.model.Project;
+import dk.trustworks.intranet.dao.crm.model.Task;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
+import dk.trustworks.intranet.dao.crm.services.ProjectService;
+import dk.trustworks.intranet.dao.crm.services.TaskService;
+import dk.trustworks.intranet.dao.workservice.model.Week;
+import dk.trustworks.intranet.dao.workservice.model.Work;
+import dk.trustworks.intranet.dao.workservice.model.WorkFull;
+import dk.trustworks.intranet.dao.workservice.services.WeekService;
+import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.newsservice.model.News;
 import dk.trustworks.intranet.newsservice.resources.NewsService;
+import dk.trustworks.intranet.sales.model.SalesCoffeeDate;
 import dk.trustworks.intranet.userservice.model.Employee;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
-import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.GET;
-import jakarta.ws.rs.POST;
-import jakarta.ws.rs.Path;
-import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -32,8 +40,13 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
+
+import static dk.trustworks.intranet.utils.DateUtils.dateIt;
+import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 @JBossLog
 @Path("/public")
@@ -55,6 +68,21 @@ public class PublicResource {
     @Inject
     SlackService slackService;
 
+    @Inject
+    WeekService weekService;
+
+    @Inject
+    TaskService taskService;
+
+    @Inject
+    ProjectService projectService;
+
+    @Inject
+    WorkService workService;
+
+    @Inject
+    AggregateEventSender sender;
+
     @GET
     @Path("/clients")
     public List<Client> findAllClients() {
@@ -65,16 +93,23 @@ public class PublicResource {
     @Path("/users")
     public List<PublicUser> findAllUsers() {
         Stream<Employee> stream = Employee.stream("status not in (?1, ?2)", StatusType.TERMINATED, StatusType.PREBOARDING);
-        return stream.map(employee -> {
-            PublicUser publicUser = new PublicUser();
-            publicUser.setUuid(employee.getUuid());
-            publicUser.setActive(!(employee.getStatus().equals(StatusType.TERMINATED) || employee.getStatus().equals(StatusType.PREBOARDING)));
-            publicUser.setType(employee.getConsultanttype());
-            publicUser.setFirstName(employee.getFirstname());
-            publicUser.setLastName(employee.getLastname());
-            publicUser.setBirthday(DateUtils.getNextBirthday(employee.getBirthday()));
-            return publicUser;
-        }).toList();
+        return stream.map(PublicUser::new).toList();
+    }
+
+    @GET
+    @Path("/users/{useruuid}")
+    public PublicUser findByUseruuid(@PathParam("useruuid") String useruuid) {
+        Employee employee = Employee.findById(useruuid);
+        if (employee == null) return null;
+        return new PublicUser(employee);
+    }
+
+    @GET
+    @Path("/users/{useruuid}/weeks/{year}/{weeknumber}")
+    public List<Week> findByWeeknumberAndYearAndUseruuidOrderBySortingAsc(@PathParam("useruuid") String useruuid, @PathParam("weeknumber") String strWeeknumber, @PathParam("year") String strYear) {
+        int year = Integer.parseInt(strYear);
+        int weeknumber = Integer.parseInt(strWeeknumber);
+        return weekService.findByWeeknumberAndYearAndUseruuidOrderBySortingAsc(weeknumber, year, useruuid);
     }
 
     @GET
@@ -93,6 +128,46 @@ public class PublicResource {
     @Path("/users/{useruuid}/photo")
     public File findPhotoByUserUUID(@PathParam("useruuid") String useruuid) {
         return photoAPI.findPhotoByRelatedUUID(useruuid);
+    }
+
+    @GET
+    @Path("/tasks/{uuid}")
+    public Task findByTaskuuid(@PathParam("uuid") String uuid) {
+        return taskService.findByUuid(uuid);
+    }
+
+    @GET
+    @Path("/projects/{uuid}")
+    @SecurityRequirement(name = "jwt", scopes = {})
+    public Project findByProjectuuid(@PathParam("uuid") String uuid) {
+        return projectService.findByUuid(uuid);
+    }
+
+    @GET
+    @Path("/users/{uuid}/work")
+    public List<WorkFull> getUserWorkByPeriod(@PathParam("uuid") String useruuid, @QueryParam("fromdate") Optional<String> fromDate, @QueryParam("todate") Optional<String> toDate) {
+        return workService.findByPeriodAndUserUUID(dateIt(fromDate.orElse("2014-02-01")), dateIt(toDate.orElse(stringIt(LocalDate.now()))), useruuid);
+    }
+
+    @GET
+    @Path("/coffeedates")
+    public List<SalesCoffeeDate> getCoffeeDates() {
+        List<SalesCoffeeDate> coffeeDateList = SalesCoffeeDate.<SalesCoffeeDate>listAll();
+        coffeeDateList.forEach(coffeeDate -> {
+            coffeeDate.addPublicUser(Employee.findById(coffeeDate.getUseruuid()));
+        });
+        return coffeeDateList;
+    }
+
+
+    @POST
+    @Path("/work")
+    public void save(Work work) {
+        workService.persistOrUpdate(work);
+
+        sender.handleEvent(new UpdateWorkEvent(work.getUseruuid(), work));
+        if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
+            sender.handleEvent(new UpdateWorkEvent(work.getWorkas(), work));
     }
 
     @POST

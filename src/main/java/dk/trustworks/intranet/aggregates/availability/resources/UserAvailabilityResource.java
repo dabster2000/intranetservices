@@ -49,30 +49,4 @@ public class UserAvailabilityResource {
     public List<BiDataPerDay> getBudgetsBySingleDayAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
         return availabilityService.getEmployeeDataPerDay(useruuid, dateIt(periodFrom), dateIt(periodTo));
     }
-/*
-    @GET
-    @Path("/{useruuid}/budgets/amount")
-    public List<DateValueDTO> getBudgetRevenueByPeriodAndSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("periodFrom") String periodFrom, @QueryParam("periodTo") String periodTo) {
-        return budgetService.getBudgetAmountByPeriodAndSingleConsultant(useruuid, dateIt(periodFrom), dateIt(periodTo));
-    }
-
-    @GET
-    @Path("/{useruuid}/budgets/months/{month}")
-    public List<EmployeeBudgetPerMonth> getBudgetsBySingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return budgetService.getConsultantBudgetDataByMonth(useruuid, dateIt(month));
-    }
-
-    @GET
-    @Path("/{useruuid}/budgets/months/{month}/amount")
-    public DateValueDTO getBudgetAmountForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return budgetService.getBudgetAmountForSingleMonthAndSingleConsultant(useruuid, dateIt(month));
-    }
-
-    @GET
-    @Path("/{useruuid}/budgets/months/{month}/hours")
-    public DateValueDTO getBudgetHoursForSingleMonthAndSingleConsultant(@PathParam("useruuid") String useruuid, @PathParam("month") String month) {
-        return new DateValueDTO(dateIt(month), budgetService.getConsultantBudgetHoursByMonth(useruuid, dateIt(month)));
-    }
-
-     */
 }

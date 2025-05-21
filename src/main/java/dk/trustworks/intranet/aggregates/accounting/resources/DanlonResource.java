@@ -17,6 +17,7 @@ import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.NumberUtils;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.smallrye.common.constraint.NotNull;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -27,7 +28,6 @@ import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-import org.jetbrains.annotations.NotNull;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -71,89 +71,197 @@ public class DanlonResource {
     @PathParam("companyuuid")
     private String companyuuid;
 
+
+    /**
+     * The {@code DanlonResource} class is responsible for calculating and reporting
+     * changes to employee salary and status based on a variety of business rules.
+     *
+     * <p>This class implements the following business rules:
+     *
+     * <ul>
+     *   <li>
+     *     <b>New Hire with Partial Month Salary:</b>
+     *     <p>
+     *       If an employee's hire date falls within the current month (even if they start
+     *       mid-month), they are flagged as a "Ny medarbejder" (new employee). The adjusted
+     *       salary for that partial month is calculated and included in the report, rather
+     *       than being overridden by a generic salary change message.
+     *     </p>
+     *   </li>
+     *
+     *   <li>
+     *     <b>Benefit Change Reporting:</b>
+     *     <p>
+     *       For active employees (not new hires), if the current month’s salary record shows
+     *       differences compared to the previous month, individual benefit changes are checked:
+     *       <ul>
+     *         <li>If the base salary increases, report it as "Ny løn: [new salary]".</li>
+     *         <li>If the lunch benefit changes, report as "Tilmeldt frokostordning: Ja/Nej".</li>
+     *         <li>If the phone benefit changes, report as "Fri telefon: Ja/Nej".</li>
+     *         <li>If the prayer day benefit changes, report as "Storbededagstillæg: Ja/Nej".</li>
+     *       </ul>
+     *       Multiple benefit changes are reported independently, ensuring that no change is omitted.
+     *     </p>
+     *   </li>
+     *
+     *   <li>
+     *     <b>Terminated Employee:</b>
+     *     <p>
+     *       If an employee is terminated effective from the first day of the next month,
+     *       the employee's record is immediately flagged with "Sidste løn, medarbejder opsagt"
+     *       (final salary, employee terminated), and no additional information is appended.
+     *     </p>
+     *   </li>
+     *
+     *   <li>
+     *     <b>Employee on Full Non-Pay Leave:</b>
+     *     <p>
+     *       If every day in the current month is classified as non-pay leave, the employee's
+     *       record is overridden with "Ingen løn" (no salary) and the status is set to indicate
+     *       non-pay leave.
+     *     </p>
+     *   </li>
+     *
+     *   <li>
+     *     <b>Adjusted Salary Calculation for Partial Non-Pay Days:</b>
+     *     <p>
+     *       When the employee has some non-pay days (but not exclusively non-pay leave), the system
+     *       calculates the actual work hours and computes an adjusted salary based on:
+     *       <ul>
+     *         <li>A fixed norm (e.g., 160.33 hours),</li>
+     *         <li>The actual work hours determined by weekdays in the period, and</li>
+     *         <li>The salary awarding hours from the employee's availability data.</li>
+     *       </ul>
+     *       This calculation is appended to the record as additional detail.
+     *     </p>
+     *   </li>
+     * </ul>
+     *
+     * <p>These rules are designed to ensure that any significant changes in an employee's status or
+     * compensation are clearly reported. The documentation here serves as both a reference for developers
+     * and as a basis for writing acceptance tests.
+     *
+     * <p><b>Example Usage:</b>
+     * <pre>
+     *   DanlonResource resource = new DanlonResource();
+     *   List&lt;DanlonChanges&gt; changes = resource.findChangedUsers("2025-02");
+     *   // The changes list will contain entries with messages that reflect the business rules above.
+     * </pre>
+     *
+     * @see UserService
+     * @see SalaryService
+     * @see AvailabilityService
+     */
     @GET
     @Path("/employees/changed")
     public List<DanlonChanges> findChangedUsers(@QueryParam("month") String strMonth) {
-        LocalDate month = dateIt(strMonth).withDayOfMonth(1);
-        LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
-
-        LocalDate previousMonth = month.minusMonths(1).withDayOfMonth(1);
-        LocalDate previousEndOfMonth = month.withDayOfMonth(1).minusDays(1);
-
-        LocalDate nextMonth = month.plusMonths(1).withDayOfMonth(1);
+        // Setup the date ranges for the current, previous, and next month.
+        LocalDate currentMonth = dateIt(strMonth).withDayOfMonth(1);
+        LocalDate endOfCurrentMonth = currentMonth.plusMonths(1).minusDays(1);
+        LocalDate previousMonth = currentMonth.minusMonths(1).withDayOfMonth(1);
+        LocalDate nextMonth = currentMonth.plusMonths(1).withDayOfMonth(1);
         LocalDate nextEndOfMonth = nextMonth.plusMonths(1).minusDays(1);
 
-        List<DanlonChanges> result = new ArrayList<>();
+        List<DanlonChanges> changesList = new ArrayList<>();
 
-        // Look for changes to a user
-        List<User> userList = getActiveUsersExcludingPreboardingAndTerminated(endOfMonth);
+        // Get only the active users for this company.
+        List<User> activeUsers = getActiveUsersExcludingPreboardingAndTerminated(endOfCurrentMonth);
 
+        // Process each user individually.
+        for (User user : activeUsers) {
+            String danlonNumber = user.getUserAccount() != null ? user.getUserAccount().getDanlon() : "";
+            String fullName = user.getFullname();
+            String statusType = ""; // Default status (empty means no override)
+            StringBuilder salaryNote = new StringBuilder();
 
-        for (User user : userList) {
-            String danlonNumber = user.getUserAccount()!=null?user.getUserAccount().getDanlon():"";
-            String name = user.getFullname();
-            StringBuilder salaryNotes = new StringBuilder("Normal løn. ");
-            List<BiDataPerDay> employeeDataPerDayPreviousMonth = availabilityService.getEmployeeDataPerDay(user.uuid, previousMonth, previousMonth.plusMonths(1));
-            List<BiDataPerDay> employeeDataPerDayThisMonth = availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1));
-            //List<EmployeeAvailabilityPerDayAggregate> employeeDataPerDayNextMonth = availabilityService.getEmployeeDataPerDay(user.uuid, nextMonth, nextMonth.plusMonths(1));
+            // Determine if the user is a new hire.
+            boolean isNewHire = user.getHireDate(companyuuid).withDayOfMonth(1).isEqual(currentMonth);
 
-            Salary baseSalary = salaryService.getUserSalaryByMonth(user.getUuid(), endOfMonth);
+            // Fetch availability data for both the previous and current month.
+            List<BiDataPerDay> availabilityPrevious = availabilityService.getEmployeeDataPerDay(user.uuid, previousMonth, previousMonth.plusMonths(1));
+            List<BiDataPerDay> availabilityCurrent = availabilityService.getEmployeeDataPerDay(user.uuid, currentMonth, currentMonth.plusMonths(1));
 
-            if(user.getHireDate().withDayOfMonth(1).isEqual(month)) {
-                salaryNotes.append("Ny medarbejder: ").append(baseSalary.getSalary());
+            // Get the current month's salary record.
+            Salary currentSalary = salaryService.getUserSalaryByMonth(user.getUuid(), endOfCurrentMonth);
+
+            // 1. New Hire Rule: If the hire date falls in the current month, mark as new employee.
+            if (isNewHire) {
+                salaryNote.append("Ny medarbejder: ").append(formatCurrency(currentSalary.getSalary())).append(". ");
+            } else {
+                // 2. Salary Change Rule: Only check salary changes for non-new hires.
+                if (salaryService.isSalaryChanged(user.getUuid(), currentMonth)) {
+                    Salary previousSalary = salaryService.getUserSalaryByMonth(user.getUuid(), currentMonth.minusMonths(1));
+                    if (currentSalary.getSalary() > previousSalary.getSalary()) {
+                        salaryNote.append("Lønforhøjelse: ").append(formatCurrency(currentSalary.getSalary())).append(". ");
+                    } else if (currentSalary.getSalary() < previousSalary.getSalary()) {
+                        salaryNote.append("Reduceret løn: ").append(formatCurrency(currentSalary.getSalary())).append(". ");
+                    } else if (currentSalary.isLunch() != previousSalary.isLunch()) {
+                        salaryNote.append("Tilmeldt frokostordning: ").append(currentSalary.isLunch() ? "Ja" : "Nej").append(". ");
+                    } else if (currentSalary.isPhone() != previousSalary.isPhone()) {
+                        salaryNote.append("Fri telefon: ").append(currentSalary.isPhone() ? "Ja" : "Nej").append(". ");
+                    } else if (currentSalary.isPrayerDay() != previousSalary.isPrayerDay()) {
+                        salaryNote.append("Storbededagstillæg: ").append(currentSalary.isPrayerDay() ? "Ja" : "Nej").append(". ");
+                    } else {
+                        // If no specific salary change details are detected, use the default note.
+                        salaryNote.append("Normal løn. ");
+                    }
+                } else {
+                    // No salary change detected, so use default note.
+                    salaryNote.append("Normal løn. ");
+                }
             }
 
-            // Check for salary changes
-            if(salaryService.isSalaryChanged(user.getUuid(), month)) { // If salary has changed
-                Salary lastSalary = salaryService.getUserSalaryByMonth(user.getUuid(), month.minusMonths(1));// Get the previous salary
-                if(baseSalary.getSalary() > lastSalary.getSalary())
-                    salaryNotes = new StringBuilder("Ny løn: ").append(formatCurrency(baseSalary.getSalary())).append(". ");
-                else if (baseSalary.isLunch()!=lastSalary.isLunch())
-                    salaryNotes = new StringBuilder("Tilmeldt frokostordning: ").append(baseSalary.isLunch() ? "Ja" : "Nej" + ". ");
-                else if (baseSalary.isPhone()!=lastSalary.isPhone())
-                    salaryNotes = new StringBuilder("Fri telefon: ").append(baseSalary.isPhone() ? "Ja" : "Nej" + " ");
-                else if (baseSalary.isPrayerDay()!=lastSalary.isPrayerDay())
-                    salaryNotes = new StringBuilder("Storbededagstillæg: ").append(baseSalary.isPrayerDay() ? "Ja" : "Nej" + ". ");
-            }
-
-            String statusType = "";
-
-            // Check for userstatus changes
-            boolean isTerminated = isUserTerminatedInCurrentMonth(user, nextEndOfMonth, nextMonth);
-            if(isTerminated) {
-                salaryNotes = new StringBuilder("Sidste løn, medarbejder opsagt. ");
+            // 3. Termination Rule: Check if the user is terminated in the upcoming period.
+            if (isUserTerminatedInCurrentMonth(user, nextEndOfMonth, nextMonth)) {
+                salaryNote = new StringBuilder("Sidste løn, medarbejder opsagt. ");
                 statusType = TERMINATED.getDanlonState();
             }
 
-            boolean hasAnyTypeOfLeave = hasAnyTypeOfLeave(employeeDataPerDayThisMonth);
-            if(hasAnyTypeOfLeave) salaryNotes.append("Ingen frokostordning. ");
-            else if(hasAnyTypeOfLeave(employeeDataPerDayPreviousMonth)) salaryNotes.append("Frokostordning tiltrådt igen. ");
-
-            boolean hasOnlyNonPayLeave = hasOnlyNonPayLeave(employeeDataPerDayThisMonth);
-            if(hasOnlyNonPayLeave) {
-                salaryNotes = new StringBuilder("Ingen løn. ");
-                statusType = NON_PAY_LEAVE.getDanlonState();
+            // 4. Leave and Lunch Arrangement Adjustments:
+            if (hasAnyTypeOfLeave(availabilityCurrent)) {
+                salaryNote.append("Ingen frokostordning. ");
+            } else if (hasAnyTypeOfLeave(availabilityPrevious)) {
+                salaryNote.append("Frokostordning tiltrådt igen. ");
             }
 
-            boolean hasUserJustReturnedFromNonPayLeave = hasUserJustReturnedFromNonPayLeave(user, month, employeeDataPerDayThisMonth);
-            if(hasUserJustReturnedFromNonPayLeave) {
+            // 5. Non-Pay Leave Rules:
+            if (hasOnlyNonPayLeave(availabilityCurrent)) {
+                salaryNote = new StringBuilder("Ingen løn. ");
+                statusType = NON_PAY_LEAVE.getDanlonState();
+            }
+            if (hasUserJustReturnedFromNonPayLeave(user, currentMonth, availabilityCurrent)) {
                 statusType = StatusType.ACTIVE.getDanlonState();
             }
 
-            boolean anyNonPayDays = anyNonPayDays(employeeDataPerDayThisMonth);
-            if(anyNonPayDays && !hasOnlyNonPayLeave) {
-                EmployeeAvailabilityPerMonth availability = availabilityService.getEmployeeDataPerMonth(user.uuid, month, month.plusMonths(1)).getFirst();
-                salaryNotes.append("Norm: 160.33 timer, ");
-                salaryNotes.append("Fakt: ").append(NumberUtils.round(baseSalary.calculateActualWorkHours(getWeekdaysInPeriod(month, month.plusMonths(1)), availability.getSalaryAwardingHours() / 7.4), 2)).append(" timer, ");
-                salaryNotes.append("Justeret løn: ").append(formatCurrency(baseSalary.calculateMonthNormAdjustedSalary(getWeekdaysInPeriod(month, month.plusMonths(1)), availability.getSalaryAwardingHours() / 7.4)));
-                salaryNotes.append("). ");
-            } else if (anyNonPayDays(employeeDataPerDayPreviousMonth) && !hasOnlyNonPayLeave(employeeDataPerDayPreviousMonth)) {
-                salaryNotes.append("Check at løn er reguleret tilbage til normalt niveau: ").append(formatCurrency(baseSalary.getSalary())).append(". ");
+            // 6. Work Hours and Adjusted Salary Calculation:
+            if (anyNonPayDays(availabilityCurrent) && !hasOnlyNonPayLeave(availabilityCurrent)) {
+                EmployeeAvailabilityPerMonth availability = availabilityService
+                        .getEmployeeDataPerMonth(user.uuid, currentMonth, currentMonth.plusMonths(1))
+                        .getFirst();
+                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
+                    System.out.println("availability = " + availability);
+                double weekdays = getWeekdaysInPeriod(currentMonth, currentMonth.plusMonths(1));
+                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
+                    System.out.println("weekdays = " + weekdays);
+                double actualWorkHours = NumberUtils.round(
+                        currentSalary.calculateActualWorkHours(weekdays, availability.getSalaryAwardingHours() / 7.4), 2);
+                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
+                    System.out.println("actualWorkHours = " + actualWorkHours);
+                double adjustedSalary = currentSalary.calculateMonthNormAdjustedSalary(weekdays, availability.getSalaryAwardingHours() / 7.4);
+                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
+                    System.out.println("adjustedSalary = " + adjustedSalary);
+                salaryNote.append("Norm: 160.33 timer, Fakt: ").append(actualWorkHours)
+                        .append(" timer, Justeret løn: ").append(formatCurrency(adjustedSalary)).append(". ");
+            } else if (!isNewHire && anyNonPayDays(availabilityPrevious) && !hasOnlyNonPayLeave(availabilityPrevious)) {
+                // Skip this branch if the employee is a new hire.
+                salaryNote.append("Check at løn er reguleret tilbage til normalt niveau: ")
+                        .append(formatCurrency(currentSalary.getSalary())).append(". ");
             }
 
-            result.add(new DanlonChanges(danlonNumber, name, statusType, salaryNotes.toString()));
+            // Create and add the final change record.
+            changesList.add(new DanlonChanges(danlonNumber, fullName, statusType, salaryNote.toString()));
         }
-        return result;
+        return changesList;
     }
 
     @GET
@@ -178,7 +286,7 @@ public class DanlonResource {
                 "",
                 user.getPhone(),
                 user.getCpr(),
-                stringIt(user.getHireDate(), "dd-MM-yyyy"),
+                stringIt(user.getHireDate(companyuuid), "dd-MM-yyyy"),
                 "",
                 user.getUserBankInfo(endOfMonth).getRegnr()+"-"+user.getUserBankInfo(endOfMonth).getAccountNr(),
                 "",
@@ -195,7 +303,7 @@ public class DanlonResource {
         LocalDate month = dateIt(strMonth).withDayOfMonth(1);
         LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
 
-        for (User user : getActiveConsultantsAndStaffForEndOfMonth(endOfMonth)) {
+        for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
             if(user.getUserAccount()==null || user.getUserAccount().getDanlon()==null) continue;
 
             List<Work> vacationList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
@@ -231,7 +339,7 @@ public class DanlonResource {
         LocalDate month = dateIt(strMonth).withDayOfMonth(1);
         LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
 
-        for (User user : getActiveConsultantsAndStaffForEndOfMonth(endOfMonth)) {
+        for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
             if(user.getUserAccount()==null || user.getUserAccount().getDanlon()==null) continue;
 
             List<Work> paidVacationList = workService.findByUserAndPaidOutMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
@@ -257,7 +365,7 @@ public class DanlonResource {
 
         List<DanlonSalarySupplements> result = new ArrayList<>();
 
-        for (User user : getActiveConsultantsAndStaffForEndOfMonth(endOfMonth)) {
+        for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
             if(user.getUserAccount()==null || user.getUserAccount().getDanlon()==null) continue;
             double bonus = 0;
 
@@ -287,6 +395,79 @@ public class DanlonResource {
         return result;
     }
 
+    private @NotNull List<User> getUsersWithSpecificCriteria(LocalDate endOfMonth, LocalDate month) {
+        return userService.listAll(false).stream()
+                .filter(user ->
+                        user.getUserStatus(endOfMonth).getCompany() != null &&
+                                user.getUserStatus(endOfMonth).getCompany().getUuid().equals(companyuuid))
+                .filter(user ->
+                        user.getUserStatus(endOfMonth).getType().equals(ConsultantType.CONSULTANT) ||
+                                user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STAFF) ||
+                                user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STUDENT))
+                .filter(user ->
+                        user.getHireDate(companyuuid).withDayOfMonth(1).isEqual(endOfMonth.withDayOfMonth(1)) ||
+                                isUserTerminatedInCurrentMonth(user, endOfMonth, month) ||
+                                user.getUserBankInfos().stream().anyMatch(userBankInfo -> userBankInfo.getActiveDate().withDayOfMonth(1).isEqual(month)) ||
+                                hasUserJustReturnedFromNonPayLeave(user, month, availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1))))
+                .toList();
+    }
+
+    // Helper method: Returns active users after filtering out preboarding and terminated users.
+    private @NotNull List<User> getActiveUsersExcludingPreboardingAndTerminated(LocalDate endOfMonth) {
+        return userService.listAll(false).stream()
+                .filter(user -> {
+                    UserStatus status = user.getUserStatus(endOfMonth);
+                    return !((status.getStatus().equals(TERMINATED) || status.getStatus().equals(PREBOARDING))
+                            && status.getStatusdate().isBefore(endOfMonth));
+                })
+                .filter(user -> user.getUserStatus(endOfMonth).getCompany() != null &&
+                        user.getUserStatus(endOfMonth).getCompany().getUuid().equals(companyuuid))
+                .filter(user -> {
+                    ConsultantType type = user.getUserStatus(endOfMonth).getType();
+                    return type.equals(ConsultantType.CONSULTANT) ||
+                            type.equals(ConsultantType.STAFF) ||
+                            type.equals(ConsultantType.STUDENT);
+                })
+                .toList();
+    }
+
+    // Helper method: Checks if any day has non-pay leave, preboarding, or terminated status.
+    private static boolean anyNonPayDays(List<BiDataPerDay> employeeDataPerDay) {
+        return employeeDataPerDay.stream().anyMatch(e ->
+                e.getStatusType().equals(NON_PAY_LEAVE) ||
+                        e.getStatusType().equals(PREBOARDING) ||
+                        e.getStatusType().equals(TERMINATED));
+    }
+
+    // Helper method: Checks if all days in the month are non-pay leave.
+    private static boolean hasOnlyNonPayLeave(List<BiDataPerDay> employeeDataPerDay) {
+        return employeeDataPerDay.stream().allMatch(e -> e.getStatusType().equals(NON_PAY_LEAVE));
+    }
+
+    // Helper method: Checks for any type of leave (non-pay, paid, or maternity).
+    private static boolean hasAnyTypeOfLeave(List<BiDataPerDay> employeeDataPerDay) {
+        return employeeDataPerDay.stream().anyMatch(e ->
+                e.getStatusType().equals(NON_PAY_LEAVE) ||
+                        e.getStatusType().equals(StatusType.PAID_LEAVE) ||
+                        e.getStatusType().equals(StatusType.MATERNITY_LEAVE));
+    }
+
+    // Helper method: Checks if a user just returned from non-pay leave.
+    private static boolean hasUserJustReturnedFromNonPayLeave(User user, LocalDate month, List<BiDataPerDay> availability) {
+        return (user.getUserStatus(month.minusDays(1)).getStatus().equals(NON_PAY_LEAVE)
+                && user.getUserStatus(month).getStatus().equals(StatusType.ACTIVE))
+                || (user.getUserStatus(month).getStatus().equals(NON_PAY_LEAVE) && !hasOnlyNonPayLeave(availability));
+    }
+
+    // Helper method: Checks if the user is terminated in the current month (based on next month's period).
+    private static boolean isUserTerminatedInCurrentMonth(User user, LocalDate endOfMonth, LocalDate month) {
+        UserStatus status = user.getUserStatus(endOfMonth);
+        return status.getStatus().equals(TERMINATED)
+                && status.getStatusdate().withDayOfMonth(1).isEqual(month);
+    }
+
+    /*
+
     private @NotNull List<User> getActiveUsersExcludingPreboardingAndTerminated(LocalDate endOfMonth) {
         return userService.listAll(false).stream()
                 .filter(user -> // If user is terminated before this month, ignore
@@ -299,23 +480,6 @@ public class DanlonResource {
                         user.getUserStatus(endOfMonth).getType().equals(ConsultantType.CONSULTANT) ||
                                 user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STAFF) ||
                                 user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STUDENT))
-                .toList();
-    }
-
-    private @NotNull List<User> getUsersWithSpecificCriteria(LocalDate endOfMonth, LocalDate month) {
-        return userService.listAll(false).stream()
-                .filter(user ->
-                        user.getUserStatus(endOfMonth).getCompany() != null &&
-                                user.getUserStatus(endOfMonth).getCompany().getUuid().equals(companyuuid))
-                .filter(user ->
-                        user.getUserStatus(endOfMonth).getType().equals(ConsultantType.CONSULTANT) ||
-                                user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STAFF) ||
-                                user.getUserStatus(endOfMonth).getType().equals(ConsultantType.STUDENT))
-                .filter(user ->
-                        user.getHireDate().withDayOfMonth(1).isEqual(endOfMonth.withDayOfMonth(1)) ||
-                                isUserTerminatedInCurrentMonth(user, endOfMonth, month) ||
-                                user.getUserBankInfos().stream().anyMatch(userBankInfo -> userBankInfo.getActiveDate().withDayOfMonth(1).isEqual(month)) ||
-                                hasUserJustReturnedFromNonPayLeave(user, month, availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1))))
                 .toList();
     }
 
@@ -363,5 +527,6 @@ public class DanlonResource {
         UserStatus status = user.getUserStatus(endOfMonth);
         return status.getStatus().equals(TERMINATED) && status.getStatusdate().withDayOfMonth(1).isEqual(month);
     }
+     */
 
 }

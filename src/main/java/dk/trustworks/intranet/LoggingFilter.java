@@ -35,7 +35,7 @@ public class LoggingFilter implements ContainerRequestFilter {
         if (requestEntity.length > 0) {
             // Log the request body
             String body = new String(requestEntity, StandardCharsets.UTF_8);
-            log.info("Request body: " + body);
+            //log.info("Request body: " + body);
 
             // Restore the original input stream
             requestContext.setEntityStream(new ByteArrayInputStream(requestEntity));

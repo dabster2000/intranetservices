@@ -4,8 +4,6 @@ import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailability
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.dto.SalaryPayment;
-import dk.trustworks.intranet.aggregates.users.events.CreateSalaryEvent;
-import dk.trustworks.intranet.aggregates.users.events.DeleteSalaryEvent;
 import dk.trustworks.intranet.aggregates.users.services.*;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -222,15 +220,11 @@ public class SalaryResource {
     public void create(@PathParam("useruuid") String useruuid, Salary salary) {
         salary.setUseruuid(useruuid);
         salaryService.create(salary);
-        CreateSalaryEvent createSalaryEvent = new CreateSalaryEvent(useruuid, salary);
-        aggregateEventSender.handleEvent(createSalaryEvent);
     }
 
     @DELETE
     @Path("/{useruuid}/salaries/{salaryuuid}")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("salaryuuid") String salaryuuid) {
         salaryService.delete(salaryuuid);
-        DeleteSalaryEvent deleteSalaryEvent = new DeleteSalaryEvent(useruuid, salaryuuid);
-        aggregateEventSender.handleEvent(deleteSalaryEvent);
     }
 }

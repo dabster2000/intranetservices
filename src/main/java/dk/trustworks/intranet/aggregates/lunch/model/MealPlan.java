@@ -17,11 +17,14 @@ import java.util.UUID;
 public class MealPlan extends PanacheEntityBase {
 
     @Id
-    public String id = UUID.randomUUID().toString();
+    @EqualsAndHashCode.Include
+    @Column(name = "uuid", columnDefinition = "char(36)", nullable = false)
+    public String uuid = UUID.randomUUID().toString();
 
     @Column(name = "week_number", nullable = false)
     public int weekNumber;
 
     @Column(name = "status", nullable = false)
     public String status;
+
 }

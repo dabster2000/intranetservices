@@ -118,7 +118,7 @@ public class AccountingResource {
                                 .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().equals(finalDate))
                                 .mapToDouble(FinanceDetails::getAmount)
                                 .sum();
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("fullExpenses = " + fullExpenses);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("fullExpenses = " + fullExpenses);
                         accountingAccount.addSum(fullExpenses);
                         accountingCategory.addPrimarySum(fullExpenses);
                         if(!aa.isShared()) continue;
@@ -128,12 +128,12 @@ public class AccountingResource {
 
                         // Start by making the partial expenses equal fullExpenses
                         double partialExpenses = fullExpenses;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("partialExpenses1 = " + partialExpenses);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses1 = " + partialExpenses);
 
                         // Remove lump sums from the expenses
                         double lumpSum = AccountLumpSum.<AccountLumpSum>list("accountingAccount = ?1 and registeredDate = ?2", aa, finalDate.withDayOfMonth(1)).stream().mapToDouble(AccountLumpSum::getAmount).sum();
                         partialExpenses -= lumpSum;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("lumpSum = " + lumpSum);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("lumpSum = " + lumpSum);
 
                         // Hvis kontoen er en lønkonto, så træk lønsummen fra, så den ikke deles mellem virksomhederne.
                         if (aa.isSalary() && accountingAccount.isShared()) {
@@ -147,9 +147,9 @@ public class AccountingResource {
                                                 .mapToDouble(FinanceDetails::getAmount)
                                                 .sum());
                                     });
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("otherSalarySources.get() = " + otherSalarySources.get());
+                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("otherSalarySources.get() = " + otherSalarySources.get());
                             partialExpenses += otherSalarySources.get();
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("partialExpenses2 = " + partialExpenses);
+                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses2 = " + partialExpenses);
                             partialExpenses = (Math.max(0, partialExpenses - (primaryCompanySalarySum * 1.02)));
                             System.out.println("partialExpenses3 = " + partialExpenses);
                         }
@@ -158,7 +158,7 @@ public class AccountingResource {
                         if (accountingAccount.isShared())
                             // partial fullExpenses should only account for the part of the fullExpenses equal to the share of consultants in the primary company
                             partialExpenses *= (secondaryCompanyConsultant.get() / totalNumberOfConsultants);
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("partialExpenses4 = " + partialExpenses);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses4 = " + partialExpenses);
 
                         // The loan is the difference between the fullExpenses and the partialExpenses
                         accountingAccount.addLoan(Math.max(0, partialExpenses));
@@ -168,7 +168,7 @@ public class AccountingResource {
                                 .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().equals(finalDate))
                                 .mapToDouble(FinanceDetails::getAmount)
                                 .sum();
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("fullExpenses = " + fullExpenses);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("fullExpenses = " + fullExpenses);
                         accountingCategory.addSecondarySum(fullExpenses);
 
                         // Check and skip if expenses are negative, since they are not relevant for the calculation
@@ -176,12 +176,12 @@ public class AccountingResource {
 
                         // Start by making the partial expenses equal fullExpenses
                         double partialExpenses = fullExpenses;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("partialExpenses1 = " + partialExpenses);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses1 = " + partialExpenses);
 
                         // Remove lump sums from the expenses
                         double lumpSum = AccountLumpSum.<AccountLumpSum>list("accountingAccount = ?1 and registeredDate = ?2", aa, finalDate.withDayOfMonth(1)).stream().mapToDouble(AccountLumpSum::getAmount).sum();
                         partialExpenses -= lumpSum;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("lumpSum = " + lumpSum);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("lumpSum = " + lumpSum);
 
                         // Hvis kontoen er en lønkonto, så træk lønsummen fra, så den ikke deles mellem virksomhederne.
                         if (aa.isSalary() && accountingAccount.isShared()) {
@@ -195,9 +195,9 @@ public class AccountingResource {
                                                 .mapToDouble(FinanceDetails::getAmount)
                                                 .sum());
                                     });
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("otherSalarySources.get() = " + otherSalarySources.get());
+                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("otherSalarySources.get() = " + otherSalarySources.get());
                             partialExpenses += otherSalarySources.get();
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("partialExpenses2 = " + partialExpenses);
+                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses2 = " + partialExpenses);
                             partialExpenses = (Math.max(0, partialExpenses - (secondaryCompanySalarySum.get() * 1.02)));
                             System.out.println("partialExpenses3 = " + partialExpenses);
                         }
@@ -206,7 +206,7 @@ public class AccountingResource {
                         if (accountingAccount.isShared())
                             // partial fullExpenses should only account for the part of the fullExpenses equal to the share of consultants in the primary company
                             partialExpenses *= (primaryCompanyConsultant / totalNumberOfConsultants);
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2023,10,1))) System.out.println("partialExpenses4 = " + partialExpenses);
+                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses4 = " + partialExpenses);
 
                         // The loan is the difference between the fullExpenses and the partialExpenses
                         accountingAccount.addDebt(Math.max(0, partialExpenses));

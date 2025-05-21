@@ -11,23 +11,19 @@ import lombok.EqualsAndHashCode;
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
-@Table(name = "meal_buffer")
+@Table(name = "buffer")
 public class MealBuffer extends PanacheEntityBase {
 
     @Id
     @EqualsAndHashCode.Include
-    public String id;
+    @Column(name = "uuid", columnDefinition = "char(36)", nullable = false)
+    public String uuid;
 
-    @Column(name = "weekday", nullable = false)
+    @Column(name = "weekday", nullable = false, length = 50)
     public String weekday;
 
-    @Column(name = "buffer_meat", nullable = false)
-    public String bufferMeat;
-
-    @Column(name = "buffer_vegetarian", nullable = false)
-    public String bufferVegetarian;
-
-    @Column(name = "buffer_allergy_bowl", nullable = false)
-    public String bufferAllergyBowl;
-
+    // If there was a foreign key meal_plan_buffer_uuid referencing MealPlanBuffer, it would be a ManyToOne relationship:
+    // @ManyToOne
+    // @JoinColumn(name = "meal_plan_buffer_uuid", referencedColumnName = "uuid", nullable = false)
+    // public MealPlanBuffer mealPlanBuffer;
 }

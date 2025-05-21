@@ -61,7 +61,6 @@ public class ClientResource {
     @GET
     public List<Client> findAll() {
         return clientAPI.listAllClients();
-        //return clientAPI.listAll();
     }
 
     @GET
@@ -105,6 +104,8 @@ public class ClientResource {
     @GET
     @Path("/{clientuuid}/contracts")
     public List<Contract> findContractByClientUuid(@PathParam("clientuuid") String clientuuid) {
+        System.out.println("ClientResource.findContractByClientUuid");
+        System.out.println("clientuuid = " + clientuuid);
         return contractService.findByClientuuid(clientuuid);
     }
 

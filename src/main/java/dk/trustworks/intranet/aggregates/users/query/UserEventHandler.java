@@ -1,11 +1,8 @@
 package dk.trustworks.intranet.aggregates.users.query;
 
 import com.slack.api.methods.SlackApiException;
-import dk.trustworks.intranet.aggregates.bidata.services.UserAvailabilityCalculatorService;
-import dk.trustworks.intranet.aggregates.bidata.services.UserSalaryCalculatorService;
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
-import dk.trustworks.intranet.aggregates.users.services.StatusService;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
@@ -32,15 +29,6 @@ import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.
 @JBossLog
 @ApplicationScoped
 public class UserEventHandler {
-
-    @Inject
-    UserAvailabilityCalculatorService userAvailabilityCalculatorService;
-
-    @Inject
-    StatusService statusService;
-
-    @Inject
-    UserSalaryCalculatorService userSalaryCalculatorService;
 
     @Inject
     SlackService slackService;

@@ -5,7 +5,6 @@ import jakarta.persistence.*;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
-
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
@@ -14,20 +13,21 @@ public class MealPlanBuffer extends PanacheEntityBase {
 
     @Id
     @EqualsAndHashCode.Include
-    public String id;
+    @Column(name = "uuid", columnDefinition = "char(36)", nullable = false)
+    public String uuid;
 
     @ManyToOne
-    @JoinColumn(name = "meal_plan_id", referencedColumnName = "id", nullable = false)
+    @JoinColumn(name = "meal_plan_uuid", referencedColumnName = "uuid", nullable = false)
     public MealPlan mealPlan;
 
     @ManyToOne
-    @JoinColumn(name = "buffer_id", referencedColumnName = "id", nullable = false)
+    @JoinColumn(name = "buffer_uuid", referencedColumnName = "uuid", nullable = false)
     public MealBuffer buffer;
 
     public MealPlanBuffer() {}
 
-    public MealPlanBuffer(String id, MealPlan mealPlan, MealBuffer buffer) {
-        this.id = id;
+    public MealPlanBuffer(String uuid, MealPlan mealPlan, MealBuffer buffer) {
+        this.uuid = uuid;
         this.mealPlan = mealPlan;
         this.buffer = buffer;
     }

@@ -31,7 +31,6 @@ public class MealPlanResource {
     }
 
     @POST
-    @Path("/create")
     @Transactional
     public MealPlan createMealPlan(MealPlan mealPlan) {
         mealPlan.persist();

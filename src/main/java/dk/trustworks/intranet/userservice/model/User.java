@@ -45,6 +45,12 @@ public class User extends PanacheEntityBase {
     private String type;
     @JsonProperty(access = READ_ONLY)
     private String password;
+    @JsonIgnore
+    @Column(name = "azure_oid", length = 36, unique = true)
+    public String azureOid;
+    @JsonIgnore
+    @Column(name = "azure_issuer", length = 150)
+    public String issuer;
     @NotBlank(message="Username may not be blank")
     private String username;
     private String slackusername;
@@ -109,28 +115,46 @@ public class User extends PanacheEntityBase {
 
     public LocalDate getHireDate() {
         LocalDate hireDate = null;
-        //System.out.println("hireDate = " + hireDate);
         boolean terminated = false;
-        //System.out.println("terminated = " + terminated);
         for (UserStatus status : getStatuses().stream().sorted(Comparator.comparing(UserStatus::getStatusdate)).toList()) {
-            //System.out.println("status = " + status);
             if(status.getStatus().equals(StatusType.ACTIVE) && (hireDate==null || terminated)) {
-                //System.out.println(1);
                 hireDate = status.getStatusdate();
-                //System.out.println("hireDate = " + hireDate);
             }
             if(status.getStatus().equals(StatusType.TERMINATED)) {
-                //System.out.println(2);
                 terminated = true;
-                //System.out.println("terminated = " + terminated);
             }
-            //System.out.println(3);
         }
-        //System.out.println("Done terminated = " + terminated);
-        //System.out.println("1/2 Done hireDate = " + hireDate);
         if(hireDate==null) hireDate = LocalDate.now();
 
-        //System.out.println("Done hireDate = " + hireDate);
+        return hireDate;
+    }
+
+    public LocalDate getHireDate(String companyUuid) {
+        // Filter statuses by the given company UUID
+        List<UserStatus> filteredStatuses = getStatuses().stream()
+                .filter(s -> s.getCompany() != null
+                        && s.getCompany().getUuid().equals(companyUuid))
+                .sorted(Comparator.comparing(UserStatus::getStatusdate))
+                .toList();
+
+        LocalDate hireDate = null;
+        boolean terminated = false;
+
+        // Loop through chronologically sorted statuses for this specific company
+        for (UserStatus status : filteredStatuses) {
+            if (status.getStatus().equals(StatusType.ACTIVE) && (hireDate == null || terminated)) {
+                hireDate = status.getStatusdate();
+            }
+            if (status.getStatus().equals(StatusType.TERMINATED)) {
+                terminated = true;
+            }
+        }
+
+        // Fallback if no ACTIVE entry was found for that company
+        if (hireDate == null) {
+            hireDate = LocalDate.now();
+        }
+
         return hireDate;
     }
 
@@ -147,7 +171,7 @@ public class User extends PanacheEntityBase {
     }
 
     public Boolean checkPassword(String passwordPlainText) {
-            if (password.trim().equals("")) {
+            if (password.trim().isEmpty()) {
                 return false;
             }
         return BCrypt.checkpw(passwordPlainText, password);

@@ -13,6 +13,7 @@ import dk.trustworks.intranet.dao.bubbleservice.model.Bubble;
 import dk.trustworks.intranet.dao.bubbleservice.services.BubbleService;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.workservice.model.Week;
+import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WeekService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -31,6 +32,7 @@ import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.knowledgeservice.services.CourseService;
 import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.userservice.model.UserResume;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
@@ -38,7 +40,7 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
-import lombok.SneakyThrows;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -46,6 +48,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.jboss.resteasy.annotations.GZIP;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -113,6 +116,44 @@ public class UserResource {
 
     @Inject
     CourseService courseService;
+
+    /** DTO for linking Azure fields **/
+    public static class AzureLinkDto {
+        public String azureOid;
+        public String issuer;
+    }
+
+    /**
+     * 1) Look up by azureOid + issuer
+     * GET /users/search/findByAzureOidAndIssuer?azureOid=…&issuer=…
+     */
+    @GET
+    @PermitAll
+    @Path("/search/findByAzureOidAndIssuer")
+    public Response findByAzureOidAndIssuer(
+            @QueryParam("azureOid") String azureOid,
+            @QueryParam("issuer")   String issuer) {
+
+        User u = userService.findByAzureOidAndIssuer(azureOid, issuer);
+        return u == null
+                ? Response.noContent().build()
+                : Response.ok(u).build();
+    }
+
+    /**
+     * 2) Link (or update) Azure fields on an existing user
+     * PUT /users/{uuid}/azure
+     *   { "azureOid": "...", "issuer": "..." }
+     */
+    @PUT
+    @Path("/{uuid}/azure")
+    public Response linkAzureAccount(
+            @PathParam("uuid") String uuid,
+            AzureLinkDto dto) {
+
+        userService.linkAzureAccount(uuid, dto.azureOid, dto.issuer);
+        return Response.noContent().build();
+    }
 
     @GET
     public List<User> listAll(@QueryParam("username") Optional<String> username, @QueryParam("shallow") Optional<String> shallow) {
@@ -284,12 +325,21 @@ public class UserResource {
         aggregateEventSender.handleEvent(event);
     }
 
+    /*
     @SneakyThrows
     @PUT
     @PermitAll
     @Path("/{username}/password/{newpassword}")
     public void updatePasswordByUsername(@PathParam("username") String username, @PathParam("newpassword") String newPassword) {
         userAPI.updatePasswordByUsername(username, decode(newPassword, UTF_8));
+    }
+
+     */
+
+    @POST
+    @Path("/{uuid}/password/{newpassword}")
+    public void updatePasswordByUUID(@PathParam("uuid") String uuid, @PathParam("newpassword") String newPassword) {
+        userAPI.updatePasswordByUUID(uuid, decode(newPassword, UTF_8));
     }
 
     @POST
@@ -358,4 +408,47 @@ public class UserResource {
         }
     }
 
+    /**
+     * Returns a paginated list of hourly work items for the given user.
+     * Query parameters: page (default 0) and size (default 10).
+     */
+    @GET
+    @Path("/{useruuid}/hourlywork")
+    public List<Work> getHourlyWorkPaged(@PathParam("useruuid") String useruuid,
+                                         @QueryParam("page") @DefaultValue("0") int page,
+                                         @QueryParam("size") @DefaultValue("10") int size) {
+        return workService.findHourlyWorkPaged(useruuid, page, size);
+    }
+
+    /**
+     * Returns the total count of hourly work items for the given user.
+     */
+    @GET
+    @Path("/{useruuid}/hourlywork/count")
+    public long countHourlyWork(@PathParam("useruuid") String useruuid) {
+        return workService.countHourlyWork(useruuid);
+    }
+
+    /**
+     * Returns all hourly work items for the given user.
+     */
+    @GET
+    @Path("/{useruuid}/hourlywork/all")
+    public List<Work> getAllHourlyWork(@PathParam("useruuid") String useruuid) {
+        return workService.findHourlyWork(useruuid);
+    }
+
+    @GET
+    @Path("/{useruuid}/resume")
+    public UserResume findResumeByUserUUID(@PathParam("useruuid") String useruuid) {
+        return userService.findUserResume(useruuid);
+    }
+
+    @POST
+    @Path("/{useruuid}/resume")
+    public void saveResume(@PathParam("useruuid") String useruuid, File resume) throws IOException {
+        System.out.println("UserResource.saveResume");
+        System.out.println("useruuid = " + useruuid + ", resume = " + resume);
+        userService.updateResume(useruuid, resume);
+    }
 }

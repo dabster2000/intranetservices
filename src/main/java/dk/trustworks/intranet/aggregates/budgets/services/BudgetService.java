@@ -196,7 +196,7 @@ public class BudgetService {
                             double budgetHours = list.stream().mapToDouble(EmployeeBudgetPerDayAggregate::getBudgetHours).sum();
                             double expectedRevenue = list.stream().mapToDouble(e -> e.getBudgetHours() * e.getRate()).sum();
 
-                            return new CompanyBudgetPerMonth(year, month, client, company, contract, budgetHours, expectedRevenue);
+                            return new CompanyBudgetPerMonth(year, month, client, contract, budgetHours, expectedRevenue);
                         })
                 ))
                 .values());

@@ -2,7 +2,6 @@ package dk.trustworks.intranet.sales.model;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.sales.model.enums.ConsultantCompetencies;
-import dk.trustworks.intranet.sales.model.enums.ConsultantLevel;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.userservice.model.User;
@@ -36,6 +35,8 @@ public class SalesLead extends PanacheEntityBase {
     @JoinColumn(name = "leadmanager")
     private User leadManager;
     private String description;
+    @Column(name = "detailed_description")
+    private String detailedDescription;
     @Column(name = "contactinformation")
     private String contactInformation;
     @Enumerated(EnumType.STRING)
@@ -48,9 +49,6 @@ public class SalesLead extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @Column(name = "competencies")
     private ConsultantCompetencies competencies;
-    @Enumerated(EnumType.STRING)
-    @Column(name = "level")
-    private ConsultantLevel consultantLevel;
     private boolean extension;
     @Enumerated(EnumType.STRING)
     @Column(name = "lost_reason")
@@ -59,6 +57,8 @@ public class SalesLead extends PanacheEntityBase {
     Set<SalesLeadConsultant> salesLeadConsultants;
     @Column(name = "created")
     private LocalDateTime created;
+    @Column(name = "last_updated")
+    private LocalDateTime modified;
 
     @Override
     public boolean equals(Object o) {
@@ -90,7 +90,6 @@ public class SalesLead extends PanacheEntityBase {
                 ", period=" + period +
                 ", allocation=" + allocation +
                 ", competencies=" + competencies +
-                ", consultantLevel=" + consultantLevel +
                 ", extension=" + extension +
                 ", lostReason=" + lostReason +
                 '}';

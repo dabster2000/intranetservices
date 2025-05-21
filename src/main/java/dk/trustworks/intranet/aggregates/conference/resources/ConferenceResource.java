@@ -44,6 +44,12 @@ public class ConferenceResource {
         return conferenceService.findAllConferences();
     }
 
+    @GET
+    @Path("/slug/{slug}")
+    public Conference findConferenceBySlug(@PathParam("slug") String slug) {
+        return conferenceService.findConferenceBySlug(slug);
+    }
+
     @POST
     public void createConference(Conference conference) {
         conferenceService.createConference(conference);
@@ -144,12 +150,13 @@ public class ConferenceResource {
     }
 
     @POST
-    @Path("/apply/forefront2025")
+    @Path("/apply/forefront2025/{phaseNumber}")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)
-    public void receiveForm3(@FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
+    public void receiveForm3(@PathParam("phaseNumber") String phaseNumber, @FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
                              @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke) {
-        createParticipant("ebe8e716-7c1e-42bc-aaf0-43fd03ed99c4", new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
+        if(phaseNumber == null) createParticipant("ebe8e716-7c1e-42bc-aaf0-43fd03ed99c4", 0, new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
+        else createParticipant("ebe8e716-7c1e-42bc-aaf0-43fd03ed99c4", Integer.parseInt(phaseNumber), new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
     }
 
     @POST

@@ -51,6 +51,7 @@ public class Salary extends PanacheEntityBase {
 
     private boolean lunch;
     private boolean phone;
+    private boolean internet;
     @Column(name = "prayer_day")
     private boolean prayerDay;
 

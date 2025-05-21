@@ -29,7 +29,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.text.SimpleDateFormat;
-import java.time.LocalDate;
 import java.util.*;
 
 import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
@@ -206,7 +205,7 @@ public class  EconomicsService {
     }
 
     private Company getCompanyFromExpense(Expense expense) {
-        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(LocalDate.now());
+        UserStatus userStatus = userService.findById(expense.getUseruuid(), false).getUserStatus(expense.getExpensedate());
         return userStatus.getCompany();
     }
 

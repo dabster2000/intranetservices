@@ -3,6 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.sales.model.SalesLead;
 import dk.trustworks.intranet.sales.services.SalesService;
 import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -76,15 +77,13 @@ public class SalesResource {
         testCloseDate(salesLead);
         return salesLead;
     }
-/*
+
     @GET
-    public List<SalesLead> findByStatus(@QueryParam("status") String status) {
-        List<SalesLead> salesLeads = salesService.findByStatus(Arrays.stream(status.split(",")).map(SalesStatus::valueOf).toArray((SalesStatus[]::new)));
-        for (SalesLead salesLead : salesLeads) {
-            testCloseDate(salesLead);
-        }
-        return salesLeads;
-    }*/
+    @Path("/won")
+    public List<SalesLead> findWon(@QueryParam("sinceDate") String sinceDate) {
+        log.infof("sinceDate = %s", sinceDate);
+        return salesService.findWon(DateUtils.dateIt(sinceDate));
+    }
 
     @POST
     @Path("/{uuid}/consultant")

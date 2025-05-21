@@ -35,18 +35,18 @@ public class InvoiceDTO {
     String notes; //Notes - any extra information not included elsewhere	null
     String terms; //Terms and conditions - all the details	null
 
-    private InvoiceDTO(String from, String to, String date, String dueDate, String currency) {
+    private InvoiceDTO(String from, String to, String date, String dueDate, String currency, double vat) {
         logo = "";
         due_date = dueDate;
         this.currency = currency;
-        tax = "DKK".equals(currency)?25:0;
+        this.tax = NumberUtils.convertDoubleToInt(vat);
         this.from = from;
         this.to = to;
         this.date = date;
     }
 
-    private InvoiceDTO(String header, InvoiceFieldsDTO invoiceFieldsDTO, String from, String to, String number, String date, String dueDate, double discounts, String currency, String notes) {
-        this(from, to, date, dueDate, currency);
+    private InvoiceDTO(String header, InvoiceFieldsDTO invoiceFieldsDTO, String from, String to, String number, String date, String dueDate, double discounts, String currency, double vat, String notes) {
+        this(from, to, date, dueDate, currency, vat);
         this.header = header;
         this.fields = invoiceFieldsDTO;
         this.number = number;
@@ -66,15 +66,15 @@ public class InvoiceDTO {
                 invoice.getClientname()+"\n"+
                         invoice.getClientaddresse()+"\n"+
                         invoice.getZipcity()+"\n"+
-                        ((invoice.cvr!=null && !invoice.cvr.equals(""))?"CVR: "+invoice.getCvr()+"\n":"")+
-                        ((invoice.ean!=null && !invoice.ean.equals(""))?"EAN: "+invoice.getEan()+"\n":"")+
-                        ((invoice.attention!=null && !invoice.attention.equals(""))?"ATT: "+invoice.getAttention()+"\n":""),
+                        ((invoice.cvr!=null && !invoice.cvr.isEmpty())?"CVR: "+invoice.getCvr()+"\n":"")+
+                        ((invoice.ean!=null && !invoice.ean.isEmpty())?"EAN: "+invoice.getEan()+"\n":"")+
+                        ((invoice.attention!=null && !invoice.attention.isEmpty())?"ATT: "+invoice.getAttention()+"\n":""),
                 StringUtils.convertInvoiceNumberToString(invoice.invoicenumber),
                 invoice.getInvoicedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
                 invoice.getDuedate()!=null?
                         invoice.getDuedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")):
                         invoice.getInvoicedate().plusMonths(1).format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
-                invoice.getDiscount(), invoice.getCurrency(),
+                invoice.getDiscount(), invoice.getCurrency(), invoice.getVat(),
                 ((invoice.contractref!=null && !invoice.contractref.isEmpty())?invoice.getContractref()+"\n":"")+
                         ((invoice.projectref!=null && !invoice.projectref.isEmpty())?invoice.getProjectref()+"\n":"")+
                         ((invoice.specificdescription!=null && !invoice.specificdescription.isEmpty())?invoice.getSpecificdescription():""));

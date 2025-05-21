@@ -4,6 +4,7 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -290,5 +291,17 @@ public final class DateUtils {
     public static LocalDate ConvertInstantToLocalDate(Instant instant) {
         ZoneId zoneId = ZoneId.of("Europe/Copenhagen");
         return LocalDate.ofInstant(instant, zoneId);
+    }
+
+    public static boolean isFirstThursdayOrFridayInOctober(LocalDate date) {
+        if (date.getMonth() != Month.OCTOBER) {
+            return false;
+        }
+
+        LocalDate firstOfMonth = date.withDayOfMonth(1);
+        LocalDate firstThursday = firstOfMonth.with(TemporalAdjusters.nextOrSame(DayOfWeek.THURSDAY));
+        LocalDate firstFriday = firstOfMonth.with(TemporalAdjusters.nextOrSame(DayOfWeek.FRIDAY));
+
+        return date.equals(firstThursday) || date.equals(firstFriday);
     }
 }

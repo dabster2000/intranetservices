@@ -3,17 +3,20 @@ package dk.trustworks.intranet.contracts.model;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
-
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Data
@@ -47,7 +50,13 @@ public class ContractConsultant extends PanacheEntityBase {
 
     private double hours;
 
+    @Column(name = "created")
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime created;
+
     public ContractConsultant() {
+        if(created==null) created = LocalDateTime.now();
     }
 
     private ContractConsultant(ContractConsultant cc, Contract c) {
@@ -56,6 +65,7 @@ public class ContractConsultant extends PanacheEntityBase {
         useruuid = cc.getUseruuid();
         rate = cc.getRate();
         hours = cc.getHours();
+        if(created==null) created = LocalDateTime.now();
     }
 
     public static ContractConsultant createContractConsultant(ContractConsultant cc, Contract c) {

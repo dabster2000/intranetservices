@@ -19,24 +19,39 @@ public class SummaryService {
 
     public MealPlanSummary fetchSummaryForMealPlan(String mealPlanId) {
         // SQL query to aggregate meal choices and buffer data for the given meal plan.
-        String sql = "SELECT mc.weekday, " +
-                "SUM(CASE WHEN mc.selected_meal_type = 'meat' THEN 1 ELSE 0 END) AS total_meat, " +
-                "SUM(CASE WHEN mc.selected_meal_type = 'vegetarian' THEN 1 ELSE 0 END) AS total_vegetarian, " +
-                "SUM(CASE WHEN mc.selected_meal_type = 'allergybowl' THEN 1 ELSE 0 END) AS total_allergy_bowl, " +
-                "SUM(mc.reserve_meat::int) AS reserved_meat, " +
-                "SUM(mc.reserve_vegetarian::int) AS reserved_vegetarian, " +
-                "SUM(mc.reserve_allergy_bowl::int) AS reserved_allergy_bowl, " +
-                "SUM(mc.wants_breakfast::int) AS total_breakfast, " +
-                "SUM(mc.guest_wants_meat) AS guest_meat, " +
-                "SUM(mc.guest_wants_vegetarian) AS guest_vegetarian, " +
-                "SUM(mc.guest_wants_allergy_bowl) AS guest_allergy_bowl, " +
-                "b.buffer_meat, b.buffer_vegetarian, b.buffer_allergy_bowl " +
-                "FROM meal_choice mc " +
-                "LEFT JOIN meal_plan_buffer mpb ON mc.meal_plan_id = mpb.meal_plan_id " +
-                "LEFT JOIN meal_buffer b ON b.meal_plan_buffer_id = mpb.id AND mc.weekday = b.weekday " +
-                "WHERE mc.meal_plan_id = :mealPlanId " +
-                "GROUP BY mc.weekday, b.buffer_meat, b.buffer_vegetarian, b.buffer_allergy_bowl " +
-                "ORDER BY mc.weekday";
+        String sql = """
+        
+                SELECT
+          mc.weekday,
+          SUM(CASE WHEN mc.selected_meal_type = 'meat' THEN 1 ELSE 0 END) AS total_meat,
+          SUM(CASE WHEN mc.selected_meal_type = 'vegetarian' THEN 1 ELSE 0 END) AS total_vegetarian,
+          SUM(CASE WHEN mc.selected_meal_type = 'allergyBowl' THEN 1 ELSE 0 END) AS total_allergy_bowl,
+          SUM(cast(mc.reserve_meat as signed)) AS reserved_meat,
+          SUM(cast(mc.reserve_vegetarian as signed)) AS reserved_vegetarian,
+          SUM(cast(mc.reserve_allergy_bowl as signed)) AS reserved_allergy_bowl,
+          SUM(cast(mc.wants_breakfast as signed) AS wants_breakfast,
+          SUM(mc.guest_wants_meat) AS guest_meat,
+          SUM(mc.guest_wants_vegetarian) AS guest_vegetarian,
+          SUM(mc.guest_wants_allergy_bowl) AS guest_allergy_bowl,
+          b.buffer_meat,
+          b.buffer_vegetarian,
+          b.buffer_allergy_bowl
+        FROM
+        mealplan mp
+        Join
+        mealplanuser mpu ON mpu.mealplanuuid = mp.uuid
+        left join
+        mealchoice mc ON mpu.uuid = mc.mealplanuser_uuid
+        JOIN
+        mealplanbuffer mpb ON mpb.mealPlan_uuid = mp.uuid
+        left join
+        buffer b ON b.mealplanbuffer_id = mpb.uuid
+        WHere mp.id = 'mealplan456'
+        GROUP BY
+          mc.weekday, b.buffer_meat, b.buffer_vegetarian, b.buffer_allergy_bowl
+        ORDER BY
+          mc.weekday;
+        """;
 
         // Execute the query
         Query query = entityManager.createNativeQuery(sql, Tuple.class);
@@ -46,6 +61,7 @@ public class SummaryService {
         // Parse the results into a MealPlanSummary object
         return parseSummary(resultList, mealPlanId);
     }
+
 
     private MealPlanSummary parseSummary(List<Tuple> resultList, String mealPlanId) {
         List<DaySummary> daySummaries = new ArrayList<>();

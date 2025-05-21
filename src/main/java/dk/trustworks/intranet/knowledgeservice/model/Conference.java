@@ -13,6 +13,7 @@ public class Conference extends PanacheEntityBase {
     @Id
     private String uuid;
     private String name;
+    private String slug;
     private boolean active;
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER)
     @JoinColumn(name = "conferenceuuid")

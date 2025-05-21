@@ -16,6 +16,7 @@ import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
+import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
@@ -82,6 +83,8 @@ public class InvoiceService {
 
     @Inject
     JPAStreamer jpaStreamer;
+    @Inject
+    WorkService workService;
 
     private static DateValueDTO apply(Invoice invoice, double exchangeRate) {
         double sum = switch (invoice.getType()) {
@@ -322,8 +325,9 @@ public class InvoiceService {
                         "bonusConsultantApprovedStatus = ?25, " +
                         "bonusOverrideAmount = ?26, " +
                         "bonusOverrideNote = ?27, " +
-                        "duedate = ?28 " +
-                        "WHERE uuid like ?29 ",
+                        "duedate = ?28, " +
+                        "vat = ?29 " +
+                        "WHERE uuid like ?30 ",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -352,6 +356,7 @@ public class InvoiceService {
                 invoice.getBonusOverrideAmount(),
                 invoice.getBonusOverrideNote(),
                 invoice.getDuedate(),
+                invoice.getVat(),
                 invoice.getUuid());
         System.out.println("Updating invoice items...");
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
@@ -376,6 +381,9 @@ public class InvoiceService {
         System.out.println("Uploading invoice to economics...");
         uploadToEconomics(draftInvoice);
         System.out.println("Invoice uploaded to economics: "+draftInvoice.getUuid());
+        String contractuuid = draftInvoice.getContractuuid();
+        String projectuuid = draftInvoice.getProjectuuid();
+        workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth()+1, draftInvoice.getYear());
 
         return draftInvoice;
     }
@@ -425,7 +433,7 @@ public class InvoiceService {
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(), LocalDate.now().plusMonths(1),
-                invoice.getProjectref(), invoice.getContractref(), invoice.contractType, invoice.getCompany(), invoice.getCurrency(),
+                invoice.getProjectref(), invoice.getContractref(), invoice.contractType, invoice.getCompany(), invoice.getCurrency(), invoice.getVat(),
                 "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.getBonusConsultantApprovedStatus());
 
         creditNote.invoicenumber = 0;

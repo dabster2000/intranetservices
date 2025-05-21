@@ -160,13 +160,7 @@ WHERE
      */
 
     public List<Contract> findByClientuuid(String clientuuid) {
-        List<Contract> contracts = Contract.find("clientuuid like ?1", clientuuid).list();
-        /*
-        for (Contract contract : contracts) {
-            addConsultantsToContract(contract);
-        }
-         */
-        return contracts;
+        return Contract.find("clientuuid = ?1", clientuuid).list();
     }
 
     public List<Contract> findByProjectuuid(String projectuuid) {
@@ -306,12 +300,11 @@ WHERE
         return projectUserDateDTO;
     }
 
-    private Contract addConsultantsToContract(Contract contract) {
+    private void addConsultantsToContract(Contract contract) {
         Set<ContractConsultant> contractConsultants = ContractConsultant.<ContractConsultant>stream("contractuuid like ?1", contract.getUuid()).collect(Collectors.toSet());
         Optional<ContractSalesConsultant> salesConsultant = ContractSalesConsultant.find("contractuuid like ?1 and status like 'APPROVED' order by created DESC", contract.getUuid()).firstResultOptional();
         salesConsultant.ifPresent(contract::setSalesconsultant);
         contract.setContractConsultants(contractConsultants);
-        return contract;
     }
 
     @Transactional

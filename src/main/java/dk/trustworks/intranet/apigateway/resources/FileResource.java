@@ -4,7 +4,6 @@ import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
 import dk.trustworks.intranet.fileservice.services.S3FileService;
-
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -12,7 +11,6 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 
 import java.io.IOException;
-import java.net.URISyntaxException;
 import java.util.List;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -67,13 +65,13 @@ public class FileResource {
 
     @PUT
     @Path("/photos/logo")
-    public void updateClientLogo(File photo) throws URISyntaxException, IOException {
+    public void updateClientLogo(File photo) throws IOException {
         photoService.updateLogo(photo);
     }
 
     @PUT
     @Path("/photos/portrait")
-    public void updatePortrait(File photo) throws URISyntaxException, IOException {
+    public void updatePortrait(File photo) throws IOException {
         photoService.updatePortrait(photo);
     }
 

@@ -5,11 +5,11 @@ import dk.trustworks.intranet.userservice.model.Role;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.utils.TokenUtils;
+import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.Claims;
 import org.jboss.logging.Logger;
 
-import jakarta.enterprise.context.ApplicationScoped;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -61,6 +61,47 @@ public class LoginService {
         user.setUsername("system.intra");
 
         return new LoginTokenResult(TokenUtils.generateSystemUserTokenString(user, timeClaims, user.getRoleList()), user.getUuid(), true, "", user.getRoleList());
+    }
+
+    /**
+     * Validates a token and returns validation result
+     *
+     * @param token JWT token to validate
+     * @return LoginTokenResult with validation status
+     */
+    public LoginTokenResult validateToken(String token) {
+        try {
+            if (token == null || token.isEmpty()) {
+                return new LoginTokenResult("", "", false, "Invalid token: Token is empty", new ArrayList<>());
+            }
+
+            // Validate token
+            boolean isValid = TokenUtils.validateToken(token);
+
+            if (isValid) {
+                // Parse the token to extract username
+                String[] tokenParts = token.split("\\.");
+                String payload = new String(Base64.getDecoder().decode(tokenParts[1]));
+                jakarta.json.JsonObject payloadJson = jakarta.json.Json.createReader(
+                        new java.io.StringReader(payload)).readObject();
+
+                String username = payloadJson.getString("preferred_username", "");
+                Optional<User> userOpt = User.findByUsername(username);
+
+                if (userOpt.isPresent()) {
+                    User user = userOpt.get();
+                    List<Role> roles = Role.findByUseruuid(user.getUuid());
+                    return new LoginTokenResult(token, user.getUuid(), true, "", roles);
+                } else {
+                    return new LoginTokenResult("", "", false, "User not found", new ArrayList<>());
+                }
+            } else {
+                return new LoginTokenResult("", "", false, "Invalid token: Validation failed", new ArrayList<>());
+            }
+        } catch (Exception e) {
+            log.error("Error validating token", e);
+            return new LoginTokenResult("", "", false, "Error validating token: " + e.getMessage(), new ArrayList<>());
+        }
     }
 
 }

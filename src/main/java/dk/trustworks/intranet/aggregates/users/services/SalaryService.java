@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
+import dk.trustworks.intranet.bi.events.SalaryChangedEvent;
 import dk.trustworks.intranet.userservice.model.Salary;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import lombok.extern.jbosslog.JBossLog;
@@ -14,6 +17,9 @@ import java.util.Optional;
 @JBossLog
 @ApplicationScoped
 public class SalaryService {
+
+    @Inject
+    Event<SalaryChangedEvent> salaryChangedEvent;
 
     public List<Salary> listAll(String useruuid) {
         return Salary.findByUseruuid(useruuid);
@@ -42,6 +48,7 @@ public class SalaryService {
             s.setActivefrom(salary.getActivefrom());
             updateSalary(s);
         }, salary::persist);
+        salaryChangedEvent.fireAsync(new SalaryChangedEvent(salary.getUseruuid(), salary.getUuid(), salary));
     }
 
     private void updateSalary(Salary salary) {
@@ -65,7 +72,9 @@ public class SalaryService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(String salaryuuid) {
+        Optional<Salary> optionalSalary = Salary.findByIdOptional(salaryuuid);
         Salary.deleteById(salaryuuid);
+        optionalSalary.ifPresent(salary -> salaryChangedEvent.fireAsync(new SalaryChangedEvent(salary.getUseruuid(), salary.getUuid(), salary)));
     }
 
     public List<Salary> findByUseruuid(String useruuid) {

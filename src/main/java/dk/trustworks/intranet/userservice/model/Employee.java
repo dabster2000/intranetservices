@@ -16,7 +16,6 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * Created by hans on 23/06/2017.
@@ -65,16 +64,16 @@ public class Employee extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     private ConsultantType consultanttype;
     private int salary;
+    @Column(name = "hiredate")
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    @JsonSerialize(using = LocalDateSerializer.class)
+    private LocalDate hireDate;
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "uuid")
     private User user;
     @OneToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "companyuuid")
     private Company company;
-
-    public static Optional<Employee> findByUsername(String username) {
-        return find("username", username).firstResultOptional();
-    }
 
     @Override
     public boolean equals(Object o) {

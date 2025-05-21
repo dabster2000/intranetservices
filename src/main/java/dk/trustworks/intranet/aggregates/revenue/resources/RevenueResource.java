@@ -5,9 +5,10 @@ import dk.trustworks.intranet.aggregateservices.FinanceService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
-import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.TeamService;
+import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -51,18 +52,21 @@ public class RevenueResource {
 
     @GET
     @Path("/registered")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<DateValueDTO> getRegisteredRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return revenueService.getRegisteredRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/registered/months/{month}")
+    //@CacheResult(cacheName = "registered-revenue-cache-date")
     public DateValueDTO getRegisteredRevenueForSingleMonth(@PathParam("month") String month) {
         return revenueService.getRegisteredRevenueForSingleMonth(companyuuid, dateIt(month));
     }
 
     @GET
     @Path("/registered/months/{month}/hours")
+    //@CacheResult(cacheName = "registered-revenue-cache-graph")
     public GraphKeyValue getRegisteredHoursForSingleMonth(@PathParam("month") String month) {
         log.debug("RevenueResource.getRegisteredHoursForSingleMonth");
         log.debug("month = " + month);
@@ -71,36 +75,35 @@ public class RevenueResource {
 
     @GET
     @Path("/registered/clients")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getSumOfRegisteredRevenueByClient() {
         return revenueService.getSumOfRegisteredRevenueByClient(companyuuid);
     }
 
-    //@GET
-    //@Path("/registered/clients")
-    public List<KeyValueDTO> revenuePerClient(@QueryParam("clientuuids") String clientuuids) {
-        return revenueService.getRegisteredRevenuePerClient(companyuuid, Arrays.stream(clientuuids.split(",")).toList());
-    }
-
     @GET
     @Path("/registered/clients/fiscalyear/{fiscalyear}")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getSumOfRegisteredRevenueByClientByFiscalYear(@PathParam("fiscalyear") int fiscalYear) {
         return revenueService.getSumOfRegisteredRevenueByClientByFiscalYear(companyuuid, fiscalYear);
     }
 
     @GET
     @Path("/registered/consultants/hours")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getRegisteredHoursPerConsultantForSingleMonth(@QueryParam("month") String month) {
         return revenueService.getRegisteredHoursPerConsultantForSingleMonth(companyuuid, dateIt(month));
     }
 
     @GET
     @Path("/invoiced")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<DateValueDTO> getInvoicedRevenueByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return revenueService.getInvoicedRevenueByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/invoiced/months/{month}")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public GraphKeyValue getInvoicedRevenueForSingleMonth(@PathParam("month") String month) {
         return new GraphKeyValue(UUID.randomUUID().toString(), month, revenueService.getInvoicedRevenueForSingleMonth(companyuuid, dateIt(month)));
     }
@@ -108,12 +111,14 @@ public class RevenueResource {
     @GET
     @Path("/profits")
     @RolesAllowed({"PARTNER", "ADMIN"})
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getProfitsByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return revenueService.getProfitsByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
     }
 
     @GET
     @Path("/profits/teams")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public GraphKeyValue getTotalProfitsByTeamList(@QueryParam("fiscalyear") Integer intFiscalYear, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate, @QueryParam("teamuuids") String teamlist) {
         log.info("RevenueResource.getTotalProfitsByTeamList");
         log.info("intFiscalYear = " + intFiscalYear + ", fromdate = " + fromdate + ", todate = " + todate + ", teamlist = " + teamlist);
@@ -131,6 +136,7 @@ public class RevenueResource {
 
     @GET
     @Path("/profits/consultants/{useruuid}")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getRegisteredProfitsForSingleConsultant(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String periodStart, @QueryParam("todate") String periodEnd, @QueryParam("interval") String interval) {
         return revenueService.getRegisteredProfitsForSingleConsultant(companyuuid, useruuid, dateIt(periodStart), dateIt(periodEnd), Integer.parseInt(interval));
     }
@@ -138,6 +144,7 @@ public class RevenueResource {
     // Profits generated by consultants in a team. Not including owners, sales, partners or teamleads
     @GET
     @Path("/profits/teams/{fiscalyear}")
+    //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getTeamProfitsByFiscalYear(@PathParam("fiscalyear") int fiscalyear) {
         LocalDate datefrom = LocalDate.of(fiscalyear, 7, 1);
         LocalDate dateto = LocalDate.of(fiscalyear+1, 7, 1);
@@ -158,5 +165,12 @@ public class RevenueResource {
             }
         }
         return List.of(new GraphKeyValue("d", "e", revenue-sum));
+    }
+
+    @CacheInvalidateAll(cacheName = "registered-revenue-cache")
+    @Scheduled(every="24h")
+    void refreshCaches() {
+        revenueService.getRegisteredRevenueByPeriod("company-uuid", LocalDate.now().minusDays(30), LocalDate.now());
+        revenueService.getRegisteredRevenueForSingleMonth("company-uuid", LocalDate.now().minusDays(30));
     }
 }

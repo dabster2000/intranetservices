@@ -8,7 +8,6 @@ import jakarta.persistence.Table;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
-
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
@@ -17,9 +16,10 @@ public class MealChoice extends PanacheEntityBase {
 
     @Id
     @EqualsAndHashCode.Include
-    public String id;
+    @Column(name = "uuid", columnDefinition = "char(36)", nullable = false)
+    public String uuid;
 
-    @Column(name = "weekday", nullable = false)
+    @Column(name = "weekday", nullable = false, length = 50)
     public String weekday;
 
     @Column(name = "selected_meal_type", nullable = false)
@@ -49,4 +49,9 @@ public class MealChoice extends PanacheEntityBase {
     @Column(name = "guest_wants_allergy_bowl", nullable = false)
     public int guestWantsAllergyBowl;
 
+    // If MealChoice references MealPlanUser by meal_plan_user_uuid, add a field like:
+    // @ManyToOne
+    // @JoinColumn(name = "meal_plan_user_uuid", referencedColumnName = "uuid", nullable = false)
+    // public MealPlanUser mealPlanUser;
+    // (Do this only if needed, based on your schema logic.)
 }

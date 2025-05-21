@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
 
+import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.DateValueDTO;
@@ -37,9 +38,12 @@ public class WorkService {
     public static final String VACATION = "f585f46f-19c1-4a3a-9ebd-1a4f21007282";
     public static final String SICKNESS = "02bf71c5-f588-46cf-9695-5864020eb1c4";
     public static final String WORK_HOURS = "a7314f77-5e03-4f56-8b1c-0562e601f22f";
+    private static final String HOURLY_TASK_UUID = "a7314f77-5e03-4f56-8b1c-0562e601f22f";
 
     @Inject
     EntityManager em;
+    @Inject
+    ProjectService projectService;
 
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
@@ -276,5 +280,49 @@ public class WorkService {
     public void clearPaidAndUpdate(Work work) {
         work.setPaidOut(null);
         Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
+    }
+
+    @Transactional
+    public void registerAsPaidout(String contractuuid, String projectuuid, int month, int year) {
+        LocalDateTime now = LocalDateTime.now();
+        WorkFull.<WorkFull>find("contractuuid = ?1 AND projectuuid = ?2 AND MONTH(registered) = ?3 AND YEAR(registered) = ?4", contractuuid, projectuuid, month, year).stream().forEach(work -> {
+            Work.update("paidOut = ?1 WHERE uuid = ?2 ", now, work.getUuid());
+        });
+    }
+
+    /**
+     * Returns a paginated list of hourly work items for the given user,
+     * filtering so that only items with paidOut null or within the last 6 months are returned.
+     */
+    public List<Work> findHourlyWorkPaged(String useruuid, int page, int size) {
+        LocalDateTime sixMonthsAgo = LocalDateTime.now().minusMonths(6);
+        return Work.find(
+                        "useruuid = ?1 and taskuuid = ?2 and workduration > 0 and (paidOut is null or paidOut >= ?3) order by paidOut desc",
+                        useruuid, HOURLY_TASK_UUID, sixMonthsAgo)
+                .page(Page.of(page, size))
+                .list();
+    }
+
+    /**
+     * Returns the total count of hourly work items for the given user,
+     * filtering so that only items with paidOut null or within the last 6 months are counted.
+     */
+    public long countHourlyWork(String useruuid) {
+        LocalDateTime sixMonthsAgo = LocalDateTime.now().minusMonths(6);
+        return Work.count(
+                "useruuid = ?1 and taskuuid = ?2 and workduration > 0 and (paidOut is null or paidOut >= ?3)",
+                useruuid, HOURLY_TASK_UUID, sixMonthsAgo);
+    }
+
+    /**
+     * Returns all hourly work items for the given user,
+     * filtering so that only items with paidOut null or within the last 6 months are returned.
+     */
+    public List<Work> findHourlyWork(String useruuid) {
+        LocalDateTime sixMonthsAgo = LocalDateTime.now().minusMonths(6);
+        return Work.find(
+                        "useruuid = ?1 and taskuuid = ?2 and workduration > 0 and (paidOut is null or paidOut >= ?3) order by paidOut desc",
+                        useruuid, HOURLY_TASK_UUID, sixMonthsAgo)
+                .list();
     }
 }

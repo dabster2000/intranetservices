@@ -137,6 +137,76 @@ public class TokenUtils {
         return kf.generatePublic(spec);
     }
 
+    /**
+     * Validates a JWT token
+     *
+     * @param token - the JWT token to validate
+     * @return boolean indicating if the token is valid
+     */
+    public static boolean validateToken(String token) {
+        try {
+            // Read the public key for verification
+            PublicKey publicKey = readPublicKey("/publicKey.pem");
+
+            // Prepare to verify the signature
+            String[] tokenParts = token.split("\\.");
+            if (tokenParts.length != 3) {
+                return false;
+            }
+
+            // Data that was signed (header and payload)
+            String signedData = tokenParts[0] + "." + tokenParts[1];
+
+            // Decode the signature
+            byte[] signatureBytes = Base64.getUrlDecoder().decode(tokenParts[2]);
+
+            // Create a signature instance for verification
+            Signature signature = Signature.getInstance("SHA256withRSA");
+            signature.initVerify(publicKey);
+            signature.update(signedData.getBytes(StandardCharsets.UTF_8));
+
+            // Verify the signature
+            boolean signatureValid = signature.verify(signatureBytes);
+            if (!signatureValid) {
+                return false;
+            }
+
+            // Verify token is not expired
+            String payload = new String(Base64.getUrlDecoder().decode(tokenParts[1]));
+            jakarta.json.JsonObject payloadJson = jakarta.json.Json.createReader(
+                    new java.io.StringReader(payload)).readObject();
+
+            if (payloadJson.containsKey("exp")) {
+                long exp = payloadJson.getJsonNumber("exp").longValue();
+                if (exp < currentTimeInSecs()) {
+                    return false; // Token is expired
+                }
+            }
+
+            // Token is valid
+            return true;
+        } catch (Exception e) {
+            // Any exception during validation means the token is invalid
+            return false;
+        }
+    }
+
+    /**
+     * Read a PEM encoded public key from the classpath
+     *
+     * @param pemResName - key file resource name
+     * @return PublicKey
+     * @throws Exception on decode failure
+     */
+    public static PublicKey readPublicKey(final String pemResName) throws Exception {
+        try (InputStream contentIS = TokenUtils.class.getResourceAsStream(pemResName)) {
+            byte[] tmp = new byte[4096];
+            assert contentIS != null;
+            int length = contentIS.read(tmp);
+            return decodePublicKey(new String(tmp, 0, length, StandardCharsets.UTF_8));
+        }
+    }
+
     private static byte[] toEncodedBytes(final String pemEncoded) {
         final String normalizedPem = removeBeginEnd(pemEncoded);
         return Base64.getDecoder().decode(normalizedPem);

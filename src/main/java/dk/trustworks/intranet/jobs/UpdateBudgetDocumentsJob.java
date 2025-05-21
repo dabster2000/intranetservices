@@ -33,14 +33,15 @@ public class UpdateBudgetDocumentsJob {
     @Scheduled(cron = "0 0 1 ? * 2-6")
     public void updateBiData() {
         log.info("BudgetServiceCache.updateBiData");
-        LocalDate startMonth = LocalDate.now().minusMonths(1);//LocalDate.of(2023, 11, 1);
-        LocalDate endMonth = LocalDate.now();
+        LocalDate startMonth = LocalDate.now().minusMonths(2).withDayOfMonth(1);//LocalDate.of(2023, 11, 1);
+        LocalDate endMonth = LocalDate.now().plusMonths(2).withDayOfMonth(1);
         for (User user : User.<User>streamAll().filter(user -> user.getType().equals("USER")).toList()) {
             log.info("Starting calculating availability for user: " + user.getUuid());
             LocalDate testDay = startMonth;
             do {
                 snsEventSender.sendEvent(SNSEventSender.UserStatusUpdatePerDayTopic, user.getUuid(), testDay);
                 snsEventSender.sendEvent(SNSEventSender.WorkUpdatePerDayTopic, user.getUuid(), testDay);
+                snsEventSender.sendEvent(SNSEventSender.ContractConsultantUpdatePerDayTopic, user.getUuid(), testDay);
                 // Log every quarter
                 if(testDay.getMonthValue() % 3 == 0) log.info("UserStatusUpdatePerDayTopic: " + user.getUuid() + " - " + testDay);
                 testDay = testDay.plusDays(1);

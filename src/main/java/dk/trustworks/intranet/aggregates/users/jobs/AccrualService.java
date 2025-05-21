@@ -5,7 +5,6 @@ import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.Vacation;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.VacationType;
-import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -25,7 +24,7 @@ public class AccrualService {
     UserService userService;
 
     @Transactional
-    @Scheduled(cron = "0 0 0 1 * ?")
+    //@Scheduled(cron = "0 0 0 1 * ?")
     public void accrueVacationDays() {
         log.info("Starting monthly vacation accrual process...");
         LocalDate currentDate = LocalDate.now();
@@ -41,7 +40,7 @@ public class AccrualService {
     }
 
     @Transactional
-    @Scheduled(every = "24h", delay = 1)
+    //@Scheduled(every = "24h", delay = 1)
     public void initVacation() {
         log.info("Starting vacation initialization process...");
         LocalDate endDate = LocalDate.of(2024, 11, 1);

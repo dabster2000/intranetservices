@@ -23,6 +23,10 @@ public class ConferenceService {
         return Conference.listAll();
     }
 
+    public Conference findConferenceBySlug(String slug) {
+        return Conference.<Conference>find("slug", slug).stream().findAny().orElse(null);
+    }
+
     @Transactional
     public void createConference(Conference conference) {
         conference.persist();

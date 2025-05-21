@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
+import dk.trustworks.intranet.apis.ResumeParserService;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
+import dk.trustworks.intranet.fileservice.model.File;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
@@ -10,7 +13,8 @@ import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import io.quarkus.cache.CacheInvalidateAll;
-import io.quarkus.cache.CacheResult;
+import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -21,6 +25,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.mindrot.jbcrypt.BCrypt;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -46,6 +51,8 @@ public class UserService {
 
     @Inject
     LoginService loginService;
+    @Inject
+    ResumeParserService resumeParserService;
 
     /** V2.0 **/
     public List<User> findByDate(LocalDate date) {
@@ -72,12 +79,44 @@ public class UserService {
                 "JOIN salary s ON u.uuid = s.useruuid AND max_salary.max_statusdate = s.activefrom; ", User.class).getResultList();
     }
 
+    /**
+     * 1) Find user by Azure OID + issuer
+     */
+    public User findByAzureOidAndIssuer(String azureOid, String issuer) {
+        return User.<User>find(
+                        "azureOid = ?1 and issuer = ?2",
+                        azureOid, issuer)
+                .firstResultOptional()
+                .orElse(null);
+    }
+
+    /**
+     * 2) Link or update the Azure OID + issuer on an existing user
+     */
+    @Transactional
+    public void linkAzureAccount(String userUuid, String azureOid, String issuer) {
+        User user = User.findById(userUuid);
+        if (user == null) {
+            throw new NotFoundException("User not found: " + userUuid);
+        }
+        user.azureOid = azureOid;
+        user.issuer   = issuer;
+        // Panache auto-flushes on transaction commit
+    }
+
 
     /** V1.0 **/
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> listAll(boolean shallow) {
         List<User> userList = User.listAll();
+        if(!shallow) userList.forEach(UserService::addChildrenToUser);
+        return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
+    }
+
+    public List<User> listAllByCompany(String companyuuid, boolean shallow) {
+        Company company = Company.findById(companyuuid);
+        List<User> userList = Employee.<Employee>stream("company = ?1", company).map(Employee::getUser).toList();
         if(!shallow) userList.forEach(UserService::addChildrenToUser);
         return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
@@ -95,9 +134,10 @@ public class UserService {
         return user;
     }
 
-    @CacheResult(cacheName = "user-cache")
     public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String[] statusArray, String[] consultantTypesArray, boolean shallow) {
-        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, u.created, u.email, u.primaryskilltype, u.primary_skill_level, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
+        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, " +
+                "u.azure_oid, u.azure_issuer, " +
+                "u.created, u.email, u.primaryskilltype, u.primary_skill_level, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
                 "FROM user as u " +
                 "LEFT OUTER JOIN salary ON u.uuid = salary.useruuid " +
                 "LEFT OUTER JOIN roles ON u.uuid = roles.useruuid " +
@@ -123,6 +163,36 @@ public class UserService {
         return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
+    public List<User> findUsersByDateAndStatusListAndTypesAndCompany(String companyuuid, LocalDate date, String[] statusArray, String[] consultantTypesArray, boolean shallow) {
+        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, " +
+                "u.azure_oid, u.azure_issuer, " +
+                "u.created, u.email, u.primaryskilltype, u.primary_skill_level, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, " +
+                "u.type " +
+                "FROM user as u " +
+                "LEFT OUTER JOIN salary ON u.uuid = salary.useruuid " +
+                "LEFT OUTER JOIN roles ON u.uuid = roles.useruuid " +
+                "LEFT OUTER JOIN user_contactinfo ON u.uuid = user_contactinfo.useruuid " +
+                "LEFT JOIN ( " +
+                "SELECT yt.uuid, yt.useruuid, yt.status, yt.statusdate, yt.allocation, yt.type " +
+                "FROM userstatus as yt " +
+                "INNER JOIN ( " +
+                "SELECT uuid, useruuid, max(statusdate) created " +
+                "FROM userstatus as us " +
+                "WHERE statusdate <= '"+date+"' " +
+                "GROUP BY useruuid " +
+                ") as ss " +
+                "ON yt.statusdate = ss.created AND yt.useruuid = ss.useruuid " +
+                "WHERE yt.status IN ('"+String.join("','", statusArray)+"') AND yt.type IN ('"+String.join("','", consultantTypesArray)+"') " +
+                ") as kk " +
+                "ON u.uuid = kk.useruuid " +
+                "WHERE kk.status IN ('"+String.join("','", statusArray)+"') AND kk.type IN ('"+String.join("','", consultantTypesArray)+"') " +
+                "ORDER BY u.username";
+        List<User> userList = em.createNativeQuery(sql, User.class).getResultList();
+        if(!shallow)
+            userList.forEach(UserService::addChildrenToUser);
+        return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
+    }
+
     public static User addChildrenToUser(User user) {
         user.getTeams().addAll(TeamRole.getTeamrolesByUser(user.getUuid()));
         user.getRoleList().addAll(Role.findByUseruuid(user.getUuid()));
@@ -138,7 +208,7 @@ public class UserService {
         return UserStatus.findByUseruuid(useruuid);
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> filterForActiveTeamMembers(LocalDate month, List<User> usersInTeam) {
         List<User> allActiveConsultants = findUsersByDateAndStatusListAndTypes(month, new String[]{ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString(), NON_PAY_LEAVE.toString()}, new String[]{CONSULTANT.toString(), STAFF.toString(), STUDENT.toString()}, true);
         return usersInTeam.stream()
@@ -148,7 +218,7 @@ public class UserService {
     }
 
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public int calcMonthSalaries(LocalDate date, String... consultantTypes) {
         String[] statusList = {ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString()};
         return findUsersByDateAndStatusListAndTypes(date, statusList, consultantTypes, false)
@@ -157,7 +227,7 @@ public class UserService {
                 ).sum();
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public UserStatus getUserStatus(User user, LocalDate date) {
         return user.getStatuses().stream().filter(value -> value.getStatusdate().isBefore(date) || value.getStatusdate().isEqual(date)).max(Comparator.comparing(UserStatus::getStatusdate)).orElse(new UserStatus(ConsultantType.STAFF, StatusType.TERMINATED, date, 0, user.getUuid()));
     }
@@ -166,21 +236,21 @@ public class UserService {
         return user.getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date) || value.getActivefrom().isEqual(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> findCurrentlyEmployedUsers(boolean shallow, ConsultantType... consultantType) {
         String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString()};
         return findUsersByDateAndStatusListAndTypes(LocalDate.now(), statusList,
                 Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow).stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> findEmployedUsersByDate(LocalDate currentDate, boolean shallow, ConsultantType... consultantType) {
         String[] statusList = {ACTIVE.toString(), NON_PAY_LEAVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString()};
         return findUsersByDateAndStatusListAndTypes(currentDate, statusList,
                 Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), shallow);
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> findWorkingUsersByDate(LocalDate currentDate, ConsultantType... consultantType) {
         return findUsersByDateAndStatusListAndTypes(
                 currentDate,
@@ -188,16 +258,26 @@ public class UserService {
                 Arrays.stream(consultantType).map(Enum::toString).toArray(String[]::new), true);
     }
 
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String statusList, String consultantTypes, boolean shallow) {
         String[] statusArray = split(statusList);
         String[] consultantTypesArray = split(consultantTypes);
         return new ArrayList<>(findUsersByDateAndStatusListAndTypes(date, statusArray, consultantTypesArray, shallow));
     }
 
+    public List<User> findUsersByDateAndStatusListAndTypesAndCompany(String companyuuid, LocalDate date, String statusList, String consultantTypes, boolean shallow) {
+        String[] statusArray = split(statusList);
+        String[] consultantTypesArray = split(consultantTypes);
+        Employee.<Employee>stream("company = ?1 and " +
+                "date = ?2 and " +
+                "status in ('"+String.join("','", statusArray)+"') and " +
+                "type in ('"+String.join("','", consultantTypesArray)+"') ", Company.findById(companyuuid))
+                .map(Employee::getUser)
+                .forEach(UserService::addChildrenToUser);
+        return new ArrayList<>(findUsersByDateAndStatusListAndTypesAndCompany(companyuuid, date, statusArray, consultantTypesArray, shallow));
+    }
 
-
-    @CacheResult(cacheName = "user-cache")
+    //@CacheResult(cacheName = "user-cache")
     public List<User> getActiveConsultantsByFiscalYear(String intFiscalYear) {
         LocalDate fiscalYear = LocalDate.of(Integer.parseInt(intFiscalYear), 7,1);
 
@@ -304,6 +384,19 @@ public class UserService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
+    public void updatePasswordByUUID(String uuid, String newPassword) {
+        log.info("UserResource.updatePasswordByUUID");
+        log.info("uuid = " + uuid + ", newPassword = " + newPassword);
+        User user = (User) User.find("uuid like ?1", uuid).firstResultOptional().orElseThrow(NotFoundException::new);
+        String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
+        user.setPassword(hashpw);
+        User.update("password = ?1 WHERE uuid like ?2",
+                hashpw,
+                uuid);
+    }
+
+    @Transactional
+    @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordBySlackid(String slackid, String newPassword) {
         log.info("UserResource.updatePasswordBySlackid");
         log.info("slackid = " + slackid + ", newPassword = " + newPassword);
@@ -349,4 +442,89 @@ public class UserService {
         return user;
         //return clearSalaries(List.of(user)).get(0);
     }
+
+    public UserResume findUserResume(String useruuid) {
+        return UserResume.<UserResume>find("useruuid", useruuid).firstResultOptional().orElse(new UserResume());
+    }
+
+    @Transactional
+    public void updateResume(String useruuid, File resume) throws IOException {
+        String parsedResume = resumeParserService.parseResume(resume.getFile(), resume.getFilename());
+        String htmlResumeResult = resumeParserService.convertResultToHTML(parsedResume);
+        String encodedResume = Base64.getEncoder().encodeToString(htmlResumeResult.getBytes());
+        UserResume.delete("useruuid", useruuid);
+        new UserResume(UUID.randomUUID().toString(), useruuid, extractFirstDiv(htmlResumeResult), "", encodedResume).persist();
+    }
+
+    @Scheduled(every = "1h")
+    public void updateResumes() {
+        List<UserResume> userResumes = UserResume.list("resumeVersion < "+UserResume.version);
+        log.info("Updating user resumes: "+userResumes.size());
+        userResumes.forEach(userResume -> {
+            if(userResume.getResumeResult().isEmpty()) return;
+            String parsedResume = new String(Base64.getDecoder().decode(userResume.getResumeResult()));
+            String htmlResumeResult = extractFirstDiv(resumeParserService.convertResultToHTML(parsedResume));
+            userResume.setResumeENG(htmlResumeResult);
+            QuarkusTransaction.begin();
+            UserResume.update("resumeENG = ?1, resumeVersion = ?2 where uuid like ?3", htmlResumeResult, UserResume.version, userResume.getUuid());
+            QuarkusTransaction.commit();
+        });
+    }
+
+    /**
+     * Extracts the first complete <div>...</div> block from the input string.
+     * It ignores any content outside that block.
+     *
+     * @param input the input string containing HTML and possibly extra text
+     * @return the substring that is the first parent div container,
+     *         or an empty string if no <div> is found.
+     */
+    public static String extractFirstDiv(String input) {
+        // Find the first occurrence of a div tag.
+        int start = input.indexOf("<div");
+        if (start == -1) {
+            return ""; // No div found
+        }
+
+        int count = 0;
+        int index = start;
+        while (index < input.length()) {
+            // Find the next opening <div and closing </div> tags after the current index.
+            int nextOpen = input.indexOf("<div", index);
+            int nextClose = input.indexOf("</div>", index);
+
+            // If no closing tag is found, break out.
+            if (nextClose == -1) {
+                break;
+            }
+
+            // If the next opening tag comes before the next closing tag, it means a nested div is found.
+            if (nextOpen != -1 && nextOpen < nextClose) {
+                count++; // Increment nesting counter.
+                index = nextOpen + 4; // Move index past this opening tag.
+            } else {
+                // Process a closing tag.
+                count--; // Decrement nesting counter.
+                index = nextClose + 6; // Move index past the closing tag.
+                if (count == 0) {
+                    // Found the matching closing tag for the first <div>.
+                    return input.substring(start, index);
+                }
+            }
+        }
+        // If no matching closing tag is found, return everything from the first <div> onward.
+        return input.substring(start);
+    }
+
+    /**
+     * Validates a JWT token
+     *
+     * @param token JWT token to validate
+     * @return LoginTokenResult with validation status
+     * @throws Exception if validation fails
+     */
+    public LoginTokenResult validateToken(String token) throws Exception {
+        return loginService.validateToken(token);
+    }
+
 }

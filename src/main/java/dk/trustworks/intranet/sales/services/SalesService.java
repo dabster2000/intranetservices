@@ -12,6 +12,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -109,84 +110,14 @@ public class SalesService {
         return count;
     }
 
-
-    /*
-    public List<SalesLead> findAll(int offset, int limit, List<String> sortOrders, Map<String, String> filterValues) {
-        // Build the base query
-        PanacheQuery<SalesLead> query = SalesLead.findAll();
-
-        // Apply filters if any exist
-        if (filterValues != null && !filterValues.isEmpty()) {
-            StringBuilder queryStr = new StringBuilder();
-            Map<String, Object> parameters = new HashMap<>();
-
-            for (Map.Entry<String, String> filter : filterValues.entrySet()) {
-                if (!queryStr.isEmpty()) {
-                    queryStr.append(" and ");
-                }
-                // Handle specific field types appropriately
-                switch (filter.getKey()) {
-                    case "status":
-                        queryStr.append("status = :status");
-                        parameters.put("status", SalesStatus.valueOf(filter.getValue()));
-                        break;
-                    case "closeDate":
-                        queryStr.append("closeDate >= :closeDate");
-                        parameters.put("closeDate", LocalDate.parse(filter.getValue()));
-                        break;
-                    default:
-                        queryStr.append(filter.getKey()).append(" like :").append(filter.getKey());
-                        parameters.put(filter.getKey(), "%" + filter.getValue() + "%");
-                }
-            }
-
-            // Apply the filters
-            if (!queryStr.isEmpty()) {
-                query = SalesLead.find(queryStr.toString(), parameters);
-            }
-        }
-
-        // Apply sorting
-        if (sortOrders != null && !sortOrders.isEmpty()) {
-            StringBuilder sortQuery = new StringBuilder();
-            for (String sort : sortOrders) {
-                String[] parts = sort.split(" ");
-                if (!sortQuery.isEmpty()) {
-                    sortQuery.append(", ");
-                }
-                sortQuery.append(parts[0]).append(" ").append(parts[1]);
-            }
-            //query.sort(sortQuery.toString());
-        }
-
-        // Apply pagination
-        return query.page(offset / limit, limit).list();
-    }
-
-    public long count(Map<String, String> filterValues) {
-        if (filterValues == null || filterValues.isEmpty()) {
-            return SalesLead.count();
-        }
-
-        StringBuilder whereClause = new StringBuilder();
-        List<Object> parameters = new ArrayList<>();
-        int paramIndex = 1;
-
-        for (Map.Entry<String, String> filter : filterValues.entrySet()) {
-            if (whereClause.length() > 0) {
-                whereClause.append(" AND ");
-            }
-            whereClause.append(filter.getKey()).append(" LIKE ?").append(paramIndex++);
-            parameters.add("%" + filter.getValue() + "%");
-        }
-
-        return SalesLead.count(whereClause.toString(), parameters.toArray());
-    }
-
-     */
-
     public List<SalesLead> findAll() {
         return SalesLead.findAll().<SalesLead>stream().sorted(Comparator.comparing(SalesLead::getCreated)).toList();
+    }
+
+    public List<SalesLead> findWon(LocalDate sinceDate) {
+        LocalDateTime since = sinceDate.atStartOfDay();
+        log.infof("since = %s", since);
+        return SalesLead.list("status = ?1 and modified >= ?2", LeadStatus.WON, since);
     }
 
     public List<SalesLead> findByStatus(SalesStatus... status) {
@@ -224,12 +155,12 @@ public class SalesService {
                         "closeDate = ?3, " +
                         "competencies = ?4, " +
                         "leadManager = ?5, " +
-                        "consultantLevel = ?6, " +
-                        "extension = ?7, " +
-                        "rate = ?8, " +
-                        "period = ?9, " +
-                        "contactInformation = ?10, " +
-                        "description = ?11, " +
+                        "extension = ?6, " +
+                        "rate = ?7, " +
+                        "period = ?8, " +
+                        "contactInformation = ?9, " +
+                        "description = ?10, " +
+                        "detailedDescription = ?11, " +
                         "status = ?12 " +
                         "WHERE uuid like ?13 ",
                 salesLead.getClient(),
@@ -237,12 +168,13 @@ public class SalesService {
                 salesLead.getCloseDate(),
                 salesLead.getCompetencies(),
                 salesLead.getLeadManager(),
-                salesLead.getConsultantLevel(),
+                //salesLead.getConsultantLevel(),
                 salesLead.isExtension(),
                 salesLead.getRate(),
                 salesLead.getPeriod(),
                 salesLead.getContactInformation(),
                 salesLead.getDescription(),
+                salesLead.getDetailedDescription(),
                 salesLead.getStatus(),
                 salesLead.getUuid());
     }
