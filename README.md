@@ -74,3 +74,20 @@ The Quarkus application configuration is located in `src/main/resources/applicat
 Easily start your Reactive RESTful Web Services
 
 [Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+
+## Borrowed Device API
+
+Manage devices borrowed by users.
+
+### Endpoints
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/users/{useruuid}/borroweddevices` | List borrowed devices for a user |
+| `POST` | `/users/{useruuid}/borroweddevices` | Create a borrowed device |
+| `PUT` | `/users/{useruuid}/borroweddevices` | Update an existing borrowed device |
+| `DELETE` | `/users/{useruuid}/borroweddevices/{uuid}` | Delete a borrowed device |
+
+### BorrowedDevice Fields
+
+`uuid`, `useruuid`, `type`, `description`, `serial`, `borrowedDate`, `returnedDate`
