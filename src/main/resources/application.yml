@@ -43,6 +43,8 @@ quarkus:
   log:
     level: INFO
     category:
+      "dk.trustworks":
+        level: DEBUG
       "io.quarkus.http":
         level: DEBUG
       "org.jboss.resteasy.resteasy_client":

@@ -5,7 +5,5 @@ CREATE TABLE borrowed_device (
     description   VARCHAR(255) NULL,
     serial        VARCHAR(255) NULL,
     borrowed_date DATE         NOT NULL,
-    returned_date DATE         NULL,
-    CONSTRAINT borrowed_device_user_fk FOREIGN KEY (useruuid) REFERENCES user (uuid)
-        ON UPDATE CASCADE ON DELETE CASCADE
+    returned_date DATE         NULL
 );
