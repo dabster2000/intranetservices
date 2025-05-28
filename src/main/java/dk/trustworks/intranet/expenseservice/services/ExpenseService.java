@@ -21,6 +21,14 @@ import java.util.List;
 @RequestScoped
 public class ExpenseService {
 
+    // Status constants used throughout the expense processing flow
+    public static final String STATUS_CREATED = "CREATED";
+    public static final String STATUS_PROCESSING = "PROCESSING";
+    public static final String STATUS_PROCESSED = "PROCESSED";
+    public static final String STATUS_NO_FILE = "NO_FILE";
+    public static final String STATUS_NO_USER = "NO_USER";
+    public static final String STATUS_UP_FAILED = "UP_FAILED";
+
     @Inject
     ExpenseFileService expenseFileService;
 
@@ -47,10 +55,12 @@ public class ExpenseService {
 
     @Transactional
     public void processExpense(Expense expense) throws IOException {
+        log.info("Processing new expense " + expense.getUuid());
         try {
             //save expense to db
-            expense.setStatus("CREATED");
+            expense.setStatus(STATUS_CREATED);
             expense.persist();
+            log.info("Expense persisted with status CREATED: " + expense.getUuid());
 
             //save expense file to AWS
             ExpenseFile expenseFile = new ExpenseFile(expense.getUuid(), expense.getExpensefile());
@@ -61,18 +71,21 @@ public class ExpenseService {
                 QuarkusTransaction.setRollbackOnly();
                 throw new IOException("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
             }
+            log.info("Expense file stored in S3 for " + expense.getUuid());
 
         } catch (Exception e) {
             log.error("exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
             throw new IOException("exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);//Response.status(500).entity(e).build();
         }
+        log.info("Expense processed and stored with uuid: " + expense.getUuid());
     }
 
     @Transactional
     @Scheduled(every = "5s")
     //@Scheduled(cron = "0 0 20 * * ?")
     public void consumeCreate() throws IOException {
-        List<Expense> expenses = Expense.<Expense>stream("status", "CREATED")
+        log.info("Starting scheduled expense upload job");
+        List<Expense> expenses = Expense.<Expense>stream("status", STATUS_CREATED)
                 .filter(e -> e.getAmount() > 0)
                 .filter(e -> e.getDatecreated().isBefore(LocalDate.now().minusDays(2)))
                 .limit(1).toList();
@@ -80,17 +93,20 @@ public class ExpenseService {
         if (expenses.isEmpty()) return;
 
         for (Expense expense : expenses) {
+            log.info("Processing expense " + expense.getUuid());
+            updateStatus(expense, STATUS_PROCESSING);
+
             ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
             if (expenseFile == null || expenseFile.getExpensefile().isEmpty()) {
                 log.error("No expense file found for expense " + expense);
-                updateStatus(expense, "NO_FILE");
+                updateStatus(expense, STATUS_NO_FILE);
                 continue;
             }
 
             List<UserAccount> userAccounts = UserAccount.find("useruuid = ?1", expense.getUseruuid()).list();
             if (userAccounts.size() != 1) {
                 log.warn("No single user account found for expense " + expense);
-                updateStatus(expense, "NO_USER");
+                updateStatus(expense, STATUS_NO_USER);
                 continue;
             }
 
@@ -105,21 +121,23 @@ public class ExpenseService {
         Response response;
         try {
             response = economicsService.sendVoucher(expense, expenseFile, userAccount);
-            updateStatus(expense, "UP_FAILED");
+            updateStatus(expense, STATUS_PROCESSING);
         } catch (Exception e) {
             log.error("Exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
+            updateStatus(expense, STATUS_UP_FAILED);
             throw new IOException("Exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);
         }
 
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
-            updateStatus(expense, "PROCESSED");
+            updateStatus(expense, STATUS_PROCESSED);
         } else {
             log.error("unable to send voucher to economics: " + expense);
-            updateStatus(expense, "UP_FAILED");
+            updateStatus(expense, STATUS_UP_FAILED);
             throw new IOException("Economics error on uploading file. Expense : "+ expense +", response: "+ response);
         }
     }
 
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     private void updateStatus(Expense expense, String status) {
         expense.setStatus(status);
         Expense.update("status = ?1, " + "vouchernumber = ?2 " + "WHERE uuid like ?3 ", expense.getStatus(), expense.getVouchernumber(), expense.getUuid());

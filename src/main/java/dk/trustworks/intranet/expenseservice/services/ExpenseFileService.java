@@ -33,18 +33,25 @@ public class ExpenseFileService {
     S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
 
     public PutObjectResponse saveFile(ExpenseFile expenseFile) {
-        return s3.putObject(PutObjectRequest.builder().bucket(bucketName).key(expenseFile.getUuid()).build(),
+        log.info("Uploading expense file to S3: " + expenseFile.getUuid());
+        PutObjectResponse response = s3.putObject(
+                PutObjectRequest.builder().bucket(bucketName).key(expenseFile.getUuid()).build(),
                 RequestBody.fromString(expenseFile.getExpensefile()));
+        log.info("S3 upload response: " + response);
+        return response;
     }
 
     public ExpenseFile getFileById(String uuid) throws S3Exception {
         ExpenseFile file = new ExpenseFile(uuid,"");
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try{
+            log.info("Downloading expense file from S3: " + uuid);
             s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(uuid).build(), ResponseTransformer.toOutputStream(baos));
 
             String str = baos.toString(StandardCharsets.UTF_8);
             file.setExpensefile(str);
+
+            log.info("Loaded expense file from S3: " + uuid);
 
         }  catch (S3Exception e) {
             log.error("Could not load file from S3", e.fillInStackTrace());

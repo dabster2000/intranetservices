@@ -78,3 +78,7 @@ Easily start your Reactive RESTful Web Services
 ## Borrowed Device API
 
 The `BorrowedDevice` endpoints manage devices lent to users. A new `clientuuid` field links a device to a client. Developers should include this property when creating or updating devices. See `docs/borroweddevice-client-update.md` for migration details.
+
+## Expense Processing
+
+The expense upload flow is documented in [docs/expense-processing.md](docs/expense-processing.md).

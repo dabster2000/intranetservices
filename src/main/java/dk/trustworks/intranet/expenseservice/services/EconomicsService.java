@@ -41,6 +41,7 @@ public class  EconomicsService {
     UserService userService;
 
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
+        log.info("Sending voucher for expense " + expense.getUuid());
 
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
         log.info("Voucher target = " + result);
@@ -86,7 +87,7 @@ public class  EconomicsService {
     }
 
     public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
-        System.out.println("EconomicsService.sendFile");
+        log.info("Uploading file for expense " + expense.getUuid());
         // format accountingYear to URL output
         String year = voucher.getAccountingYear().getYear();
         String[] arrOfStr = year.split("/", 2);
@@ -102,7 +103,7 @@ public class  EconomicsService {
 
         // call e-conomics endpoint
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
-        System.out.println("File upload data = " + result);
+        log.info("File upload target = " + result);
         EconomicsAPI remoteApi = getEconomicsAPI(result);
 
         Response fileResponse = null;
