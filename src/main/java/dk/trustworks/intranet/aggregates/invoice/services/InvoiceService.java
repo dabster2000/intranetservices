@@ -27,6 +27,7 @@ import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.panache.common.Sort;
+import io.quarkus.panache.common.Page;
 import io.quarkus.runtime.LaunchMode;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -99,6 +100,14 @@ public class InvoiceService {
 
     public List<Invoice> findAll() {
         return Invoice.findAll().list();
+    }
+
+    public List<Invoice> findPaged(int page, int size) {
+        return Invoice.findAll().page(Page.of(page, size)).list();
+    }
+
+    public long countInvoices() {
+        return Invoice.count();
     }
 
     public static List<Invoice> findWithFilter(LocalDate fromdate, LocalDate todate, String... type) {
