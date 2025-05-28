@@ -78,3 +78,7 @@ Easily start your Reactive RESTful Web Services
 ## Borrowed Device API
 
 The `BorrowedDevice` endpoints manage devices lent to users. A new `clientuuid` field links a device to a client. Developers should include this property when creating or updating devices. See `docs/borroweddevice-client-update.md` for migration details.
+
+## Invoice Pagination
+
+Providers can request paged invoices using `/invoices?page=X&size=Y`. To retrieve the total number of invoices without loading all data, call `/invoices/count`. See `docs/invoice-pagination.md` for details.

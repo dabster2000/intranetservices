@@ -45,7 +45,14 @@ public class InvoiceResource {
     InvoiceGenerator invoiceGenerator;
 
     @GET
-    public List<Invoice> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+    public List<Invoice> findByPeriod(@QueryParam("fromdate") String fromdate,
+                                      @QueryParam("todate") String todate,
+                                      @QueryParam("page") Integer page,
+                                      @QueryParam("size") Integer size) {
+        log.debug("findByPeriod page=" + page + ", size=" + size);
+        if(page != null && size != null) {
+            return invoiceService.findPaged(page, size);
+        }
         if (fromdate == null || todate == null) return invoiceService.findAll();
         return InvoiceService.findWithFilter(dateIt(fromdate), dateIt(todate));
     }
@@ -60,6 +67,13 @@ public class InvoiceResource {
     @Path("/search/bookingdate")
     public List<Invoice> getInvoicesByBookingdate(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return invoiceService.findByBookingDate(dateIt(fromdate), dateIt(todate));
+    }
+
+    @GET
+    @Path("/count")
+    public long countInvoices() {
+        log.debug("countInvoices");
+        return invoiceService.countInvoices();
     }
 
     @GET
