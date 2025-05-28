@@ -44,21 +44,6 @@ public class InvoiceResource {
     @Inject
     InvoiceGenerator invoiceGenerator;
 
-    /*
-    @GET
-    public List<Invoice> findByPeriod(@QueryParam("fromdate") String fromdate,
-                                      @QueryParam("todate") String todate,
-                                      @QueryParam("page") Integer page,
-                                      @QueryParam("size") Integer size,
-                                      @QueryParam("sort") List<String> sort) {
-        log.debug("findByPeriod page=" + page + ", size=" + size + ", sort=" + sort);
-        List<Invoice> invoices = (fromdate == null || todate == null)
-                ? invoiceService.findAll()
-                : InvoiceService.findWithFilter(dateIt(fromdate), dateIt(todate));
-        return invoiceService.sortAndPage(invoices, sort, page, size);
-    }
-     */
-
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
