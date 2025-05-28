@@ -137,11 +137,12 @@ public class ExpenseService {
         }
     }
 
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
     private void updateStatus(Expense expense, String status) {
-        expense.setStatus(status);
-        Expense.update("status = ?1, " + "vouchernumber = ?2 " + "WHERE uuid like ?3 ", expense.getStatus(), expense.getVouchernumber(), expense.getUuid());
-        log.info("Updated expense " + expense);
+        QuarkusTransaction.requiringNew().run(() -> {
+            expense.setStatus(status);
+            Expense.update("status = ?1, " + "vouchernumber = ?2 " + "WHERE uuid like ?3 ", expense.getStatus(), expense.getVouchernumber(), expense.getUuid());
+            log.info("Updated expense " + expense);
+        });
     }
 
     @Transactional
