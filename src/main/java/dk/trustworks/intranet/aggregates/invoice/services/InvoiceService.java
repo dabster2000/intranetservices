@@ -26,8 +26,10 @@ import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
-import io.quarkus.panache.common.Sort;
+import dk.trustworks.intranet.utils.SortBuilder;
+import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
+import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.LaunchMode;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -35,8 +37,8 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.Tuple;
 import jakarta.persistence.TupleElement;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
@@ -105,6 +107,26 @@ public class InvoiceService {
 
     public List<Invoice> findPaged(int page, int size) {
         return Invoice.findAll().page(Page.of(page, size)).list();
+    }
+
+    public List<Invoice> findPaged(LocalDate from,
+                                   LocalDate to,
+                                   int pageIdx,
+                                   int pageSize,
+                                   List<String> sortParams) {
+
+        Sort sort = SortBuilder.from(sortParams);           // see § 3
+        Page page = Page.of(pageIdx, pageSize);
+
+        PanacheQuery<Invoice> q;
+
+        if (from == null || to == null) {                   // no date filter
+            q = Invoice.findAll(sort);
+        } else {                                            // with date range
+            q = Invoice.find("invoicedate >= ?1 and invoicedate < ?2",
+                    sort, from, to);
+        }
+        return q.page(page).list();                         // 🔹 SQL: ORDER BY … LIMIT …
     }
 
     public List<Invoice> sortAndPage(List<Invoice> invoices, List<String> sortParams, Integer page, Integer size) {

@@ -262,6 +262,7 @@ public final class DateUtils {
     }
 
     public static LocalDate dateIt(String date) {
+        if(date==null || date.isBlank()) return null;
         return LocalDate.parse(date, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
     }
 
