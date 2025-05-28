@@ -48,13 +48,13 @@ public class InvoiceResource {
     public List<Invoice> findByPeriod(@QueryParam("fromdate") String fromdate,
                                       @QueryParam("todate") String todate,
                                       @QueryParam("page") Integer page,
-                                      @QueryParam("size") Integer size) {
-        log.debug("findByPeriod page=" + page + ", size=" + size);
-        if(page != null && size != null) {
-            return invoiceService.findPaged(page, size);
-        }
-        if (fromdate == null || todate == null) return invoiceService.findAll();
-        return InvoiceService.findWithFilter(dateIt(fromdate), dateIt(todate));
+                                      @QueryParam("size") Integer size,
+                                      @QueryParam("sort") List<String> sort) {
+        log.debug("findByPeriod page=" + page + ", size=" + size + ", sort=" + sort);
+        List<Invoice> invoices = (fromdate == null || todate == null)
+                ? invoiceService.findAll()
+                : InvoiceService.findWithFilter(dateIt(fromdate), dateIt(todate));
+        return invoiceService.sortAndPage(invoices, sort, page, size);
     }
 
     @GET

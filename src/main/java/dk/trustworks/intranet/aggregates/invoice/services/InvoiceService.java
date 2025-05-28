@@ -36,6 +36,7 @@ import jakarta.persistence.Tuple;
 import jakarta.persistence.TupleElement;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.WebApplicationException;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
@@ -104,6 +105,47 @@ public class InvoiceService {
 
     public List<Invoice> findPaged(int page, int size) {
         return Invoice.findAll().page(Page.of(page, size)).list();
+    }
+
+    public List<Invoice> sortAndPage(List<Invoice> invoices, List<String> sortParams, Integer page, Integer size) {
+        List<Invoice> sorted = new ArrayList<>(invoices);
+        sorted.sort(buildComparator(sortParams));
+        if(page != null && size != null) {
+            int fromIndex = Math.min(page * size, sorted.size());
+            int toIndex = Math.min(fromIndex + size, sorted.size());
+            return sorted.subList(fromIndex, toIndex);
+        }
+        return sorted;
+    }
+
+    private Comparator<Invoice> buildComparator(List<String> sortParams) {
+        if(sortParams == null || sortParams.isEmpty()) {
+            return Comparator.comparing(Invoice::getInvoicedate).reversed();
+        }
+        Comparator<Invoice> comparator = null;
+        for(String param : sortParams) {
+            String[] parts = param.split(",");
+            String field = parts[0];
+            String dir = parts.length > 1 ? parts[1] : "asc";
+            Comparator<Invoice> c = switch(field) {
+                case "invoicenumber" -> Comparator.comparing(Invoice::getInvoicenumber);
+                case "uuid" -> Comparator.comparing(Invoice::getUuid);
+                case "clientname" -> Comparator.comparing(i -> i.clientname.toLowerCase());
+                case "projectname" -> Comparator.comparing(i -> Optional.ofNullable(i.projectname).orElse("").toLowerCase());
+                case "sumnotax" -> Comparator.comparingDouble(Invoice::getSumNoTax);
+                case "type" -> Comparator.comparing(i -> i.getType().name());
+                case "invoicedate" -> Comparator.comparing(Invoice::getInvoicedate);
+                case "bookingdate" -> Comparator.comparing(Invoice::getBookingdate);
+                default -> {
+                    log.errorf("Unsupported sort field: %s", field);
+                    throw new WebApplicationException(Response.status(400)
+                            .entity(Map.of("error", "Unsupported sort field: " + field)).build());
+                }
+            };
+            if("desc".equalsIgnoreCase(dir)) c = c.reversed();
+            comparator = comparator == null ? c : comparator.thenComparing(c);
+        }
+        return comparator != null ? comparator : Comparator.comparing(Invoice::getInvoicedate).reversed();
     }
 
     public long countInvoices() {

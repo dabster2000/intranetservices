@@ -82,3 +82,7 @@ The `BorrowedDevice` endpoints manage devices lent to users. A new `clientuuid` 
 ## Expense Processing
 
 The expense upload flow is documented in [docs/expense-processing.md](docs/expense-processing.md).
+
+## Invoice Sorting
+
+The sorting options for invoices are documented in [docs/invoice-sorting.md](docs/invoice-sorting.md).
