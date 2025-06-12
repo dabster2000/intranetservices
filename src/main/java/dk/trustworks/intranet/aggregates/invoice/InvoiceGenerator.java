@@ -142,6 +142,8 @@ public class InvoiceGenerator {
 
     @Transactional
     public Invoice createDraftInvoiceFromProject(String contractuuid, String projectuuid, LocalDate month, String type) {
+        log.infof("createDraftInvoiceFromProject contract=%s project=%s month=%s type=%s",
+                contractuuid, projectuuid, month, type);
         Invoice invoice = null;
 
         if (!type.equals(ProjectSummaryType.RECEIPT.toString())) {
@@ -241,7 +243,29 @@ public class InvoiceGenerator {
             }
         }
         log.info("draftInvoice: "+invoice);
-        assert invoice != null;
-        return invoiceService.createDraftInvoice(invoice);
+
+        if(invoice == null) {
+            log.warn("No work found for given parameters; unable to create draft invoice");
+            Response response = Response
+                    .status(Response.Status.NOT_FOUND)
+                    .entity("No work found for specified project and month")
+                    .type(MediaType.TEXT_PLAIN)
+                    .build();
+            throw new WebApplicationException(response);
+        }
+
+        if(invoice.getInvoiceitems().isEmpty()) {
+            log.warn("Draft invoice has no line items");
+            Response response = Response
+                    .status(Response.Status.BAD_REQUEST)
+                    .entity("No invoice items found for specified project and month")
+                    .type(MediaType.TEXT_PLAIN)
+                    .build();
+            throw new WebApplicationException(response);
+        }
+
+        Invoice created = invoiceService.createDraftInvoice(invoice);
+        log.info("Persisted draft invoice: " + created.getUuid());
+        return created;
     }
 }
