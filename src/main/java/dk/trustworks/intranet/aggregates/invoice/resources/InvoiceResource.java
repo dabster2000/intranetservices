@@ -99,11 +99,35 @@ public class InvoiceResource {
     @POST
     @Path("/drafts")
     @Transactional
-    public Invoice createDraftInvoice(@QueryParam("contractuuid") String contractuuid, @QueryParam("projectuuid") String projectuuid, @QueryParam("month") String month, @QueryParam("type") String type) {
-        System.out.println("InvoiceResource.createDraftInvoice");
-        System.out.println("contractuuid = " + contractuuid + ", projectuuid = " + projectuuid + ", month = " + month + ", type = " + type);
-        LocalDate localDate = dateIt(month);
-        return invoiceGenerator.createDraftInvoiceFromProject(contractuuid, projectuuid, localDate, type);
+    public Response createDraftInvoice(@QueryParam("contractuuid") String contractuuid,
+                                       @QueryParam("projectuuid") String projectuuid,
+                                       @QueryParam("month") String month,
+                                       @QueryParam("type") String type) {
+        log.infof("createDraftInvoice contractuuid=%s, projectuuid=%s, month=%s, type=%s",
+                contractuuid, projectuuid, month, type);
+
+        if(contractuuid == null || contractuuid.isBlank() ||
+                projectuuid == null || projectuuid.isBlank() ||
+                month == null || month.isBlank() ||
+                type == null || type.isBlank()) {
+            log.warn("Missing required parameters when creating draft invoice");
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("contractuuid, projectuuid, month and type are required")
+                    .build();
+        }
+
+        try {
+            LocalDate localDate = dateIt(month);
+            Invoice invoice = invoiceGenerator.createDraftInvoiceFromProject(contractuuid, projectuuid, localDate, type);
+            log.info("Draft invoice created: " + invoice.getUuid());
+            return Response.ok(invoice).build();
+        } catch (WebApplicationException wae) {
+            log.warn("Draft invoice creation failed", wae);
+            throw wae;
+        } catch (Exception e) {
+            log.error("Failed to create draft invoice", e);
+            return Response.serverError().entity("Failed to create draft invoice").build();
+        }
     }
 
     @PUT

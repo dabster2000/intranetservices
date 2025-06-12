@@ -360,10 +360,12 @@ public class InvoiceService {
 
     @Transactional
     public Invoice createDraftInvoice(Invoice invoice) {
+        log.debug("Persisting draft invoice");
         invoice.setStatus(InvoiceStatus.DRAFT);
         invoice.setUuid(UUID.randomUUID().toString());
         invoice.getInvoiceitems().forEach(invoiceItem -> invoiceItem.setInvoiceuuid(invoice.uuid));
         Invoice.persist(invoice);
+        log.debug("Draft invoice persisted: " + invoice.getUuid());
         return invoice;
     }
 
