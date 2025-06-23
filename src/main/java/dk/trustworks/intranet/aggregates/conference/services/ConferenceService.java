@@ -20,15 +20,18 @@ public class ConferenceService {
     MailResource mailResource;
 
     public List<Conference> findAllConferences() {
+        log.debug("ConferenceService.findAllConferences");
         return Conference.listAll();
     }
 
     public Conference findConferenceBySlug(String slug) {
+        log.debug("ConferenceService.findConferenceBySlug: {}", slug);
         return Conference.<Conference>find("slug", slug).stream().findAny().orElse(null);
     }
 
     @Transactional
     public void createConference(Conference conference) {
+        log.info("ConferenceService.createConference: {}", conference.getName());
         conference.persist();
     }
 

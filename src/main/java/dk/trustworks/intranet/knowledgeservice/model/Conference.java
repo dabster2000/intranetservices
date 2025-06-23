@@ -15,6 +15,13 @@ public class Conference extends PanacheEntityBase {
     private String name;
     private String slug;
     private boolean active;
+    private String description;
+    @Column(name = "note_text")
+    private String noteText;
+    @Column(name = "consent_text")
+    private String consentText;
+    @Column(name = "thanks_text")
+    private String thanksText;
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER)
     @JoinColumn(name = "conferenceuuid")
     private List<ConferencePhase> phases;
