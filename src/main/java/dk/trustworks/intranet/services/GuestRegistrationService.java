@@ -1,12 +1,12 @@
 package dk.trustworks.intranet.services;
 
+import com.slack.api.methods.SlackApiException;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.model.GuestRegistration;
 import dk.trustworks.intranet.model.RegistrationRequest;
-import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.userservice.model.User;
-import com.slack.api.methods.SlackApiException;
-import io.quarkus.hibernate.orm.panache.Sort;
+import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
