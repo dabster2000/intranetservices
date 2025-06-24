@@ -86,3 +86,7 @@ The expense upload flow is documented in [docs/expense-processing.md](docs/expen
 ## Invoice Sorting
 
 The sorting options for invoices are documented in [docs/invoice-sorting.md](docs/invoice-sorting.md).
+
+## Guest Registration
+
+The guest registration endpoints are documented in [docs/guest-registration.md](docs/guest-registration.md).
