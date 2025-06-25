@@ -94,3 +94,11 @@ The guest registration endpoints are documented in [docs/guest-registration.md](
 ## Slack User Sync
 
 Slack user ids are synchronized nightly. Details in [docs/slack-user-sync.md](docs/slack-user-sync.md).
+
+## Draft Invoice Creation
+
+The improved draft invoice creation flow is documented in [docs/draft-invoice-creation.md](docs/draft-invoice-creation.md).
+
+## Draft Invoice API for Frontend
+
+See [docs/draft-invoice-frontend.md](docs/draft-invoice-frontend.md) for usage instructions and error handling guidelines.
