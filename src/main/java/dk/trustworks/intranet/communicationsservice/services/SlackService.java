@@ -4,6 +4,7 @@ import com.slack.api.Slack;
 import com.slack.api.methods.SlackApiException;
 import com.slack.api.methods.response.chat.ChatPostMessageResponse;
 import com.slack.api.methods.response.conversations.*;
+import com.slack.api.methods.response.users.UsersLookupByEmailResponse;
 import dk.trustworks.intranet.userservice.model.User;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -97,6 +98,18 @@ public class SlackService {
         }
 
         return response.isOk();
+    }
+
+    public String findUserIdByEmail(String email) throws IOException, SlackApiException {
+        Slack slack = Slack.getInstance();
+        log.info("Looking up Slack user for email " + email);
+        UsersLookupByEmailResponse response = slack.methods(adminSlackBotToken)
+                .usersLookupByEmail(r -> r.email(email));
+        if (!response.isOk()) {
+            log.warn("Slack lookup failed for " + email + ": " + response.getError());
+            return null;
+        }
+        return response.getUser() != null ? response.getUser().getId() : null;
     }
 
 }

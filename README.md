@@ -90,3 +90,7 @@ The sorting options for invoices are documented in [docs/invoice-sorting.md](doc
 ## Guest Registration
 
 The guest registration endpoints are documented in [docs/guest-registration.md](docs/guest-registration.md).
+
+## Slack User Sync
+
+Slack user ids are synchronized nightly. Details in [docs/slack-user-sync.md](docs/slack-user-sync.md).
