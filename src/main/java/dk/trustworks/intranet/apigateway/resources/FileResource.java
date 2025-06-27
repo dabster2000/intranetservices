@@ -47,7 +47,7 @@ public class FileResource {
 
     @GET
     @Path("/photos/{relateduuid}/jpg")
-    @Produces("image/webp")
+    @Produces("image/jpeg")
     public Response getImage(@PathParam("relateduuid") String relateduuid, @QueryParam("width") Integer width) {
         log.debug("Fetching photo " + relateduuid + (width != null ? " width=" + width : ""));
         byte[] imageBytes;
