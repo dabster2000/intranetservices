@@ -94,3 +94,7 @@ The guest registration endpoints are documented in [docs/guest-registration.md](
 ## Slack User Sync
 
 Slack user ids are synchronized nightly. Details in [docs/slack-user-sync.md](docs/slack-user-sync.md).
+
+## Photo Service
+
+Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](docs/photo-service.md).

@@ -9,6 +9,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.io.IOException;
 import java.util.List;
@@ -20,6 +21,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @RolesAllowed({"SYSTEM"})
+@JBossLog
 public class FileResource {
 
     @Inject
@@ -40,8 +42,14 @@ public class FileResource {
     @GET
     @Path("/photos/{relateduuid}/jpg")
     @Produces("image/webp")
-    public Response getImage(@PathParam("relateduuid") String relateduuid) {
-        byte[] imageBytes = photoService.findPhotoByRelatedUUID(relateduuid).getFile(); // get the byte array for the image
+    public Response getImage(@PathParam("relateduuid") String relateduuid, @QueryParam("width") Integer width) {
+        log.debug("Fetching photo " + relateduuid + (width != null ? " width=" + width : ""));
+        byte[] imageBytes;
+        if(width != null) {
+            imageBytes = photoService.getResizedPhoto(relateduuid, width);
+        } else {
+            imageBytes = photoService.findPhotoByRelatedUUID(relateduuid).getFile();
+        }
         return Response.ok(imageBytes).build();
     }
 
