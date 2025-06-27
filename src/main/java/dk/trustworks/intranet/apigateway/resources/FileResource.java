@@ -35,8 +35,14 @@ public class FileResource {
 
     @GET
     @Path("/photos/{relateduuid}")
-    public File findPhotoByRelatedUUID(@PathParam("relateduuid") String relateduuid) {
-        return photoService.findPhotoByRelatedUUID(relateduuid);
+    public File findPhotoByRelatedUUID(@PathParam("relateduuid") String relateduuid,
+                                       @QueryParam("width") Integer width) {
+        log.debug("Finding photo " + relateduuid + (width != null ? " width=" + width : ""));
+        File photo = photoService.findPhotoByRelatedUUID(relateduuid);
+        if (width != null) {
+            photo.setFile(photoService.getResizedPhoto(relateduuid, width));
+        }
+        return photo;
     }
 
     @GET
