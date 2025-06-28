@@ -1,0 +1,147 @@
+quarkus:
+  application:
+    name: trustworks-intranet-dev
+  datasource:
+    db-kind: mariadb
+    jdbc:
+      url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      driver: org.mariadb.jdbc.Driver
+      min-size: 5
+      max-size: 10
+      idle-removal-interval: PT1M
+    username: ${USERNAME:root}
+    password: ${PASSWORD:1606}
+  hibernate-orm:
+    statistics: true
+  flyway:
+    migrate-at-start: true
+    baseline-on-migrate: true
+    baseline-version: 1.0
+    baseline-description: initial baseline
+  swagger-ui:
+    enable: true
+    always-include: true
+  mailer:
+    auth-methods: LOGIN
+    from: no-reply@trustworks.dk
+    host: ${SMTPSERVER:email-smtp.eu-west-1.amazonaws.com}
+    port: 587
+    start-tls: REQUIRED
+    username: ${MAILUSERNAME:xx}
+    password: ${MAILPASSWORD:xx}
+    mock: false
+  http:
+    limits:
+      max-body-size: 40M
+      max-form-attribute-size: 40M
+    access-log:
+      enabled: true
+      pattern: common #"...traceId=%{X,traceId} spanId=%{X,spanId}" #common
+    port: 9093 #registry.hub.docker.com/
+  smallrye-health:
+    root-path: /health
+  log:
+    level: INFO
+    category:
+      "dk.trustworks":
+        level: DEBUG
+      "io.quarkus.http":
+        level: DEBUG
+      "org.jboss.resteasy.resteasy_client":
+        level: DEBUG
+      "io.quarkus.smallrye.health":
+        level: WARN  # This will stop logging health check INFO level messages
+      #"io.opentelemetry":
+      #  level: DEBUG
+    console:
+      enable: true
+      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
+      #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
+      level: DEBUG
+  rest-client:
+    openai-api:
+      url: https://api.openai.com
+      scope: jakarta.inject.Singleton
+      #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
+  #otel:
+  #  exporter:
+  #    otlp:
+  #      endpoint: http://jaeger:4317 #4317
+  cache:
+    caffeine:
+      "employee-data-per-month-cache":
+        expire-after-write: 3H
+      employee-budgets:
+        expire-after-write: 30M  # Expire after 30 minutes
+      employee-availability:
+        expire-after-write: 30M  # Expire after 30 minutes
+      employee-revenue:
+        expire-after-write: 30M
+  s3:
+    endpoint-override: http://localhost:9000   # MinIO API endpoint
+    path-style-access: true                    # MinIO expects /bucket/key
+    sync-client:
+      type: APACHE
+    aws:
+      region: us-east-1                        # any region string is fine
+      credentials:
+        type: STATIC
+        static-provider:
+          access-key-id: minioadmin
+          secret-access-key: minioadmin
+vertx:
+  worker-pool-size: 10
+mp:
+  jwt:
+    verify:
+      issuer: https://trustworks.dk
+      publickey:
+        location: META-INF/resources/publicKey.pem
+slack:
+  slackApi: https://slack.com/api
+  motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
+  adminSlackBotToken: ${ADMINSLACKBOTTOKEN:xx}
+invoice-generator:
+  apikey: ${INV_GENERATOR:xx}
+e-conomics:
+  xAppSecretToken: ${XAPPSERCREETTOKEN:none}
+  xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
+  journal-number: ${JOURNALNUMBER:15}
+  expense-journal-number: ${EXPENSEJOURNALNUMBER:15}
+currencyapi:
+  key: ${API_KEY:xx}
+bucket:
+  expenses: expensefiles
+  files: trustworksfiles
+claid:
+  ai:
+    apikey: ${CLAID_APIKEY:xx}
+edenai:
+  api:
+    key: ${EDENAI_APIKEY:xx}
+openai:
+  api:
+    key: ${OPENAI_APIKEY:xx}
+  model: gpt-4o-mini
+dk:
+  trustworks:
+    intranet:
+      #fileservice:
+      # network:
+      #PhotoAPI/mp-rest/url: https://api.claid.ai
+      #PhotoAPI/mp-rest/providers=dk.trustworks.intranet.network.BearerTokenFilter:
+      expenseservice:
+        remote:
+          EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
+          EconomicsAPIFile/mp-rest/url: https://restapi.e-conomic.com
+          EconomicsAPIAccount/mp-rest/url: https://restapi.e-conomic.com
+      aggregates:
+        invoice:
+          network:
+            InvoiceAPI/mp-rest/url: https://invoice-generator.com
+            CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
+hibernate:
+  jdbc:
+    batch_size: 50
+  order_inserts: true
+  order_updates: true
