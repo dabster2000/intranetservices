@@ -35,9 +35,6 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
-import net.coobird.thumbnailator.Thumbnails;
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -147,26 +144,49 @@ public class PhotoService {
     }
 
     private byte[] resizeWithClaid(byte[] data, int width) {
-        log.debug("Resizing image locally to width=" + width);
-        try(ByteArrayInputStream bais = new ByteArrayInputStream(data);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+        log.debug("Resizing image with Claid to width=" + width);
+        try {
+            HttpClient httpClient = HttpClientBuilder.create().build();
+            HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.setBoundary("Boundary-Unique-Identifier");
+            builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
+            builder.addBinaryBody(
+                    "file",
+                    new ByteArrayInputStream(data),
+                    ContentType.APPLICATION_OCTET_STREAM,
+                    "photo"
+            );
 
-            BufferedImage original = ImageIO.read(bais);
-            if(original == null) {
-                log.error("Could not decode image for resizing");
-                return data;
-            }
+            String jsonData = "{" +
+                    "\"operations\": {" +
+                    "\"restorations\": {" +
+                    "\"upscale\": \"faces\"," +
+                    "\"polish\": false" +
+                    "}," +
+                    "\"resizing\": {" +
+                    "\"width\": " + width + "," +
+                    "\"height\": " + width + "," +
+                    "\"fit\": {\"crop\": \"smart\"}" +
+                    "}" +
+                    "}," +
+                    "\"output\": {" +
+                    "\"format\": \"webp\"" +
+                    "}" +
+                    "}";
+            builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
 
-            int newHeight = (int) (((double) width / original.getWidth()) * original.getHeight());
-            Thumbnails.of(original)
-                    .size(width, newHeight)
-                    .outputFormat("jpg")
-                    .toOutputStream(baos);
-            byte[] resized = baos.toByteArray();
-            log.debug("Local resize complete, size=" + getFileSize(resized) + "KB");
+            HttpEntity multipart = builder.build();
+            uploadFile.setEntity(multipart);
+            uploadFile.setHeader("Authorization", "Bearer " + claidApiKey);
+
+            ResponseHandler<String> responseHandler = new BasicResponseHandler();
+            String response = httpClient.execute(uploadFile, responseHandler);
+            byte[] resized = downloadImageFromJson(response);
+            log.debug("Claid resize complete, size=" + getFileSize(resized) + "KB");
             return resized;
-        } catch (IOException e) {
-            log.error("Local resize failed", e);
+        } catch (Exception e) {
+            log.error("Claid resize failed", e);
             return data;
         }
     }
