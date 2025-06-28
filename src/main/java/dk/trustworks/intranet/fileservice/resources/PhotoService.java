@@ -22,6 +22,7 @@ import org.apache.http.entity.mime.HttpMultipartMode;
 import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.impl.client.BasicResponseHandler;
 import org.apache.http.impl.client.HttpClientBuilder;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -158,22 +159,21 @@ public class PhotoService {
                     "photo"
             );
 
-            String jsonData = "{" +
-                    "\"operations\": {" +
-                    "\"restorations\": {" +
-                    "\"upscale\": \"faces\"," +
-                    "\"polish\": false" +
-                    "}," +
-                    "\"resizing\": {" +
-                    "\"width\": " + width + "," +
-                    "\"height\": " + width + "," +
-                    "\"fit\": {\"crop\": \"smart\"}" +
-                    "}" +
-                    "}," +
-                    "\"output\": {" +
-                    "\"format\": \"webp\"" +
-                    "}" +
-                    "}";
+            // Build JSON body programmatically to keep it consistent with other Claid requests
+            ObjectNode root = objectMapper.createObjectNode();
+            ObjectNode operations = root.putObject("operations");
+            ObjectNode restorations = operations.putObject("restorations");
+            restorations.put("upscale", "faces");
+            restorations.put("polish", false);
+            ObjectNode resizing = operations.putObject("resizing");
+            resizing.put("width", width);
+            resizing.put("height", width);
+            ObjectNode fit = resizing.putObject("fit");
+            fit.put("crop", "smart");
+            ObjectNode output = root.putObject("output");
+            output.put("format", "webp");
+
+            String jsonData = objectMapper.writeValueAsString(root);
             builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
 
             HttpEntity multipart = builder.build();
