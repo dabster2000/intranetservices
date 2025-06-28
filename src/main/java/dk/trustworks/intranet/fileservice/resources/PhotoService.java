@@ -3,6 +3,8 @@ package dk.trustworks.intranet.fileservice.resources;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.fileservice.model.File;
+import io.quarkus.cache.CacheKey;
+import io.quarkus.cache.CacheResult;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
@@ -20,6 +22,7 @@ import org.apache.http.entity.mime.HttpMultipartMode;
 import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.impl.client.BasicResponseHandler;
 import org.apache.http.impl.client.HttpClientBuilder;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -30,12 +33,14 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 import java.util.*;
 
 @ApplicationScoped
@@ -72,37 +77,32 @@ public class PhotoService {
     ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder().proxyConfiguration(proxyConfig.build());
     S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
 
+    @CacheResult(cacheName = "photo-cache")
+    byte[] loadFromS3(@CacheKey String uuid) {
+        log.debug("Fetching photo from S3 uuid=" + uuid);
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(uuid).build(), ResponseTransformer.toOutputStream(baos));
+            return baos.toByteArray();
+        } catch (S3Exception e) {
+            log.error("Error loading " + uuid + " from S3: " + e.awsErrorDetails().errorMessage(), e);
+            return new byte[0];
+        }
+    }
+
     public File findPhotoByType(String type) {
+        log.debug("findPhotoByType type=" + type);
         List<File> photos = File.find("type like ?1", type).list();
         if(!photos.isEmpty()) {
             File photo = photos.get(new Random().nextInt(photos.size()));
-            try{
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(photo.getUuid()).build(), ResponseTransformer.toOutputStream(baos));
-                byte[] file = baos.toByteArray();
-                photo.setFile(file);
-            }  catch (S3Exception e) {
-                //log.error("Error loading "+photo.getUuid()+" from S3: "+e.awsErrorDetails().errorMessage(), e);
-            } catch (Exception e) {
-                log.error(e.getMessage());
-            }
+            photo.setFile(loadFromS3(photo.getUuid()));
             return photo;
         } else {
             log.debug("Is not present");
             File newPhoto = new File(UUID.randomUUID().toString(), UUID.randomUUID().toString(), "PHOTO");
             QuarkusTransaction.run(() -> File.persist(newPhoto));
 
-            try{
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                s3.getObject(GetObjectRequest.builder().bucket(bucketName).key("c297e216-e5cf-437d-9a1f-de840c7557e9").build(), ResponseTransformer.toOutputStream(baos));
-                byte[] file = baos.toByteArray();
-
-                newPhoto.setFile(file);
-            }  catch (S3Exception e) {
-                //log.error("Error loading "+type+" from S3: "+e.awsErrorDetails().errorMessage(), e);
-            } catch (Exception e) {
-                log.error(e.getMessage());
-            }
+            newPhoto.setFile(loadFromS3("c297e216-e5cf-437d-9a1f-de840c7557e9"));
             return newPhoto;
         }
     }
@@ -112,40 +112,20 @@ public class PhotoService {
     }
 
     public File findPhotoByRelatedUUID(String relateduuid) {
+        log.debug("findPhotoByRelatedUUID uuid=" + relateduuid);
         Optional<File> photo = File.find("relateduuid like ?1 AND type like 'PHOTO'", relateduuid).firstResultOptional();
         if(photo.isPresent()) {
-            try {
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(photo.get().getUuid()).build(), ResponseTransformer.toOutputStream(baos));
-                byte[] file = baos.toByteArray();
-                photo.get().setFile(file);
-
-                long fileSizeKB = getFileSize(file);
-                String mimeType = detectMimeType(file);
-
-                if (!mimeType.equals("image/webp")) {
-                    return photo.get();
-                }
-            } catch (S3Exception e) {
-                log.error("Error loading "+relateduuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
-            } catch (Exception e) {
-                log.error(e.getMessage());
+            byte[] file = loadFromS3(photo.get().getUuid());
+            photo.get().setFile(file);
+            String mimeType = detectMimeType(file);
+            if (!mimeType.equals("image/webp")) {
+                return photo.get();
             }
         }
         return photo.orElseGet(() -> {
             File newPhoto = new File(UUID.randomUUID().toString(), relateduuid, "PHOTO");
             QuarkusTransaction.run(() -> File.persist(newPhoto));
-            try{
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                s3.getObject(GetObjectRequest.builder().bucket(bucketName).key("c297e216-e5cf-437d-9a1f-de840c7557e9").build(), ResponseTransformer.toOutputStream(baos));
-                byte[] file = baos.toByteArray();
-
-                newPhoto.setFile(file);
-            }  catch (S3Exception e) {
-                log.error("Error loading default 'c297e216-e5cf-437d-9a1f-de840c7557e9' from S3: "+e.awsErrorDetails().errorMessage(), e);
-            } catch (Exception e) {
-                log.error(e.getMessage());
-            }
+            newPhoto.setFile(loadFromS3("c297e216-e5cf-437d-9a1f-de840c7557e9"));
             return newPhoto;
         });
     }
@@ -162,6 +142,102 @@ public class PhotoService {
 
     private long getFileSize(byte[] fileData) {
         return fileData.length / 1024; // Convert bytes to kilobytes
+    }
+
+    private byte[] resizeWithClaid(byte[] data, int width) {
+        log.debug("Resizing image with Claid to width=" + width);
+        try {
+            HttpClient httpClient = HttpClientBuilder.create().build();
+            HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
+            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
+            builder.setBoundary("Boundary-Unique-Identifier");
+            builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
+            builder.addBinaryBody(
+                    "file",
+                    new ByteArrayInputStream(data),
+                    ContentType.APPLICATION_OCTET_STREAM,
+                    "photo"
+            );
+
+            // Build JSON body programmatically to keep it consistent with other Claid requests
+            ObjectNode root = objectMapper.createObjectNode();
+            ObjectNode operations = root.putObject("operations");
+            ObjectNode restorations = operations.putObject("restorations");
+            restorations.put("upscale", "faces");
+            restorations.put("polish", false);
+            ObjectNode resizing = operations.putObject("resizing");
+            resizing.put("width", width);
+            resizing.put("height", width);
+            ObjectNode fit = resizing.putObject("fit");
+            fit.put("crop", "smart");
+            ObjectNode output = root.putObject("output");
+            output.put("format", "webp");
+
+            String jsonData = objectMapper.writeValueAsString(root);
+            builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
+
+            HttpEntity multipart = builder.build();
+            uploadFile.setEntity(multipart);
+            uploadFile.setHeader("Authorization", "Bearer " + claidApiKey);
+
+            ResponseHandler<String> responseHandler = new BasicResponseHandler();
+            String response = httpClient.execute(uploadFile, responseHandler);
+            byte[] resized = downloadImageFromJson(response);
+            log.debug("Claid resize complete, size=" + getFileSize(resized) + "KB");
+            return resized;
+        } catch (Exception e) {
+            log.error("Claid resize failed", e);
+            return data;
+        }
+    }
+
+    private boolean s3ObjectExists(String key) {
+        log.debug("Checking S3 for " + key);
+        try {
+            s3.headObject(HeadObjectRequest.builder().bucket(bucketName).key(key).build());
+            log.debug("S3 hit for " + key);
+            return true;
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) return false;
+            log.error("Error checking " + key + " on S3: " + e.awsErrorDetails().errorMessage(), e);
+            return false;
+        }
+    }
+
+    private String resizedKey(String uuid, int width) {
+        return "resized/" + width + "/" + uuid;
+    }
+
+    private void saveToS3Async(String key, byte[] data) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                s3.putObject(PutObjectRequest.builder().bucket(bucketName).key(key).build(),
+                        RequestBody.fromBytes(data));
+                log.debug("Stored resized photo in S3 key=" + key);
+            } catch (Exception e) {
+                log.error("Failed to store resized photo in S3 key=" + key, e);
+            }
+        });
+    }
+
+    @CacheResult(cacheName = "photo-resize-cache")
+    public byte[] getResizedPhoto(@CacheKey String relateduuid, @CacheKey int width) {
+        String key = resizedKey(relateduuid, width);
+        log.debug("Retrieving resized photo " + key);
+
+        if (s3ObjectExists(key)) {
+            return loadFromS3(key);
+        }
+
+        File photo = findPhotoByRelatedUUID(relateduuid);
+        try {
+            byte[] resized = resizeWithClaid(photo.getFile(), width);
+            saveToS3Async(key, resized);
+            return resized;
+        } catch (Exception e) {
+            log.error("Error resizing photo", e);
+            return photo.getFile();
+        }
     }
 
     private void update(File photo) {

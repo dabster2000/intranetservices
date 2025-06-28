@@ -120,14 +120,26 @@ public class PublicResource {
 
     @GET
     @Path("/files/photos/{relateduuid}")
-    public File findPhotoByRelatedUUID(@PathParam("relateduuid") String relateduuid) {
-        return photoAPI.findPhotoByRelatedUUID(relateduuid);
+    public File findPhotoByRelatedUUID(@PathParam("relateduuid") String relateduuid,
+                                       @QueryParam("width") Integer width) {
+        log.debug("Public photo request " + relateduuid + (width != null ? " width=" + width : ""));
+        File photo = photoAPI.findPhotoByRelatedUUID(relateduuid);
+        if (width != null) {
+            photo.setFile(photoAPI.getResizedPhoto(relateduuid, width));
+        }
+        return photo;
     }
 
     @GET
     @Path("/users/{useruuid}/photo")
-    public File findPhotoByUserUUID(@PathParam("useruuid") String useruuid) {
-        return photoAPI.findPhotoByRelatedUUID(useruuid);
+    public File findPhotoByUserUUID(@PathParam("useruuid") String useruuid,
+                                    @QueryParam("width") Integer width) {
+        log.debug("Public user photo request " + useruuid + (width != null ? " width=" + width : ""));
+        File photo = photoAPI.findPhotoByRelatedUUID(useruuid);
+        if (width != null) {
+            photo.setFile(photoAPI.getResizedPhoto(useruuid, width));
+        }
+        return photo;
     }
 
     @GET

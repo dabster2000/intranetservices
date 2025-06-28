@@ -102,3 +102,7 @@ The improved draft invoice creation flow is documented in [docs/draft-invoice-cr
 ## Draft Invoice API for Frontend
 
 See [docs/draft-invoice-frontend.md](docs/draft-invoice-frontend.md) for usage instructions and error handling guidelines.
+
+## Photo Service
+
+Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](docs/photo-service.md). Images are resized through the Claid API.
