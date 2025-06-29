@@ -31,3 +31,6 @@ Request counts and durations can also be captured with Micrometer. Add the
 `quarkus-micrometer` extension and annotate resources with `@Timed` to record
 timings automatically. For custom metrics inject a `MeterRegistry` and use
 counters or timers per resource path.
+
+For detailed examples of how client applications can query the `/api-usage-logs`
+REST API, see [api-usage-log-client-guide.md](api-usage-log-client-guide.md).
