@@ -24,6 +24,7 @@ public class ApiUsageLoggingFilter implements ContainerRequestFilter, ContainerR
     @Override
     public void filter(ContainerRequestContext requestContext) throws IOException {
         requestContext.setProperty("apiUsageStartTime", System.currentTimeMillis());
+        log.debugf("Started request %s %s", requestContext.getMethod(), requestContext.getUriInfo().getPath());
     }
 
     @Override

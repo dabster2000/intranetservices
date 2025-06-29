@@ -34,3 +34,5 @@ counters or timers per resource path.
 
 For detailed examples of how client applications can query the `/api-usage-logs`
 REST API, see [api-usage-log-client-guide.md](api-usage-log-client-guide.md).
+
+The Flyway migration script `V67__Create_api_usage_log_table.sql` has been tested with MariaDB 10.11 and MySQL 8.0.
