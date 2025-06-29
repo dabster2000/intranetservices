@@ -106,3 +106,10 @@ See [docs/draft-invoice-frontend.md](docs/draft-invoice-frontend.md) for usage i
 ## Photo Service
 
 Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](docs/photo-service.md). Images are resized through the Claid API.
+
+## API Usage Logging
+
+The centralized request logging and the `/api-usage-logs` endpoint are described
+in [docs/api-usage-logging.md](docs/api-usage-logging.md). Client developers can
+learn how to query the log API in
+[docs/api-usage-log-client-guide.md](docs/api-usage-log-client-guide.md).
