@@ -113,3 +113,8 @@ The centralized request logging and the `/api-usage-logs` endpoint are described
 in [docs/api-usage-logging.md](docs/api-usage-logging.md). Client developers can
 learn how to query the log API in
 [docs/api-usage-log-client-guide.md](docs/api-usage-log-client-guide.md).
+
+## Voucher Upload Errors
+
+Information about the new voucher upload error logging can be found in
+[docs/voucher-upload-error-logging.md](docs/voucher-upload-error-logging.md).

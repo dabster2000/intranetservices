@@ -62,11 +62,12 @@ public class EconomicsInvoiceService {
                 log.info("voucher posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", voucherNumber: " + voucherNumber);
                 return sendFile(invoice, voucher, voucherNumber);
             } else {
-                log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", response: " + response);
+                String errorBody = response.readEntity(String.class);
+                log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", status: " + response.getStatus() + ", body: " + errorBody);
                 return response;
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("Failed to send voucher", e);
             throw new RuntimeException(e);
         }
     }
