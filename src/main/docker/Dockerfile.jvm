@@ -97,7 +97,9 @@
 #ENTRYPOINT [ "/opt/jboss/container/java/run/run-java.sh" ]
 
 # Use the OpenJDK 21 base image
-FROM registry.access.redhat.com/ubi8/openjdk-21:1.18
+FROM amazoncorretto:21
+#FROM registry.access.redhat.com/ubi9/openjdk-21:1.21
+#FROM registry.access.redhat.com/ubi8/openjdk-21:1.18
 
 ENV LANGUAGE='en_US:en'
 
@@ -127,8 +129,12 @@ EXPOSE 8080
 USER 185
 
 # Add New Relic and other JVM options
-ENV JAVA_OPTS="-Xmx2g -Xms1g -Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+#ENV JAVA_OPTS="-Xmx2g -Xms1g -Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
 ENV JAVA_APP_JAR="/deployments/quarkus-run.jar"
 
 # Set the entry point to run the application
-ENTRYPOINT [ "/opt/jboss/container/java/run/run-java.sh" ]
+#ENTRYPOINT [ "/opt/jboss/container/java/run/run-java.sh" ]
+
+ENV JAVA_OPTS="-Xmx2g -Xms1g"
+# keep or tweak as you like
+ENTRYPOINT ["sh","-c","exec java $JAVA_OPTS -Dquarkus.http.host=0.0.0.0 -jar /deployments/quarkus-run.jar"]
