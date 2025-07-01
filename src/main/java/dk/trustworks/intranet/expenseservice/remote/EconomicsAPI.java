@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.expenseservice.remote;
 
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
+import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper;
 import org.jboss.resteasy.annotations.providers.multipart.MultipartForm;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
@@ -8,6 +10,7 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 
 @RegisterRestClient
+@RegisterProvider(EconomicsErrorMapper.class)
 @Produces("application/json")
 @Path("/journals")
 public interface EconomicsAPI extends AutoCloseable {

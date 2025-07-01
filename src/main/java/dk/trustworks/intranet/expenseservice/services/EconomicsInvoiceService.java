@@ -99,7 +99,7 @@ public class EconomicsInvoiceService {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        System.out.println("fileResponse = " + fileResponse);
+        log.debug("fileResponse = " + fileResponse);
         if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
             log.error("file not posted successfully to e-conomics. Expenseuuid: " + invoice.getUuid() + ", voucher: " + voucher.getJournal().getJournalNumber() + ", response: " + fileResponse);
         }
@@ -107,15 +107,15 @@ public class EconomicsInvoiceService {
     }
 
     public Voucher buildJSONRequest(Invoice invoice, Journal journal, String text, IntegrationKey.IntegrationKeyValue integrationKeyValue){
-        System.out.println("EconomicsInvoiceService.buildJSONRequest");
+        log.debug("EconomicsInvoiceService.buildJSONRequest");
         ContraAccount contraAccount = new ContraAccount(integrationKeyValue.invoiceAccountNumber());
-        System.out.println("contraAccount = " + contraAccount.getAccountNumber());
+        log.debug("contraAccount = " + contraAccount.getAccountNumber());
         ExpenseAccount account = new ExpenseAccount(integrationKeyValue.invoiceAccountNumber());
-        System.out.println("account = " + account.getAccountNumber());
+        log.debug("account = " + account.getAccountNumber());
         String s = DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()).getYear() + "/" + DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()).plusYears(1).getYear();
-        System.out.println("s = " + s);
+        log.debug("s = " + s);
         AccountingYear accountingYear = new AccountingYear(s);//new AccountingYear(DateUtils.getCurrentFiscalStartDate().getYear()+"/"+DateUtils.getCurrentFiscalStartDate().plusYears(1).getYear());
-        System.out.println("accountingYear = " + accountingYear.getYear());
+        log.debug("accountingYear = " + accountingYear.getYear());
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 
