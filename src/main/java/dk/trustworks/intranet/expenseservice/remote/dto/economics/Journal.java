@@ -6,12 +6,12 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({
-        "expenseJournalNumber",
+        "journalNumber",
         "self"
 })
 public class Journal {
 
-    @JsonProperty("expenseJournalNumber")
+    @JsonProperty("journalNumber")
     public int journalNumber;
 
     @JsonProperty("self")
@@ -25,12 +25,12 @@ public class Journal {
         this.journalNumber = journalNumber;
     }
 
-    @JsonProperty("expenseJournalNumber")
+    @JsonProperty("journalNumber")
     public int getJournalNumber() {
         return journalNumber;
     }
 
-    @JsonProperty("expenseJournalNumber")
+    @JsonProperty("journalNumber")
     public void setJournalNumber(int journalNumber) {
         this.journalNumber = journalNumber;
     }
@@ -48,8 +48,8 @@ public class Journal {
     @Override
     public String toString() {
         return "Journal{" +
-                "expenseJournalNumber='" + journalNumber +
-                '}';
+                "journalNumber='" + journalNumber +
+                "'}";
     }
 }
 

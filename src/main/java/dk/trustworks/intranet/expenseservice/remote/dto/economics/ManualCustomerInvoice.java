@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({
+        "customer",
         "account",
         "text",
         "amount",
@@ -15,6 +16,8 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 })
 public class ManualCustomerInvoice {
 
+    @JsonProperty("customer")
+    public Customer customer;
     @JsonProperty("account")
     public ExpenseAccount account;
     @JsonProperty("text")
@@ -27,20 +30,32 @@ public class ManualCustomerInvoice {
     public String date;
     @JsonProperty("customerInvoiceNumber")
     public int customerInvoiceNumber;
-  //  @JsonProperty("journalEntryNumber")
-  //  public int journalEntryNumber;
+    //  @JsonProperty("journalEntryNumber")
+    //  public int journalEntryNumber;
 
     public ManualCustomerInvoice(){
 
     }
-    public ManualCustomerInvoice(ExpenseAccount account, int customerInvoiceNumber, String text, double amount, ContraAccount contraAccount, String date) {
+    public ManualCustomerInvoice(ExpenseAccount account, int customerInvoiceNumber, String text, double amount,
+                                 ContraAccount contraAccount, String date, Customer customer) {
         this.account = account;
         this.customerInvoiceNumber = customerInvoiceNumber;
         this.text = text;
         this.amount = amount;
         this.contraAccount = contraAccount;
         this.date = date;
+        this.customer = customer;
     //    this.journalEntryNumber = journalEntryNumber;
+    }
+
+    @JsonProperty("customer")
+    public Customer getCustomer() {
+        return customer;
+    }
+
+    @JsonProperty("customer")
+    public void setCustomer(Customer customer) {
+        this.customer = customer;
     }
 
     @JsonProperty("account")
@@ -122,6 +137,7 @@ public class ManualCustomerInvoice {
                 ", text='" + text + '\'' +
                 ", amount='" + amount + '\'' +
                 ", contraAccount='" + contraAccount + '\'' +
+                ", customer='" + customer + '\'' +
                 ", date='" + date +
                 '}';
     }
