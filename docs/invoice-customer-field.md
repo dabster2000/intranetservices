@@ -1,5 +1,7 @@
-# Manual Invoice Customer Field
+# Manual Invoice Ledger Entry
 
-`ManualCustomerInvoice` includes a new `customer` property with the customer number used by e‑conomics.
-`EconomicsInvoiceService.buildJSONRequest` populates this field from `Invoice.referencenumber` and logs the created entry.
-The `Journal` DTO now serializes `journalNumber` instead of `expenseJournalNumber`.
+`ManualCustomerInvoice` no longer contains a `customer` object. Each entry is posted using only the `contraAccount` specified in the integration settings.
+
+`EconomicsInvoiceService.buildJSONRequest` logs the created invoice entry and relies on the configured contra account to satisfy the e‑conomics requirement that either `customer` or `contraAccount` is present.
+
+The `Journal` DTO still serializes the property as `journalNumber`.
