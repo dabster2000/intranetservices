@@ -1,6 +1,7 @@
 # API Usage Logging
 
 The `ApiUsageLoggingFilter` records every REST request. It logs the HTTP method, the request path and the username resolved by `HeaderInterceptor`.
+When neither an `X-Requested-By` header nor a JWT token is present, the interceptor attempts to read a `username` query parameter. If no identifier can be found, the username `anonymous` is used.
 
 To correlate multiple requests used to build the same page, the filter also logs the `Referer` header when present. Frontend clients may instead send an `X-View-Id` header to explicitly group requests belonging to a single view.
 

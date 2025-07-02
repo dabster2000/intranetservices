@@ -19,6 +19,10 @@ public class ApiUsageLogService {
 
     @Transactional
     public void record(String username, String method, String path, String viewId, long duration) {
+        if (username == null || username.isEmpty()) {
+            log.debug("Username missing when recording API usage; defaulting to anonymous");
+            username = "anonymous";
+        }
         log.debugf("record user=%s method=%s path=%s viewId=%s duration=%dms", username, method, path, viewId, duration);
         ApiUsageLog logEntry = new ApiUsageLog();
         logEntry.setTimestamp(LocalDateTime.now());
