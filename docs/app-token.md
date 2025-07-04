@@ -10,6 +10,18 @@ curl -X POST http://localhost:8080/apps \
   -d '{"name":"demo"}'
 ```
 
+## List Apps for a User
+```bash
+curl http://localhost:8080/apps?user=<userUuid> \
+  -H "Authorization: Bearer <accessToken>"
+```
+
+## Create a Refresh Token
+```bash
+curl -X POST http://localhost:8080/apps/{appUuid}/tokens \
+  -H "Authorization: Bearer <accessToken>"
+```
+
 ## Refresh a Token
 ```bash
 curl -X POST http://localhost:8080/auth/refresh \

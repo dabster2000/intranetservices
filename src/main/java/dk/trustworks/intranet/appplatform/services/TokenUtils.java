@@ -14,7 +14,7 @@ public class TokenUtils {
     public String issueAppAccessToken(String appUuid, List<String> roles, long expiresInSeconds) {
         long iat = System.currentTimeMillis() / 1000;
         long exp = iat + expiresInSeconds;
-        log.debug("Issuing access token for app=" + appUuid + " exp=" + exp);
+        log.debug("Issuing access token for app=" + appUuid + " exp=" + exp + " roles=" + roles);
         return Jwt.claims()
                 .issuedAt(iat)
                 .expiresAt(exp)

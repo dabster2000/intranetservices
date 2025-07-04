@@ -13,6 +13,7 @@ public class AppTokenCleanupJob {
 
     @Scheduled(cron = "0 0 3 * * ?")
     public void deleteExpiredTokens() {
+        log.debug("Running AppToken cleanup job");
         long deleted = AppToken.delete("revoked = true and expiresAt < ?1", LocalDateTime.now());
         log.info("Cleaned up " + deleted + " expired revoked tokens");
     }

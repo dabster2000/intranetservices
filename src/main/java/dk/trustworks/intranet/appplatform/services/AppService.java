@@ -6,9 +6,9 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
-import org.password4j.Argon2Function;
-import org.password4j.Hash;
-import org.password4j.Password;
+import com.password4j.Argon2Function;
+import com.password4j.Hash;
+import com.password4j.Password;
 import com.password4j.types.Argon2;
 
 import java.time.LocalDateTime;
@@ -44,9 +44,11 @@ public class AppService {
 
     public List<App> listAppsForUser(String userUuid) {
         log.debug("Fetching apps for user=" + userUuid);
-        return em.createQuery("select a from app a join app_user_role r on a.uuid=r.appUuid where r.userUuid=?1", App.class)
+        List<App> apps = em.createQuery("select a from app a join app_user_role r on a.uuid=r.appUuid where r.userUuid=?1", App.class)
                 .setParameter(1, userUuid)
                 .getResultList();
+        log.debug("Found " + apps.size() + " apps for user=" + userUuid);
+        return apps;
     }
 
     @Transactional
@@ -65,6 +67,7 @@ public class AppService {
         token.setExpiresAt(LocalDateTime.now().plusSeconds(refreshExpiresIn));
         token.setRevoked(false);
         token.persist();
+        log.debug("Refresh token hash=" + token.getTokenHash());
         log.info("Created refresh token " + token.getUuid() + " for app " + appUuid);
         return rawRefresh;
     }
@@ -75,6 +78,8 @@ public class AppService {
         if (token != null) {
             token.setRevoked(true);
             log.info("Revoked token " + token.getUuid());
+        } else {
+            log.warn("Attempted to revoke non-existing token " + tokenId);
         }
     }
 }
