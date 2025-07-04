@@ -1,6 +1,8 @@
 # App & Token API
 
 The `/apps` endpoints manage applications and their access tokens. All calls require an `Authorization: Bearer <accessToken>` header.
+Refresh tokens are opaque UUID strings that are only returned once at creation time. The plain value is never persisted.
+Every call to `POST /auth/refresh` returns a new short lived access token **and** a new refresh token, invalidating the previous one (rotation).
 
 ## Create an App
 ```bash

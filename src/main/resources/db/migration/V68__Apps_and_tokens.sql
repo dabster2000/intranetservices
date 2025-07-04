@@ -19,7 +19,8 @@ CREATE TABLE app_token (
     revoked BOOLEAN NOT NULL DEFAULT FALSE,
     created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP NOT NULL,
+    active_appuuid VARCHAR(36) GENERATED ALWAYS AS (CASE WHEN revoked = 0 THEN appuuid END) VIRTUAL,
     CONSTRAINT fk_app_token_app FOREIGN KEY (appuuid) REFERENCES app(uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE UNIQUE INDEX ux_app_token_active ON app_token(appuuid) WHERE revoked = 0;
+CREATE UNIQUE INDEX ux_app_token_active ON app_token(active_appuuid);
