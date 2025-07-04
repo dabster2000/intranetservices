@@ -44,6 +44,7 @@ public class AppResource {
     @Transactional
     @RolesAllowed({"DEVELOPER","APP_ADMIN"})
     public Map<String, String> createToken(@PathParam("app") String appUuid) {
+        log.info("Creating token for app=" + appUuid);
         String refresh = appService.createToken(appUuid, 900, 30 * 24 * 3600);
         return Map.of("refreshToken", refresh);
     }
@@ -53,6 +54,7 @@ public class AppResource {
     @Transactional
     @RolesAllowed({"DEVELOPER","APP_ADMIN"})
     public void revoke(@PathParam("token") String tokenId) {
+        log.info("Revoking token " + tokenId);
         appService.revokeToken(tokenId);
     }
 }

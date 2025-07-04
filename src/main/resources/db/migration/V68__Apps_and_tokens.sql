@@ -22,4 +22,4 @@ CREATE TABLE app_token (
     CONSTRAINT fk_app_token_app FOREIGN KEY (appuuid) REFERENCES app(uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE UNIQUE INDEX ux_app_token_active ON app_token(appuuid) WHERE revoked = FALSE;
+CREATE UNIQUE INDEX ux_app_token_active ON app_token(appuuid) WHERE revoked = 0;

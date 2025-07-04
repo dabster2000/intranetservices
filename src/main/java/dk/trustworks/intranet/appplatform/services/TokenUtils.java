@@ -4,6 +4,7 @@ import io.smallrye.jwt.build.Jwt;
 import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.HashSet;
 import java.util.List;
 
 @JBossLog
@@ -19,7 +20,7 @@ public class TokenUtils {
                 .expiresAt(exp)
                 .subject(appUuid)
                 .claim("scope", "APP")
-                .groups(roles)
+                .groups(new HashSet<>(roles))
                 .sign();
     }
 }

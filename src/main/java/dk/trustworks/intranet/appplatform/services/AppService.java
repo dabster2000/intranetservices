@@ -9,6 +9,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.password4j.Argon2Function;
 import org.password4j.Hash;
 import org.password4j.Password;
+import com.password4j.types.Argon2;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -42,6 +43,7 @@ public class AppService {
     }
 
     public List<App> listAppsForUser(String userUuid) {
+        log.debug("Fetching apps for user=" + userUuid);
         return em.createQuery("select a from app a join app_user_role r on a.uuid=r.appUuid where r.userUuid=?1", App.class)
                 .setParameter(1, userUuid)
                 .getResultList();
@@ -52,7 +54,7 @@ public class AppService {
         App app = App.findById(appUuid);
         if (app == null) throw new IllegalArgumentException("App not found");
         String rawRefresh = UUID.randomUUID().toString();
-        Argon2Function func = Argon2Function.getInstance(3, 65536, 1, 32, Argon2Function.Argon2Types.ID);
+        Argon2Function func = Argon2Function.getInstance(3, 65536, 1, 32, Argon2.ID);
         Hash hash = Password.hash(rawRefresh).addRandomSalt().with(func);
 
         AppToken token = new AppToken();
