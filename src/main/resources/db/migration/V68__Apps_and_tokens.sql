@@ -1,0 +1,25 @@
+CREATE TABLE app (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE app_user_role (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    appuuid VARCHAR(36) NOT NULL,
+    useruuid VARCHAR(36) NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    CONSTRAINT fk_app_user_role_app FOREIGN KEY (appuuid) REFERENCES app(uuid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE app_token (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    appuuid VARCHAR(36) NOT NULL,
+    token_hash VARCHAR(255) NOT NULL,
+    revoked BOOLEAN NOT NULL DEFAULT FALSE,
+    created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    CONSTRAINT fk_app_token_app FOREIGN KEY (appuuid) REFERENCES app(uuid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE UNIQUE INDEX ux_app_token_active ON app_token(appuuid) WHERE revoked = FALSE;
