@@ -118,3 +118,7 @@ learn how to query the log API in
 
 Information about the new voucher upload error logging can be found in
 [docs/voucher-upload-error-logging.md](docs/voucher-upload-error-logging.md).
+
+## App & Token Platform
+
+Learn how to manage application tokens in [docs/app-token.md](docs/app-token.md).
