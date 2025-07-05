@@ -29,7 +29,8 @@ public class ApiUsageLoggingFilter implements ContainerRequestFilter, ContainerR
 
     @Override
     public void filter(ContainerRequestContext requestContext, ContainerResponseContext responseContext) throws IOException {
-        long start = (long) requestContext.getProperty("apiUsageStartTime");
+        Object apiUsageStartTime = requestContext.getProperty("apiUsageStartTime");
+        long start = apiUsageStartTime!= null ? (long) apiUsageStartTime : System.currentTimeMillis();
         long duration = System.currentTimeMillis() - start;
         String path = requestContext.getUriInfo().getPath();
         String method = requestContext.getMethod();
@@ -39,6 +40,6 @@ public class ApiUsageLoggingFilter implements ContainerRequestFilter, ContainerR
         }
         log.infof("API request - user=%s method=%s path=%s referer=%s duration=%dms",
                 requestHeaderHolder.getUsername(), method, path, referer, duration);
-        logService.record(requestHeaderHolder.getUsername(), method, path, referer, duration);
+        //logService.record(requestHeaderHolder.getUsername(), method, path, referer, duration);
     }
 }
