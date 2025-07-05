@@ -122,3 +122,5 @@ Information about the new voucher upload error logging can be found in
 ## App & Token Platform
 
 Learn how to manage application tokens in [docs/app-token.md](docs/app-token.md).
+Membership management and role assignments are described in
+[docs/app-membership.md](docs/app-membership.md).
