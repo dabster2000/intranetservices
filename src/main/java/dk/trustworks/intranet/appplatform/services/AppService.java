@@ -99,13 +99,16 @@ public class AppService {
         Long count = em.createQuery("select count(a) from app a join app_user_role r on a.uuid=r.appUuid where r.userUuid=?1", Long.class)
                 .setParameter(1, userUuid)
                 .getSingleResult();
+        log.debug("App count=" + count + " for user=" + userUuid);
         return count;
     }
 
     public List<AppMember> listMembers(String appUuid) {
         log.debug("Listing members for app=" + appUuid);
         List<AppUserRole> roles = AppUserRole.list("appUuid", appUuid);
-        return roles.stream().map(r -> new AppMember(r.getUserUuid(), r.getRole())).toList();
+        List<AppMember> members = roles.stream().map(r -> new AppMember(r.getUserUuid(), r.getRole())).toList();
+        log.debug("Found " + members.size() + " members for app=" + appUuid);
+        return members;
     }
 
     @Transactional
