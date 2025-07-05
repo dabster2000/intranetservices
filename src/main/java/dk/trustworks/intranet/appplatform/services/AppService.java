@@ -82,4 +82,61 @@ public class AppService {
             log.warn("Attempted to revoke non-existing token " + tokenId);
         }
     }
+
+    public List<App> listAppsForUser(String userUuid, int page, int size) {
+        log.debug("Fetching apps for user=" + userUuid + " page=" + page + " size=" + size);
+        List<App> apps = em.createQuery("select a from app a join app_user_role r on a.uuid=r.appUuid where r.userUuid=?1", App.class)
+                .setParameter(1, userUuid)
+                .setFirstResult(page * size)
+                .setMaxResults(size)
+                .getResultList();
+        log.debug("Found " + apps.size() + " apps for user=" + userUuid);
+        return apps;
+    }
+
+    public long countAppsForUser(String userUuid) {
+        log.debug("Counting apps for user=" + userUuid);
+        Long count = em.createQuery("select count(a) from app a join app_user_role r on a.uuid=r.appUuid where r.userUuid=?1", Long.class)
+                .setParameter(1, userUuid)
+                .getSingleResult();
+        return count;
+    }
+
+    public List<AppMember> listMembers(String appUuid) {
+        log.debug("Listing members for app=" + appUuid);
+        List<AppUserRole> roles = AppUserRole.list("appUuid", appUuid);
+        return roles.stream().map(r -> new AppMember(r.getUserUuid(), r.getRole())).toList();
+    }
+
+    @Transactional
+    public void addMember(String appUuid, String userUuid) {
+        AppUserRole role = new AppUserRole();
+        role.setUuid(UUID.randomUUID().toString());
+        role.setAppUuid(appUuid);
+        role.setUserUuid(userUuid);
+        role.setRole(AppRole.APP_MEMBER);
+        role.persist();
+        log.info("Added member " + userUuid + " to app " + appUuid);
+    }
+
+    @Transactional
+    public void changeRole(String appUuid, String userUuid, AppRole roleType) {
+        AppUserRole role = AppUserRole.find("appUuid=?1 and userUuid=?2", appUuid, userUuid).firstResult();
+        if (role != null) {
+            role.setRole(roleType);
+            log.info("Changed role of " + userUuid + " to " + roleType + " in app " + appUuid);
+        } else {
+            log.warn("Attempted to change role for non-member " + userUuid + " in app " + appUuid);
+        }
+    }
+
+    @Transactional
+    public void removeMember(String appUuid, String userUuid) {
+        long deleted = AppUserRole.delete("appUuid=?1 and userUuid=?2", appUuid, userUuid);
+        if (deleted > 0) {
+            log.info("Removed member " + userUuid + " from app " + appUuid);
+        } else {
+            log.warn("Attempted to remove non-member " + userUuid + " from app " + appUuid);
+        }
+    }
 }
