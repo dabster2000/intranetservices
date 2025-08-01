@@ -9,11 +9,29 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.HashMap;
+
+import org.jboss.logging.Logger;
 
 import static java.time.temporal.ChronoUnit.DAYS;
 import static java.time.temporal.ChronoUnit.MONTHS;
 
 public final class DateUtils {
+
+    private static final Logger log = Logger.getLogger(DateUtils.class);
+
+    /**
+     * Overrides for fiscal year names when e-conomic uses custom labels.
+     * Key is the default fiscal year string (e.g. "2025/2026") and value is the
+     * actual name in e-conomic (e.g. "2025/2026a").
+     */
+    private static final Map<String, String> FISCAL_YEAR_OVERRIDES = new HashMap<>();
+
+    static {
+        FISCAL_YEAR_OVERRIDES.put("2025/2026", "2025/2026a");
+    }
+
 
     private DateUtils() {
     }
@@ -272,6 +290,21 @@ public final class DateUtils {
 
     public static LocalDate getFiscalStartDateBasedOnDate(LocalDate date) {
         return (date.getMonthValue()>6 && date.getMonthValue()<13)?date.withMonth(7).withDayOfMonth(1):date.minusYears(1).withMonth(7).withDayOfMonth(1);
+    }
+
+    /**
+     * Returns the accounting year label used in e-conomic for the given fiscal
+     * start date. Normally this is "YYYY/YYYY+1", but certain years may have
+     * custom suffixes.
+     *
+     * @param fiscalStartDate start of the fiscal year
+     * @return formatted accounting year string
+     */
+    public static String getFiscalYearName(LocalDate fiscalStartDate) {
+        String base = fiscalStartDate.getYear() + "/" + fiscalStartDate.plusYears(1).getYear();
+        String result = FISCAL_YEAR_OVERRIDES.getOrDefault(base, base);
+        log.debug("Mapping fiscal year '" + base + "' to '" + result + "'");
+        return result;
     }
 
     public static LocalDate getTwentieth(LocalDate date) {
