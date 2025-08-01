@@ -30,7 +30,7 @@ public class AppResource {
 
     @POST
     @Transactional
-    public App createApp(Map<String, String> request, @HeaderParam("X-User") String userUuid) {
+    public App createApp(Map<String, String> request, @HeaderParam("X-Requested-By") String userUuid) {
         log.info("Creating app name=" + request.get("name") + " user=" + userUuid);
         return appService.createApp(request.get("name"), userUuid);
     }
