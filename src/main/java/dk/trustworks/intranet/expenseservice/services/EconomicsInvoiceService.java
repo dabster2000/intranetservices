@@ -112,9 +112,11 @@ public class EconomicsInvoiceService {
         log.debug("contraAccount = " + contraAccount.getAccountNumber());
         ExpenseAccount account = new ExpenseAccount(integrationKeyValue.invoiceAccountNumber());
         log.debug("account = " + account.getAccountNumber());
-        String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()));
+        String fiscalYearName = DateUtils.getFiscalYearName(
+                DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()),
+                invoice.getCompany().getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
-        log.debug("Using accounting year " + accountingYear.getYear());
+        log.debug("Using accounting year " + accountingYear.getYear() + " for company " + invoice.getCompany().getUuid());
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 
