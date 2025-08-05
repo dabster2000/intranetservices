@@ -9,6 +9,7 @@ import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
+import dk.trustworks.intranet.model.Company;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
@@ -112,9 +113,12 @@ public class EconomicsInvoiceService {
         log.debug("contraAccount = " + contraAccount.getAccountNumber());
         ExpenseAccount account = new ExpenseAccount(integrationKeyValue.invoiceAccountNumber());
         log.debug("account = " + account.getAccountNumber());
-        String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()));
+        Company company = invoice.getCompany();
+        String fiscalYearName = DateUtils.getFiscalYearName(
+                DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()),
+                company.getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
-        log.debug("Using accounting year " + accountingYear.getYear());
+        log.debug("Using accounting year " + accountingYear.getYear() + " for company " + company.getUuid());
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 

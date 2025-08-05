@@ -12,6 +12,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.HashMap;
 
+import dk.trustworks.intranet.model.Company;
+
 import org.jboss.logging.Logger;
 
 import static java.time.temporal.ChronoUnit.DAYS;
@@ -22,14 +24,17 @@ public final class DateUtils {
     private static final Logger log = Logger.getLogger(DateUtils.class);
 
     /**
-     * Overrides for fiscal year names when e-conomic uses custom labels.
-     * Key is the default fiscal year string (e.g. "2025/2026") and value is the
-     * actual name in e-conomic (e.g. "2025/2026a").
+     * Overrides for fiscal year names when e-conomic uses custom labels for a
+     * specific company. The outer map is keyed by company UUID, the inner map by
+     * the default fiscal year label (e.g. "2025/2026") mapping to the actual
+     * year name in e-conomic (e.g. "2025/2026a").
      */
-    private static final Map<String, String> FISCAL_YEAR_OVERRIDES = new HashMap<>();
+    private static final Map<String, Map<String, String>> COMPANY_FISCAL_YEAR_OVERRIDES = new HashMap<>();
 
     static {
-        FISCAL_YEAR_OVERRIDES.put("2025/2026", "2025/2026a");
+        Map<String, String> trustworksOverrides = new HashMap<>();
+        trustworksOverrides.put("2025/2026", "2025/2026a");
+        COMPANY_FISCAL_YEAR_OVERRIDES.put(Company.TRUSTWORKS_UUID, trustworksOverrides);
     }
 
 
@@ -294,17 +299,32 @@ public final class DateUtils {
 
     /**
      * Returns the accounting year label used in e-conomic for the given fiscal
-     * start date. Normally this is "YYYY/YYYY+1", but certain years may have
-     * custom suffixes.
+     * start date and company. Normally this is "YYYY/YYYY+1", but certain years
+     * may have company-specific custom suffixes.
      *
      * @param fiscalStartDate start of the fiscal year
+     * @param companyUuid     company UUID; if {@code null} no company-specific
+     *                        overrides are applied
      * @return formatted accounting year string
      */
-    public static String getFiscalYearName(LocalDate fiscalStartDate) {
+    public static String getFiscalYearName(LocalDate fiscalStartDate, String companyUuid) {
         String base = fiscalStartDate.getYear() + "/" + fiscalStartDate.plusYears(1).getYear();
-        String result = FISCAL_YEAR_OVERRIDES.getOrDefault(base, base);
-        log.debug("Mapping fiscal year '" + base + "' to '" + result + "'");
+        String result = base;
+        if (companyUuid != null) {
+            Map<String, String> overrides = COMPANY_FISCAL_YEAR_OVERRIDES.get(companyUuid);
+            if (overrides != null) {
+                result = overrides.getOrDefault(base, base);
+            }
+        }
+        log.debug("Mapping fiscal year '" + base + "' to '" + result + "' for company " + companyUuid);
         return result;
+    }
+
+    /**
+     * Convenience method when no company-specific overrides are needed.
+     */
+    public static String getFiscalYearName(LocalDate fiscalStartDate) {
+        return getFiscalYearName(fiscalStartDate, null);
     }
 
     public static LocalDate getTwentieth(LocalDate date) {

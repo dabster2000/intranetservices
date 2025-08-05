@@ -141,9 +141,10 @@ public class  EconomicsService {
 
         ContraAccount contraAccount = new ContraAccount(userAccount.getEconomics());
         ExpenseAccount expenseaccount = new ExpenseAccount(Integer.parseInt(expense.getAccount()));
-        String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.getCurrentFiscalStartDate());
+        Company company = getCompanyFromExpense(expense);
+        String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.getCurrentFiscalStartDate(), company.getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
-        log.debug("Using accounting year " + fiscalYearName);
+        log.debug("Using accounting year " + fiscalYearName + " for company " + company.getUuid());
 
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
         String date = dateFormat.format(new Date());
