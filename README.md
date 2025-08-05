@@ -118,3 +118,13 @@ learn how to query the log API in
 
 Information about the new voucher upload error logging can be found in
 [docs/voucher-upload-error-logging.md](docs/voucher-upload-error-logging.md).
+
+## Build Warning Resolution
+
+Lombok now calls superclass implementations of `equals` and `hashCode`, avoiding
+warnings for entities extending Quarkus `PanacheEntityBase`. A new
+`lombok.config` file configures this behavior.
+
+The REST client dependency has been updated to use Quarkus REST with Mutiny
+support. This eliminates startup warnings about mixing RESTEasy Classic client
+parts and missing Mutiny support.
