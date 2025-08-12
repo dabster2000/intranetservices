@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-This is a Quarkus-based Java 21 microservices application for Trustworks intranet services. The architecture follows a modular microservice pattern with distinct service boundaries:
+This is a Quarkus-based Java 21 modular monolith for Trustworks intranet services. While organized as logical microservices, it's deployed as a single application with shared database and configuration:
 
 ### Core Services
 - **API Gateway** (`apigateway/`) - Central routing and authentication
@@ -88,3 +88,19 @@ This is a Quarkus-based Java 21 microservices application for Trustworks intrane
 - REST endpoints follow JAX-RS standards
 - Background jobs using Quarkus Scheduler
 - Comprehensive documentation in `docs/` directory for specific features
+
+## Testing
+
+- `./mvnw test` - Run unit tests
+- `./mvnw verify` - Run all tests including integration tests
+- Dev UI available at http://localhost:8080/q/dev/ in dev mode
+
+## Feature Documentation
+
+Key features have detailed documentation in the `docs/` directory:
+- Expense Processing: `docs/expense-processing.md`
+- Photo Service: `docs/photo-service.md`
+- API Usage Logging: `docs/api-usage-logging.md`
+- Draft Invoice Creation: `docs/draft-invoice-creation.md`
+- Guest Registration: `docs/guest-registration.md`
+- Slack User Sync: `docs/slack-user-sync.md`

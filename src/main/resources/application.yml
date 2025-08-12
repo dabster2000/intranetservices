@@ -134,6 +134,8 @@ dk:
           EconomicsAPIFile/mp-rest/url: https://restapi.e-conomic.com
           EconomicsAPIAccount/mp-rest/url: https://restapi.e-conomic.com
       aggregates:
+        accounting:
+          salary-buffer-multiplier: 1.02  # 2% buffer for salary calculations
         invoice:
           network:
             InvoiceAPI/mp-rest/url: https://invoice-generator.com

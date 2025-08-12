@@ -22,18 +22,19 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
-import lombok.Data;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-
-import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
 @Tag(name = "accounting")
 @JBossLog
@@ -54,15 +55,308 @@ public class AccountingResource {
     @Inject
     AvailabilityService availabilityService;
 
+    @ConfigProperty(name = "dk.trustworks.intranet.aggregates.accounting.salary-buffer-multiplier", defaultValue = "1.02")
+    double salaryBufferMultiplier;
+
+    /**
+     * Calculates adjusted expenses for salary accounts, applying the salary buffer multiplier
+     * @param partialExpenses The initial expense amount
+     * @param otherSalarySources Additional salary sources to consider
+     * @param companySalarySum The total salary sum for the company
+     * @return The adjusted expense amount
+     */
+    private double calculateAdjustedSalaryExpenses(double partialExpenses, double otherSalarySources, double companySalarySum) {
+        partialExpenses += otherSalarySources;
+        return Math.max(0, partialExpenses - (companySalarySum * salaryBufferMultiplier));
+    }
+
     @GET
     @Path("/categories/csv")
-    public List<DateAccountCategoriesDTO> findAllAccountingCategoriesCSV(@QueryParam("companyuuid") String companyuuid, @QueryParam("fromdate") Optional<String> strFromdate, @QueryParam("todate") Optional<String> strTodate) {
+    public List<DateAccountCategoriesDTO> findAllAccountingCategoriesCSV(
+            @QueryParam("companyuuid") String companyuuid,
+            @QueryParam("fromdate") Optional<String> strFromdate,
+            @QueryParam("todate") Optional<String> strTodate) {
 
-        LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
-        LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
+        // ---- Validation & setup ----
+        if (companyuuid == null || companyuuid.trim().isEmpty()) {
+            log.warnf("Request rejected: Company UUID is required");
+            throw new WebApplicationException("Company UUID is required", Response.Status.BAD_REQUEST);
+        }
+
+        LocalDate datefrom = strFromdate.map(DateUtils::dateIt)
+                .orElse(LocalDate.of(2017, 1, 1))
+                .withDayOfMonth(1);
+        LocalDate dateto = strTodate.map(DateUtils::dateIt)
+                .orElse(LocalDate.now())
+                .withDayOfMonth(1)
+                .plusMonths(1);
+
+        if (datefrom.isAfter(dateto)) throw new WebApplicationException("From date must be before or equal to to date", Response.Status.BAD_REQUEST);
+        if (datefrom.isBefore(LocalDate.of(2010, 1, 1))) throw new WebApplicationException("From date cannot be before 2010-01-01", Response.Status.BAD_REQUEST);
+        if (dateto.isAfter(LocalDate.now().plusYears(2))) throw new WebApplicationException("To date cannot be more than 2 years in the future", Response.Status.BAD_REQUEST);
+
+        final Company primaryCompany = Company.findById(companyuuid);
+        if (primaryCompany == null) throw new WebApplicationException("Company not found: " + companyuuid, Response.Status.NOT_FOUND);
+
+        final List<EmployeeAvailabilityPerMonth> availability =
+                availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
+
+        final List<AccountingCategory> allCategories =
+                AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
+
+        final List<FinanceDetails> allFinance =
+                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", datefrom, dateto);
+
+        final List<AccountLumpSum> allLumps =
+                AccountLumpSum.list("registeredDate >= ?1 and registeredDate < ?2", datefrom, dateto);
+
+        // BigDecimal config
+        final int SCALE = 2; // cents
+        final int RATIO_SCALE = 10; // for proportions
+        final RoundingMode RM = RoundingMode.HALF_EVEN; // banker’s rounding
+
+        final BigDecimal SALARY_BUFFER = BigDecimal.valueOf(salaryBufferMultiplier);
+
+        // Build a BigDecimal lump map: accountUuid -> (monthStart -> sum)
+        final Map<String, Map<LocalDate, BigDecimal>> lumpsByAccountAndMonth = new HashMap<>();
+        for (AccountLumpSum ls : allLumps) {
+            String key = ls.getAccountingAccount().getUuid();
+            LocalDate month = ls.getRegisteredDate().withDayOfMonth(1);
+            BigDecimal amt = BigDecimal.valueOf(ls.getAmount());
+            lumpsByAccountAndMonth.computeIfAbsent(key, k -> new HashMap<>())
+                    .merge(month, amt, BigDecimal::add);
+        }
+
+        // Partition finance rows by (company, month, accountnumber) to avoid repeated filters
+        // Map<Company, Map<LocalDate, Map<Integer, BigDecimal>>>
+        final Map<Company, Map<LocalDate, Map<Integer, BigDecimal>>> financeByCoMonthAcc = new HashMap<>();
+        for (FinanceDetails fd : allFinance) {
+            Company co = fd.getCompany();
+            LocalDate m = fd.getExpensedate().withDayOfMonth(1);
+            int acc = fd.getAccountnumber();
+            BigDecimal amt = BigDecimal.valueOf(fd.getAmount());
+            financeByCoMonthAcc
+                    .computeIfAbsent(co, c -> new HashMap<>())
+                    .computeIfAbsent(m, mm -> new HashMap<>())
+                    .merge(acc, amt, BigDecimal::add);
+        }
+
+        // Secondary companies list
+        final List<Company> allCompanies = Company.listAll();
+        final List<Company> secondaryCompanies = allCompanies.stream()
+                .filter(c -> !c.getUuid().equals(primaryCompany.getUuid()))
+                .toList();
+
+        // ---- Main monthly loop ----
+        final Map<LocalDate, DateAccountCategoriesDTO> byMonth = new TreeMap<>(); // chronological
+
+        for (LocalDate cursor = datefrom; cursor.isBefore(dateto); cursor = cursor.plusMonths(1)) {
+            final LocalDate month = cursor.withDayOfMonth(1);
+            final DateAccountCategoriesDTO dto = new DateAccountCategoriesDTO(month, new ArrayList<>());
+            byMonth.put(month, dto);
+
+            // Driver: consultant counts (as headcount) and consultant salary sums, per company
+            final Map<Company, BigDecimal> consultantCount = new HashMap<>();
+            final Map<Company, BigDecimal> consultantSalary = new HashMap<>();
+
+            for (Company c : allCompanies) {
+                BigDecimal count = BigDecimal.valueOf(
+                        availabilityService.calculateConsultantCount(c, month, availability)
+                );
+                BigDecimal salary = BigDecimal.valueOf(
+                        availabilityService.calculateSalarySum(c, month, availability)
+                );
+                consultantCount.put(c, count);
+                consultantSalary.put(c, salary);
+            }
+
+            BigDecimal totalConsultants = consultantCount.values().stream()
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            if (totalConsultants.compareTo(BigDecimal.ZERO) == 0) {
+                log.debugf("Skipping %s: no consultants across companies", month);
+                continue;
+            }
+
+            // Precompute, per company & month, the salary GL pools across ALL categories (after lumps):
+            // - sharedSalaryGL[c]: sum of shared salary accounts (after lumps)
+            // - nonSharedSalaryGL[c]: sum of non-shared salary accounts (after lumps)
+            // - staffSalaryPool[c] = max(0, (shared + nonShared) - buffer * consultantSalary[c])
+            final Map<Company, BigDecimal> sharedSalaryGL = new HashMap<>();
+            final Map<Company, BigDecimal> nonSharedSalaryGL = new HashMap<>();
+            final Map<Company, BigDecimal> staffSalaryPool = new HashMap<>();
+
+            for (Company c : allCompanies) {
+                BigDecimal shared = BigDecimal.ZERO;
+                BigDecimal nonShared = BigDecimal.ZERO;
+
+                for (AccountingCategory ac : allCategories) {
+                    for (AccountingAccount aa : ac.getAccounts()) {
+                        if (!aa.getCompany().equals(c) || !aa.isSalary()) continue;
+
+                        BigDecimal gl = financeByCoMonthAcc
+                                .getOrDefault(c, Collections.emptyMap())
+                                .getOrDefault(month, Collections.emptyMap())
+                                .getOrDefault(aa.getAccountCode(), BigDecimal.ZERO);
+
+                        BigDecimal lump = lumpsByAccountAndMonth
+                                .getOrDefault(aa.getUuid(), Collections.emptyMap())
+                                .getOrDefault(month, BigDecimal.ZERO);
+
+                        BigDecimal net = gl.subtract(lump);
+                        if (aa.isShared()) shared = shared.add(net);
+                        else nonShared = nonShared.add(net);
+                    }
+                }
+
+                sharedSalaryGL.put(c, shared);
+                nonSharedSalaryGL.put(c, nonShared);
+
+                BigDecimal consultantPayroll = SALARY_BUFFER.multiply(consultantSalary.get(c));
+                BigDecimal totalSalaryGL = shared.add(nonShared);
+
+                // Keep staff pool non-negative (credits/reversals on salary shouldn’t create “negative staff”)
+                BigDecimal pool = totalSalaryGL.subtract(consultantPayroll);
+                if (pool.compareTo(BigDecimal.ZERO) < 0) pool = BigDecimal.ZERO;
+
+                staffSalaryPool.put(c, pool.setScale(SCALE, RM));
+            }
+
+            // Helper lambdas
+            java.util.function.BiFunction<Company, AccountingAccount, BigDecimal> accountNetAfterLumps = (co, aa) -> {
+                BigDecimal gl = financeByCoMonthAcc
+                        .getOrDefault(co, Collections.emptyMap())
+                        .getOrDefault(month, Collections.emptyMap())
+                        .getOrDefault(aa.getAccountCode(), BigDecimal.ZERO);
+
+                BigDecimal lump = lumpsByAccountAndMonth
+                        .getOrDefault(aa.getUuid(), Collections.emptyMap())
+                        .getOrDefault(month, BigDecimal.ZERO);
+
+                return gl.subtract(lump); // can be negative
+            };
+
+            java.util.function.BiFunction<BigDecimal, BigDecimal, BigDecimal> safeRatio = (num, den) -> {
+                if (den == null || den.compareTo(BigDecimal.ZERO) == 0) return BigDecimal.ZERO;
+                return num.divide(den, RATIO_SCALE, RM);
+            };
+
+            // Prepare consultant shares
+            final BigDecimal primaryShareOfOthers = consultantCount.get(primaryCompany)
+                    .divide(totalConsultants, RATIO_SCALE, RM); // used on secondary to compute "debt"
+            final BigDecimal othersShareOfPrimary = BigDecimal.ONE.subtract(primaryShareOfOthers); // used on primary to compute "loan"
+
+            // ---- Build categories with allocated loans/debts ----
+            for (AccountingCategory sourceCat : allCategories) {
+                AccountingCategory cat = new AccountingCategory(sourceCat.getAccountCode(), sourceCat.getAccountname());
+                dto.getAccountingCategories().add(cat);
+
+                for (AccountingAccount aaSrc : sourceCat.getAccounts()) {
+                    // Clone account object into this category to avoid graph confusion
+                    AccountingAccount aa = new AccountingAccount(
+                            aaSrc.getCompany(), cat, aaSrc.getAccountCode(),
+                            aaSrc.getAccountDescription(), aaSrc.isShared(), aaSrc.isSalary()
+                    );
+                    cat.getAccounts().add(aa);
+
+                    Company aaCompany = aa.getCompany();
+
+                    // Full GL amount (before lumps) for sums on primary/secondary totals
+                    BigDecimal full = financeByCoMonthAcc
+                            .getOrDefault(aaCompany, Collections.emptyMap())
+                            .getOrDefault(month, Collections.emptyMap())
+                            .getOrDefault(aa.getAccountCode(), BigDecimal.ZERO);
+
+                    // Track primary vs secondary sums (unadjusted)
+                    if (aaCompany.equals(primaryCompany)) {
+                        aa.addSum(full.setScale(SCALE, RM).doubleValue());
+                        cat.addPrimarySum(full.setScale(SCALE, RM).doubleValue());
+                    } else {
+                        cat.addSecondarySum(full.setScale(SCALE, RM).doubleValue());
+                    }
+
+                    // Allocation only applies to shared accounts
+                    if (!aa.isShared()) continue;
+
+                    // Net (GL - lumps). For salary, we will replace "net" by the share of the staff pool later.
+                    BigDecimal net = accountNetAfterLumps.apply(aaCompany, aa).setScale(SCALE, RM);
+
+                    // Determine the amount subject to intercompany split for THIS account
+                    BigDecimal allocBase;
+                    if (aa.isSalary()) {
+                        // Allocate STAFF salary pool across all SHARED salary accounts, proportional to each account's net share.
+                        BigDecimal denom = sharedSalaryGL.get(aaCompany);
+                        if (denom == null || denom.compareTo(BigDecimal.ZERO) == 0) {
+                            allocBase = BigDecimal.ZERO;
+                        } else {
+                            BigDecimal share = safeRatio.apply(net, denom); // net of this shared salary account / total shared salary
+                            allocBase = staffSalaryPool.get(aaCompany).multiply(share).setScale(SCALE, RM);
+                        }
+                    } else {
+                        // Non-salary shared accounts: allocate the actual net (credits allowed).
+                        allocBase = net;
+                    }
+
+                    // If zero, nothing to allocate
+                    if (allocBase.compareTo(BigDecimal.ZERO) == 0) continue;
+
+                    if (aaCompany.equals(primaryCompany)) {
+                        // Primary holds the cost; others owe "loan"
+                        BigDecimal loan = allocBase.multiply(othersShareOfPrimary).setScale(SCALE, RM);
+                        aa.addLoan(loan.doubleValue()); // allow negative if allocBase < 0
+                    } else {
+                        // Secondary holds the cost; primary owes "debt"
+                        BigDecimal debt = allocBase.multiply(primaryShareOfOthers).setScale(SCALE, RM);
+                        aa.addDebt(debt.doubleValue()); // allow negative if allocBase < 0
+                    }
+                }
+            }
+
+            log.debugf("Processed month %s for company %s", month, primaryCompany.getUuid());
+        }
+
+        log.infof("Successfully processed accounting categories for company %s with %d monthly results",
+                companyuuid, byMonth.size());
+
+        // Sorted by month due to TreeMap
+        return byMonth.values().stream().toList();
+    }
+
+
+
+    @GET
+    @Path("/categories/csv/old")
+    public List<DateAccountCategoriesDTO> findAllAccountingCategoriesCSV_OLD(@QueryParam("companyuuid") String companyuuid, @QueryParam("fromdate") Optional<String> strFromdate, @QueryParam("todate") Optional<String> strTodate) {
+        // Validate company UUID
+        if (companyuuid == null || companyuuid.trim().isEmpty()) {
+            log.warnf("Request rejected: Company UUID is required");
+            throw new WebApplicationException("Company UUID is required", Response.Status.BAD_REQUEST);
+        }
+
+        LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1)).withDayOfMonth(1);
+        LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now()).withDayOfMonth(1).plusMonths(1);
+        
+        // Validate date range
+        if (datefrom.isAfter(dateto)) {
+            log.warnf("Request rejected: Invalid date range - from {} is after to {}", datefrom, dateto);
+            throw new WebApplicationException("From date must be before or equal to to date", Response.Status.BAD_REQUEST);
+        }
+        if (datefrom.isBefore(LocalDate.of(2010, 1, 1))) {
+            log.warnf("Request rejected: From date {} is before 2010-01-01", datefrom);
+            throw new WebApplicationException("From date cannot be before 2010-01-01", Response.Status.BAD_REQUEST);
+        }
+        if (dateto.isAfter(LocalDate.now().plusYears(2))) {
+            log.warnf("Request rejected: To date {} is more than 2 years in the future", dateto);
+            throw new WebApplicationException("To date cannot be more than 2 years in the future", Response.Status.BAD_REQUEST);
+        }
+        
+        log.debugf("Processing accounting categories CSV for company {} from {} to {}", companyuuid, datefrom, dateto);
 
         List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
         Company company = Company.findById(companyuuid);
+        if (company == null) {
+            throw new WebApplicationException("Company not found: " + companyuuid, Response.Status.NOT_FOUND);
+        }
 
         List<AccountingCategory> allAccountingCategories = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
         List<FinanceDetails> allFinanceDetails = FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", datefrom, dateto);
@@ -70,6 +364,25 @@ public class AccountingResource {
         List<FinanceDetails> primaryCompanyFinanceDetails = allFinanceDetails.stream().filter(fd -> fd.getCompany().equals(company)).toList();
         List<FinanceDetails> secondaryCompaniesFinanceDetails = allFinanceDetails.stream().filter(fd -> !fd.getCompany().equals(company)).toList();
 
+        // Load all AccountLumpSum data once to avoid queries in nested loops
+        log.debug("Loading all AccountLumpSum data for performance optimization");
+        List<AccountLumpSum> allLumpSums = AccountLumpSum.list("registeredDate >= ?1 and registeredDate < ?2", datefrom, dateto);
+        Map<String, Map<LocalDate, Double>> lumpSumsByAccountAndDate = new HashMap<>();
+        for (AccountLumpSum lumpSum : allLumpSums) {
+            String accountKey = lumpSum.getAccountingAccount().getUuid();
+            LocalDate monthDate = lumpSum.getRegisteredDate().withDayOfMonth(1);
+            lumpSumsByAccountAndDate
+                .computeIfAbsent(accountKey, k -> new HashMap<>())
+                .merge(monthDate, lumpSum.getAmount(), Double::sum);
+        }
+        log.debugf("Loaded {} lump sum records", allLumpSums.size());
+
+        // Cache all companies to avoid repeated queries
+        List<Company> allCompanies = Company.listAll();
+        List<Company> secondaryCompanies = allCompanies.stream()
+            .filter(c -> !c.getUuid().equals(companyuuid))
+            .toList();
+        log.debugf("Processing data for {} companies", allCompanies.size());
 
         LocalDate date = datefrom;
 
@@ -82,22 +395,24 @@ public class AccountingResource {
 
             // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
             double primaryCompanySalarySum = availabilityService.calculateSalarySum(company, finalDate, employeeAvailabilityPerMonthList);
-            System.out.println("primaryCompanySalarySum = " + primaryCompanySalarySum);
 
             // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
             double primaryCompanyConsultant = availabilityService.calculateConsultantCount(company, finalDate, employeeAvailabilityPerMonthList);
-            System.out.println("primaryCompanyConsultant = " + primaryCompanyConsultant);
 
             // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
             AtomicReference<Double> secondaryCompanyConsultant = new AtomicReference<>(0.0);
             AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
-            Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
+            secondaryCompanies.forEach(secondaryCompany -> {
                 secondaryCompanySalarySum.updateAndGet(v -> v + availabilityService.calculateSalarySum(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
                 secondaryCompanyConsultant.updateAndGet(v -> v + availabilityService.calculateConsultantCount(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
             });
 
             double totalNumberOfConsultants = primaryCompanyConsultant + secondaryCompanyConsultant.get();
-            System.out.println("totalNumberOfConsultants = " + totalNumberOfConsultants);
+            if (totalNumberOfConsultants == 0) {
+                // Skip allocation if no consultants
+                date = date.plusMonths(1);
+                continue;
+            }
 
             for (AccountingCategory ac : allAccountingCategories) {
                 AccountingCategory accountingCategory = new AccountingCategory(ac.getAccountCode(), ac.getAccountname());
@@ -115,10 +430,9 @@ public class AccountingResource {
 
                     if(accountingAccount.getCompany().equals(company)) {
                         double fullExpenses = primaryCompanyFinanceDetails.stream()
-                                .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().equals(finalDate))
+                                .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().withDayOfMonth(1).equals(finalDate.withDayOfMonth(1)))
                                 .mapToDouble(FinanceDetails::getAmount)
                                 .sum();
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("fullExpenses = " + fullExpenses);
                         accountingAccount.addSum(fullExpenses);
                         accountingCategory.addPrimarySum(fullExpenses);
                         if(!aa.isShared()) continue;
@@ -128,47 +442,39 @@ public class AccountingResource {
 
                         // Start by making the partial expenses equal fullExpenses
                         double partialExpenses = fullExpenses;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses1 = " + partialExpenses);
 
                         // Remove lump sums from the expenses
-                        double lumpSum = AccountLumpSum.<AccountLumpSum>list("accountingAccount = ?1 and registeredDate = ?2", aa, finalDate.withDayOfMonth(1)).stream().mapToDouble(AccountLumpSum::getAmount).sum();
+                        double lumpSum = lumpSumsByAccountAndDate
+                            .getOrDefault(aa.getUuid(), Collections.emptyMap())
+                            .getOrDefault(finalDate.withDayOfMonth(1), 0.0);
                         partialExpenses -= lumpSum;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("lumpSum = " + lumpSum);
 
                         // Hvis kontoen er en lønkonto, så træk lønsummen fra, så den ikke deles mellem virksomhederne.
                         if (aa.isSalary() && accountingAccount.isShared()) {
-                            //partialExpenses = (Math.max(0, partialExpenses - primaryCompanySalarySum));
-                            AtomicReference<Double> otherSalarySources = new AtomicReference<>(0.0);
-                            ac.getAccounts().stream()
+                            double otherSalarySources = ac.getAccounts().stream()
                                     .filter(value -> value.getCompany().equals(company) && !value.isShared() && value.isSalary())
-                                    .forEach(value -> {
-                                        otherSalarySources.updateAndGet(v -> v + primaryCompanyFinanceDetails.stream()
-                                                .filter(fd -> fd.getAccountnumber() == value.getAccountCode() && fd.getExpensedate().withDayOfMonth(1).equals(finalDate))
-                                                .mapToDouble(FinanceDetails::getAmount)
-                                                .sum());
-                                    });
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("otherSalarySources.get() = " + otherSalarySources.get());
-                            partialExpenses += otherSalarySources.get();
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses2 = " + partialExpenses);
-                            partialExpenses = (Math.max(0, partialExpenses - (primaryCompanySalarySum * 1.02)));
-                            System.out.println("partialExpenses3 = " + partialExpenses);
+                                    .mapToDouble(value -> primaryCompanyFinanceDetails.stream()
+                                            .filter(fd -> fd.getAccountnumber() == value.getAccountCode() && 
+                                                   fd.getExpensedate().withDayOfMonth(1).equals(finalDate.withDayOfMonth(1)))
+                                            .mapToDouble(FinanceDetails::getAmount)
+                                            .sum())
+                                    .sum();
+                            partialExpenses = calculateAdjustedSalaryExpenses(partialExpenses, otherSalarySources, primaryCompanySalarySum);
                         }
                         if(partialExpenses <= 0) continue;
 
                         if (accountingAccount.isShared())
                             // partial fullExpenses should only account for the part of the fullExpenses equal to the share of consultants in the primary company
                             partialExpenses *= (secondaryCompanyConsultant.get() / totalNumberOfConsultants);
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses4 = " + partialExpenses);
 
                         // The loan is the difference between the fullExpenses and the partialExpenses
                         accountingAccount.addLoan(Math.max(0, partialExpenses));
                     } else {
                         if(!aa.isShared()) continue;
                         double fullExpenses = secondaryCompaniesFinanceDetails.stream()
-                                .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().equals(finalDate))
+                                .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().withDayOfMonth(1).equals(finalDate.withDayOfMonth(1)))
                                 .mapToDouble(FinanceDetails::getAmount)
                                 .sum();
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("fullExpenses = " + fullExpenses);
                         accountingCategory.addSecondarySum(fullExpenses);
 
                         // Check and skip if expenses are negative, since they are not relevant for the calculation
@@ -176,37 +482,30 @@ public class AccountingResource {
 
                         // Start by making the partial expenses equal fullExpenses
                         double partialExpenses = fullExpenses;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses1 = " + partialExpenses);
 
                         // Remove lump sums from the expenses
-                        double lumpSum = AccountLumpSum.<AccountLumpSum>list("accountingAccount = ?1 and registeredDate = ?2", aa, finalDate.withDayOfMonth(1)).stream().mapToDouble(AccountLumpSum::getAmount).sum();
+                        double lumpSum = lumpSumsByAccountAndDate
+                            .getOrDefault(aa.getUuid(), Collections.emptyMap())
+                            .getOrDefault(finalDate.withDayOfMonth(1), 0.0);
                         partialExpenses -= lumpSum;
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("lumpSum = " + lumpSum);
 
                         // Hvis kontoen er en lønkonto, så træk lønsummen fra, så den ikke deles mellem virksomhederne.
                         if (aa.isSalary() && accountingAccount.isShared()) {
-                            //partialExpenses = (Math.max(0, partialExpenses - primaryCompanySalarySum));
-                            AtomicReference<Double> otherSalarySources = new AtomicReference<>(0.0);
-                            ac.getAccounts().stream()
+                            double otherSalarySources = ac.getAccounts().stream()
                                     .filter(value -> !value.getCompany().equals(company) && !value.isShared() && value.isSalary())
-                                    .forEach(value -> {
-                                        otherSalarySources.updateAndGet(v -> v + secondaryCompaniesFinanceDetails.stream()
-                                                .filter(fd -> fd.getAccountnumber() == value.getAccountCode() && fd.getExpensedate().withDayOfMonth(1).equals(finalDate))
-                                                .mapToDouble(FinanceDetails::getAmount)
-                                                .sum());
-                                    });
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("otherSalarySources.get() = " + otherSalarySources.get());
-                            partialExpenses += otherSalarySources.get();
-                            if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses2 = " + partialExpenses);
-                            partialExpenses = (Math.max(0, partialExpenses - (secondaryCompanySalarySum.get() * 1.02)));
-                            System.out.println("partialExpenses3 = " + partialExpenses);
+                                    .mapToDouble(value -> secondaryCompaniesFinanceDetails.stream()
+                                            .filter(fd -> fd.getAccountnumber() == value.getAccountCode() && 
+                                                   fd.getExpensedate().withDayOfMonth(1).equals(finalDate.withDayOfMonth(1)))
+                                            .mapToDouble(FinanceDetails::getAmount)
+                                            .sum())
+                                    .sum();
+                            partialExpenses = calculateAdjustedSalaryExpenses(partialExpenses, otherSalarySources, secondaryCompanySalarySum.get());
                         }
                         if(partialExpenses <= 0) continue;
 
                         if (accountingAccount.isShared())
                             // partial fullExpenses should only account for the part of the fullExpenses equal to the share of consultants in the primary company
                             partialExpenses *= (primaryCompanyConsultant / totalNumberOfConsultants);
-                        if(aa.getAccountCode()==3502 && finalDate.isEqual(LocalDate.of(2024,10,1))) System.out.println("partialExpenses4 = " + partialExpenses);
 
                         // The loan is the difference between the fullExpenses and the partialExpenses
                         accountingAccount.addDebt(Math.max(0, partialExpenses));
@@ -216,17 +515,31 @@ public class AccountingResource {
             date = date.plusMonths(1);
         } while (date.isBefore(dateto));
 
+        log.infof("Successfully processed accounting categories for company {} with {} monthly results", companyuuid, result.size());
         return result.values().stream().toList();
     }
 
     @GET
     @Path("/categories/v2")
     public List<AccountingCategory> findAllAccountingCategoriesV2(@QueryParam("companyuuid") String companyuuid, @QueryParam("fromdate") Optional<String> strFromdate, @QueryParam("todate") Optional<String> strTodate) {
-        LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
-        LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
+        // Validate company UUID
+        if (companyuuid == null || companyuuid.trim().isEmpty()) {
+            throw new WebApplicationException("Company UUID is required", Response.Status.BAD_REQUEST);
+        }
+
+        LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1)).withDayOfMonth(1);
+        LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now()).withDayOfMonth(1).plusMonths(1);
+        
+        // Validate date range
+        if (datefrom.isAfter(dateto)) {
+            throw new WebApplicationException("From date must be before or equal to to date", Response.Status.BAD_REQUEST);
+        }
 
         List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
         Company company = Company.findById(companyuuid);
+        if (company == null) {
+            throw new WebApplicationException("Company not found: " + companyuuid, Response.Status.NOT_FOUND);
+        }
 
         List<AccountingCategory> list = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
 
@@ -243,16 +556,22 @@ public class AccountingResource {
             //AtomicReference<Double> secondaryCompanyConsultantAvg = new AtomicReference<>(0.0);
             //AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
             Map<Company, CompanyAccountingRecord> accountingRecordMap = new HashMap<>();
-            Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
+            List<Company> secondaryCompanies = Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).toList();
+            secondaryCompanies.forEach(secondaryCompany -> {
                 accountingRecordMap.put(secondaryCompany, new CompanyAccountingRecord(
-                        availabilityService.calculateSalarySum(secondaryCompany, finalDate, employeeAvailabilityPerMonthList),
-                        availabilityService.calculateConsultantCount(secondaryCompany, finalDate, employeeAvailabilityPerMonthList)
+                        availabilityService.calculateConsultantCount(secondaryCompany, finalDate, employeeAvailabilityPerMonthList),
+                        availabilityService.calculateSalarySum(secondaryCompany, finalDate, employeeAvailabilityPerMonthList)
                 ));
                 //secondaryCompanySalarySum.updateAndGet(v -> v + calculateSalarySum(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
                 //secondaryCompanyConsultantAvg.updateAndGet(v -> v + calculateConsultantCount(secondaryCompany, finalDate, employeeAvailabilityPerMonthList));
             });
 
             double totalNumberOfConsultants = primaryCompanyConsultantAvg + accountingRecordMap.values().stream().mapToDouble(CompanyAccountingRecord::consultantCount).sum();//secondaryCompanyConsultantAvg.get();
+            if (totalNumberOfConsultants == 0) {
+                // Skip allocation if no consultants
+                date = date.plusMonths(1);
+                continue;
+            }
 
             // Beregn omkostningsfordeling for hver kategori og account for den primære virksomhed.
             //AccountingAccount.<AccountingAccount>list("accountingCategory = ?1 and company = ?2", accountingCategory, company)
@@ -281,7 +600,7 @@ public class AccountingResource {
 
             // Beregn omkostningsfordeling for hver kategori og account for alle andre virksomheder end den primære.
             // AccountingAccount.<AccountingAccount>list("accountingCategory = ?1 and company = ?2 and shared is true", accountingCategory, secondaryCompany)
-            Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
+            secondaryCompanies.forEach(secondaryCompany -> {
                 list.forEach(accountingCategory -> accountingCategory.getAccounts().stream().filter(aa -> aa.getCompany().equals(secondaryCompany) && aa.isShared()).forEach(accountingAccount -> {
                     accountingAccount.setSum(
                             FinanceDetails.<FinanceDetails>stream("accountnumber = ?1 and company = ?2 and expensedate >= ?3 and expensedate < ?4", accountingAccount.getAccountCode(), secondaryCompany, finalDate, finalDate.plusMonths(1))
@@ -312,8 +631,18 @@ public class AccountingResource {
     @GET
     @Path("/categories")
     public List<AccountingCategory> findAllAccountingCategories(@QueryParam("companyuuid") String companyuuid, @QueryParam("fromdate") Optional<String> strFromdate, @QueryParam("todate") Optional<String> strTodate) {
-        LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1));
-        LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now());
+        // Validate company UUID
+        if (companyuuid == null || companyuuid.trim().isEmpty()) {
+            throw new WebApplicationException("Company UUID is required", Response.Status.BAD_REQUEST);
+        }
+
+        LocalDate datefrom = strFromdate.map(DateUtils::dateIt).orElse(LocalDate.of(2017, 1, 1)).withDayOfMonth(1);
+        LocalDate dateto = strTodate.map(DateUtils::dateIt).orElse(LocalDate.now()).withDayOfMonth(1).plusMonths(1);
+        
+        // Validate date range
+        if (datefrom.isAfter(dateto)) {
+            throw new WebApplicationException("From date must be before or equal to to date", Response.Status.BAD_REQUEST);
+        }
         int monthsBetween = DateUtils.countMonthsBetween(datefrom, dateto);
 
         List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(datefrom, dateto);
@@ -321,22 +650,24 @@ public class AccountingResource {
 
         // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
         double primaryCompanySalarySum = availabilityService.calculateSalarySum(company, employeeAvailabilityPerMonthList.stream().filter(e -> e.getDate().isBefore(LocalDate.now().withDayOfMonth(1))).toList());
-        System.out.println("primaryCompanySalarySum = " + primaryCompanySalarySum);
 
         // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
         double primaryCompanyConsultantAvg = availabilityService.calculateConsultantCount(company, employeeAvailabilityPerMonthList) / monthsBetween;
-        System.out.println("primaryCompanyConsultantAvg = " + primaryCompanyConsultantAvg);
 
         // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
         AtomicReference<Double> secondaryCompanyConsultantAvg = new AtomicReference<>(0.0);
         AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
-        Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
+        List<Company> secondaryCompanies = Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).toList();
+        secondaryCompanies.forEach(secondaryCompany -> {
             secondaryCompanySalarySum.updateAndGet(v -> v + availabilityService.calculateSalarySum(secondaryCompany, employeeAvailabilityPerMonthList.stream().filter(e -> e.getDate().isBefore(LocalDate.now().withDayOfMonth(1))).toList()));
             secondaryCompanyConsultantAvg.updateAndGet(v -> v + availabilityService.calculateConsultantCount(secondaryCompany, employeeAvailabilityPerMonthList) / monthsBetween);
         });
-        System.out.println("secondaryCompanyConsultantAvg = " + secondaryCompanyConsultantAvg.get());
 
         double totalNumberOfConsultants = primaryCompanyConsultantAvg + secondaryCompanyConsultantAvg.get();
+        if (totalNumberOfConsultants == 0) {
+            // No consultants, return empty categories
+            return AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
+        }
 
         List<AccountingCategory> list = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
 
@@ -367,7 +698,7 @@ public class AccountingResource {
 
         // Beregn omkostningsfordeling for hver kategori og account for alle andre virksomheder end den primære.
         // AccountingAccount.<AccountingAccount>list("accountingCategory = ?1 and company = ?2 and shared is true", accountingCategory, secondaryCompany)
-        Company.<Company>listAll().stream().filter(c -> !c.getUuid().equals(companyuuid)).forEach(secondaryCompany -> {
+        secondaryCompanies.forEach(secondaryCompany -> {
             list.forEach(accountingCategory -> accountingCategory.getAccounts().stream().filter(aa -> aa.getCompany().equals(secondaryCompany) && aa.isShared()).forEach(accountingAccount -> {
                 accountingAccount.setSum(
                         FinanceDetails.<FinanceDetails>stream("accountnumber = ?1 and company = ?2 and expensedate >= ?3 and expensedate < ?4", accountingAccount.getAccountCode(), secondaryCompany, datefrom, dateto)
@@ -405,20 +736,26 @@ public class AccountingResource {
         LocalDate date1 = DateUtils.dateIt(fromdate);
         LocalDate date2 = DateUtils.dateIt(todate);
         Company company = Company.findById(companyuuid);
+        if (company == null) {
+            throw new WebApplicationException("Company not found: " + companyuuid, Response.Status.NOT_FOUND);
+        }
         AccountingCategory category = AccountingCategory.findById(uuid);
+        if (category == null) {
+            throw new WebApplicationException("Accounting category not found: " + uuid, Response.Status.NOT_FOUND);
+        }
         List<FinanceDetails> financeDetails = FinanceDetails.list("expensedate between ?1 and ?2", date1, date2);
         List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(date1, date2);
         AtomicInteger sum = new AtomicInteger();
         LocalDate date = date1;
         while(date.isBefore(date2)) {
             LocalDate finalDate = date;
-            System.out.println("Calculating date: " + stringIt(finalDate));
 
             // count sum of salary per month and number of consultants
             AtomicInteger salarySum = new AtomicInteger();
             AtomicInteger totalNumberOfConsultants = new AtomicInteger();
             Map<Company, Integer> numberOfConsultantsPerCompany = new HashMap<>();
-            for (Company c : Company.<Company>listAll()) {
+            List<Company> allCompanies = Company.listAll();
+            for (Company c : allCompanies) {
                 numberOfConsultantsPerCompany.put(c, 0);
                 employeeAvailabilityPerMonthList.stream()
                         .filter(e -> LocalDate.of(e.getYear(), e.getMonth(), 1).equals(finalDate) &&
@@ -432,60 +769,34 @@ public class AccountingResource {
                             numberOfConsultantsPerCompany.merge(employeeDataPerMonth.getCompany(), 1, Integer::sum);
                         });
             }
-            System.out.println("totalNumberOfConsultants = " + totalNumberOfConsultants.get());
-            System.out.println("salarySum = " + salarySum.get());
-            System.out.println("numberOfConsultantsPerCompany.get(company).intValue() = " + numberOfConsultantsPerCompany.get(company));
 
             // Go through each account type and sum up the expenses. Include all company account and those which are shared
             AccountingAccount.<AccountingAccount>list("accountingCategory", category).stream().filter(a -> (a.isShared() || a.getCompany().equals(company))).forEach(accountingAccount -> {
                 // Calculate the raw sum of expenses for the given account type and month. Only include which are shared or the correct company
-                // DONE: Filter by company and shared. Waiting for the new accounting system to be implemented.
-                AccountCodeResult accountCodeResult = new AccountCodeResult();
-
                 double partialSum = financeDetails.stream()
-                        .filter(fd -> fd.getExpensedate().equals(finalDate) &&
+                        .filter(fd -> fd.getExpensedate().withDayOfMonth(1).equals(finalDate.withDayOfMonth(1)) &&
                                 fd.getAccountnumber() == accountingAccount.getAccountCode() &&
                                 (accountingAccount.isShared() || accountingAccount.getCompany().equals(company)))
                         .mapToDouble(FinanceDetails::getAmount)
                         .sum();
-                System.out.println("Unadjusted sum for "+accountingAccount.getAccountCode()+": " + partialSum);
 
                 if(accountingAccount.isSalary()) {
                     partialSum -= salarySum.get();
                 }
-                System.out.println("Salary adjusted sum: " + partialSum);
 
-                if(accountingAccount.isShared()) {
+                if(accountingAccount.isShared() && totalNumberOfConsultants.get() > 0) {
                     partialSum = (partialSum / totalNumberOfConsultants.get()) * numberOfConsultantsPerCompany.get(company);
                 }
-                System.out.println("Sum adjusted for number of employees without salary: " + partialSum);
 
                 if(accountingAccount.isSalary()) {
                     partialSum += salarySum.get();
                 }
-                System.out.println("Resulting sum: " + partialSum);
 
                 sum.addAndGet((int) partialSum);
             });
             date = date.plusMonths(1);
         }
         return null; //TODO replace this stub to something useful
-    }
-
-    @Data
-    static class MonthResult {
-        private LocalDate date;
-        private int totalConsultants;
-        private int companyConsultants;
-        private int companySalary;
-        private List<AccountCodeResult> accountCodeResults = new ArrayList<>();
-    }
-
-    @Data
-    static class AccountCodeResult {
-        private int accountCode;
-        private int totalSum;
-        private int companySum;
     }
 
     @GET
