@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="budget-aggregation" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <properties>
+        <property name="startMonth" value="#{jobParameters['startMonth']}"/>
+        <property name="partitions" value="#{jobParameters['partitions']}"/>
+        <property name="delayMs" value="#{jobParameters['delayMs']}"/>
+        <!-- optionally also provide endMonth from the scheduler -->
+        <property name="endMonth" value="#{jobParameters['endMonth']}"/>
+    </properties>
+
+    <step id="budget-aggregation-chunk-step">
+        <chunk item-count="50" skip-limit="100">
+            <reader ref="userDayItemReader">
+                <properties>
+                    <!-- job-level props passed down -->
+                    <property name="startMonth" value="#{jobProperties['startMonth']}"/>
+                    <property name="endMonth"   value="#{jobProperties['endMonth']}"/>
+                    <!-- per-partition props coming from the mapper -->
+                    <property name="users"       value="#{partitionPlan['users']}"/>
+                    <property name="partitionId" value="#{partitionPlan['partitionId']}"/>
+                </properties>
+            </reader>
+
+            <writer ref="userDayOrchestrationWriter">
+                <properties>
+                    <property name="delayMs"     value="#{jobProperties['delayMs']}"/>
+                    <property name="partitionId" value="#{partitionPlan['partitionId']}"/>
+                </properties>
+            </writer>
+        </chunk>
+
+        <partition>
+            <mapper ref="budgetAggregationPartitionMapper"/>
+        </partition>
+    </step>
+</job>

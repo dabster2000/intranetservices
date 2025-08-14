@@ -1,56 +1,42 @@
 package dk.trustworks.intranet.aggregates.sender;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import software.amazon.awssdk.services.sns.SnsClient;
-import software.amazon.awssdk.services.sns.model.PublishRequest;
-import software.amazon.awssdk.services.sns.model.PublishResponse;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
 
+@JBossLog
 @ApplicationScoped
 public class SNSEventSender {
 
-    public final static String UserStatusUpdatePerDayTopic = "arn:aws:sns:eu-west-1:932149427356:UserStatusUpdatePerDayTopic";
-    public final static String UserSalaryUpdatePerDayTopic = "arn:aws:sns:eu-west-1:932149427356:UserSalaryUpdatePerDayTopic";
-    public final static String ContractConsultantUpdatePerDayTopic = "arn:aws:sns:eu-west-1:932149427356:ContractConsultantUpdatePerDayTopic";
-    public final static String WorkUpdatePerDayTopic = "arn:aws:sns:eu-west-1:932149427356:WorkUpdatePerDayTopic";
+    // Legacy topic constants retained for backward compatibility/reference only
+    public static final String UserStatusUpdatePerDayTopic = "legacy-sns:UserStatusUpdatePerDayTopic";
+    public static final String UserSalaryUpdatePerDayTopic = "legacy-sns:UserSalaryUpdatePerDayTopic";
+    public static final String ContractConsultantUpdatePerDayTopic = "legacy-sns:ContractConsultantUpdatePerDayTopic";
+    public static final String WorkUpdatePerDayTopic = "legacy-sns:WorkUpdatePerDayTopic";
 
-    public final static String WorkUpdateTopic = "arn:aws:sns:eu-west-1:932149427356:WorkUpdatePerDayTopic";
-    public final static String UserStatusUpdateTopic = "arn:aws:sns:eu-west-1:932149427356:UserStatusUpdateTopic";
-    public final static String UserSalaryUpdateTopic = "arn:aws:sns:eu-west-1:932149427356:UserSalaryUpdateTopic";
-    public final static String BudgetUpdateTopic = "arn:aws:sns:eu-west-1:932149427356:UpdateBudget";
-    public final static String ContractUpdateTopic = "arn:aws:sns:eu-west-1:932149427356:ContractConsultantUpdateTopic";
+    public static final String WorkUpdateTopic = "legacy-sns:WorkUpdateTopic";
+    public static final String UserStatusUpdateTopic = "legacy-sns:UserStatusUpdateTopic";
+    public static final String UserSalaryUpdateTopic = "legacy-sns:UserSalaryUpdateTopic";
+    public static final String BudgetUpdateTopic = "legacy-sns:UpdateBudget";
+    public static final String ContractUpdateTopic = "legacy-sns:ContractConsultantUpdateTopic";
 
-    @Inject
-    SnsClient snsClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // No-op implementation: SNS has been retired. This method logs and returns.
     public void sendEvent(String topic, String aggregateUUID, LocalDate aggregateDate) {
-        Map<String, String> messageMap = new HashMap<>();
-        messageMap.put("aggregateRootUUID", aggregateUUID);
-        messageMap.put("aggregateDate", DateUtils.stringIt(aggregateDate));
-
-        ObjectMapper objectMapper = new ObjectMapper();
-        String message = null;
         try {
-            message = objectMapper.writeValueAsString(messageMap);
-        } catch (JsonProcessingException e) {
-            e.printStackTrace();
+            Map<String, String> messageMap = new HashMap<>();
+            messageMap.put("aggregateRootUUID", aggregateUUID);
+            messageMap.put("aggregateDate", DateUtils.stringIt(aggregateDate));
+            String message = objectMapper.writeValueAsString(messageMap);
+            log.debugf("[NO-OP SNS] topic=%s key=%s payload=%s", topic, aggregateUUID, message);
+        } catch (Exception e) {
+            log.debug("[NO-OP SNS] serialization error (ignored)", e);
         }
-        //System.out.println("message = " + message);
-
-        PublishRequest request = PublishRequest.builder()
-                .message(message)
-                .topicArn(topic)
-                .build();
-
-        PublishResponse result = snsClient.publish(request);
-
-        //System.out.println("Message sent with ID: " + result.messageId());
     }
 }

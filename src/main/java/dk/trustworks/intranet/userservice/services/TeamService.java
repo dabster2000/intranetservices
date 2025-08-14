@@ -175,7 +175,7 @@ public class TeamService {
      * Updates the description of all teams using the UserResumes for the employees in the team.
      * Updates the 10th of each month.
      */
-    @Scheduled(cron = "0 0 10 10 * ?")
+    //@Scheduled(cron = "0 0 10 10 * ?") // Disabled: replaced by JBeret job 'team-description' via BatchScheduler
     public void updateTeamDescription() {
         log.info("TeamService.updateTeamDescription");
         List<Team> teams = Team.<Team>streamAll().filter(Team::isTeamleadbonus).toList();

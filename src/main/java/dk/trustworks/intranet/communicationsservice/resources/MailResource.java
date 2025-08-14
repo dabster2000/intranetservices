@@ -43,7 +43,7 @@ public class MailResource {
     }
 
     @Transactional
-    @Scheduled(every = "10s")
+    //@Scheduled(every = "10s") // Disabled: replaced by JBeret job 'mail-send' via BatchScheduler
     public void sendMailJob() {
         Optional<TrustworksMail> optMail = TrustworksMail.find("status = ?1", MailStatus.READY).firstResultOptional();
         optMail.ifPresent(mail -> {

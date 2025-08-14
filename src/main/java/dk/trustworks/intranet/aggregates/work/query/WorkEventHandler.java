@@ -21,6 +21,9 @@ public class WorkEventHandler {
     @Inject
     SNSEventSender snsEventSender;
 
+    @Inject
+    dk.trustworks.intranet.config.FeatureFlags featureFlags;
+
     @ConsumeEvent(value = WORK_EVENT, blocking = true)
     public void readWorkEvent(AggregateRootChangeEvent event) {
         log.info("WorkEventHandler.readWorkEvent -> event = " + event);
@@ -36,6 +39,10 @@ public class WorkEventHandler {
         Work work = new JsonObject(event.getEventContent()).mapTo(Work.class);
         LocalDate testDay = work.getRegistered();
 
-        snsEventSender.sendEvent(SNSEventSender.WorkUpdateTopic, useruuid, testDay);
+        if (featureFlags.isSnsEnabled()) {
+            snsEventSender.sendEvent(SNSEventSender.WorkUpdateTopic, useruuid, testDay);
+        } else {
+            log.debug("SNS disabled (feature.sns.enabled=false). Skipping SNS publish: WorkUpdateTopic");
+        }
     }
 }

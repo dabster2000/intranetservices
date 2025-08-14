@@ -11,15 +11,14 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
 import jakarta.persistence.*;
 import jakarta.transaction.Transactional;
 import java.time.LocalDate;
 
-@Data
+@Getter
+@Setter
 @Entity
 @Table(name = "bi_budget_per_day")
 @NoArgsConstructor

@@ -90,6 +90,23 @@ public class WorkService {
                 )).toList();
     }
 
+    public DateValueDTO findWorkHoursByUserAndDay(String useruuid, LocalDate day) {
+        final String sql =
+                "SELECT COALESCE(SUM(wf.workduration), 0) AS value " +
+                        "FROM work_full wf " +
+                        "WHERE wf.useruuid = :useruuid " +
+                        "  AND wf.workduration > 0 " +
+                        "  AND wf.rate > 0 " +
+                        "  AND wf.registered = :day";
+
+        var q = em.createNativeQuery(sql);
+        q.setParameter("useruuid", useruuid);
+        q.setParameter("day", java.sql.Date.valueOf(day));
+
+        Number value = (Number) q.getSingleResult();
+        return new DateValueDTO(day, value != null ? value.doubleValue() : 0d);
+    }
+
     public List<DateValueDTO> findWorkRevenueByUserAndPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
         String sql = "select " +
                 "    MAKEDATE(YEAR(wf.registered), 1) + INTERVAL (MONTH(wf.registered) - 1) MONTH AS date, " +
@@ -108,6 +125,29 @@ public class WorkService {
                         ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).toList();
+    }
+
+    public DateValueDTO findWorkRevenueByUserAndDay(String useruuid, LocalDate day) {
+        final String sql =
+                "SELECT COALESCE(SUM(wf.workduration * wf.rate), 0) AS value " +
+                        "FROM work_full wf " +
+                        "WHERE wf.useruuid = :useruuid " +
+                        "  AND wf.workduration > 0 " +
+                        "  AND wf.rate > 0 " +
+                        "  AND wf.registered = :day";
+
+        var q = em.createNativeQuery(sql);
+        q.setParameter("useruuid", useruuid);
+        q.setParameter("day", java.sql.Date.valueOf(day));
+
+        Object raw = q.getSingleResult();
+        java.math.BigDecimal revenue = (raw == null)
+                ? java.math.BigDecimal.ZERO
+                : (raw instanceof java.math.BigDecimal)
+                ? (java.math.BigDecimal) raw
+                : new java.math.BigDecimal(raw.toString());
+
+        return new DateValueDTO(day, revenue.doubleValue());
     }
 
     public List<WorkFull> findByPeriodAndProject(String fromdate, String todate, String projectuuid) {

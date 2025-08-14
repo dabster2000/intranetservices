@@ -86,6 +86,14 @@ public final class DateUtils {
         return testDate.isAfter(from) && testDate.isBefore(to);
     }
 
+    public static boolean isWeekend(LocalDate localDate) {
+        if(isWeekendDay(localDate)) return true;
+        for (LocalDate vacationDate : getVacationDayArray(localDate.getYear())) {
+            if(localDate.isEqual(vacationDate)) return true;
+        }
+        return false;
+    }
+
     /**
      * Counts vacation days in period, weekends not included.
      *

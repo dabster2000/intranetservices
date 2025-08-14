@@ -25,7 +25,7 @@ public class BirthdayNotificationJob {
      * This method sends birthday notifications to employees with birthday today.
      * It runs every day at 5:00 AM.
      */
-    @Scheduled(cron = "0 0 5 * * ?")
+    //@Scheduled(cron = "0 0 5 * * ?") // Disabled: replaced by JBeret job 'birthday-notification' via BatchScheduler
     public void sendBirthdayNotifications() {
         log.info("Checking for employees with birthday today");
         @SuppressWarnings("unchecked")

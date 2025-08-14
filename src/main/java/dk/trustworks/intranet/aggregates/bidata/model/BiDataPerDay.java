@@ -13,10 +13,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-@Data
+@Getter
 @NoArgsConstructor
 @AllArgsConstructor
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
 @Entity
 @Table(name = "bi_data_per_day", indexes = {
         @Index(name = "idx_availability_useruuid_month", columnList = "useruuid, document_date"),
@@ -117,5 +116,9 @@ public class BiDataPerDay extends PanacheEntityBase {
     @JsonIgnore
     public Double getNetAvailableHours() {
         return grossAvailableHours!=null?Math.max(grossAvailableHours.doubleValue() - unavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0):0.0;
+    }
+
+    public BiDataPerDay(Company company) {
+        this.company = company;
     }
 }

@@ -107,7 +107,6 @@ public class UserService {
 
     /** V1.0 **/
 
-    //@CacheResult(cacheName = "user-cache")
     public List<User> listAll(boolean shallow) {
         List<User> userList = User.listAll();
         if(!shallow) userList.forEach(UserService::addChildrenToUser);
@@ -456,7 +455,7 @@ public class UserService {
         new UserResume(UUID.randomUUID().toString(), useruuid, extractFirstDiv(htmlResumeResult), "", encodedResume).persist();
     }
 
-    @Scheduled(every = "1h")
+    //@Scheduled(every = "1h") // Disabled: replaced by JBeret job 'user-resume-update' via BatchScheduler
     public void updateResumes() {
         List<UserResume> userResumes = UserResume.list("resumeVersion < "+UserResume.version);
         log.info("Updating user resumes: "+userResumes.size());

@@ -27,12 +27,12 @@ public class WorkAggregateService {
 
     @Transactional
     public void recalculateWork(String useruuid, LocalDate testDay) {
-        log.info("WorkAggregateService.recalculateWork");
+        log.debug("WorkAggregateService.recalculateWork");
 
-        List<DateValueDTO> workByDay = workService.findWorkHoursByUserAndPeriod(useruuid, testDay, testDay.plusDays(1));
-        List<DateValueDTO> workRevenueByUserAndPeriod = workService.findWorkRevenueByUserAndPeriod(useruuid, testDay, testDay.plusDays(1));
+        DateValueDTO workByDay = workService.findWorkHoursByUserAndDay(useruuid, testDay);
+        biDataPerDayRepository.insertOrUpdateWork(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workByDay!=null?workByDay.getValue():0);
 
-        biDataPerDayRepository.insertOrUpdateWork(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workByDay.getFirst().getValue());
-        biDataPerDayRepository.insertOrUpdateRevenue(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workRevenueByUserAndPeriod.getFirst().getValue());
+        DateValueDTO workRevenueByUserAndPeriod = workService.findWorkRevenueByUserAndDay(useruuid, testDay);
+        biDataPerDayRepository.insertOrUpdateRevenue(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workRevenueByUserAndPeriod!=null?workRevenueByUserAndPeriod.getValue():0);
     }
 }

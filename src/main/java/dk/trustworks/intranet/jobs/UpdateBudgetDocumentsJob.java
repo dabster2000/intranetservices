@@ -1,9 +1,6 @@
 package dk.trustworks.intranet.jobs;
 
-import dk.trustworks.intranet.aggregates.budgets.events.UpdateBudgetEvent;
 import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
-import dk.trustworks.intranet.aggregates.sender.SystemEventSender;
-import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -17,10 +14,8 @@ import java.util.Map;
 
 @JBossLog
 @ApplicationScoped
+@Deprecated
 public class UpdateBudgetDocumentsJob {
-
-    @Inject
-    SystemEventSender systemEventSender;
 
     @Inject
     SNSEventSender snsEventSender;
@@ -29,7 +24,7 @@ public class UpdateBudgetDocumentsJob {
     private final int updateRateInHours = 3;
     private final int delayInSeconds = 10;
 
-    @Scheduled(cron = "0 0 1 ? * 2-6")
+    //@Scheduled(cron = "0 0 1 ? * 2-6") // Disabled: replaced by JBeret job 'budget-aggregation' triggered via BatchScheduler
     public void updateBiData() {
         log.info("BudgetServiceCache.updateBiData");
         LocalDate startMonth = LocalDate.now().minusMonths(2).withDayOfMonth(1);//LocalDate.of(2023, 11, 1);

@@ -75,7 +75,11 @@ public class RevenueService {
     TeamService teamService;
 
     public DateValueDTO getRegisteredRevenueForSingleMonth(String companyuuid, LocalDate month) {
-        return getRegisteredRevenueByPeriod(companyuuid, month, month.plusMonths(1)).getFirst();
+        var list = getRegisteredRevenueByPeriod(companyuuid, month, month.plusMonths(1));
+        if (list == null || list.isEmpty()) {
+            return new DateValueDTO(month.withDayOfMonth(1), 0.0);
+        }
+        return list.get(0);
     }
 
     public List<DateValueDTO> getRegisteredRevenueByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {

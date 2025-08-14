@@ -8,12 +8,10 @@ import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.NoResultException;
-import jakarta.persistence.NonUniqueResultException;
-import jakarta.persistence.Query;
+import jakarta.persistence.*;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.PathParam;
 import lombok.extern.jbosslog.JBossLog;
@@ -38,11 +36,49 @@ public class ContractService {
         return contractList;
     }
 
+    @Transactional(Transactional.TxType.SUPPORTS)
+    public List<Contract> findByDayReadOnly(LocalDate day) {
+        final EntityManager em = Panache.getEntityManager();
+
+        // Avoid autoflush on queries from this EM
+        em.setFlushMode(FlushModeType.COMMIT);
+
+        final String sql =
+                "SELECT DISTINCT c.* " +
+                        "FROM contracts c " +
+                        "JOIN contract_consultants cc ON cc.contractuuid = c.uuid " +
+                        "WHERE cc.activefrom <= :day " +
+                        "  AND cc.activeto   >= :day " +
+                        "  AND c.status IN ('TIME','SIGNED','CLOSED','BUDGET')";
+
+        Query q = em.createNativeQuery(sql, Contract.class);
+        q.setParameter("day", day);
+
+        // Tell Hibernate this is read-only; skip dirty checking
+        q.setHint(org.hibernate.jpa.HibernateHints.HINT_READ_ONLY, Boolean.TRUE);
+
+        // Optional (Hibernate-specific): further enforce read-only + no flushing
+        try {
+            org.hibernate.query.NativeQuery<?> hq = q.unwrap(org.hibernate.query.NativeQuery.class);
+            hq.setReadOnly(true);
+            hq.setHibernateFlushMode(org.hibernate.FlushMode.MANUAL);
+        } catch (IllegalStateException ignored) {
+            // Unwrap not available – fine to proceed with the hint alone
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Contract> results = (List<Contract>) q.getResultList();
+
+        // Detach to avoid accidental writes later
+        results.forEach(em::detach);
+        return results;
+    }
+
     public List<Contract> findByPeriod(LocalDate fromdate, LocalDate todate) {
         Query query = em.createNativeQuery("SELECT " +
                 "c.* " +
                 "FROM " +
-                "    twservices.contracts c " +
+                "    contracts c " +
                 "INNER JOIN " +
                 "    ( " +
                 "        SELECT " +
@@ -50,7 +86,7 @@ public class ContractService {
                 "            MIN(activefrom) AS min_activefrom, " +
                 "            MAX(activeto) AS max_activeto " +
                 "        FROM " +
-                "            twservices.contract_consultants " +
+                "            contract_consultants " +
                 "        GROUP BY " +
                 "            contractuuid " +
                 "    ) AS contract_period ON c.uuid = contract_period.contractuuid " +
@@ -90,35 +126,6 @@ public class ContractService {
         return ContractProject.find("contractuuid like ?1", contractuuid).list().stream().map(panacheEntityBase -> (ContractProject) panacheEntityBase).collect(Collectors.toSet());
     }
 
-    /*
-    public List<Contract> findByActiveFromLessThanEqualAndActiveToGreaterThanEqualAndStatusIn(LocalDate fromdate, LocalDate todate, List<ContractStatus> contractStatuses) {
-        List<Contract> contractList = Contract.find("(activeFrom <= ?1 AND activeTo >= ?1) OR (activeFrom <= ?2 AND activeTo >= ?2) AND status IN (?3)", fromdate, todate, contractStatuses).list();
-        contractList.forEach(this::addConsultantsToContract);
-        return contractList;
-    }
-    */
-    /*
-SELECT
-    c.uuid,
-    contract_period.min_activefrom,
-    contract_period.max_activeto
-FROM
-    twservices.contracts c
-INNER JOIN
-    (
-        SELECT
-            contractuuid,
-            MIN(activefrom) AS min_activefrom,
-            MAX(activeto) AS max_activeto
-        FROM
-            twservices.contract_consultants
-        GROUP BY
-            contractuuid
-    ) AS contract_period ON c.uuid = contract_period.contractuuid
-WHERE
-    (contract_period.min_activefrom <= ?1 AND contract_period.max_activeto >= ?1) OR (contract_period.min_activefrom <= ?2 AND contract_period.max_activeto >= ?2) AND status IN (?3);
-     */
-
     public List<ContractConsultant> getContractConsultants(String constractuuid) {
         return ContractConsultant.find("contractuuid like ?1", constractuuid).list();
     }
@@ -135,29 +142,33 @@ WHERE
                 .collect(Collectors.toList());
     }
 
+    public List<Contract> findByDay(LocalDate testDay) {
+        Query query = em.createNativeQuery("SELECT " +
+                "c.* " +
+                "FROM " +
+                "    contracts c " +
+                "INNER JOIN " +
+                "    ( " +
+                "        SELECT " +
+                "            contractuuid, " +
+                "            MIN(activefrom) AS min_activefrom, " +
+                "            MAX(activeto) AS max_activeto " +
+                "        FROM " +
+                "            contract_consultants " +
+                "        GROUP BY " +
+                "            contractuuid " +
+                "    ) AS contract_period ON c.uuid = contract_period.contractuuid " +
+                "WHERE (contract_period.min_activefrom <= :testDay AND contract_period.max_activeto >= :testDay)", Contract.class);
+        query.setParameter("testDay", testDay);
+        List<Contract> contractList = query.getResultList();
+        contractList.forEach(this::addConsultantsToContract);
+        return contractList;
+    }
 
     public ProjectUserDateDTO findRateByProjectuuidAndUseruuidAndDate(String projectuuid, String useruuid, String date) {
         return addContractAndRate(new ProjectUserDateDTO(UUID.randomUUID().toString(), projectuuid, useruuid, date));
     }
 
-    /*
-    public Contract findContractByProjectuuidAndUseruuidAndDate(String projectuuid, String useruuid, String date) {
-        String sql = "select c.* from contracts c " +
-                "right join contract_project pc ON  pc.contractuuid = c.uuid " +
-                "right join contract_consultants cc ON c.uuid = cc.contractuuid " +
-                "where cc.activefrom <= :localdate and cc.activeto >= :localdate and cc.useruuid like :useruuid AND pc.projectuuid like :projectuuid ;";
-        Query query = em.createNativeQuery(sql, Contract.class);
-        query.setParameter("useruuid", useruuid);
-        query.setParameter("projectuuid", projectuuid);
-        query.setParameter("localdate", dateIt(date));
-        try {
-            return (Contract) query.getSingleResult();
-        } catch (NonUniqueResultException | NoResultException e) {
-
-        }
-        return null;
-    }
-     */
 
     public List<Contract> findByClientuuid(String clientuuid) {
         return Contract.find("clientuuid = ?1", clientuuid).list();
@@ -169,20 +180,6 @@ WHERE
         contractProject.forEach(contractProject1 -> result.add(Contract.findById(contractProject1.getContractuuid()))); //result.add(addConsultantsToContract(Contract.findById(contractProject1.getContractuuid()))));
         return result;
     }
-
-    /*
-    public List<ProjectUserDateDTO> findRateByProjectuuidAndUseruuidAndDateList(List<ProjectUserDateDTO> projectUserDateDTOList) {
-        for (ProjectUserDateDTO projectUserDateDTO : projectUserDateDTOList) {
-            addContractAndRate(projectUserDateDTO);
-        }
-        return projectUserDateDTOList;
-    }
-
-    public List<ContractConsultant> findContractConsultant(String constractuuid) {
-        return getContractConsultants(constractuuid);
-    }
-
-     */
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
@@ -300,7 +297,8 @@ WHERE
         return projectUserDateDTO;
     }
 
-    private void addConsultantsToContract(Contract contract) {
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void addConsultantsToContract(Contract contract) {
         Set<ContractConsultant> contractConsultants = ContractConsultant.<ContractConsultant>stream("contractuuid like ?1", contract.getUuid()).collect(Collectors.toSet());
         Optional<ContractSalesConsultant> salesConsultant = ContractSalesConsultant.find("contractuuid like ?1 and status like 'APPROVED' order by created DESC", contract.getUuid()).firstResultOptional();
         salesConsultant.ifPresent(contract::setSalesconsultant);
@@ -317,4 +315,5 @@ WHERE
     public void updateContractTypeItem(ContractTypeItem contractTypeItem) {
         ContractTypeItem.update("key = ?1, value = ?2 where id = ?3", contractTypeItem.getKey(), contractTypeItem.getValue(), contractTypeItem.getId());
     }
+
 }

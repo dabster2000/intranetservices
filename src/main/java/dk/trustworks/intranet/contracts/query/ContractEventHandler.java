@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.contracts.query;
 
-import dk.trustworks.intranet.aggregates.budgets.jobs.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
@@ -20,10 +19,10 @@ import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.
 public class ContractEventHandler {
 
     @Inject
-    BudgetCalculatingExecutor budgetCalculatingExecutor;
+    SNSEventSender snsEventSender;
 
     @Inject
-    SNSEventSender snsEventSender;
+    dk.trustworks.intranet.config.FeatureFlags featureFlags;
 
     @ConsumeEvent(value = CONTRACT_EVENT, blocking = true)
     public void readUserEvent(AggregateRootChangeEvent event) {
@@ -37,10 +36,14 @@ public class ContractEventHandler {
     private void modifyContractConsultant(AggregateRootChangeEvent aggregateRootChangeEvent) {
         ContractConsultant contractConsultant = new JsonObject(aggregateRootChangeEvent.getEventContent()).mapTo(ContractConsultant.class);
         LocalDate lookupMonth = contractConsultant.getActiveFrom().withDayOfMonth(1);
-        do {
-            snsEventSender.sendEvent(SNSEventSender.ContractUpdateTopic, contractConsultant.getUseruuid(), lookupMonth);
-            lookupMonth = lookupMonth.plusMonths(1);
-        } while (lookupMonth.isBefore(contractConsultant.getActiveTo().plusMonths(1).withDayOfMonth(1)));
+        if (featureFlags.isSnsEnabled()) {
+            do {
+                snsEventSender.sendEvent(SNSEventSender.ContractUpdateTopic, contractConsultant.getUseruuid(), lookupMonth);
+                lookupMonth = lookupMonth.plusMonths(1);
+            } while (lookupMonth.isBefore(contractConsultant.getActiveTo().plusMonths(1).withDayOfMonth(1)));
+        } else {
+            log.debug("SNS disabled (feature.sns.enabled=false). Skipping SNS publish: ContractUpdateTopic (monthly fanout)");
+        }
         //budgetCalculatingExecutor.calcBudgetsV3(contractConsultant.getUseruuid(), new DateRangeMap(contractConsultant.getActiveFrom(), contractConsultant.getActiveTo()));
     }
 }

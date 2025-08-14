@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.sender;
 
 import dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter;
+import dk.trustworks.intranet.messaging.outbox.OutboxEvent;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 
 import jakarta.enterprise.context.RequestScoped;
@@ -18,6 +19,9 @@ public class AggregateEventSender {
     }
 
     private void persistEvent(AggregateRootChangeEvent event) {
-        QuarkusTransaction.requiringNew().run(event::persist);
+        QuarkusTransaction.requiringNew().run(() -> {
+            event.persist();
+            OutboxEvent.fromAggregateEvent(event).persist();
+        });
     }
 }

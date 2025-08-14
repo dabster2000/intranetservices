@@ -34,7 +34,7 @@ public class FinanceLoadJob {
     private final String[] periods = {"2021_6_2022", "2022_6_2023", "2023_6_2024"};
 
     //@Scheduled(every="1h")
-    @Scheduled(cron="0 0 21 * * ?")
+    //@Scheduled(cron="0 0 21 * * ?") // disabled; replaced by JBeret job 'finance-load-economics' triggered via BatchScheduler
     void loadEconomicsData() {
         log.debug("ExpenseLoadJob.loadEconomicsData");
         log.debug("Cleaning old data...");
@@ -71,7 +71,7 @@ public class FinanceLoadJob {
     }
 
     //@Scheduled(every="5m")
-    @Scheduled(cron = "0 0 22 * * ?")
+    //@Scheduled(cron = "0 0 22 * * ?") // disabled; replaced by JBeret job 'finance-invoice-sync' triggered via BatchScheduler
     public void synchronizeInvoices() {
         log.info("ExpenseLoadJob.synchronizeInvoices");
         List<FinanceDetails> expenseList = FinanceDetails.find("accountnumber >= ?1 and accountnumber <= ?2", EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMinimum(), EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMaximum()).list();//EconomicAccountGroup.OMSAETNING_ACCOUNTS);

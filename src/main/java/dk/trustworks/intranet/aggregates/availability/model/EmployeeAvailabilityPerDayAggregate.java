@@ -18,12 +18,12 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-@Data
+@Getter
+@Setter
 @Entity
 @Table(name = "bi_availability_per_day")
 @NoArgsConstructor
 @AllArgsConstructor
-@EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
 public class EmployeeAvailabilityPerDayAggregate extends PanacheEntityBase {
 
     @JsonIgnore

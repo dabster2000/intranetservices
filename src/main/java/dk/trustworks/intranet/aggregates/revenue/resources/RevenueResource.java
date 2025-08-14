@@ -9,6 +9,7 @@ import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.scheduler.Scheduled;
+import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -167,10 +168,14 @@ public class RevenueResource {
         return List.of(new GraphKeyValue("d", "e", revenue-sum));
     }
 
-    @CacheInvalidateAll(cacheName = "registered-revenue-cache")
-    @Scheduled(every="24h")
+    //@PermitAll
+    //@CacheInvalidateAll(cacheName = "registered-revenue-cache")
+    //@Scheduled(every="24h") // Disabled: replaced by JBeret job 'revenue-cache-refresh' via BatchScheduler
+    /*
     void refreshCaches() {
         revenueService.getRegisteredRevenueByPeriod("company-uuid", LocalDate.now().minusDays(30), LocalDate.now());
         revenueService.getRegisteredRevenueForSingleMonth("company-uuid", LocalDate.now().minusDays(30));
     }
+
+     */
 }

@@ -1,14 +1,11 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.aggregates.availability.jobs.AvailabilityCalculatingExecutor;
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
-import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -32,12 +29,6 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @RolesAllowed({"SYSTEM"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class YourPartOfTrustworksResource {
-
-    @Inject
-    AvailabilityCalculatingExecutor availabilityCalculatingExecutor;
-
-    @Inject
-    UserService userService;
 
     @GET
     public List<EmployeeBonusEligibility> findByFiscalStartYear(@QueryParam("fiscalstartyear") int year) {
@@ -87,6 +78,6 @@ public class YourPartOfTrustworksResource {
     @GET
     @Path("/reload")
     public void reload() {
-        availabilityCalculatingExecutor.recalculateAvailability();
+
     }
 }

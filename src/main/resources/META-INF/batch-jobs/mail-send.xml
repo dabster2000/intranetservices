@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="mail-send" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <step id="mail-send-step">
+        <batchlet ref="mailSendBatchlet"/>
+    </step>
+</job>

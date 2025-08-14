@@ -69,7 +69,7 @@ public class AvailabilityServiceCache {
         return availabilityDocumentList;
     }
 
-    @Scheduled(every = "3h", delay = 0)
+    //@Scheduled(every = "3h", delay = 0) // Disabled: replaced by JBeret job 'availability-cache-refresh' via BatchScheduler
     public void job() {
         getAvailabilityData();
     }

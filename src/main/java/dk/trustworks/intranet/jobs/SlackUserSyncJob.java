@@ -19,7 +19,7 @@ public class SlackUserSyncJob {
     SlackService slackService;
 
     @Transactional
-    @Scheduled(cron = "0 30 2 * * ?")
+    //@Scheduled(cron = "0 30 2 * * ?") // Disabled: replaced by JBeret job 'slack-user-sync' via BatchScheduler
     public void syncSlackUserIds() {
         log.info("Starting Slack user synchronization job");
         List<User> users = User.list("slackusername is null or slackusername = ''");

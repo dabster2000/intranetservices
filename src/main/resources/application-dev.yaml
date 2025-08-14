@@ -7,12 +7,14 @@ quarkus:
       url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
-      max-size: 10
+      max-size: 32
       idle-removal-interval: PT1M
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   hibernate-orm:
     statistics: true
+  jberet:
+    job-repository: jdbc
   flyway:
     migrate-at-start: true
     baseline-on-migrate: true
@@ -58,6 +60,18 @@ quarkus:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
       #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
+  micrometer:
+    enabled: true
+    export:
+      prometheus:
+        enabled: true
+  otel:
+    enabled: false
+    exporter:
+      otlp:
+        traces:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4317}
+          enabled: ${OTEL_EXPORTER_OTLP_TRACES_ENABLED:false}
   rest-client:
     openai-api:
       url: https://api.openai.com
@@ -92,7 +106,91 @@ quarkus:
 vertx:
   worker-pool-size: 10
 mp:
-  jwt:
+  messaging:
+    connector:
+      smallrye-kafka:
+        bootstrap:
+          servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    incoming:
+      user-status-updates:
+        connector: smallrye-kafka
+        topic: user.status.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      user-salary-updates:
+        connector: smallrye-kafka
+        topic: user.salary.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      work-updates:
+        connector: smallrye-kafka
+        topic: work.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      contract-consultant-updates:
+        connector: smallrye-kafka
+        topic: contract.consultant.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      budget-updates:
+        connector: smallrye-kafka
+        topic: budget.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+feature:
+  sns:
+    enabled: false
+  kafka:
+    live-producer:
+      enabled: true
+    consumers:
+      shadow: false
+jwt:
     verify:
       issuer: https://trustworks.dk
       publickey:

@@ -10,7 +10,7 @@ import jakarta.transaction.Transactional;
 public class ProjectLockJob {
 
     @Transactional
-    @Scheduled(cron="0 0 0 * * ?")
+    //@Scheduled(cron="0 0 0 * * ?") // Disabled: replaced by JBeret job 'project-lock' via BatchScheduler
     void relockProjects() {
         Project.update("locked = true");
     }
