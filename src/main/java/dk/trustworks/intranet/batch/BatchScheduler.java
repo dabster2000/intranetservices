@@ -26,7 +26,7 @@ public class BatchScheduler {
 
      */
 
-    @Scheduled(cron = "0 1 22 ? * 2-6")
+    @Scheduled(cron = "0 33 23 ? * 2-6")
     void trigger() {
         LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(2);
         LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);

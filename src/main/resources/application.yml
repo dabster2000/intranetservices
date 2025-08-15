@@ -7,7 +7,7 @@ quarkus:
       url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
-      max-size: 10
+      max-size: 32
       idle-removal-interval: PT1M
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
@@ -40,6 +40,8 @@ quarkus:
     port: 9093 #registry.hub.docker.com/
   smallrye-health:
     root-path: /health
+  otel:
+    enabled: false
   log:
     level: INFO
     category:
@@ -90,11 +92,95 @@ quarkus:
 vertx:
   worker-pool-size: 10
 mp:
+  messaging:
+    connector:
+      smallrye-kafka:
+        bootstrap:
+          servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    incoming:
+      user-status-updates:
+        connector: smallrye-kafka
+        topic: user.status.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      user-salary-updates:
+        connector: smallrye-kafka
+        topic: user.salary.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      work-updates:
+        connector: smallrye-kafka
+        topic: work.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      contract-consultant-updates:
+        connector: smallrye-kafka
+        topic: contract.consultant.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
+      budget-updates:
+        connector: smallrye-kafka
+        topic: budget.updates
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
   jwt:
     verify:
       issuer: https://trustworks.dk
       publickey:
         location: META-INF/resources/publicKey.pem
+feature:
+  sns:
+    enabled: false
+  kafka:
+    live-producer:
+      enabled: true
+    consumers:
+      shadow: false
 slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
