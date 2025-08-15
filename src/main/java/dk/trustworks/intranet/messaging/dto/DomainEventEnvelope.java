@@ -31,7 +31,9 @@ public class DomainEventEnvelope {
     private String schemaRef; // optional
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
-                .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+                .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule())
+                .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+                .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     public static DomainEventEnvelope fromAggregateEvent(AggregateRootChangeEvent event) {
         DomainEventEnvelope env = new DomainEventEnvelope();
