@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.messaging.emitters;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
+import dk.trustworks.intranet.messaging.dto.DomainEventEnvelope;
+import dk.trustworks.intranet.messaging.routing.EventRoutingRegistry;
 import io.vertx.mutiny.core.eventbus.EventBus;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -19,21 +21,19 @@ public class AggregateMessageEmitter {
     @Inject
     EventBus eventBus;
 
+    @Inject
+    EventRoutingRegistry routingRegistry;
+
     public void sendAggregateEvent(AggregateRootChangeEvent aggregateRootChangeEvent) {
-        switch (aggregateRootChangeEvent.getEventType()) {
-            case CREATE_CLIENT -> eventBus.publish(CLIENT_EVENT, aggregateRootChangeEvent);
-            case MODIFY_CONTRACT_CONSULTANT -> eventBus.publish(CONTRACT_EVENT, aggregateRootChangeEvent);
-            case UPDATE_WORK -> eventBus.publish(WORK_EVENT, aggregateRootChangeEvent);
-            case CREATE_USER -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-            case UPDATE_USER -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-            case CREATE_USER_STATUS -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-            case DELETE_USER_STATUS -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-            case CREATE_USER_SALARY -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-            case DELETE_USER_SALARY -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-            case CREATE_CONFERENCE_PARTICIPANT -> eventBus.publish(CONFERENCE_EVENT, aggregateRootChangeEvent);
-            case UPDATE_CONFERENCE_PARTICIPANT -> eventBus.publish(CONFERENCE_EVENT, aggregateRootChangeEvent);
-            case CHANGE_CONFERENCE_PARTICIPANT_PHASE -> eventBus.publish(CONFERENCE_EVENT, aggregateRootChangeEvent);
-            case CREATE_BANK_INFO -> eventBus.publish(USER_EVENT, aggregateRootChangeEvent);
-        }
+        DomainEventEnvelope envelope = DomainEventEnvelope.fromAggregateEvent(aggregateRootChangeEvent);
+        String envelopeJson = envelope.toJson();
+        // 1) Per-event-type address publication (preferred)
+        String perTypeAddress = "domain.events." + envelope.getEventType();
+        eventBus.publish(perTypeAddress, envelopeJson);
+        // 2) Backward-compatible coarse channel publication
+        String address = routingRegistry
+                .resolveAddress(envelope.getEventType(), aggregateRootChangeEvent.getClass().getName())
+                .orElse(USER_EVENT);
+        eventBus.publish(address, envelopeJson);
     }
 }

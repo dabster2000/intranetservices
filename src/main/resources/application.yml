@@ -60,6 +60,15 @@ quarkus:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
       #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
+
+# Event type to Kafka topic mapping (used by ConfigTopicMapper)
+event-topics:
+  CREATE_USER_STATUS: user.status.updates
+  DELETE_USER_STATUS: user.status.updates
+  CREATE_USER_SALARY: user.salary.updates
+  DELETE_USER_SALARY: user.salary.updates
+  UPDATE_WORK: work.updates
+  MODIFY_CONTRACT_CONSULTANT: contract.consultant.updates
   rest-client:
     openai-api:
       url: https://api.openai.com

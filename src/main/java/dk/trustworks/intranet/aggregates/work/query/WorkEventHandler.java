@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.aggregates.work.query;
 
-import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.dao.workservice.model.Work;
+import dk.trustworks.intranet.messaging.dto.DomainEventEnvelope;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
@@ -24,19 +24,16 @@ public class WorkEventHandler {
     @Inject
     dk.trustworks.intranet.config.FeatureFlags featureFlags;
 
-    @ConsumeEvent(value = WORK_EVENT, blocking = true)
-    public void readWorkEvent(AggregateRootChangeEvent event) {
-        log.info("WorkEventHandler.readWorkEvent -> event = " + event);
-        AggregateEventType type = event.getEventType();
-
-        switch (type) {
-            case UPDATE_WORK -> updateWork(event);
-        }
+    @ConsumeEvent(value = "domain.events.UPDATE_WORK", blocking = true)
+    public void onUpdateWork(String envelopeJson) {
+        DomainEventEnvelope env = DomainEventEnvelope.fromJson(envelopeJson);
+        log.info("WorkEventHandler.onUpdateWork -> envelopeId = " + env.getEventId());
+        updateWork(env);
     }
 
-    private void updateWork(AggregateRootChangeEvent event) {
-        String useruuid = event.getAggregateRootUUID();
-        Work work = new JsonObject(event.getEventContent()).mapTo(Work.class);
+    private void updateWork(DomainEventEnvelope env) {
+        String useruuid = env.getAggregateId();
+        Work work = new JsonObject(env.getPayload()).mapTo(Work.class);
         LocalDate testDay = work.getRegistered();
 
         if (featureFlags.isSnsEnabled()) {

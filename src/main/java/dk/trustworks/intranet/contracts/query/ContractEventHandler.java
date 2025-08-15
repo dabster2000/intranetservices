@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.contracts.query;
 
-import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
 import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
+import dk.trustworks.intranet.messaging.dto.DomainEventEnvelope;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import io.quarkus.vertx.ConsumeEvent;
 import io.vertx.core.json.JsonObject;
@@ -24,17 +24,15 @@ public class ContractEventHandler {
     @Inject
     dk.trustworks.intranet.config.FeatureFlags featureFlags;
 
-    @ConsumeEvent(value = CONTRACT_EVENT, blocking = true)
-    public void readUserEvent(AggregateRootChangeEvent event) {
-        log.info("ContractEventHandler.readContractEvent -> event = " + event);
-        AggregateEventType type = event.getEventType();
-        switch (type) {
-            case MODIFY_CONTRACT_CONSULTANT -> modifyContractConsultant(event);
-        }
+    @ConsumeEvent(value = "domain.events.MODIFY_CONTRACT_CONSULTANT", blocking = true)
+    public void onModifyContractConsultant(String envelopeJson) {
+        DomainEventEnvelope env = DomainEventEnvelope.fromJson(envelopeJson);
+        log.info("ContractEventHandler.onModifyContractConsultant -> envelopeId = " + env.getEventId());
+        modifyContractConsultant(env);
     }
 
-    private void modifyContractConsultant(AggregateRootChangeEvent aggregateRootChangeEvent) {
-        ContractConsultant contractConsultant = new JsonObject(aggregateRootChangeEvent.getEventContent()).mapTo(ContractConsultant.class);
+    private void modifyContractConsultant(DomainEventEnvelope env) {
+        ContractConsultant contractConsultant = new JsonObject(env.getPayload()).mapTo(ContractConsultant.class);
         LocalDate lookupMonth = contractConsultant.getActiveFrom().withDayOfMonth(1);
         if (featureFlags.isSnsEnabled()) {
             do {

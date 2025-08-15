@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.messaging.outbox;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
+import dk.trustworks.intranet.messaging.dto.DomainEventEnvelope;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Data;
@@ -8,6 +9,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 @Data
@@ -53,9 +55,10 @@ public class OutboxEvent extends PanacheEntityBase {
         out.aggregateId = event.getAggregateRootUUID();
         out.aggregateType = event.getClass().getSimpleName();
         out.type = event.getEventType().name();
-        out.payload = event.getEventContent();
+        DomainEventEnvelope envelope = DomainEventEnvelope.fromAggregateEvent(event);
+        out.payload = envelope.toJson();
         out.headers = null;
-        out.occurredAt = LocalDateTime.now();
+        out.occurredAt = LocalDateTime.ofInstant(envelope.getOccurredAt(), ZoneOffset.UTC);
         out.partitionKey = event.getAggregateRootUUID();
         out.processed = false;
         return out;

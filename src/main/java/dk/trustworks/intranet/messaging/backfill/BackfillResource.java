@@ -32,6 +32,9 @@ public class BackfillResource {
     @Inject
     KafkaEventPublisher publisher;
 
+    @Inject
+    dk.trustworks.intranet.messaging.config.ConfigTopicMapper topicMapper;
+
     private static final ObjectMapper mapper = new ObjectMapper();
 
     private static final List<String> DATE_FIELDS = List.of(
@@ -70,7 +73,7 @@ public class BackfillResource {
         summary.setDryRun(dryRun);
 
         for (OutboxEvent evt : page) {
-            String topic = TopicMapper.topicForType(evt.getType());
+            String topic = topicMapper.topicForType(evt.getType());
             if (topic == null) continue; // skip non-external types
             try {
                 String dateStr = deriveDate(evt);

@@ -9,10 +9,14 @@ import lombok.extern.jbosslog.JBossLog;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.serialization.StringSerializer;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.TimeUnit;
 
 @JBossLog
 @ApplicationScoped
@@ -55,6 +59,37 @@ public class KafkaEventPublisher {
         } catch (Exception e) {
             errors.increment();
             log.errorf(e, "Producer send threw exception for %s key=%s", topic, key);
+            throw e;
+        }
+    }
+
+    public void sendWithHeaders(String topic, String key, String value, Map<String, String> headers, boolean sync) throws Exception {
+        var success = registry.counter("kafka.producer.messages", "result", "success", "topic", topic);
+        var errors = registry.counter("kafka.producer.messages", "result", "error", "topic", topic);
+        ProducerRecord<String, String> record = new ProducerRecord<>(topic, key, value);
+        if (headers != null && !headers.isEmpty()) {
+            Headers hs = record.headers();
+            headers.forEach((k, v) -> {
+                if (k != null && v != null) hs.add(k, v.getBytes(StandardCharsets.UTF_8));
+            });
+        }
+        try {
+            if (sync) {
+                producer.send(record).get(10, TimeUnit.SECONDS);
+                success.increment();
+            } else {
+                producer.send(record, (metadata, exception) -> {
+                    if (exception != null) {
+                        errors.increment();
+                        log.errorf(exception, "Failed to produce to %s key=%s", topic, key);
+                    } else {
+                        success.increment();
+                    }
+                });
+            }
+        } catch (Exception e) {
+            errors.increment();
+            log.errorf(e, "Producer sendWithHeaders threw exception for %s key=%s", topic, key);
             throw e;
         }
     }

@@ -36,7 +36,7 @@ import java.util.UUID;
         @JsonSubTypes.Type(value = UpdateUserEvent.class, name = "UpdateUserEvent"),
         @JsonSubTypes.Type(value = CreateUserStatusEvent.class, name = "CreateUserStatusEvent"),
         @JsonSubTypes.Type(value = DeleteUserStatusEvent.class, name = "DeleteUserStatusEvent"),
-        @JsonSubTypes.Type(value = CreateSalaryLogEvent.class, name = "CreateSalaryEvent"),
+        @JsonSubTypes.Type(value = CreateSalaryLogEvent.class, name = "CreateSalaryLogEvent"),
         @JsonSubTypes.Type(value = DeleteSalaryEvent.class, name = "DeleteSalaryEvent"),
         @JsonSubTypes.Type(value = CreateParticipantEvent.class, name = "CreateParticipantEvent"),
         @JsonSubTypes.Type(value = UpdateParticipantDataEvent.class, name = "UpdateParticipantDataEvent"),
