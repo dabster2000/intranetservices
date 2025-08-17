@@ -14,18 +14,6 @@ public class BatchScheduler {
     @Inject
     JobOperator jobOperator;
 
-    /*
-    @Scheduled(cron = "0 57 19 ? * 2-6")
-    void scheduleBudgetAggregation() {
-        Properties props = new Properties();
-        props.setProperty("startMonth", LocalDate.now().minusMonths(2).toString());
-        props.setProperty("partitions", "100");
-        props.setProperty("delayMs", "0");
-        jobOperator.start("budget-aggregation", props);
-    }
-
-     */
-
     @Scheduled(cron = "0 33 23 ? * 2-6")
     void trigger() {
         LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(2);
@@ -94,9 +82,29 @@ public class BatchScheduler {
     }
      */
 
-    @Scheduled(every = "1h")
+    @Scheduled(every = "5m")
     void scheduleExpenseConsume() {
         jobOperator.start("expense-consume", new Properties());
+    }
+
+    @Scheduled(every = "24h", delayed = "1m")
+    void scheduleExpenseSync() {
+        try {
+            // Only query running executions if the job is known to the repository
+            if (jobOperator.getJobNames().contains("expense-sync")) {
+                if (!jobOperator.getRunningExecutions("expense-sync").isEmpty()) {
+                    return; // one is already running
+                }
+            }
+            jobOperator.start("expense-sync", new Properties());
+        } catch (Exception e) {
+            // Log and do not fail the scheduler; it will try again in next tick
+            // If job still isn’t known, the next cycle will typically succeed
+            // once the repository has fully initialized
+            // (You can narrow this to NoSuchJobException if you prefer)
+            // log.warn("Could not schedule expense-sync now: " + e.getMessage(), e);
+            jobOperator.start("expense-sync", new Properties());
+        }
     }
 
 }

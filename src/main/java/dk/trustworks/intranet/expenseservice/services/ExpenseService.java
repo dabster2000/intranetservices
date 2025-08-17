@@ -28,6 +28,7 @@ public class ExpenseService {
     public static final String STATUS_NO_FILE = "NO_FILE";
     public static final String STATUS_NO_USER = "NO_USER";
     public static final String STATUS_UP_FAILED = "UP_FAILED";
+    public static final String STATUS_DELETED = "DELETED";
 
     @Inject
     ExpenseFileService expenseFileService;
@@ -40,17 +41,17 @@ public class ExpenseService {
     }
 
     public List<Expense> findByUserLimited(String useruuid) {
-        return Expense.find("useruuid = ?1 AND status NOT LIKE ?2 ORDER BY expensedate DESC LIMIT 40", useruuid, "DELETED").list();
+        return Expense.find("useruuid = ?1 AND status NOT LIKE ?2 ORDER BY expensedate DESC LIMIT 40", useruuid, STATUS_DELETED).list();
     }
 
     public List<Expense> findByUserAndPaidOutMonth(String useruuid, LocalDate month) {
         return Expense.find("useruuid = ?1 and status = ?2 AND " +
-                "(YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))", useruuid, "PROCESSED", month).list();
+                "(YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))", useruuid, STATUS_PROCESSED, month).list();
     }
 
     public List<Expense> findByUserAndUnpaidAndMonth(String useruuid, LocalDate month) {
         return Expense.find("useruuid = ?1 and status = ?2 AND " +
-                "(paidOut is null OR YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))", useruuid, "PROCESSED", month).list();
+                "(paidOut is null OR YEAR(paidOut) = YEAR(?3) AND MONTH(paidOut) = MONTH(?3))", useruuid, STATUS_PROCESSED, month).list();
     }
 
     @Transactional
@@ -80,7 +81,6 @@ public class ExpenseService {
         log.info("Expense processed and stored with uuid: " + expense.getUuid());
     }
 
-    @Transactional
     //@Scheduled(every = "5s") // Disabled: replaced by JBeret job 'expense-consume' via BatchScheduler
     //@Scheduled(cron = "0 0 20 * * ?")
     public void consumeCreate() throws IOException {
@@ -116,7 +116,6 @@ public class ExpenseService {
     }
 
 
-    @Transactional
     public void sendExpense(Expense expense, ExpenseFile expenseFile, UserAccount userAccount) throws IOException {
         Response response;
         try {
@@ -137,11 +136,21 @@ public class ExpenseService {
         }
     }
 
-    private void updateStatus(Expense expense, String status) {
+    public void updateStatus(Expense expense, String status) {
         QuarkusTransaction.requiringNew().run(() -> {
-            expense.setStatus(status);
-            Expense.update("status = ?1, " + "vouchernumber = ?2 " + "WHERE uuid like ?3 ", expense.getStatus(), expense.getVouchernumber(), expense.getUuid());
-            log.info("Updated expense " + expense);
+            Expense.update("status = ?1, " +
+                    "vouchernumber = ?2, " +
+                    "journalnumber = ?3, " +
+                    "accountingyear = ?4, " +
+                    "account = ?5 " +
+                    "WHERE uuid like ?6 ",
+                    status,
+                    expense.getVouchernumber(),
+                    expense.getJournalnumber(),
+                    expense.getAccountingyear(),
+                    expense.getAccount(),
+                    expense.getUuid());
+            log.info("Updated expense uuid=" + expense.getUuid() + " -> status=" + status + ", triple=" + expense.getJournalnumber() + "/" + expense.getAccountingyear() + "-" + expense.getVouchernumber());
         });
     }
 

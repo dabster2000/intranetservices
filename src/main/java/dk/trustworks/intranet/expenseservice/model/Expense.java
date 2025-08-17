@@ -60,6 +60,12 @@ public class Expense extends PanacheEntityBase {
     @JsonIgnore
     private int vouchernumber;
 
+    @JsonIgnore
+    private Integer journalnumber;
+
+    @JsonIgnore
+    private String accountingyear;
+
     public Expense() {
         uuid = UUID.randomUUID().toString();
         datecreated = LocalDate.now();

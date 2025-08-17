@@ -12,6 +12,7 @@ import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.userservice.model.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.ImageProcessor;
@@ -62,7 +63,8 @@ public class  EconomicsService {
         log.info("Voucher payload = " + json);
         Response response = null;
         try {
-            response = remoteApi.postVoucher(journal.getJournalNumber(), json);
+            String idempotencyKey = "expense-" + expense.getUuid();
+            response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
         } catch (Exception e) {
             log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
             throw e;
@@ -72,10 +74,20 @@ public class  EconomicsService {
         if ((Objects.requireNonNull(response).getStatus() > 199) & (response.getStatus() < 300)) {
             ObjectMapper objectMapper = new ObjectMapper();
             String responseAsString = response.readEntity(String.class);
-            JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
-            JsonNode object = array.get(0);
-            int voucherNumber = object.get("voucherNumber").intValue();
+            JsonNode root = objectMapper.readValue(responseAsString, JsonNode.class);
+            JsonNode first = root.isArray() ? (root.size() > 0 ? root.get(0) : null) : root;
+            if (first == null || first.get("voucherNumber") == null) {
+                log.error("Unexpected voucher POST response: " + responseAsString);
+                return Response.status(502).entity("Unexpected voucher response").build();
+            }
+            int voucherNumber = first.get("voucherNumber").asInt();
             expense.setVouchernumber(voucherNumber);
+            // persist accountingYear and journal too
+            String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2024/2025
+            String[] parts = fiscalYearName.split("/");
+            String urlYear = parts.length == 2 ? parts[0] + "_6_" + parts[1] : fiscalYearName;
+            expense.setAccountingyear(urlYear);
+            expense.setJournalnumber(journal.getJournalNumber());
 
             //upload file to e-conomics voucher
             return sendFile(expense, expensefile, voucher);
@@ -193,6 +205,11 @@ public class  EconomicsService {
                 .baseUri(URI.create(result.url()))
                 .register(new EconomicsDynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
                 .build(EconomicsAPI.class);
+    }
+
+    public EconomicsAPI getApiForExpense(Expense expense) {
+        IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
+        return getEconomicsAPI(result);
     }
 
     private static EconomicsAPIAccount getEconomicsAccountAPI(IntegrationKey.IntegrationKeyValue result) {

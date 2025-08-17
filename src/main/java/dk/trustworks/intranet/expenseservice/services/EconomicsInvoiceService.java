@@ -47,7 +47,8 @@ public class EconomicsInvoiceService {
         // call e-conomics endpoint
         try {
             EconomicsAPI economicsAPI = getEconomicsAPI(integrationKeyValue);
-            Response response = economicsAPI.postVoucher(journal.getJournalNumber(), json);
+            String idem = "invoice-" + invoice.getUuid();
+            Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json);
 
             // extract voucher number from reponse
             if ((response.getStatus() > 199) & (response.getStatus() < 300)) {

@@ -12,17 +12,40 @@ import jakarta.ws.rs.core.Response;
 @RegisterRestClient
 @RegisterProvider(EconomicsErrorMapper.class)
 @Produces("application/json")
-@Path("/journals")
+@Path("/")
 public interface EconomicsAPI extends AutoCloseable {
 
         @POST
         @Consumes("application/json")
-        @Path("/{journalNumber}/vouchers")
-        Response postVoucher(@PathParam("journalNumber") int journalNumber, String voucher);
+        @Path("/journals/{journalNumber}/vouchers")
+        Response postVoucher(@PathParam("journalNumber") int journalNumber, @HeaderParam("Idempotency-Key") String idempotencyKey, String voucher);
 
         @POST
-        @Consumes("multipart/form-data; boundary=----------------------------240952202702610052022222")
-        @Path("/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file")
+        @Consumes("multipart/form-data")
+        @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file")
         Response postFile(@PathParam("journalNumber") int journalNumber, @PathParam("accountingYear") String accountingYear, @PathParam("voucherNumber") int voucherNumber, @MultipartForm MultipartFormDataOutput data);
 
+        @GET
+        @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}")
+        Response getVoucher(@PathParam("journalNumber") int journalNumber,
+                            @PathParam("accountingYear") String accountingYear,
+                            @PathParam("voucherNumber") int voucherNumber);
+
+        @GET
+        @Path("/journals/{journalNumber}/entries")
+        Response getJournalEntries(@PathParam("journalNumber") int journalNumber,
+                                   @QueryParam("filter") String filter,
+                                   @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
+
+        @GET
+        @Path("/accounting-years/{accountingYear}/entries")
+        Response getYearEntries(@PathParam("accountingYear") String accountingYear,
+                                @QueryParam("filter") String filter,
+                                @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
+
+        @GET
+        @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment")
+        Response getVoucherAttachmentMeta(@PathParam("journalNumber") int journalNumber,
+                                          @PathParam("accountingYear") String accountingYear,
+                                          @PathParam("voucherNumber") int voucherNumber);
 }
