@@ -35,7 +35,7 @@ public class ExpenseInsightBackfillScheduler {
         }
     }
 
-    @Scheduled(cron = "0 0 2 * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(cron = "0 17 17 * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     void runNightlyBackfill() {
         try {
             JobOperator op = jobOperator();

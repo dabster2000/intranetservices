@@ -220,6 +220,13 @@ openai:
   api:
     key: ${OPENAI_APIKEY:xx}
   model: gpt-4o-mini
+  rate:
+    max-concurrency: 1
+    requests-per-second: 1.5
+    retry:
+      max-attempts: 6
+      base-delay-ms: 400
+      max-delay-ms: 4000
 dk:
   trustworks:
     intranet:
@@ -244,3 +251,4 @@ hibernate:
     batch_size: 50
   order_inserts: true
   order_updates: true
+

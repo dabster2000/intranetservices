@@ -7,6 +7,8 @@ import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import jakarta.enterprise.context.control.ActivateRequestContext;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.List;
@@ -33,6 +35,8 @@ public class ExpenseInsightBackfillBatchlet implements Batchlet {
     private volatile boolean stopRequested = false;
 
     @Override
+    @Transactional
+    @ActivateRequestContext
     public String process() throws Exception {
         int limit = parseOrDefault(limitProp, 50);
         long sleepMillis = parseOrDefaultLong(sleepMillisProp, 1500L);
