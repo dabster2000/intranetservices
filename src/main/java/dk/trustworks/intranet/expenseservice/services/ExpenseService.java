@@ -1,8 +1,10 @@
 package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.dto.ExpenseFile;
+import dk.trustworks.intranet.expenseservice.events.ExpenseStatusChangedEvent;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
+import dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.RequestScoped;
@@ -36,6 +38,9 @@ public class ExpenseService {
     @Inject
     EconomicsService economicsService;
 
+    @Inject
+    AggregateMessageEmitter messageEmitter;
+
     public List<Expense> findByUser(String useruuid) {
         return Expense.find("useruuid", useruuid).list();
     }
@@ -62,6 +67,8 @@ public class ExpenseService {
             expense.setStatus(STATUS_CREATED);
             expense.persist();
             log.info("Expense persisted with status CREATED: " + expense.getUuid());
+            // publish CREATED event
+            publishStatusEvent(expense, null, STATUS_CREATED, null, null);
 
             //save expense file to AWS
             ExpenseFile expenseFile = new ExpenseFile(expense.getUuid(), expense.getExpensefile());
@@ -123,6 +130,8 @@ public class ExpenseService {
             updateStatus(expense, STATUS_PROCESSING);
         } catch (Exception e) {
             log.error("Exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
+            // Publish explicit failure with error context before status update
+            publishStatusEvent(expense, expense.getStatus(), STATUS_UP_FAILED, "Exception while posting voucher", e);
             updateStatus(expense, STATUS_UP_FAILED);
             throw new IOException("Exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);
         }
@@ -131,6 +140,7 @@ public class ExpenseService {
             updateStatus(expense, STATUS_PROCESSED);
         } else {
             log.error("unable to send voucher to economics: " + expense);
+            publishStatusEvent(expense, expense.getStatus(), STATUS_UP_FAILED, "Economics returned non-2xx", null);
             updateStatus(expense, STATUS_UP_FAILED);
             throw new IOException("Economics error on uploading file. Expense : "+ expense +", response: "+ response);
         }
@@ -138,6 +148,9 @@ public class ExpenseService {
 
     public void updateStatus(Expense expense, String status) {
         QuarkusTransaction.requiringNew().run(() -> {
+            Expense managed = Expense.findById(expense.getUuid());
+            String previousStatus = managed != null ? managed.getStatus() : null;
+
             Expense.update("status = ?1, " +
                     "vouchernumber = ?2, " +
                     "journalnumber = ?3, " +
@@ -151,7 +164,25 @@ public class ExpenseService {
                     expense.getAccount(),
                     expense.getUuid());
             log.info("Updated expense uuid=" + expense.getUuid() + " -> status=" + status + ", triple=" + expense.getJournalnumber() + "/" + expense.getAccountingyear() + "-" + expense.getVouchernumber());
+
+            publishStatusEvent(expense, previousStatus, status, reasonFor(status), null);
         });
+    }
+
+    private String reasonFor(String status) {
+        return switch (status) {
+            case STATUS_NO_FILE -> "Missing expense file";
+            case STATUS_NO_USER -> "Missing/ambiguous user account";
+            case STATUS_UP_FAILED -> "Economics upload failed";
+            default -> null;
+        };
+    }
+
+    private void publishStatusEvent(Expense expense, String previousStatus, String newStatus, String reason, Throwable error) {
+        ExpenseStatusChangedEvent.Payload payload = ExpenseStatusChangedEvent.Payload.from(expense, previousStatus, newStatus, reason, error);
+        ExpenseStatusChangedEvent evt = new ExpenseStatusChangedEvent(expense.getUuid(), payload);
+        evt.persist();
+        messageEmitter.sendAggregateEvent(evt);
     }
 
     @Transactional

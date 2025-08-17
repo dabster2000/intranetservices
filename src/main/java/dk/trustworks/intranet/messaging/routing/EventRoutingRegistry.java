@@ -33,6 +33,9 @@ public class EventRoutingRegistry {
         byEventType.put("CREATE_CONFERENCE_PARTICIPANT", AggregateMessageEmitter.CONFERENCE_EVENT);
         byEventType.put("UPDATE_CONFERENCE_PARTICIPANT", AggregateMessageEmitter.CONFERENCE_EVENT);
         byEventType.put("CHANGE_CONFERENCE_PARTICIPANT_PHASE", AggregateMessageEmitter.CONFERENCE_EVENT);
+
+        // Expense domain
+        byEventType.put("EXPENSE_STATUS_CHANGED", AggregateMessageEmitter.EXPENSE_EVENT);
     }
 
     public Optional<String> resolveAddress(String eventType, String aggregateClassName) {
@@ -48,6 +51,7 @@ public class EventRoutingRegistry {
             if (lower.contains("contract")) return Optional.of(AggregateMessageEmitter.CONTRACT_EVENT);
             if (lower.contains("conference")) return Optional.of(AggregateMessageEmitter.CONFERENCE_EVENT);
             if (lower.contains("client")) return Optional.of(AggregateMessageEmitter.CLIENT_EVENT);
+            if (lower.contains("expense")) return Optional.of(AggregateMessageEmitter.EXPENSE_EVENT);
         }
         log.warnf("No routing mapping for eventType=%s aggregateClass=%s. Defaulting to USER_EVENT.", eventType, aggregateClassName);
         return Optional.of(AggregateMessageEmitter.USER_EVENT);

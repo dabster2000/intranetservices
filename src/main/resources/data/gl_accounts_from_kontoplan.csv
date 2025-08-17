@@ -1,0 +1,482 @@
+account_no,account_name,vat,type,sheet
+1000,Resultatopgørelse,,4,Sheet1
+2000,OMSÆTNING,,4,Sheet1
+2100,Varesalg,,4,Sheet1
+2101,Konsulenthonorar,U25,1,Sheet1
+2102,Konsulenthonorar Ework,U25,1,Sheet1
+2103,Konsulenthonorar ZeroChaos Nordic ApS,U25,1,Sheet1
+2104,Konsulenthonorar Vattenfall,U25,1,Sheet1
+2105,Konsulenthonorar udland,,1,Sheet1
+2110,Konsulenthonorar 3. Land,,1,Sheet1
+2115,Div. varesalg,U25,1,Sheet1
+2120,Afholdelses af kursus,U25,1,Sheet1
+2130,Konsulenthonorar EU,UEUY,1,Sheet1
+2140,Konsulenthonorar TW TECH,U25,1,Sheet1
+2145,Konsulent Cyber,U25,1,Sheet1
+2150,Transport m.m.,U25,1,Sheet1
+2160,Igangværende arbejde regulering,,1,Sheet1
+2170,Administration TW TECH,U25,1,Sheet1
+2175,Administration Cyber,U25,1,Sheet1
+2999,OMSÆTNING I ALT,,3,Sheet1
+3000,OMKOSTNINGER,,4,Sheet1
+3001,DIREKTE OMKOSTNINGER,,4,Sheet1
+3002,Vareforbrug opgaver,I25,1,Sheet1
+3010,Konsulentbistand,I25,1,Sheet1
+3020,Afholdelse af kursus kunder,I25,1,Sheet1
+3030,SW DK,I25,1,Sheet1
+3040,SW EU Y,,1,Sheet1
+3050,Konsulentbistand TW TECH,I25,1,Sheet1
+3055,Konsulentbistand TW CYBER,I25,1,Sheet1
+3070,Administration TW Tech,I25,1,Sheet1
+3075,Administration TW CYBER,I25,1,Sheet1
+3080,Fortoldning,,1,Sheet1
+3099,Produktionsomk. i alt,,3,Sheet1
+3100,Igangværende arbejde,,4,Sheet1
+3111,Forbrug intern tid,,1,Sheet1
+3122,Afregning intern tid,,1,Sheet1
+3130,Igangværende arbejde i alt,,3,Sheet1
+3299,Produktionsomk. i alt,,6,Sheet1
+3499,**Dækningsbidrag 1**,,6,Sheet1
+3501,Lønninger,,4,Sheet1
+3502,Løn AM-grundlag,,1,Sheet1
+3503,B-indkomst,,1,Sheet1
+3504,Bonus/tantieme,,1,Sheet1
+3505,Ferie overgangsperiode,,1,Sheet1
+3510,Pension,,1,Sheet1
+3530,Fri telefon,,1,Sheet1
+3531,Sundhedsforsikring */*,,1,Sheet1
+3550,B-indkomster,,1,Sheet1
+3555,Bidragsfri a-indkomst,,1,Sheet1
+3556,Reg. Feriepengeforpligtelse,,1,Sheet1
+3558,Assistance m/moms,I25,1,Sheet1
+3560,Kurser/udd./konferencer,I25,1,Sheet1
+3565,Bruttotræk,,1,Sheet1
+3570,"KM penge 3,73/km til 20.000 km, så 2,10/km",,1,Sheet1
+3572,Diæter,,1,Sheet1
+3575,Gaver og blomster,,1,Sheet1
+3578,Atp,,1,Sheet1
+3580,Samlet ATP,,1,Sheet1
+3583,Danløn,I25,1,Sheet1
+3585,Personale- og mødeomkostninger uden moms,,1,Sheet1
+3586,Frokostordning,,1,Sheet1
+3588,Personaleomkostninger med moms,I25,1,Sheet1
+3589,Personale / Arrangementer uden moms,,1,Sheet1
+3591,Restaurationsbesøg overarb. mv.,REP,1,Sheet1
+3593,Sundhedsforsikring,,1,Sheet1
+3594,Arbejdsskadeforsikring,,1,Sheet1
+3595,Sygeforsikring,,1,Sheet1
+3597,Lønrefusion sygeforsikring,,1,Sheet1
+3598,Regul. feriepengeforpl.,,1,Sheet1
+3599,Lønninger i alt,,3,Sheet1
+3600,Variable omkostninger,,4,Sheet1
+3601,Transport og forsendelse med moms,I25,1,Sheet1
+3602,Transport og forsendelse u/moms,,1,Sheet1
+3607,Leje driftsmidler,I25,1,Sheet1
+3608,Leje af testlokaler m.m.,I25,1,Sheet1
+3610,Inspirationsmaterialer,I25,1,Sheet1
+3620,Arbejdstøj,I25,1,Sheet1
+3621,Køb EU,,1,Sheet1
+3622,Rensning,I25,1,Sheet1
+3632,Maskiner/redskaber,I25,1,Sheet1
+3636,Rep./vedl. Maskiner/redskaber,I25,1,Sheet1
+3680,Rejser og ophold ifm. Opgaver,,1,Sheet1
+3682,Rejser og ophold ifm opgaver m/delv. Moms,REP,1,Sheet1
+3698,Variable omkostninger i alt,,3,Sheet1
+3699,**Dækningsbidrag 2**,,6,Sheet1
+3700,Lokaleomkostninger,,4,Sheet1
+3701,Husleje,I25,1,Sheet1
+3705,Parkeringsplads,I25,1,Sheet1
+3709,El afgift,I25,1,Sheet1
+3717,Varme,I25,1,Sheet1
+3721,Vand,I25,1,Sheet1
+3725,Fællesudgifter,I25,1,Sheet1
+3729,Rengøring og rengøringsmidler,I25,1,Sheet1
+3730,El afgift tilbageført,,1,Sheet1
+3735,Alarm,I25,1,Sheet1
+3737,Rep./vedl. Lokaler,I25,1,Sheet1
+3738,Indretning af lokaler,I25,1,Sheet1
+3740,Diverse vedr lokaler,I25,1,Sheet1
+3745,Dekoration kontoret,I25,1,Sheet1
+3795,Leasing Ikano,I25,1,Sheet1
+3797,Diverse u moms,,1,Sheet1
+3799,Lokaleomkostninger i alt,,3,Sheet1
+3998,DIREKTE OMKOSTNINGER I ALT,,6,Sheet1
+4000,SALGSFREMMENDE OMKOSTNINGER,,4,Sheet1
+4001,Dekoration,I25,1,Sheet1
+4002,Sponsorat,I25,1,Sheet1
+4003,"Annoncer, reklame og tryksager",I25,1,Sheet1
+4004,Messer mv. m/moms,I25,1,Sheet1
+4005,Sponsor u/moms,,1,Sheet1
+4006,Restaurationsbesøg m/delv. Fradragsret,REP,1,Sheet1
+4007,Kunde udlæg mad,REP,1,Sheet1
+4008,Gaver og blomster,,1,Sheet1
+4015,Arrangementer m/moms,I25,1,Sheet1
+4016,Arrangementer u/moms,,1,Sheet1
+4020,Anden repræsentation,,1,Sheet1
+4030,Rejser og ophold,,1,Sheet1
+4031,Hotel DK,I25,1,Sheet1
+4032,Rejser og ophold m/delv. Fradragsret,REP,1,Sheet1
+4040,Kunde udlæg Hotel,,1,Sheet1
+4041,Kunde udlæg office,,1,Sheet1
+4042,Kunde udlæg transport,,1,Sheet1
+4050,Taxa/tog/bus,,1,Sheet1
+4054,P med moms,I25,1,Sheet1
+4055,Parkering,,1,Sheet1
+4061,Broafgift m/moms (alle plader Øresund),I25,1,Sheet1
+4066,Storebælt u/moms (hvide plader),,1,Sheet1
+4090,Velgørenhed,,1,Sheet1
+4098,SALGSFREMMENDE OMK I ALT,,3,Sheet1
+4099,**Markedsføringsbidrag**,,6,Sheet1
+5200,Administration,,4,Sheet1
+5214,Software,I25,1,Sheet1
+5216,Software  EU Y,EU25,1,Sheet1
+5217,Software Udland,UDL25,1,Sheet1
+5218,Hardware (under (33.100/14),I25,1,Sheet1
+5219,IT Hardware mv. m halv moms,Halv,1,Sheet1
+5222,Inventar (under 33.100/14),I25,1,Sheet1
+5224,Rep. og vedl. af inventar,I25,1,Sheet1
+5228,Køb EU,EU25,1,Sheet1
+5229,Køb 3. Lande,UDL25,1,Sheet1
+5233,Kontorartikler,I25,1,Sheet1
+5234,Kunde udlæg office,,1,Sheet1
+5235,Faktura service,I25,1,Sheet1
+5237,Porto,,1,Sheet1
+5241,"Abonnementer (Telefon, Internet )",I25,1,Sheet1
+5242,Telefon-Internet -Personale halv moms,Halv,1,Sheet1
+5247,Regnskab og administration,I25,1,Sheet1
+5250,"Blade, tidsskrifter, faglitteratur",I25,1,Sheet1
+5252,Blade og aviser,,1,Sheet1
+5254,Forsikringer,,1,Sheet1
+5255,Forsikringsskader indtægt,,1,Sheet1
+5257,Abonnement m moms,I25,1,Sheet1
+5258,Kontingenter,I25,1,Sheet1
+5259,Kontingenter uden moms,,1,Sheet1
+5260,Gebyrer med moms,I25,1,Sheet1
+5262,Gebyrer uden moms,,1,Sheet1
+5264,Kassedifferencer,,1,Sheet1
+5266,Bankomkostninger,,1,Sheet1
+5268,Advokat,I25,1,Sheet1
+5270,Revisor,I25,1,Sheet1
+5271,Rådgivende assistance,I25,1,Sheet1
+5275,Konsulentbistand,I25,1,Sheet1
+5280,Tab på debitorer,,1,Sheet1
+5296,Regulering kreditorer,,1,Sheet1
+5297,Diverse med moms,I25,1,Sheet1
+5298,Diverse uden moms,,1,Sheet1
+5299,Øvrige administrationsomk. i alt,,3,Sheet1
+5799,Kapacitetsomkostninger i alt,,6,Sheet1
+6000,**Indtjeningsbidrag**,,6,Sheet1
+6100,AFSKRIVNINGER,,4,Sheet1
+6111,Afskrivning Driftsmidler,,1,Sheet1
+6131,Afskrivning Hardware,,1,Sheet1
+6150,Afskrivning Inventar,,1,Sheet1
+6160,Afskrivning Lokaler/indretning,,1,Sheet1
+6190,Tab på debitorer,U25,1,Sheet1
+6195,Hensat til tab på debitorer,,1,Sheet1
+6198,AFSKRIVNINGER I ALT,,3,Sheet1
+6199,**Resultat før renter**,,6,Sheet1
+6500,FINANSIELLE POSTER,,4,Sheet1
+6800,Renteindtægter mv.,,4,Sheet1
+6806,Renteindtægt banker,,1,Sheet1
+6810,Renteindtægt debitorer,,1,Sheet1
+6814,Udbytte og renteindtægt på værdipapirer,,1,Sheet1
+6818,Andre renteindtægter,,1,Sheet1
+6820,Kursgevinster,,1,Sheet1
+6849,Renteindtægter i alt,,3,Sheet1
+6850,Renteudgifter mv.,,4,Sheet1
+6856,Renteudgift banker,,1,Sheet1
+6860,Renteudgift kreditorer,,1,Sheet1
+6864,Andre renteudgifter,,1,Sheet1
+6870,Afskrivning inventar,,1,Sheet1
+6872,Afskrivninger EDB-hardware,,1,Sheet1
+6875,Gebyr og renter off. Myndigheder,,1,Sheet1
+6880,Kurstab,,1,Sheet1
+6885,Garanti,,1,Sheet1
+6890,Provision,,1,Sheet1
+6899,Renteudgifter mv. i alt,,3,Sheet1
+6999,FINANSIELLE POSTER I ALT,,6,Sheet1
+7070,**Resultat før skat**,,6,Sheet1
+7090,Skat af årets resultat,,1,Sheet1
+7091,Skat tidligere år,,1,Sheet1
+7092,Udskudt skat,,1,Sheet1
+7990,Afsat til udbytte,,1,Sheet1
+7998,Resultat,,1,Sheet1
+7999,RESULTAT,,6,Sheet1
+8000,AKTIVER,,4,Sheet1
+8001,ANLÆGSAKTIVER,,4,Sheet1
+8100,Materielle anlægsaktiver,,4,Sheet1
+8110,Driftsmidler,I25,2,Sheet1
+8111,Afskrivning driftsmidler,,2,Sheet1
+8130,Edb-hardware,I25,2,Sheet1
+8131,Afskrivning edb-hardware,,2,Sheet1
+8132,Tilgang edb-hardware,I25,2,Sheet1
+8150,Inventar,I25,2,Sheet1
+8151,Afskrivning inventar,,2,Sheet1
+8152,Tilgang Inventar,I25,2,Sheet1
+8154,Afgang Inventar,U25,2,Sheet1
+8160,Lokaler/indretning,I25,2,Sheet1
+8161,Afskrivning lokaler,,2,Sheet1
+8162,Tilgang Lokaler / indretning,I25,2,Sheet1
+8199,Materielle anlægsaktiver i alt,,3,Sheet1
+8200,Finansielle anlægsaktiver,,4,Sheet1
+8290,Deposita,I25,2,Sheet1
+8299,Finansielle anlægsaktiver i alt,,3,Sheet1
+8399,ANLÆGSAKTIVER I ALT,,6,Sheet1
+8400,OMSÆTNINGSAKTIVER,,4,Sheet1
+8500,Varebeholdninger,,4,Sheet1
+8501,Varelager,,2,Sheet1
+8510,Igangværende arbejder tid,,2,Sheet1
+8515,Igangværende arbejder ekstern,,2,Sheet1
+8599,Varebeholdninger i alt,,3,Sheet1
+8600,Tilgodehavender,,4,Sheet1
+8610,Samlekonto debitorer,,2,Sheet1
+8612,Samlekonto debitorer EU,,2,Sheet1
+8614,Samlekonto debitorer 3. Lande,,2,Sheet1
+8620,Debitorer CN Juli 2020,,2,Sheet1
+8635,A/c løn,,2,Sheet1
+8640,Andre tilgodehavender,,2,Sheet1
+8642,Tilgode vedr. fejloverførsel,,2,Sheet1
+8650,Udlæg,,2,Sheet1
+8685,Forudbetalinger,,2,Sheet1
+8686,Udskudt skat,,2,Sheet1
+8690,Periodeafgrænsningsposter,,2,Sheet1
+8699,Tilgodehavender i alt,,3,Sheet1
+8700,Likvide beholdninger,,4,Sheet1
+8711,Kasse,,2,Sheet1
+8712,Kasse Valuta,,2,Sheet1
+8713,Kasse Valuta 2,,2,Sheet1
+8720,Nykredit Bank,,2,Sheet1
+8722,Danske Bank 11397603,,2,Sheet1
+8733,Danske Bank 11483011,,2,Sheet1
+8735,Danske Bank 3409533124,,2,Sheet1
+8740,Pleo,,2,Sheet1
+8741,Mastercard TK 3965698 Nykredit,,2,Sheet1
+8742,Mastercard TG 3965981 Nykredit,,2,Sheet1
+8743,Mastercard HEL 3966007 Nykredit,,2,Sheet1
+8749,Likvide beholdninger i alt,,3,Sheet1
+8799,OMSÆTNINGSAKTIVER I ALT,,6,Sheet1
+8999,AKTIVER I ALT,,6,Sheet1
+9000,PASSIVER,,4,Sheet1
+9071,Regulering af tidligere år,,2,Sheet1
+9100,Egenkapital,,4,Sheet1
+9101,Anpartskapital,,2,Sheet1
+9170,Skyldig udbytte,,2,Sheet1
+9175,Ekstraordinær udbytte,,2,Sheet1
+9180,Overført fra tidligere år,,2,Sheet1
+9190,Årets resultat,,2,Sheet1
+9199,Egenkaital i alt,,3,Sheet1
+9354,Diverse - kapital,,2,Sheet1
+9399,GÆLD,,4,Sheet1
+9400,Kortfristet gæld,,4,Sheet1
+9401,Deposita,,2,Sheet1
+9403,Gæld pengeinstitut,,4,Sheet1
+9405,Banklån,,2,Sheet1
+9409,Gæld pengeinstitut i alt,,3,Sheet1
+9410,Moms,,4,Sheet1
+9418,Udgående moms,,2,Sheet1
+9419,Moms af EU varekøb,,2,Sheet1
+9420,Indgående moms,,2,Sheet1
+9421,EU ydelseskøb modtagermoms K,,2,Sheet1
+9422,Moms af varekøb udland,,2,Sheet1
+9424,Indgående moms - delvis fradragsret,,2,Sheet1
+9425,3. land ydelse modtagermoms K,,2,Sheet1
+9426,El-afgift,,2,Sheet1
+9430,Momsafregning,,2,Sheet1
+9431,Moms i alt,,3,Sheet1
+9432,Skyldige omk.,,4,Sheet1
+9433,Samlekonto kreditorer,,2,Sheet1
+9434,Afsat revisor,,2,Sheet1
+9435,Eurocard,,2,Sheet1
+9436,Skyldige Omkostninger,,2,Sheet1
+9438,Skyldige omk. I alt,,3,Sheet1
+9439,Skyldig løn,,4,Sheet1
+9440,Skyldig a-skat,,2,Sheet1
+9441,Afregnet a-skat,,2,Sheet1
+9442,Skyldig am-bidrag,,2,Sheet1
+9443,Afregnet am-bidrag,,2,Sheet1
+9446,Skyldig atp,,2,Sheet1
+9448,Skyldige feriepenge,,2,Sheet1
+9449,Feriepenge overgangsperiode,,2,Sheet1
+9450,Lønindeholdelse,,2,Sheet1
+9452,Skyldig løn,,2,Sheet1
+9455,Skyldig pension,,2,Sheet1
+9458,Skyldig løn i alt,,3,Sheet1
+9459,Anden gæld,,4,Sheet1
+9460,Mellemregning Hans,,2,Sheet1
+9461,Mellemregning HEL ApS,,2,Sheet1
+9462,Mellemregning Peter,,2,Sheet1
+9463,Mellemregning PG ApS,,2,Sheet1
+9464,Mellemregning Tobias,,2,Sheet1
+9465,Mellemregning Tokjo ApS,,2,Sheet1
+9466,Mellemregning Thomas,,2,Sheet1
+9467,Mellemregning Gammelvind Cons. ApS,,2,Sheet1
+9468,Modtagne forudbetalinger fra kunder,,2,Sheet1
+9469,Mellemregning TW Holding,,2,Sheet1
+9470,Skyldig bonus/tantieme,,2,Sheet1
+9471,Mellemregning TW Technology,,2,Sheet1
+9472,Mellemregning TW Cyber,,2,Sheet1
+9475,Afsatte feriepenge,,2,Sheet1
+9476,Regul. feriepengeforpl.,,2,Sheet1
+9478,Skyldig Udbytte Skat,,2,Sheet1
+9479,Selskabsskat,,2,Sheet1
+9480,Skyldig selskabsskat,,2,Sheet1
+9481,Sambeskatningsbidrag,,2,Sheet1
+9482,Langfristet skat,,2,Sheet1
+9485,Skattekonto,,2,Sheet1
+9498,Anden gæld i alt,,3,Sheet1
+9649,Udlæg,,4,Sheet1
+9650,Tommy Sørensen,,2,Sheet1
+9651,Udlæg Mette Buhl,,2,Sheet1
+9652,Elvi Nissen,,2,Sheet1
+9653,Simon Gomez,,2,Sheet1
+9654,SLUT Michala Jagd,,2,Sheet1
+9655,Udlæg Sofie Louise Andersen,,2,Sheet1
+9656,Udlæg Paula Høiby,,2,Sheet1
+9657,SLUT Simon Warthou,,2,Sheet1
+9658,SLUT  Anne Thomson,,2,Sheet1
+9659,SLUTJeanette K. Hansen,,2,Sheet1
+9660,Lars A. Beck Thomsen,,2,Sheet1
+9661,SLUT Gisla Faber,,2,Sheet1
+9662,SLUT Rikke Kallerup,,2,Sheet1
+9663,Michael Bruun Ellegaard,,2,Sheet1
+9664,SLUT Sofie,,2,Sheet1
+9665,Stephan Jensen,,2,Sheet1
+9666,SLUT Mimi,,2,Sheet1
+9667,SLUT Arni Einarsson,,2,Sheet1
+9668,SLUT Nikolai Hart,,2,Sheet1
+9669,Udlæg ialt,,3,Sheet1
+9670,kortfristet gæld ialt,,6,Sheet1
+9674,Marie Louise Daugaard,,2,Sheet1
+9675,SLUT Rene Rørmose Løjmand,,2,Sheet1
+9676,SLUT Morten Press,,2,Sheet1
+9677,SLUT Jane Maigaard,,2,Sheet1
+9678,SLUT Anne Walther Thomson,,2,Sheet1
+9679,SLUT Janni Thoft,,2,Sheet1
+9680,SLUT Konrad Kubak,,2,Sheet1
+9681,SLUT Oliver Skjønnemand,,2,Sheet1
+9682,Thomas Gadeberg,,2,Sheet1
+9683,SLUT Michala Christensen,,2,Sheet1
+9684,SLUT Henrik Hvid Jensen,,2,Sheet1
+9685,Rasmus Frandsen,,2,Sheet1
+9686,SLUT Mikkel Frederiksen,,2,Sheet1
+9687,Marie Myssing,,2,Sheet1
+9688,Nicklas Sandager,,2,Sheet1
+9689,Udlæg SLUT Brian K. Flaskager,,2,Sheet1
+9690,Udlæg SLUT Emilie Duedahl,,2,Sheet1
+9691,SLUT Christiane,,2,Sheet1
+9692,Udlæg SLUT Henrik Kjems,,2,Sheet1
+9693,Regitze,,2,Sheet1
+9694,SLUT Jan Borg,,2,Sheet1
+9695,SLUT Stefan Vesløev,,2,Sheet1
+9696,Sebastian Frandsen,,2,Sheet1
+9697,Thomas Buchholdt,,2,Sheet1
+9698,SLUT Martin Dam,,2,Sheet1
+9699,SLUT Anna Mette Hansen,,2,Sheet1
+9700,Signe Stoholm,,2,Sheet1
+9701,Rasmus Saltoft,,2,Sheet1
+9702,SLUT Emil Hauberg,,2,Sheet1
+9703,Jens Østervang,,2,Sheet1
+9704,Mathias Rasmussen,,2,Sheet1
+9705,danielle.vaever,,2,Sheet1
+9706,thomas.loeber,,2,Sheet1
+9707,nikolaj.marquard,,2,Sheet1
+9708,jacob.breindahl,,2,Sheet1
+9709,kurt.hansen,,2,Sheet1
+9710,marie.dorthea,,2,Sheet1
+9711,Emilie Kent,,2,Sheet1
+9712,Christine Islev-Noes,,2,Sheet1
+9713,Ida Hupfeld,,2,Sheet1
+9714,Anna Rønne Vang,,2,Sheet1
+9715,Letty Meszaros,,2,Sheet1
+9716,Anne Cathrine Andersen,,2,Sheet1
+9717,Linda Faurskov,,2,Sheet1
+9718,Tinna S. Nielsen,,2,Sheet1
+9719,Sarah Rasmussen,,2,Sheet1
+9720,Emillie Horneman,,2,Sheet1
+9721,Ditte Hjort,,2,Sheet1
+9722,Casper.Mellergaard,,2,Sheet1
+9723,Mathias Herbst-Jensen,,2,Sheet1
+9724,Johan Bach Hansen,,2,Sheet1
+9725,Helene Damsholt,,2,Sheet1
+9726,Lars.ole.kruse,,2,Sheet1
+9727,Sara Barzan,,2,Sheet1
+9728,Emma S.Andersen,,2,Sheet1
+9729,Lukas B Højland,,2,Sheet1
+9730,Amalie Obel,,2,Sheet1
+9731,Anette Luffe,,2,Sheet1
+9732,Niels Berg,,2,Sheet1
+9733,Lars Michael Brink,,2,Sheet1
+9734,Sandra H Andersen,,2,Sheet1
+9735,Sofie Østengård,,2,Sheet1
+9736,SLUT - Emil Tophøj,,2,Sheet1
+9737,Nicole Agger-Nielsen,,2,Sheet1
+9738,SLUT Jonas Ø Fisker,,2,Sheet1
+9739,Stinne Riis,,2,Sheet1
+9740,Kasper Kronborg,,2,Sheet1
+9741,Peter Lester,,2,Sheet1
+9742,Alberte Bang,,2,Sheet1
+9743,Christian I Olsen,,2,Sheet1
+9744,Jennifer Ravn,,2,Sheet1
+9745,SLUT - Arne Winther,,2,Sheet1
+9746,Christian Larsen,,2,Sheet1
+9747,Rebecca Mandrup,,2,Sheet1
+9748,Laura Lund,,2,Sheet1
+9749,Rasmus Møller,,2,Sheet1
+9750,Mads Christiansen,,2,Sheet1
+9751,Stefan Hansen,,2,Sheet1
+9752,Jonathan Frystyk,,2,Sheet1
+9753,Morten Lund,,2,Sheet1
+9754,Sarah Skipper,,2,Sheet1
+9755,Pernille Sørensen,,2,Sheet1
+9756,MINUS TW TECHEmil Tange,,2,Sheet1
+9757,MINUS TW TECH Anders Thøgersen,,2,Sheet1
+9758,MINUS TW TECH Henrik G Hansen,,2,Sheet1
+9759,MINUS TW TECH Rasmus Rask Andersen,,2,Sheet1
+9760,Thea Bech,,2,Sheet1
+9761,Nicolas Horst,,2,Sheet1
+9762,Andreas Nielsen,,2,Sheet1
+9763,André Kristensen,,2,Sheet1
+9764,Deni Klinac,,2,Sheet1
+9765,Trine Mikkelsen,,2,Sheet1
+9766,Niklas Rendboe,,2,Sheet1
+9767,Torben Dalgaard,,2,Sheet1
+9768,Malte Hyllested,,2,Sheet1
+9769,Simon Christensen,,2,Sheet1
+9770,Simon Brandt,,2,Sheet1
+9771,Lars Østergaard,,2,Sheet1
+9772,Caroline Tachieda,,2,Sheet1
+9773,Simon Brüel-Holler,,2,Sheet1
+9774,Mette Borch,,2,Sheet1
+9775,Manmeet Singh,,2,Sheet1
+9776,Victor From-Poulsen,,2,Sheet1
+9777,Ida Marie Iversen,,2,Sheet1
+9778,Camilla Edens,,2,Sheet1
+9779,Julie Kirpekar,,2,Sheet1
+9780,Gunilla Juul Lethenborg,,2,Sheet1
+9781,Caroline Saabye,,2,Sheet1
+9782,Tanja Kaufmann,,2,Sheet1
+9783,André Engsbye,,2,Sheet1
+9784,Jeppe Nikolajsen,,2,Sheet1
+9785,Nicolas de Teilmann,,2,Sheet1
+9786,Mikael Filtenborg,,2,Sheet1
+9787,Marcus Vielsted,,2,Sheet1
+9788,Tamara Jenic,,2,Sheet1
+9789,Jacob Boeskov,,2,Sheet1
+9790,Birger Püschl,,2,Sheet1
+9791,Emely Amlong,,2,Sheet1
+9792,Frederik Skov-Pedersen,,2,Sheet1
+9793,Nina Jakobsen,,2,Sheet1
+9794,Nichlas Halberg Madsen,,2,Sheet1
+9795,Mathias Hauge,,2,Sheet1
+9796,Mikal Weber,,2,Sheet1
+9797,Mia Jørgensen,,2,Sheet1
+9798,Alexander Fetterlein,,2,Sheet1
+9799,Camilla Alm,,2,Sheet1
+9800,Kamille Busch Hansen,,2,Sheet1
+9801,Mette Sander,,2,Sheet1
+9802,Matilde Toft Lund,,2,Sheet1
+9803,Charlotte Ellesøe,,2,Sheet1
+9804,Sara Vest,,2,Sheet1
+9805,Sandra Warming,,2,Sheet1
+9998,Fejlkonto,,2,Sheet1
+9999,PASSIVER I ALT,,6,Sheet1

@@ -1,0 +1,4682 @@
+{
+  "meta": {
+    "version": "1.0",
+    "language": "da",
+    "company_type": "it_management_consulting",
+    "generated_from": "Kontoplan.xlsx"
+  },
+  "rollups": {
+    "drinks_all": {
+      "name_da": "Drikkevarer (samlet)",
+      "includes": [
+        "non_alcoholic",
+        "alcoholic",
+        "beer",
+        "wine",
+        "spirits",
+        "coffee_tea",
+        "water",
+        "juice_smoothies",
+        "soda_energy"
+      ]
+    },
+    "drinks_non_alcoholic": {
+      "name_da": "Ikke-alkoholiske drikke",
+      "includes": [
+        "coffee_tea",
+        "water",
+        "juice_smoothies",
+        "soda_energy"
+      ]
+    },
+    "drinks_alcoholic": {
+      "name_da": "Alkoholiske drikke",
+      "includes": [
+        "beer",
+        "wine",
+        "spirits"
+      ]
+    },
+    "t_and_e": {
+      "name_da": "Travel & Entertainment",
+      "includes": [
+        "flights",
+        "hotels",
+        "rail",
+        "bus",
+        "taxi_rideshare",
+        "car_rental",
+        "fuel",
+        "parking",
+        "tolls_bridges",
+        "mileage_allowance",
+        "travel_incidentals",
+        "cafes_lunch",
+        "catering",
+        "office_lunch_scheme",
+        "groceries_office",
+        "snacks",
+        "fast_food",
+        "bakery_pastry",
+        "representation"
+      ]
+    },
+    "telecom": {
+      "name_da": "Telefoni & internet (samlet)",
+      "includes": [
+        "home_internet_employee",
+        "mobile_phone_data",
+        "office_internet",
+        "conferencing"
+      ]
+    },
+    "saas_all": {
+      "name_da": "SaaS (samlet)",
+      "includes": [
+        "saas_productivity",
+        "saas_dev",
+        "saas_comm",
+        "saas_hr_finance",
+        "saas_security"
+      ]
+    },
+    "cloud_all": {
+      "name_da": "Cloud & hosting (samlet)",
+      "includes": [
+        "cloud_aws",
+        "cloud_azure",
+        "cloud_gcp",
+        "hosting_domains_cdn",
+        "email_sms_api"
+      ]
+    },
+    "pass_through": {
+      "name_da": "Kundeudlæg (viderefakturering)",
+      "includes": [
+        "reimb_food",
+        "reimb_hotel",
+        "reimb_transport",
+        "reimb_other"
+      ]
+    }
+  },
+  "categories": [
+    {
+      "id": "food_drink",
+      "name_da": "Mad & drikke (samlet)",
+      "name_en": "Food & Drink (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "meals",
+      "name_da": "Måltider (mad)",
+      "name_en": "Meals (food)",
+      "parent": "food_drink",
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [
+        "frokost",
+        "lunch",
+        "aftensmad",
+        "mad",
+        "måltid"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "cafes_lunch",
+      "name_da": "Caféer & frokoststeder",
+      "name_en": "Cafés & lunch places",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "café",
+        "kaffebar",
+        "kaffebar",
+        "frokoststed",
+        "joej",
+        "joe & the juice",
+        "lagkagehuset",
+        "espresso house",
+        "kantine",
+        "lunch"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5812,
+        5814
+      ],
+      "gl_pattern_hints": [
+        "restaurant",
+        "café",
+        "frokost",
+        "kantine",
+        "catering"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3586",
+          "name": "Frokostordning"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "catering",
+      "name_da": "Catering & mødeforplejning",
+      "name_en": "Catering & meeting catering",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "catering",
+        "møde-forplejning",
+        "mødeforplejning",
+        "forplejning",
+        "buffet",
+        "platte"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5811,
+        5812
+      ],
+      "gl_pattern_hints": [
+        "catering",
+        "forplejning"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "office_lunch_scheme",
+      "name_da": "Frokostordning (kontor)",
+      "name_en": "Office lunch scheme",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "partial",
+      "synonyms": [
+        "frokostordning",
+        "kantineordning"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "frokostordning",
+        "kantine"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3586",
+          "name": "Frokostordning"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "groceries_office",
+      "name_da": "Dagligvarer til kontor/køkken",
+      "name_en": "Groceries for office/kitchen",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "supermarked",
+        "supermarket",
+        "netto",
+        "rema1000",
+        "føtex",
+        "bilka",
+        "meny",
+        "irony",
+        "coop",
+        "coop365",
+        "dagrofa"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5411,
+        5499
+      ],
+      "gl_pattern_hints": [
+        "dagligvarer",
+        "køkken",
+        "frugt",
+        "frugtordning",
+        "vand"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3721",
+          "name": "Vand"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "snacks",
+      "name_da": "Snacks & sødt",
+      "name_en": "Snacks & sweets",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "snacks",
+        "kage",
+        "chokolade",
+        "chips"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5499
+      ],
+      "gl_pattern_hints": [
+        "snacks",
+        "kage",
+        "chokolade"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "9689",
+          "name": "Udlæg SLUT Brian K. Flaskager"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "fast_food",
+      "name_da": "Fastfood",
+      "name_en": "Fast food",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "burger",
+        "shawarma",
+        "pizza",
+        "kebab",
+        "mcdonalds",
+        "burger king",
+        "subway"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5814
+      ],
+      "gl_pattern_hints": [
+        "fastfood"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "bakery_pastry",
+      "name_da": "Bager & konditori",
+      "name_en": "Bakery & pastry",
+      "parent": "meals",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "bager",
+        "konditori",
+        "brød",
+        "kager",
+        "lagkagehuset"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5462
+      ],
+      "gl_pattern_hints": [
+        "bager",
+        "konditori"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "beverages",
+      "name_da": "Drikkevarer (samlet)",
+      "name_en": "Beverages (all)",
+      "parent": "food_drink",
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "non_alcoholic",
+      "name_da": "Ikke-alkoholiske drikke",
+      "name_en": "Non-alcoholic drinks",
+      "parent": "beverages",
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "coffee_tea",
+      "name_da": "Kaffe & te",
+      "name_en": "Coffee & tea",
+      "parent": "non_alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "kaffe",
+        "espresso",
+        "americano",
+        "latte",
+        "cappuccino",
+        "te",
+        "tea"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5812,
+        5814
+      ],
+      "gl_pattern_hints": [
+        "kaffe",
+        "te"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "2104",
+          "name": "Konsulenthonorar Vattenfall"
+        },
+        {
+          "number": "2140",
+          "name": "Konsulenthonorar TW TECH"
+        },
+        {
+          "number": "2170",
+          "name": "Administration TW TECH"
+        },
+        {
+          "number": "3001",
+          "name": "DIREKTE OMKOSTNINGER"
+        },
+        {
+          "number": "3050",
+          "name": "Konsulentbistand TW TECH"
+        },
+        {
+          "number": "3070",
+          "name": "Administration TW Tech"
+        },
+        {
+          "number": "3111",
+          "name": "Forbrug intern tid"
+        },
+        {
+          "number": "3122",
+          "name": "Afregning intern tid"
+        },
+        {
+          "number": "3530",
+          "name": "Fri telefon"
+        },
+        {
+          "number": "3550",
+          "name": "B-indkomster"
+        },
+        {
+          "number": "3556",
+          "name": "Reg. Feriepengeforpligtelse"
+        },
+        {
+          "number": "3572",
+          "name": "Diæter"
+        },
+        {
+          "number": "3575",
+          "name": "Gaver og blomster"
+        },
+        {
+          "number": "3589",
+          "name": "Personale / Arrangementer uden moms"
+        },
+        {
+          "number": "3608",
+          "name": "Leje af testlokaler m.m."
+        },
+        {
+          "number": "3610",
+          "name": "Inspirationsmaterialer"
+        },
+        {
+          "number": "3725",
+          "name": "Fællesudgifter"
+        },
+        {
+          "number": "3998",
+          "name": "DIREKTE OMKOSTNINGER I ALT"
+        },
+        {
+          "number": "4008",
+          "name": "Gaver og blomster"
+        },
+        {
+          "number": "4015",
+          "name": "Arrangementer m/moms"
+        },
+        {
+          "number": "4016",
+          "name": "Arrangementer u/moms"
+        },
+        {
+          "number": "4031",
+          "name": "Hotel DK"
+        },
+        {
+          "number": "4040",
+          "name": "Kunde udlæg Hotel"
+        },
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        },
+        {
+          "number": "5250",
+          "name": "Blade, tidsskrifter, faglitteratur"
+        },
+        {
+          "number": "5258",
+          "name": "Kontingenter"
+        },
+        {
+          "number": "5259",
+          "name": "Kontingenter uden moms"
+        },
+        {
+          "number": "5799",
+          "name": "Kapacitetsomkostninger i alt"
+        },
+        {
+          "number": "6199",
+          "name": "**Resultat før renter**"
+        },
+        {
+          "number": "6500",
+          "name": "FINANSIELLE POSTER"
+        },
+        {
+          "number": "6800",
+          "name": "Renteindtægter mv."
+        },
+        {
+          "number": "6806",
+          "name": "Renteindtægt banker"
+        },
+        {
+          "number": "6810",
+          "name": "Renteindtægt debitorer"
+        },
+        {
+          "number": "6814",
+          "name": "Udbytte og renteindtægt på værdipapirer"
+        },
+        {
+          "number": "6818",
+          "name": "Andre renteindtægter"
+        },
+        {
+          "number": "6820",
+          "name": "Kursgevinster"
+        },
+        {
+          "number": "6849",
+          "name": "Renteindtægter i alt"
+        },
+        {
+          "number": "6850",
+          "name": "Renteudgifter mv."
+        },
+        {
+          "number": "6856",
+          "name": "Renteudgift banker"
+        },
+        {
+          "number": "6860",
+          "name": "Renteudgift kreditorer"
+        },
+        {
+          "number": "6864",
+          "name": "Andre renteudgifter"
+        },
+        {
+          "number": "6875",
+          "name": "Gebyr og renter off. Myndigheder"
+        },
+        {
+          "number": "6899",
+          "name": "Renteudgifter mv. i alt"
+        },
+        {
+          "number": "6999",
+          "name": "FINANSIELLE POSTER I ALT"
+        },
+        {
+          "number": "7990",
+          "name": "Afsat til udbytte"
+        },
+        {
+          "number": "8100",
+          "name": "Materielle anlægsaktiver"
+        },
+        {
+          "number": "8199",
+          "name": "Materielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8515",
+          "name": "Igangværende arbejder ekstern"
+        },
+        {
+          "number": "8690",
+          "name": "Periodeafgrænsningsposter"
+        },
+        {
+          "number": "8741",
+          "name": "Mastercard TK 3965698 Nykredit"
+        },
+        {
+          "number": "8742",
+          "name": "Mastercard TG 3965981 Nykredit"
+        },
+        {
+          "number": "8743",
+          "name": "Mastercard HEL 3966007 Nykredit"
+        },
+        {
+          "number": "9170",
+          "name": "Skyldig udbytte"
+        },
+        {
+          "number": "9175",
+          "name": "Ekstraordinær udbytte"
+        },
+        {
+          "number": "9400",
+          "name": "Kortfristet gæld"
+        },
+        {
+          "number": "9462",
+          "name": "Mellemregning Peter"
+        },
+        {
+          "number": "9471",
+          "name": "Mellemregning TW Technology"
+        },
+        {
+          "number": "9475",
+          "name": "Afsatte feriepenge"
+        },
+        {
+          "number": "9478",
+          "name": "Skyldig Udbytte Skat"
+        },
+        {
+          "number": "9482",
+          "name": "Langfristet skat"
+        },
+        {
+          "number": "9485",
+          "name": "Skattekonto"
+        },
+        {
+          "number": "9651",
+          "name": "Udlæg Mette Buhl"
+        },
+        {
+          "number": "9659",
+          "name": "SLUTJeanette K. Hansen"
+        },
+        {
+          "number": "9665",
+          "name": "Stephan Jensen"
+        },
+        {
+          "number": "9670",
+          "name": "kortfristet gæld ialt"
+        },
+        {
+          "number": "9676",
+          "name": "SLUT Morten Press"
+        },
+        {
+          "number": "9683",
+          "name": "SLUT Michala Christensen"
+        },
+        {
+          "number": "9695",
+          "name": "SLUT Stefan Vesløev"
+        },
+        {
+          "number": "9699",
+          "name": "SLUT Anna Mette Hansen"
+        },
+        {
+          "number": "9703",
+          "name": "Jens Østervang"
+        },
+        {
+          "number": "9721",
+          "name": "Ditte Hjort"
+        },
+        {
+          "number": "9731",
+          "name": "Anette Luffe"
+        },
+        {
+          "number": "9735",
+          "name": "Sofie Østengård"
+        },
+        {
+          "number": "9741",
+          "name": "Peter Lester"
+        },
+        {
+          "number": "9742",
+          "name": "Alberte Bang"
+        },
+        {
+          "number": "9751",
+          "name": "Stefan Hansen"
+        },
+        {
+          "number": "9753",
+          "name": "Morten Lund"
+        },
+        {
+          "number": "9756",
+          "name": "MINUS TW TECHEmil Tange"
+        },
+        {
+          "number": "9757",
+          "name": "MINUS TW TECH Anders Thøgersen"
+        },
+        {
+          "number": "9758",
+          "name": "MINUS TW TECH Henrik G Hansen"
+        },
+        {
+          "number": "9759",
+          "name": "MINUS TW TECH Rasmus Rask Andersen"
+        },
+        {
+          "number": "9763",
+          "name": "André Kristensen"
+        },
+        {
+          "number": "9768",
+          "name": "Malte Hyllested"
+        },
+        {
+          "number": "9769",
+          "name": "Simon Christensen"
+        },
+        {
+          "number": "9771",
+          "name": "Lars Østergaard"
+        },
+        {
+          "number": "9774",
+          "name": "Mette Borch"
+        },
+        {
+          "number": "9785",
+          "name": "Nicolas de Teilmann"
+        },
+        {
+          "number": "9786",
+          "name": "Mikael Filtenborg"
+        },
+        {
+          "number": "9787",
+          "name": "Marcus Vielsted"
+        },
+        {
+          "number": "9798",
+          "name": "Alexander Fetterlein"
+        },
+        {
+          "number": "9801",
+          "name": "Mette Sander"
+        },
+        {
+          "number": "9803",
+          "name": "Charlotte Ellesøe"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "water",
+      "name_da": "Vand",
+      "name_en": "Water",
+      "parent": "non_alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "vand",
+        "kildevand",
+        "sparkling",
+        "danskvand"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5499
+      ],
+      "gl_pattern_hints": [
+        "vand"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3721",
+          "name": "Vand"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "juice_smoothies",
+      "name_da": "Juice & smoothies",
+      "name_en": "Juice & smoothies",
+      "parent": "non_alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "juice",
+        "smoothie",
+        "fresh juice"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5499
+      ],
+      "gl_pattern_hints": [
+        "juice",
+        "smoothie"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "soda_energy",
+      "name_da": "Sodavand & energidrikke",
+      "name_en": "Soda & energy drinks",
+      "parent": "non_alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "sodavand",
+        "cola",
+        "fanta",
+        "sprite",
+        "energydrik",
+        "red bull",
+        "monster"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5499
+      ],
+      "gl_pattern_hints": [
+        "sodavand",
+        "cola",
+        "energi"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "9761",
+          "name": "Nicolas Horst"
+        },
+        {
+          "number": "9785",
+          "name": "Nicolas de Teilmann"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "alcoholic",
+      "name_da": "Alkoholiske drikke",
+      "name_en": "Alcoholic drinks",
+      "parent": "beverages",
+      "type": "group",
+      "vat_hint": "partial",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "beer",
+      "name_da": "Øl",
+      "name_en": "Beer",
+      "parent": "alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "øl",
+        "pilsner",
+        "ipa",
+        "lager"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5813,
+        5921
+      ],
+      "gl_pattern_hints": [
+        "øl"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "9749",
+          "name": "Rasmus Møller"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wine",
+      "name_da": "Vin",
+      "name_en": "Wine",
+      "parent": "alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "vin",
+        "rødvin",
+        "hvidvin",
+        "rose"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5813,
+        5921
+      ],
+      "gl_pattern_hints": [
+        "vin"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "6820",
+          "name": "Kursgevinster"
+        },
+        {
+          "number": "9467",
+          "name": "Mellemregning Gammelvind Cons. ApS"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "spirits",
+      "name_da": "Spiritus & cocktails",
+      "name_en": "Spirits & cocktails",
+      "parent": "alcoholic",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "spiritus",
+        "cocktails",
+        "whisky",
+        "gin",
+        "rom",
+        "vodka"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5813,
+        5921
+      ],
+      "gl_pattern_hints": [
+        "spiritus"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "representation",
+      "name_da": "Repræsentation (kundeunderholdning)",
+      "name_en": "Representation (client entertainment)",
+      "parent": "food_drink",
+      "type": "spend",
+      "vat_hint": "partial",
+      "synonyms": [
+        "repræsentation",
+        "kundeunderholdning",
+        "restaurationsbesøg"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "repræsentation",
+        "restaurationsbesøg",
+        "underholdning",
+        "kunde"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3020",
+          "name": "Afholdelse af kursus kunder"
+        },
+        {
+          "number": "3591",
+          "name": "Restaurationsbesøg overarb. mv."
+        },
+        {
+          "number": "4006",
+          "name": "Restaurationsbesøg m/delv. Fradragsret"
+        },
+        {
+          "number": "4007",
+          "name": "Kunde udlæg mad"
+        },
+        {
+          "number": "4020",
+          "name": "Anden repræsentation"
+        },
+        {
+          "number": "4040",
+          "name": "Kunde udlæg Hotel"
+        },
+        {
+          "number": "4041",
+          "name": "Kunde udlæg office"
+        },
+        {
+          "number": "4042",
+          "name": "Kunde udlæg transport"
+        },
+        {
+          "number": "5234",
+          "name": "Kunde udlæg office"
+        },
+        {
+          "number": "9468",
+          "name": "Modtagne forudbetalinger fra kunder"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "travel_transport",
+      "name_da": "Rejser & transport (samlet)",
+      "name_en": "Travel & transport (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "flights",
+      "name_da": "Flybilletter",
+      "name_en": "Air travel",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "fly",
+        "flight",
+        "sas",
+        "norwegian",
+        "ryanair"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4511
+      ],
+      "gl_pattern_hints": [
+        "fly"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "hotels",
+      "name_da": "Hotel & logi",
+      "name_en": "Hotels & lodging",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "hotel",
+        "overnatning",
+        "logi"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7011
+      ],
+      "gl_pattern_hints": [
+        "hotel",
+        "ophold",
+        "overnatning"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3680",
+          "name": "Rejser og ophold ifm. Opgaver"
+        },
+        {
+          "number": "3682",
+          "name": "Rejser og ophold ifm opgaver m/delv. Moms"
+        },
+        {
+          "number": "4030",
+          "name": "Rejser og ophold"
+        },
+        {
+          "number": "4031",
+          "name": "Hotel DK"
+        },
+        {
+          "number": "4032",
+          "name": "Rejser og ophold m/delv. Fradragsret"
+        },
+        {
+          "number": "4040",
+          "name": "Kunde udlæg Hotel"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "rail",
+      "name_da": "Tog",
+      "name_en": "Rail",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "tog",
+        "dsb"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4112
+      ],
+      "gl_pattern_hints": [
+        "tog"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4050",
+          "name": "Taxa/tog/bus"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "bus",
+      "name_da": "Bus",
+      "name_en": "Bus",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "bus"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4131
+      ],
+      "gl_pattern_hints": [
+        "bus"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4050",
+          "name": "Taxa/tog/bus"
+        },
+        {
+          "number": "9800",
+          "name": "Kamille Busch Hansen"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "taxi_rideshare",
+      "name_da": "Taxi & rideshare",
+      "name_en": "Taxi & rideshare",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "taxa",
+        "taxi",
+        "uber",
+        "bolt"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4121
+      ],
+      "gl_pattern_hints": [
+        "taxa",
+        "taxi"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4050",
+          "name": "Taxa/tog/bus"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "car_rental",
+      "name_da": "Lejebiler",
+      "name_en": "Car rental",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "lejebil",
+        "rental car",
+        "avis",
+        "hertz",
+        "europcar",
+        "sixt"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7512
+      ],
+      "gl_pattern_hints": [
+        "lejebil",
+        "rental"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "fuel",
+      "name_da": "Brændstof",
+      "name_en": "Fuel",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "benzin",
+        "diesel",
+        "tank"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5541,
+        5542
+      ],
+      "gl_pattern_hints": [
+        "benzin",
+        "diesel",
+        "brændstof"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "parking",
+      "name_da": "Parkering",
+      "name_en": "Parking",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "parkering",
+        "p-afgift",
+        "parkeringsafgift"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7523
+      ],
+      "gl_pattern_hints": [
+        "parkering",
+        "p-"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3705",
+          "name": "Parkeringsplads"
+        },
+        {
+          "number": "4055",
+          "name": "Parkering"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "tolls_bridges",
+      "name_da": "Bro & vejafgifter",
+      "name_en": "Tolls & bridges",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "storebælt",
+        "øresund",
+        "broafgift",
+        "vejafgift"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4784
+      ],
+      "gl_pattern_hints": [
+        "broafgift",
+        "storebælt",
+        "øresund",
+        "ørestund",
+        "ø",
+        "vejafgift"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "1000",
+          "name": "Resultatopgørelse"
+        },
+        {
+          "number": "3501",
+          "name": "Lønninger"
+        },
+        {
+          "number": "3502",
+          "name": "Løn AM-grundlag"
+        },
+        {
+          "number": "3583",
+          "name": "Danløn"
+        },
+        {
+          "number": "3585",
+          "name": "Personale- og mødeomkostninger uden moms"
+        },
+        {
+          "number": "3591",
+          "name": "Restaurationsbesøg overarb. mv."
+        },
+        {
+          "number": "3597",
+          "name": "Lønrefusion sygeforsikring"
+        },
+        {
+          "number": "3599",
+          "name": "Lønninger i alt"
+        },
+        {
+          "number": "3620",
+          "name": "Arbejdstøj"
+        },
+        {
+          "number": "3621",
+          "name": "Køb EU"
+        },
+        {
+          "number": "3729",
+          "name": "Rengøring og rengøringsmidler"
+        },
+        {
+          "number": "3730",
+          "name": "El afgift tilbageført"
+        },
+        {
+          "number": "4006",
+          "name": "Restaurationsbesøg m/delv. Fradragsret"
+        },
+        {
+          "number": "4061",
+          "name": "Broafgift m/moms (alle plader Øresund)"
+        },
+        {
+          "number": "4066",
+          "name": "Storebælt u/moms (hvide plader)"
+        },
+        {
+          "number": "4090",
+          "name": "Velgørenhed"
+        },
+        {
+          "number": "4099",
+          "name": "**Markedsføringsbidrag**"
+        },
+        {
+          "number": "5228",
+          "name": "Køb EU"
+        },
+        {
+          "number": "5229",
+          "name": "Køb 3. Lande"
+        },
+        {
+          "number": "5299",
+          "name": "Øvrige administrationsomk. i alt"
+        },
+        {
+          "number": "6199",
+          "name": "**Resultat før renter**"
+        },
+        {
+          "number": "7070",
+          "name": "**Resultat før skat**"
+        },
+        {
+          "number": "8635",
+          "name": "A/c løn"
+        },
+        {
+          "number": "8642",
+          "name": "Tilgode vedr. fejloverførsel"
+        },
+        {
+          "number": "9180",
+          "name": "Overført fra tidligere år"
+        },
+        {
+          "number": "9419",
+          "name": "Moms af EU varekøb"
+        },
+        {
+          "number": "9421",
+          "name": "EU ydelseskøb modtagermoms K"
+        },
+        {
+          "number": "9422",
+          "name": "Moms af varekøb udland"
+        },
+        {
+          "number": "9439",
+          "name": "Skyldig løn"
+        },
+        {
+          "number": "9450",
+          "name": "Lønindeholdelse"
+        },
+        {
+          "number": "9452",
+          "name": "Skyldig løn"
+        },
+        {
+          "number": "9458",
+          "name": "Skyldig løn i alt"
+        },
+        {
+          "number": "9650",
+          "name": "Tommy Sørensen"
+        },
+        {
+          "number": "9656",
+          "name": "Udlæg Paula Høiby"
+        },
+        {
+          "number": "9675",
+          "name": "SLUT Rene Rørmose Løjmand"
+        },
+        {
+          "number": "9681",
+          "name": "SLUT Oliver Skjønnemand"
+        },
+        {
+          "number": "9695",
+          "name": "SLUT Stefan Vesløev"
+        },
+        {
+          "number": "9703",
+          "name": "Jens Østervang"
+        },
+        {
+          "number": "9714",
+          "name": "Anna Rønne Vang"
+        },
+        {
+          "number": "9729",
+          "name": "Lukas B Højland"
+        },
+        {
+          "number": "9735",
+          "name": "Sofie Østengård"
+        },
+        {
+          "number": "9736",
+          "name": "SLUT - Emil Tophøj"
+        },
+        {
+          "number": "9738",
+          "name": "SLUT Jonas Ø Fisker"
+        },
+        {
+          "number": "9749",
+          "name": "Rasmus Møller"
+        },
+        {
+          "number": "9755",
+          "name": "Pernille Sørensen"
+        },
+        {
+          "number": "9757",
+          "name": "MINUS TW TECH Anders Thøgersen"
+        },
+        {
+          "number": "9771",
+          "name": "Lars Østergaard"
+        },
+        {
+          "number": "9797",
+          "name": "Mia Jørgensen"
+        },
+        {
+          "number": "9803",
+          "name": "Charlotte Ellesøe"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "mileage_allowance",
+      "name_da": "Kørselsgodtgørelse",
+      "name_en": "Mileage allowance",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "kørselsgodtgørelse",
+        "km-godtgørelse"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kørselsgodtgørelse",
+        "km",
+        "kilometer"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3570",
+          "name": "KM penge 3,73/km til 20.000 km, så 2,10/km"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "travel_incidentals",
+      "name_da": "Øvrige rejseomkostninger",
+      "name_en": "Travel incidentals",
+      "parent": "travel_transport",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "rejseomkostninger",
+        "diæter",
+        "per diem",
+        "bagage",
+        "visa"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "rejse",
+        "diæt",
+        "bagage",
+        "visa"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3572",
+          "name": "Diæter"
+        },
+        {
+          "number": "3680",
+          "name": "Rejser og ophold ifm. Opgaver"
+        },
+        {
+          "number": "3682",
+          "name": "Rejser og ophold ifm opgaver m/delv. Moms"
+        },
+        {
+          "number": "4030",
+          "name": "Rejser og ophold"
+        },
+        {
+          "number": "4032",
+          "name": "Rejser og ophold m/delv. Fradragsret"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "telecom_internet",
+      "name_da": "Telefoni & internet (samlet)",
+      "name_en": "Telecom & internet (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "home_internet_employee",
+      "name_da": "Hjemmeinternet (ansatte)",
+      "name_en": "Home internet (employees)",
+      "parent": "telecom_internet",
+      "type": "spend",
+      "vat_hint": "partial",
+      "synonyms": [
+        "hjemmeinternet",
+        "internet hjemme",
+        "bredbånd",
+        "fiber"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4814
+      ],
+      "gl_pattern_hints": [
+        "internet",
+        "bredbånd",
+        "fiber",
+        "halv moms"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5219",
+          "name": "IT Hardware mv. m halv moms"
+        },
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "mobile_phone_data",
+      "name_da": "Mobiltelefon & data",
+      "name_en": "Mobile phone & data",
+      "parent": "telecom_internet",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "mobil",
+        "telefon",
+        "mobilabonnement",
+        "data"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4814
+      ],
+      "gl_pattern_hints": [
+        "telefon",
+        "mobil"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3530",
+          "name": "Fri telefon"
+        },
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "office_internet",
+      "name_da": "Internet & fastnet (kontor)",
+      "name_en": "Office internet & landline",
+      "parent": "telecom_internet",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "internet",
+        "fastnet",
+        "bredbånd",
+        "fiber"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4814
+      ],
+      "gl_pattern_hints": [
+        "internet",
+        "fastnet"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "conferencing",
+      "name_da": "Møde-/konferenceløsninger",
+      "name_en": "Meeting/conferencing",
+      "parent": "telecom_internet",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "zoom",
+        "teams",
+        "webex",
+        "meet",
+        "konference"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4814,
+        4899
+      ],
+      "gl_pattern_hints": [
+        "zoom",
+        "konference",
+        "meeting"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3560",
+          "name": "Kurser/udd./konferencer"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "software_cloud",
+      "name_da": "Software, licenser & cloud (samlet)",
+      "name_en": "Software, licenses & cloud (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "saas_productivity",
+      "name_da": "SaaS: produktivitet (M365/GWS)",
+      "name_en": "SaaS: productivity (M365/GWS)",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "microsoft 365",
+        "office 365",
+        "google workspace",
+        "g suite"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        5818,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "software",
+        "licens",
+        "licenser",
+        "microsoft",
+        "google"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5214",
+          "name": "Software"
+        },
+        {
+          "number": "5216",
+          "name": "Software  EU Y"
+        },
+        {
+          "number": "5217",
+          "name": "Software Udland"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "saas_dev",
+      "name_da": "SaaS: udviklingsværktøjer",
+      "name_en": "SaaS: dev tools",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "github",
+        "gitlab",
+        "bitbucket",
+        "atlassian",
+        "jira",
+        "confluence",
+        "jetbrains"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "github",
+        "atlassian",
+        "jira",
+        "confluence",
+        "jetbrains"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "saas_comm",
+      "name_da": "SaaS: kommunikation",
+      "name_en": "SaaS: communication",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "slack",
+        "zoom",
+        "teams",
+        "loom",
+        "voip"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        4814
+      ],
+      "gl_pattern_hints": [
+        "slack",
+        "zoom",
+        "teams"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "saas_hr_finance",
+      "name_da": "SaaS: HR & finans",
+      "name_en": "SaaS: HR & finance",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "e-conomic",
+        "economic",
+        "pleo",
+        "salary",
+        "zenegy"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "e-conomic",
+        "economic",
+        "pleo",
+        "salary",
+        "zenegy"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "8740",
+          "name": "Pleo"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "saas_security",
+      "name_da": "SaaS: sikkerhed (SSO/Password)",
+      "name_en": "SaaS: security (SSO/Password)",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "okta",
+        "onelogin",
+        "1password",
+        "lastpass"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "okta",
+        "1password",
+        "lastpass"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "cloud_aws",
+      "name_da": "Cloud: AWS",
+      "name_en": "Cloud: AWS",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "aws",
+        "amazon web services"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "aws"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "cloud_azure",
+      "name_da": "Cloud: Azure",
+      "name_en": "Cloud: Azure",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "azure",
+        "microsoft azure"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "azure"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "cloud_gcp",
+      "name_da": "Cloud: GCP",
+      "name_en": "Cloud: GCP",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "gcp",
+        "google cloud"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734,
+        7399
+      ],
+      "gl_pattern_hints": [
+        "gcp",
+        "google cloud"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "hosting_domains_cdn",
+      "name_da": "Hosting, domæner & CDN",
+      "name_en": "Hosting, domains & CDN",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "domæne",
+        "domain",
+        "dns",
+        "cdn",
+        "cloudflare",
+        "letsencrypt",
+        "hosted"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4816,
+        4899
+      ],
+      "gl_pattern_hints": [
+        "domæne",
+        "domain",
+        "hosting",
+        "dns",
+        "cdn",
+        "cloudflare"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "email_sms_api",
+      "name_da": "E-mail/SMS API'er",
+      "name_en": "Email/SMS APIs",
+      "parent": "software_cloud",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "sendgrid",
+        "mailgun",
+        "postmark",
+        "twilio",
+        "sms"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4899,
+        4814
+      ],
+      "gl_pattern_hints": [
+        "sendgrid",
+        "mailgun",
+        "postmark",
+        "twilio",
+        "sms"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "it_equipment",
+      "name_da": "IT-udstyr & reparation (samlet)",
+      "name_en": "IT equipment & repairs (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "laptops",
+      "name_da": "Computere & bærbare",
+      "name_en": "Computers & laptops",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "bærbar",
+        "laptop",
+        "macbook",
+        "pc",
+        "computer"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "bærbar",
+        "laptop",
+        "pc",
+        "computer"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "desktops",
+      "name_da": "Stationære PC'er",
+      "name_en": "Desktops",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "desktop",
+        "stationær"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "stationær",
+        "desktop"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "monitors",
+      "name_da": "Skærme",
+      "name_en": "Monitors",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "skærm",
+        "monitor"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "skærm",
+        "monitor"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "peripherals",
+      "name_da": "Tilbehør (tastatur, mus, dock)",
+      "name_en": "Peripherals (keyboard, mouse, dock)",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "tastatur",
+        "keyboard",
+        "mus",
+        "mouse",
+        "dock",
+        "dok",
+        "hub",
+        "adapter"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "tastatur",
+        "keyboard",
+        "mus",
+        "dock",
+        "adapter"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "9685",
+          "name": "Rasmus Frandsen"
+        },
+        {
+          "number": "9701",
+          "name": "Rasmus Saltoft"
+        },
+        {
+          "number": "9704",
+          "name": "Mathias Rasmussen"
+        },
+        {
+          "number": "9719",
+          "name": "Sarah Rasmussen"
+        },
+        {
+          "number": "9749",
+          "name": "Rasmus Møller"
+        },
+        {
+          "number": "9759",
+          "name": "MINUS TW TECH Rasmus Rask Andersen"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "phones_tablets",
+      "name_da": "Mobiltelefoner & tablets",
+      "name_en": "Mobile phones & tablets",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "iphone",
+        "android",
+        "tablet",
+        "ipad",
+        "telefon"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "telefon",
+        "tablet",
+        "iphone",
+        "ipad"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3530",
+          "name": "Fri telefon"
+        },
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "cables_accessories",
+      "name_da": "Kabler & småtilbehør",
+      "name_en": "Cables & small accessories",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "kabel",
+        "kabler",
+        "hdmi",
+        "usb",
+        "thunderbolt",
+        "oplader",
+        "charger"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kabel",
+        "kabler",
+        "oplader",
+        "adapter"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "it_repairs",
+      "name_da": "Reparation & vedligehold (IT)",
+      "name_en": "Repairs & maintenance (IT)",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "reparation",
+        "repair",
+        "serviceaftale"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "rep",
+        "reparation",
+        "vedligehold"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3636",
+          "name": "Rep./vedl. Maskiner/redskaber"
+        },
+        {
+          "number": "3737",
+          "name": "Rep./vedl. Lokaler"
+        },
+        {
+          "number": "4020",
+          "name": "Anden repræsentation"
+        },
+        {
+          "number": "5224",
+          "name": "Rep. og vedl. af inventar"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "it_warranty_support",
+      "name_da": "Garanti/support (IT)",
+      "name_en": "Warranty/support (IT)",
+      "parent": "it_equipment",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "garanti",
+        "warranty",
+        "supportaftale"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "garanti",
+        "support"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "6885",
+          "name": "Garanti"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "office_facilities",
+      "name_da": "Kontor & faciliteter (samlet)",
+      "name_en": "Office & facilities (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "rent_lease",
+      "name_da": "Husleje & lejemål",
+      "name_en": "Rent & lease",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "husleje",
+        "leje",
+        "lejemål"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3607",
+          "name": "Leje driftsmidler"
+        },
+        {
+          "number": "3608",
+          "name": "Leje af testlokaler m.m."
+        },
+        {
+          "number": "3701",
+          "name": "Husleje"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "utilities_electric",
+      "name_da": "Forsyning: El",
+      "name_en": "Utilities: electricity",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "el",
+        "elektricitet",
+        "strøm"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "1000",
+          "name": "Resultatopgørelse"
+        },
+        {
+          "number": "2120",
+          "name": "Afholdelses af kursus"
+        },
+        {
+          "number": "3020",
+          "name": "Afholdelse af kursus kunder"
+        },
+        {
+          "number": "3530",
+          "name": "Fri telefon"
+        },
+        {
+          "number": "3556",
+          "name": "Reg. Feriepengeforpligtelse"
+        },
+        {
+          "number": "3601",
+          "name": "Transport og forsendelse med moms"
+        },
+        {
+          "number": "3602",
+          "name": "Transport og forsendelse u/moms"
+        },
+        {
+          "number": "3682",
+          "name": "Rejser og ophold ifm opgaver m/delv. Moms"
+        },
+        {
+          "number": "3709",
+          "name": "El afgift"
+        },
+        {
+          "number": "3730",
+          "name": "El afgift tilbageført"
+        },
+        {
+          "number": "4006",
+          "name": "Restaurationsbesøg m/delv. Fradragsret"
+        },
+        {
+          "number": "4031",
+          "name": "Hotel DK"
+        },
+        {
+          "number": "4032",
+          "name": "Rejser og ophold m/delv. Fradragsret"
+        },
+        {
+          "number": "4040",
+          "name": "Kunde udlæg Hotel"
+        },
+        {
+          "number": "4090",
+          "name": "Velgørenhed"
+        },
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        },
+        {
+          "number": "6500",
+          "name": "FINANSIELLE POSTER"
+        },
+        {
+          "number": "6999",
+          "name": "FINANSIELLE POSTER I ALT"
+        },
+        {
+          "number": "8100",
+          "name": "Materielle anlægsaktiver"
+        },
+        {
+          "number": "8199",
+          "name": "Materielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8200",
+          "name": "Finansielle anlægsaktiver"
+        },
+        {
+          "number": "8299",
+          "name": "Finansielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8501",
+          "name": "Varelager"
+        },
+        {
+          "number": "8642",
+          "name": "Tilgode vedr. fejloverførsel"
+        },
+        {
+          "number": "8743",
+          "name": "Mastercard HEL 3966007 Nykredit"
+        },
+        {
+          "number": "9421",
+          "name": "EU ydelseskøb modtagermoms K"
+        },
+        {
+          "number": "9424",
+          "name": "Indgående moms - delvis fradragsret"
+        },
+        {
+          "number": "9425",
+          "name": "3. land ydelse modtagermoms K"
+        },
+        {
+          "number": "9426",
+          "name": "El-afgift"
+        },
+        {
+          "number": "9450",
+          "name": "Lønindeholdelse"
+        },
+        {
+          "number": "9460",
+          "name": "Mellemregning Hans"
+        },
+        {
+          "number": "9461",
+          "name": "Mellemregning HEL ApS"
+        },
+        {
+          "number": "9462",
+          "name": "Mellemregning Peter"
+        },
+        {
+          "number": "9463",
+          "name": "Mellemregning PG ApS"
+        },
+        {
+          "number": "9464",
+          "name": "Mellemregning Tobias"
+        },
+        {
+          "number": "9465",
+          "name": "Mellemregning Tokjo ApS"
+        },
+        {
+          "number": "9466",
+          "name": "Mellemregning Thomas"
+        },
+        {
+          "number": "9467",
+          "name": "Mellemregning Gammelvind Cons. ApS"
+        },
+        {
+          "number": "9469",
+          "name": "Mellemregning TW Holding"
+        },
+        {
+          "number": "9471",
+          "name": "Mellemregning TW Technology"
+        },
+        {
+          "number": "9472",
+          "name": "Mellemregning TW Cyber"
+        },
+        {
+          "number": "9479",
+          "name": "Selskabsskat"
+        },
+        {
+          "number": "9480",
+          "name": "Skyldig selskabsskat"
+        },
+        {
+          "number": "9652",
+          "name": "Elvi Nissen"
+        },
+        {
+          "number": "9663",
+          "name": "Michael Bruun Ellegaard"
+        },
+        {
+          "number": "9686",
+          "name": "SLUT Mikkel Frederiksen"
+        },
+        {
+          "number": "9705",
+          "name": "danielle.vaever"
+        },
+        {
+          "number": "9713",
+          "name": "Ida Hupfeld"
+        },
+        {
+          "number": "9718",
+          "name": "Tinna S. Nielsen"
+        },
+        {
+          "number": "9722",
+          "name": "Casper.Mellergaard"
+        },
+        {
+          "number": "9725",
+          "name": "Helene Damsholt"
+        },
+        {
+          "number": "9730",
+          "name": "Amalie Obel"
+        },
+        {
+          "number": "9732",
+          "name": "Niels Berg"
+        },
+        {
+          "number": "9733",
+          "name": "Lars Michael Brink"
+        },
+        {
+          "number": "9737",
+          "name": "Nicole Agger-Nielsen"
+        },
+        {
+          "number": "9762",
+          "name": "Andreas Nielsen"
+        },
+        {
+          "number": "9765",
+          "name": "Trine Mikkelsen"
+        },
+        {
+          "number": "9773",
+          "name": "Simon Brüel-Holler"
+        },
+        {
+          "number": "9786",
+          "name": "Mikael Filtenborg"
+        },
+        {
+          "number": "9787",
+          "name": "Marcus Vielsted"
+        },
+        {
+          "number": "9791",
+          "name": "Emely Amlong"
+        },
+        {
+          "number": "9803",
+          "name": "Charlotte Ellesøe"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "utilities_heating",
+      "name_da": "Forsyning: Varme",
+      "name_en": "Utilities: heating",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "varme",
+        "fjernvarme",
+        "gas"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3717",
+          "name": "Varme"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "utilities_water",
+      "name_da": "Forsyning: Vand",
+      "name_en": "Utilities: water",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [
+        "drikkevand"
+      ],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "vand"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3721",
+          "name": "Vand"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "cleaning",
+      "name_da": "Rengøring",
+      "name_en": "Cleaning",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "rengøring",
+        "rengoering"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3729",
+          "name": "Rengøring og rengøringsmidler"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "office_supplies",
+      "name_da": "Kontorartikler",
+      "name_en": "Office supplies",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kontorartikler",
+        "papir",
+        "penne",
+        "whiteboard"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5233",
+          "name": "Kontorartikler"
+        },
+        {
+          "number": "6814",
+          "name": "Udbytte og renteindtægt på værdipapirer"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "printing",
+      "name_da": "Print & tryk",
+      "name_en": "Printing",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "print",
+        "tryksager",
+        "printer",
+        "toner"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4003",
+          "name": "Annoncer, reklame og tryksager"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "furniture",
+      "name_da": "Inventar & møbler",
+      "name_en": "Furniture & fixtures",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "inventar",
+        "møbler",
+        "moebler",
+        "stol",
+        "bord"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5222",
+          "name": "Inventar (under 33.100/14)"
+        },
+        {
+          "number": "5224",
+          "name": "Rep. og vedl. af inventar"
+        },
+        {
+          "number": "6150",
+          "name": "Afskrivning Inventar"
+        },
+        {
+          "number": "6870",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "8150",
+          "name": "Inventar"
+        },
+        {
+          "number": "8151",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "8152",
+          "name": "Tilgang Inventar"
+        },
+        {
+          "number": "8154",
+          "name": "Afgang Inventar"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "plants_decor",
+      "name_da": "Planter & dekoration",
+      "name_en": "Plants & decor",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "planter",
+        "dekoration",
+        "blomster"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3575",
+          "name": "Gaver og blomster"
+        },
+        {
+          "number": "3745",
+          "name": "Dekoration kontoret"
+        },
+        {
+          "number": "4001",
+          "name": "Dekoration"
+        },
+        {
+          "number": "4008",
+          "name": "Gaver og blomster"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "facility_repairs",
+      "name_da": "Reparation & vedligehold (facilitet)",
+      "name_en": "Repairs & maintenance (facility)",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "reparation",
+        "vedligehold",
+        "serviceaftale"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "postage_shipping",
+      "name_da": "Porto & forsendelse",
+      "name_en": "Postage & shipping",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "porto",
+        "forsendelse",
+        "fragt",
+        "postnord",
+        "gls",
+        "dao"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3601",
+          "name": "Transport og forsendelse med moms"
+        },
+        {
+          "number": "3602",
+          "name": "Transport og forsendelse u/moms"
+        },
+        {
+          "number": "5237",
+          "name": "Porto"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "security_alarm_access",
+      "name_da": "Alarm & adgang",
+      "name_en": "Alarm & access",
+      "parent": "office_facilities",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "alarm",
+        "adgang",
+        "adgangskort",
+        "sikkerhed"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3735",
+          "name": "Alarm"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "sales_marketing",
+      "name_da": "Salg & marketing (samlet)",
+      "name_en": "Sales & marketing (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "advertising_online",
+      "name_da": "Annoncer: Online",
+      "name_en": "Advertising: online",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7311
+      ],
+      "gl_pattern_hints": [
+        "annoncer",
+        "ads",
+        "google ads",
+        "facebook ads",
+        "linkedin ads"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3705",
+          "name": "Parkeringsplads"
+        },
+        {
+          "number": "4003",
+          "name": "Annoncer, reklame og tryksager"
+        },
+        {
+          "number": "9750",
+          "name": "Mads Christiansen"
+        },
+        {
+          "number": "9794",
+          "name": "Nichlas Halberg Madsen"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "advertising_offline",
+      "name_da": "Annoncer: Offline/tryksager",
+      "name_en": "Advertising: offline/print",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7311
+      ],
+      "gl_pattern_hints": [
+        "annoncer",
+        "tryksager",
+        "plakater"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4003",
+          "name": "Annoncer, reklame og tryksager"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "seo_sem",
+      "name_da": "SEO/SEM værktøjer",
+      "name_en": "SEO/SEM tools",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7311,
+        5734
+      ],
+      "gl_pattern_hints": [
+        "seo",
+        "sem",
+        "ahrefs",
+        "semrush"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "events_fairs",
+      "name_da": "Messer & events",
+      "name_en": "Trade shows & events",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7392
+      ],
+      "gl_pattern_hints": [
+        "messe",
+        "event",
+        "konference",
+        "stand"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3010",
+          "name": "Konsulentbistand"
+        },
+        {
+          "number": "3050",
+          "name": "Konsulentbistand TW TECH"
+        },
+        {
+          "number": "3055",
+          "name": "Konsulentbistand TW CYBER"
+        },
+        {
+          "number": "3560",
+          "name": "Kurser/udd./konferencer"
+        },
+        {
+          "number": "4004",
+          "name": "Messer mv. m/moms"
+        },
+        {
+          "number": "5275",
+          "name": "Konsulentbistand"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "sponsorships",
+      "name_da": "Sponsorater",
+      "name_en": "Sponsorships",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7399
+      ],
+      "gl_pattern_hints": [
+        "sponsor"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4002",
+          "name": "Sponsorat"
+        },
+        {
+          "number": "4005",
+          "name": "Sponsor u/moms"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "gifts_flowers_promo",
+      "name_da": "Gaver, blomster & promotion",
+      "name_en": "Gifts, flowers & promo",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5947,
+        5943
+      ],
+      "gl_pattern_hints": [
+        "gaver",
+        "blomster",
+        "merch",
+        "promotion"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3002",
+          "name": "Vareforbrug opgaver"
+        },
+        {
+          "number": "3575",
+          "name": "Gaver og blomster"
+        },
+        {
+          "number": "3680",
+          "name": "Rejser og ophold ifm. Opgaver"
+        },
+        {
+          "number": "3682",
+          "name": "Rejser og ophold ifm opgaver m/delv. Moms"
+        },
+        {
+          "number": "4008",
+          "name": "Gaver og blomster"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "marketing_other",
+      "name_da": "Øvrig marketing",
+      "name_en": "Other marketing",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "marketing",
+        "reklame"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4003",
+          "name": "Annoncer, reklame og tryksager"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "website_marketing_hosting",
+      "name_da": "Web/marketing hosting & værktøjer",
+      "name_en": "Web/marketing hosting & tools",
+      "parent": "sales_marketing",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        4899,
+        5734
+      ],
+      "gl_pattern_hints": [
+        "wordpress",
+        "webhotel",
+        "hosting",
+        "mailchimp",
+        "hubspot"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "external_advisors",
+      "name_da": "Eksterne rådgivere (samlet)",
+      "name_en": "External advisors (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "legal_services",
+      "name_da": "Juridisk bistand",
+      "name_en": "Legal services",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        8111
+      ],
+      "gl_pattern_hints": [
+        "juridisk",
+        "advokat",
+        "legal"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5268",
+          "name": "Advokat"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "audit_accounting",
+      "name_da": "Revision & regnskab",
+      "name_en": "Audit & accounting",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        8931
+      ],
+      "gl_pattern_hints": [
+        "revision",
+        "revisor",
+        "regnskab",
+        "bogføring"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5247",
+          "name": "Regnskab og administration"
+        },
+        {
+          "number": "5270",
+          "name": "Revisor"
+        },
+        {
+          "number": "9434",
+          "name": "Afsat revisor"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "tax_advisory",
+      "name_da": "Skatterådgivning",
+      "name_en": "Tax advisory",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        8931
+      ],
+      "gl_pattern_hints": [
+        "skat",
+        "tax"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4050",
+          "name": "Taxa/tog/bus"
+        },
+        {
+          "number": "7070",
+          "name": "**Resultat før skat**"
+        },
+        {
+          "number": "7090",
+          "name": "Skat af årets resultat"
+        },
+        {
+          "number": "7091",
+          "name": "Skat tidligere år"
+        },
+        {
+          "number": "7092",
+          "name": "Udskudt skat"
+        },
+        {
+          "number": "8686",
+          "name": "Udskudt skat"
+        },
+        {
+          "number": "9440",
+          "name": "Skyldig a-skat"
+        },
+        {
+          "number": "9441",
+          "name": "Afregnet a-skat"
+        },
+        {
+          "number": "9478",
+          "name": "Skyldig Udbytte Skat"
+        },
+        {
+          "number": "9479",
+          "name": "Selskabsskat"
+        },
+        {
+          "number": "9480",
+          "name": "Skyldig selskabsskat"
+        },
+        {
+          "number": "9481",
+          "name": "Sambeskatningsbidrag"
+        },
+        {
+          "number": "9482",
+          "name": "Langfristet skat"
+        },
+        {
+          "number": "9485",
+          "name": "Skattekonto"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "external_consultants_mgmt",
+      "name_da": "Eksterne konsulenter (management)",
+      "name_en": "External consultants (management)",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7392
+      ],
+      "gl_pattern_hints": [
+        "konsulent",
+        "management"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "2101",
+          "name": "Konsulenthonorar"
+        },
+        {
+          "number": "2102",
+          "name": "Konsulenthonorar Ework"
+        },
+        {
+          "number": "2103",
+          "name": "Konsulenthonorar ZeroChaos Nordic ApS"
+        },
+        {
+          "number": "2104",
+          "name": "Konsulenthonorar Vattenfall"
+        },
+        {
+          "number": "2105",
+          "name": "Konsulenthonorar udland"
+        },
+        {
+          "number": "2110",
+          "name": "Konsulenthonorar 3. Land"
+        },
+        {
+          "number": "2130",
+          "name": "Konsulenthonorar EU"
+        },
+        {
+          "number": "2140",
+          "name": "Konsulenthonorar TW TECH"
+        },
+        {
+          "number": "2145",
+          "name": "Konsulent Cyber"
+        },
+        {
+          "number": "3010",
+          "name": "Konsulentbistand"
+        },
+        {
+          "number": "3050",
+          "name": "Konsulentbistand TW TECH"
+        },
+        {
+          "number": "3055",
+          "name": "Konsulentbistand TW CYBER"
+        },
+        {
+          "number": "5275",
+          "name": "Konsulentbistand"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "external_consultants_it",
+      "name_da": "Eksterne konsulenter (IT)",
+      "name_en": "External consultants (IT)",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7372,
+        7379
+      ],
+      "gl_pattern_hints": [
+        "it-konsulent",
+        "it konsulent",
+        "udvikling"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "recruitment_agencies",
+      "name_da": "Rekruttering & jobopslag",
+      "name_en": "Recruitment & job ads",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        7361
+      ],
+      "gl_pattern_hints": [
+        "rekruttering",
+        "headhunter",
+        "jobopslag"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "background_checks",
+      "name_da": "Baggrundstjek",
+      "name_en": "Background checks",
+      "parent": "external_advisors",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "baggrundstjek",
+        "background check"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "hr_benefits",
+      "name_da": "HR & personalegoder (samlet)",
+      "name_en": "HR & employee benefits (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "training_courses",
+      "name_da": "Kurser & uddannelse",
+      "name_en": "Training & courses",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kursus",
+        "uddannelse",
+        "certificering",
+        "kursusafgift"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "2120",
+          "name": "Afholdelses af kursus"
+        },
+        {
+          "number": "3020",
+          "name": "Afholdelse af kursus kunder"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "conferences_workshops",
+      "name_da": "Konferencer & workshops",
+      "name_en": "Conferences & workshops",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "konference",
+        "workshop"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3560",
+          "name": "Kurser/udd./konferencer"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "health_insurance",
+      "name_da": "Sundhedsforsikring",
+      "name_en": "Health insurance",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        6300
+      ],
+      "gl_pattern_hints": [
+        "sundhedsforsikring",
+        "helbred"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3531",
+          "name": "Sundhedsforsikring */*"
+        },
+        {
+          "number": "3593",
+          "name": "Sundhedsforsikring"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "travel_insurance",
+      "name_da": "Rejseforsikring",
+      "name_en": "Travel insurance",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        6300
+      ],
+      "gl_pattern_hints": [
+        "rejseforsikring"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "workwear",
+      "name_da": "Arbejdstøj",
+      "name_en": "Workwear",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "arbejdstøj",
+        "uniform",
+        "tøj"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3620",
+          "name": "Arbejdstøj"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "staff_events",
+      "name_da": "Personalearrangementer",
+      "name_en": "Staff events",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "partial",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "personalearrangement",
+        "julefrokost",
+        "sommerfest",
+        "teamdag"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "staff_welfare_gifts",
+      "name_da": "Personalegaver & velfærd",
+      "name_en": "Staff gifts & welfare",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "personalegave",
+        "velfærd",
+        "wellbeing",
+        "gave",
+        "julegave"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3002",
+          "name": "Vareforbrug opgaver"
+        },
+        {
+          "number": "3575",
+          "name": "Gaver og blomster"
+        },
+        {
+          "number": "3680",
+          "name": "Rejser og ophold ifm. Opgaver"
+        },
+        {
+          "number": "3682",
+          "name": "Rejser og ophold ifm opgaver m/delv. Moms"
+        },
+        {
+          "number": "4008",
+          "name": "Gaver og blomster"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "lunch_benefit",
+      "name_da": "Frokostordning (benefit)",
+      "name_en": "Lunch benefit",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "partial",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "frokostordning",
+        "kantine"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3586",
+          "name": "Frokostordning"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "phone_benefit",
+      "name_da": "Fri telefon (benefit)",
+      "name_en": "Company paid phone (benefit)",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "partial",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "fri telefon",
+        "telefon"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3530",
+          "name": "Fri telefon"
+        },
+        {
+          "number": "5241",
+          "name": "Abonnementer (Telefon, Internet )"
+        },
+        {
+          "number": "5242",
+          "name": "Telefon-Internet -Personale halv moms"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "relocation",
+      "name_da": "Relocation & tilflytning",
+      "name_en": "Relocation expenses",
+      "parent": "hr_benefits",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "relocation",
+        "tilflytning",
+        "flytteomkostninger"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "cogs",
+      "name_da": "Direkte omkostninger / COGS (samlet)",
+      "name_en": "Direct costs / COGS (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "subcontractors",
+      "name_da": "Underleverandører (konsulenter)",
+      "name_en": "Subcontractors (consultants)",
+      "parent": "cogs",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "underleverandør",
+        "underleverandor",
+        "subcontractor",
+        "ekstern konsulent"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "project_software",
+      "name_da": "Projektsoftware",
+      "name_en": "Project software",
+      "parent": "cogs",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        5734
+      ],
+      "gl_pattern_hints": [
+        "projektsoftware",
+        "project software"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "project_materials",
+      "name_da": "Projektmaterialer",
+      "name_en": "Project materials",
+      "parent": "cogs",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "materialer",
+        "projektmaterialer"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3610",
+          "name": "Inspirationsmaterialer"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "client_training_events",
+      "name_da": "Kundedrevne kurser/events",
+      "name_en": "Client-driven training/events",
+      "parent": "cogs",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kunde event",
+        "kundekursus",
+        "kundearrangement"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "client_reimbursables",
+      "name_da": "Kundeudlæg (samlet)",
+      "name_en": "Client reimbursables (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "reimb_food",
+      "name_da": "Kundeudlæg: mad",
+      "name_en": "Reimbursable: food",
+      "parent": "client_reimbursables",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kundeudlæg",
+        "udlæg mad",
+        "viderefakturering mad"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4007",
+          "name": "Kunde udlæg mad"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "reimb_hotel",
+      "name_da": "Kundeudlæg: hotel",
+      "name_en": "Reimbursable: hotel",
+      "parent": "client_reimbursables",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kundeudlæg",
+        "udlæg hotel",
+        "viderefakturering hotel"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4040",
+          "name": "Kunde udlæg Hotel"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "reimb_transport",
+      "name_da": "Kundeudlæg: transport",
+      "name_en": "Reimbursable: transport",
+      "parent": "client_reimbursables",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kundeudlæg",
+        "udlæg transport",
+        "viderefakturering transport"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4042",
+          "name": "Kunde udlæg transport"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "reimb_other",
+      "name_da": "Kundeudlæg: øvrigt",
+      "name_en": "Reimbursable: other",
+      "parent": "client_reimbursables",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kundeudlæg",
+        "viderefakturering"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "finance_other",
+      "name_da": "Finans/afgifter/øvrigt (samlet)",
+      "name_en": "Finance/fees/other (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "bank_fees",
+      "name_da": "Bankgebyrer",
+      "name_en": "Bank fees",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "bankgebyr",
+        "gebyr",
+        "kortgebyr"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5260",
+          "name": "Gebyrer med moms"
+        },
+        {
+          "number": "5262",
+          "name": "Gebyrer uden moms"
+        },
+        {
+          "number": "6875",
+          "name": "Gebyr og renter off. Myndigheder"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "interest_expense",
+      "name_da": "Renteomkostninger",
+      "name_en": "Interest expense",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "rente"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "6199",
+          "name": "**Resultat før renter**"
+        },
+        {
+          "number": "6800",
+          "name": "Renteindtægter mv."
+        },
+        {
+          "number": "6806",
+          "name": "Renteindtægt banker"
+        },
+        {
+          "number": "6810",
+          "name": "Renteindtægt debitorer"
+        },
+        {
+          "number": "6814",
+          "name": "Udbytte og renteindtægt på værdipapirer"
+        },
+        {
+          "number": "6818",
+          "name": "Andre renteindtægter"
+        },
+        {
+          "number": "6849",
+          "name": "Renteindtægter i alt"
+        },
+        {
+          "number": "6850",
+          "name": "Renteudgifter mv."
+        },
+        {
+          "number": "6856",
+          "name": "Renteudgift banker"
+        },
+        {
+          "number": "6860",
+          "name": "Renteudgift kreditorer"
+        },
+        {
+          "number": "6864",
+          "name": "Andre renteudgifter"
+        },
+        {
+          "number": "6875",
+          "name": "Gebyr og renter off. Myndigheder"
+        },
+        {
+          "number": "6899",
+          "name": "Renteudgifter mv. i alt"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "fx_gain_loss",
+      "name_da": "Valutakursregulering",
+      "name_en": "FX gain/loss",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "kursregulering",
+        "valuta"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "8712",
+          "name": "Kasse Valuta"
+        },
+        {
+          "number": "8713",
+          "name": "Kasse Valuta 2"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "government_fees",
+      "name_da": "Afgifter & gebyrer (myndigheder)",
+      "name_en": "Government fees",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "afgift",
+        "gebyr",
+        "skat",
+        "erhvervsstyrelsen"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3709",
+          "name": "El afgift"
+        },
+        {
+          "number": "3730",
+          "name": "El afgift tilbageført"
+        },
+        {
+          "number": "4061",
+          "name": "Broafgift m/moms (alle plader Øresund)"
+        },
+        {
+          "number": "5260",
+          "name": "Gebyrer med moms"
+        },
+        {
+          "number": "5262",
+          "name": "Gebyrer uden moms"
+        },
+        {
+          "number": "6875",
+          "name": "Gebyr og renter off. Myndigheder"
+        },
+        {
+          "number": "7070",
+          "name": "**Resultat før skat**"
+        },
+        {
+          "number": "7090",
+          "name": "Skat af årets resultat"
+        },
+        {
+          "number": "7091",
+          "name": "Skat tidligere år"
+        },
+        {
+          "number": "7092",
+          "name": "Udskudt skat"
+        },
+        {
+          "number": "8686",
+          "name": "Udskudt skat"
+        },
+        {
+          "number": "9426",
+          "name": "El-afgift"
+        },
+        {
+          "number": "9440",
+          "name": "Skyldig a-skat"
+        },
+        {
+          "number": "9441",
+          "name": "Afregnet a-skat"
+        },
+        {
+          "number": "9478",
+          "name": "Skyldig Udbytte Skat"
+        },
+        {
+          "number": "9479",
+          "name": "Selskabsskat"
+        },
+        {
+          "number": "9480",
+          "name": "Skyldig selskabsskat"
+        },
+        {
+          "number": "9481",
+          "name": "Sambeskatningsbidrag"
+        },
+        {
+          "number": "9482",
+          "name": "Langfristet skat"
+        },
+        {
+          "number": "9485",
+          "name": "Skattekonto"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "charity_donations",
+      "name_da": "Velgørenhed & donationer",
+      "name_en": "Charity & donations",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "donation",
+        "velgørenhed"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "4090",
+          "name": "Velgørenhed"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "fines_penalties",
+      "name_da": "Bøder & gebyrer",
+      "name_en": "Fines & penalties",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "bøde",
+        "boder",
+        "penalty"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "other_expense",
+      "name_da": "Øvrige omkostninger",
+      "name_en": "Other expense",
+      "parent": "finance_other",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "øvrige omkostninger",
+        "diverse"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "3740",
+          "name": "Diverse vedr lokaler"
+        },
+        {
+          "number": "3797",
+          "name": "Diverse u moms"
+        },
+        {
+          "number": "5297",
+          "name": "Diverse med moms"
+        },
+        {
+          "number": "5298",
+          "name": "Diverse uden moms"
+        },
+        {
+          "number": "9354",
+          "name": "Diverse - kapital"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "insurance",
+      "name_da": "Forsikringer (samlet)",
+      "name_en": "Insurance (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "liability_insurance",
+      "name_da": "Erhvervs-/ansvarsforsikring",
+      "name_en": "General liability insurance",
+      "parent": "insurance",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [
+        6300
+      ],
+      "gl_pattern_hints": [
+        "erhvervsforsikring",
+        "ansvarsforsikring"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "professional_indemnity",
+      "name_da": "Professionel ansvarsforsikring",
+      "name_en": "Professional indemnity",
+      "parent": "insurance",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "professionel ansvar",
+        "it-professionel"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "equipment_insurance",
+      "name_da": "Udstyrsforsikring",
+      "name_en": "Equipment insurance",
+      "parent": "insurance",
+      "type": "spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "udstyrsforsikring",
+        "elektronikforsikring"
+      ],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "capex_depr",
+      "name_da": "Anlæg & afskrivninger (samlet)",
+      "name_en": "Capex & depreciation (all)",
+      "parent": null,
+      "type": "group",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [],
+      "gl_accounts_suggested": [],
+      "notes": ""
+    },
+    {
+      "id": "capex_it_equipment",
+      "name_da": "ANL: IT-udstyr",
+      "name_en": "CAPEX: IT equipment",
+      "parent": "capex_depr",
+      "type": "capex",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "anlæg",
+        "capex",
+        "it-udstyr"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "8001",
+          "name": "ANLÆGSAKTIVER"
+        },
+        {
+          "number": "8100",
+          "name": "Materielle anlægsaktiver"
+        },
+        {
+          "number": "8199",
+          "name": "Materielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8200",
+          "name": "Finansielle anlægsaktiver"
+        },
+        {
+          "number": "8299",
+          "name": "Finansielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8399",
+          "name": "ANLÆGSAKTIVER I ALT"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "capex_furniture",
+      "name_da": "ANL: Inventar/møbler",
+      "name_en": "CAPEX: furniture",
+      "parent": "capex_depr",
+      "type": "capex",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "anlæg",
+        "capex",
+        "inventar",
+        "møbler"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5222",
+          "name": "Inventar (under 33.100/14)"
+        },
+        {
+          "number": "5224",
+          "name": "Rep. og vedl. af inventar"
+        },
+        {
+          "number": "6150",
+          "name": "Afskrivning Inventar"
+        },
+        {
+          "number": "6870",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "8001",
+          "name": "ANLÆGSAKTIVER"
+        },
+        {
+          "number": "8100",
+          "name": "Materielle anlægsaktiver"
+        },
+        {
+          "number": "8150",
+          "name": "Inventar"
+        },
+        {
+          "number": "8151",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "8152",
+          "name": "Tilgang Inventar"
+        },
+        {
+          "number": "8154",
+          "name": "Afgang Inventar"
+        },
+        {
+          "number": "8199",
+          "name": "Materielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8200",
+          "name": "Finansielle anlægsaktiver"
+        },
+        {
+          "number": "8299",
+          "name": "Finansielle anlægsaktiver i alt"
+        },
+        {
+          "number": "8399",
+          "name": "ANLÆGSAKTIVER I ALT"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "depr_it",
+      "name_da": "Afskrivninger: IT",
+      "name_en": "Depreciation: IT",
+      "parent": "capex_depr",
+      "type": "non-spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "afskrivning",
+        "it"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5219",
+          "name": "IT Hardware mv. m halv moms"
+        },
+        {
+          "number": "5250",
+          "name": "Blade, tidsskrifter, faglitteratur"
+        },
+        {
+          "number": "5280",
+          "name": "Tab på debitorer"
+        },
+        {
+          "number": "5296",
+          "name": "Regulering kreditorer"
+        },
+        {
+          "number": "5799",
+          "name": "Kapacitetsomkostninger i alt"
+        },
+        {
+          "number": "6100",
+          "name": "AFSKRIVNINGER"
+        },
+        {
+          "number": "6111",
+          "name": "Afskrivning Driftsmidler"
+        },
+        {
+          "number": "6131",
+          "name": "Afskrivning Hardware"
+        },
+        {
+          "number": "6150",
+          "name": "Afskrivning Inventar"
+        },
+        {
+          "number": "6160",
+          "name": "Afskrivning Lokaler/indretning"
+        },
+        {
+          "number": "6190",
+          "name": "Tab på debitorer"
+        },
+        {
+          "number": "6195",
+          "name": "Hensat til tab på debitorer"
+        },
+        {
+          "number": "6198",
+          "name": "AFSKRIVNINGER I ALT"
+        },
+        {
+          "number": "6810",
+          "name": "Renteindtægt debitorer"
+        },
+        {
+          "number": "6860",
+          "name": "Renteudgift kreditorer"
+        },
+        {
+          "number": "6870",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "6872",
+          "name": "Afskrivninger EDB-hardware"
+        },
+        {
+          "number": "8111",
+          "name": "Afskrivning driftsmidler"
+        },
+        {
+          "number": "8131",
+          "name": "Afskrivning edb-hardware"
+        },
+        {
+          "number": "8151",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "8161",
+          "name": "Afskrivning lokaler"
+        },
+        {
+          "number": "8290",
+          "name": "Deposita"
+        },
+        {
+          "number": "8610",
+          "name": "Samlekonto debitorer"
+        },
+        {
+          "number": "8612",
+          "name": "Samlekonto debitorer EU"
+        },
+        {
+          "number": "8614",
+          "name": "Samlekonto debitorer 3. Lande"
+        },
+        {
+          "number": "8620",
+          "name": "Debitorer CN Juli 2020"
+        },
+        {
+          "number": "8720",
+          "name": "Nykredit Bank"
+        },
+        {
+          "number": "8741",
+          "name": "Mastercard TK 3965698 Nykredit"
+        },
+        {
+          "number": "8742",
+          "name": "Mastercard TG 3965981 Nykredit"
+        },
+        {
+          "number": "8743",
+          "name": "Mastercard HEL 3966007 Nykredit"
+        },
+        {
+          "number": "9100",
+          "name": "Egenkapital"
+        },
+        {
+          "number": "9101",
+          "name": "Anpartskapital"
+        },
+        {
+          "number": "9199",
+          "name": "Egenkaital i alt"
+        },
+        {
+          "number": "9354",
+          "name": "Diverse - kapital"
+        },
+        {
+          "number": "9401",
+          "name": "Deposita"
+        },
+        {
+          "number": "9403",
+          "name": "Gæld pengeinstitut"
+        },
+        {
+          "number": "9409",
+          "name": "Gæld pengeinstitut i alt"
+        },
+        {
+          "number": "9433",
+          "name": "Samlekonto kreditorer"
+        },
+        {
+          "number": "9693",
+          "name": "Regitze"
+        },
+        {
+          "number": "9721",
+          "name": "Ditte Hjort"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "depr_furniture",
+      "name_da": "Afskrivninger: inventar",
+      "name_en": "Depreciation: furniture",
+      "parent": "capex_depr",
+      "type": "non-spend",
+      "vat_hint": "full",
+      "synonyms": [],
+      "merchant_hints": [],
+      "mcc_hints": [],
+      "gl_pattern_hints": [
+        "afskrivning",
+        "inventar"
+      ],
+      "gl_accounts_suggested": [
+        {
+          "number": "5222",
+          "name": "Inventar (under 33.100/14)"
+        },
+        {
+          "number": "5224",
+          "name": "Rep. og vedl. af inventar"
+        },
+        {
+          "number": "6100",
+          "name": "AFSKRIVNINGER"
+        },
+        {
+          "number": "6111",
+          "name": "Afskrivning Driftsmidler"
+        },
+        {
+          "number": "6131",
+          "name": "Afskrivning Hardware"
+        },
+        {
+          "number": "6150",
+          "name": "Afskrivning Inventar"
+        },
+        {
+          "number": "6160",
+          "name": "Afskrivning Lokaler/indretning"
+        },
+        {
+          "number": "6198",
+          "name": "AFSKRIVNINGER I ALT"
+        },
+        {
+          "number": "6870",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "6872",
+          "name": "Afskrivninger EDB-hardware"
+        },
+        {
+          "number": "8111",
+          "name": "Afskrivning driftsmidler"
+        },
+        {
+          "number": "8131",
+          "name": "Afskrivning edb-hardware"
+        },
+        {
+          "number": "8150",
+          "name": "Inventar"
+        },
+        {
+          "number": "8151",
+          "name": "Afskrivning inventar"
+        },
+        {
+          "number": "8152",
+          "name": "Tilgang Inventar"
+        },
+        {
+          "number": "8154",
+          "name": "Afgang Inventar"
+        },
+        {
+          "number": "8161",
+          "name": "Afskrivning lokaler"
+        }
+      ],
+      "notes": ""
+    }
+  ]
+}

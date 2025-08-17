@@ -9,6 +9,7 @@ import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantData
 import dk.trustworks.intranet.aggregates.users.events.*;
 import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
+import dk.trustworks.intranet.expenseservice.events.ExpenseStatusChangedEvent;
 import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -43,6 +44,7 @@ import java.util.UUID;
         @JsonSubTypes.Type(value = ChangeParticipantPhaseEvent.class, name = "ChangeParticipantPhaseEvent"),
         @JsonSubTypes.Type(value = CreateBankInfoEvent.class, name = "CreateBankInfoEvent"),
         @JsonSubTypes.Type(value = UpdateWorkEvent.class, name = "UpdateWorkEvent"),
+        @JsonSubTypes.Type(value = ExpenseStatusChangedEvent.class, name = "ExpenseStatusChangedEvent"),
 })
 public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
 

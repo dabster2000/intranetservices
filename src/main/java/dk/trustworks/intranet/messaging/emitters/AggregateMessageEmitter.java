@@ -17,6 +17,7 @@ public class AggregateMessageEmitter {
     public static final String WORK_EVENT = "send-work-events";
     public static final String USER_EVENT = "send-user-events";
     public static final String CONFERENCE_EVENT = "send-conference-events";
+    public static final String EXPENSE_EVENT = "send-expense-events";
 
     @Inject
     EventBus eventBus;
