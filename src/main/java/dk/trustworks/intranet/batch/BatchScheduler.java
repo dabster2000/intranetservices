@@ -30,7 +30,7 @@ public class BatchScheduler {
     }
 
     // Finance loads
-    @Scheduled(cron = "0 0 21 * * ?")
+    @Scheduled(cron = "0 56 20 * * ?")
     void scheduleFinanceLoadEconomics() {
         jobOperator.start("finance-load-economics", new Properties());
     }

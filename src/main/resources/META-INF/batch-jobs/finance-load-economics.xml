@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <job id="finance-load-economics" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
-    <step id="finance-load-economics-step">
-        <batchlet ref="financeLoadEconomicsBatchlet"/>
+    <properties>
+        <!-- Default throttling and paging limits; can be overridden via JobOperator Properties -->
+        <property name="sleepMillis" value="1200"/>
+        <property name="pagesize" value="500"/>
+    </properties>
+    <step id="load-step">
+        <batchlet ref="financeLoadEconomicsBatchlet">
+            <properties>
+                <property name="sleepMillis" value="#{jobParameters['sleepMillis'] != null ? jobParameters['sleepMillis'] : jobProperties['sleepMillis']}"/>
+                <property name="pagesize" value="#{jobParameters['pagesize'] != null ? jobParameters['pagesize'] : jobProperties['pagesize']}"/>
+            </properties>
+        </batchlet>
+        <end on="COMPLETED"/>
+        <fail on="FAILED"/>
     </step>
 </job>

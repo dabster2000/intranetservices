@@ -212,6 +212,11 @@ public class  EconomicsService {
         return getEconomicsAPI(result);
     }
 
+    public EconomicsAPI getApiForCompany(Company company) {
+        IntegrationKey.IntegrationKeyValue result = getIntegrationKeyValue(company);
+        return getEconomicsAPI(result);
+    }
+
     private static EconomicsAPIAccount getEconomicsAccountAPI(IntegrationKey.IntegrationKeyValue result) {
         return RestClientBuilder.newBuilder()
                 .baseUri(URI.create(result.url()))

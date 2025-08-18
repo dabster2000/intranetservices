@@ -41,11 +41,31 @@ public interface EconomicsAPI extends AutoCloseable {
         @Path("/accounting-years/{accountingYear}/entries")
         Response getYearEntries(@PathParam("accountingYear") String accountingYear,
                                 @QueryParam("filter") String filter,
-                                @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
+                                @QueryParam("pagesize") @DefaultValue("1000") int pagesize,
+                                @QueryParam("skippages") @DefaultValue("0") int skipPages);
+
+        @GET
+        @Path("/accounts")
+        Response getAccounts(@QueryParam("filter") String filter,
+                             @QueryParam("pagesize") @DefaultValue("1000") int pagesize,
+                             @QueryParam("skippages") @DefaultValue("0") int skipPages);
 
         @GET
         @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment")
         Response getVoucherAttachmentMeta(@PathParam("journalNumber") int journalNumber,
                                           @PathParam("accountingYear") String accountingYear,
                                           @PathParam("voucherNumber") int voucherNumber);
+
+        @GET
+        @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file")
+        @Produces("*/*")
+        Response getVoucherAttachmentFile(@PathParam("journalNumber") int journalNumber,
+                                          @PathParam("accountingYear") String accountingYear,
+                                          @PathParam("voucherNumber") int voucherNumber);
+
+        @GET
+        @Path("/accounting-years/{accountingYear}/vouchers/{voucherNumber}/attachment/file")
+        @Produces("*/*")
+        Response getYearVoucherAttachmentFile(@PathParam("accountingYear") String accountingYear,
+                                              @PathParam("voucherNumber") int voucherNumber);
 }

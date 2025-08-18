@@ -89,7 +89,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             // 2) If not in journal, check booked entries under accounting-years
             String yearFilter = "voucherNumber$eq:" + vn;
-            Response yr = api.getYearEntries(year, yearFilter, 1000);
+            Response yr = api.getYearEntries(year, yearFilter, 1000, 0);
             int yrStatus = yr != null ? yr.getStatus() : -1;
             String yrBody = null;
             try {

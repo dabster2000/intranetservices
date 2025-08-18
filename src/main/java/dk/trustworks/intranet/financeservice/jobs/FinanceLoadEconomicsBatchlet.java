@@ -7,7 +7,7 @@ import jakarta.inject.Named;
 import lombok.extern.jbosslog.JBossLog;
 
 @JBossLog
-@Named("financeLoadEconomicsBatchlet")
+@Named("financeLoadEconomicsBatchletLegacy")
 @Dependent
 public class FinanceLoadEconomicsBatchlet extends AbstractBatchlet {
 
