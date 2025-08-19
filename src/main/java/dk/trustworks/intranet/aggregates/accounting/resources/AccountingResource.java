@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.accounting.resources;
 
+import dk.trustworks.intranet.aggregates.accounting.dto.*;
 import dk.trustworks.intranet.aggregates.accounting.model.CompanyAccountingRecord;
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
@@ -21,6 +22,8 @@ import io.quarkus.panache.common.Sort;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -35,6 +38,7 @@ import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 @Tag(name = "accounting")
 @JBossLog
@@ -45,6 +49,9 @@ import java.util.concurrent.atomic.AtomicReference;
 @RolesAllowed({"SYSTEM", "USER"})
 @SecurityRequirement(name = "jwt")
 public class AccountingResource {
+
+    @Inject
+    EntityManager em;
 
     @Inject
     ExpenseResource expenseAPI;
@@ -322,7 +329,666 @@ public class AccountingResource {
         return byMonth.values().stream().toList();
     }
 
+    /**
+     * Distribute monthly expenses across companies using consultant headcount as key.
+     * Rules:
+     *  - Only STAFF salary is shared on Salary-accounts (from BI, +2% pension).
+     *  - Lumps related to an account are NOT shared and reduce the shareable base (GL - lumps).
+     *  - Negative amounts are clamped to 0 and not shared.
+     *
+     * @param year  e.g. 2025
+     * @param month 1..12
+     */
+    @GET
+    @Path("/distribution")
+    public ExpenseDistributionResult distributeMonthlyExpenses(
+            @QueryParam("year") int year,
+            @QueryParam("month") int month) {
 
+        // ---- validate input ----
+        if (year < 2010 || month < 1 || month > 12) {
+            throw new WebApplicationException("Invalid year/month", Response.Status.BAD_REQUEST);
+        }
+        final LocalDate from = LocalDate.of(year, month, 1);
+        final LocalDate to = from.plusMonths(1);
+
+        // ---- constants ----
+        final int SCALE = 2;              // cents
+        final int RATIO_SCALE = 10;       // for precise ratios
+        final RoundingMode RM = RoundingMode.HALF_EVEN; // banker’s rounding
+
+        final BigDecimal PENSION_MULT = BigDecimal.valueOf(salaryBufferMultiplier); // typically 1.02
+
+        // ---- load base data ----
+        final List<Company> companies = Company.listAll();
+        final Map<String, Company> byUuid = companies.stream().collect(Collectors.toMap(Company::getUuid, c -> c));
+
+        // availability for the month (for consultant headcount)
+        final List<EmployeeAvailabilityPerMonth> availability =
+                availabilityService.getAllEmployeeAvailabilityByPeriod(from, to);
+
+        // consultant counts (used as key)
+        final Map<String, BigDecimal> consultantCount = new HashMap<>();
+        companies.forEach(c -> {
+            double cnt = availabilityService.calculateConsultantCount(c, from, availability);
+            consultantCount.put(c.getUuid(), BigDecimal.valueOf(cnt));
+        });
+        final BigDecimal totalConsultants = consultantCount.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // STAFF salary from BI per company using monthly per-user average and day-weighting across companies
+        final Map<String, BigDecimal> staffBaseByCompany = new HashMap<>();
+        {
+            // Forklaring:
+            //  - a: gennemsnitlig månedsløn pr. USER (over alle dage i måneden) for STAFF
+            //  - b: antal (DISTINCT) dage pr. USER i hver COMPANY i måneden (for STAFF)
+            //  - c: totalt antal (DISTINCT) dage pr. USER i måneden (for STAFF)
+            //  - vægt pr. (USER, COMPANY) = b.days_in_company / c.days_total
+            //  - bidrag til COMPANY = a.avg_salary * vægt
+            //  - summér bidrag pr. COMPANY og multiplicér med pensionsfaktor i Java-delen nedenfor
+            String sql = """
+        SELECT t.companyuuid, SUM(t.weighted_avg) AS staff_month_avg
+        FROM (
+            SELECT b.companyuuid,
+                   a.useruuid,
+                   a.avg_salary * (CAST(b.days_in_company AS DECIMAL(10,6)) / CAST(c.days_total AS DECIMAL(10,6))) AS weighted_avg
+            FROM (
+                SELECT useruuid, AVG(COALESCE(salary,0)) AS avg_salary
+                FROM bi_data_per_day
+                WHERE year = :year AND month = :month
+                  AND consultant_type = 'STAFF'
+                GROUP BY useruuid
+            ) a
+            JOIN (
+                SELECT useruuid, companyuuid, COUNT(DISTINCT day) AS days_in_company
+                FROM bi_data_per_day
+                WHERE year = :year AND month = :month
+                  AND consultant_type = 'STAFF'
+                  AND companyuuid IS NOT NULL
+                GROUP BY useruuid, companyuuid
+            ) b ON a.useruuid = b.useruuid
+            JOIN (
+                SELECT useruuid, COUNT(DISTINCT day) AS days_total
+                FROM bi_data_per_day
+                WHERE year = :year AND month = :month
+                  AND consultant_type = 'STAFF'
+                GROUP BY useruuid
+            ) c ON a.useruuid = c.useruuid AND c.days_total > 0
+        ) t
+        GROUP BY t.companyuuid
+        """;
+
+            Query q = em.createNativeQuery(sql);
+            q.setParameter("year", year);
+            q.setParameter("month", month);
+
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = q.getResultList();
+            for (Object[] r : rows) {
+                String companyuuid = (String) r[0];
+                BigDecimal avgSum = new BigDecimal(String.valueOf(r[1]));
+                staffBaseByCompany.put(companyuuid, avgSum);
+            }
+
+            // Sikr at alle virksomheder er til stede i map
+            for (Company c : companies) staffBaseByCompany.putIfAbsent(c.getUuid(), BigDecimal.ZERO);
+
+            // Påfør pensionsfaktor (fx 1.02) og afrund
+            staffBaseByCompany.replaceAll((k, v) ->
+                    v.multiply(PENSION_MULT).setScale(SCALE, RM));
+        }
+
+        // Mutable kopi til salary-accounts allokering
+        final Map<String, BigDecimal> staffRemaining = new HashMap<>();
+        staffBaseByCompany.forEach((k, v) -> staffRemaining.put(k, v));
+
+        // categories and accounts (Panache, sorted for determinism)
+        final List<AccountingCategory> allCategories =
+                AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending)); // :contentReference[oaicite:6]{index=6}
+
+        // finance GL rows for the month
+        final List<FinanceDetails> finance =
+                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", from, to);
+
+        // pre-aggregate GL: companyUuid -> accountCode -> amount
+        final Map<String, Map<Integer, BigDecimal>> glByCompanyAccount = new HashMap<>();
+        for (FinanceDetails fd : finance) {
+            String cu = fd.getCompany().getUuid();
+            int acc = fd.getAccountnumber();
+            BigDecimal amt = BigDecimal.valueOf(fd.getAmount());
+            glByCompanyAccount.computeIfAbsent(cu, k -> new HashMap<>()).merge(acc, amt, BigDecimal::add);
+        }
+
+        // lumps for the month: accountUuid -> sum(lumps)
+        final List<AccountLumpSum> lumps = AccountLumpSum.list("registeredDate >= ?1 and registeredDate < ?2", from, to);
+        final Map<String, BigDecimal> lumpsByAccount = new HashMap<>();
+        for (AccountLumpSum ls : lumps) {
+            String accUuid = ls.getAccountingAccount().getUuid();
+            BigDecimal amt = BigDecimal.valueOf(ls.getAmount());
+            lumpsByAccount.merge(accUuid, amt, BigDecimal::add);
+        }
+        // clamp negative lumps to 0 for sharing logic
+        lumpsByAccount.replaceAll((k, v) -> (v.compareTo(BigDecimal.ZERO) < 0) ? BigDecimal.ZERO : v.setScale(SCALE, RM));
+
+        // ---- result container ----
+        ExpenseDistributionResult result = new ExpenseDistributionResult(year, month);
+
+        // company summaries
+        companies.forEach(c -> {
+            CompanySummary cs = new CompanySummary();
+            cs.companyUuid = c.getUuid();
+            cs.companyName  = c.getName();
+            cs.consultants  = consultantCount.getOrDefault(c.getUuid(), BigDecimal.ZERO).setScale(RATIO_SCALE, RM);
+            cs.staffCostOrigin = staffBaseByCompany.getOrDefault(c.getUuid(), BigDecimal.ZERO);
+            result.companies.add(cs);
+        });
+        final Map<String, CompanySummary> companySummaryIndex =
+                result.companies.stream().collect(Collectors.toMap(x -> x.companyUuid, x -> x));
+
+        // aggregates
+        final Map<String, Map<String, BigDecimal>> catAgg = new HashMap<>(); // categoryCode -> (companyUuid -> amount)
+        final Map<String, String> catNameByCode = new HashMap<>();
+
+        final Map<String, Map<String, Map<Integer, BigDecimal>>> owesByAccount = new HashMap<>();
+        final Map<String, Map<String, Map<String, BigDecimal>>>  owesByCategory = new HashMap<>();
+
+        final Map<String, BigDecimal> staffPayableByCompany = new HashMap<>();
+
+        // helper: consultant ratio per payer
+        final Map<String, BigDecimal> ratioByCompany = new HashMap<>();
+        if (totalConsultants.compareTo(BigDecimal.ZERO) > 0) {
+            companies.forEach(c -> {
+                BigDecimal ratio = consultantCount.getOrDefault(c.getUuid(), BigDecimal.ZERO)
+                        .divide(totalConsultants, RATIO_SCALE, RM);
+                ratioByCompany.put(c.getUuid(), ratio);
+            });
+        } else {
+            companies.forEach(c -> ratioByCompany.put(c.getUuid(), BigDecimal.ZERO));
+        }
+
+        // ---- main allocation loop ----
+        for (AccountingCategory catSrc : allCategories) {
+            final String catCode = catSrc.getAccountCode();
+            final String catName = catSrc.getAccountname();
+            catNameByCode.put(catCode, catName);
+
+            for (AccountingAccount aaSrc : catSrc.getAccounts()) {
+                final String originUuid = aaSrc.getCompany().getUuid();
+                final int accountCode = aaSrc.getAccountCode();
+                final boolean isShared = aaSrc.isShared();
+                final boolean isSalary = aaSrc.isSalary();
+
+                // GL (clamp negative to 0 => no sharing on negative month)
+                BigDecimal gl = glByCompanyAccount
+                        .getOrDefault(originUuid, Collections.emptyMap())
+                        .getOrDefault(accountCode, BigDecimal.ZERO);
+                if (gl.compareTo(BigDecimal.ZERO) < 0) gl = BigDecimal.ZERO;
+                gl = gl.setScale(SCALE, RM);
+
+                // lumps (not shared, reduce shareable base). If missing -> 0
+                BigDecimal lumpsAmt = lumpsByAccount.getOrDefault(aaSrc.getUuid(), BigDecimal.ZERO);
+
+                // share candidate
+                BigDecimal shareCandidate = gl.subtract(lumpsAmt);
+                if (shareCandidate.compareTo(BigDecimal.ZERO) < 0) shareCandidate = BigDecimal.ZERO;
+
+                // baseToShare per rules
+                BigDecimal baseToShare = BigDecimal.ZERO;
+                if (totalConsultants.compareTo(BigDecimal.ZERO) > 0) {
+                    if (isSalary) {
+                        BigDecimal rem = staffRemaining.getOrDefault(originUuid, BigDecimal.ZERO);
+                        if (rem.compareTo(BigDecimal.ZERO) > 0) {
+                            baseToShare = shareCandidate.min(rem);
+                            staffRemaining.put(originUuid, rem.subtract(baseToShare));
+                        }
+                    } else if (isShared) {
+                        baseToShare = shareCandidate;
+                    }
+                }
+                baseToShare = baseToShare.setScale(SCALE, RM);
+
+                // origin remainder (what stays at origin after sharing). Note: lumps are inside gl and remain with origin via this remainder
+                BigDecimal originRemainder = gl.subtract(baseToShare).setScale(SCALE, RM);
+
+                // build per-account distribution row
+                AccountDistribution dist = new AccountDistribution();
+                dist.accountCode = accountCode;
+                dist.accountDescription = aaSrc.getAccountDescription();
+                dist.categoryCode = catCode;
+                dist.categoryName = catName;
+                dist.originCompanyUuid = originUuid;
+                dist.shared = (isShared || isSalary); // salary is partly shared by definition
+                dist.salary = isSalary;
+
+                // allocate to payers
+                for (Company payer : companies) {
+                    String payerUuid = payer.getUuid();
+
+                    BigDecimal alloc = BigDecimal.ZERO;
+
+                    // shared part
+                    if (baseToShare.compareTo(BigDecimal.ZERO) > 0) {
+                        BigDecimal r = ratioByCompany.getOrDefault(payerUuid, BigDecimal.ZERO);
+                        BigDecimal share = baseToShare.multiply(r).setScale(SCALE, RM);
+                        alloc = alloc.add(share);
+
+                        // intercompany owe (only for cross-company shares)
+                        if (!payerUuid.equals(originUuid) && share.compareTo(BigDecimal.ZERO) > 0) {
+                            owesByAccount
+                                    .computeIfAbsent(payerUuid, k -> new HashMap<>())
+                                    .computeIfAbsent(originUuid, k -> new HashMap<>())
+                                    .merge(accountCode, share, BigDecimal::add);
+                            owesByCategory
+                                    .computeIfAbsent(payerUuid, k -> new HashMap<>())
+                                    .computeIfAbsent(originUuid, k -> new HashMap<>())
+                                    .merge(catCode, share, BigDecimal::add);
+                        }
+
+                        // staff payable tracking
+                        if (isSalary && share.compareTo(BigDecimal.ZERO) > 0) {
+                            staffPayableByCompany.merge(payerUuid, share, BigDecimal::add);
+                        }
+                    }
+
+                    // origin keeps the remainder (incl. lumps and ikke‑STAFF på løn)
+                    if (payerUuid.equals(originUuid) && originRemainder.compareTo(BigDecimal.ZERO) > 0) {
+                        alloc = alloc.add(originRemainder);
+                    }
+
+                    dist.allocations.put(payerUuid, alloc.setScale(SCALE, RM));
+
+                    // category aggregate
+                    catAgg.computeIfAbsent(catCode, k -> new HashMap<>())
+                            .merge(payerUuid, alloc, BigDecimal::add);
+                }
+
+                result.accounts.add(dist);
+            }
+        }
+
+        // finalize categories list
+        catAgg.forEach((cc, map) -> {
+            CategoryAggregate ca = new CategoryAggregate();
+            ca.categoryCode = cc;
+            ca.categoryName = catNameByCode.getOrDefault(cc, "");
+            ca.allocations.putAll(map);
+            // scale to cents
+            ca.allocations.replaceAll((k, v) -> v.setScale(SCALE, RM));
+            result.categories.add(ca);
+        });
+
+        // owes lists (by account)
+        owesByAccount.forEach((payer, recvMap) -> {
+            recvMap.forEach((receiver, accMap) -> {
+                accMap.forEach((acc, amt) -> {
+                    IntercompanyOwe row = new IntercompanyOwe();
+                    row.fromCompanyUuid = payer;
+                    row.toCompanyUuid = receiver;
+                    row.accountCode = acc;
+                    row.amount = amt.setScale(SCALE, RM);
+                    result.owesByAccount.add(row);
+                });
+            });
+        });
+        // owes lists (by category)
+        owesByCategory.forEach((payer, recvMap) -> {
+            recvMap.forEach((receiver, catMap) -> {
+                catMap.forEach((cc, amt) -> {
+                    IntercompanyOweCategory row = new IntercompanyOweCategory();
+                    row.fromCompanyUuid = payer;
+                    row.toCompanyUuid = receiver;
+                    row.categoryCode = cc;
+                    row.categoryName = catNameByCode.getOrDefault(cc, "");
+                    row.amount = amt.setScale(SCALE, RM);
+                    result.owesByCategory.add(row);
+                });
+            });
+        });
+
+        // company summaries: staff payable (what this company pays for STAFF across all origins)
+        staffPayableByCompany.forEach((uuid, amt) -> {
+            CompanySummary cs = companySummaryIndex.get(uuid);
+            if (cs != null) cs.staffPayable = amt.setScale(SCALE, RM);
+        });
+
+        return result;
+    }
+
+    @GET
+    @Path("/distribution/fy")
+    public Map<LocalDate, ExpenseDistributionResult> distributeFiscalYear(
+            @QueryParam("startYear") int fiscalStartYear) {
+
+        if (fiscalStartYear < 2010) {
+            throw new WebApplicationException("Invalid startYear", Response.Status.BAD_REQUEST);
+        }
+
+        // FY = Jul -> Jun
+        final LocalDate from = LocalDate.of(fiscalStartYear, 7, 1).withDayOfMonth(1);
+        final LocalDate to   = from.plusMonths(12);
+        final List<LocalDate> months = new ArrayList<>(12);
+        for (LocalDate d = from; d.isBefore(to); d = d.plusMonths(1)) months.add(d.withDayOfMonth(1));
+
+        // ---- constants ----
+        final int SCALE = 2;                // cents
+        final int RATIO_SCALE = 10;         // for precise ratios
+        final RoundingMode RM = RoundingMode.HALF_EVEN;
+        final BigDecimal PENSION_MULT = BigDecimal.valueOf(salaryBufferMultiplier); // e.g. 1.02
+
+        // ---- load once ----
+        final List<Company> companies = Company.listAll();
+        final Map<String, Company> byUuid = companies.stream().collect(Collectors.toMap(Company::getUuid, c -> c));
+
+        final List<AccountingCategory> allCategories =
+                AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
+
+        // Finance GL across FY
+        final List<FinanceDetails> financeFY =
+                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", from, to);
+
+        // Bucket: month -> companyUuid -> accountCode -> amount
+        final Map<LocalDate, Map<String, Map<Integer, BigDecimal>>> glByMonthCoAcc = new HashMap<>();
+        for (FinanceDetails fd : financeFY) {
+            LocalDate m = fd.getExpensedate().withDayOfMonth(1);
+            String cu = fd.getCompany().getUuid();
+            int acc = fd.getAccountnumber();
+            BigDecimal amt = BigDecimal.valueOf(fd.getAmount());
+            glByMonthCoAcc
+                    .computeIfAbsent(m, k -> new HashMap<>())
+                    .computeIfAbsent(cu, k -> new HashMap<>())
+                    .merge(acc, amt, BigDecimal::add);
+        }
+
+        // Lumps across FY
+        final List<AccountLumpSum> lumpsFY = AccountLumpSum.list("registeredDate >= ?1 and registeredDate < ?2", from, to);
+        // Bucket: month -> accountUuid -> amount (clamp negatives to 0)
+        final Map<LocalDate, Map<String, BigDecimal>> lumpsByMonthAcc = new HashMap<>();
+        for (AccountLumpSum ls : lumpsFY) {
+            LocalDate m = ls.getRegisteredDate().withDayOfMonth(1);
+            String accUuid = ls.getAccountingAccount().getUuid();
+            BigDecimal amt = BigDecimal.valueOf(ls.getAmount());
+            if (amt.compareTo(BigDecimal.ZERO) < 0) amt = BigDecimal.ZERO;
+            lumpsByMonthAcc
+                    .computeIfAbsent(m, k -> new HashMap<>())
+                    .merge(accUuid, amt, BigDecimal::add);
+        }
+        // normalize cents
+        lumpsByMonthAcc.values().forEach(map -> map.replaceAll((k,v) -> v.setScale(SCALE, RM)));
+
+        // Availability across FY (for consultant headcount)
+        final List<EmployeeAvailabilityPerMonth> availability =
+                availabilityService.getAllEmployeeAvailabilityByPeriod(from, to);
+
+        // consultantCount per month per company
+        final Map<LocalDate, Map<String, BigDecimal>> consultantCountByMonth = new HashMap<>();
+        for (LocalDate m : months) {
+            Map<String, BigDecimal> perCo = new HashMap<>();
+            for (Company c : companies) {
+                double cnt = availabilityService.calculateConsultantCount(c, m, availability);
+                perCo.put(c.getUuid(), BigDecimal.valueOf(cnt));
+            }
+            consultantCountByMonth.put(m, perCo);
+        }
+
+        // STAFF salary base per company per month using weighted monthly avg from BI (document_date range)
+        final Map<LocalDate, Map<String, BigDecimal>> staffBaseByMonthCompany = new HashMap<>();
+        {
+            String sql = """
+            SELECT t.y, t.m, t.companyuuid, SUM(t.weighted_avg) AS staff_month_avg
+            FROM (
+                SELECT a.useruuid, a.y, a.m, b.companyuuid,
+                       a.avg_salary * (CAST(b.days_in_company AS DECIMAL(18,6)) / CAST(c.days_total AS DECIMAL(18,6))) AS weighted_avg
+                FROM (
+                    SELECT useruuid, YEAR(document_date) AS y, MONTH(document_date) AS m,
+                           AVG(COALESCE(salary,0)) AS avg_salary
+                    FROM bi_data_per_day
+                    WHERE document_date >= :from AND document_date < :to
+                      AND consultant_type = 'STAFF'
+                    GROUP BY useruuid, y, m
+                ) a
+                JOIN (
+                    SELECT useruuid, YEAR(document_date) AS y, MONTH(document_date) AS m, companyuuid,
+                           COUNT(DISTINCT DAY(document_date)) AS days_in_company
+                    FROM bi_data_per_day
+                    WHERE document_date >= :from AND document_date < :to
+                      AND consultant_type = 'STAFF'
+                      AND companyuuid IS NOT NULL
+                    GROUP BY useruuid, y, m, companyuuid
+                ) b ON a.useruuid = b.useruuid AND a.y = b.y AND a.m = b.m
+                JOIN (
+                    SELECT useruuid, YEAR(document_date) AS y, MONTH(document_date) AS m,
+                           COUNT(DISTINCT DAY(document_date)) AS days_total
+                    FROM bi_data_per_day
+                    WHERE document_date >= :from AND document_date < :to
+                      AND consultant_type = 'STAFF'
+                    GROUP BY useruuid, y, m
+                ) c ON a.useruuid = c.useruuid AND a.y = c.y AND a.m = c.m AND c.days_total > 0
+            ) t
+            GROUP BY t.y, t.m, t.companyuuid
+        """;
+
+            Query q = em.createNativeQuery(sql);
+            q.setParameter("from", from);
+            q.setParameter("to", to);
+
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = q.getResultList();
+            for (Object[] r : rows) {
+                int y = ((Number) r[0]).intValue();
+                int m = ((Number) r[1]).intValue();
+                String companyuuid = (String) r[2];
+                BigDecimal avg = new BigDecimal(String.valueOf(r[3])); // DB driver safety
+                LocalDate key = LocalDate.of(y, m, 1);
+                staffBaseByMonthCompany
+                        .computeIfAbsent(key, k -> new HashMap<>())
+                        .merge(companyuuid, avg, BigDecimal::add);
+            }
+
+            // ensure all (month, company) keys exist & apply pension factor
+            for (LocalDate m : months) {
+                Map<String, BigDecimal> map = staffBaseByMonthCompany.computeIfAbsent(m, k -> new HashMap<>());
+                for (Company c : companies) {
+                    map.putIfAbsent(c.getUuid(), BigDecimal.ZERO);
+                    map.compute(c.getUuid(), (k, v) ->
+                            v.multiply(PENSION_MULT).setScale(SCALE, RM));
+                }
+            }
+        }
+
+        // ---- per-month results ----
+        final Map<LocalDate, ExpenseDistributionResult> out = new LinkedHashMap<>();
+
+        for (LocalDate month : months) {
+            final ExpenseDistributionResult result = new ExpenseDistributionResult(month.getYear(), month.getMonthValue());
+
+            // consultant ratios for this month
+            Map<String, BigDecimal> cCount = consultantCountByMonth.getOrDefault(month, Collections.emptyMap());
+            BigDecimal totalConsultants = cCount.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            final Map<String, BigDecimal> ratioByCompany = new HashMap<>();
+            if (totalConsultants.compareTo(BigDecimal.ZERO) > 0) {
+                companies.forEach(c ->
+                        ratioByCompany.put(c.getUuid(),
+                                cCount.getOrDefault(c.getUuid(), BigDecimal.ZERO)
+                                        .divide(totalConsultants, RATIO_SCALE, RM)));
+            } else {
+                companies.forEach(c -> ratioByCompany.put(c.getUuid(), BigDecimal.ZERO));
+            }
+
+            // staff remaining (mutable copy per month)
+            final Map<String, BigDecimal> staffRemaining = new HashMap<>();
+            staffRemaining.putAll(staffBaseByMonthCompany.getOrDefault(month, Collections.emptyMap()));
+
+            // quick indices
+            final Map<String, CompanySummary> companySummaryIndex = new HashMap<>();
+            companies.forEach(c -> {
+                CompanySummary cs = new CompanySummary();
+                cs.companyUuid = c.getUuid();
+                cs.companyName = c.getName();
+                cs.consultants = cCount.getOrDefault(c.getUuid(), BigDecimal.ZERO).setScale(RATIO_SCALE, RM);
+                cs.staffCostOrigin = staffBaseByMonthCompany.getOrDefault(month, Collections.emptyMap())
+                        .getOrDefault(c.getUuid(), BigDecimal.ZERO);
+                result.companies.add(cs);
+                companySummaryIndex.put(cs.companyUuid, cs);
+            });
+
+            final Map<String, Map<String, BigDecimal>> catAgg = new HashMap<>();
+            final Map<String, String> catNameByCode = new HashMap<>();
+            final Map<String, Map<String, Map<Integer, BigDecimal>>> owesByAccount = new HashMap<>();
+            final Map<String, Map<String, Map<String, BigDecimal>>>  owesByCategory = new HashMap<>();
+            final Map<String, BigDecimal> staffPayableByCompany = new HashMap<>();
+
+            // handy getters for this month
+            final Map<String, Map<Integer, BigDecimal>> glForMonth =
+                    glByMonthCoAcc.getOrDefault(month, Collections.emptyMap());
+            final Map<String, BigDecimal> lumpsForMonth =
+                    lumpsByMonthAcc.getOrDefault(month, Collections.emptyMap());
+
+            // main allocation
+            for (AccountingCategory catSrc : allCategories) {
+                final String catCode = catSrc.getAccountCode();
+                final String catName = catSrc.getAccountname();
+                catNameByCode.put(catCode, catName);
+
+                for (AccountingAccount aaSrc : catSrc.getAccounts()) {
+                    final String originUuid = aaSrc.getCompany().getUuid();
+                    final int accountCode = aaSrc.getAccountCode();
+                    final boolean isShared = aaSrc.isShared();
+                    final boolean isSalary = aaSrc.isSalary();
+
+                    // GL for month/company/account (clamp negatives to 0)
+                    BigDecimal gl = glForMonth
+                            .getOrDefault(originUuid, Collections.emptyMap())
+                            .getOrDefault(accountCode, BigDecimal.ZERO);
+                    if (gl.compareTo(BigDecimal.ZERO) < 0) gl = BigDecimal.ZERO;
+                    gl = gl.setScale(SCALE, RM);
+
+                    // lumps (not shared), reduce shareable base
+                    BigDecimal lumpsAmt = lumpsForMonth.getOrDefault(aaSrc.getUuid(), BigDecimal.ZERO);
+
+                    // candidate to share
+                    BigDecimal shareCandidate = gl.subtract(lumpsAmt);
+                    if (shareCandidate.compareTo(BigDecimal.ZERO) < 0) shareCandidate = BigDecimal.ZERO;
+
+                    // decide baseToShare
+                    BigDecimal baseToShare = BigDecimal.ZERO;
+                    if (totalConsultants.compareTo(BigDecimal.ZERO) > 0) {
+                        if (isSalary) {
+                            BigDecimal rem = staffRemaining.getOrDefault(originUuid, BigDecimal.ZERO);
+                            if (rem.compareTo(BigDecimal.ZERO) > 0) {
+                                baseToShare = shareCandidate.min(rem);
+                                staffRemaining.put(originUuid, rem.subtract(baseToShare));
+                            }
+                        } else if (isShared) {
+                            baseToShare = shareCandidate;
+                        }
+                    }
+                    baseToShare = baseToShare.setScale(SCALE, RM);
+
+                    // origin remainder = what stays with origin (incl. all lumps)
+                    BigDecimal originRemainder = gl.subtract(baseToShare).setScale(SCALE, RM);
+
+                    // build row
+                    AccountDistribution dist = new AccountDistribution();
+                    dist.accountCode = accountCode;
+                    dist.accountDescription = aaSrc.getAccountDescription();
+                    dist.categoryCode = catCode;
+                    dist.categoryName = catName;
+                    dist.originCompanyUuid = originUuid;
+                    dist.shared = (isShared || isSalary);
+                    dist.salary = isSalary;
+
+                    for (Company payer : companies) {
+                        String payerUuid = payer.getUuid();
+                        BigDecimal alloc = BigDecimal.ZERO;
+
+                        // shared part split by consultant ratio
+                        if (baseToShare.compareTo(BigDecimal.ZERO) > 0) {
+                            BigDecimal r = ratioByCompany.getOrDefault(payerUuid, BigDecimal.ZERO);
+                            BigDecimal share = baseToShare.multiply(r).setScale(SCALE, RM);
+                            alloc = alloc.add(share);
+
+                            if (!payerUuid.equals(originUuid) && share.compareTo(BigDecimal.ZERO) > 0) {
+                                // owes by account
+                                owesByAccount
+                                        .computeIfAbsent(payerUuid, k -> new HashMap<>())
+                                        .computeIfAbsent(originUuid, k -> new HashMap<>())
+                                        .merge(accountCode, share, BigDecimal::add);
+                                // owes by category
+                                owesByCategory
+                                        .computeIfAbsent(payerUuid, k -> new HashMap<>())
+                                        .computeIfAbsent(originUuid, k -> new HashMap<>())
+                                        .merge(catCode, share, BigDecimal::add);
+                            }
+
+                            if (isSalary && share.compareTo(BigDecimal.ZERO) > 0) {
+                                staffPayableByCompany.merge(payerUuid, share, BigDecimal::add);
+                            }
+                        }
+
+                        // origin keeps its remainder (including lumps and non-STAFF salary)
+                        if (payerUuid.equals(originUuid) && originRemainder.compareTo(BigDecimal.ZERO) > 0) {
+                            alloc = alloc.add(originRemainder);
+                        }
+
+                        dist.allocations.put(payerUuid, alloc.setScale(SCALE, RM));
+
+                        // category aggregate
+                        catAgg.computeIfAbsent(catCode, k -> new HashMap<>())
+                                .merge(payerUuid, alloc, BigDecimal::add);
+                    }
+
+                    result.accounts.add(dist);
+                }
+            }
+
+            // finalize categories
+            catAgg.forEach((cc, map) -> {
+                CategoryAggregate ca = new CategoryAggregate();
+                ca.categoryCode = cc;
+                ca.categoryName = catNameByCode.getOrDefault(cc, "");
+                map.replaceAll((k, v) -> v.setScale(SCALE, RM));
+                ca.allocations.putAll(map);
+                result.categories.add(ca);
+            });
+
+            // owes lists (by account)
+            owesByAccount.forEach((payer, recvMap) -> {
+                recvMap.forEach((receiver, accMap) -> {
+                    accMap.forEach((acc, amt) -> {
+                        IntercompanyOwe row = new IntercompanyOwe();
+                        row.fromCompanyUuid = payer;
+                        row.toCompanyUuid = receiver;
+                        row.accountCode = acc;
+                        row.amount = amt.setScale(SCALE, RM);
+                        result.owesByAccount.add(row);
+                    });
+                });
+            });
+            // owes lists (by category)
+            owesByCategory.forEach((payer, recvMap) -> {
+                recvMap.forEach((receiver, catMap) -> {
+                    catMap.forEach((cc, amt) -> {
+                        IntercompanyOweCategory row = new IntercompanyOweCategory();
+                        row.fromCompanyUuid = payer;
+                        row.toCompanyUuid = receiver;
+                        row.categoryCode = cc;
+                        row.categoryName = catNameByCode.getOrDefault(cc, "");
+                        row.amount = amt.setScale(SCALE, RM);
+                        result.owesByCategory.add(row);
+                    });
+                });
+            });
+
+            // staff payable summary per company
+            staffPayableByCompany.forEach((uuid, amt) -> {
+                CompanySummary cs = companySummaryIndex.get(uuid);
+                if (cs != null) cs.staffPayable = amt.setScale(SCALE, RM);
+            });
+
+            out.put(month, result);
+        }
+
+        return out;
+    }
 
     @GET
     @Path("/categories/csv/old")
