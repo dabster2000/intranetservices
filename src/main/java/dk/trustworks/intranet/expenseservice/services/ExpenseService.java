@@ -83,6 +83,7 @@ public class ExpenseService {
 
     //@Scheduled(every = "5s") // Disabled: replaced by JBeret job 'expense-consume' via BatchScheduler
     //@Scheduled(cron = "0 0 20 * * ?")
+    @Transactional
     public void consumeCreate() throws IOException {
         log.info("Starting scheduled expense upload job");
         List<Expense> expenses = Expense.<Expense>stream("status", STATUS_CREATED)

@@ -106,6 +106,10 @@ public class BudgetCalculatingExecutor {
     @Transactional
     public void recalculateUserDailyBudgets(String useruuid, LocalDate testDay) {
         User user = User.findById(useruuid);
+        if (user == null) {
+            log.warnf("recalculateUserDailyBudgets: user not found, skipping. useruuid=%s day=%s", useruuid, String.valueOf(testDay));
+            return;
+        }
         EmployeeBudgetPerDayAggregate.delete("documentDate = ?1 and user = ?2", testDay, user);
         if(DateUtils.isWeekend(testDay)) return;
 

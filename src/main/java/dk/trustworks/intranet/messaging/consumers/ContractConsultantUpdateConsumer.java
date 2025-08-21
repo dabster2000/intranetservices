@@ -16,6 +16,7 @@ import org.eclipse.microprofile.reactive.messaging.Message;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import java.time.LocalDate;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
@@ -38,6 +39,8 @@ public class ContractConsultantUpdateConsumer {
     @Incoming(CHANNEL)
     @Acknowledgment(Acknowledgment.Strategy.MANUAL)
     @WithSpan("consumer.contract-consultant-updates")
+    @Blocking
+    @Transactional
     public CompletionStage<Void> onMessage(Message<String> msg) {
         Timer timer = registry.timer("kafka.consumer.process", "channel", CHANNEL);
         var success = registry.counter("kafka.consumer.messages", "result", "success", "channel", CHANNEL);

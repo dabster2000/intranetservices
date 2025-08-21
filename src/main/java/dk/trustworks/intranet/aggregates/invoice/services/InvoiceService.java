@@ -3,7 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.speedment.jpastreamer.application.JPAStreamer;
-import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
+import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
@@ -20,12 +20,11 @@ import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
-import dk.trustworks.intranet.financeservice.model.AccountLumpSum;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
-import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
+import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
@@ -45,11 +44,13 @@ import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
@@ -68,6 +69,9 @@ public class InvoiceService {
     InvoiceAPI invoiceAPI;
 
      */
+
+    @Inject IntercompanyCalcService calcService;
+
 
     @Inject
     @RestClient
@@ -554,84 +558,104 @@ public class InvoiceService {
         internalInvoice.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
     }
 
+
     @Transactional
     public void createInternalServiceInvoiceDraft(String fromCompanyuuid, String toCompanyuuid, LocalDate month) {
-        List<EmployeeAvailabilityPerMonth> employeeAvailabilityPerMonthList = availabilityService.getAllEmployeeAvailabilityByPeriod(month, month.plusMonths(1));
-        Company fromCompany = Company.findById(fromCompanyuuid);
-        Company toCompany = Company.findById(toCompanyuuid);
+        // Month boundaries
+        final LocalDate from = month.withDayOfMonth(1);
+        final LocalDate to   = from.plusMonths(1);
 
-        List<AccountingCategory> allAccountingCategories = AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
-        List<FinanceDetails> allFinanceDetails = FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", month, month.plusMonths(1));
+        // Load the common month context used by distribution
+        final IntercompanyCalcService.MonthData md =
+                calcService.loadMonthData(from, to, 1.02 /* same multiplier as distribution */);
 
-        List<FinanceDetails> financeDetails = allFinanceDetails.stream().filter(fd -> fd.getCompany().equals(fromCompany)).toList();
+        final Company fromCompany = Company.findById(fromCompanyuuid); // sender (receiver of money)
+        final Company toCompany   = Company.findById(toCompanyuuid);   // payer (client on the invoice)
 
-        // Beregn totale lønsum for den primært valgte virksomhed. Dette bruges til at trække fra lønsummen, så den ikke deles mellem virksomhederne.
-        double primaryCompanySalarySum = availabilityService.calculateSalarySum(fromCompany, month, employeeAvailabilityPerMonthList);
+        // Use the same lumps and the same staff pool semantics as distribution
+        final Map<String, BigDecimal> lumpsByAccount = calcService.lumpsMonthRange(from, to);
+        final Map<String, BigDecimal> staffRemaining = new HashMap<>(md.staffBaseBI102);
 
-        // Beregn det gennemsnitlige antal konsulenter i den primære virksomhed. Dette bruges til at omkostningsfordele forbrug mellem virksomhederne.
-        double fromCompanyConsultantAvg = availabilityService.calculateConsultantCount(fromCompany, month, employeeAvailabilityPerMonthList);
+        // For grouping invoice lines per parent category
+        final Map<String, BigDecimal> amountByCategory = new LinkedHashMap<>();
+        final Map<String, String>     catNameByCode    = new HashMap<>();
 
-        double toCompanyConsultantAvg = availabilityService.calculateConsultantCount(toCompany, month, employeeAvailabilityPerMonthList);
+        // Same rounding policy as distribution
+        final int SCALE = IntercompanyCalcService.SCALE;
+        final RoundingMode RM = IntercompanyCalcService.RM;
 
-        // Beregn det totale gennemsnitlige antal konsulenter i alle andre virksomheder end den primære. Dette bruge til at kunne regne en andel ud. F.eks. 65 medarbejdere ud af 100 i alt.
-        AtomicReference<Double> secondaryCompanyConsultant = new AtomicReference<>(0.0);
-        AtomicReference<Double> secondaryCompanySalarySum = new AtomicReference<>(0.0);
-        Company.<Company>listAll().stream().filter(c -> !c.equals(fromCompany)).forEach(secondaryCompany -> {
-            secondaryCompanySalarySum.updateAndGet(v -> v + availabilityService.calculateSalarySum(secondaryCompany, month, employeeAvailabilityPerMonthList));
-            secondaryCompanyConsultant.updateAndGet(v -> v + availabilityService.calculateConsultantCount(secondaryCompany, month, employeeAvailabilityPerMonthList));
-        });
-        double totalNumberOfConsultants = fromCompanyConsultantAvg + secondaryCompanyConsultant.get();
+        // Build using the *same* distribution logic per account
+        for (AccountingCategory catSrc : md.categories) {
+            final String catCode = catSrc.getAccountCode();
+            final String catName = catSrc.getAccountname();
+            catNameByCode.put(catCode, catName);
 
-        Invoice invoice = new Invoice(0, InvoiceType.INTERNAL_SERVICE, "", "", "", 0.0, month.getYear(), month.getMonthValue(), toCompany.getName(), toCompany.getAddress(), "", toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen", LocalDate.now().withDayOfMonth(1).minusDays(1), LocalDate.now().withDayOfMonth(1).minusDays(1).plusMonths(1), "", "", ContractType.PERIOD, fromCompany, "DKK", "Intern faktura knyttet til " + month.getMonth().name());
-        invoice.persistAndFlush();
+            for (AccountingAccount aa : catSrc.getAccounts()) {
+                // Only origin = sender company
+                if (!aa.getCompany().equals(fromCompany)) continue;
 
-        for (AccountingCategory accountingCategory : allAccountingCategories) {
-            double accountingCategorySum = 0.0;
-            for (AccountingAccount aa : accountingCategory.getAccounts()) {
-                if (aa.getCompany().equals(fromCompany) && aa.isShared()) {
-                    double fullExpenses = financeDetails.stream()
-                            .filter(fd -> fd.getAccountnumber() == aa.getAccountCode() && fd.getExpensedate().equals(month))
-                            .mapToDouble(FinanceDetails::getAmount)
-                            .sum();
+                // Invoiceable here = shared OR salary (matches distribution)
+                if (!aa.isShared() && !aa.isSalary()) continue;
 
-                    // Check and skip if expenses are negative, since they are not relevant for the calculation
-                    if(fullExpenses <= 0) continue;
+                // GL for the whole month (range), same as UI
+                BigDecimal gl = md.glByCompanyAccountRange
+                        .getOrDefault(fromCompanyuuid, Collections.emptyMap())
+                        .getOrDefault(aa.getAccountCode(), BigDecimal.ZERO);
 
-                    // Start by making the partial expenses equal fullExpenses
-                    double partialExpenses = fullExpenses;
+                // Lumps for the whole month, negatives clamped (same as UI)
+                BigDecimal lump = lumpsByAccount.getOrDefault(aa.getUuid(), BigDecimal.ZERO);
 
-                    // Remove lump sums from the expenses
-                    double lumpSum = AccountLumpSum.<AccountLumpSum>list("accountingAccount = ?1 and registeredDate = ?2", aa, month.withDayOfMonth(1)).stream().mapToDouble(AccountLumpSum::getAmount).sum();
-                    partialExpenses -= lumpSum;
+                // Let the shared engine compute the split/cap for this account
+                IntercompanyCalcService.ShareAmounts share =
+                        calcService.computeDistributionLegacyShareForAccount(
+                                md, aa, fromCompanyuuid, gl, lump, staffRemaining);
 
-                        // Hvis kontoen er en lønkonto, så træk lønsummen fra, så den ikke deles mellem virksomhederne.
-                    if (aa.isSalary()) {
-                        AtomicReference<Double> otherSalarySources = new AtomicReference<>(0.0);
-                        accountingCategory.getAccounts().stream()
-                                .filter(value -> value.getCompany().equals(fromCompany) && !value.isShared() && value.isSalary())
-                                        .forEach(value -> {
-                                            otherSalarySources.updateAndGet(v -> v + financeDetails.stream()
-                                                    .filter(fd -> fd.getAccountnumber() == value.getAccountCode() && fd.getExpensedate().equals(month))
-                                                    .mapToDouble(FinanceDetails::getAmount)
-                                                    .sum());
-                                        });
-                        partialExpenses += otherSalarySources.get();
-                        partialExpenses = (Math.max(0, partialExpenses - (primaryCompanySalarySum * 1.02)));
-                    }
-                    if(partialExpenses <= 0) continue;
+                // Amount owed by the payer (toCompany) on this account:
+                BigDecimal rTo = md.ratioByCompany.getOrDefault(toCompanyuuid, BigDecimal.ZERO);
+                BigDecimal owed = share.baseToShare.multiply(rTo).setScale(SCALE, RM);
 
-                    // partial fullExpenses should only account for the part of the fullExpenses equal to the share of consultants in the primary company
-                    partialExpenses *= (toCompanyConsultantAvg / totalNumberOfConsultants);
-
-                    // The loan is the difference between the fullExpenses and the partialExpenses
-                    accountingCategorySum += (Math.max(0, partialExpenses));
+                if (owed.compareTo(BigDecimal.ZERO) > 0) {
+                    amountByCategory.merge(catCode, owed, BigDecimal::add);
                 }
             }
-            if(accountingCategorySum <= 0) continue;
-            InvoiceItem invoiceItem = new InvoiceItem(accountingCategory.getAccountname(), "", accountingCategorySum, 1, invoice.getUuid());
-            invoice.getInvoiceitems().add(invoiceItem);
-            invoiceItem.persist();
         }
+
+        // Create the invoice shell
+        Invoice invoice = new Invoice(
+                0, InvoiceType.INTERNAL_SERVICE,
+                "", "", "",
+                0.0, month.getYear(), month.getMonthValue(),
+                toCompany.getName(), toCompany.getAddress(), "",
+                toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen",
+                LocalDate.now().withDayOfMonth(1).minusDays(1),
+                LocalDate.now().withDayOfMonth(1).minusDays(1).plusMonths(1),
+                "", "", ContractType.PERIOD, fromCompany, "DKK",
+                "Intern faktura knyttet til " + month.getMonth().name());
+
+        invoice.persistAndFlush();
+
+        // Add one invoice item per parent category (like before)
+        amountByCategory.forEach((catCode, amt) -> {
+            if (amt.compareTo(BigDecimal.ZERO) <= 0) return;
+            String catName = catNameByCode.getOrDefault(catCode, catCode);
+            // rate = amount, hours = 1  (your existing convention)
+            InvoiceItem item = new InvoiceItem(catName, "", amt.doubleValue(), 1, invoice.getUuid());
+            invoice.getInvoiceitems().add(item);
+            item.persist();
+        });
+    }
+
+
+    public List<Invoice> findInternalServiceInvoicesByMonth(String month) {
+        LocalDate localDate = DateUtils.dateIt(month).withDayOfMonth(1);
+        return Invoice.find("type = ?1 and year = ?2 AND month = ?3 ", InvoiceType.INTERNAL_SERVICE, localDate.getYear(), localDate.getMonthValue()).list();
+    }
+
+    public List<Invoice> findInternalServicesPaged(int pageIdx, int pageSize, List<String> sortParams) {
+        Sort sort = SortBuilder.from(sortParams);
+        Page page = Page.of(pageIdx, pageSize);
+        PanacheQuery<Invoice> q = Invoice.find("type = ?1", sort, InvoiceType.INTERNAL_SERVICE);
+        return q.page(page).list();
     }
 
     public byte[] createInvoicePdf(Invoice invoice) throws JsonProcessingException {

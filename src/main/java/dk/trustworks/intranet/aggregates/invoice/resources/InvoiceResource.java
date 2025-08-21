@@ -49,7 +49,7 @@ public class InvoiceResource {
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
                               @QueryParam("page")     @DefaultValue("0")  int page,
-                              @QueryParam("size")     @DefaultValue("50") int size,
+                              @QueryParam("size")     @DefaultValue("1000") int size,
                               @QueryParam("sort")     List<String> sort) {
 
         return invoiceService.findPaged(
@@ -186,9 +186,25 @@ public class InvoiceResource {
         invoiceService.updateInvoiceReference(invoiceuuid, invoiceReference);
     }
 
+    @GET
+    @Path("/internalservices")
+    public List<Invoice> findInternalServiceInvoices(@QueryParam("page") @DefaultValue("0") int page,
+                                                      @QueryParam("size") @DefaultValue("1000") int size,
+                                                      @QueryParam("sort") List<String> sort) {
+        return invoiceService.findInternalServicesPaged(page, size, sort);
+    }
+
+    @GET
+    @Path("/internalservices/months/{month}")
+    public List<Invoice> findInternalServiceInvoicesByMonth(@PathParam("month") String month) {
+        return invoiceService.findInternalServiceInvoicesByMonth(month);
+    }
+
     @POST
     @Path("/internalservices")
     public void createInternalServiceInvoiceDraft(@QueryParam("fromCompany") String fromCompanyuuid, @QueryParam("toCompany") String toCompanyuuid, @QueryParam("month") String month) {
+        log.info("InvoiceResource.createInternalServiceInvoiceDraft");
+        log.info("fromCompanyuuid = " + fromCompanyuuid + ", toCompanyuuid = " + toCompanyuuid + ", month = " + month);
         invoiceService.createInternalServiceInvoiceDraft(fromCompanyuuid, toCompanyuuid, dateIt(month));
     }
 
