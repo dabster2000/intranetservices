@@ -92,7 +92,7 @@ public class PhotoService {
 
     public File findPhotoByType(String type) {
         log.debug("findPhotoByType type=" + type);
-        List<File> photos = File.find("type like ?1", type).list();
+        List<File> photos = File.find("type = ?1", type).list();
         if(!photos.isEmpty()) {
             File photo = photos.get(new Random().nextInt(photos.size()));
             photo.setFile(loadFromS3(photo.getUuid()));
@@ -108,12 +108,12 @@ public class PhotoService {
     }
 
     public List<File> findPhotosByType(String type) {
-        return File.find("type like ?1", type).list();
+        return File.find("type = ?1", type).list();
     }
 
     public File findPhotoByRelatedUUID(String relateduuid) {
         log.debug("findPhotoByRelatedUUID uuid=" + relateduuid);
-        Optional<File> photo = File.find("relateduuid like ?1 AND type like 'PHOTO'", relateduuid).firstResultOptional();
+        Optional<File> photo = File.find("relateduuid = ?1 AND type = 'PHOTO'", relateduuid).firstResultOptional();
         if(photo.isPresent()) {
             byte[] file = loadFromS3(photo.get().getUuid());
             photo.get().setFile(file);

@@ -283,4 +283,132 @@ public class IntercompanyCalcService {
         map.replaceAll((k, v) -> v.multiply(PENSION_MULT).setScale(SCALE, RM));
         return map;
     }
+
+    // Add near MonthData class
+    public static final class FiscalYearData {
+        public final List<Company> companies;
+        public final List<AccountingCategory> categories;
+        public final Map<java.time.YearMonth, MonthData> perMonth; // month -> MonthData (prebuilt)
+        public final Map<java.time.YearMonth, Map<String, BigDecimal>> lumpsByMonth; // month -> (accountUuid -> amount)
+
+        public FiscalYearData(List<Company> companies,
+                              List<AccountingCategory> categories,
+                              Map<java.time.YearMonth, MonthData> perMonth,
+                              Map<java.time.YearMonth, Map<String, BigDecimal>> lumpsByMonth) {
+            this.companies = companies;
+            this.categories = categories;
+            this.perMonth = perMonth;
+            this.lumpsByMonth = lumpsByMonth;
+        }
+    }
+
+    // New batch loader
+    public FiscalYearData loadFiscalYear(LocalDate from, LocalDate to, double salaryBufferMultiplier) {
+        // Static data
+        final List<Company> companies = Company.listAll();
+        final List<AccountingCategory> categories =
+                AccountingCategory.listAll(Sort.by("accountCode", Sort.Direction.Ascending));
+
+        // Months in the period
+        final java.time.YearMonth startYm = java.time.YearMonth.from(from);
+        final java.time.YearMonth endYmExcl = java.time.YearMonth.from(to);
+        final List<java.time.YearMonth> months = new ArrayList<>();
+        for (java.time.YearMonth ym = startYm; ym.isBefore(endYmExcl); ym = ym.plusMonths(1)) {
+            months.add(ym);
+        }
+
+        // One availability fetch for the whole FY
+        final List<EmployeeAvailabilityPerMonth> availabilityAll =
+                availabilityService.getAllEmployeeAvailabilityByPeriod(from, to);
+
+        // -------- GL for entire FY, then group per month ----------
+        @SuppressWarnings("unchecked")
+        final List<FinanceDetails> financeFull =
+                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", from, to);
+
+        final Map<java.time.YearMonth, Map<String, Map<Integer, BigDecimal>>> glRangeByMonth = new HashMap<>();
+        final Map<java.time.YearMonth, Map<String, Map<Integer, BigDecimal>>> glExactByMonth = new HashMap<>();
+
+        for (FinanceDetails fd : financeFull) {
+            final java.time.YearMonth ym = java.time.YearMonth.from(fd.getExpensedate());
+            final String cu = fd.getCompany().getUuid();
+            final int acc = fd.getAccountnumber();
+            final BigDecimal amt = BigDecimal.valueOf(fd.getAmount());
+
+            // range [month start, next month)
+            glRangeByMonth
+                    .computeIfAbsent(ym, k -> new HashMap<>())
+                    .computeIfAbsent(cu, k -> new HashMap<>())
+                    .merge(acc, amt, BigDecimal::add);
+
+            // exact day == first of month
+            if (fd.getExpensedate().getDayOfMonth() == 1) {
+                glExactByMonth
+                        .computeIfAbsent(ym, k -> new HashMap<>())
+                        .computeIfAbsent(cu, k -> new HashMap<>())
+                        .merge(acc, amt, BigDecimal::add);
+            }
+        }
+
+        // -------- Lumps for entire FY, then group per month (clamp negatives like Distribution) ----------
+        @SuppressWarnings("unchecked")
+        final List<AccountLumpSum> lumpsFull =
+                AccountLumpSum.list("registeredDate >= ?1 and registeredDate < ?2", from, to);
+
+        final Map<java.time.YearMonth, Map<String, BigDecimal>> lumpsByMonth = new HashMap<>();
+        for (AccountLumpSum ls : lumpsFull) {
+            final java.time.YearMonth ym = java.time.YearMonth.from(ls.getRegisteredDate());
+            BigDecimal amt = BigDecimal.valueOf(ls.getAmount());
+            if (amt.compareTo(BigDecimal.ZERO) < 0) amt = BigDecimal.ZERO; // legacy clamp
+            lumpsByMonth
+                    .computeIfAbsent(ym, k -> new HashMap<>())
+                    .merge(ls.getAccountingAccount().getUuid(), amt.setScale(SCALE, RM), BigDecimal::add);
+        }
+
+        // -------- Build MonthData per month using shared availability ----------
+        final Map<java.time.YearMonth, MonthData> perMonth = new LinkedHashMap<>();
+        for (java.time.YearMonth ym : months) {
+            final LocalDate monthFrom = ym.atDay(1);
+            final LocalDate monthTo = ym.plusMonths(1).atDay(1);
+
+            // Consultant counts & ratios based on the FY-wide availability list
+            final Map<String, BigDecimal> cCount = new HashMap<>();
+            companies.forEach(c -> {
+                double cnt = availabilityService.calculateConsultantCount(c, monthFrom, availabilityAll);
+                cCount.put(c.getUuid(), BigDecimal.valueOf(cnt));
+            });
+            final BigDecimal total = cCount.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            final Map<String, BigDecimal> ratios = new HashMap<>();
+            if (total.compareTo(BigDecimal.ZERO) > 0) {
+                companies.forEach(c ->
+                        ratios.put(c.getUuid(), cCount.get(c.getUuid()).divide(BigDecimal.ONE.max(total), RATIO_SCALE, RM)));
+            } else {
+                companies.forEach(c -> ratios.put(c.getUuid(), BigDecimal.ZERO));
+            }
+
+            // Staff base (kept per-month for correct salary cap semantics)
+            final Map<String, BigDecimal> staffBase = staffBaseFromBI(ym.getYear(), ym.getMonthValue(), salaryBufferMultiplier);
+
+            final Map<String, Map<Integer, BigDecimal>> glRange =
+                    glRangeByMonth.getOrDefault(ym, Collections.emptyMap());
+            final Map<String, Map<Integer, BigDecimal>> glExact =
+                    glExactByMonth.getOrDefault(ym, Collections.emptyMap());
+
+            perMonth.put(ym, new MonthData(
+                    monthFrom,
+                    monthTo,
+                    companies,
+                    categories,
+                    availabilityAll,   // ok: MonthData only uses this to derive counts/ratios, which we already computed
+                    glRange,
+                    glExact,
+                    cCount,
+                    ratios,
+                    staffBase
+            ));
+        }
+
+        return new FiscalYearData(companies, categories, perMonth, lumpsByMonth);
+    }
+
 }

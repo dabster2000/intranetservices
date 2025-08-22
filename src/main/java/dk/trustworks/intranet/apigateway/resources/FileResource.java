@@ -10,6 +10,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.apache.tika.Tika;
 
 import java.io.IOException;
 import java.util.List;
@@ -47,16 +48,26 @@ public class FileResource {
 
     @GET
     @Path("/photos/{relateduuid}/jpg")
-    @Produces("image/jpeg")
+    @Produces({"image/*"})
     public Response getImage(@PathParam("relateduuid") String relateduuid, @QueryParam("width") Integer width) {
         log.debug("Fetching photo " + relateduuid + (width != null ? " width=" + width : ""));
         byte[] imageBytes;
-        if(width != null) {
+        if (width != null) {
             imageBytes = photoService.getResizedPhoto(relateduuid, width);
         } else {
             imageBytes = photoService.findPhotoByRelatedUUID(relateduuid).getFile();
         }
-        return Response.ok(imageBytes).build();
+        String mimeType;
+        try {
+            mimeType = new Tika().detect(imageBytes);
+        } catch (Exception e) {
+            log.warn("Failed to detect mime type, defaulting to application/octet-stream", e);
+            mimeType = "application/octet-stream";
+        }
+        return Response.ok(imageBytes)
+                .header("Cache-Control", "public, max-age=600")
+                .type(mimeType)
+                .build();
     }
 
     @GET
