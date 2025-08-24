@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -96,9 +97,20 @@ public class Invoice extends PanacheEntityBase {
     @ToString.Exclude
     public byte[] pdf;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "economics_status")
+    public EconomicsInvoiceStatus economicsStatus;
+
+    @Column(name = "economics_voucher_number")
+    public int economicsVoucherNumber;
+
+    @Column(name = "creditnote_for_uuid")
+    public String creditnoteForUuid;
+
     public Invoice() {
         this.invoiceitems = new LinkedList<>();
         this.errors = false;
+        this.economicsStatus = EconomicsInvoiceStatus.NA;
     }
 
     public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription) {
@@ -117,6 +129,7 @@ public class Invoice extends PanacheEntityBase {
         this.cvr = cvr;
         this.contractref = contractref;
         this.status = InvoiceStatus.DRAFT;
+        this.economicsStatus = EconomicsInvoiceStatus.NA;
         this.projectuuid = projectuuid;
         this.projectname = projectname;
         this.year = year;

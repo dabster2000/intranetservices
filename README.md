@@ -85,7 +85,7 @@ The expense upload flow is documented in [docs/expense-processing.md](docs/expen
 
 ## Invoice Sorting
 
-The sorting options for invoices are documented in [docs/invoice-sorting.md](docs/invoice-sorting.md).
+The sorting options for invoices are documented in [docs/invoice-sorting.md](docs/invoice/invoice-sorting.md).
 
 ## Guest Registration
 
@@ -97,11 +97,11 @@ Slack user ids are synchronized nightly. Details in [docs/slack-user-sync.md](do
 
 ## Draft Invoice Creation
 
-The improved draft invoice creation flow is documented in [docs/draft-invoice-creation.md](docs/draft-invoice-creation.md).
+The improved draft invoice creation flow is documented in [docs/draft-invoice-creation.md](docs/invoice/draft-invoice-creation.md).
 
 ## Draft Invoice API for Frontend
 
-See [docs/draft-invoice-frontend.md](docs/draft-invoice-frontend.md) for usage instructions and error handling guidelines.
+See [docs/draft-invoice-frontend.md](docs/invoice/draft-invoice-frontend.md) for usage instructions and error handling guidelines.
 
 ## Photo Service
 

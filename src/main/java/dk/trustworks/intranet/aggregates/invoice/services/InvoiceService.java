@@ -20,6 +20,7 @@ import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.model.Company;
@@ -505,6 +506,15 @@ public class InvoiceService {
 
     @Transactional
     public Invoice createCreditNote(Invoice invoice) {
+        // Validate no existing credit note for this invoice
+        if (Invoice.find("creditnoteForUuid = ?1", invoice.getUuid()).count() > 0) {
+            throw new WebApplicationException(
+                    Response.status(Response.Status.CONFLICT)
+                            .entity("A credit note already exists for this invoice.")
+                            .build()
+            );
+        }
+
         invoice.status = InvoiceStatus.CREDIT_NOTE;
         updateDraftInvoice(invoice);
 
@@ -516,11 +526,25 @@ public class InvoiceService {
                 "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.getBonusConsultantApprovedStatus());
 
         creditNote.invoicenumber = 0;
+        creditNote.setCreditnoteForUuid(invoice.getUuid());
+
         for (InvoiceItem invoiceitem : invoice.invoiceitems) {
-            creditNote.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), invoice.uuid));
+            creditNote.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), creditNote.uuid));
         }
-        Invoice.persist(creditNote);
-        creditNote.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
+        try {
+            Invoice.persist(creditNote);
+            creditNote.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
+        } catch (Exception e) {
+            // Map unique index violation to 409 Conflict to prevent duplicates in concurrent requests
+            if (e.getCause() != null && e.getCause().getMessage() != null && e.getCause().getMessage().contains("ux_invoices_creditnote_for_uuid")) {
+                throw new WebApplicationException(
+                        Response.status(Response.Status.CONFLICT)
+                                .entity("A credit note already exists for this invoice.")
+                                .build()
+                );
+            }
+            throw e;
+        }
         return creditNote;
     }
 
@@ -697,12 +721,36 @@ public class InvoiceService {
         Invoice.update("bookingdate = ?1, referencenumber = ?2 WHERE uuid like ?3 ", invoiceReference.getBookingdate(), invoiceReference.getReferencenumber(), invoiceuuid);
     }
 
+    @Transactional
     public void uploadToEconomics(Invoice invoice) {
-        if(invoice.invoicenumber == 0) return;
+        if (invoice.invoicenumber == 0) return;
+        // Prevent double upload if already uploaded/booked/paid
+        if (invoice.getEconomicsStatus() == EconomicsInvoiceStatus.UPLOADED
+                || invoice.getEconomicsStatus() == EconomicsInvoiceStatus.BOOKED
+                || invoice.getEconomicsStatus() == EconomicsInvoiceStatus.PAID) {
+            return;
+        }
         try {
-            economicsInvoiceService.sendVoucher(invoice);
-        } catch (IOException e) {
-            e.printStackTrace();
+            Response r = economicsInvoiceService.sendVoucher(invoice);
+
+            // Persist voucher number if it was assigned by Economics (voucher posted)
+            if (invoice.getEconomicsVoucherNumber() > 0) {
+                Invoice.update("economicsVoucherNumber = ?1 WHERE uuid like ?2", invoice.getEconomicsVoucherNumber(), invoice.getUuid());
+                // Mark as UPLOADED as soon as voucher exists in e-conomics (robust against attachment failures)
+                Invoice.update("economicsStatus = ?1 WHERE uuid like ?2", EconomicsInvoiceStatus.UPLOADED, invoice.getUuid());
+            } else if (r != null && r.getStatus() >= 200 && r.getStatus() < 300) {
+                // Fallback: if we don’t have voucherNumber but file upload response is 2xx, still mark UPLOADED
+                Invoice.update("economicsStatus = ?1 WHERE uuid like ?2", EconomicsInvoiceStatus.UPLOADED, invoice.getUuid());
+            }
+        } catch (Exception e) {
+            // If voucher was created in e-conomics but an error occurred afterwards (e.g., attachment),
+            // persist the voucher number and mark as UPLOADED to keep systems in sync.
+            if (invoice.getEconomicsVoucherNumber() > 0) {
+                Invoice.update("economicsVoucherNumber = ?1 WHERE uuid like ?2", invoice.getEconomicsVoucherNumber(), invoice.getUuid());
+                Invoice.update("economicsStatus = ?1 WHERE uuid like ?2", EconomicsInvoiceStatus.UPLOADED, invoice.getUuid());
+                // Do not rethrow to avoid rolling back DB changes when the external side-effect succeeded
+                return;
+            }
             throw new RuntimeException(e);
         }
     }

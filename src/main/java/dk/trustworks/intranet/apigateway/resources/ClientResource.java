@@ -41,9 +41,6 @@ import java.util.Map;
 public class ClientResource {
 
     @Inject
-    RevenueService revenueService;
-
-    @Inject
     ClientService clientAPI;
 
     @Inject

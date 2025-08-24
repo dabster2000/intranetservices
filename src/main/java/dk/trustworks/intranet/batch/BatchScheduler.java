@@ -4,10 +4,12 @@ import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import io.quarkus.scheduler.Scheduled;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.Properties;
 
+@JBossLog
 @ApplicationScoped
 public class BatchScheduler {
 
@@ -104,6 +106,21 @@ public class BatchScheduler {
             // (You can narrow this to NoSuchJobException if you prefer)
             // log.warn("Could not schedule expense-sync now: " + e.getMessage(), e);
             jobOperator.start("expense-sync", new Properties());
+        }
+    }
+
+    @Scheduled(cron = "0 38 12 * * ?")
+    void scheduleEconomicsInvoiceStatusSync() {
+        try {
+            if (jobOperator.getJobNames().contains("economics-invoice-status-sync")) {
+                if (!jobOperator.getRunningExecutions("economics-invoice-status-sync").isEmpty()) {
+                    return; // one is already running
+                }
+            }
+            log.info("Starting economics-invoice-status-sync");
+            jobOperator.start("economics-invoice-status-sync", new Properties());
+        } catch (Exception e) {
+            jobOperator.start("economics-invoice-status-sync", new Properties());
         }
     }
 

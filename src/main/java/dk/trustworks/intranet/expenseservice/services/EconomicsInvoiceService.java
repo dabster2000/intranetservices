@@ -57,7 +57,10 @@ public class EconomicsInvoiceService {
                 JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
                 JsonNode object = array.get(0);
                 int voucherNumber = object.get("voucherNumber").intValue();
-                //expense.setVouchernumber(voucherNumber);
+                // Persist voucher number on invoice entity; actual DB write will occur in caller @Transactional
+                invoice.setEconomicsVoucherNumber(voucherNumber);
+                Invoice.update("economicsVoucherNumber = ?1 WHERE uuid like ?2", voucherNumber, invoice.getUuid());
+                log.info("Saved e-conomics voucherNumber=" + voucherNumber + " on invoice " + invoice.getUuid());
 
                 //upload file to e-conomics voucher
                 log.info("voucher posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", voucherNumber: " + voucherNumber);
