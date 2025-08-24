@@ -108,6 +108,7 @@ public class ClientResource {
 
     @POST
     public void save(Client client) {
+        clientAPI.save(client);
         CreateClientEvent createClientEvent = new CreateClientEvent(client.getUuid(), client);
         aggregateEventSender.handleEvent(createClientEvent);
     }

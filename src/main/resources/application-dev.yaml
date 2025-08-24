@@ -243,3 +243,17 @@ hibernate:
     batch_size: 50
   order_inserts: true
   order_updates: true
+
+# Mapping of domain event types to Kafka topics used by OutboxDispatcher
+# These become properties like event-topics.CREATE_CLIENT at runtime
+event-topics:
+  CREATE_CLIENT: client.updates
+  UPDATE_WORK: work.updates
+  MODIFY_CONTRACT_CONSULTANT: contract.consultant.updates
+  CREATE_USER: user.status.updates
+  UPDATE_USER: user.status.updates
+  CREATE_USER_STATUS: user.status.updates
+  DELETE_USER_STATUS: user.status.updates
+  CREATE_USER_SALARY: user.salary.updates
+  DELETE_USER_SALARY: user.salary.updates
+  CREATE_BANK_INFO: user.status.updates

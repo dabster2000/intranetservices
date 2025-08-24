@@ -63,12 +63,16 @@ quarkus:
 
 # Event type to Kafka topic mapping (used by ConfigTopicMapper)
 event-topics:
+  CREATE_CLIENT: client.updates
+  UPDATE_WORK: work.updates
+  MODIFY_CONTRACT_CONSULTANT: contract.consultant.updates
+  CREATE_USER: user.status.updates
+  UPDATE_USER: user.status.updates
   CREATE_USER_STATUS: user.status.updates
   DELETE_USER_STATUS: user.status.updates
   CREATE_USER_SALARY: user.salary.updates
   DELETE_USER_SALARY: user.salary.updates
-  UPDATE_WORK: work.updates
-  MODIFY_CONTRACT_CONSULTANT: contract.consultant.updates
+  CREATE_BANK_INFO: user.status.updates
   rest-client:
     openai-api:
       url: https://api.openai.com
