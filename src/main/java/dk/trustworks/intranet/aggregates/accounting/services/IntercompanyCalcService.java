@@ -2,8 +2,10 @@ package dk.trustworks.intranet.aggregates.accounting.services;
 
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
-import dk.trustworks.intranet.aggregates.accounting.dto.*;
-import dk.trustworks.intranet.financeservice.model.*;
+import dk.trustworks.intranet.financeservice.model.AccountLumpSum;
+import dk.trustworks.intranet.financeservice.model.AccountingAccount;
+import dk.trustworks.intranet.financeservice.model.AccountingCategory;
+import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -410,5 +412,71 @@ public class IntercompanyCalcService {
 
         return new FiscalYearData(companies, categories, perMonth, lumpsByMonth);
     }
+
+    // In: dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService
+
+    /**
+     * Compute the final (post-distribution) total per category for a single payer company
+     * for the given month context.
+     *
+     * Semantics match /accounting/distribution (legacy):
+     *  - Salary: shared but capped by STAFF base (BI * multiplier), cap consumed across salary accounts.
+     *  - Non-salary shared: fully shareable.
+     *  - Non-shared: stay with origin; payer only gets origin remainder if payer==origin.
+     *  - Lumps are not shared and month-range lumps are clamped at 0.
+     *
+     * @param md month data (from loadMonthData)
+     * @param lumpsByAccount accountUuid -> amount (clamped >= 0) for [md.monthFrom, md.monthTo)
+     * @param payerCompanyUuid company that we want the final totals for
+     * @return Map<categoryCode, amount>
+     */
+    public Map<String, BigDecimal> computeCategoryTotalsForCompany(
+            MonthData md,
+            Map<String, BigDecimal> lumpsByAccount,
+            String payerCompanyUuid
+    ) {
+        final Map<String, BigDecimal> totalsByCategory = new HashMap<>();
+
+        // Mutable copy for STAFF cap behavior (legacy)
+        final Map<String, BigDecimal> staffRemaining = new HashMap<>(md.staffBaseBI102);
+
+        for (AccountingCategory catSrc : md.categories) {
+            final String catCode = catSrc.getAccountCode();
+
+            for (AccountingAccount aaSrc : catSrc.getAccounts()) {
+                final String originUuid = aaSrc.getCompany().getUuid();
+                final int accountCode = aaSrc.getAccountCode();
+
+                BigDecimal gl = md.glByCompanyAccountRange
+                        .getOrDefault(originUuid, Collections.emptyMap())
+                        .getOrDefault(accountCode, BigDecimal.ZERO);
+
+                BigDecimal lump = lumpsByAccount.getOrDefault(aaSrc.getUuid(), BigDecimal.ZERO);
+
+                IntercompanyCalcService.ShareAmounts share =
+                        computeDistributionLegacyShareForAccount(md, aaSrc, originUuid, gl, lump, staffRemaining);
+
+                BigDecimal alloc = BigDecimal.ZERO;
+
+                if (share.baseToShare.compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal r = md.ratioByCompany.getOrDefault(payerCompanyUuid, BigDecimal.ZERO);
+                    BigDecimal part = share.baseToShare.multiply(r).setScale(SCALE, RM);
+                    alloc = alloc.add(part);
+                }
+                if (payerCompanyUuid.equals(originUuid) && share.originRemainder.compareTo(BigDecimal.ZERO) > 0) {
+                    alloc = alloc.add(share.originRemainder);
+                }
+
+                if (alloc.compareTo(BigDecimal.ZERO) != 0) {
+                    totalsByCategory.merge(catCode, alloc, BigDecimal::add);
+                }
+            }
+        }
+
+        // Ensure 2-decimal scale for all values
+        totalsByCategory.replaceAll((k, v) -> v.setScale(SCALE, RM));
+        return totalsByCategory;
+    }
+
 
 }

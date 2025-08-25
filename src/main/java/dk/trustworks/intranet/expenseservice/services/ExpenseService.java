@@ -23,6 +23,7 @@ public class ExpenseService {
 
     // Status constants used throughout the expense processing flow
     public static final String STATUS_CREATED = "CREATED";
+    public static final String STATUS_VALIDATED = "VALIDATED";
     public static final String STATUS_PROCESSING = "PROCESSING";
     public static final String STATUS_PROCESSED = "PROCESSED";
     public static final String STATUS_NO_FILE = "NO_FILE";
@@ -35,6 +36,9 @@ public class ExpenseService {
 
     @Inject
     EconomicsService economicsService;
+
+    @Inject
+    dk.trustworks.intranet.expenseservice.events.ExpenseCreatedProducer expenseCreatedProducer;
 
     public List<Expense> findByUser(String useruuid) {
         return Expense.find("useruuid", useruuid).list();
@@ -74,6 +78,13 @@ public class ExpenseService {
             }
             log.info("Expense file stored in S3 for " + expense.getUuid());
 
+            // Publish Kafka event to validate asynchronously
+            try {
+                expenseCreatedProducer.publishCreated(expense.getUuid());
+            } catch (Exception ex) {
+                log.error("Failed to publish expense created event for uuid=" + expense.getUuid(), ex);
+            }
+
         } catch (Exception e) {
             log.error("exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
             throw new IOException("exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);//Response.status(500).entity(e).build();
@@ -81,16 +92,14 @@ public class ExpenseService {
         log.info("Expense processed and stored with uuid: " + expense.getUuid());
     }
 
-    //@Scheduled(every = "5s") // Disabled: replaced by JBeret job 'expense-consume' via BatchScheduler
-    //@Scheduled(cron = "0 0 20 * * ?")
     @Transactional
     public void consumeCreate() throws IOException {
         log.info("Starting scheduled expense upload job");
-        List<Expense> expenses = Expense.<Expense>stream("status", STATUS_CREATED)
+        List<Expense> expenses = Expense.<Expense>stream("status", STATUS_VALIDATED)
                 .filter(e -> e.getAmount() > 0)
                 .filter(e -> e.getDatecreated().isBefore(LocalDate.now().minusDays(2)))
                 .limit(1).toList();
-        log.info("Expenses found with status CREATED: " + expenses.size());
+        log.info("Expenses found with status VALIDATED: " + expenses.size());
         if (expenses.isEmpty()) return;
 
         for (Expense expense : expenses) {

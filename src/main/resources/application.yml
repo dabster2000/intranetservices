@@ -110,7 +110,30 @@ mp:
       smallrye-kafka:
         bootstrap:
           servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    outgoing:
+      expenses-created-out:
+        connector: smallrye-kafka
+        topic: expenses.created
+        tracing-enabled: true
+        key:
+          serializer: org.apache.kafka.common.serialization.StringSerializer
+        value:
+          serializer: org.apache.kafka.common.serialization.StringSerializer
     incoming:
+      expenses-created-in:
+        connector: smallrye-kafka
+        topic: expenses.created
+        tracing-enabled: true
+        key:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value:
+          deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto:
+          offset:
+            reset: earliest
+        enable:
+          auto:
+            commit: false
       user-status-updates:
         connector: smallrye-kafka
         topic: user.status.updates
@@ -219,7 +242,7 @@ edenai:
 openai:
   api:
     key: ${OPENAI_APIKEY:xx}
-  model: gpt-4o-mini
+  model: gpt-5-nano
 dk:
   trustworks:
     intranet:

@@ -24,7 +24,6 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.Query;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -486,6 +485,97 @@ public class AccountingResource {
 
         return result;
     }
+
+    // In: dk.trustworks.intranet.aggregates.accounting.resources.AccountingResource
+
+    @GET
+    @Path("/distribution/categories/by-month")
+    public List<CompanyCategoryMonth> distributedCategoryExpensesByMonth(
+            @QueryParam("companyuuid") String companyuuid,
+            @QueryParam("from") String fromMonthStr,
+            @QueryParam("to") String toMonthStr
+    ) {
+        // ---- Validation ----
+        if (companyuuid == null || companyuuid.isBlank())
+            throw new WebApplicationException("Company UUID is required", Response.Status.BAD_REQUEST);
+
+        final Company payer = Company.findById(companyuuid);
+        if (payer == null)
+            throw new WebApplicationException("Company not found: " + companyuuid, Response.Status.NOT_FOUND);
+
+        final LocalDate fromMonth = parseMonthArgOrThrow(fromMonthStr)
+                .withDayOfMonth(1);
+        final LocalDate toMonth = parseMonthArgOrThrow(toMonthStr)
+                .withDayOfMonth(1);
+
+        if (fromMonth.isAfter(toMonth))
+            throw new WebApplicationException("From month must be before or equal to to month", Response.Status.BAD_REQUEST);
+        if (fromMonth.isBefore(LocalDate.of(2010, 1, 1)))
+            throw new WebApplicationException("From month cannot be before 2010-01-01", Response.Status.BAD_REQUEST);
+        if (toMonth.isAfter(LocalDate.now().plusYears(2)))
+            throw new WebApplicationException("To month cannot be more than 2 years in the future", Response.Status.BAD_REQUEST);
+
+        // ---- Main loop per month (inclusive) ----
+        final List<CompanyCategoryMonth> out = new ArrayList<>();
+        for (LocalDate cursor = fromMonth; !cursor.isAfter(toMonth); cursor = cursor.plusMonths(1)) {
+            final LocalDate monthStart = cursor.withDayOfMonth(1);
+            final LocalDate monthEndExcl = monthStart.plusMonths(1);
+
+            // Batch-load month context once
+            final IntercompanyCalcService.MonthData md =
+                    calcService.loadMonthData(monthStart, monthEndExcl, salaryBufferMultiplier);
+
+            // Lumps for month (legacy clamp >= 0)
+            final Map<String, BigDecimal> lumpsByAccount =
+                    calcService.lumpsMonthRange(monthStart, monthEndExcl);
+
+            // Compute category totals for payer company
+            final Map<String, BigDecimal> totals =
+                    calcService.computeCategoryTotalsForCompany(md, lumpsByAccount, companyuuid);
+
+            // Build a stable category list (include all categories, zeros allowed)
+            final Map<String, String> catNames = md.categories.stream()
+                    .collect(Collectors.toMap(
+                            AccountingCategory::getAccountCode,
+                            AccountingCategory::getAccountname,
+                            (a, b) -> a)); // keep first if duplicate keys
+
+            final CompanyCategoryMonth row = new CompanyCategoryMonth(monthStart);
+
+            // Preserve the sorted order already present in md.categories (by accountCode asc)
+            for (AccountingCategory cat : md.categories) {
+                final String code = cat.getAccountCode();
+                final String name = catNames.getOrDefault(code, "");
+                final BigDecimal amount = totals.getOrDefault(code, BigDecimal.ZERO)
+                        .setScale(IntercompanyCalcService.SCALE, IntercompanyCalcService.RM);
+
+                row.categories.add(new CompanyCategoryAmount(code, name, amount));
+            }
+
+            out.add(row);
+        }
+
+        log.infof("Distributed category expenses by month computed for company %s (%d months)",
+                companyuuid, out.size());
+        return out;
+    }
+
+    /** Accepts yyyy-MM or yyyy-MM-dd; returns first-of-month LocalDate on success, otherwise BAD_REQUEST. */
+    private LocalDate parseMonthArgOrThrow(String s) {
+        if (s == null || s.isBlank())
+            throw new WebApplicationException("Missing required month parameter", Response.Status.BAD_REQUEST);
+        final String trimmed = s.trim();
+        try {
+            if (trimmed.length() == 7) { // yyyy-MM
+                return java.time.YearMonth.parse(trimmed).atDay(1);
+            }
+            // yyyy-MM-dd
+            return DateUtils.dateIt(trimmed).withDayOfMonth(1);
+        } catch (Exception ex) {
+            throw new WebApplicationException("Invalid month format. Use yyyy-MM or yyyy-MM-dd", Response.Status.BAD_REQUEST);
+        }
+    }
+
 
     @GET
     @Path("/distribution/fy")
