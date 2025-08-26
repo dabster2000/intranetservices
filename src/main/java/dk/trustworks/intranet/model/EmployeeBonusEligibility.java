@@ -5,11 +5,16 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.userservice.model.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import lombok.Data;
-
 import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.proxy.HibernateProxy;
 
-@Data
+import java.util.Objects;
+
+@Getter
+@Setter
+@ToString
+@NoArgsConstructor
 @Entity
 @Table(name = "user_contract_bonus")
 public class EmployeeBonusEligibility extends PanacheEntityBase {
@@ -45,9 +50,6 @@ public class EmployeeBonusEligibility extends PanacheEntityBase {
     private boolean april;
     private boolean may;
     private boolean june;
-
-    public EmployeeBonusEligibility() {
-    }
 
     public EmployeeBonusEligibility(User user, int year, boolean bonusEligible, boolean july, boolean august, boolean september, boolean october, boolean november, boolean december, boolean january, boolean february, boolean march, boolean april, boolean may, boolean june) {
         this.user = user;
