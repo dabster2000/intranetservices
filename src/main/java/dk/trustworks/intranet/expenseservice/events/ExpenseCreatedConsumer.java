@@ -11,6 +11,8 @@ import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.userservice.model.User;
 import dk.trustworks.intranet.userservice.model.UserContactinfo;
+import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.quarkus.scheduler.Scheduled;
 import io.smallrye.reactive.messaging.annotations.Blocking;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -20,6 +22,7 @@ import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.function.Consumer;
 
 @JBossLog
 @ApplicationScoped
@@ -38,6 +41,11 @@ public class ExpenseCreatedConsumer {
     SlackService slackService;
     @Inject
     UserService userService;
+
+    @Scheduled(every = "1m")
+    public void expenseSyncJob() {
+        Expense.find("status", "CREATED").stream().forEach(expense -> ExpenseCreatedConsumer.this.onExpenseCreated(((Expense) expense).getUuid()));
+    }
 
     @Incoming("expenses-created-in")
     @Blocking

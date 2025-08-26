@@ -42,6 +42,10 @@ quarkus:
     root-path: /health
   otel:
     enabled: false
+  rest-client:
+    openai-api:
+      url: https://api.openai.com
+      scope: jakarta.inject.Singleton
   log:
     level: INFO
     category:
@@ -73,10 +77,6 @@ event-topics:
   CREATE_USER_SALARY: user.salary.updates
   DELETE_USER_SALARY: user.salary.updates
   CREATE_BANK_INFO: user.status.updates
-  rest-client:
-    openai-api:
-      url: https://api.openai.com
-      scope: jakarta.inject.Singleton
       #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
   #otel:
   #  exporter:
@@ -242,7 +242,7 @@ edenai:
 openai:
   api:
     key: ${OPENAI_APIKEY:xx}
-  model: gpt-5-nano
+  model: gpt-5-nano #gpt-4o-mini
 dk:
   trustworks:
     intranet:

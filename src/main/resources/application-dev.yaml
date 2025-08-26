@@ -220,7 +220,7 @@ edenai:
 openai:
   api:
     key: ${OPENAI_APIKEY:xx}
-  model: gpt-5-nano
+  model: gpt-4o-mini
 dk:
   trustworks:
     intranet:
