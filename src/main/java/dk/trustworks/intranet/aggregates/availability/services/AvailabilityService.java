@@ -100,72 +100,62 @@ public class AvailabilityService {
                 .values());
     }
 
+    // AvailabilityService.java
     @NotNull
     private List<EmployeeAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(List<BiDataPerDay> aggregates) {
         return aggregates.stream()
                 .collect(Collectors.groupingBy(
-                        e -> new AbstractMap.SimpleEntry<>(new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()), e.getUser()),
+                        d -> new AbstractMap.SimpleEntry<>(new AbstractMap.SimpleEntry<>(d.getYear(), d.getMonth()), d.getUser()),
                         Collectors.toList()
                 ))
-                .values().stream().map(list -> {
-                    int year = list.getFirst().getYear();
-                    int month = list.getFirst().getMonth();
-                    User user = list.getFirst().getUser();
-                    Company company = list.getFirst().getCompany();
-                    ConsultantType consultantType = list.getFirst().getConsultantType();
+                .values().stream()
+                .map(list -> {
+                    BiDataPerDay first = list.getFirst();
+                    int year = first.getYear();
+                    int month = first.getMonth();
+                    User user = first.getUser();
+                    Company company = first.getCompany();
+                    ConsultantType consultantType = first.getConsultantType();
 
-                    // Filter to only include days where the employee is ACTIVE (or other statuses that count for work)
-                    List<BiDataPerDay> activeDays = list.stream()
-                            .filter(day -> day.getStatusType() != null)
-                            .filter(day -> day.getStatusType().equals(StatusType.ACTIVE)
-                                    || day.getStatusType().equals(StatusType.PAID_LEAVE)
-                                    || day.getStatusType().equals(StatusType.MATERNITY_LEAVE))
-                            .toList();
+                    // ---- Daily → monthly aggregation (use ALL days) ----
+                    double grossAvailableHours     = list.stream().map(d -> d.getGrossAvailableHours()     != null ? d.getGrossAvailableHours().doubleValue()     : 0.0).mapToDouble(Double::doubleValue).sum();
+                    double unavailableHours        = list.stream().map(d -> d.getUnavailableHours()        != null ? d.getUnavailableHours().doubleValue()        : 0.0).mapToDouble(Double::doubleValue).sum();
+                    double vacationHours           = list.stream().map(d -> d.getVacationHours()           != null ? d.getVacationHours().doubleValue()           : 0.0).mapToDouble(Double::doubleValue).sum();
+                    double sickHours               = list.stream().map(d -> d.getSickHours()               != null ? d.getSickHours().doubleValue()               : 0.0).mapToDouble(Double::doubleValue).sum();
+                    double maternityLeaveHours     = list.stream().map(d -> d.getMaternityLeaveHours()     != null ? d.getMaternityLeaveHours().doubleValue()     : 0.0).mapToDouble(Double::doubleValue).sum();
+                    double nonPaydLeaveHours       = list.stream().map(d -> d.getNonPaydLeaveHours()       != null ? d.getNonPaydLeaveHours().doubleValue()       : 0.0).mapToDouble(Double::doubleValue).sum();
+                    double paidLeaveHours          = list.stream().map(d -> d.getPaidLeaveHours()          != null ? d.getPaidLeaveHours().doubleValue()          : 0.0).mapToDouble(Double::doubleValue).sum();
 
-                    if(activeDays.isEmpty()) {
-                        // If no active days, treat the month as terminated (or non-pay)
-                        return new EmployeeAvailabilityPerMonth(
-                                year, month, company, user.getUuid(), consultantType, StatusType.TERMINATED,
-                                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
-                                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, false
-                        );
-                    } else {
-                        double grossAvailableHours = activeDays.stream()
-                                .mapToDouble(day -> day.getGrossAvailableHours().doubleValue()).sum();
-                        double unavailableHours = activeDays.stream()
-                                .mapToDouble(day -> day.getUnavailableHours().doubleValue()).sum();
-                        double vacationHours = activeDays.stream()
-                                .mapToDouble(day -> day.getVacationHours().doubleValue()).sum();
-                        double sickHours = activeDays.stream()
-                                .mapToDouble(day -> day.getSickHours().doubleValue()).sum();
-                        double maternityLeaveHours = activeDays.stream()
-                                .mapToDouble(day -> day.getMaternityLeaveHours().doubleValue()).sum();
-                        double nonPaydLeaveHours = activeDays.stream()
-                                .mapToDouble(day -> day.getNonPaydLeaveHours().doubleValue()).sum();
-                        double paidLeaveHours = activeDays.stream()
-                                .mapToDouble(day -> day.getPaidLeaveHours().doubleValue()).sum();
-                        double salary = activeDays.stream()
-                                .mapToDouble(BiDataPerDay::getSalary).average().orElse(0.0);
-                        boolean isTwBonusEligible = activeDays.stream().allMatch(BiDataPerDay::isTwBonusEligible);
+                    // Average of daily salary (0 on non-paid/terminated days) => proportional monthly basis
+                    double avgSalary = list.stream().mapToDouble(d -> d.getSalary() != null ? d.getSalary() : 0).average().orElse(0.0);
 
-                        // Use ACTIVE status because there are active days in this month
-                        StatusType status = StatusType.ACTIVE;
+                    long eligibleDays = list.stream().filter(d -> d.getSalary() != null && d.getSalary() > 0).count();
+                    boolean isTwBonusEligible = eligibleDays > 0;
 
-                        return new EmployeeAvailabilityPerMonth(
-                                year, month, company, user.getUuid(), consultantType, status,
-                                BigDecimal.valueOf(grossAvailableHours),
-                                BigDecimal.valueOf(unavailableHours),
-                                BigDecimal.valueOf(vacationHours),
-                                BigDecimal.valueOf(sickHours),
-                                BigDecimal.valueOf(maternityLeaveHours),
-                                BigDecimal.valueOf(nonPaydLeaveHours),
-                                BigDecimal.valueOf(paidLeaveHours),
-                                BigDecimal.valueOf(salary),
-                                isTwBonusEligible
-                        );
-                    }
-                }).collect(Collectors.toList());
+                    // Month-level status (keep ACTIVE if any day is not PREBOARDING/TERMINATED)
+                    StatusType status = list.stream()
+                            .map(BiDataPerDay::getStatusType)
+                            .filter(Objects::nonNull)
+                            .anyMatch(st -> st != StatusType.PREBOARDING && st != StatusType.TERMINATED)
+                            ? StatusType.ACTIVE
+                            : StatusType.TERMINATED;
+
+                    return new EmployeeAvailabilityPerMonth(
+                            year, month, company, user.getUuid(), consultantType, status,
+                            BigDecimal.valueOf(grossAvailableHours),
+                            BigDecimal.valueOf(unavailableHours),
+                            BigDecimal.valueOf(vacationHours),
+                            BigDecimal.valueOf(sickHours),
+                            BigDecimal.valueOf(maternityLeaveHours),
+                            BigDecimal.valueOf(nonPaydLeaveHours),
+                            BigDecimal.valueOf(paidLeaveHours),
+                            BigDecimal.valueOf(avgSalary),
+                            isTwBonusEligible
+                    );
+                })
+                .collect(Collectors.toList());
     }
+
 
     /*
     @NotNull

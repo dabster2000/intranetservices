@@ -21,7 +21,7 @@ import java.util.Optional;
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 
 @Tag(name = "user")
-@Path("/{companyuuid}/users")
+@Path("/company/{companyuuid}/users")
 @JBossLog
 @RequestScoped
 @SecurityRequirement(name = "jwt")
