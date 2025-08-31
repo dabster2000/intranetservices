@@ -1,5 +1,5 @@
 package dk.trustworks.intranet.contracts.model.enums;
 
 public enum ContractType {
-    PERIOD, AMOUNT, SKI2016, SKI0217_2021
+    PERIOD, SKI0217_2021, SKI0217_2025, SKI0215_2025
 }

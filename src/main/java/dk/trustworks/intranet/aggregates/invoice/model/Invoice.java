@@ -24,6 +24,8 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 
+import static dk.trustworks.intranet.contracts.model.enums.ContractType.*;
+
 /**
  * Created by hans on 08/07/2017.
  */
@@ -161,7 +163,7 @@ public class Invoice extends PanacheEntityBase {
     public double getSumNoTax() {
         final double[] sumOfLineItems = {invoiceitems.stream().mapToDouble(value -> value.hours * value.rate).sum()};
         if(contractType == null) System.out.println("uuid has no contract = " + uuid);
-        if(contractType.equals(ContractType.SKI0217_2021)) {
+        if(contractType.equals(SKI0217_2021) || contractType.equals(SKI0217_2025) || contractType.equals(SKI0215_2025)) {
             ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
                 double keyDiscount = (sumOfLineItems[0] * (Double.parseDouble(contractTypeItem.getValue()) / 100.0));
                 double adminDiscount = ((sumOfLineItems[0] - keyDiscount) * 0.02);

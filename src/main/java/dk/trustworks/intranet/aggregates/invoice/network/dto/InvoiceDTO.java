@@ -82,7 +82,7 @@ public class InvoiceDTO {
             items.add(new InvoiceItemDTO(invoiceItem.itemname, invoiceItem.hours, invoiceItem.rate, invoiceItem.description));
         }
         Contract contract = Contract.findById(invoice.contractuuid);
-        if(contract != null && contract.getContractType().equals(ContractType.SKI0217_2021)) { // null happens when invoice is an internal service invoice
+        if(contract != null && (contract.getContractType().equals(ContractType.SKI0217_2021) || contract.getContractType().equals(ContractType.SKI0217_2025) || contract.getContractType().equals(ContractType.SKI0215_2025))) { // null happens when invoice is an internal service invoice
             ContractTypeItem contractTypeItem = contract.getContractTypeItems().stream().findAny().get();
             double sumNoTax = invoice.getInvoiceitems().stream().mapToDouble(value -> value.hours * value.rate).sum();
             double keyDiscount = (sumNoTax * (NumberUtils.parseDouble(contract.getContractTypeItems().stream().findAny().get().getValue()) / 100.0));
