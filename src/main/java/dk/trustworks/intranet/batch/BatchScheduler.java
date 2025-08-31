@@ -16,9 +16,9 @@ public class BatchScheduler {
     @Inject
     JobOperator jobOperator;
 
-    @Scheduled(cron = "0 33 23 ? * 2-6")
+    @Scheduled(cron = "0 55 20 ? * 1-6")
     void trigger() {
-        LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(2);
+        LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(24);
         LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);
 
         Properties params = new Properties();

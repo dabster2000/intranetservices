@@ -14,6 +14,7 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
 
@@ -35,6 +36,7 @@ public class FinanceLoadJob {
 
     //@Scheduled(every="1h")
     //@Scheduled(cron="0 0 21 * * ?") // disabled; replaced by JBeret job 'finance-load-economics' triggered via BatchScheduler
+    @Transactional
     void loadEconomicsData() {
         log.debug("ExpenseLoadJob.loadEconomicsData");
         log.debug("Cleaning old data...");
