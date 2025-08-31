@@ -4,8 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
+import dk.trustworks.intranet.aggregates.invoice.rules.PricingRulesEngine;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
@@ -44,6 +46,13 @@ public class InvoiceResource {
 
     @Inject
     InvoiceGenerator invoiceGenerator;
+
+    @Inject
+    PricingRulesEngine pricingRulesEngine;
+
+    @Inject
+    ContractService contractService;
+
 
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
@@ -225,4 +234,15 @@ public class InvoiceResource {
     public void createOrUpdateInvoiceNote(InvoiceNote invoiceNote) {
         invoiceNotesService.createOrUpdateInvoiceNote(invoiceNote);
     }
+
+    @POST
+    @Path("/drafts/{invoiceuuid}/recalculate")
+    @Transactional
+    public Invoice recalc(@PathParam("invoiceuuid") String id) {
+        Invoice inv = Invoice.findById(id);
+        var contract = contractService.findByUuid(inv.getContractuuid());
+        pricingRulesEngine.reapplyAll(contract, inv);
+        return inv;
+    }
+
 }

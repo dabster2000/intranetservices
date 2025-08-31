@@ -14,7 +14,9 @@ import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
 import dk.trustworks.intranet.aggregates.invoice.network.InvoiceDynamicHeaderFilter;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
+import dk.trustworks.intranet.aggregates.invoice.rules.PricingRulesEngine;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
+import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
@@ -73,6 +75,8 @@ public class InvoiceService {
 
     @Inject IntercompanyCalcService calcService;
 
+    @Inject
+    PricingRulesEngine pricingRulesEngine;
 
     @Inject
     @RestClient
@@ -376,8 +380,7 @@ public class InvoiceService {
 
     @Transactional
     public Invoice updateDraftInvoice(Invoice invoice) {
-        System.out.println("InvoiceService.updateDraftInvoice");
-        System.out.println("Updating invoice...");
+        // Scalar fields (unchanged from your current method)
         Invoice.update("attention = ?1, " +
                         "bookingdate = ?2, " +
                         "clientaddresse = ?3, " +
@@ -438,14 +441,24 @@ public class InvoiceService {
                 invoice.getDuedate(),
                 invoice.getVat(),
                 invoice.getUuid());
-        System.out.println("Updating invoice items...");
+
+        // Replace items: keep only USER-origin items from payload
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
-        invoice.getInvoiceitems().forEach(invoiceItem -> {
-            invoiceItem.setInvoiceuuid(invoice.uuid);
-        });
-        System.out.println("Persisting invoice items...");
-        InvoiceItem.persist(invoice.invoiceitems);
-        System.out.println("Invoice updated: "+invoice.getUuid());
+        List<InvoiceItem> userItems = new ArrayList<>();
+        for (InvoiceItem ii : invoice.getInvoiceitems()) {
+            if (ii.origin != null && ii.origin.name().equals("AUTO_RULE")) continue;
+            ii.setInvoiceuuid(invoice.uuid);
+            ii.origin = InvoiceItem.ItemOrigin.USER;
+            ii.locked = false;
+            ii.ruleCode = null;
+            ii.calcNote = null;
+            userItems.add(ii);
+        }
+        if (!userItems.isEmpty()) InvoiceItem.persist(userItems);
+
+        // Re-apply rules on top of user lines
+        Contract contract = dk.trustworks.intranet.contracts.model.Contract.findById(invoice.getContractuuid());
+        pricingRulesEngine.reapplyAll(contract, invoice);
 
         return invoice;
     }
@@ -454,6 +467,8 @@ public class InvoiceService {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
+        Contract contract = dk.trustworks.intranet.contracts.model.Contract.findById(draftInvoice.getContractuuid());
+        pricingRulesEngine.reapplyAll(contract, draftInvoice);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         System.out.println("Saving invoice...");
         saveInvoice(draftInvoice);

@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice;
 
 import com.google.common.collect.Lists;
+import dk.trustworks.intranet.aggregates.invoice.rules.PricingRulesEngine;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
@@ -65,6 +66,10 @@ public class InvoiceGenerator {
 
     @Inject
     WorkService workService;
+
+    @Inject
+    PricingRulesEngine pricingRulesEngine;
+
 
     public List<ProjectSummary> loadProjectSummaryByYearAndMonth(LocalDate month) {
         log.debug("InvoiceController.loadProjectSummaryByYearAndMonth");
@@ -265,6 +270,11 @@ public class InvoiceGenerator {
         }
 
         Invoice created = invoiceService.createDraftInvoice(invoice);
+
+        // Apply rules (adds locked system lines)
+        var contractEntity = contractService.findByUuid(contractuuid);
+        pricingRulesEngine.reapplyAll(contractEntity, created);
+
         log.info("Persisted draft invoice: " + created.getUuid());
         return created;
     }

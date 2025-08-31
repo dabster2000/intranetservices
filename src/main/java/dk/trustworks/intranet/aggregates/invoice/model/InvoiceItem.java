@@ -2,12 +2,10 @@ package dk.trustworks.intranet.aggregates.invoice.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
 import java.util.UUID;
 
 /**
@@ -29,6 +27,22 @@ public class InvoiceItem extends PanacheEntityBase {
     public double hours;
     @JsonIgnore
     public String invoiceuuid;
+    public enum ItemOrigin { USER, AUTO_RULE }
+
+    // ...inside class (fields)...
+    @Enumerated(EnumType.STRING)
+    @Column(name = "origin", nullable = false)
+    public ItemOrigin origin = ItemOrigin.USER;
+
+    @Column(name = "locked", nullable = false)
+    public boolean locked = false;
+
+    @Column(name = "rulecode")
+    public String ruleCode;
+
+    @Column(name = "calc_note")
+    public String calcNote;                 // optional human-readable detail (“2% of 123,000.00”)
+
 
     public InvoiceItem() {
     }
