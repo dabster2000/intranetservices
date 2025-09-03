@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.financeservice.jobs;
 
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
@@ -11,6 +12,7 @@ import lombok.extern.jbosslog.JBossLog;
 @Named("financeLoadEconomicsBatchlet")
 @Dependent
 @ActivateRequestContext
+@BatchExceptionTracking
 public class FinanceLoadEconomicsBatchlet extends AbstractBatchlet {
 
     @Inject

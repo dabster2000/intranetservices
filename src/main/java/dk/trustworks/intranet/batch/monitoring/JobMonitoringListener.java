@@ -9,6 +9,7 @@ import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
@@ -17,12 +18,14 @@ import java.util.Properties;
 
 @Named("jobMonitoringListener")
 @Dependent
+@JBossLog
 public class JobMonitoringListener implements JobListener {
 
     @Inject JobContext jobContext;
     @Inject JobOperator jobOperator;
     @Inject BatchJobTrackingService trackingService;
     @Inject UserService userService;
+    @Inject BatchExceptionRegistry exceptionRegistry;
 
     @Override
     @ActivateRequestContext
@@ -75,11 +78,58 @@ public class JobMonitoringListener implements JobListener {
     }
 
     @Override
+    @ActivateRequestContext
     public void afterJob() {
         long executionId = jobContext.getExecutionId();
         BatchStatus status = jobContext.getBatchStatus();
         String exitStatus = jobContext.getExitStatus();
-        trackingService.onJobEnd(executionId, status != null ? status.name() : "UNKNOWN", exitStatus);
+        
+        // Check if an exception was captured during job execution
+        Throwable capturedError = null;
+        try {
+            BatchExceptionRegistry.ExceptionContext exceptionContext = 
+                exceptionRegistry.retrieveException(executionId);
+            
+            if (exceptionContext != null) {
+                capturedError = exceptionContext.exception;
+                log.infof("Retrieved captured exception for job %s (execution %d): %s",
+                         jobContext.getJobName(), executionId, 
+                         capturedError.getClass().getSimpleName());
+            }
+        } catch (Exception e) {
+            log.errorf(e, "Failed to retrieve exception from registry for execution %d", executionId);
+        }
+        
+        // Update tracking with status and any captured exception
+        if (capturedError != null) {
+            // Use the overloaded method that accepts the exception
+            trackingService.onJobEnd(executionId, 
+                                   status != null ? status.name() : "UNKNOWN", 
+                                   exitStatus, 
+                                   capturedError);
+        } else if (status == BatchStatus.FAILED) {
+            // Job failed but no exception was captured - create a synthetic one
+            String errorMsg = String.format("Job %s failed with status %s. Exit status: %s",
+                                          jobContext.getJobName(), status, exitStatus);
+            Exception syntheticError = new Exception(errorMsg);
+            
+            trackingService.onJobEnd(executionId,
+                                   status.name(),
+                                   exitStatus,
+                                   syntheticError);
+        } else {
+            // Normal completion without error
+            trackingService.onJobEnd(executionId, 
+                                   status != null ? status.name() : "UNKNOWN", 
+                                   exitStatus);
+        }
+        
+        // Clean up registry to prevent memory leaks
+        try {
+            exceptionRegistry.clearException(executionId);
+        } catch (Exception e) {
+            log.warnf("Failed to clear exception registry for execution %d", executionId);
+        }
     }
 
     @ActivateRequestContext

@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.jobs;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
 import dk.trustworks.intranet.bi.services.WorkAggregateService;
@@ -14,6 +15,7 @@ import java.time.LocalDate;
 
 @Named("userDayBatchlet")
 @Dependent
+@BatchExceptionTracking
 public class UserDayBatchlet extends AbstractBatchlet {
 
     @Inject UserAvailabilityCalculatorService availability;

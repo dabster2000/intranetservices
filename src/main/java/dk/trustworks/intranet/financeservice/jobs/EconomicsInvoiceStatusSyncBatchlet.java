@@ -2,6 +2,7 @@ package dk.trustworks.intranet.financeservice.jobs;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceStatusService;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
@@ -15,6 +16,7 @@ import java.util.List;
 @JBossLog
 @Named("economicsInvoiceStatusSyncBatchlet")
 @Dependent
+@BatchExceptionTracking
 public class EconomicsInvoiceStatusSyncBatchlet extends AbstractBatchlet {
 
     @Inject

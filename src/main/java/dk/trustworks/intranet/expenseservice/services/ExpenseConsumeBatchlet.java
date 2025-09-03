@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.expenseservice.services;
 
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
@@ -10,6 +11,7 @@ import lombok.extern.jbosslog.JBossLog;
 @JBossLog
 @Named("expenseConsumeBatchlet")
 @Dependent
+@BatchExceptionTracking
 public class ExpenseConsumeBatchlet extends AbstractBatchlet {
 
     @Inject

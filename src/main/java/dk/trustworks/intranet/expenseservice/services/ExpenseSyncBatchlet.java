@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import jakarta.batch.api.AbstractBatchlet;
@@ -15,8 +16,9 @@ import lombok.extern.jbosslog.JBossLog;
 import java.util.List;
 
 @JBossLog
-@Named("expenseSyncBatchlet")
 @Dependent
+@Named("expenseSyncBatchlet")
+@BatchExceptionTracking
 public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
     @Inject

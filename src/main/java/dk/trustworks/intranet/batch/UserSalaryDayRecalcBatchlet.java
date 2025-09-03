@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.batch;
 
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.bi.services.UserSalaryCalculatorService;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -13,6 +14,7 @@ import java.time.LocalDate;
 
 @Dependent
 @Named("userSalaryDayRecalcBatchlet")
+@BatchExceptionTracking
 public class UserSalaryDayRecalcBatchlet implements Batchlet {
 
     @Inject

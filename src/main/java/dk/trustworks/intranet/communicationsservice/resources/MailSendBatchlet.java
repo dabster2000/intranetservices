@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.communicationsservice.resources;
 
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -7,8 +8,9 @@ import jakarta.inject.Named;
 import lombok.extern.jbosslog.JBossLog;
 
 @JBossLog
-@Named("mailSendBatchlet")
 @Dependent
+@Named("mailSendBatchlet")
+@BatchExceptionTracking
 public class MailSendBatchlet extends AbstractBatchlet {
 
     @Inject
