@@ -18,5 +18,6 @@ import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType
 public class CreateUserStatusEvent extends AggregateRootChangeEvent {
     public CreateUserStatusEvent(String aggregateRootUUID, UserStatus userStatus) {
         super(aggregateRootUUID, CREATE_USER_STATUS, JsonObject.mapFrom(userStatus).encode());
+        this.setEffectiveDate(userStatus.getStatusdate());
     }
 }

@@ -1,11 +1,9 @@
 package dk.trustworks.intranet.messaging.consumers;
 
-import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
+import dk.trustworks.intranet.batch.StatusRecalcJobLauncher;
 import dk.trustworks.intranet.messaging.consumers.util.EventDataParser;
 import dk.trustworks.intranet.messaging.dto.EventData;
 import dk.trustworks.intranet.utils.DateUtils;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.opentelemetry.instrumentation.annotations.WithSpan;
@@ -27,9 +25,9 @@ import java.util.concurrent.CompletionStage;
 public class UserStatusUpdateConsumer {
 
     private static final String CHANNEL = "user-status-updates";
-
+    
     @Inject
-    UserAvailabilityCalculatorService userAvailabilityCalculatorService;
+    StatusRecalcJobLauncher statusRecalcJobLauncher;
 
     @Inject
     MeterRegistry registry;
@@ -71,9 +69,18 @@ public class UserStatusUpdateConsumer {
             }
             String useruuid = eventData.getAggregateRootUUID();
             LocalDate date = DateUtils.dateIt(eventData.getAggregateDate());
-            userAvailabilityCalculatorService.updateUserAvailabilityByDay(useruuid, date);
+            
+            // Launch a batch job to recalculate all affected future dates
+            // This ensures status changes propagate forward for availability, budgets, and work aggregates
+            long execId = statusRecalcJobLauncher.launch(useruuid, date, 4);
+            
+            log.infof("Started user-status forward recalc job execId=%d user=%s from=%s to=%s", 
+                     execId, useruuid, date, LocalDate.now().plusYears(2));
+            
+            // Acknowledge the message immediately; the batch job runs in background
             long durMs = (System.nanoTime() - startNs) / 1_000_000;
-            log.infof("Processed user-status update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", topic, partition, offset, key, useruuid, date, durMs);
+            log.infof("Processed user-status update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", 
+                     topic, partition, offset, key, useruuid, date, durMs);
             success.increment();
             sample.stop(timer);
             return msg.ack();
