@@ -4,7 +4,7 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.sales.model.enums.ConsultantCompetencies;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Data;

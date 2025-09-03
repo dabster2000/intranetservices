@@ -4,7 +4,7 @@ import dk.trustworks.intranet.aggregates.availability.model.CompanyAvailabilityP
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.NumberUtils;

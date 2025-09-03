@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.sales.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
 import lombok.NoArgsConstructor;

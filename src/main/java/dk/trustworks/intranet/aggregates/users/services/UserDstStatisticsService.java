@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
-import dk.trustworks.intranet.userservice.model.UserDstStatistic;
+import dk.trustworks.intranet.domain.user.entity.UserDstStatistic;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;

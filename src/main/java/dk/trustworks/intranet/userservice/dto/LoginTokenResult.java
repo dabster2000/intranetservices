@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.userservice.dto;
 
-import dk.trustworks.intranet.userservice.model.Role;
+import dk.trustworks.intranet.domain.user.entity.Role;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;

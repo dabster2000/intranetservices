@@ -2,7 +2,7 @@ package dk.trustworks.intranet.aggregates.bidata.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;

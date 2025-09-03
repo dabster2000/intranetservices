@@ -8,7 +8,7 @@ import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.messaging.dto.DateRangeMap;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.annotation.PostConstruct;

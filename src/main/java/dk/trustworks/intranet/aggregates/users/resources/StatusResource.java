@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.aggregates.users.services.StatusService;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;

@@ -4,7 +4,7 @@ import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.crm.model.ConsultantContract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;

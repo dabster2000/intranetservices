@@ -3,7 +3,7 @@ package dk.trustworks.intranet.batch;
 import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
 import dk.trustworks.intranet.bi.services.WorkAggregateService;
 import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.batch.api.BatchProperty;
 import jakarta.enterprise.context.Dependent;

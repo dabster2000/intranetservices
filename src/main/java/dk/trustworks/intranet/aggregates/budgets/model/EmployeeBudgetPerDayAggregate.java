@@ -9,7 +9,7 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.*;
 

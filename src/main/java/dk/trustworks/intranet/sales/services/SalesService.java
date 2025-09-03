@@ -4,7 +4,7 @@ import dk.trustworks.intranet.contracts.model.enums.SalesStatus;
 import dk.trustworks.intranet.sales.model.SalesLead;
 import dk.trustworks.intranet.sales.model.SalesLeadConsultant;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;

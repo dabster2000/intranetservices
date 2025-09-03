@@ -1,10 +1,13 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
-import dk.trustworks.intranet.bi.events.SalaryChangedEvent;
-import dk.trustworks.intranet.userservice.model.Salary;
+import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.users.events.CreateSalaryLogEvent;
+import dk.trustworks.intranet.aggregates.users.events.DeleteSalaryEvent;
+import dk.trustworks.intranet.aggregates.users.events.UpdateSalaryEvent;
+import dk.trustworks.intranet.domain.user.entity.Salary;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
@@ -19,7 +22,7 @@ import java.util.Optional;
 public class SalaryService {
 
     @Inject
-    Event<SalaryChangedEvent> salaryChangedEvent;
+    AggregateEventSender aggregateEventSender;
 
     public List<Salary> listAll(String useruuid) {
         return Salary.findByUseruuid(useruuid);
@@ -47,8 +50,11 @@ public class SalaryService {
             s.setType(salary.getType());
             s.setActivefrom(salary.getActivefrom());
             updateSalary(s);
-        }, salary::persist);
-        salaryChangedEvent.fireAsync(new SalaryChangedEvent(salary.getUseruuid(), salary.getUuid(), salary));
+            aggregateEventSender.handleEvent(new UpdateSalaryEvent(s.getUseruuid(), s));
+        }, () -> {
+            salary.persist();
+            aggregateEventSender.handleEvent(new CreateSalaryLogEvent(salary.getUseruuid(), salary));
+        });
     }
 
     private void updateSalary(Salary salary) {
@@ -74,9 +80,10 @@ public class SalaryService {
     public void delete(String salaryuuid) {
         Optional<Salary> optionalSalary = Salary.findByIdOptional(salaryuuid);
         Salary.deleteById(salaryuuid);
-        optionalSalary.ifPresent(salary -> salaryChangedEvent.fireAsync(new SalaryChangedEvent(salary.getUseruuid(), salary.getUuid(), salary)));
+        optionalSalary.ifPresent(salary -> aggregateEventSender.handleEvent(new DeleteSalaryEvent(salary.getUseruuid(), salaryuuid)));
     }
 
+    @CacheResult(cacheName = "user-cache")
     public List<Salary> findByUseruuid(String useruuid) {
         return Salary.findByUseruuid(useruuid);
     }

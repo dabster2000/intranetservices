@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <job id="revenue-cache-refresh" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
     <step id="revenue-cache-refresh-step">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
         <batchlet ref="revenueCacheRefreshBatchlet"/>
     </step>
 </job>

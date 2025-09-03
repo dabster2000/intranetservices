@@ -1,8 +1,7 @@
 package dk.trustworks.intranet.jobs;
 
 import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
-import dk.trustworks.intranet.userservice.model.User;
-import io.quarkus.scheduler.Scheduled;
+import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;

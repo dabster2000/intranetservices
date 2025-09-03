@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.userservice.model.UserContactinfo;
+import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.userservice.services.UserContactInfoService;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 

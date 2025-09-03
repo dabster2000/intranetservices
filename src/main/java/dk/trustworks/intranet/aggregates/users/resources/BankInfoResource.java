@@ -3,7 +3,7 @@ package dk.trustworks.intranet.aggregates.users.resources;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateBankInfoEvent;
 import dk.trustworks.intranet.aggregates.users.services.UserBankInfoService;
-import dk.trustworks.intranet.userservice.model.UserBankInfo;
+import dk.trustworks.intranet.domain.user.entity.UserBankInfo;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.PermitAll;
 import jakarta.enterprise.context.RequestScoped;

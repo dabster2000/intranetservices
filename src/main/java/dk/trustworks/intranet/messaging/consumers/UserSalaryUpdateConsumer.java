@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.messaging.consumers;
 
+import dk.trustworks.intranet.batch.SalaryRecalcJobLauncher;
 import dk.trustworks.intranet.bi.services.UserSalaryCalculatorService;
 import dk.trustworks.intranet.messaging.consumers.util.EventDataParser;
 import dk.trustworks.intranet.messaging.dto.EventData;
@@ -28,6 +29,9 @@ public class UserSalaryUpdateConsumer {
 
     @Inject
     UserSalaryCalculatorService userSalaryCalculatorService;
+
+    @Inject
+    SalaryRecalcJobLauncher salaryRecalcJobLauncher;
 
     @Inject
     MeterRegistry registry;
@@ -69,7 +73,13 @@ public class UserSalaryUpdateConsumer {
             }
             String useruuid = eventData.getAggregateRootUUID();
             LocalDate date = DateUtils.dateIt(eventData.getAggregateDate());
-            userSalaryCalculatorService.recalculateSalary(useruuid, date);
+            //userSalaryCalculatorService.recalculateSalary(useruuid, date);
+            // Launch a bounded, partitioned batch job (non-blocking for the consumer thread)
+            long execId = salaryRecalcJobLauncher.launch(useruuid, date, 4);
+
+            log.infof("Started user-salary forward recalc job execId=%d user=%s from=%s to=%s", execId, useruuid, date, LocalDate.now().plusYears(2));
+
+            // Acknowledge the message immediately; the batch job runs in background
             long durMs = (System.nanoTime() - startNs) / 1_000_000;
             log.infof("Processed user-salary update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", topic, partition, offset, key, useruuid, date, durMs);
             success.increment();

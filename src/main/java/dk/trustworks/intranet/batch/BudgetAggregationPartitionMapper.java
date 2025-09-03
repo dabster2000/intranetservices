@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.batch;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import jakarta.batch.api.partition.PartitionMapper;
 import jakarta.batch.api.partition.PartitionPlan;

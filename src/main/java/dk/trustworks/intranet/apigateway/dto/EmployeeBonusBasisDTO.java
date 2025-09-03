@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.apigateway.dto;
 
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;

@@ -163,13 +163,26 @@ public class Invoice extends PanacheEntityBase {
     public double getSumNoTax() {
         final double[] sumOfLineItems = {invoiceitems.stream().mapToDouble(value -> value.hours * value.rate).sum()};
         if(contractType == null) System.out.println("uuid has no contract = " + uuid);
-        if(contractType.equals(SKI0217_2021) || contractType.equals(SKI0217_2025) || contractType.equals(SKI0215_2025)) {
+        if(contractType.equals(SKI0217_2021)) {
             ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
                 double keyDiscount = (sumOfLineItems[0] * (Double.parseDouble(contractTypeItem.getValue()) / 100.0));
                 double adminDiscount = ((sumOfLineItems[0] - keyDiscount) * 0.02);
                 sumOfLineItems[0] -= keyDiscount + adminDiscount;
             });
             sumOfLineItems[0] -= 2000;
+        }
+        if(contractType.equals(SKI0217_2025)) {
+            ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
+                double keyDiscount = (sumOfLineItems[0] * (Double.parseDouble(contractTypeItem.getValue()) / 100.0));
+                double adminDiscount = ((sumOfLineItems[0] - keyDiscount) * 0.04);
+                sumOfLineItems[0] -= keyDiscount + adminDiscount;
+            });
+        }
+        if(contractType.equals(SKI0215_2025)) {
+            ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
+                double adminDiscount = ((sumOfLineItems[0]) * 0.04);
+                sumOfLineItems[0] -= adminDiscount;
+            });
         }
         if(discount > 0) sumOfLineItems[0] -= (sumOfLineItems[0] * (discount / 100.0));
         return sumOfLineItems[0];

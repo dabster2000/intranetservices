@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.userservice.services;
 
-import dk.trustworks.intranet.userservice.model.UserContactinfo;
+import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;

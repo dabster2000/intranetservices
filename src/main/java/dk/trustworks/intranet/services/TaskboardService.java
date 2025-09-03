@@ -2,7 +2,7 @@ package dk.trustworks.intranet.services;
 
 import dk.trustworks.intranet.model.TaskboardItem;
 import dk.trustworks.intranet.model.TaskboardItemWorker;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 

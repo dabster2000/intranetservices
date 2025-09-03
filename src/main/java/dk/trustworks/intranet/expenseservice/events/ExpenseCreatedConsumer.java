@@ -9,9 +9,8 @@ import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.UserContactinfo;
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import io.quarkus.scheduler.Scheduled;
 import io.smallrye.reactive.messaging.annotations.Blocking;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -22,7 +21,6 @@ import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import java.time.LocalDate;
 import java.util.List;
-import java.util.function.Consumer;
 
 @JBossLog
 @ApplicationScoped

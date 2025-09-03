@@ -3,7 +3,7 @@ package dk.trustworks.intranet.apigateway.resources.gate;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dto.KeyValueDTO;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;

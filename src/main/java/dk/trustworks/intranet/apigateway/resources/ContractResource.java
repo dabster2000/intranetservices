@@ -136,7 +136,7 @@ public class ContractResource {
         List<ContractConsultant> contractConsultants = contractService.getContractConsultants(contractuuid);
         contractService.delete(contractuuid);
         contractConsultants.forEach(contractConsultant -> {
-            aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
+            aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), contractConsultant));
         });
     }
 
@@ -157,7 +157,7 @@ public class ContractResource {
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void addConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         contractService.addConsultant(contractuuid, consultantuuid, contractConsultant);
-        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), contractConsultant));
     }
 
     @PUT
@@ -166,8 +166,8 @@ public class ContractResource {
     public void updateConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         ContractConsultant existingContractConsultant = ContractConsultant.findById(contractConsultant.getUuid());
         contractService.updateConsultant(contractConsultant);
-        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, existingContractConsultant));
-        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractuuid, contractConsultant));
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), existingContractConsultant));
+        aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), contractConsultant));
     }
 
     @DELETE

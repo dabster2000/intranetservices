@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
-import dk.trustworks.intranet.userservice.model.Role;
+import dk.trustworks.intranet.domain.user.entity.Role;
 import dk.trustworks.intranet.userservice.services.RoleService;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;

@@ -6,7 +6,7 @@ import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -31,9 +31,7 @@ public class ContractService {
     EntityManager em;
 
     public List<Contract> findAll() {
-        List<Contract> contractList = Contract.findAll().list();
-        //contractList.forEach(this::addConsultantsToContract);
-        return contractList;
+        return Contract.listAll();
     }
 
     @Transactional(Transactional.TxType.SUPPORTS)

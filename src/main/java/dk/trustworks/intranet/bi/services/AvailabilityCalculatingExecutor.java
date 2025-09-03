@@ -4,8 +4,8 @@ import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailability
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;

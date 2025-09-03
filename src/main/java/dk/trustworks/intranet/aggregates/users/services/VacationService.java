@@ -2,7 +2,7 @@ package dk.trustworks.intranet.aggregates.users.services;
 
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.Vacation;
 import dk.trustworks.intranet.userservice.model.VacationPool;
 import dk.trustworks.intranet.userservice.model.enums.VacationType;

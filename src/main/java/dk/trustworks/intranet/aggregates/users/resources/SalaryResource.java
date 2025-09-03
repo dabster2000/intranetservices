@@ -9,7 +9,7 @@ import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
-import dk.trustworks.intranet.userservice.model.Salary;
+import dk.trustworks.intranet.domain.user.entity.Salary;
 import dk.trustworks.intranet.userservice.model.TransportationRegistration;
 import dk.trustworks.intranet.userservice.model.VacationPool;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;

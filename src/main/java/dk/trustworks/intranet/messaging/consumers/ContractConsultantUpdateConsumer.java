@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.messaging.consumers;
 
+import dk.trustworks.intranet.batch.ContractConsultantRecalcJobLauncher;
 import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.messaging.consumers.util.EventDataParser;
 import dk.trustworks.intranet.messaging.dto.EventData;
@@ -28,7 +29,7 @@ public class ContractConsultantUpdateConsumer {
     private static final String CHANNEL = "contract-consultant-updates";
 
     @Inject
-    BudgetCalculatingExecutor budgetCalculatingExecutor;
+    ContractConsultantRecalcJobLauncher contractConsultantRecalcJobLauncher;
 
     @Inject
     MeterRegistry registry;
@@ -71,7 +72,8 @@ public class ContractConsultantUpdateConsumer {
             }
             String useruuid = eventData.getAggregateRootUUID();
             LocalDate date = DateUtils.dateIt(eventData.getAggregateDate());
-            budgetCalculatingExecutor.recalculateUserDailyBudgets(useruuid, date);
+            long execId = contractConsultantRecalcJobLauncher.launch(useruuid, date, 4);
+            log.infof("Started contract-consultant forward recalc job execId=%d user=%s from=%s to=%s", execId, useruuid, date, LocalDate.now().plusYears(2));
             long durMs = (System.nanoTime() - startNs) / 1_000_000;
             log.infof("Processed contract-consultant update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", topic, partition, offset, key, useruuid, date, durMs);
             success.increment();

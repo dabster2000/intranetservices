@@ -3,6 +3,7 @@ package dk.trustworks.intranet.userservice.model;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;

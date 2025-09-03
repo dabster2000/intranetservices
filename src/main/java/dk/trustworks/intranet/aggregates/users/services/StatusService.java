@@ -3,7 +3,7 @@ package dk.trustworks.intranet.aggregates.users.services;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateUserStatusEvent;
 import dk.trustworks.intranet.aggregates.users.events.DeleteUserStatusEvent;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -43,6 +43,7 @@ public class StatusService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
+    @CacheInvalidateAll(cacheName = "user-status-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
     public void create(@Valid UserStatus status) {
         if(status.getUuid().isEmpty()) return;
@@ -85,6 +86,7 @@ public class StatusService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
+    @CacheInvalidateAll(cacheName = "user-status-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
     public void delete(String statusuuid) {
         System.out.println("StatusService.delete");

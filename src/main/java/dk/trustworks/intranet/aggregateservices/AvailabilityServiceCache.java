@@ -4,12 +4,11 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.AvailabilityDocument;
 import dk.trustworks.intranet.userservice.dto.Capacity;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.userservice.services.CapacityService;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheResult;
-import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
 import jakarta.enterprise.context.ApplicationScoped;

@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
-import dk.trustworks.intranet.userservice.model.SalarySupplement;
+import dk.trustworks.intranet.domain.user.entity.SalarySupplement;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;

@@ -3,7 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.apigateway.dto.EmployeeBonusBasisDTO;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import jakarta.annotation.security.RolesAllowed;
@@ -40,7 +40,7 @@ public class YourPartOfTrustworksResource {
         LocalDate startDate = LocalDate.of(year, 7, 1);
         LocalDate endExclusive = startDate.plusYears(1);
 
-        List<BiDataPerDay> days = BiDataPerDay.<BiDataPerDay>list(
+        List<BiDataPerDay> days = BiDataPerDay.list(
                 "documentDate >= ?1 and documentDate < ?2 and consultantType in (?3, ?4, ?5)",
                 startDate, endExclusive, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT
         );
@@ -50,8 +50,7 @@ public class YourPartOfTrustworksResource {
 
         List<EmployeeBonusEligibility> result = new ArrayList<>();
         for (Map.Entry<String, List<BiDataPerDay>> e : byUser.entrySet()) {
-            String userUuid = e.getKey();
-            User u = e.getValue().get(0).user;
+            User u = e.getValue().getFirst().user;
 
             boolean jul = eligibleShare(e.getValue(), year, 7)  > 0.0;
             boolean aug = eligibleShare(e.getValue(), year, 8)  > 0.0;
@@ -84,7 +83,7 @@ public class YourPartOfTrustworksResource {
         long eligible = days.stream()
                 .filter(d -> d.getYear() != null && d.getMonth() != null)
                 .filter(d -> d.getYear() == y && d.getMonth() == m)
-                .filter(d -> isEligibleDay(d))
+                .filter(YourPartOfTrustworksResource::isEligibleDay)
                 .map(d -> 1L)
                 .reduce(0L, Long::sum);
         return dim == 0 ? 0.0 : (eligible / (double) dim);
@@ -92,7 +91,7 @@ public class YourPartOfTrustworksResource {
 
     private static boolean isEligibleDay(BiDataPerDay d) {
         StatusType s = d.statusType;
-        return Boolean.TRUE.equals(d.isTwBonusEligible())
+        return d.isTwBonusEligible()
                 && s != StatusType.PREBOARDING
                 && s != StatusType.TERMINATED
                 && s != StatusType.NON_PAY_LEAVE;
@@ -106,15 +105,38 @@ public class YourPartOfTrustworksResource {
         LocalDate startDate = LocalDate.of(year, 7, 1);
         LocalDate endExclusive = startDate.plusYears(1);
 
+
         List<BiDataPerDay> days = (companyUuid == null || companyUuid.isBlank())
                 ? BiDataPerDay.<BiDataPerDay>list(
-                    "documentDate >= ?1 and documentDate < ?2 and consultantType in (?3, ?4, ?5)",
-                    startDate, endExclusive, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT
-                  )
+                "documentDate >= ?1 and documentDate < ?2 " +
+                        "and consultantType in (?3, ?4, ?5) " +
+                        "and exists (" +
+                        "  select 1 from BiDataPerDay d2 " +
+                        "  where d2.user = user " +
+                        "    and d2.documentDate >= ?1 and d2.documentDate < ?2 " +
+                        "    and d2.consultantType in (?3, ?4, ?5) " +
+                        "    and d2.statusType <> ?6" +
+                        ")",
+                startDate, endExclusive,
+                ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT,
+                StatusType.TERMINATED
+        )
                 : BiDataPerDay.<BiDataPerDay>list(
-                    "documentDate >= ?1 and documentDate < ?2 and company.uuid = ?3 and consultantType in (?4, ?5, ?6)",
-                    startDate, endExclusive, companyUuid, ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT
-                  );
+                "documentDate >= ?1 and documentDate < ?2 " +
+                        "and company.uuid = ?3 " +
+                        "and consultantType in (?4, ?5, ?6) " +
+                        "and exists (" +
+                        "  select 1 from BiDataPerDay d2 " +
+                        "  where d2.user = user " +
+                        "    and d2.documentDate >= ?1 and d2.documentDate < ?2 " +
+                        "    and d2.consultantType in (?4, ?5, ?6) " +
+                        "    and d2.statusType <> ?7 " +
+                        "    and d2.company.uuid = ?3" +
+                        ")",
+                startDate, endExclusive, companyUuid,
+                ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT,
+                StatusType.TERMINATED
+        );
 
         // group by user -> (year,month) -> list
         Map<String, Map<String, List<BiDataPerDay>>> byUserYearMonth = days.stream()

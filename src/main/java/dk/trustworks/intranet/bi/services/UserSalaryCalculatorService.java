@@ -4,13 +4,14 @@ package dk.trustworks.intranet.bi.services;
 import dk.trustworks.intranet.aggregates.bidata.repositories.BiDataPerDayRepository;
 import dk.trustworks.intranet.aggregates.users.services.SalaryService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.userservice.model.Salary;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.Salary;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -28,6 +29,7 @@ public class UserSalaryCalculatorService {
     @Inject
     UserService userService;
 
+    @Transactional
     public void recalculateSalary(String useruuid, LocalDate testDay) {
         log.info("Recalculate salary for " + useruuid + " on " + testDay + " started");
         List<UserStatus> userStatusList = userService.findUserStatuses(useruuid);
@@ -36,17 +38,16 @@ public class UserSalaryCalculatorService {
         //LocalDate startDate = DateUtils.getCompanyStartDate();
         //LocalDate endDate = DateUtils.getCurrentFiscalStartDate().plusYears(1);
         //do {
-            LocalDate finalStartDate = testDay;
 
-            Salary sal = salaryList.stream()
+        Salary sal = salaryList.stream()
                     .sorted(Comparator.comparing(Salary::getActivefrom).reversed())
-                    .filter(s -> s.getActivefrom().isBefore(finalStartDate) || s.getActivefrom().isEqual(finalStartDate))
+                    .filter(s -> s.getActivefrom().isBefore(testDay) || s.getActivefrom().isEqual(testDay))
                     .findFirst()
                     .orElse(new Salary(DateUtils.getCurrentFiscalStartDate().plusYears(1), 0, useruuid));
 
             StatusType userStatus = userStatusList.stream()
                     .sorted(Comparator.comparing(UserStatus::getStatusdate).reversed())
-                    .filter(s -> s.getStatusdate().isBefore(finalStartDate) || s.getStatusdate().isEqual(finalStartDate))
+                    .filter(s -> s.getStatusdate().isBefore(testDay) || s.getStatusdate().isEqual(testDay))
                     .map(UserStatus::getStatus)
                     .findFirst()
                     .orElse(StatusType.TERMINATED);
@@ -63,7 +64,7 @@ public class UserSalaryCalculatorService {
 
              */
 
-            QuarkusTransaction.requiringNew().run(() -> updateSalary(useruuid, finalStartDate, sal.getSalary()));
+            updateSalary(useruuid, testDay, sal.getSalary());
 
         //    startDate = startDate.plusDays(1);
         //} while (startDate.isBefore(endDate));

@@ -262,7 +262,7 @@ public class InvoiceService {
         List<Tuple> invoicedTupleList = ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList());
         List<DateValueDTO> invoicedSumList = invoicedTupleList.stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -276,7 +276,7 @@ public class InvoiceService {
             internalInvoicedSumList = internalTupleList.stream()
                     .map(tuple -> {
                         return new DateValueDTO(
-                                ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                                tuple.get("date", LocalDate.class).withDayOfMonth(1),
                                 (Double) tuple.get("value")
                         );
                     })
@@ -651,8 +651,8 @@ public class InvoiceService {
                 0.0, month.getYear(), month.getMonthValue(),
                 toCompany.getName(), toCompany.getAddress(), "",
                 toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen",
-                LocalDate.now().withDayOfMonth(1).minusDays(1),
-                LocalDate.now().withDayOfMonth(1).minusDays(1).plusMonths(1),
+                month.plusMonths(1).withDayOfMonth(1).minusDays(1),
+                month.plusMonths(1).withDayOfMonth(1).minusDays(1).plusMonths(1),
                 "", "", ContractType.PERIOD, fromCompany, "DKK",
                 "Intern faktura knyttet til " + month.getMonth().name());
 

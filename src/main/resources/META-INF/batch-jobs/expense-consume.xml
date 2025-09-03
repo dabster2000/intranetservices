@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <job id="expense-consume" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
     <step id="expense-consume-step">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
         <batchlet ref="expenseConsumeBatchlet"/>
     </step>
 </job>

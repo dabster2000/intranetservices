@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.userservice.services;
 
-import dk.trustworks.intranet.userservice.model.Role;
+import dk.trustworks.intranet.domain.user.entity.Role;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;

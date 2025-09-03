@@ -45,6 +45,9 @@ public class ExternalEventBridge {
     @ConsumeEvent(value = "domain.events.CREATE_USER_SALARY", blocking = true)
     public void onCreateUserSalary(String envelopeJson) { if (dispatcherEnabled()) return; handleSimple(envelopeJson, AggregateEventType.CREATE_USER_SALARY); }
 
+    @ConsumeEvent(value = "domain.events.UPDATE_USER_SALARY", blocking = true)
+    public void onUpdateUserSalary(String envelopeJson) { if (dispatcherEnabled()) return; handleSimple(envelopeJson, AggregateEventType.UPDATE_USER_SALARY); }
+
     @ConsumeEvent(value = "domain.events.DELETE_USER_SALARY", blocking = true)
     public void onDeleteUserSalary(String envelopeJson) { if (dispatcherEnabled()) return; handleSimple(envelopeJson, AggregateEventType.DELETE_USER_SALARY); }
 

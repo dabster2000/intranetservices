@@ -1,4 +1,4 @@
-package dk.trustworks.intranet.userservice.model;
+package dk.trustworks.intranet.domain.cv.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;

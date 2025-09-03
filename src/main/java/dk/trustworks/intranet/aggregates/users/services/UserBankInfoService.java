@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
-import dk.trustworks.intranet.userservice.model.UserBankInfo;
+import dk.trustworks.intranet.domain.user.entity.UserBankInfo;
 import io.quarkus.cache.CacheInvalidateAll;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;

@@ -16,7 +16,7 @@ public class BatchScheduler {
     @Inject
     JobOperator jobOperator;
 
-    @Scheduled(cron = "0 55 20 ? * 1-6")
+    @Scheduled(cron = "0 0 1 ? * 1-6")
     void trigger() {
         LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(24);
         LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);
@@ -77,14 +77,14 @@ public class BatchScheduler {
     void scheduleRevenueCacheRefresh() {
         jobOperator.start("revenue-cache-refresh", new Properties());
     }
+     */
 
-    @Scheduled(every = "10s")
+    @Scheduled(every = "1m")
     void scheduleMailSend() {
         jobOperator.start("mail-send", new Properties());
     }
-     */
 
-    @Scheduled(every = "5m")
+    @Scheduled(every = "10m")
     void scheduleExpenseConsume() {
         jobOperator.start("expense-consume", new Properties());
     }

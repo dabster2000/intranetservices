@@ -85,7 +85,7 @@ public class WorkService {
                 "    YEAR(wf.registered), MONTH(wf.registered); ";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).toList();
     }
@@ -122,7 +122,7 @@ public class WorkService {
                 "    YEAR(wf.registered), MONTH(wf.registered); ";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).toList();
     }

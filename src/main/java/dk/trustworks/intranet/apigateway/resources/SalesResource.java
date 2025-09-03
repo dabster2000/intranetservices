@@ -2,7 +2,7 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.sales.model.SalesLead;
 import dk.trustworks.intranet.sales.services.SalesService;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;

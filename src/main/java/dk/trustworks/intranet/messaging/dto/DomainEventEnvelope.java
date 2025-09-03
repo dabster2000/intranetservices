@@ -43,7 +43,7 @@ public class DomainEventEnvelope {
         env.setAggregateType(event.getClass().getSimpleName());
         env.setAggregateId(event.getAggregateRootUUID());
         env.setOccurredAt(Instant.now());
-        // effectiveDate unknown at this layer unless embedded in payload; keep null for now
+        env.setEffectiveDate(event.getEffectiveDate());
         env.setVersion(1);
         env.setCorrelationId(null);
         env.setCausationId(null);

@@ -12,8 +12,8 @@ import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.knowledgeservice.model.CKOExpense;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import lombok.extern.jbosslog.JBossLog;
 

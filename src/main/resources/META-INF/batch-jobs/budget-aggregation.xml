@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <job id="budget-aggregation" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
     <properties>
         <property name="startMonth" value="#{jobParameters['startMonth']}"/>
         <property name="partitions" value="#{jobParameters['partitions']}"/>

@@ -7,7 +7,7 @@ import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceUnit;
@@ -15,7 +15,6 @@ import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 import org.jetbrains.annotations.NotNull;
 
-import java.sql.Date;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -47,7 +46,7 @@ public class BudgetService {
                 "  GROUP BY ad.year, ad.month;";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -65,7 +64,7 @@ public class BudgetService {
 
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -82,7 +81,7 @@ public class BudgetService {
                 "GROUP BY ad.companyuuid, ad.year, ad.month;";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).findAny().orElse(new DateValueDTO(date, 0.0));
     }
@@ -98,7 +97,7 @@ public class BudgetService {
                 "  GROUP BY ad.year, ad.month;";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -115,7 +114,7 @@ public class BudgetService {
                 "GROUP BY ad.year, ad.month;";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).findAny().orElse(new DateValueDTO(date, 0.0));
     }
@@ -131,7 +130,7 @@ public class BudgetService {
                 "  GROUP BY ad.year, ad.month;";
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();

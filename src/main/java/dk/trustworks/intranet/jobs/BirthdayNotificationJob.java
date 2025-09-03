@@ -3,6 +3,7 @@ package dk.trustworks.intranet.jobs;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.userservice.model.Employee;
 import io.quarkus.scheduler.Scheduled;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -26,6 +27,7 @@ public class BirthdayNotificationJob {
      * It runs every day at 5:00 AM.
      */
     //@Scheduled(cron = "0 0 5 * * ?") // Disabled: replaced by JBeret job 'birthday-notification' via BatchScheduler
+    @Transactional
     public void sendBirthdayNotifications() {
         log.info("Checking for employees with birthday today");
         @SuppressWarnings("unchecked")

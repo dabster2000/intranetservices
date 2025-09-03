@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.users.events;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
+import dk.trustworks.intranet.domain.user.entity.Salary;
 import io.vertx.core.json.JsonObject;
 import jakarta.persistence.Entity;
 import lombok.Data;
@@ -18,5 +19,9 @@ import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType
 public class CreateSalaryLogEvent extends AggregateRootChangeEvent {
     public CreateSalaryLogEvent(String aggregateRootUUID, Object salary) {
         super(aggregateRootUUID, CREATE_USER_SALARY, JsonObject.mapFrom(salary).encode());
+    }
+    public CreateSalaryLogEvent(String aggregateRootUUID, Salary salary) {
+        super(aggregateRootUUID, CREATE_USER_SALARY, JsonObject.mapFrom(salary).encode());
+        this.setEffectiveDate(salary.getActivefrom());
     }
 }

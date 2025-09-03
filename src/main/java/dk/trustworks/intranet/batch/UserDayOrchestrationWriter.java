@@ -3,6 +3,7 @@ package dk.trustworks.intranet.batch;
 import dk.trustworks.intranet.batch.model.UserDay;
 import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
+import dk.trustworks.intranet.bi.services.UserSalaryCalculatorService;
 import dk.trustworks.intranet.bi.services.WorkAggregateService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -27,6 +28,7 @@ public class UserDayOrchestrationWriter implements ItemWriter {
     @Inject UserAvailabilityCalculatorService availabilityService;
     @Inject WorkAggregateService workAggregateService;
     @Inject BudgetCalculatingExecutor budgetCalculatingExecutor;
+    @Inject UserSalaryCalculatorService userSalaryCalculatorService;
     @Inject MeterRegistry registry;
     @Inject StepContext stepContext; // optional
 
@@ -63,6 +65,7 @@ public class UserDayOrchestrationWriter implements ItemWriter {
                 availabilityService.updateUserAvailabilityByDay(ud.getUseruuid(), ud.getDay());
                 workAggregateService.recalculateWork(ud.getUseruuid(), ud.getDay());
                 budgetCalculatingExecutor.recalculateUserDailyBudgets(ud.getUseruuid(), ud.getDay());
+                userSalaryCalculatorService.recalculateSalary(ud.getUseruuid(), ud.getDay());
                 processed++; success.increment();
             } catch (Exception ex) {
                 errors++; error.increment();

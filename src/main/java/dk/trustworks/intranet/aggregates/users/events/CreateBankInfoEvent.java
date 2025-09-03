@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.users.events;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
-import dk.trustworks.intranet.userservice.model.UserBankInfo;
+import dk.trustworks.intranet.domain.user.entity.UserBankInfo;
 import io.vertx.core.json.JsonObject;
 import jakarta.persistence.Entity;
 import lombok.Data;

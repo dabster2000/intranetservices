@@ -1,10 +1,11 @@
-package dk.trustworks.intranet.userservice.model;
+package dk.trustworks.intranet.domain.user.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
+import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;

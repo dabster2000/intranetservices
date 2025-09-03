@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.userservice.utils;
 
-import dk.trustworks.intranet.userservice.model.Role;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.Role;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.smallrye.jwt.build.Jwt;
 import io.smallrye.jwt.build.JwtClaimsBuilder;
 import org.eclipse.microprofile.jwt.Claims;

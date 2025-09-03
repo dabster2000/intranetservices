@@ -1,9 +1,9 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.userservice.model.Team;
+import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;

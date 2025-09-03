@@ -2,7 +2,7 @@ package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.services.SalarySupplementService;
-import dk.trustworks.intranet.userservice.model.SalarySupplement;
+import dk.trustworks.intranet.domain.user.entity.SalarySupplement;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;

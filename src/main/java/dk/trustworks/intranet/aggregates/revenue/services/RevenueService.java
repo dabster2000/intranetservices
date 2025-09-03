@@ -15,7 +15,7 @@ import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.financeservice.model.Finance;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -90,7 +90,7 @@ public class RevenueService {
         log.info("getRegisteredRevenueByPeriod sql: "+sql);
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();
@@ -191,7 +191,7 @@ public class RevenueService {
         log.info("getRegisteredRevenueByPeriod sql: "+sql);
         return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
-                        ((Date) tuple.get("date")).toLocalDate().withDayOfMonth(1),
+                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 ))
                 .toList();

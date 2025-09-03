@@ -2,7 +2,7 @@ package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.services.UserPensionService;
-import dk.trustworks.intranet.userservice.model.UserPension;
+import dk.trustworks.intranet.domain.user.entity.UserPension;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;

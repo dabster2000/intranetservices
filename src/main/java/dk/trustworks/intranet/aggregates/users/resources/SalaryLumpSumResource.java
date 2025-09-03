@@ -2,7 +2,7 @@ package dk.trustworks.intranet.aggregates.users.resources;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.services.SalaryLumpSumService;
-import dk.trustworks.intranet.userservice.model.SalaryLumpSum;
+import dk.trustworks.intranet.domain.user.entity.SalaryLumpSum;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;

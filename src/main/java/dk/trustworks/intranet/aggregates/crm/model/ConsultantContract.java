@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.crm.model;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.NonNull;

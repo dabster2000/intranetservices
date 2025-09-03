@@ -104,11 +104,7 @@ public class OutboxDispatcher {
 
         // 1) External Kafka publish (if mapping exists and global Kafka producer enabled)
         if (flags.isKafkaLiveProducerEnabled()) {
-            if (type == AggregateEventType.MODIFY_CONTRACT_CONSULTANT) {
-                publishContractFanout(evt, env);
-            } else {
-                publishSimple(evt, env, type);
-            }
+            publishSimple(evt, env, type);
         }
 
         // 2) Optional internal EventBus publish per-event-type address
@@ -181,13 +177,61 @@ public class OutboxDispatcher {
             log.debugf("OutboxDispatcher: no topic mapping for contract consultant updates");
             return;
         }
-        JsonNode root = mapper.readTree(env.getPayload());
+
+        // Safely parse payload
+        JsonNode root = mapper.readTree(env.getPayload() == null ? "{}" : env.getPayload());
+
         String useruuid = env.getAggregateId();
-        LocalDate start = LocalDate.parse(root.get("activeFrom").asText());
-        LocalDate end = LocalDate.parse(root.get("activeTo").asText());
+
+        // Null-safe extraction of dates
+        LocalDate start = null;
+        LocalDate end = null;
+
+        JsonNode fromNode = root.get("activeFrom");
+        if (fromNode != null && !fromNode.isNull()) {
+            String s = fromNode.asText();
+            if (s != null && !s.isBlank() && !"null".equalsIgnoreCase(s)) {
+                start = LocalDate.parse(s); // assuming ISO-8601
+            }
+        }
+
+        JsonNode toNode = root.get("activeTo");
+        if (toNode != null && !toNode.isNull()) {
+            String s = toNode.asText();
+            if (s != null && !s.isBlank() && !"null".equalsIgnoreCase(s)) {
+                end = LocalDate.parse(s);
+            }
+        }
+
+        // Fallbacks: use effectiveDate or occurredAt or now
+        if (start == null) {
+            if (env.getEffectiveDate() != null) {
+                start = env.getEffectiveDate();
+            } else if (env.getOccurredAt() != null) {
+                start = env.getOccurredAt().atZone(ZoneOffset.UTC).toLocalDate();
+            } else {
+                start = LocalDate.now(ZoneOffset.UTC);
+            }
+        }
+
+        if (end == null) {
+            // If open-ended or missing, treat as single-month change
+            end = start;
+        }
+
+        // Guard against inverted ranges
+        if (end.isBefore(start)) {
+            LocalDate tmp = start;
+            start = end;
+            end = tmp;
+        }
+
+        // Fanout: one message per month in [start, end]
         LocalDate month = start.withDayOfMonth(1);
+        LocalDate lastMonth = end.withDayOfMonth(1);
+
         int fanout = 0;
-        while (month.isBefore(end.plusMonths(1).withDayOfMonth(1))) {
+        while (!month.isAfter(lastMonth)) {
             EventData ed = new EventData(useruuid, DateUtils.stringIt(month));
             String json = mapper.writeValueAsString(ed);
             Map<String, String> headers = defaultHeaders(evt, env);
@@ -196,6 +240,7 @@ public class OutboxDispatcher {
             fanout++;
             month = month.plusMonths(1);
         }
+
         log.infof("Outbox->Kafka fanout type=%s topic=%s key=%s count=%d", evt.getType(), topic, useruuid, fanout);
     }
 

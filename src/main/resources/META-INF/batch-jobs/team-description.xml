@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <job id="team-description" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
     <step id="team-description-step">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
         <batchlet ref="teamDescriptionBatchlet"/>
     </step>
 </job>

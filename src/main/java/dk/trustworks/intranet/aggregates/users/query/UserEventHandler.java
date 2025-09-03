@@ -5,11 +5,10 @@ import dk.trustworks.intranet.aggregates.sender.SNSEventSender;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.messaging.dto.DomainEventEnvelope;
-import dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType;
-import dk.trustworks.intranet.userservice.model.Salary;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.UserBankInfo;
-import dk.trustworks.intranet.userservice.model.UserStatus;
+import dk.trustworks.intranet.domain.user.entity.Salary;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserBankInfo;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -24,7 +23,6 @@ import java.io.IOException;
 import java.util.List;
 
 import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.BROWSER_EVENT;
-import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.USER_EVENT;
 
 @JBossLog
 @ApplicationScoped

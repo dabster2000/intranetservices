@@ -2,11 +2,10 @@ package dk.trustworks.intranet.userservice.services;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
-import dk.trustworks.intranet.userservice.model.Team;
+import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;

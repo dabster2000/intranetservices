@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.users.services;
 import dk.trustworks.intranet.apis.ResumeParserService;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
+import dk.trustworks.intranet.domain.cv.entity.UserResume;
+import dk.trustworks.intranet.domain.user.entity.*;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.model.Company;
@@ -13,8 +15,9 @@ import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.cache.CacheResult;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.scheduler.Scheduled;
+import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -23,6 +26,7 @@ import jakarta.ws.rs.NotAllowedException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
+import org.hibernate.query.NativeQuery;
 import org.mindrot.jbcrypt.BCrypt;
 
 import java.io.IOException;
@@ -35,6 +39,8 @@ import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.*;
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.*;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 import static io.smallrye.config.common.utils.StringUtil.split;
+import static java.util.stream.Collectors.groupingBy;
+import static java.util.stream.Collectors.toMap;
 
 @JBossLog
 @ApplicationScoped
@@ -53,31 +59,6 @@ public class UserService {
     LoginService loginService;
     @Inject
     ResumeParserService resumeParserService;
-
-    /** V2.0 **/
-    public List<User> findByDate(LocalDate date) {
-        return em.createNativeQuery("SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname, " +
-                "u.gender, u.type, u.password, u.username, u.slackusername, u.birthday, u.cpr, u.phone, u.pension, " +
-                "u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.primaryskilltype, us.status, " +
-                "us.allocation, us.type, s.salary " +
-                "FROM user u " +
-                "JOIN ( " +
-                "    SELECT useruuid, " +
-                "           MAX(statusdate) AS max_statusdate " +
-                "    FROM userstatus " +
-                "    WHERE statusdate <= '"+ stringIt(date) +"' " +
-                "    GROUP BY useruuid " +
-                ") max_status ON u.uuid = max_status.useruuid " +
-                "JOIN userstatus us ON u.uuid = us.useruuid AND max_status.max_statusdate = us.statusdate " +
-                "JOIN ( " +
-                "    SELECT useruuid, " +
-                "           MAX(activefrom) AS max_statusdate " +
-                "    FROM salary " +
-                "    WHERE activefrom <= '"+ stringIt(date) +"' " +
-                "    GROUP BY useruuid " +
-                ") max_salary ON u.uuid = max_salary.useruuid " +
-                "JOIN salary s ON u.uuid = s.useruuid AND max_salary.max_statusdate = s.activefrom; ", User.class).getResultList();
-    }
 
     /**
      * 1) Find user by Azure OID + issuer
@@ -101,16 +82,14 @@ public class UserService {
         }
         user.azureOid = azureOid;
         user.issuer   = issuer;
-        // Panache auto-flushes on transaction commit
     }
 
-
-    /** V1.0 **/
-
     public List<User> listAll(boolean shallow) {
-        List<User> userList = User.listAll();
-        if(!shallow) userList.forEach(UserService::addChildrenToUser);
-        return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
+        log.infof("listAll(%s)", shallow);
+        List<User> userList = User.listAll(Sort.ascending("username")); // push sort to DB
+        log.infof("listAll(%s) found %d users", shallow, userList.size());
+        if (!shallow) hydrateUsers(userList); // bulk instead of per-user adds
+        return userList;
     }
 
     public List<User> listAllByCompany(String companyuuid, boolean shallow) {
@@ -120,77 +99,89 @@ public class UserService {
         return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
     }
 
-    //@CacheResult(cacheName = "user-cache")
     public User findById(String uuid, boolean shallow) {
         User user = User.findById(uuid);
-        if(user!=null && !shallow) return UserService.addChildrenToUser(user);
+        if (user != null && !shallow) addChildrenToUser(user); // single object is fine
         return user;
     }
 
     public User findByUsername(String username, boolean shallow) {
-        User user = User.findByUsername(username).orElse(new User());
-        if(!shallow) return UserService.addChildrenToUser(user);
+        User user = User.<User>find("username = ?1", username)  // '=' not 'like'
+                .firstResultOptional()
+                .orElse(new User());
+        if (!shallow) addChildrenToUser(user);
         return user;
     }
 
-    public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String[] statusArray, String[] consultantTypesArray, boolean shallow) {
-        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, " +
-                "u.azure_oid, u.azure_issuer, " +
-                "u.created, u.email, u.primaryskilltype, u.primary_skill_level, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, u.type " +
-                "FROM user as u " +
-                "LEFT OUTER JOIN salary ON u.uuid = salary.useruuid " +
-                "LEFT OUTER JOIN roles ON u.uuid = roles.useruuid " +
-                "LEFT OUTER JOIN user_contactinfo ON u.uuid = user_contactinfo.useruuid " +
-                "LEFT JOIN ( " +
-                "SELECT yt.uuid, yt.useruuid, yt.status, yt.statusdate, yt.allocation, yt.type " +
-                "FROM userstatus as yt " +
-                "INNER JOIN ( " +
-                "SELECT uuid, useruuid, max(statusdate) created " +
-                "FROM userstatus as us " +
-                "WHERE statusdate <= '"+date+"' " +
-                "GROUP BY useruuid " +
-                ") as ss " +
-                "ON yt.statusdate = ss.created AND yt.useruuid = ss.useruuid " +
-                "WHERE yt.status IN ('"+String.join("','", statusArray)+"') AND yt.type IN ('"+String.join("','", consultantTypesArray)+"') " +
-                ") as kk " +
-                "ON u.uuid = kk.useruuid " +
-                "WHERE kk.status IN ('"+String.join("','", statusArray)+"') AND kk.type IN ('"+String.join("','", consultantTypesArray)+"') " +
-                "ORDER BY u.username";
-        List<User> userList = em.createNativeQuery(sql, User.class).getResultList();
-        if(!shallow)
-            userList.forEach(user -> addChildrenToUser(user));
-        return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
+    public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date,
+                                                           String[] statusArray,
+                                                           String[] consultantTypesArray,
+                                                           boolean shallow) {
+        String sql = """
+        WITH latest_status AS (
+            SELECT us.useruuid, us.status, us.statusdate, us.allocation, us.type,
+                   ROW_NUMBER() OVER (PARTITION BY us.useruuid ORDER BY us.statusdate DESC) AS rn
+            FROM userstatus us
+            WHERE us.statusdate <= :asOfDate
+        )
+        SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname,
+               u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
+               u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
+               u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
+               u.azure_oid, u.azure_issuer
+        FROM user u
+        JOIN latest_status ls ON ls.useruuid = u.uuid AND ls.rn = 1
+        WHERE ls.status IN (:statuses)
+          AND ls.type   IN (:types)
+        ORDER BY u.username
+        """;
+
+        NativeQuery<User> q = em.createNativeQuery(sql, User.class).unwrap(NativeQuery.class);
+        q.setParameter("asOfDate", date);
+        q.setParameterList("statuses", Arrays.asList(statusArray));
+        q.setParameterList("types", Arrays.asList(consultantTypesArray));
+
+        List<User> users = q.getResultList();
+        if (!shallow) hydrateUsers(users);
+        return users;
     }
 
-    public List<User> findUsersByDateAndStatusListAndTypesAndCompany(String companyuuid, LocalDate date, String[] statusArray, String[] consultantTypesArray, boolean shallow) {
-        String sql = "SELECT DISTINCT (u.uuid), u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.active, u.birthday, " +
-                "u.azure_oid, u.azure_issuer, " +
-                "u.created, u.email, u.primaryskilltype, u.primary_skill_level, u.firstname, u.lastname, u.gender, u.password, u.slackusername, u.username, " +
-                "u.type " +
-                "FROM user as u " +
-                "LEFT OUTER JOIN salary ON u.uuid = salary.useruuid " +
-                "LEFT OUTER JOIN roles ON u.uuid = roles.useruuid " +
-                "LEFT OUTER JOIN user_contactinfo ON u.uuid = user_contactinfo.useruuid " +
-                "LEFT JOIN ( " +
-                "SELECT yt.uuid, yt.useruuid, yt.status, yt.statusdate, yt.allocation, yt.type " +
-                "FROM userstatus as yt " +
-                "INNER JOIN ( " +
-                "SELECT uuid, useruuid, max(statusdate) created " +
-                "FROM userstatus as us " +
-                "WHERE statusdate <= '"+date+"' " +
-                "GROUP BY useruuid " +
-                ") as ss " +
-                "ON yt.statusdate = ss.created AND yt.useruuid = ss.useruuid " +
-                "WHERE yt.status IN ('"+String.join("','", statusArray)+"') AND yt.type IN ('"+String.join("','", consultantTypesArray)+"') " +
-                ") as kk " +
-                "ON u.uuid = kk.useruuid " +
-                "WHERE kk.status IN ('"+String.join("','", statusArray)+"') AND kk.type IN ('"+String.join("','", consultantTypesArray)+"') " +
-                "ORDER BY u.username";
-        List<User> userList = em.createNativeQuery(sql, User.class).getResultList();
-        if(!shallow)
-            userList.forEach(UserService::addChildrenToUser);
-        return userList.stream().sorted(Comparator.comparing(User::getUsername)).collect(Collectors.toList());
+    public List<User> findUsersByDateAndStatusListAndTypesAndCompany(String companyuuid,
+                                                                     LocalDate date,
+                                                                     String[] statusArray,
+                                                                     String[] consultantTypesArray,
+                                                                     boolean shallow) {
+        String sql = """
+        WITH latest_status AS (
+            SELECT us.useruuid, us.status, us.statusdate, us.allocation, us.type, us.companyuuid,
+                   ROW_NUMBER() OVER (PARTITION BY us.useruuid ORDER BY us.statusdate DESC) AS rn
+            FROM userstatus us
+            WHERE us.statusdate <= :asOfDate
+              AND us.companyuuid = :companyUuid
+        )
+        SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname,
+               u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
+               u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
+               u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
+               u.azure_oid, u.azure_issuer
+        FROM user u
+        JOIN latest_status ls ON ls.useruuid = u.uuid AND ls.rn = 1
+        WHERE ls.status IN (:statuses)
+          AND ls.type   IN (:types)
+        ORDER BY u.username
+        """;
+        NativeQuery<User> q = em.createNativeQuery(sql, User.class)
+                .unwrap(NativeQuery.class);
+        q.setParameter("asOfDate", date);
+        q.setParameter("companyUuid", companyuuid);
+        q.setParameterList("statuses", Arrays.asList(statusArray));
+        q.setParameterList("types", Arrays.asList(consultantTypesArray));
+
+        List<User> users = q.getResultList();
+        if (!shallow) hydrateUsers(users);
+        return users;
     }
+
 
     public static User addChildrenToUser(User user) {
         user.getTeams().addAll(TeamRole.getTeamrolesByUser(user.getUuid()));
@@ -203,6 +194,52 @@ public class UserService {
         return user;
     }
 
+    private void hydrateUsers(List<User> users) {
+        if (users == null || users.isEmpty()) return;
+
+        List<String> ids = users.stream().map(User::getUuid).toList();
+
+        // Teams (TeamRole)
+        Map<String, List<TeamRole>> teamsByUser = TeamRole.<TeamRole>list("useruuid in ?1", ids)
+                .stream().collect(groupingBy(TeamRole::getUseruuid));
+
+        // Roles
+        Map<String, List<Role>> rolesByUser = Role.<Role>list("useruuid in ?1", ids)
+                .stream().collect(groupingBy(Role::getUseruuid));
+
+        // Contact info (one per user)
+        Map<String, UserContactinfo> contactByUser = UserContactinfo.<UserContactinfo>list("useruuid in ?1", ids)
+                .stream().collect(toMap(UserContactinfo::getUseruuid, ci -> ci, (a,b) -> a));
+
+        // Statuses
+        Map<String, List<UserStatus>> statusesByUser = UserStatus.<UserStatus>list("useruuid in ?1 order by statusdate", ids)
+                .stream().collect(groupingBy(UserStatus::getUseruuid));
+
+        // Salaries
+        Map<String, List<Salary>> salariesByUser = Salary.<Salary>list("useruuid in ?1 order by activefrom", ids)
+                .stream().collect(groupingBy(Salary::getUseruuid));
+
+        // Bank infos
+        Map<String, List<UserBankInfo>> bankByUser = UserBankInfo.<UserBankInfo>list("useruuid in ?1 order by activeDate", ids)
+                .stream().collect(groupingBy(UserBankInfo::getUseruuid));
+
+        // External accounts (UserAccount)
+        Map<String, UserAccount> accountByUser = UserAccount.<UserAccount>list("useruuid in ?1", ids)
+                .stream().collect(toMap(UserAccount::getUseruuid, ua -> ua, (a,b) -> a));
+
+        // Attach – use setters to avoid duplicate add()
+        users.forEach(u -> {
+            u.setTeams(new ArrayList<>(teamsByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
+            u.setRoleList(new ArrayList<>(rolesByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
+            u.setUserContactinfo(contactByUser.get(u.getUuid()));
+            u.setStatuses(new ArrayList<>(statusesByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
+            u.setSalaries(new ArrayList<>(salariesByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
+            u.setUserBankInfos(new ArrayList<>(bankByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
+            u.setUserAccount(accountByUser.get(u.getUuid()));
+        });
+    }
+
+    @CacheResult(cacheName = "user-status-cache")
     public List<UserStatus> findUserStatuses(String useruuid) {
         return UserStatus.findByUseruuid(useruuid);
     }
@@ -258,35 +295,60 @@ public class UserService {
     }
 
     //@CacheResult(cacheName = "user-cache")
-    public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date, String statusList, String consultantTypes, boolean shallow) {
+    public List<User> findUsersByDateAndStatusListAndTypes(LocalDate date,
+                                                           String statusList,
+                                                           String consultantTypes,
+                                                           boolean shallow) {
         String[] statusArray = split(statusList);
         String[] consultantTypesArray = split(consultantTypes);
-        return new ArrayList<>(findUsersByDateAndStatusListAndTypes(date, statusArray, consultantTypesArray, shallow));
+        return findUsersByDateAndStatusListAndTypes(date, statusArray, consultantTypesArray, shallow);
     }
 
-    public List<User> findUsersByDateAndStatusListAndTypesAndCompany(String companyuuid, LocalDate date, String statusList, String consultantTypes, boolean shallow) {
+    public List<User> findUsersByDateAndStatusListAndTypesAndCompany(String companyuuid,
+                                                                     LocalDate date,
+                                                                     String statusList,
+                                                                     String consultantTypes,
+                                                                     boolean shallow) {
         String[] statusArray = split(statusList);
-        String[] consultantTypesArray = split(consultantTypes);
-        Employee.<Employee>stream("company = ?1 and " +
-                "date = ?2 and " +
-                "status in ('"+String.join("','", statusArray)+"') and " +
-                "type in ('"+String.join("','", consultantTypesArray)+"') ", Company.findById(companyuuid))
-                .map(Employee::getUser)
-                .forEach(UserService::addChildrenToUser);
-        return new ArrayList<>(findUsersByDateAndStatusListAndTypesAndCompany(companyuuid, date, statusArray, consultantTypesArray, shallow));
+        String[] typesArray  = split(consultantTypes);
+        return findUsersByDateAndStatusListAndTypesAndCompany(companyuuid, date, statusArray, typesArray, shallow);
     }
 
-    //@CacheResult(cacheName = "user-cache")
     public List<User> getActiveConsultantsByFiscalYear(String intFiscalYear) {
-        LocalDate fiscalYear = LocalDate.of(Integer.parseInt(intFiscalYear), 7,1);
+        LocalDate fyStart = LocalDate.of(Integer.parseInt(intFiscalYear), 7, 1);
+        LocalDate fyEnd   = fyStart.plusYears(1);
 
-        Map<String, User> users = new HashMap<>();
-        for (int i = 0; i < 11; i++) {
-            LocalDate date = fiscalYear.plusMonths(i);
-            findUsersByDateAndStatusListAndTypes(date, new String[]{ACTIVE.name()}, new String[]{ConsultantType.CONSULTANT.name()}, true).forEach(user -> users.put(user.getUuid(), user));
-        }
-        return new ArrayList<>(users.values());
+        String sql = """
+        WITH ordered AS (
+            SELECT us.useruuid, us.status, us.type, us.statusdate,
+                   LEAD(us.statusdate, 1, DATE '9999-12-31')
+                     OVER (PARTITION BY us.useruuid ORDER BY us.statusdate) AS next_date
+            FROM userstatus us
+            WHERE us.type = 'CONSULTANT'
+        ),
+        active_overlap AS (
+            SELECT DISTINCT o.useruuid
+            FROM ordered o
+            WHERE o.status = 'ACTIVE'
+              AND o.statusdate < :fyEnd
+              AND o.next_date > :fyStart
+        )
+        SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname,
+               u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
+               u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
+               u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
+               u.azure_oid, u.azure_issuer
+        FROM user u
+        JOIN active_overlap ao ON ao.useruuid = u.uuid
+        ORDER BY u.username
+        """;
+
+        return em.createNativeQuery(sql, User.class)
+                .setParameter("fyStart", fyStart)
+                .setParameter("fyEnd", fyEnd)
+                .getResultList(); // shallow by design; call hydrateUsers() if you need the deep graph
     }
+
 
     public LoginTokenResult login(String username, String password) throws Exception {
         return loginService.login(username, password);

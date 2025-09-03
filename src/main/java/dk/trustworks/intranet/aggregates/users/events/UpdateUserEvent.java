@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.users.events;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateRootChangeEvent;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import io.vertx.core.json.JsonObject;
 import lombok.Data;
 import lombok.EqualsAndHashCode;

@@ -3,7 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.knowledgeservice.model.CkoCourse;
 import dk.trustworks.intranet.knowledgeservice.model.CkoCourseParticipant;
 import dk.trustworks.intranet.knowledgeservice.services.CourseService;
-import dk.trustworks.intranet.userservice.model.User;
+import dk.trustworks.intranet.domain.user.entity.User;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;

@@ -61,9 +61,8 @@ public class CapacityService {
         Query query = em.createNativeQuery(sql, Tuple.class);
         query.setParameter("statusdate", statusdate);
 
-        List<Capacity> capacityList = ((Stream<Tuple>) query.getResultStream())
+        return ((Stream<Tuple>) query.getResultStream())
                 .map(tuple -> new Capacity(tuple.get("useruuid", String.class), statusdate, tuple.get("totalAllocation", Number.class).intValue()))
                 .collect(Collectors.toList());
-        return capacityList;
     }
 }

@@ -4,7 +4,7 @@ quarkus:
   datasource:
     db-kind: mariadb
     jdbc:
-      url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      url: ${URL:jdbc:mariadb://localhost:3306/twservices}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
       max-size: 32
@@ -12,7 +12,13 @@ quarkus:
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   hibernate-orm:
+    jdbc:
+      statement-batch-size: 32
+    second-level-caching-enabled: true
     statistics: true
+    unsupported-properties:
+      "hibernate.order_inserts": "true"
+      "hibernate.order_updates": "true"
   flyway:
     migrate-at-start: true
     baseline-on-migrate: true
@@ -46,6 +52,9 @@ quarkus:
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
+  thread-pool:
+    core-threads: 10
+    max-threads: 30
   log:
     level: INFO
     category:
@@ -75,6 +84,7 @@ event-topics:
   CREATE_USER_STATUS: user.status.updates
   DELETE_USER_STATUS: user.status.updates
   CREATE_USER_SALARY: user.salary.updates
+  UPDATE_USER_SALARY: user.salary.updates
   DELETE_USER_SALARY: user.salary.updates
   CREATE_BANK_INFO: user.status.updates
       #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
@@ -102,8 +112,6 @@ event-topics:
         static-provider:
           access-key-id: ${AWS_ACCESS_KEY_ID:xx}
           secret-access-key: ${AWS_SECRET_ACCESS_KEY:xx}
-vertx:
-  worker-pool-size: 10
 mp:
   messaging:
     connector:
@@ -262,8 +270,3 @@ dk:
           network:
             InvoiceAPI/mp-rest/url: https://invoice-generator.com
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
-hibernate:
-  jdbc:
-    batch_size: 50
-  order_inserts: true
-  order_updates: true

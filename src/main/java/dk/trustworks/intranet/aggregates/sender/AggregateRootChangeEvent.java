@@ -18,6 +18,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
 @Data
@@ -37,6 +38,7 @@ import java.util.UUID;
         @JsonSubTypes.Type(value = CreateUserStatusEvent.class, name = "CreateUserStatusEvent"),
         @JsonSubTypes.Type(value = DeleteUserStatusEvent.class, name = "DeleteUserStatusEvent"),
         @JsonSubTypes.Type(value = CreateSalaryLogEvent.class, name = "CreateSalaryLogEvent"),
+        @JsonSubTypes.Type(value = UpdateSalaryEvent.class, name = "UpdateSalaryEvent"),
         @JsonSubTypes.Type(value = DeleteSalaryEvent.class, name = "DeleteSalaryEvent"),
         @JsonSubTypes.Type(value = CreateParticipantEvent.class, name = "CreateParticipantEvent"),
         @JsonSubTypes.Type(value = UpdateParticipantDataEvent.class, name = "UpdateParticipantDataEvent"),
@@ -58,6 +60,8 @@ public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
     private String aggregateRootUUID;
     @Column(name = "event_content")
     private String eventContent;
+    @Transient
+    private LocalDate effectiveDate;
 
     public AggregateRootChangeEvent(String aggregateRootUUID, AggregateEventType eventType, String eventContent) {
         this.uuid = UUID.randomUUID().toString();

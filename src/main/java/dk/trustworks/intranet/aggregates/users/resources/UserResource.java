@@ -31,8 +31,8 @@ import dk.trustworks.intranet.knowledgeservice.model.UserCertification;
 import dk.trustworks.intranet.knowledgeservice.services.CertificationService;
 import dk.trustworks.intranet.knowledgeservice.services.CkoExpenseService;
 import dk.trustworks.intranet.knowledgeservice.services.CourseService;
-import dk.trustworks.intranet.userservice.model.User;
-import dk.trustworks.intranet.userservice.model.UserResume;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.cv.entity.UserResume;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
@@ -50,7 +50,6 @@ import org.jboss.resteasy.annotations.GZIP;
 
 import java.io.IOException;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -156,24 +155,35 @@ public class UserResource {
     }
 
     @GET
-    public List<User> listAll(@QueryParam("username") Optional<String> username, @QueryParam("shallow") Optional<String> shallow) {
-        String shallowValue = shallow.orElse("false");
-        return userService.clearSalaries(username.map(s -> Collections.singletonList(userAPI.findByUsername(s, Boolean.getBoolean(shallowValue)))).orElseGet(() -> userAPI.listAll(Boolean.getBoolean(shallowValue))));
+    public List<User> listAll(@QueryParam("username") Optional<String> username,
+                              @QueryParam("shallow") Optional<String> shallow) {
+        boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
+        return userService.clearSalaries(
+                username
+                        .map(s -> Collections.singletonList(userAPI.findByUsername(s, shallowFlag)))
+                        .orElseGet(() -> userAPI.listAll(shallowFlag))
+        );
     }
 
     @GET
     @Path("/{uuid}")
-    public User findById(@PathParam("uuid") String uuid, @QueryParam("shallow") Optional<String> shallow) {
-        String shallowValue = shallow.orElse("false");
-        User user = userAPI.findById(uuid, Boolean.getBoolean(shallowValue));
+    public User findById(@PathParam("uuid") String uuid,
+                         @QueryParam("shallow") Optional<String> shallow) {
+        boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
+        User user = userAPI.findById(uuid, shallowFlag);
         return userService.clearSalaries(user);
     }
 
     @GET
     @Path("/search/findUsersByDateAndStatusListAndTypes")
-    public List<User> findUsersByDateAndStatusListAndTypes(@QueryParam("date") String date, @QueryParam("consultantStatusList") String statusList, @QueryParam("consultantTypes") String consultantTypes, @QueryParam("shallow") Optional<String> shallow) {
-        String shallowValue = shallow.orElse("false");
-        return userService.clearSalaries(userAPI.findUsersByDateAndStatusListAndTypes(dateIt(date), statusList, consultantTypes, Boolean.getBoolean(shallowValue)));
+    public List<User> findUsersByDateAndStatusListAndTypes(@QueryParam("date") String date,
+                                                           @QueryParam("consultantStatusList") String statusList,
+                                                           @QueryParam("consultantTypes") String consultantTypes,
+                                                           @QueryParam("shallow") Optional<String> shallow) {
+        boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
+        return userService.clearSalaries(
+                userAPI.findUsersByDateAndStatusListAndTypes(dateIt(date), statusList, consultantTypes, shallowFlag)
+        );
     }
 
     @GET
@@ -185,15 +195,20 @@ public class UserResource {
     @GET
     @Path("/employed/all")
     public List<User> findCurrentlyEmployedUsers(@QueryParam("shallow") Optional<String> shallow) {
-        String[] statusList = {ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString(), NON_PAY_LEAVE.toString()};
-        return userService.clearSalaries(findUsersByDateAndStatusListAndTypes(
-                LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+        boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
+        String[] statusList = { ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString(), NON_PAY_LEAVE.toString() };
+        List<User> users = userAPI.findUsersByDateAndStatusListAndTypes(
+                LocalDate.now(),
                 String.join(",", statusList),
-                String.join(",", Stream.of(ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT).map(Enum::toString).toArray(String[]::new)), shallow)
-                .stream()
-                .sorted(Comparator.comparing(User::getUsername))
-                .collect(Collectors.toList()));
+                String.join(",", Stream.of(ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT)
+                        .map(Enum::toString).toArray(String[]::new)),
+                shallowFlag
+        );
+        // Sorting is already pushed into SQL in the service; this is just in case.
+        users.sort(Comparator.comparing(User::getUsername));
+        return userService.clearSalaries(users);
     }
+
 
     @GET
     @Path("/{uuid}/work")
@@ -217,14 +232,17 @@ public class UserResource {
 
     @GET
     @Path("/{useruuid}/projects")
-    public Set<Project> getProjectsByUser(@PathParam("useruuid") String useruuid, @QueryParam("date") String date) {
+    public Set<Project> getProjectsByUser(@PathParam("useruuid") String useruuid,
+                                          @QueryParam("date") String date) {
+        // NOTE: Current approach is N+1 (one call per contract). Prefer a bulk service method.
+        // Suggested ContractService API (implement there):
+        //   Set<Project> findProjectsByContracts(Collection<String> contractUuids);
         List<Contract> contracts = contractService.findTimeActiveConsultantContracts(useruuid, dateIt(date));
-        Set<Project> projectsList = new HashSet<>();
-        for (Contract contract : contracts) {
-            List<Project> projectsByContract = contractService.findProjectsByContract(contract.getUuid());
-            projectsList.addAll(projectsByContract);
+        Set<Project> projects = new HashSet<>();
+        for (Contract c : contracts) {
+            projects.addAll(contractService.findProjectsByContract(c.getUuid())); // keep as-is if bulk API not yet available
         }
-        return projectsList;
+        return projects;
     }
 
     @GET
