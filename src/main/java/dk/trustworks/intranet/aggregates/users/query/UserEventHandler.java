@@ -64,6 +64,14 @@ public class UserEventHandler {
         eventBus.publish(BROWSER_EVENT, env.getAggregateId());
     }
 
+    @ConsumeEvent(value = "domain.events.UPDATE_USER_STATUS", blocking = true)
+    @CacheInvalidateAll(cacheName = "user-cache")
+    public void onUpdateUserStatus(String envelopeJson) {
+        DomainEventEnvelope env = DomainEventEnvelope.fromJson(envelopeJson);
+        updateUserStatus(env);
+        eventBus.publish(BROWSER_EVENT, env.getAggregateId());
+    }
+
     @ConsumeEvent(value = "domain.events.DELETE_USER_STATUS", blocking = true)
     @CacheInvalidateAll(cacheName = "user-cache")
     public void onDeleteUserStatus(String envelopeJson) {
@@ -127,9 +135,9 @@ public class UserEventHandler {
     }
 
     private void deleteUserStatus(DomainEventEnvelope env) {
-        String useruuid = env.getAggregateId();
+        UserStatus userStatus = new JsonObject(env.getPayload()).mapTo(UserStatus.class);
         if (featureFlags.isSnsEnabled()) {
-            snsEventSender.sendEvent(SNSEventSender.UserStatusUpdateTopic, useruuid, DateUtils.getCompanyStartDate());
+            snsEventSender.sendEvent(SNSEventSender.UserStatusUpdateTopic, userStatus.getUseruuid(), userStatus.getStatusdate());
         } else {
             log.debug("SNS disabled (feature.sns.enabled=false). Skipping SNS publish: UserStatusUpdateTopic [delete]");
         }
@@ -143,6 +151,17 @@ public class UserEventHandler {
             snsEventSender.sendEvent(SNSEventSender.UserStatusUpdateTopic, userStatus.getUseruuid(), userStatus.getStatusdate());
         } else {
             log.debug("SNS disabled (feature.sns.enabled=false). Skipping SNS publish: UserStatusUpdateTopic [create]");
+        }
+        //userAvailabilityCalculatorService.updateUserAvailability(useruuid);
+        //userSalaryCalculatorService.recalculateSalary(useruuid);
+    }
+
+    private void updateUserStatus(DomainEventEnvelope env) {
+        UserStatus userStatus = new JsonObject(env.getPayload()).mapTo(UserStatus.class);
+        if (featureFlags.isSnsEnabled()) {
+            snsEventSender.sendEvent(SNSEventSender.UserStatusUpdateTopic, userStatus.getUseruuid(), userStatus.getStatusdate());
+        } else {
+            log.debug("SNS disabled (feature.sns.enabled=false). Skipping SNS publish: UserStatusUpdateTopic [update]");
         }
         //userAvailabilityCalculatorService.updateUserAvailability(useruuid);
         //userSalaryCalculatorService.recalculateSalary(useruuid);

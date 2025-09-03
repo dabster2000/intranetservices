@@ -34,10 +34,10 @@ public abstract class MonitoredBatchlet extends AbstractBatchlet {
     protected JobContext jobContext;
     
     @Inject
-    private BatchExceptionRegistry exceptionRegistry;
+    BatchExceptionRegistry exceptionRegistry;
     
     @Inject
-    private BatchJobTrackingService trackingService;
+    BatchJobTrackingService trackingService;
     
     /**
      * Final implementation of process() that wraps the actual work with exception handling.
@@ -49,13 +49,13 @@ public abstract class MonitoredBatchlet extends AbstractBatchlet {
         long executionId = jobContext.getExecutionId();
         String jobName = jobContext.getJobName();
         
-        log.debugf("Starting monitored execution of job %s (execution %d)", jobName, executionId);
+        log.infof("Starting monitored execution of job %s (execution %d)", jobName, executionId);
         
         try {
             // Call the template method that subclasses implement
             String result = doProcess();
             
-            log.debugf("Job %s (execution %d) completed successfully with result: %s", 
+            log.infof("Job %s (execution %d) completed successfully with result: %s",
                       jobName, executionId, result);
             
             return result;

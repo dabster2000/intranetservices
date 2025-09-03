@@ -32,7 +32,14 @@ public class JobMonitoringListener implements JobListener {
     public void beforeJob() {
         long executionId = jobContext.getExecutionId();
         String jobName = jobContext.getJobName();
-        trackingService.onJobStart(executionId, jobName);
+        log.infof("[JOB-MONITOR] beforeJob() called for job '%s' (execution %d)", jobName, executionId);
+        
+        try {
+            trackingService.onJobStart(executionId, jobName);
+            log.infof("[JOB-MONITOR] Successfully initiated tracking for job '%s' (execution %d)", jobName, executionId);
+        } catch (Exception e) {
+            log.errorf(e, "[JOB-MONITOR] Failed to initiate tracking for job '%s' (execution %d)", jobName, executionId);
+        }
 
         // Try to pre-compute total subtasks for partitioned jobs to get meaningful percent early
         try {
@@ -46,6 +53,7 @@ public class JobMonitoringListener implements JobListener {
                         LocalDate e = LocalDate.parse(end);
                         long days = ChronoUnit.DAYS.between(s, e) + 1; // inclusive per job design
                         if (days > 0 && days < Integer.MAX_VALUE) {
+                            log.infof("[JOB-MONITOR] Setting total subtasks to %d days for %s", days, jobName);
                             trackingService.setTotalSubtasks(executionId, (int) days);
                         }
                     }
@@ -59,6 +67,8 @@ public class JobMonitoringListener implements JobListener {
                         int users = safeUserCount();
                         long total = Math.max(0, days) * Math.max(users, 0);
                         if (total > 0 && total < Integer.MAX_VALUE) {
+                            log.infof("[JOB-MONITOR] Setting total subtasks to %d (days=%d, users=%d) for bi-date-update", 
+                                     total, days, users);
                             trackingService.setTotalSubtasks(executionId, (int) total);
                         }
                     }
@@ -67,7 +77,10 @@ public class JobMonitoringListener implements JobListener {
                     try {
                         if (partitions != null && !partitions.isBlank()) {
                             int p = Integer.parseInt(partitions.trim());
-                            if (p > 0) trackingService.setTotalSubtasks(executionId, p);
+                            if (p > 0) {
+                                log.infof("[JOB-MONITOR] Setting total subtasks to %d partitions for budget-aggregation", p);
+                                trackingService.setTotalSubtasks(executionId, p);
+                            }
                         }
                     } catch (Exception ignored) {}
                 }
@@ -83,6 +96,10 @@ public class JobMonitoringListener implements JobListener {
         long executionId = jobContext.getExecutionId();
         BatchStatus status = jobContext.getBatchStatus();
         String exitStatus = jobContext.getExitStatus();
+        String jobName = jobContext.getJobName();
+        
+        log.infof("[JOB-MONITOR] afterJob() called for job '%s' (execution %d) - status: %s, exitStatus: %s", 
+                 jobName, executionId, status, exitStatus);
         
         // Check if an exception was captured during job execution
         Throwable capturedError = null;
@@ -92,25 +109,31 @@ public class JobMonitoringListener implements JobListener {
             
             if (exceptionContext != null) {
                 capturedError = exceptionContext.exception;
-                log.infof("Retrieved captured exception for job %s (execution %d): %s",
-                         jobContext.getJobName(), executionId, 
-                         capturedError.getClass().getSimpleName());
+                log.infof("[JOB-MONITOR] Retrieved captured exception for job %s (execution %d): %s - %s",
+                         jobName, executionId, 
+                         capturedError.getClass().getSimpleName(),
+                         capturedError.getMessage());
+            } else {
+                log.debugf("[JOB-MONITOR] No captured exception found for job %s (execution %d)", 
+                          jobName, executionId);
             }
         } catch (Exception e) {
-            log.errorf(e, "Failed to retrieve exception from registry for execution %d", executionId);
+            log.errorf(e, "[JOB-MONITOR] Failed to retrieve exception from registry for execution %d", executionId);
         }
         
         // Update tracking with status and any captured exception
         if (capturedError != null) {
+            log.infof("[JOB-MONITOR] Updating job end with captured exception for execution %d", executionId);
             // Use the overloaded method that accepts the exception
             trackingService.onJobEnd(executionId, 
                                    status != null ? status.name() : "UNKNOWN", 
                                    exitStatus, 
                                    capturedError);
         } else if (status == BatchStatus.FAILED) {
+            log.warnf("[JOB-MONITOR] Job failed but no exception captured for execution %d, creating synthetic error", executionId);
             // Job failed but no exception was captured - create a synthetic one
             String errorMsg = String.format("Job %s failed with status %s. Exit status: %s",
-                                          jobContext.getJobName(), status, exitStatus);
+                                          jobName, status, exitStatus);
             Exception syntheticError = new Exception(errorMsg);
             
             trackingService.onJobEnd(executionId,
@@ -119,24 +142,31 @@ public class JobMonitoringListener implements JobListener {
                                    syntheticError);
         } else {
             // Normal completion without error
+            log.infof("[JOB-MONITOR] Job completed normally for execution %d - calling onJobEnd", executionId);
             trackingService.onJobEnd(executionId, 
                                    status != null ? status.name() : "UNKNOWN", 
                                    exitStatus);
+            log.infof("[JOB-MONITOR] onJobEnd completed for execution %d", executionId);
         }
         
         // Clean up registry to prevent memory leaks
         try {
             exceptionRegistry.clearException(executionId);
+            log.debugf("[JOB-MONITOR] Cleared exception registry for execution %d", executionId);
         } catch (Exception e) {
-            log.warnf("Failed to clear exception registry for execution %d", executionId);
+            log.warnf("[JOB-MONITOR] Failed to clear exception registry for execution %d: %s", 
+                     executionId, e.getMessage());
         }
     }
 
     @ActivateRequestContext
     int safeUserCount() {
         try {
-            return userService.listAll(true).size();
+            int count = userService.listAll(true).size();
+            log.debugf("[JOB-MONITOR] Retrieved user count: %d", count);
+            return count;
         } catch (Exception e) {
+            log.warnf("[JOB-MONITOR] Failed to get user count: %s", e.getMessage());
             return 0;
         }
     }

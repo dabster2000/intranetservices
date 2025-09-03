@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.users.services;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.users.events.CreateUserStatusEvent;
 import dk.trustworks.intranet.aggregates.users.events.DeleteUserStatusEvent;
+import dk.trustworks.intranet.aggregates.users.events.UpdateUserStatusEvent;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -51,7 +52,6 @@ public class StatusService {
         existingStatus.ifPresentOrElse(s -> {
             log.info("StatusService.create -> updating status");
             log.info("status = " + status);
-            sendUpdateEvent(s);
             s.setStatus(status.getStatus());
             s.setStatusdate(status.getStatusdate());
             s.setType(status.getType());
@@ -59,12 +59,13 @@ public class StatusService {
             s.setTwBonusEligible(status.isTwBonusEligible());
             s.setAllocation(status.getAllocation());
             updateStatusType(s);
+            sendUpdateEvent(s);
         }, () -> {
             log.info("StatusService.create -> creating status");
             log.info("status = " + status);
             status.persist();
+            sendCreateEvent(status);
         });
-        sendUpdateEvent(status);
     }
 
     private void updateStatusType(UserStatus s) {
@@ -89,17 +90,22 @@ public class StatusService {
     @CacheInvalidateAll(cacheName = "user-status-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
     public void delete(String statusuuid) {
-        System.out.println("StatusService.delete");
-        System.out.println("statusuuid = " + statusuuid);
+        log.info("StatusService.delete");
+        log.info("statusuuid = " + statusuuid);
         UserStatus entity = UserStatus.<UserStatus>findById(statusuuid);
 
         UserStatus.deleteById(statusuuid);
-        DeleteUserStatusEvent event = new DeleteUserStatusEvent(entity.getUseruuid(), statusuuid);
+        DeleteUserStatusEvent event = new DeleteUserStatusEvent(entity.getUseruuid(), entity);
         aggregateEventSender.handleEvent(event);
     }
 
-    private void sendUpdateEvent(UserStatus status) {
+    private void sendCreateEvent(UserStatus status) {
         CreateUserStatusEvent event = new CreateUserStatusEvent(status.getUseruuid(), status);
+        aggregateEventSender.handleEvent(event);
+    }
+    
+    private void sendUpdateEvent(UserStatus status) {
+        UpdateUserStatusEvent event = new UpdateUserStatusEvent(status.getUseruuid(), status);
         aggregateEventSender.handleEvent(event);
     }
 }

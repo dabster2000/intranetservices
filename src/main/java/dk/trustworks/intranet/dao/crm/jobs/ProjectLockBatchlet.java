@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.dao.crm.jobs;
 
+import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -9,6 +10,7 @@ import lombok.extern.jbosslog.JBossLog;
 @JBossLog
 @Named("projectLockBatchlet")
 @Dependent
+@BatchExceptionTracking
 public class ProjectLockBatchlet extends AbstractBatchlet {
 
     @Inject

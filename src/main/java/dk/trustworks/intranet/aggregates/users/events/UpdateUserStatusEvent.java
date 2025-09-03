@@ -9,15 +9,15 @@ import lombok.NoArgsConstructor;
 
 import jakarta.persistence.Entity;
 
-import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType.DELETE_USER_STATUS;
+import static dk.trustworks.intranet.messaging.emitters.enums.AggregateEventType.UPDATE_USER_STATUS;
 
 @Data
 @NoArgsConstructor
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
-public class DeleteUserStatusEvent extends AggregateRootChangeEvent {
-    public DeleteUserStatusEvent(String aggregateRootUUID, UserStatus userStatus) {
-        super(aggregateRootUUID, DELETE_USER_STATUS, JsonObject.mapFrom(userStatus).encode());
+public class UpdateUserStatusEvent extends AggregateRootChangeEvent {
+    public UpdateUserStatusEvent(String aggregateRootUUID, UserStatus userStatus) {
+        super(aggregateRootUUID, UPDATE_USER_STATUS, JsonObject.mapFrom(userStatus).encode());
         this.setEffectiveDate(userStatus.getStatusdate());
     }
 }

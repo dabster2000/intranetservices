@@ -10,7 +10,6 @@ import lombok.extern.jbosslog.JBossLog;
 @JBossLog
 @Dependent
 @Named("mailSendBatchlet")
-@BatchExceptionTracking
 public class MailSendBatchlet extends AbstractBatchlet {
 
     @Inject
