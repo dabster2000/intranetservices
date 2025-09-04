@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.communicationsservice.resources;
 
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
+import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -10,13 +11,13 @@ import lombok.extern.jbosslog.JBossLog;
 @JBossLog
 @Dependent
 @Named("mailSendBatchlet")
-public class MailSendBatchlet extends AbstractBatchlet {
+public class MailSendBatchlet extends MonitoredBatchlet {
 
     @Inject
     MailResource mailResource;
 
     @Override
-    public String process() throws Exception {
+    protected String doProcess() throws Exception {
         try {
             mailResource.sendMailJob();
             return "COMPLETED";
@@ -24,5 +25,11 @@ public class MailSendBatchlet extends AbstractBatchlet {
             log.error("MailSendBatchlet failed", e);
             throw e;
         }
+    }
+
+    @Override
+    protected void onFinally(long executionId, String jobName) {
+        // Optional cleanup
+        log.info("Cleaning up after job execution");
     }
 }

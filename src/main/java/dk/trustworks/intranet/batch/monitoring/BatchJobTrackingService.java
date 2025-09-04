@@ -89,31 +89,25 @@ public class BatchJobTrackingService {
     public void onJobStart(long executionId, String jobName) {
         log.infof("[BATCH-MONITOR] onJobStart called for job '%s' execution %d", jobName, executionId);
         try {
-            BatchJobExecutionTracking existing = findByExecutionId(executionId).orElse(null);
-            if (existing == null) {
-                log.infof("[BATCH-MONITOR] Creating new tracking record for job '%s' execution %d", jobName, executionId);
-                BatchJobExecutionTracking e = new BatchJobExecutionTracking();
-                e.setExecutionId(executionId);
-                e.setJobName(jobName);
-                e.setStatus("STARTED");
-                e.setStartTime(LocalDateTime.now());
-                e.setProgressPercent(0);
-                e.setCompletedSubtasks(0);
-                em.persist(e);
-                em.flush(); // Force immediate persistence
-                log.infof("[BATCH-MONITOR] Successfully created tracking record for execution %d", executionId);
-            } else {
-                log.infof("[BATCH-MONITOR] Updating existing tracking record for execution %d", executionId);
-                existing.setStatus("STARTED");
-                if (existing.getStartTime() == null) {
-                    existing.setStartTime(LocalDateTime.now());
-                }
-                em.merge(existing);
-                em.flush(); // Force immediate persistence
-                log.infof("[BATCH-MONITOR] Successfully updated tracking record for execution %d", executionId);
-            }
+            // ALWAYS create a new record - NEVER update existing ones
+            // This prevents data corruption when JBatch reuses execution IDs after server restart
+            log.infof("[BATCH-MONITOR] Creating new tracking record for job '%s' execution %d", jobName, executionId);
+            
+            BatchJobExecutionTracking e = new BatchJobExecutionTracking();
+            e.setExecutionId(executionId);
+            e.setJobName(jobName);
+            e.setStatus("STARTED");
+            e.setStartTime(LocalDateTime.now());
+            e.setProgressPercent(0);
+            e.setCompletedSubtasks(0);
+            
+            em.persist(e);
+            em.flush(); // Force immediate persistence
+            
+            log.infof("[BATCH-MONITOR] Successfully created tracking record (id=%d) for job '%s' execution %d", 
+                     e.getId(), jobName, executionId);
         } catch (Exception ex) {
-            log.errorf(ex, "[BATCH-MONITOR] Failed to create/update tracking record for job '%s' execution %d", jobName, executionId);
+            log.errorf(ex, "[BATCH-MONITOR] Failed to create tracking record for job '%s' execution %d", jobName, executionId);
             throw ex;
         }
     }
@@ -166,7 +160,7 @@ public class BatchJobTrackingService {
         }
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRED)
     public void incrementTotalSubtasks(long executionId) {
         log.debugf("[BATCH-MONITOR] Incrementing total subtasks for execution %d", executionId);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
@@ -184,7 +178,7 @@ public class BatchJobTrackingService {
         em.merge(e);
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRED)
     public void incrementCompletedSubtasks(long executionId) {
         log.debugf("[BATCH-MONITOR] Incrementing completed subtasks for execution %d", executionId);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
@@ -201,7 +195,7 @@ public class BatchJobTrackingService {
         em.merge(e);
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRED)
     public void appendDetails(long executionId, String message) {
         log.debugf("[BATCH-MONITOR] Appending details for execution %d: %s", executionId, message);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
@@ -215,7 +209,7 @@ public class BatchJobTrackingService {
         em.merge(e);
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRED)
     public void setTotalSubtasks(long executionId, int total) {
         log.infof("[BATCH-MONITOR] Setting total subtasks to %d for execution %d", total, executionId);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
@@ -233,31 +227,28 @@ public class BatchJobTrackingService {
 
     private BatchJobExecutionTracking findByExecutionIdForUpdate(long executionId) {
         try {
+            // Find the most recent record with this execution_id that hasn't ended yet
+            // This handles the case where execution IDs are reused after server restart
             BatchJobExecutionTracking e = em.createQuery(
-                            "select e from BatchJobExecutionTracking e where e.executionId = :id", BatchJobExecutionTracking.class)
-                    .setParameter("id", executionId)
-                    .setLockMode(LockModeType.PESSIMISTIC_WRITE)
-                    .getSingleResult();
-            log.debugf("[BATCH-MONITOR] Found and locked tracking record for execution %d", executionId);
+                    "SELECT e FROM BatchJobExecutionTracking e " +
+                    "WHERE e.executionId = :id " +
+                    "AND e.endTime IS NULL " +
+                    "ORDER BY e.startTime DESC", 
+                    BatchJobExecutionTracking.class)
+                .setParameter("id", executionId)
+                .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+                .setMaxResults(1)
+                .getSingleResult();
+
             return e;
         } catch (Exception ex) {
-            log.warnf("[BATCH-MONITOR] Failed to find/lock tracking record for execution %d: %s", 
+            log.warnf("[BATCH-MONITOR] Failed to find/lock active tracking record for execution %d: %s", 
                      executionId, ex.getMessage());
             return null;
         }
     }
 
-    private Optional<BatchJobExecutionTracking> findByExecutionId(long executionId) {
-        try {
-            BatchJobExecutionTracking e = em.createQuery(
-                            "select e from BatchJobExecutionTracking e where e.executionId = :id", BatchJobExecutionTracking.class)
-                    .setParameter("id", executionId)
-                    .getSingleResult();
-            log.debugf("[BATCH-MONITOR] Found existing tracking record for execution %d", executionId);
-            return Optional.ofNullable(e);
-        } catch (Exception ex) {
-            log.debugf("[BATCH-MONITOR] No existing tracking record found for execution %d", executionId);
-            return Optional.empty();
-        }
-    }
+    // Method removed - no longer needed since we always INSERT in onJobStart
+    // Previously used to check for existing records, but that caused data corruption
+    // when JBatch reused execution IDs after server restart
 }

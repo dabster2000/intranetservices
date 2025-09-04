@@ -9,6 +9,7 @@ import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -28,7 +29,7 @@ public class JobMonitoringListener implements JobListener {
     @Inject BatchExceptionRegistry exceptionRegistry;
 
     @Override
-    @ActivateRequestContext
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void beforeJob() {
         long executionId = jobContext.getExecutionId();
         String jobName = jobContext.getJobName();
