@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.expenseservice.remote;
 
+import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper;
@@ -8,6 +9,9 @@ import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
+
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
+import static jakarta.ws.rs.core.MediaType.MULTIPART_FORM_DATA;
 
 @RegisterRestClient
 @RegisterProvider(EconomicsErrorMapper.class)
@@ -20,10 +24,14 @@ public interface EconomicsAPI extends AutoCloseable {
         @Path("/journals/{journalNumber}/vouchers")
         Response postVoucher(@PathParam("journalNumber") int journalNumber, @HeaderParam("Idempotency-Key") String idempotencyKey, String voucher);
 
+        @Consumes(MULTIPART_FORM_DATA)
+        @Produces(APPLICATION_JSON)
         @POST
-        @Consumes("multipart/form-data")
         @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file")
-        Response postFile(@PathParam("journalNumber") int journalNumber, @PathParam("accountingYear") String accountingYear, @PathParam("voucherNumber") int voucherNumber, @MultipartForm MultipartFormDataOutput data);
+        Response postFile(@PathParam("journalNumber") int journalNumber,
+                          @PathParam("accountingYear") String accountingYear,
+                          @PathParam("voucherNumber") int voucherNumber,
+                          org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput form);
 
         @GET
         @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}")

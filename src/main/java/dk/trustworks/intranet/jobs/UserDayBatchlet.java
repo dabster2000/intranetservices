@@ -16,6 +16,7 @@ import java.time.LocalDate;
 @Named("userDayBatchlet")
 @Dependent
 @BatchExceptionTracking
+@Deprecated
 public class UserDayBatchlet extends AbstractBatchlet {
 
     @Inject UserAvailabilityCalculatorService availability;

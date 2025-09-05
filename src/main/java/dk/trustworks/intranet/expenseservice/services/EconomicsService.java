@@ -99,54 +99,70 @@ public class  EconomicsService {
 
     public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
         log.info("Uploading file for expense " + expense.getUuid());
-        // format accountingYear to URL output
-        String year = voucher.getAccountingYear().getYear();
-        String[] arrOfStr = year.split("/", 2);
-        String urlYear = arrOfStr[0]+ "_6_" +arrOfStr[1];
 
-        String imageString = expensefile.getExpensefile();
-        byte[] finalByteArray = ImageProcessor.convertBase64ToImageAndCompress(imageString);
+        // Format accounting year for URL: "YYYY" or "YYYY/ZZZZ" -> "YYYY_6_ZZZZ"
+        String fiscal = voucher.getAccountingYear().getYear();
+        String urlYear = fiscal.contains("/") ? fiscal.replace("/", "_6_") : fiscal;
 
-        InputStream targetStream = new ByteArrayInputStream(finalByteArray);
+        // Decode & (already) compress
+        byte[] bytes = ImageProcessor.convertBase64ToImageAndCompress(expensefile.getExpensefile());
+        if (bytes == null || bytes.length == 0) {
+            log.error("Attachment is empty for expense " + expense.getUuid());
+            return Response.status(400).entity("Empty attachment").build();
+        }
+        final int MAX = 9 * 1024 * 1024; // 9 MB per e‑conomic docs
+        if (bytes.length > MAX) {
+            log.errorf("Attachment exceeds 9MB (%d bytes) for expense %s", bytes.length, expense.getUuid());
+            return Response.status(413).entity("Attachment too large (>9MB)").build();
+        }
 
-        MultipartFormDataOutput upload = new MultipartFormDataOutput();
-        upload.addFormData("fileContent", targetStream, MediaType.APPLICATION_OCTET_STREAM_TYPE, "output.jpg");
+        // Build multipart with a single binary part; name is not required by API
+        MultipartFormDataOutput form = new MultipartFormDataOutput();
+        InputStream in = new ByteArrayInputStream(bytes);
+        // Use a stable filename extension that matches your ImageProcessor output
+        form.addFormData("file", in, MediaType.APPLICATION_OCTET_STREAM_TYPE, "receipt.jpg");
 
-        // call e-conomics endpoint
-        IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
-        log.info("File upload target = " + result);
-        EconomicsAPI remoteApi = getEconomicsAPI(result);
-
-        Response fileResponse = null;
+        // Call API
+        EconomicsAPI api = getApiForExpense(expense);
+        Response fileResponse;
         try {
-            fileResponse = remoteApi.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), upload);
-            // Check the response status code to ensure it's within the 2xx range indicating success.
-            if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
-                log.error("File not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() +
-                        ", voucher: " + expense.getVouchernumber() + ", response: " + fileResponse);
-            }
-        } catch (WebApplicationException e) {
-            // Extract response from the exception
-            Response response = e.getResponse();
-            String errorMessage = response.readEntity(String.class); // Assuming the error message is in plain text or JSON format
-            log.error("Failed to post file. Status code: " + response.getStatus() + ", Error: " + errorMessage +
-                    ", Expenseuuid: " + expense.getUseruuid() + ", Voucher: " + expense.getVouchernumber());
-            // Optionally rethrow or handle the exception as needed
-            throw e;
+            fileResponse = api.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), form);
+        } catch (jakarta.ws.rs.ProcessingException pe) {
+            // Most common when multipart provider is missing or connection fails
+            String hint = pe.getMessage() != null && pe.getMessage().contains("MessageBodyWriter")
+                    ? "Missing multipart client support. Add quarkus-resteasy-multipart."
+                    : "Transport error to e-conomic.";
+            log.error("ProcessingException posting attachment: " + hint, pe);
+            return Response.status(502).entity("Attachment upload failed: " + hint).build();
+        } catch (WebApplicationException wae) {
+            Response r = wae.getResponse();
+            String body = null;
+            try { body = r.readEntity(String.class); } catch (Exception ignore) { }
+            log.errorf("e‑conomic responded %d for expense %s (voucher %d): %s",
+                    r.getStatus(), expense.getUuid(), expense.getVouchernumber(), body);
+            return r; // propagate remote status with body consumed/logged
         } catch (Exception e) {
-            // Log unexpected exceptions
             log.error("Unexpected error when posting file", e);
-        }
-        /*
-        Response fileResponse = remoteApi.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), upload);
-        if ((fileResponse.getStatus() < 200) || (fileResponse.getStatus() > 299)) {
-            log.error("file not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + expense.getVouchernumber() + ", response: " + fileResponse);
+            return Response.status(502).entity("Unexpected error during attachment upload").build();
         }
 
-         */
-        if(fileResponse==null) throw new IOException("Upload failed, fileResponse is null");
+        if (fileResponse == null) {
+            // Never throw; return an actionable response instead
+            log.error("Upload failed: client returned null Response");
+            return Response.status(502).entity("Upload failed: no Response from client").build();
+        }
+
+        // Accept 2xx as success; log otherwise and propagate
+        int sc = fileResponse.getStatus();
+        if (sc < 200 || sc > 299) {
+            String body = null;
+            try { body = fileResponse.readEntity(String.class); } catch (Exception ignore) { }
+            log.errorf("Attachment upload not successful (HTTP %d). Expense %s, voucher %d. Body: %s",
+                    sc, expense.getUuid(), expense.getVouchernumber(), body);
+        }
         return fileResponse;
     }
+
 
     public Voucher buildJSONRequest(Expense expense, UserAccount userAccount, Journal journal, String text){
 
