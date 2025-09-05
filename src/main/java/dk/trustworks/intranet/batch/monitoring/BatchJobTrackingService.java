@@ -117,6 +117,14 @@ public class BatchJobTrackingService {
         log.infof("[BATCH-MONITOR] onJobEnd called for execution %d - batchStatus: %s, exitStatus: %s", 
                  executionId, batchStatus, exitStatus);
         try {
+            // Small delay to allow partition progress updates to commit
+            // This helps avoid race condition where job completion is checked before partition updates are persisted
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            
             BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
             if (e == null) {
                 log.errorf("[BATCH-MONITOR] CRITICAL: Cannot update job end - no tracking record found for execution %d. " +
@@ -124,19 +132,28 @@ public class BatchJobTrackingService {
                 return;
             }
             
-            log.debugf("[BATCH-MONITOR] Found tracking record for execution %d, current status: %s", 
-                      executionId, e.getStatus());
+            log.debugf("[BATCH-MONITOR] Found tracking record for execution %d, current status: %s, completed: %d, total: %d", 
+                      executionId, e.getStatus(), e.getCompletedSubtasks(), e.getTotalSubtasks());
             
             e.setStatus(batchStatus);
             e.setExitStatus(exitStatus);
             e.setEndTime(LocalDateTime.now());
             String result;
             if ("COMPLETED".equalsIgnoreCase(batchStatus)) {
+                // For jobs with subtasks, only mark as PARTIAL if we have a significant discrepancy
+                // Allow for minor race conditions (e.g., off by 1 or 2)
                 if (e.getTotalSubtasks() != null && e.getCompletedSubtasks() != null
-                        && e.getTotalSubtasks() > 0 && e.getCompletedSubtasks() < e.getTotalSubtasks()) {
-                    result = "PARTIAL";
-                    log.infof("[BATCH-MONITOR] Job marked as PARTIAL - completed %d of %d subtasks", 
-                             e.getCompletedSubtasks(), e.getTotalSubtasks());
+                        && e.getTotalSubtasks() > 0) {
+                    int difference = e.getTotalSubtasks() - e.getCompletedSubtasks();
+                    if (difference > 2) {
+                        result = "PARTIAL";
+                        log.infof("[BATCH-MONITOR] Job marked as PARTIAL - completed %d of %d subtasks (difference: %d)", 
+                                 e.getCompletedSubtasks(), e.getTotalSubtasks(), difference);
+                    } else {
+                        result = "COMPLETED";
+                        log.infof("[BATCH-MONITOR] Job marked as COMPLETED - completed %d of %d subtasks", 
+                                 e.getCompletedSubtasks(), e.getTotalSubtasks());
+                    }
                 } else {
                     result = "COMPLETED";
                     log.infof("[BATCH-MONITOR] Job marked as COMPLETED");
@@ -223,6 +240,23 @@ public class BatchJobTrackingService {
             e.setProgressPercent(percent);
         }
         em.merge(e);
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void setCompletedSubtasksSynchronous(long executionId, int completed) {
+        log.debugf("[BATCH-MONITOR] Setting completed subtasks to %d for execution %d (synchronous)", completed, executionId);
+        BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
+        if (e == null) {
+            log.warnf("[BATCH-MONITOR] Cannot set completed subtasks - no tracking record found for execution %d", executionId);
+            return;
+        }
+        e.setCompletedSubtasks(completed);
+        if (e.getTotalSubtasks() != null && e.getTotalSubtasks() > 0) {
+            int percent = Math.min(100, (int) Math.floor((completed * 100.0) / e.getTotalSubtasks()));
+            e.setProgressPercent(percent);
+        }
+        em.merge(e);
+        em.flush(); // Force immediate persistence to avoid race condition
     }
 
     private BatchJobExecutionTracking findByExecutionIdForUpdate(long executionId) {

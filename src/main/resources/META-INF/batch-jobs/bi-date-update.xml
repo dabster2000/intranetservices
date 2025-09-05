@@ -4,7 +4,7 @@
         <listener ref="jobMonitoringListener"/>
     </listeners>
     <step id="process-user-day" allow-start-if-complete="true">
-        <batchlet ref="userDayBatchlet">
+        <batchlet ref="userDayBatchletEnhanced">
             <properties>
                 <property name="userUuid" value="#{partitionPlan['userUuid']}"/>
                 <property name="day"      value="#{partitionPlan['day']}"/>
@@ -12,7 +12,8 @@
         </batchlet>
         <partition>
             <mapper ref="userDayPartitionMapper"/>
-            <analyzer ref="partitionProgressAnalyzer"/>
+            <analyzer ref="resultBasedPartitionAnalyzer"/>
+            <collector ref="userDayBatchletEnhanced"/>
         </partition>
     </step>
 </job>

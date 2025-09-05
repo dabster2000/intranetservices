@@ -5,7 +5,7 @@
         <listener ref="jobMonitoringListener"/>
     </listeners>
     <step id="recalc-day">
-        <batchlet ref="contractConsultantDayRecalcBatchlet">
+        <batchlet ref="contractConsultantDayRecalcBatchletEnhanced">
             <properties>
                 <property name="userUuid" value="#{jobParameters['userUuid']}"/>
                 <property name="date" value="#{partitionPlan['date']}"/>
@@ -19,7 +19,8 @@
                     <property name="requestedThreads" value="#{jobParameters['requestedThreads']}"/>
                 </properties>
             </mapper>
-            <analyzer ref="partitionProgressAnalyzer"/>
+            <analyzer ref="resultBasedPartitionAnalyzer"/>
+            <collector ref="contractConsultantDayRecalcBatchletEnhanced"/>
         </partition>
     </step>
 </job>

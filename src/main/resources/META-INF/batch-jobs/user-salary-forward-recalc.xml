@@ -5,7 +5,7 @@
         <listener ref="jobMonitoringListener"/>
     </listeners>
     <step id="recalc-day">
-        <batchlet ref="userSalaryDayRecalcBatchlet">
+        <batchlet ref="userSalaryDayRecalcBatchletEnhanced">
             <!-- Inject the user and the partition's date into the batchlet -->
             <properties>
                 <property name="userUuid" value="#{jobParameters['userUuid']}"/>
@@ -24,6 +24,8 @@
                     <property name="requestedThreads" value="#{jobParameters['requestedThreads']}"/>
                 </properties>
             </mapper>
+            <analyzer ref="resultBasedPartitionAnalyzer"/>
+            <collector ref="userSalaryDayRecalcBatchletEnhanced"/>
         </partition>
     </step>
 </job>
