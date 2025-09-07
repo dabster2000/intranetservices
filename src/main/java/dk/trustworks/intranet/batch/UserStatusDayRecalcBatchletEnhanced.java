@@ -2,9 +2,9 @@ package dk.trustworks.intranet.batch;
 
 import dk.trustworks.intranet.batch.monitoring.AbstractEnhancedBatchlet;
 import dk.trustworks.intranet.batch.monitoring.BatchletResult;
-import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
-import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
-import dk.trustworks.intranet.bi.services.WorkAggregateService;
+import dk.trustworks.intranet.recalc.DayRecalcService;
+import dk.trustworks.intranet.recalc.RecalcResult;
+import dk.trustworks.intranet.recalc.RecalcTrigger;
 import jakarta.batch.api.BatchProperty;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
@@ -18,9 +18,7 @@ import java.time.LocalDate;
 
 /**
  * Enhanced batchlet to recalculate user data for a specific day after a status change.
- * This ensures that status changes properly propagate to all affected calculations
- * including availability, work aggregates, and budgets.
- * Uses return-based tracking to avoid race conditions.
+ * Delegates to DayRecalcService to ensure correct pipeline ordering and error handling.
  */
 @Dependent
 @Named("userStatusDayRecalcBatchletEnhanced")
@@ -28,19 +26,16 @@ import java.time.LocalDate;
 public class UserStatusDayRecalcBatchletEnhanced extends AbstractEnhancedBatchlet {
 
     @Inject
-    UserAvailabilityCalculatorService availability;
-    
-    @Inject
-    WorkAggregateService workAggregates;
-    
-    @Inject
-    BudgetCalculatingExecutor budgets;
+    DayRecalcService recalcService;
 
     @Inject @BatchProperty(name = "userUuid")
     String userUuid;
 
     @Inject @BatchProperty(name = "date")
     String dateStr;
+
+    @Inject @BatchProperty(name = "trigger")
+    String triggerName;
     
     @Override
     protected String generatePartitionId() {
@@ -61,38 +56,22 @@ public class UserStatusDayRecalcBatchletEnhanced extends AbstractEnhancedBatchle
             }
             
             LocalDate date = LocalDate.parse(dateStr);
-            
-            // Track individual operation failures but continue processing
-            boolean hasErrors = false;
-            StringBuilder errorMessages = new StringBuilder();
-            
-            // 1. Update availability based on current status
-            if (!executeOperation("Availability update", 
-                () -> availability.updateUserAvailabilityByDay(userUuid, date), 
-                errorMessages)) {
-                hasErrors = true;
+
+            RecalcTrigger trigger;
+            try {
+                // Default to STATUS_CHANGE for this batchlet if not provided
+                trigger = (triggerName != null && !triggerName.isBlank()) ? RecalcTrigger.valueOf(triggerName) : RecalcTrigger.STATUS_CHANGE;
+            } catch (IllegalArgumentException ex) {
+                log.warnf("Unknown trigger '%s', defaulting to STATUS_CHANGE", triggerName);
+                trigger = RecalcTrigger.STATUS_CHANGE;
             }
-            
-            // 2. Recalculate work aggregates
-            if (!executeOperation("Work aggregates recalculation",
-                () -> workAggregates.recalculateWork(userUuid, date),
-                errorMessages)) {
-                hasErrors = true;
-            }
-            
-            // 3. Recalculate budgets (which depend on availability and work)
-            if (!executeOperation("Budget recalculation",
-                () -> budgets.recalculateUserDailyBudgets(userUuid, date),
-                errorMessages)) {
-                hasErrors = true;
-            }
-            
-            if (hasErrors) {
-                return BatchletResult.partial("Partial success for user " + userUuid + 
-                    " on " + date + ": " + errorMessages.toString());
+
+            RecalcResult r = recalcService.recalc(userUuid, date, trigger);
+
+            if (r.isFailed()) {
+                return BatchletResult.partial("Partial success: " + r.summary());
             } else {
-                return BatchletResult.success("Successfully processed all updates for user " + 
-                    userUuid + " on " + date);
+                return BatchletResult.success("Successfully processed user " + userUuid + " on " + date + "; " + r.summary());
             }
             
         } catch (Exception e) {

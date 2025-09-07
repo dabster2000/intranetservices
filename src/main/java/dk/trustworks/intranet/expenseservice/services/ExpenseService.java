@@ -3,6 +3,10 @@ package dk.trustworks.intranet.expenseservice.services;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.AccountingYear;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.Entries;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.Journal;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.Voucher;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.RequestScoped;
@@ -128,13 +132,23 @@ public class ExpenseService {
 
     public void sendExpense(Expense expense, ExpenseFile expenseFile, UserAccount userAccount) throws IOException {
         Response response;
-        try {
-            response = economicsService.sendVoucher(expense, expenseFile, userAccount);
-            updateStatus(expense, STATUS_PROCESSING);
-        } catch (Exception e) {
-            log.error("Exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
-            updateStatus(expense, STATUS_UP_FAILED);
-            throw new IOException("Exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);
+        if (expense.getVouchernumber() > 0
+                && expense.getJournalnumber() != null
+                && expense.getAccountingyear() != null) {
+            // Voucher findes allerede – byg kun et "Voucher"-objekt for stien og upload vedhæftning
+            Journal journal = new Journal(expense.getJournalnumber());
+            AccountingYear ay = new AccountingYear(expense.getAccountingyear().replace("_6_", "/"));
+            Voucher v = new Voucher(ay, journal, new Entries());
+            response = economicsService.sendFile(expense, expenseFile, v);
+        } else {
+            try {
+                response = economicsService.sendVoucher(expense, expenseFile, userAccount);
+                updateStatus(expense, STATUS_PROCESSING);
+            } catch (Exception e) {
+                log.error("Exception posting expense: " + expense + ", exception: " + e.getMessage(), e);
+                updateStatus(expense, STATUS_UP_FAILED);
+                throw new IOException("Exception posting expense: " + expense.getUuid() + ", exception: " + e.getMessage(), e);
+            }
         }
 
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
@@ -142,7 +156,7 @@ public class ExpenseService {
         } else {
             log.error("unable to send voucher to economics: " + expense);
             updateStatus(expense, STATUS_UP_FAILED);
-            throw new IOException("Economics error on uploading file. Expense : "+ expense +", response: "+ response);
+            throw new IOException("Economics error on uploading file. Expense : " + expense + ", response: " + response);
         }
     }
 
@@ -177,23 +191,3 @@ public class ExpenseService {
     }
 }
 
-
-// if user has account and file is stored at AWS send files to e-conomics
-            /*
-            if (awsResponse != null ) {
-                UserAccount user = UserAccount.findById(expense.getUseruuid());
-                if (user != null) {
-                    //send expense to economics
-                    sendExpense(expense, expenseFile, user);
-                } else {
-                    //user does not have an economics account - await userAccount creation
-                    log.info("unknown user created expense: "+ expense.getUseruuid());
-                }
-
-            } else {
-                log.error("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
-                QuarkusTransaction.setRollbackOnly();
-                throw new IOException("aws s3/user account issue. Expense : "+ expense +", aws response: "+ awsResponse +", useraccount: "+ expense.getUseruuid());
-            }
-
-             */

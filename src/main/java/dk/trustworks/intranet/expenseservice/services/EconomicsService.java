@@ -100,69 +100,70 @@ public class  EconomicsService {
     public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
         log.info("Uploading file for expense " + expense.getUuid());
 
-        // Format accounting year for URL: "YYYY" or "YYYY/ZZZZ" -> "YYYY_6_ZZZZ"
-        String fiscal = voucher.getAccountingYear().getYear();
-        String urlYear = fiscal.contains("/") ? fiscal.replace("/", "_6_") : fiscal;
+        final String fiscal = voucher.getAccountingYear().getYear();             // fx "2025/2026"
+        final String urlYear = fiscal.contains("/") ? fiscal.replace("/", "_6_") : fiscal; // sti-format som i eksisterende kode
 
-        // Decode & (already) compress
         byte[] bytes = ImageProcessor.convertBase64ToImageAndCompress(expensefile.getExpensefile());
-        if (bytes == null || bytes.length == 0) {
-            log.error("Attachment is empty for expense " + expense.getUuid());
-            return Response.status(400).entity("Empty attachment").build();
-        }
-        final int MAX = 9 * 1024 * 1024; // 9 MB per e‑conomic docs
-        if (bytes.length > MAX) {
-            log.errorf("Attachment exceeds 9MB (%d bytes) for expense %s", bytes.length, expense.getUuid());
-            return Response.status(413).entity("Attachment too large (>9MB)").build();
-        }
+        if (bytes == null || bytes.length == 0) return Response.status(400).entity("Empty attachment").build();
+        if (bytes.length > 9 * 1024 * 1024) return Response.status(413).entity("Attachment too large (>9MB)").build();
 
-        // Build multipart with a single binary part; name is not required by API
         MultipartFormDataOutput form = new MultipartFormDataOutput();
-        InputStream in = new ByteArrayInputStream(bytes);
-        // Use a stable filename extension that matches your ImageProcessor output
-        form.addFormData("file", in, MediaType.APPLICATION_OCTET_STREAM_TYPE, "receipt.jpg");
+        form.addFormData("file", new ByteArrayInputStream(bytes), MediaType.APPLICATION_OCTET_STREAM_TYPE, "receipt.jpg");
 
-        // Call API
         EconomicsAPI api = getApiForExpense(expense);
-        Response fileResponse;
+
+        // 1) Check om der allerede er en vedhæftning
+        boolean hasAttachment = false;
         try {
-            fileResponse = api.postFile(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber(), form);
-        } catch (jakarta.ws.rs.ProcessingException pe) {
-            // Most common when multipart provider is missing or connection fails
-            String hint = pe.getMessage() != null && pe.getMessage().contains("MessageBodyWriter")
-                    ? "Missing multipart client support. Add quarkus-resteasy-multipart."
-                    : "Transport error to e-conomic.";
-            log.error("ProcessingException posting attachment: " + hint, pe);
-            return Response.status(502).entity("Attachment upload failed: " + hint).build();
+            Response meta = api.getAttachment(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber());
+            if (meta.getStatus() / 100 == 2) {
+                String json = meta.readEntity(String.class);
+                hasAttachment = json.contains("\"pages\"") && !json.contains("\"pages\":0");
+            }
+        } catch (Exception ignore) { /* fortsæt defensivt */ }
+
+        // 2) POST hvis ingen vedhæftning, ellers PATCH
+        try {
+            String idemp = "attach-" + expense.getUuid();
+
+            if (!hasAttachment) {
+                Response r = api.postExpenseFile(
+                        voucher.getJournal().getJournalNumber(),
+                        urlYear,
+                        expense.getVouchernumber(),
+                        idemp, // <-- ny parameter
+                        form
+                );
+                if (r.getStatus() == 400) {
+                    String body = safeRead(r);
+                    if (body != null && body.contains("Voucher already has attachment")) {
+                        // fallback til PATCH
+                        return api.patchFile(
+                                voucher.getJournal().getJournalNumber(),
+                                urlYear,
+                                expense.getVouchernumber(),
+                                idemp, // <-- ny parameter
+                                form
+                        );
+                    }
+                }
+                return r;
+            } else {
+                return api.patchFile(
+                        voucher.getJournal().getJournalNumber(),
+                        urlYear,
+                        expense.getVouchernumber(),
+                        idemp, // <-- ny parameter
+                        form
+                );
+            }
         } catch (WebApplicationException wae) {
-            Response r = wae.getResponse();
-            String body = null;
-            try { body = r.readEntity(String.class); } catch (Exception ignore) { }
-            log.errorf("e‑conomic responded %d for expense %s (voucher %d): %s",
-                    r.getStatus(), expense.getUuid(), expense.getVouchernumber(), body);
-            return r; // propagate remote status with body consumed/logged
+            return wae.getResponse(); // lad kalderen afgøre status
         } catch (Exception e) {
             log.error("Unexpected error when posting file", e);
             return Response.status(502).entity("Unexpected error during attachment upload").build();
         }
-
-        if (fileResponse == null) {
-            // Never throw; return an actionable response instead
-            log.error("Upload failed: client returned null Response");
-            return Response.status(502).entity("Upload failed: no Response from client").build();
-        }
-
-        // Accept 2xx as success; log otherwise and propagate
-        int sc = fileResponse.getStatus();
-        if (sc < 200 || sc > 299) {
-            String body = null;
-            try { body = fileResponse.readEntity(String.class); } catch (Exception ignore) { }
-            log.errorf("Attachment upload not successful (HTTP %d). Expense %s, voucher %d. Body: %s",
-                    sc, expense.getUuid(), expense.getVouchernumber(), body);
-        }
-        return fileResponse;
     }
-
 
     public Voucher buildJSONRequest(Expense expense, UserAccount userAccount, Journal journal, String text){
 
@@ -275,5 +276,14 @@ public class  EconomicsService {
         // Check if the kontokode exists in the map and return the converted value.
         // If the kontokode does not exist in the map, return the input as is or handle as needed.
         return conversionMap.getOrDefault(kontokode, kontokode);
+    }
+
+    private static String safeRead(Response r) {
+        if (r == null) return null;
+        try {
+            return r.readEntity(String.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

@@ -10,6 +10,7 @@
             <properties>
                 <property name="userUuid" value="#{jobParameters['userUuid']}"/>
                 <property name="date" value="#{partitionPlan['date']}"/>
+                <property name="trigger" value="STATUS_CHANGE"/>
             </properties>
         </batchlet>
 

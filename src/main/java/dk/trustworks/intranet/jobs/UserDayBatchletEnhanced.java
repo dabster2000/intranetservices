@@ -6,6 +6,9 @@ import dk.trustworks.intranet.batch.monitoring.BatchletResult;
 import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.bi.services.UserAvailabilityCalculatorService;
 import dk.trustworks.intranet.bi.services.WorkAggregateService;
+import dk.trustworks.intranet.recalc.DayRecalcService;
+import dk.trustworks.intranet.recalc.RecalcResult;
+import dk.trustworks.intranet.recalc.RecalcTrigger;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.batch.api.BatchProperty;
 import jakarta.batch.api.partition.PartitionCollector;
@@ -25,13 +28,12 @@ import java.time.LocalDate;
 @JBossLog
 public class UserDayBatchletEnhanced extends AbstractBatchlet implements PartitionCollector {
 
-    @Inject UserAvailabilityCalculatorService availability;
-    @Inject WorkAggregateService workAggregates;
-    @Inject BudgetCalculatingExecutor budgets;
+    @Inject DayRecalcService recalcService;
     @Inject StepContext stepContext;
 
     @Inject @BatchProperty(name = "userUuid") String userUuid;
     @Inject @BatchProperty(name = "day") String dayIso;
+    @Inject @BatchProperty(name = "trigger") String triggerName;
     
     private BatchletResult executionResult;
     private long startTime;
@@ -54,47 +56,27 @@ public class UserDayBatchletEnhanced extends AbstractBatchlet implements Partiti
             }
             
             final LocalDate day = LocalDate.parse(dayIso);
-            
-            // Track individual operation failures but continue processing
-            boolean hasErrors = false;
-            StringBuilder errorMessages = new StringBuilder();
-            
+
+            RecalcTrigger trigger;
             try {
-                availability.updateUserAvailabilityByDay(userUuid, day);
-                log.debugf("Successfully updated availability for user %s on %s", userUuid, day);
-            } catch (Exception e) {
-                hasErrors = true;
-                errorMessages.append("Availability update failed: ").append(e.getMessage()).append("; ");
-                log.errorf(e, "Failed to update availability for user %s on %s", userUuid, day);
+                trigger = (triggerName != null && !triggerName.isBlank()) ? RecalcTrigger.valueOf(triggerName) : RecalcTrigger.SCHEDULED_BI;
+            } catch (IllegalArgumentException ex) {
+                log.warnf("Unknown trigger '%s', defaulting to SCHEDULED_BI", triggerName);
+                trigger = RecalcTrigger.SCHEDULED_BI;
             }
-            
-            try {
-                workAggregates.recalculateWork(userUuid, day);
-                log.debugf("Successfully recalculated work for user %s on %s", userUuid, day);
-            } catch (Exception e) {
-                hasErrors = true;
-                errorMessages.append("Work recalculation failed: ").append(e.getMessage()).append("; ");
-                log.errorf(e, "Failed to recalculate work for user %s on %s", userUuid, day);
-            }
-            
-            try {
-                budgets.recalculateUserDailyBudgets(userUuid, day);
-                log.debugf("Successfully recalculated budgets for user %s on %s", userUuid, day);
-            } catch (Exception e) {
-                hasErrors = true;
-                errorMessages.append("Budget recalculation failed: ").append(e.getMessage()).append("; ");
-                log.errorf(e, "Failed to recalculate budgets for user %s on %s", userUuid, day);
-            }
+
+            RecalcResult r = recalcService.recalc(userUuid, day, trigger);
+            boolean resultFailed = r.isFailed();
             
             long processingTime = System.currentTimeMillis() - startTime;
-            
-            if (hasErrors) {
-                executionResult = BatchletResult.partial("Partial success: " + errorMessages.toString());
+
+            if (resultFailed) {
+                executionResult = BatchletResult.partial("Partial success: " + r.summary());
                 executionResult.setPartitionId(partitionId);
                 executionResult.setProcessingTimeMs(processingTime);
                 return "PARTIAL";
             } else {
-                executionResult = BatchletResult.success("Successfully processed user " + userUuid + " for " + day);
+                executionResult = BatchletResult.success("Successfully processed user " + userUuid + " for " + day + "; " + r.summary());
                 executionResult.setPartitionId(partitionId);
                 executionResult.setProcessingTimeMs(processingTime);
                 return "COMPLETED";
@@ -116,6 +98,12 @@ public class UserDayBatchletEnhanced extends AbstractBatchlet implements Partiti
     @Override
     public Serializable collectPartitionData() throws Exception {
         // This is called after process() to collect results from this partition
+        if (executionResult == null) {
+            String partitionId = (userUuid != null ? userUuid : "unknownUser") + "_" + (dayIso != null ? dayIso : "unknownDay");
+            BatchletResult fallback = BatchletResult.failure("No execution result was produced for this partition");
+            fallback.setPartitionId(partitionId);
+            return fallback;
+        }
         return executionResult;
     }
 }

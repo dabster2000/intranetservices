@@ -36,7 +36,7 @@ public class FinanceLoadJob {
 
     //@Scheduled(every="1h")
     //@Scheduled(cron="0 0 21 * * ?") // disabled; replaced by JBeret job 'finance-load-economics' triggered via BatchScheduler
-    @Transactional
+    @Transactional(Transactional.TxType.NOT_SUPPORTED)
     void loadEconomicsData() {
         log.debug("ExpenseLoadJob.loadEconomicsData");
         log.debug("Cleaning old data...");

@@ -82,11 +82,11 @@ public class CrmService {
             String contractUuid = tuple.get("contractuuid", String.class);
 
             // Get java.sql.Date from tuple and convert it to LocalDate
-            Date fromSqlDate = tuple.get("fromdate", Date.class);
-            LocalDate fromDate = fromSqlDate != null ? fromSqlDate.toLocalDate() : null;
+            LocalDate fromDate = tuple.get("fromdate", LocalDate.class);
+            //LocalDate fromDate = fromSqlDate != null ? fromSqlDate.toLocalDate() : null;
 
-            Date toSqlDate = tuple.get("todate", Date.class);
-            LocalDate toDate = toSqlDate != null ? toSqlDate.toLocalDate() : null;
+            LocalDate toDate = tuple.get("todate", LocalDate.class);
+            //LocalDate toDate = toSqlDate != null ? toSqlDate.toLocalDate() : null;
 
             // Construct a Client object
             Client client = new Client();

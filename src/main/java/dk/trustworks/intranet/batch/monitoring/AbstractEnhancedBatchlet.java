@@ -98,6 +98,11 @@ public abstract class AbstractEnhancedBatchlet extends AbstractBatchlet implemen
     @Override
     public final Serializable collectPartitionData() throws Exception {
         // This is called after process() to collect results from this partition
+        if (executionResult == null) {
+            BatchletResult fallback = BatchletResult.failure("No execution result was produced for this partition");
+            // partitionId and processingTime are best-effort here; they should have been set in process()
+            return fallback;
+        }
         return executionResult;
     }
     
