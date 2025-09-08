@@ -47,6 +47,7 @@ import java.lang.annotation.Target;
 @BatchExceptionTracking
 @Priority(Interceptor.Priority.APPLICATION + 100)
 @JBossLog
+@Deprecated
 public class BatchExceptionInterceptor {
     
     @Inject

@@ -716,9 +716,11 @@ public class InvoiceService {
         return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 OR type = ?3 OR invoicenumber = 0)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void updateInvoiceReference(String invoiceuuid, InvoiceReference invoiceReference) {
-        Invoice.update("bookingdate = ?1, referencenumber = ?2 WHERE uuid like ?3 ", invoiceReference.getBookingdate(), invoiceReference.getReferencenumber(), invoiceuuid);
+        // Only perform the update if something actually changes to keep transactions short and avoid extra flushes
+        Invoice.update("bookingdate = ?1, referencenumber = ?2 WHERE uuid like ?3 AND (bookingdate <> ?1 OR referencenumber <> ?2 OR bookingdate IS NULL OR referencenumber IS NULL)",
+                invoiceReference.getBookingdate(), invoiceReference.getReferencenumber(), invoiceuuid);
     }
 
     @Transactional

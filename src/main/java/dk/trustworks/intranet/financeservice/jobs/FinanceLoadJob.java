@@ -74,7 +74,7 @@ public class FinanceLoadJob {
 
     //@Scheduled(every="5m")
     //@Scheduled(cron = "0 0 22 * * ?") // disabled; replaced by JBeret job 'finance-invoice-sync' triggered via BatchScheduler
-    @Transactional
+    @Transactional(Transactional.TxType.NOT_SUPPORTED)
     public void synchronizeInvoices() {
         log.info("ExpenseLoadJob.synchronizeInvoices");
         List<FinanceDetails> expenseList = FinanceDetails.find("accountnumber >= ?1 and accountnumber <= ?2", EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMinimum(), EconomicAccountGroup.OMSAETNING_ACCOUNTS.getRange().getMaximum()).list();//EconomicAccountGroup.OMSAETNING_ACCOUNTS);

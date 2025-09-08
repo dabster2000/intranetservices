@@ -59,11 +59,11 @@ quarkus:
     level: INFO
     category:
       "dk.trustworks":
-        level: DEBUG
+        level: INFO
       "io.quarkus.http":
-        level: DEBUG
+        level: INFO
       "org.jboss.resteasy.resteasy_client":
-        level: DEBUG
+        level: INFO
       "io.quarkus.smallrye.health":
         level: WARN  # This will stop logging health check INFO level messages
       #"io.opentelemetry":

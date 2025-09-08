@@ -3,7 +3,9 @@ package dk.trustworks.intranet.batch.monitoring;
 import jakarta.batch.api.partition.PartitionAnalyzer;
 import jakarta.batch.runtime.BatchStatus;
 import jakarta.batch.runtime.context.JobContext;
+import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.context.Dependent;
+import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
 import lombok.extern.jbosslog.JBossLog;
@@ -12,9 +14,10 @@ import java.io.Serializable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-@Named("resultBasedPartitionAnalyzer")
-@Dependent
 @JBossLog
+@Dependent
+@ActivateRequestContext
+@Named("resultBasedPartitionAnalyzer")
 public class ResultBasedPartitionAnalyzer implements PartitionAnalyzer {
 
     @Inject JobContext jobContext;
@@ -26,9 +29,8 @@ public class ResultBasedPartitionAnalyzer implements PartitionAnalyzer {
     private final ConcurrentHashMap<String, BatchletResult> partitionResults = new ConcurrentHashMap<>();
     
     @Override
-    public void analyzeCollectorData(Serializable data) throws Exception {
-        if (data instanceof BatchletResult) {
-            BatchletResult result = (BatchletResult) data;
+    public void analyzeCollectorData(Serializable data) {
+        if (data instanceof BatchletResult result) {
             String partitionId = result.getPartitionId() != null ? result.getPartitionId() : "partition-" + System.nanoTime();
             partitionResults.put(partitionId, result);
             

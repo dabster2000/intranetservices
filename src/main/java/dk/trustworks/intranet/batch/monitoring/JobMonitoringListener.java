@@ -17,9 +17,10 @@ import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 import java.util.Properties;
 
-@Named("jobMonitoringListener")
-@Dependent
 @JBossLog
+@Dependent
+@ActivateRequestContext
+@Named("jobMonitoringListener")
 public class JobMonitoringListener implements JobListener {
 
     @Inject JobContext jobContext;

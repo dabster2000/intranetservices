@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.batch.monitoring;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -12,8 +13,9 @@ import java.io.StringWriter;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
-@ApplicationScoped
 @JBossLog
+@ApplicationScoped
+@ActivateRequestContext
 public class BatchJobTrackingService {
 
     @Inject
@@ -212,7 +214,7 @@ public class BatchJobTrackingService {
         em.merge(e);
     }
 
-    @Transactional(Transactional.TxType.REQUIRED)
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void appendDetails(long executionId, String message) {
         log.debugf("[BATCH-MONITOR] Appending details for execution %d: %s", executionId, message);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
@@ -261,28 +263,21 @@ public class BatchJobTrackingService {
 
     private BatchJobExecutionTracking findByExecutionIdForUpdate(long executionId) {
         try {
-            // Find the most recent record with this execution_id that hasn't ended yet
-            // This handles the case where execution IDs are reused after server restart
-            BatchJobExecutionTracking e = em.createQuery(
-                    "SELECT e FROM BatchJobExecutionTracking e " +
-                    "WHERE e.executionId = :id " +
-                    "AND e.endTime IS NULL " +
-                    "ORDER BY e.startTime DESC", 
-                    BatchJobExecutionTracking.class)
-                .setParameter("id", executionId)
-                .setLockMode(LockModeType.PESSIMISTIC_WRITE)
-                .setMaxResults(1)
-                .getSingleResult();
-
-            return e;
+            return em.createQuery(
+                            "SELECT e FROM BatchJobExecutionTracking e " +
+                                    "WHERE e.executionId = :id AND e.endTime IS NULL " +
+                                    "ORDER BY e.startTime DESC", BatchJobExecutionTracking.class)
+                    .setParameter("id", executionId)
+                    .setLockMode(LockModeType.PESSIMISTIC_WRITE)
+                    .setMaxResults(1)
+                    .getResultStream()
+                    .findFirst()
+                    .orElse(null);
         } catch (Exception ex) {
-            log.warnf("[BATCH-MONITOR] Failed to find/lock active tracking record for execution %d: %s", 
-                     executionId, ex.getMessage());
+            log.warnf("[BATCH-MONITOR] Failed to find/lock active tracking record for execution %d: %s",
+                    executionId, ex.getMessage());
             return null;
         }
     }
 
-    // Method removed - no longer needed since we always INSERT in onJobStart
-    // Previously used to check for existing records, but that caused data corruption
-    // when JBatch reused execution IDs after server restart
 }
