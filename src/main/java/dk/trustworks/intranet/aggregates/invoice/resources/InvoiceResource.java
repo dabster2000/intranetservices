@@ -132,8 +132,8 @@ public class InvoiceResource {
     }
 
     @PUT
-    @Path("/drafts")
-    public Invoice updateDraftInvoice(Invoice draftInvoice) {
+    @Path("/{invoiceuuid}")
+    public Invoice updateDraftInvoice(@PathParam("invoiceuuid") String invoiceuuid, Invoice draftInvoice) {
         System.out.println("InvoiceResource.updateDraftInvoice");
         System.out.println("draftInvoice = " + draftInvoice);
         return invoiceService.updateDraftInvoice(draftInvoice);
@@ -148,8 +148,8 @@ public class InvoiceResource {
     @POST
     @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
-        System.out.println("InvoiceResource.createInvoice");
-        System.out.println("draftInvoice = " + draftInvoice);
+        log.debug("InvoiceResource.createInvoice");
+        log.debugf("draftInvoice = " + draftInvoice);
         return invoiceService.createInvoice(draftInvoice);
     }
 

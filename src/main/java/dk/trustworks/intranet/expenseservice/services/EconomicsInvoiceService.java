@@ -125,7 +125,7 @@ public class EconomicsInvoiceService {
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 
         log.info("Creating manual customer invoice for number " + invoice.getInvoicenumber());
-        ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getSumWithTax(), contraAccount, date);
+        ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal(), contraAccount, date);
         log.debug("ManualCustomerInvoice text=" + manualCustomerInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
         List<ManualCustomerInvoice> manualCustomerInvoices = new ArrayList<>();
         manualCustomerInvoices.add(manualCustomerInvoice);

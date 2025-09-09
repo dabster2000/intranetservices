@@ -66,6 +66,7 @@ public class InvoiceGenerator {
     @Inject
     WorkService workService;
 
+    @Transactional
     public List<ProjectSummary> loadProjectSummaryByYearAndMonth(LocalDate month) {
         log.debug("InvoiceController.loadProjectSummaryByYearAndMonth");
         log.debug("month = " + month);
@@ -229,10 +230,11 @@ public class InvoiceGenerator {
                             User workAsUser = userService.findById(workFull.getWorkas(), true);
                             invoiceItemName = user.getFullname() + " (helped " + workAsUser.getFullname() + ")";
                         }
+                        int nextPos = invoice.getInvoiceitems().size() + 1;
                         InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,
                                 task.getName(),
                                 workFull.getRate(),
-                                0.0, invoice.uuid);
+                                0.0, nextPos, invoice.uuid);
                         invoiceItem.uuid = UUID.randomUUID().toString();
                         invoiceItemMap.put(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid(), invoiceItem);
                         invoice.invoiceitems.add(invoiceItem);
@@ -266,6 +268,9 @@ public class InvoiceGenerator {
 
         Invoice created = invoiceService.createDraftInvoice(invoice);
         log.info("Persisted draft invoice: " + created.getUuid());
+        // Invoke pricing to add CALCULATED lines immediately
+        Invoice priced = invoiceService.updateDraftInvoice(created);
+        log.info("Priced draft invoice: " + priced.getUuid());
         return created;
     }
 }

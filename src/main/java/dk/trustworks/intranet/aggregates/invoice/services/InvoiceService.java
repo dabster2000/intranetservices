@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcSer
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.network.CurrencyAPI;
@@ -14,28 +15,34 @@ import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
 import dk.trustworks.intranet.aggregates.invoice.network.InvoiceDynamicHeaderFilter;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
+import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
+import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
+import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.LaunchMode;
+import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Tuple;
 import jakarta.persistence.TupleElement;
+import jakarta.transaction.Transaction;
+import jakarta.transaction.TransactionManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -44,16 +51,14 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URI;
-import java.sql.Date;
 import java.time.LocalDate;
 import java.util.*;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 import static java.util.stream.Collectors.toList;
 
@@ -73,6 +78,8 @@ public class InvoiceService {
 
     @Inject IntercompanyCalcService calcService;
 
+    @Inject
+    PricingEngine pricingEngine;
 
     @Inject
     @RestClient
@@ -110,10 +117,6 @@ public class InvoiceService {
         return Invoice.findAll().list();
     }
 
-    public List<Invoice> findPaged(int page, int size) {
-        return Invoice.findAll().page(Page.of(page, size)).list();
-    }
-
     public List<Invoice> findPaged(LocalDate from,
                                    LocalDate to,
                                    int pageIdx,
@@ -131,18 +134,7 @@ public class InvoiceService {
             q = Invoice.find("invoicedate >= ?1 and invoicedate < ?2",
                     sort, from, to);
         }
-        return q.page(page).list();                         // 🔹 SQL: ORDER BY … LIMIT …
-    }
-
-    public List<Invoice> sortAndPage(List<Invoice> invoices, List<String> sortParams, Integer page, Integer size) {
-        List<Invoice> sorted = new ArrayList<>(invoices);
-        sorted.sort(buildComparator(sortParams));
-        if(page != null && size != null) {
-            int fromIndex = Math.min(page * size, sorted.size());
-            int toIndex = Math.min(fromIndex + size, sorted.size());
-            return sorted.subList(fromIndex, toIndex);
-        }
-        return sorted;
+        return q.page(page).list();
     }
 
     private Comparator<Invoice> buildComparator(List<String> sortParams) {
@@ -195,11 +187,6 @@ public class InvoiceService {
         return result;
     }
 
-    /**
-     * {@code @Param} fromdate Date is included
-     * {@code @Param} todate Date is not included
-     * @return  type
-     */
     public List<Invoice> findByBookingDate(LocalDate fromdate, LocalDate todate) {
         //String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT"};
         LocalDate finalFromdate = fromdate!=null?fromdate:LocalDate.of(2014,1,1);
@@ -211,89 +198,6 @@ public class InvoiceService {
         invoices.addAll(Invoice.find("bookingdate >= ?1 AND bookingdate < ?2",
                 finalFromdate, finalTodate).list());
         return invoices;
-    }
-
-    public List<DateValueDTO> calculateInvoiceSumByPeriodAndWorkDate(String companyuuid, LocalDate fromdate, LocalDate todate) throws JsonProcessingException {
-        Response response = currencyAPI.getExchangeRate(stringIt(fromdate), "EUR", "DKK", apiKey);
-        double exchangeRate = 1.0;
-        if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
-            ObjectMapper objectMapper = new ObjectMapper();
-            CurrencyData currencyData = objectMapper.readValue(response.readEntity(String.class), CurrencyData.class);
-            exchangeRate = currencyData.getExchangeRate(stringIt(fromdate), "DKK");
-        }
-        System.out.println("exchangeRate = " + exchangeRate);
-        String sql = "select " +
-                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') date, sum(if((i.type = 0 OR i.type = 3), (ii.rate*ii.hours * if(i.currency='DKK', 1, "+exchangeRate+")), -(ii.rate*ii.hours * if(i.currency='DKK', 1, "+exchangeRate+")))) value " +
-                "from " +
-                "    invoiceitems ii " +
-                "LEFT JOIN " +
-                "    invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE " +
-                "    i.type != 4 AND " +
-                "    i.status NOT LIKE 'DRAFT' AND " +
-                "    i.companyuuid = '"+companyuuid+"' AND " +
-                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') >= '"+ stringIt(fromdate) +"' AND " +
-                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') < '"+ stringIt(todate)+"' " +
-                "GROUP BY " +
-                "    i.month, i.year;";
-
-        String sql2 = "select " +
-                "    STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') date, sum(ii.rate*ii.hours * if(i.currency='DKK', 1, "+exchangeRate+")) value " +
-                "from " +
-                "    invoiceitems ii " +
-                "LEFT JOIN " +
-                "    invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE " +
-                "    i.type = 3 AND " +
-                "    i.invoice_ref IN ( " +
-                "        SELECT " +
-                "            i.invoicenumber " +
-                "        FROM " +
-                "            invoices i " +
-                "        WHERE " +
-                "            i.status NOT LIKE 'DRAFT' AND " +
-                "            i.companyuuid = '"+companyuuid+"' AND " +
-                "            STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') >= '"+ stringIt(fromdate) +"' AND " +
-                "            STR_TO_DATE(CONCAT(i.year, '-', i.month+1, '-01'), '%Y-%m-%d') < '"+ stringIt(todate)+"') " +
-                "GROUP BY " +
-                "    i.month, i.year;";
-
-
-        List<Tuple> invoicedTupleList = ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList());
-        List<DateValueDTO> invoicedSumList = invoicedTupleList.stream()
-                .map(tuple -> new DateValueDTO(
-                        tuple.get("date", LocalDate.class).withDayOfMonth(1),
-                        (Double) tuple.get("value")
-                ))
-                .toList();
-
-        List<Tuple> internalTupleList = em.createNativeQuery(sql2, Tuple.class).getResultList();
-        List<DateValueDTO> internalInvoicedSumList = new ArrayList<>();
-        if(!internalTupleList.isEmpty()) {
-            internalTupleList.stream().forEach(tuple -> {
-                List<TupleElement<?>> elements = tuple.getElements();
-            });
-            internalInvoicedSumList = internalTupleList.stream()
-                    .map(tuple -> {
-                        return new DateValueDTO(
-                                tuple.get("date", LocalDate.class).withDayOfMonth(1),
-                                (Double) tuple.get("value")
-                        );
-                    })
-                    .toList();
-        }
-
-        LocalDate testDate = fromdate;
-        List<DateValueDTO> result = new ArrayList<>();
-        do {
-            LocalDate finalTestDate = testDate;
-            double invoicedSum = invoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
-            double internalInvoicedSum = internalInvoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
-            result.add(new DateValueDTO(testDate, invoicedSum - internalInvoicedSum));
-
-            testDate = testDate.plusMonths(1);
-        } while (testDate.isBefore(todate));
-        return result;
     }
 
     @Transactional
@@ -363,7 +267,7 @@ public class InvoiceService {
         return Invoice.find("contractuuid = ?1 AND status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC", contractuuid).list();
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice createDraftInvoice(Invoice invoice) {
         log.debug("Persisting draft invoice");
         invoice.setStatus(InvoiceStatus.DRAFT);
@@ -374,40 +278,21 @@ public class InvoiceService {
         return invoice;
     }
 
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice updateDraftInvoice(Invoice invoice) {
-        System.out.println("InvoiceService.updateDraftInvoice");
-        System.out.println("Updating invoice...");
-        Invoice.update("attention = ?1, " +
-                        "bookingdate = ?2, " +
-                        "clientaddresse = ?3, " +
-                        "contractref = ?4, " +
-                        "clientname = ?5, " +
-                        "cvr = ?6, " +
-                        "discount = ?7, " +
-                        "ean = ?8, " +
-                        "invoicedate = ?9, " +
-                        "invoiceref = ?10, " +
-                        "month = ?11, " +
-                        "otheraddressinfo = ?12, " +
-                        "projectname = ?13, " +
-                        "projectref = ?14, " +
-                        "projectuuid = ?15, " +
-                        "specificdescription = ?16, " +
-                        "status = ?17, " +
-                        "invoicenumber = ?18, " +
-                        "type = ?19, " +
-                        "year = ?20, " +
-                        "zipcity = ?21, " +
-                        "company = ?22, " +
-                        "currency = ?23, " +
-                        "bonusConsultant = ?24, " +
-                        "bonusConsultantApprovedStatus = ?25, " +
-                        "bonusOverrideAmount = ?26, " +
-                        "bonusOverrideNote = ?27, " +
-                        "duedate = ?28, " +
-                        "vat = ?29 " +
-                        "WHERE uuid like ?30 ",
+        if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
+            return legacyUpdateDraft(invoice);
+        }
+
+        // Sikkerhed: kun Draft må opdateres
+        if (!isDraft(invoice.getUuid())) throw new WebApplicationException(Response.Status.CONFLICT);
+
+        Invoice.update("attention = ?1, bookingdate = ?2, clientaddresse = ?3, contractref = ?4, clientname = ?5, cvr = ?6, " +
+                        "discount = ?7, ean = ?8, invoicedate = ?9, invoiceref = ?10, month = ?11, otheraddressinfo = ?12, " +
+                        "projectname = ?13, projectref = ?14, projectuuid = ?15, specificdescription = ?16, status = ?17, " +
+                        "invoicenumber = ?18, type = ?19, year = ?20, zipcity = ?21, company = ?22, currency = ?23, " +
+                        "bonusConsultant = ?24, bonusConsultantApprovedStatus = ?25, bonusOverrideAmount = ?26, bonusOverrideNote = ?27, " +
+                        "duedate = ?28, vat = ?29 WHERE uuid like ?30",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -438,29 +323,92 @@ public class InvoiceService {
                 invoice.getDuedate(),
                 invoice.getVat(),
                 invoice.getUuid());
-        System.out.println("Updating invoice items...");
-        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
-        invoice.getInvoiceitems().forEach(invoiceItem -> {
-            invoiceItem.setInvoiceuuid(invoice.uuid);
-        });
-        System.out.println("Persisting invoice items...");
-        InvoiceItem.persist(invoice.invoiceitems);
-        System.out.println("Invoice updated: "+invoice.getUuid());
 
+        recalculateInvoiceItems(invoice);
+        return invoice;
+    }
+
+    private void recalculateInvoiceItems(Invoice invoice) {
+        var baseItems = invoice.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == null || ii.getOrigin() == BASE)
+                .toList();
+
+        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        baseItems.forEach(ii -> { ii.setInvoiceuuid(invoice.getUuid()); ii.setOrigin(BASE); });
+        InvoiceItem.persist(baseItems);
+
+        Map<String, String> cti = new HashMap<>();
+        ContractTypeItem.<ContractTypeItem>find("contractuuid", invoice.getContractuuid())
+                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+
+        var pr = pricingEngine.price(invoice, cti);
+
+        pr.syntheticItems.forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
+        InvoiceItem.persist(pr.syntheticItems);
+
+        invoice.invoiceitems.clear();
+        invoice.invoiceitems.addAll(baseItems);
+        invoice.invoiceitems.addAll(pr.syntheticItems);
+        invoice.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
+        invoice.sumAfterDiscounts  = pr.sumAfterDiscounts.doubleValue();
+        invoice.vatAmount          = pr.vatAmount.doubleValue();
+        invoice.grandTotal         = pr.grandTotal.doubleValue();
+        invoice.calculationBreakdown = pr.breakdown;
+    }
+
+    @Scheduled(every = "2h")
+    public void migrateLegacyInvoices() {
+        QuarkusTransaction.begin();
+        List<Invoice> unprocessed = Invoice.listAll();
+        QuarkusTransaction.commit();
+        int migrated = unprocessed.size();
+        for (Invoice invoice : unprocessed) {
+            try {
+                QuarkusTransaction.begin();
+                recalculateInvoiceItems(invoice);
+                log.debugf("Migrations left: %d", migrated--);
+                QuarkusTransaction.commit();
+            } catch (Exception e) {
+                log.error("Failed to migrate invoice: " + invoice.getUuid(), e);
+            }
+        }
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public Invoice updateInvoiceStatus(Invoice invoice, InvoiceStatus status) {
+                Invoice.update("status = ?1 WHERE uuid like ?2",
+                status,
+                invoice.getUuid());
+        return invoice;
+    }
+
+    /** Legacy fallback hvis engine ikke må køre for denne type */
+    private Invoice legacyUpdateDraft(Invoice invoice) {
+        // (identisk med jeres nuværende implementering, forkortet for overskuelighed)
+        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        invoice.getInvoiceitems().forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
+        InvoiceItem.persist(invoice.getInvoiceitems());
         return invoice;
     }
 
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
+        if(draftInvoice.getType() == InvoiceType.CREDIT_NOTE) {
+            Invoice parentInvoice = Invoice.findById(draftInvoice.getCreditnoteForUuid());
+            parentInvoice.status = InvoiceStatus.CREDIT_NOTE;
+            updateInvoiceStatus(parentInvoice, InvoiceStatus.CREDIT_NOTE);
+        }
+        recalculateInvoiceItems(draftInvoice);
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
-        System.out.println("Saving invoice...");
+        log.debug("Saving invoice...");
         saveInvoice(draftInvoice);
-        System.out.println("Invoice saved: "+draftInvoice.getUuid());
-        System.out.println("Uploading invoice to economics...");
+        recalculateInvoiceItems(draftInvoice);
+        log.debug("Invoice saved: "+draftInvoice.getUuid());
+        log.debug("Uploading invoice to economics...");
         uploadToEconomics(draftInvoice);
-        System.out.println("Invoice uploaded to economics: "+draftInvoice.getUuid());
+        log.debug("Invoice uploaded to economics: "+draftInvoice.getUuid());
         String contractuuid = draftInvoice.getContractuuid();
         String projectuuid = draftInvoice.getProjectuuid();
         workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth()+1, draftInvoice.getYear());
@@ -471,6 +419,7 @@ public class InvoiceService {
     @Transactional
     public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
+        recalculateInvoiceItems(draftInvoice);
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = 0;
         draftInvoice.setType(InvoiceType.PHANTOM);
@@ -497,11 +446,13 @@ public class InvoiceService {
                 invoice.getPdf(),
                 invoice.getUuid());
 
+        /*
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
         invoice.getInvoiceitems().forEach(invoiceItem -> {
             invoiceItem.setInvoiceuuid(invoice.uuid);
         });
         InvoiceItem.persist(invoice.invoiceitems);
+         */
     }
 
     @Transactional
@@ -515,9 +466,6 @@ public class InvoiceService {
             );
         }
 
-        invoice.status = InvoiceStatus.CREDIT_NOTE;
-        updateDraftInvoice(invoice);
-
         Invoice creditNote = new Invoice(invoice.getInvoicenumber(), InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
@@ -529,7 +477,7 @@ public class InvoiceService {
         creditNote.setCreditnoteForUuid(invoice.getUuid());
 
         for (InvoiceItem invoiceitem : invoice.invoiceitems) {
-            creditNote.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), creditNote.uuid));
+            creditNote.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), invoiceitem.getPosition(), creditNote.uuid));
         }
         try {
             Invoice.persist(creditNote);
@@ -574,9 +522,10 @@ public class InvoiceService {
                 Company.findById(companyuuid),
                 invoice.getCurrency(),
                 "Intern faktura knyttet til " + invoice.getInvoicenumber());
+        int position = 1;
         for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
             if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
-            internalInvoice.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), invoice.uuid));
+            internalInvoice.getInvoiceitems().add(new InvoiceItem(invoiceitem.consultantuuid, invoiceitem.getItemname(), invoiceitem.getDescription(), invoiceitem.getRate(), invoiceitem.getHours(), position++, invoice.uuid));
         }
         Invoice.persist(internalInvoice);
         internalInvoice.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));

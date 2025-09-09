@@ -257,3 +257,5 @@ event-topics:
   CREATE_USER_SALARY: user.salary.updates
   DELETE_USER_SALARY: user.salary.updates
   CREATE_BANK_INFO: user.status.updates
+pricingEngine:
+  enabled: true

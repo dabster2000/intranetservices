@@ -1,20 +1,21 @@
 package dk.trustworks.intranet.aggregates.invoice.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
 import java.util.UUID;
 
 /**
  * Created by hans on 08/07/2017.
  */
-@Data
-@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
+@Getter
+@Setter
 @Entity
 @Table(name = "invoiceitems")
 public class InvoiceItem extends PanacheEntityBase {
@@ -27,10 +28,27 @@ public class InvoiceItem extends PanacheEntityBase {
     public String description;
     public double rate;
     public double hours;
+    public int position;
     @JsonIgnore
     public String invoiceuuid;
 
+    @Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "origin")
+    public InvoiceItemOrigin origin = InvoiceItemOrigin.BASE;
+
+    @Column(name = "calculation_ref")
+    public String calculationRef;
+
+    @Column(name = "rule_id")
+    public String ruleId;
+
+    @Column(name = "label")
+    public String label;
+
     public InvoiceItem() {
+        if( this.uuid == null ) {
+            this.uuid = UUID.randomUUID().toString();
+        }
     }
 
     public InvoiceItem(String itemname, String description, double rate, double hours, String invoiceuuid) {
@@ -42,9 +60,20 @@ public class InvoiceItem extends PanacheEntityBase {
         this.invoiceuuid = invoiceuuid;
     }
 
-    public InvoiceItem(String useruuid, String itemname, String description, double rate, double hours, String invoiceuuid) {
+    public InvoiceItem(String useruuid, String itemname, String description, double rate, double hours, int position, String invoiceuuid) {
         this(itemname, description, rate, hours, invoiceuuid);
         this.consultantuuid = useruuid;
+        this.position = position;
     }
 
+    @Override
+    public String toString() {
+        return "InvoiceItem{" +
+                "uuid='" + uuid + '\'' +
+                ", itemname='" + itemname + '\'' +
+                ", rate=" + rate +
+                ", hours=" + hours +
+                ", origin=" + origin +
+                '}';
+    }
 }

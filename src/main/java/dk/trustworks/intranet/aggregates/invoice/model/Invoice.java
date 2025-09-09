@@ -6,32 +6,33 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
-import lombok.Data;
 import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
+import org.eclipse.microprofile.config.ConfigProvider;
 
 import java.time.LocalDate;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 
-import static dk.trustworks.intranet.contracts.model.enums.ContractType.*;
-
 /**
  * Created by hans on 08/07/2017.
  */
 
-@Data
-@EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
+@Getter
+@Setter
 @Entity
 @Table(name = "invoices")
 public class Invoice extends PanacheEntityBase {
@@ -109,6 +110,21 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "creditnote_for_uuid")
     public String creditnoteForUuid;
 
+    @Transient
+    public Double sumBeforeDiscounts;
+
+    @Transient
+    public Double sumAfterDiscounts;
+
+    @Transient
+    public Double vatAmount;
+
+    @Transient
+    public Double grandTotal;
+
+    @Transient
+    public List<CalculationBreakdownLine> calculationBreakdown;
+
     public Invoice() {
         this.invoiceitems = new LinkedList<>();
         this.errors = false;
@@ -161,40 +177,27 @@ public class Invoice extends PanacheEntityBase {
     }
 
     public double getSumNoTax() {
-        final double[] sumOfLineItems = {invoiceitems.stream().mapToDouble(value -> value.hours * value.rate).sum()};
-        if(contractType == null) System.out.println("uuid has no contract = " + uuid);
-        if(contractType.equals(SKI0217_2021)) {
-            ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
-                double keyDiscount = (sumOfLineItems[0] * (Double.parseDouble(contractTypeItem.getValue()) / 100.0));
-                double adminDiscount = ((sumOfLineItems[0] - keyDiscount) * 0.02);
-                sumOfLineItems[0] -= keyDiscount + adminDiscount;
-            });
-            sumOfLineItems[0] -= 2000;
-        }
-        if(contractType.equals(SKI0217_2025)) {
-            ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
-                double keyDiscount = (sumOfLineItems[0] * (Double.parseDouble(contractTypeItem.getValue()) / 100.0));
-                double adminDiscount = ((sumOfLineItems[0] - keyDiscount) * 0.04);
-                sumOfLineItems[0] -= keyDiscount + adminDiscount;
-            });
-        }
-        if(contractType.equals(SKI0215_2025)) {
-            ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().ifPresent(contractTypeItem -> {
-                double adminDiscount = ((sumOfLineItems[0]) * 0.04);
-                sumOfLineItems[0] -= adminDiscount;
-            });
-        }
-        if(discount > 0) sumOfLineItems[0] -= (sumOfLineItems[0] * (discount / 100.0));
-        return sumOfLineItems[0];
+        // Feature‑toggle: når Pricing Engine er slået til, returnér blot summen af linjer (ingen yderligere rabat)
+        boolean peEnabled = ConfigProvider.getConfig()
+                .getOptionalValue("pricingEngine.enabled", Boolean.class)
+                .orElse(false);
+
+        return invoiceitems.stream()
+                .mapToDouble(ii -> ii.hours * ii.rate)
+                .sum(); // Rabatter er allerede udtrykt som syntetiske linjer
+
     }
+
 
     public double getSumWithNoTaxInDKK(double exchangeRate) {
         if(getCurrency().equals("DKK")) return getSumNoTax();
         return getSumNoTax() * exchangeRate;
     }
 
-    public double getSumWithTax() {
-        return getSumNoTax() * ((getVat() / 100) + 1);
+    @Override
+    public String toString() {
+        return "Invoice{" +
+                "uuid='" + uuid + '\'' +
+                '}';
     }
-
 }

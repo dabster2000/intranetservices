@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.network.dto;
 
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
@@ -55,48 +56,62 @@ public class InvoiceDTO {
     }
 
     public InvoiceDTO(Invoice invoice) {
-        this(invoice.getType().name(),
-                new InvoiceFieldsDTO((invoice.getDiscount()>0.0?"%":"false"), false),
-                invoice.getCompany().getName() + "\n" +
-                        invoice.getCompany().getAddress() + "\n" +
-                        invoice.getCompany().getZipcode() + " " + invoice.getCompany().getCity() + ", "+invoice.getCompany().getCountry()+"\n" +
-                        "CVR: "+invoice.getCompany().getCvr()+"\n\n"+
-                        "Phone: "+invoice.getCompany().getPhone()+"\n"+
-                        "Email: "+invoice.getCompany().getEmail(),
-                invoice.getClientname()+"\n"+
-                        invoice.getClientaddresse()+"\n"+
-                        invoice.getZipcity()+"\n"+
-                        ((invoice.cvr!=null && !invoice.cvr.isEmpty())?"CVR: "+invoice.getCvr()+"\n":"")+
-                        ((invoice.ean!=null && !invoice.ean.isEmpty())?"EAN: "+invoice.getEan()+"\n":"")+
-                        ((invoice.attention!=null && !invoice.attention.isEmpty())?"ATT: "+invoice.getAttention()+"\n":""),
-                StringUtils.convertInvoiceNumberToString(invoice.invoicenumber),
-                invoice.getInvoicedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
-                invoice.getDuedate()!=null?
-                        invoice.getDuedate().format(DateTimeFormatter.ofPattern("dd. MMM yyyy")):
-                        invoice.getInvoicedate().plusMonths(1).format(DateTimeFormatter.ofPattern("dd. MMM yyyy")),
-                invoice.getDiscount(), invoice.getCurrency(), invoice.getVat(),
-                ((invoice.contractref!=null && !invoice.contractref.isEmpty())?invoice.getContractref()+"\n":"")+
-                        ((invoice.projectref!=null && !invoice.projectref.isEmpty())?invoice.getProjectref()+"\n":"")+
-                        ((invoice.specificdescription!=null && !invoice.specificdescription.isEmpty())?invoice.getSpecificdescription():""));
-        for (InvoiceItem invoiceItem : invoice.getInvoiceitems()) {
-            items.add(new InvoiceItemDTO(invoiceItem.itemname, invoiceItem.hours, invoiceItem.rate, invoiceItem.description));
-        }
-        Contract contract = Contract.findById(invoice.contractuuid);
-        if(contract != null && (contract.getContractType().equals(ContractType.SKI0217_2021) || contract.getContractType().equals(ContractType.SKI0217_2025) || contract.getContractType().equals(ContractType.SKI0215_2025))) { // null happens when invoice is an internal service invoice
-            ContractTypeItem contractTypeItem = contract.getContractTypeItems().stream().findAny().get();
-            double sumNoTax = invoice.getInvoiceitems().stream().mapToDouble(value -> value.hours * value.rate).sum();
-            double keyDiscount = (sumNoTax * (NumberUtils.parseDouble(contract.getContractTypeItems().stream().findAny().get().getValue()) / 100.0));
-            items.add(new InvoiceItemDTO(contractTypeItem.getValue() + "% " + contractTypeItem.getKey(), 1, -keyDiscount, ""));
-            double adminDiscount = ((sumNoTax - keyDiscount) * 0.02);
-            items.add(new InvoiceItemDTO("2% SKI administrationsgebyr", 1, -adminDiscount, ""));
-            items.add(new InvoiceItemDTO("Faktureringsgebyr", 1, -2000, ""));
-        }
-        terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "+invoice.getCompany().getRegnr()+", account number "+invoice.getCompany().getAccount()+"\n ";
-        if(invoice.getCompany().getUuid().equals("44592d3b-2be5-4b29-bfaf-4fafc60b0fa3")) {
-            terms += "IBAN: DK1054700004058023, SWIFT: NYKBDKKK";
-        } else {
-            terms += "IBAN: DK7954700003965795, SWIFT: NYKBDKKK";
-        }
+        // Detect if Pricing Engine has produced synthetic discount lines
+        boolean hasSyntheticLines = invoice.getInvoiceitems().stream()
+                .anyMatch(ii -> ii.getOrigin() != null
+                        && ii.getOrigin() == InvoiceItemOrigin.CALCULATED);
+
+        // When synthetic lines exist, we must not also use the API-level "Discounts" row
+        String discountsFieldMode = hasSyntheticLines ? "false"
+                : (invoice.getDiscount() > 0.0 ? "%" : "false");
+        double discountsValue = hasSyntheticLines ? 0.0 : invoice.getDiscount();
+
+        this.header = invoice.getType().name();
+        this.fields  = new InvoiceFieldsDTO(discountsFieldMode, false); // tax defaults to "%", shipping disabled
+        this.currency = invoice.getCurrency();
+        this.tax = dk.trustworks.intranet.utils.NumberUtils.convertDoubleToInt(invoice.getVat());
+
+        this.from = invoice.getCompany().getName() + "\n" +
+                invoice.getCompany().getAddress() + "\n" +
+                invoice.getCompany().getZipcode() + " " + invoice.getCompany().getCity() + ", " + invoice.getCompany().getCountry() + "\n" +
+                "CVR: " + invoice.getCompany().getCvr() + "\n\n" +
+                "Phone: " + invoice.getCompany().getPhone() + "\n" +
+                "Email: " + invoice.getCompany().getEmail();
+
+        this.to = invoice.getClientname() + "\n" +
+                invoice.getClientaddresse() + "\n" +
+                invoice.getZipcity() + "\n" +
+                ((invoice.getCvr() != null && !invoice.getCvr().isEmpty()) ? "CVR: " + invoice.getCvr() + "\n" : "") +
+                ((invoice.getEan() != null && !invoice.getEan().isEmpty()) ? "EAN: " + invoice.getEan() + "\n" : "") +
+                ((invoice.getAttention() != null && !invoice.getAttention().isEmpty()) ? "ATT: " + invoice.getAttention() + "\n" : "");
+
+        this.number = dk.trustworks.intranet.aggregates.invoice.utils.StringUtils.convertInvoiceNumberToString(invoice.invoicenumber);
+        this.date   = invoice.getInvoicedate().format(java.time.format.DateTimeFormatter.ofPattern("dd. MMM yyyy"));
+        this.due_date = (invoice.getDuedate() != null
+                ? invoice.getDuedate()
+                : invoice.getInvoicedate().plusMonths(1))
+                .format(java.time.format.DateTimeFormatter.ofPattern("dd. MMM yyyy"));
+
+        // IMPORTANT: set API-level discounts according to the above switch
+        this.discounts = discountsValue;
+
+        this.notes = ((invoice.getContractref() != null && !invoice.getContractref().isEmpty()) ? invoice.getContractref() + "\n" : "") +
+                ((invoice.getProjectref() != null  && !invoice.getProjectref().isEmpty())  ? invoice.getProjectref()  + "\n" : "") +
+                ((invoice.getSpecificdescription() != null && !invoice.getSpecificdescription().isEmpty()) ? invoice.getSpecificdescription() : "");
+
+        // Line items (base + synthetic already in the entity)
+        invoice.getInvoiceitems().stream()
+                .sorted(java.util.Comparator.comparingInt(dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem::getPosition)
+                        .thenComparing(ii -> ii.getItemname() == null ? "" : ii.getItemname(), String::compareToIgnoreCase)
+                        .thenComparing(dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem::getUuid))
+                .forEach(ii -> items.add(new InvoiceItemDTO(
+                        ii.getItemname(), ii.getHours(), ii.getRate(), ii.getDescription())));
+
+        this.terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "
+                + invoice.getCompany().getRegnr() + ", account number " + invoice.getCompany().getAccount() + "\n "
+                + (invoice.getCompany().getUuid().equals("44592d3b-2be5-4b29-bfaf-4fafc60b0fa3")
+                ? "IBAN: DK1054700004058023, SWIFT: NYKBDKKK"
+                : "IBAN: DK7954700003965795, SWIFT: NYKBDKKK");
     }
 
     public String getHeader() {
@@ -257,7 +272,7 @@ public class InvoiceDTO {
                 ", date='" + date + '\'' +
                 ", payment_terms='" + payment_terms + '\'' +
                 ", due_date='" + due_date + '\'' +
-                ", items=" + items +
+                ", items=" + items.size() +
                 ", discounts=" + discounts +
                 ", tax=" + tax +
                 ", shipping=" + shipping +

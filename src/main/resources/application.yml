@@ -270,3 +270,5 @@ dk:
           network:
             InvoiceAPI/mp-rest/url: https://invoice-generator.com
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
+pricingEngine:
+  enabled: true
