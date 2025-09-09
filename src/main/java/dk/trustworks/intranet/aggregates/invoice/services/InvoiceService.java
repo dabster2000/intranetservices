@@ -29,7 +29,6 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.panache.common.Page;
@@ -39,10 +38,7 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.Tuple;
-import jakarta.persistence.TupleElement;
-import jakarta.transaction.Transaction;
-import jakarta.transaction.TransactionManager;
+import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -50,6 +46,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
+import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -135,36 +132,6 @@ public class InvoiceService {
                     sort, from, to);
         }
         return q.page(page).list();
-    }
-
-    private Comparator<Invoice> buildComparator(List<String> sortParams) {
-        if(sortParams == null || sortParams.isEmpty()) {
-            return Comparator.comparing(Invoice::getInvoicedate).reversed();
-        }
-        Comparator<Invoice> comparator = null;
-        for(String param : sortParams) {
-            String[] parts = param.split(",");
-            String field = parts[0];
-            String dir = parts.length > 1 ? parts[1] : "asc";
-            Comparator<Invoice> c = switch(field) {
-                case "invoicenumber" -> Comparator.comparing(Invoice::getInvoicenumber);
-                case "uuid" -> Comparator.comparing(Invoice::getUuid);
-                case "clientname" -> Comparator.comparing(i -> i.clientname.toLowerCase());
-                case "projectname" -> Comparator.comparing(i -> Optional.ofNullable(i.projectname).orElse("").toLowerCase());
-                case "sumnotax" -> Comparator.comparingDouble(Invoice::getSumNoTax);
-                case "type" -> Comparator.comparing(i -> i.getType().name());
-                case "invoicedate" -> Comparator.comparing(Invoice::getInvoicedate);
-                case "bookingdate" -> Comparator.comparing(Invoice::getBookingdate);
-                default -> {
-                    log.errorf("Unsupported sort field: %s", field);
-                    throw new WebApplicationException(Response.status(400)
-                            .entity(Map.of("error", "Unsupported sort field: " + field)).build());
-                }
-            };
-            if("desc".equalsIgnoreCase(dir)) c = c.reversed();
-            comparator = comparator == null ? c : comparator.thenComparing(c);
-        }
-        return comparator != null ? comparator : Comparator.comparing(Invoice::getInvoicedate).reversed();
     }
 
     public long countInvoices() {
@@ -280,7 +247,7 @@ public class InvoiceService {
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice updateDraftInvoice(Invoice invoice) {
-        if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
+        if (invoice.getType() == InvoiceType.CREDIT_NOTE || invoice.getType() == InvoiceType.INTERNAL) {
             return legacyUpdateDraft(invoice);
         }
 
@@ -356,7 +323,7 @@ public class InvoiceService {
         invoice.calculationBreakdown = pr.breakdown;
     }
 
-    @Scheduled(every = "2h")
+    @Scheduled(every = "24h")
     public void migrateLegacyInvoices() {
         QuarkusTransaction.begin();
         List<Invoice> unprocessed = Invoice.listAll();
@@ -391,20 +358,25 @@ public class InvoiceService {
         return invoice;
     }
 
+    @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
+        draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
         if(draftInvoice.getType() == InvoiceType.CREDIT_NOTE) {
             Invoice parentInvoice = Invoice.findById(draftInvoice.getCreditnoteForUuid());
+            clearBonusFields(parentInvoice);
+            clearBonusFields(draftInvoice);
+            updateInvoiceBonusStatus(parentInvoice);
             parentInvoice.status = InvoiceStatus.CREDIT_NOTE;
             updateInvoiceStatus(parentInvoice, InvoiceStatus.CREDIT_NOTE);
         }
-        recalculateInvoiceItems(draftInvoice);
+
+        if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE && draftInvoice.getType() != InvoiceType.INTERNAL)
+            recalculateInvoiceItems(draftInvoice);
         draftInvoice.setStatus(InvoiceStatus.CREATED);
-        draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         log.debug("Saving invoice...");
         saveInvoice(draftInvoice);
-        recalculateInvoiceItems(draftInvoice);
         log.debug("Invoice saved: "+draftInvoice.getUuid());
         log.debug("Uploading invoice to economics...");
         uploadToEconomics(draftInvoice);
@@ -414,6 +386,27 @@ public class InvoiceService {
         workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth()+1, draftInvoice.getYear());
 
         return draftInvoice;
+    }
+
+    private static void clearBonusFields(Invoice parentInvoice) {
+        parentInvoice.setBonusConsultant(null);
+        parentInvoice.setBonusOverrideAmount(0);
+        parentInvoice.setBonusOverrideNote(null);
+        parentInvoice.setBonusConsultantApprovedStatus(SalesApprovalStatus.PENDING);
+    }
+
+    @Transactional
+    public void updateInvoiceBonusStatus(@NotNull Invoice invoice) {
+        Invoice.update("bonusConsultant = ?1, " +
+                        "bonusOverrideAmount = ?2, " +
+                        "bonusOverrideNote = ?3, " +
+                        "bonusConsultantApprovedStatus = ?4 " +
+                        "WHERE uuid like ?5",
+                invoice.getBonusConsultant(),
+                invoice.getBonusOverrideAmount(),
+                invoice.getBonusOverrideNote(),
+                invoice.getBonusConsultantApprovedStatus(),
+                invoice.getUuid());
     }
 
     @Transactional
@@ -445,14 +438,6 @@ public class InvoiceService {
                 invoice.getInvoicenumber(),
                 invoice.getPdf(),
                 invoice.getUuid());
-
-        /*
-        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
-        invoice.getInvoiceitems().forEach(invoiceItem -> {
-            invoiceItem.setInvoiceuuid(invoice.uuid);
-        });
-        InvoiceItem.persist(invoice.invoiceitems);
-         */
     }
 
     @Transactional

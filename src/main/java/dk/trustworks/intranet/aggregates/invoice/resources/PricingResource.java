@@ -20,11 +20,18 @@ public class PricingResource {
 
     @Inject PricingEngine pricingEngine;
 
+    @GET
+    @Path("/preview/{invoiceuuid}")
+    public Response preview(@PathParam("invoiceuuid") String invoiceuuid) {
+        return preview(Invoice.findById(invoiceuuid));
+    }
+
+
     @POST
     @Path("/preview")
     public Response preview(Invoice draft) {
         // Bypass for kreditnota
-        if (draft.getType() != null && draft.getType().name().equals("CREDIT_NOTE")) {
+        if (draft.getType() != null && (draft.getType().name().equals("CREDIT_NOTE") || draft.getType().name().equals("INTERNAL"))) {
             return Response.ok(draft).build();
         }
         Map<String, String> cti = new HashMap<>();

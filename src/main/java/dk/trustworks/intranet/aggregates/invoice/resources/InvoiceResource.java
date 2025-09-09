@@ -214,6 +214,12 @@ public class InvoiceResource {
         invoiceService.updateInvoiceStatus(invoiceuuid, SalesApprovalStatus.valueOf(bonusStatus));
     }
 
+    @PUT
+    @Path("/{invoiceuuid}/bonusstatus")
+    public void updateInvoiceStatus(Invoice invoice) {
+        invoiceService.updateInvoiceBonusStatus(invoice);
+    }
+
     @GET
     @Path("/notes")
     public InvoiceNote getInvoiceNote(@QueryParam("contractuuid") String contractuuid, @QueryParam("projectuuid") String projectuuid, @QueryParam("month") String month) {
