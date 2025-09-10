@@ -92,9 +92,6 @@ public class InvoiceService {
     EconomicsInvoiceService economicsInvoiceService;
 
     @Inject
-    AvailabilityService availabilityService;
-
-    @Inject
     JPAStreamer jpaStreamer;
     @Inject
     WorkService workService;
@@ -588,10 +585,12 @@ public class InvoiceService {
                 0.0, month.getYear(), month.getMonthValue(),
                 toCompany.getName(), toCompany.getAddress(), "",
                 toCompany.getZipcode(), "", toCompany.getCvr(), "Tobias Kjølsen",
-                month.plusMonths(1).withDayOfMonth(1).minusDays(1),
-                month.plusMonths(1).withDayOfMonth(1).minusDays(1).plusMonths(1),
+                LocalDate.of(2025, 6, 30),
+                LocalDate.of(2025, 7, 30),
+                //month.plusMonths(1).withDayOfMonth(1).minusDays(1),
+                //month.plusMonths(1).withDayOfMonth(1).minusDays(1).plusMonths(1),
                 "", "", ContractType.PERIOD, fromCompany, "DKK",
-                "Intern faktura knyttet til " + month.getMonth().name());
+                "Intern faktura knyttet til " + month.getMonth().name() + " " + month.getYear() + " fra " + fromCompany.getName() + " til " + toCompany.getName());
 
         invoice.persistAndFlush();
 

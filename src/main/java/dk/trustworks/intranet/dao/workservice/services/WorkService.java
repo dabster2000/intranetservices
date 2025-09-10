@@ -42,8 +42,6 @@ public class WorkService {
 
     @Inject
     EntityManager em;
-    @Inject
-    ProjectService projectService;
 
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();

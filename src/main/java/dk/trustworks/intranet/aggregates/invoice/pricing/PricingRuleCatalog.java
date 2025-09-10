@@ -37,10 +37,34 @@ public class PricingRuleCatalog {
     }
 
     public RuleSet select(ContractType contractType, LocalDate invoiceDate) {
+        // Existing rule list for the contract (may be empty)
         List<RuleStep> base = rulesByType.getOrDefault(contractType, List.of());
+
+        // Ensure a GENERAL_DISCOUNT_PERCENT step exists exactly once for ALL contracts
+        boolean hasGeneral = base.stream()
+                .anyMatch(s -> s.type == RuleStepType.GENERAL_DISCOUNT_PERCENT);
+        if (!hasGeneral) {
+            List<RuleStep> tmp = new ArrayList<>(base);
+            // Priority late in the pipeline so specific contract rules run first
+            tmp.add(step(
+                    "general-fallback",
+                    "Generel rabat",
+                    RuleStepType.GENERAL_DISCOUNT_PERCENT,
+                    StepBase.CURRENT_SUM,
+                    null,   // percent comes from draft.getDiscount()
+                    null,   // amount unused for this rule type
+                    null,   // no param key, uses draft.getDiscount()
+                    9000    // low precedence number = runs late
+            ));
+            base = tmp;
+        }
+
         RuleSet rs = new RuleSet();
         rs.contractType = contractType;
-        rs.steps = base.stream().filter(s -> s.isActiveOn(invoiceDate)).sorted(Comparator.comparingInt(s -> s.priority)).toList();
+        rs.steps = base.stream()
+                .filter(s -> s.isActiveOn(invoiceDate))
+                .sorted(Comparator.comparingInt(s -> s.priority))
+                .toList();
         return rs;
     }
 
