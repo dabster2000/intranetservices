@@ -251,8 +251,7 @@ public class InvoiceService {
             return legacyUpdateDraft(invoice);
         }
 
-        // Sikkerhed: kun Draft må opdateres
-        if (!isDraft(invoice.getUuid())) throw new WebApplicationException(Response.Status.CONFLICT);
+        if (invoice.getStatus() != InvoiceStatus.DRAFT) throw new WebApplicationException(Response.Status.CONFLICT);
 
         Invoice.update("attention = ?1, bookingdate = ?2, clientaddresse = ?3, contractref = ?4, clientname = ?5, cvr = ?6, " +
                         "discount = ?7, ean = ?8, invoicedate = ?9, invoiceref = ?10, month = ?11, otheraddressinfo = ?12, " +
@@ -299,6 +298,8 @@ public class InvoiceService {
         var baseItems = invoice.getInvoiceitems().stream()
                 .filter(ii -> ii.getOrigin() == null || ii.getOrigin() == BASE)
                 .toList();
+        System.out.print("PRE: ");
+        baseItems.forEach(System.out::println);
 
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
         baseItems.forEach(ii -> { ii.setInvoiceuuid(invoice.getUuid()); ii.setOrigin(BASE); });
@@ -321,9 +322,11 @@ public class InvoiceService {
         invoice.vatAmount          = pr.vatAmount.doubleValue();
         invoice.grandTotal         = pr.grandTotal.doubleValue();
         invoice.calculationBreakdown = pr.breakdown;
+        System.out.print("DONE: ");
+        invoice.getInvoiceitems().forEach(System.out::println);
     }
 
-    @Scheduled(every = "24h")
+    //@Scheduled(every = "24h")
     public void migrateLegacyInvoices() {
         QuarkusTransaction.begin();
         List<Invoice> unprocessed = Invoice.listAll();

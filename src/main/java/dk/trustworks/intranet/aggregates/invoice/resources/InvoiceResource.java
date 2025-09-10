@@ -136,6 +136,12 @@ public class InvoiceResource {
     public Invoice updateDraftInvoice(@PathParam("invoiceuuid") String invoiceuuid, Invoice draftInvoice) {
         System.out.println("InvoiceResource.updateDraftInvoice");
         System.out.println("draftInvoice = " + draftInvoice);
+        System.out.print("INCOMING: ");
+        draftInvoice.invoiceitems.forEach(System.out::println);
+        if (draftInvoice.getUuid() != null && !invoiceuuid.equals(draftInvoice.getUuid())) {
+            throw new WebApplicationException("Path and body uuid mismatch", Response.Status.BAD_REQUEST);
+        }
+        draftInvoice.setUuid(invoiceuuid);
         return invoiceService.updateDraftInvoice(draftInvoice);
     }
 
