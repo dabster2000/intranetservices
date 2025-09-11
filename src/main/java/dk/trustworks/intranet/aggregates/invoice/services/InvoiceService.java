@@ -4,7 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.speedment.jpastreamer.application.JPAStreamer;
 import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService;
-import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
+import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
@@ -30,15 +30,12 @@ import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
-import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.LaunchMode;
-import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -90,6 +87,8 @@ public class InvoiceService {
 
     @Inject
     EconomicsInvoiceService economicsInvoiceService;
+
+    @Inject InvoiceBonusService bonusService;
 
     @Inject
     JPAStreamer jpaStreamer;
@@ -288,6 +287,7 @@ public class InvoiceService {
                 invoice.getUuid());
 
         recalculateInvoiceItems(invoice);
+        bonusService.recalcForInvoice(invoice.getUuid());
         return invoice;
     }
 
@@ -323,24 +323,6 @@ public class InvoiceService {
         invoice.getInvoiceitems().forEach(System.out::println);
     }
 
-    //@Scheduled(every = "24h")
-    public void migrateLegacyInvoices() {
-        QuarkusTransaction.begin();
-        List<Invoice> unprocessed = Invoice.listAll();
-        QuarkusTransaction.commit();
-        int migrated = unprocessed.size();
-        for (Invoice invoice : unprocessed) {
-            try {
-                QuarkusTransaction.begin();
-                recalculateInvoiceItems(invoice);
-                log.debugf("Migrations left: %d", migrated--);
-                QuarkusTransaction.commit();
-            } catch (Exception e) {
-                log.error("Failed to migrate invoice: " + invoice.getUuid(), e);
-            }
-        }
-    }
-
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice updateInvoiceStatus(Invoice invoice, InvoiceStatus status) {
                 Invoice.update("status = ?1 WHERE uuid like ?2",
@@ -371,8 +353,10 @@ public class InvoiceService {
             updateInvoiceStatus(parentInvoice, InvoiceStatus.CREDIT_NOTE);
         }
 
-        if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE && draftInvoice.getType() != InvoiceType.INTERNAL)
+        if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE && draftInvoice.getType() != InvoiceType.INTERNAL) {
             recalculateInvoiceItems(draftInvoice);
+            bonusService.recalcForInvoice(draftInvoice.getUuid());
+        }
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         log.debug("Saving invoice...");
@@ -413,6 +397,7 @@ public class InvoiceService {
     public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         recalculateInvoiceItems(draftInvoice);
+        bonusService.recalcForInvoice(draftInvoice.getUuid());
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.invoicenumber = 0;
         draftInvoice.setType(InvoiceType.PHANTOM);

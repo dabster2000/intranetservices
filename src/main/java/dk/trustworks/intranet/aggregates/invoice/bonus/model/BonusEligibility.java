@@ -1,0 +1,45 @@
+package dk.trustworks.intranet.aggregates.invoice.bonus.model;
+
+import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import jakarta.persistence.*;
+import lombok.Getter; import lombok.Setter;
+
+import java.time.LocalDate;
+import java.util.UUID;
+
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+
+@Getter @Setter
+@Entity
+@Table(name = "invoice_bonus_eligibility")
+@Schema(
+        name = "BonusEligibility",
+        description = "Whitelist for brugere, der må self-assign bonus på fakturaer i en given periode."
+)
+public class BonusEligibility extends PanacheEntityBase {
+
+    @Id
+    @Schema(description = "Eligibility UUID", example = "55555555-5555-5555-5555-555555555555", readOnly = true)
+    public String uuid;
+
+    @Column(name="useruuid", nullable=false, unique=true, length=36)
+    @Schema(description = "Bruger UUID", example = "11111111-1111-1111-1111-111111111111")
+    public String useruuid;
+
+    @Column(name="can_self_assign", nullable=false)
+    @Schema(description = "Må brugeren selvtilføje bonus?", example = "true")
+    public boolean canSelfAssign;
+
+    @Column(name="active_from", nullable=false)
+    @Schema(description = "Gyldig fra (inklusiv)", example = "2025-01-01")
+    public LocalDate activeFrom = LocalDate.of(2000,1,1);
+
+    @Column(name="active_to", nullable=false)
+    @Schema(description = "Gyldig til (inklusiv)", example = "2999-12-31")
+    public LocalDate activeTo = LocalDate.of(2999,12,31);
+
+    @PrePersist
+    public void prePersist() {
+        if (uuid == null) uuid = UUID.randomUUID().toString();
+    }
+}
