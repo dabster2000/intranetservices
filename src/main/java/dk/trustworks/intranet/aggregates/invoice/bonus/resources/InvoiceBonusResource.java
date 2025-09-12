@@ -2,7 +2,8 @@
 package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
-import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus.ShareType;
+import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
+import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -11,7 +12,7 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-
+import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.ParameterIn;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
@@ -21,26 +22,22 @@ import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
-import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
-import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+// ... OpenAPI imports (som i din eksisterende fil) ...
 
+import java.time.LocalDate;
 import java.util.List;
 
-@Tag(
-        name = "invoice-bonuses",
-        description = "Administration af bonusser pr. faktura. Understøtter flere bonusser pr. faktura, self-assign (whitelist) og godkendelsesflow."
-)
 @Path("/invoices/{invoiceuuid}/bonuses")
 @RequestScoped
-@SecurityRequirement(name="jwt")
+@RolesAllowed({"SYSTEM"})
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class InvoiceBonusResource {
 
     @Inject InvoiceBonusService service;
+    @Inject JsonWebToken jwt;
 
     @GET
-    @RolesAllowed({"SYSTEM","FINANCE","SALES"})
     @Operation(
             operationId = "listInvoiceBonuses",
             summary = "List bonusser for en faktura",
@@ -77,9 +74,9 @@ public class InvoiceBonusResource {
             ) String useruuid,
             @Schema(
                     description = "Type af andel: procent (0-100) eller fast beløb i fakturaens valuta",
-                    implementation = ShareType.class,
+                    implementation = InvoiceBonus.ShareType.class,
                     enumeration = {"PERCENT","AMOUNT"}
-            ) ShareType shareType,
+            ) InvoiceBonus.ShareType shareType,
             @Schema(
                     description = "Hvis PERCENT: værdi i [0;100]. Hvis AMOUNT: fast beløb i fakturaens valuta.",
                     example = "10.0"
@@ -90,10 +87,8 @@ public class InvoiceBonusResource {
             ) String note
     ) {}
 
-    /** Konsulenten selv (whitelistet) kan selvtilføje sig. */
     @POST
     @Path("/self")
-    @RolesAllowed({"SYSTEM","CONSULTANT"})
     @Transactional
     @Operation(
             operationId = "selfAssignInvoiceBonus",
@@ -161,15 +156,13 @@ public class InvoiceBonusResource {
         return Response.status(Response.Status.CREATED).entity(ib).build();
     }
 
-    /** Admin kan tilføje hvem som helst. */
     @POST
-    @RolesAllowed({"SYSTEM","FINANCE","SALES"})
     @Transactional
     @Operation(
             operationId = "adminAddInvoiceBonus",
             summary = "Tilføj bonus (admin)",
             description = """
-            Admin-/Finance-/Sales-tilføjelse af bonus til vilkårlig bruger. Kræver 'x-user-uuid' header med den handlendes UUID.
+            Admin-/Finance-/Sales-tilføjelse af bonus til vilkårlig bruger. Kræver 'X-Requested-By' header med den handlendes UUID.
             Validerer bl.a. at kombinationen (invoiceuuid,useruuid) ikke allerede findes og at procent-sum ikke overskrider 100%%.
             """
     )
@@ -203,13 +196,13 @@ public class InvoiceBonusResource {
             @PathParam("invoiceuuid") String invoiceuuid,
             CreateBonusDTO dto,
             @Parameter(
-                    name = "x-user-uuid",
+                    name = "X-Requested-By",
                     in = ParameterIn.HEADER,
                     required = true,
                     description = "UUID for den bruger, der foretager handlingen (admin/finance/sales)",
                     example = "22222222-2222-2222-2222-222222222222"
             )
-            @HeaderParam("x-user-uuid") String actingUser) {
+            @HeaderParam("X-Requested-By") String actingUser) {
         var ib = service.addAdmin(invoiceuuid, dto.useruuid(), actingUser, dto.shareType(), dto.shareValue(), dto.note());
         return Response.status(Response.Status.CREATED).entity(ib).build();
     }
@@ -217,9 +210,9 @@ public class InvoiceBonusResource {
     public record UpdateBonusDTO(
             @Schema(
                     description = "Ny type af andel",
-                    implementation = ShareType.class,
+                    implementation = InvoiceBonus.ShareType.class,
                     enumeration = {"PERCENT","AMOUNT"}
-            ) ShareType shareType,
+            ) InvoiceBonus.ShareType shareType,
             @Schema(
                     description = "Ny værdi: [0;100] for PERCENT ellers fast beløb i fakturaens valuta",
                     example = "12.5"
@@ -232,7 +225,6 @@ public class InvoiceBonusResource {
 
     @PUT
     @Path("/{bonusuuid}")
-    @RolesAllowed({"SYSTEM","FINANCE","SALES"})
     @Transactional
     @Operation(
             operationId = "updateInvoiceBonus",
@@ -261,109 +253,63 @@ public class InvoiceBonusResource {
 
     @POST
     @Path("/{bonusuuid}/approve")
-    @RolesAllowed({"SYSTEM","FINANCE"})
     @Transactional
-    @Operation(
-            operationId = "approveInvoiceBonus",
-            summary = "Godkend bonus",
-            description = "Sætter status=APPROVED. Kræver FINANCE eller SYSTEM."
-    )
-    @APIResponses({
-            @APIResponse(responseCode = "204", description = "Godkendt"),
-            @APIResponse(responseCode = "404", description = "Bonus ikke fundet"),
-            @APIResponse(responseCode = "401", description = "Uautoriseret"),
-            @APIResponse(responseCode = "403", description = "Ingen adgang")
-    })
-    public void approve(
-            @Parameter(
-                    name = "bonusuuid",
-                    in = ParameterIn.PATH,
-                    required = true,
-                    description = "UUID for bonusrækken",
-                    example = "33333333-3333-3333-3333-333333333333"
-            )
-            @PathParam("bonusuuid") String bonusuuid,
-            @Parameter(
-                    name = "x-user-uuid",
-                    in = ParameterIn.HEADER,
-                    required = true,
-                    description = "UUID for godkenderen",
-                    example = "44444444-4444-4444-4444-444444444444"
-            )
-            @HeaderParam("x-user-uuid") String approver) {
-        service.approve(bonusuuid, approver);
+    public void approve(@PathParam("bonusuuid") String bonusuuid,
+                        @HeaderParam("X-Requested-By") String approver) {
+        String resolved = (approver != null && !approver.isBlank())
+                ? approver
+                : (jwt.containsClaim("uuid") ? jwt.getClaim("uuid") : jwt.getSubject());
+        if (resolved == null || resolved.isBlank())
+            throw new WebApplicationException(Response.Status.UNAUTHORIZED);
+        service.approve(bonusuuid, resolved);
     }
 
     @POST
     @Path("/{bonusuuid}/reject")
-    @RolesAllowed({"SYSTEM","FINANCE"})
     @Transactional
-    @Operation(
-            operationId = "rejectInvoiceBonus",
-            summary = "Afvis bonus",
-            description = "Sætter status=REJECTED med en forklarende note i request body (text/plain). Kræver FINANCE eller SYSTEM."
-    )
-    @RequestBody(
-            required = false,
-            content = @Content(
-                    mediaType = "text/plain",
-                    schema = @Schema(
-                            description = "Begrundelse for afvisning",
-                            example = "Afslås: mangler opfyldte kriterier"
-                    )
-            )
-    )
-    @APIResponses({
-            @APIResponse(responseCode = "204", description = "Afvist"),
-            @APIResponse(responseCode = "404", description = "Bonus ikke fundet"),
-            @APIResponse(responseCode = "401", description = "Uautoriseret"),
-            @APIResponse(responseCode = "403", description = "Ingen adgang")
-    })
-    public void reject(
-            @Parameter(
-                    name = "bonusuuid",
-                    in = ParameterIn.PATH,
-                    required = true,
-                    description = "UUID for bonusrækken",
-                    example = "33333333-3333-3333-3333-333333333333"
-            )
-            @PathParam("bonusuuid") String bonusuuid,
-            @Parameter(
-                    name = "x-user-uuid",
-                    in = ParameterIn.HEADER,
-                    required = true,
-                    description = "UUID for godkenderen",
-                    example = "44444444-4444-4444-4444-444444444444"
-            )
-            @HeaderParam("x-user-uuid") String approver,
-            String note) {
-        service.reject(bonusuuid, approver, note);
+    public void reject(@PathParam("bonusuuid") String bonusuuid,
+                       @HeaderParam("X-Requested-By") String approver,
+                       String note) {
+        String resolved = (approver != null && !approver.isBlank())
+                ? approver
+                : (jwt.containsClaim("uuid") ? jwt.getClaim("uuid") : jwt.getSubject());
+        if (resolved == null || resolved.isBlank())
+            throw new WebApplicationException(Response.Status.UNAUTHORIZED);
+        service.reject(bonusuuid, resolved, note);
+    }
+
+    // ------------------- NYT: linjevalg pr. bonus -------------------
+
+    public record LineDTO(String invoiceitemuuid, double percentage) {}
+
+    @GET
+    @Path("/{bonusuuid}/lines")
+    public List<InvoiceBonusLine> getLines(@PathParam("bonusuuid") String bonusuuid) {
+        return service.listLines(bonusuuid);
+    }
+
+    @PUT
+    @Path("/{bonusuuid}/lines")
+    @Transactional
+    public Response putLines(@PathParam("invoiceuuid") String invoiceuuid,
+                             @PathParam("bonusuuid") String bonusuuid,
+                             List<LineDTO> body) {
+        List<InvoiceBonusLine> mapped = body == null ? List.of() :
+                body.stream().map(dto -> {
+                    InvoiceBonusLine l = new InvoiceBonusLine();
+                    l.setInvoiceitemuuid(dto.invoiceitemuuid());
+                    l.setPercentage(dto.percentage());
+                    return l;
+                }).toList();
+        service.putLines(invoiceuuid, bonusuuid, mapped);
+        return Response.noContent().build();
     }
 
     @DELETE
     @Path("/{bonusuuid}")
-    @RolesAllowed({"SYSTEM","FINANCE","SALES"})
     @Transactional
-    @Operation(
-            operationId = "deleteInvoiceBonus",
-            summary = "Slet bonus",
-            description = "Sletter en bonusrække. Kræver SYSTEM/FINANCE/SALES."
-    )
-    @APIResponses({
-            @APIResponse(responseCode = "204", description = "Slettet"),
-            @APIResponse(responseCode = "404", description = "Bonus ikke fundet"),
-            @APIResponse(responseCode = "401", description = "Uautoriseret"),
-            @APIResponse(responseCode = "403", description = "Ingen adgang")
-    })
-    public void delete(
-            @Parameter(
-                    name = "bonusuuid",
-                    in = ParameterIn.PATH,
-                    required = true,
-                    description = "UUID for bonusrækken",
-                    example = "33333333-3333-3333-3333-333333333333"
-            )
-            @PathParam("bonusuuid") String bonusuuid) {
+    public void delete(@PathParam("bonusuuid") String bonusuuid) {
         service.delete(bonusuuid);
     }
+
 }

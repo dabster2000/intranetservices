@@ -177,15 +177,9 @@ public class Invoice extends PanacheEntityBase {
     }
 
     public double getSumNoTax() {
-        // Feature‑toggle: når Pricing Engine er slået til, returnér blot summen af linjer (ingen yderligere rabat)
-        boolean peEnabled = ConfigProvider.getConfig()
-                .getOptionalValue("pricingEngine.enabled", Boolean.class)
-                .orElse(false);
-
         return invoiceitems.stream()
                 .mapToDouble(ii -> ii.hours * ii.rate)
                 .sum(); // Rabatter er allerede udtrykt som syntetiske linjer
-
     }
 
 

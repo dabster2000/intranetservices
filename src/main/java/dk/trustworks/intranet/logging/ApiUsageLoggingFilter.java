@@ -12,7 +12,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.io.IOException;
 
 @JBossLog
-@Provider
+//@Provider
 public class ApiUsageLoggingFilter implements ContainerRequestFilter, ContainerResponseFilter {
 
     @Inject
