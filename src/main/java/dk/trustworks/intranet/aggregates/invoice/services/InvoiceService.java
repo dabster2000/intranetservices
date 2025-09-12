@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.speedment.jpastreamer.application.JPAStreamer;
 import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService;
+import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
@@ -16,6 +17,7 @@ import dk.trustworks.intranet.aggregates.invoice.network.InvoiceDynamicHeaderFil
 import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
@@ -104,6 +106,10 @@ public class InvoiceService {
             default -> 0.0;
         };
         return new DateValueDTO(LocalDate.of(invoice.getYear(), invoice.getMonth() + 1, 1), sum);
+    }
+
+    public Invoice findOneByUuid(String invoiceuuid) {
+        return Invoice.findById(invoiceuuid);
     }
 
     public List<Invoice> findAll() {
@@ -689,4 +695,115 @@ public class InvoiceService {
                 .register(new InvoiceDynamicHeaderFilter(invoiceGeneratorApiKey))
                 .build(InvoiceAPI.class);
     }
+
+    public long countBonusApproval(java.util.List<InvoiceStatus> statuses) {
+        // Only invoices with at least one bonus row
+        String jpql = """
+        SELECT COUNT(i) FROM Invoice i
+        WHERE i.status IN :st
+          AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+                      WHERE b.invoiceuuid = i.uuid)
+    """;
+        return em.createQuery(jpql, Long.class)
+                .setParameter("st", statuses)
+                .getSingleResult();
+    }
+
+    // ADD this helper to parse statuses if caller passed none
+    private static java.util.List<InvoiceStatus> defaultStatuses(java.util.List<InvoiceStatus> statuses) {
+        if (statuses == null || statuses.isEmpty()) {
+            return java.util.List.of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE);
+        }
+        return statuses;
+    }
+
+    // ADD main page builder for the grid
+    public java.util.List<BonusApprovalRow> findBonusApprovalPage(java.util.List<InvoiceStatus> rawStatuses,
+                                                                  int pageIdx, int pageSize) {
+
+        var statuses = defaultStatuses(rawStatuses);
+
+        // 1) Pick invoice page (only those that have bonus rows)
+        String baseJpql = """
+        SELECT i FROM Invoice i
+        WHERE i.status IN :st
+          AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+                      WHERE b.invoiceuuid = i.uuid)
+        ORDER BY i.invoicedate DESC, i.invoicenumber DESC
+    """;
+        var q = em.createQuery(baseJpql, Invoice.class)
+                .setParameter("st", statuses)
+                .setFirstResult(pageIdx * pageSize)
+                .setMaxResults(pageSize);
+
+        java.util.List<Invoice> page = q.getResultList();
+        if (page.isEmpty()) return java.util.List.of();
+
+        // Collect uuids
+        var ids = page.stream().map(Invoice::getUuid).toList();
+
+        // 2) Amount (excl. VAT): SUM(hours*rate) grouped by invoiceuuid
+        var amountByInvoice = new java.util.HashMap<String, Double>();
+        {
+            String sumItems = "SELECT ii.invoiceuuid, SUM(ii.rate * ii.hours) " +
+                    "FROM InvoiceItem ii WHERE ii.invoiceuuid IN :ids GROUP BY ii.invoiceuuid";
+            var rows = em.createQuery(sumItems, Object[].class)
+                    .setParameter("ids", ids)
+                    .getResultList();
+            for (Object[] r : rows) {
+                amountByInvoice.put((String) r[0], ((Number) r[1]).doubleValue());
+            }
+        }
+
+        // 3) Bonus aggregates: sum(computedAmount) + aggregated status
+        var bonusSumByInvoice = new java.util.HashMap<String, Double>();
+        var statusAggByInvoice = new java.util.HashMap<String, SalesApprovalStatus>();
+        {
+            String qBonus = "SELECT b.invoiceuuid, b.status, b.computedAmount " +
+                    "FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b " +
+                    "WHERE b.invoiceuuid IN :ids";
+            var rows = em.createQuery(qBonus, Object[].class)
+                    .setParameter("ids", ids)
+                    .getResultList();
+
+            // prepare buckets
+            var tmp = new java.util.HashMap<String, java.util.List<InvoiceBonus>>();
+            for (Object[] r : rows) {
+                var ib = new InvoiceBonus();
+                ib.setInvoiceuuid((String) r[0]);
+                ib.setStatus((SalesApprovalStatus) r[1]);
+                ib.setComputedAmount(((Number) r[2]).doubleValue());
+                tmp.computeIfAbsent(ib.getInvoiceuuid(), k -> new java.util.ArrayList<>()).add(ib);
+            }
+            for (var e : tmp.entrySet()) {
+                var list = e.getValue();
+                double sum = list.stream().mapToDouble(InvoiceBonus::getComputedAmount).sum();
+                boolean hasPending  = list.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.PENDING);
+                boolean hasRejected = list.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.REJECTED);
+                boolean hasApproved = list.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.APPROVED);
+                SalesApprovalStatus agg = hasPending ? SalesApprovalStatus.PENDING
+                        : (hasRejected ? SalesApprovalStatus.REJECTED
+                        : (hasApproved ? SalesApprovalStatus.APPROVED : SalesApprovalStatus.PENDING));
+                bonusSumByInvoice.put(e.getKey(), sum);
+                statusAggByInvoice.put(e.getKey(), agg);
+            }
+        }
+
+        // 4) Build rows (clientName from invoice label for speed; if you must resolve CRM name, join here once)
+        java.util.List<BonusApprovalRow> rows = new java.util.ArrayList<>(page.size());
+        for (Invoice i : page) {
+            rows.add(new BonusApprovalRow(
+                    i.getUuid(),
+                    i.getInvoicenumber(),
+                    i.getInvoicedate(),
+                    i.getCurrency(),
+                    i.getClientname(),
+                    amountByInvoice.getOrDefault(i.getUuid(), 0.0),
+                    statusAggByInvoice.getOrDefault(i.getUuid(), SalesApprovalStatus.PENDING),
+                    bonusSumByInvoice.getOrDefault(i.getUuid(), 0.0)
+            ));
+        }
+        return rows;
+    }
+
 }

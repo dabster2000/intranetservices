@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
@@ -61,6 +63,37 @@ public class InvoiceResource {
         );
     }
 
+    @GET
+    @Path("/{invoiceuuid}")
+    public Invoice findOne(@PathParam("invoiceuuid") String invoiceuuid) {
+        return invoiceService.findOneByUuid(invoiceuuid);
+    }
+
+    // New: paged lightweight rows for the approval grid
+    @GET
+    @Path("/bonus-approval")
+    public java.util.List<BonusApprovalRow> bonusApprovalPage(
+            @QueryParam("page") @DefaultValue("0") int page,
+            @QueryParam("size") @DefaultValue("50") int size,
+            @QueryParam("statuses") java.util.List<String> statuses
+    ) {
+        var st = (statuses == null || statuses.isEmpty())
+                ? java.util.List.<InvoiceStatus>of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE)
+                : statuses.stream().map(InvoiceStatus::valueOf).toList();
+        return invoiceService.findBonusApprovalPage(st, page, size);
+    }
+
+    // New: count for the same filter
+    @GET
+    @Path("/bonus-approval/count")
+    public long bonusApprovalCount(
+            @QueryParam("statuses") java.util.List<String> statuses
+    ) {
+        var st = (statuses == null || statuses.isEmpty())
+                ? java.util.List.<InvoiceStatus>of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE)
+                : statuses.stream().map(InvoiceStatus::valueOf).toList();
+        return invoiceService.countBonusApproval(st);
+    }
 
     @GET
     @Path("/months/{month}")
