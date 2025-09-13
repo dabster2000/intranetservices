@@ -6,6 +6,8 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
@@ -26,6 +28,7 @@ import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 
@@ -69,7 +72,6 @@ public class InvoiceResource {
         return invoiceService.findOneByUuid(invoiceuuid);
     }
 
-    // New: paged lightweight rows for the approval grid
     @GET
     @Path("/bonus-approval")
     public java.util.List<BonusApprovalRow> bonusApprovalPage(
@@ -77,22 +79,48 @@ public class InvoiceResource {
             @QueryParam("size") @DefaultValue("50") int size,
             @QueryParam("statuses") java.util.List<String> statuses
     ) {
-        var st = (statuses == null || statuses.isEmpty())
-                ? java.util.List.<InvoiceStatus>of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE)
-                : statuses.stream().map(InvoiceStatus::valueOf).toList();
-        return invoiceService.findBonusApprovalPage(st, page, size);
+        // First try SalesApprovalStatus (PENDING/APPROVED/REJECTED)
+        var bonusStatuses = parseEnumList(statuses, SalesApprovalStatus::valueOf);
+        if (!bonusStatuses.isEmpty()) {
+            return invoiceService.findBonusApprovalPageByBonusStatus(bonusStatuses, page, size);
+        }
+
+        // Backward compatibility: interpret as invoice lifecycle statuses (CREATED/PAID/...)
+        var invoiceStatuses = parseEnumList(statuses, InvoiceStatus::valueOf);
+        return invoiceService.findBonusApprovalPage(invoiceStatuses, page, size);
     }
 
     // New: count for the same filter
     @GET
     @Path("/bonus-approval/count")
-    public long bonusApprovalCount(
-            @QueryParam("statuses") java.util.List<String> statuses
-    ) {
-        var st = (statuses == null || statuses.isEmpty())
-                ? java.util.List.<InvoiceStatus>of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE)
-                : statuses.stream().map(InvoiceStatus::valueOf).toList();
-        return invoiceService.countBonusApproval(st);
+    public long bonusApprovalCount(@QueryParam("statuses") java.util.List<String> statuses) {
+        // First try SalesApprovalStatus (PENDING/APPROVED/REJECTED)
+        var bonusStatuses = parseEnumList(statuses, SalesApprovalStatus::valueOf);
+        if (!bonusStatuses.isEmpty()) {
+            return invoiceService.countBonusApprovalByBonusStatus(bonusStatuses);
+        }
+
+        // Backward compatibility: interpret as invoice lifecycle statuses
+        var invoiceStatuses = parseEnumList(statuses, InvoiceStatus::valueOf);
+        return invoiceService.countBonusApproval(invoiceStatuses);
+    }
+
+    // ---------------- helpers ----------------
+
+    /** Parse CSV and repeated query params into an enum list, ignoring invalid values. */
+    private static <E extends Enum<E>> java.util.List<E> parseEnumList(
+            java.util.List<String> raw, Function<String, E> parser) {
+        if (raw == null || raw.isEmpty()) return java.util.List.of();
+        java.util.List<E> out = new java.util.ArrayList<>();
+        for (String token : raw) {
+            if (token == null || token.isBlank()) continue;
+            for (String part : token.split(",")) {
+                String v = part.trim();
+                if (v.isEmpty()) continue;
+                try { out.add(parser.apply(v)); } catch (Exception ignore) { /* skip invalid */ }
+            }
+        }
+        return out;
     }
 
     @GET
@@ -269,5 +297,33 @@ public class InvoiceResource {
     @Path("/notes")
     public void createOrUpdateInvoiceNote(InvoiceNote invoiceNote) {
         invoiceNotesService.createOrUpdateInvoiceNote(invoiceNote);
+    }
+
+    @GET
+    @Path("/my-bonus")
+    public List<MyBonusRow> myBonusPage(@QueryParam("useruuid") String useruuid,
+                                        @QueryParam("from") String from,
+                                        @QueryParam("to") String to,
+                                        @QueryParam("page") @DefaultValue("0") int page,
+                                        @QueryParam("size") @DefaultValue("50") int size,
+                                        @QueryParam("statuses") List<String> statuses) {
+        var st = parseEnumList(statuses, SalesApprovalStatus::valueOf);
+        return invoiceService.findMyBonusPage(useruuid, st, dateIt(from), dateIt(to), page, size);
+    }
+
+    @GET
+    @Path("/my-bonus/count")
+    public long myBonusCount(@QueryParam("useruuid") String useruuid,
+                             @QueryParam("from") String from,
+                             @QueryParam("to") String to,
+                             @QueryParam("statuses") List<String> statuses) {
+        var st = parseEnumList(statuses, SalesApprovalStatus::valueOf);
+        return invoiceService.countMyBonus(useruuid, st, dateIt(from), dateIt(to));
+    }
+
+    @GET
+    @Path("/my-bonus/summary")
+    public List<MyBonusFySum> myBonusSummary(@QueryParam("useruuid") String useruuid) {
+        return invoiceService.myBonusFySummary(useruuid);
     }
 }

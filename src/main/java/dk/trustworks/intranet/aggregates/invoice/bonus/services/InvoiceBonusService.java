@@ -96,7 +96,38 @@ public class InvoiceBonusService {
 
     @Transactional
     public void approve(String bonusUuid, String approverUuid) {
+        InvoiceBonus ib = InvoiceBonus.findById(bonusUuid);
+        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+
+        // (d) Auto‑seed default lines when none were saved by the user before approval
+        ensureDefaultLinesIfEmpty(ib);
+
         setStatus(bonusUuid, approverUuid, SalesApprovalStatus.APPROVED);
+
+        // Recompute against the (possibly) new default lines
+        Invoice inv = Invoice.findById(ib.getInvoiceuuid());
+        recomputeFromLinesOrFallback(inv, ib);
+        ib.persist();
+    }
+
+    /** Default selection at approve-time if none exists:
+     *  BASE lines billed by applicant -> 0%; other BASE -> 100%. (CALCULATED are auto‑proportional and not persisted)
+     */
+    private void ensureDefaultLinesIfEmpty(InvoiceBonus ib) {
+        if (InvoiceBonusLine.count("bonusuuid", ib.getUuid()) > 0) return;
+        Invoice inv = Invoice.findById(ib.getInvoiceuuid());
+        if (inv == null) return;
+
+        for (InvoiceItem ii : inv.getInvoiceitems()) {
+            if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue;
+            double pct = Objects.equals(ii.getConsultantuuid(), ib.getUseruuid()) ? 0.0 : 100.0;
+            InvoiceBonusLine l = new InvoiceBonusLine();
+            l.setBonusuuid(ib.getUuid());
+            l.setInvoiceuuid(inv.getUuid());
+            l.setInvoiceitemuuid(ii.getUuid());
+            l.setPercentage(pct);
+            l.persist();
+        }
     }
 
     @Transactional
@@ -203,54 +234,72 @@ public class InvoiceBonusService {
         return pct;
     }
 
-    /**
-     * If bonus has lines -> compute from lines; otherwise fallback to legacy (shareType/shareValue).
-     * Allows negative amounts for credit notes.
-     */
+    /** If lines exist -> compute from lines; otherwise fallback (PERCENT/AMOUNT) on engine totals. */
     private void recomputeFromLinesOrFallback(Invoice inv, InvoiceBonus ib) {
         List<InvoiceBonusLine> lines = listLines(ib.getUuid());
         if (lines != null && !lines.isEmpty()) {
             double amount = computeAmountFromLines(inv, lines);
-            amount = round2(amount);
-
-            // When line selections exist, we express the bonus as AMOUNT
             ib.setShareType(InvoiceBonus.ShareType.AMOUNT);
             ib.setShareValue(amount);
             ib.setComputedAmount(amount);
         } else {
-            // No lines -> legacy computation
-            recomputeComputedAmount(inv, ib);
+            recomputeComputedAmount(inv, ib); // legacy: PERCENT of engine amount or fixed AMOUNT
         }
     }
 
     /**
-     * Sum selected BASE items (hours*rate), apply invoice discount%, then apply each line's percentage.
-     * CALCULATED items are ignored. Credit notes flip the sign.
+     * Sum selected BASE items and include global adjustments correctly:
+     *  - If CALCULATED items exist (pricing has been run): allocate them pro‑rata
+     *    to the share of selected BASE lines (this includes the global discount).
+     *  - If no CALCULATED items exist (older invoices or not priced): apply the
+     *    invoice's global discount percentage directly on the selected BASE sum.
+     * Credit notes keep the sign negative. Result is rounded to 2 decimals.
      */
     private static double computeAmountFromLines(Invoice inv, List<InvoiceBonusLine> lines) {
-        if (inv == null) return 0.0;
+        if (inv == null || inv.getInvoiceitems() == null || inv.getInvoiceitems().isEmpty()) return 0.0;
 
-        // Map items by id for fast lookup
-        Map<String, InvoiceItem> itemById = inv.getInvoiceitems().stream()
-                .collect(Collectors.toMap(InvoiceItem::getUuid, Function.identity(), (a, b)->a));
+        // Map for quick lookup
+        Map<String, InvoiceItem> byId = inv.getInvoiceitems().stream()
+                .collect(Collectors.toMap(InvoiceItem::getUuid, Function.identity(), (a, b) -> a));
 
-        double discountFactor = 1.0 - (Optional.ofNullable(inv.getDiscount()).orElse(0.0) / 100.0);
-        double sum = 0.0;
+        // BASE totals
+        double baseTotal = inv.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() != InvoiceItemOrigin.CALCULATED)
+                .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                .sum();
 
+        double baseSelected = 0.0;
         for (InvoiceBonusLine sel : lines) {
-            InvoiceItem ii = itemById.get(sel.getInvoiceitemuuid());
-            if (ii == null) continue;
-            if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue; // never count synthetic items
-
-            double lineAmount = ii.getHours() * ii.getRate();
-            lineAmount *= discountFactor;
-
-            sum += lineAmount * (sel.getPercentage() / 100.0);
+            InvoiceItem ii = byId.get(sel.getInvoiceitemuuid());
+            if (ii == null || ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue; // lines only apply to BASE
+            double pct = sanitizePct(sel.getPercentage()) / 100.0;
+            baseSelected += (ii.getHours() * ii.getRate()) * pct;
         }
 
-        if (inv.getType() == InvoiceType.CREDIT_NOTE) sum = -sum;
-        return sum;
+        // Synthetic (CALCULATED) totals – contain discounts, admin fees, rounding, etc.
+        double syntheticTotal = inv.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.CALCULATED)
+                .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                .sum();
+
+        // Decide how to include global discount:
+        //  - If CALCULATED lines are present, they already include the global discount:
+        //    allocate them pro‑rata to the selected BASE share.
+        //  - If not, fall back to applying Invoice.discount% directly.
+        double amount;
+        if (Math.abs(syntheticTotal) > 0.0000001) {
+            double ratio = baseTotal == 0.0 ? 0.0 : (baseSelected / baseTotal);
+            amount = baseSelected + ratio * syntheticTotal;
+        } else {
+            double discountPct = Optional.of(inv.getDiscount()).orElse(0.0);
+            double discountFactor = 1.0 - (discountPct / 100.0);
+            amount = baseSelected * discountFactor;
+        }
+
+        if (inv.getType() == InvoiceType.CREDIT_NOTE) amount = -amount;
+        return round2(amount);
     }
+
 
     /** Legacy: used when there are no line selections for this bonus. */
     private static void recomputeComputedAmount(Invoice inv, InvoiceBonus ib) {
@@ -284,7 +333,7 @@ public class InvoiceBonusService {
 
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
 
-    
+
     public List<BonusEligibility> listEligibility() {
         return BonusEligibility.listAll();
     }

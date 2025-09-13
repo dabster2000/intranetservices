@@ -9,6 +9,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusServ
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.network.CurrencyAPI;
@@ -18,6 +19,8 @@ import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
@@ -31,6 +34,9 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -51,7 +57,9 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE;
@@ -97,6 +105,9 @@ public class InvoiceService {
     @Inject
     WorkService workService;
 
+    @Inject
+    UserService userService;
+
     private static DateValueDTO apply(Invoice invoice, double exchangeRate) {
         double sum = switch (invoice.getType()) {
             case INVOICE -> invoice.getSumWithNoTaxInDKK(exchangeRate);
@@ -140,21 +151,21 @@ public class InvoiceService {
         return Invoice.count();
     }
 
+    // InvoiceService
     public static List<Invoice> findWithFilter(LocalDate fromdate, LocalDate todate, String... type) {
-        String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT"};
-        LocalDate finalFromdate = fromdate!=null?fromdate:LocalDate.of(2014,1,1);
-        LocalDate finalTodate = todate!=null?todate:LocalDate.now();
-        List<Invoice> result;
-        try (Stream<Invoice> invoices = Invoice.streamAll()) {
-            result = invoices.filter(invoice ->
-                            (invoice.getInvoicedate().isAfter(finalFromdate) || invoice.getInvoicedate().equals(finalFromdate)) &&
-                                    (invoice.getInvoicedate().isBefore(finalTodate) ||invoice.getInvoicedate().isEqual(finalTodate)) &&
-                                    Arrays.stream(finalType).anyMatch(s -> s.equals(invoice.getStatus().name())))
-                    .collect(toList());
+        List<InvoiceStatus> statuses =
+                (type != null && type.length > 0)
+                        ? Arrays.stream(type).map(InvoiceStatus::valueOf).toList()
+                        : List.of(InvoiceStatus.CREATED, InvoiceStatus.CREDIT_NOTE, InvoiceStatus.DRAFT);
 
-        }
-        return result;
+        LocalDate from = (fromdate != null) ? fromdate : LocalDate.of(2014, 1, 1);
+        LocalDate to   = (todate   != null) ? todate   : LocalDate.now();
+
+        // All filtering happens in SQL
+        return Invoice.find("invoicedate >= ?1 AND invoicedate <= ?2 AND status IN (?3)",
+                from, to, statuses).list();
     }
+
 
     public List<Invoice> findByBookingDate(LocalDate fromdate, LocalDate todate) {
         //String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT"};
@@ -170,7 +181,11 @@ public class InvoiceService {
     }
 
     @Transactional
-    public List<DateValueDTO> calculateInvoiceSumByPeriodAndWorkDateV2(String companyuuid, LocalDate fromdate, LocalDate todate) throws JsonProcessingException {
+    public List<DateValueDTO> calculateInvoiceSumByPeriodAndWorkDateV2(String companyuuid,
+                                                                       LocalDate fromdate,
+                                                                       LocalDate todate)
+            throws JsonProcessingException {
+
         Response response = currencyAPI.getExchangeRate(stringIt(fromdate), "EUR", "DKK", apiKey);
         double exchangeRate;
         if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
@@ -180,29 +195,45 @@ public class InvoiceService {
         } else {
             exchangeRate = 1.0;
         }
-        List<Invoice> invoiceList = Invoice.<Invoice>find("company = ?1 AND invoicedate >= ?2 AND invoicedate < ?3 AND type != ?4 AND status != ?5", Company.<Company>findById(companyuuid), fromdate, todate, InvoiceType.INTERNAL_SERVICE, InvoiceStatus.DRAFT).list();
+
+        // External (non-internal-service, non-draft) invoices in period for the company
+        List<Invoice> invoiceList = Invoice.<Invoice>find(
+                        "company = ?1 AND invoicedate >= ?2 AND invoicedate < ?3 AND type <> ?4 AND status <> ?5",
+                        Company.<Company>findById(companyuuid), fromdate, todate, InvoiceType.INTERNAL_SERVICE, InvoiceStatus.DRAFT)
+                .list();
+
         List<DateValueDTO> invoicedSumList = invoiceList.stream()
-                .map((Invoice i) -> apply(i, exchangeRate))
+                .map(i -> apply(i, exchangeRate))
                 .toList();
 
-        List<DateValueDTO> internalInvoicedSumList = jpaStreamer.stream(Invoice.class)
-                .filter(invoice -> !invoice.getCompany().getUuid().equals(companyuuid))
-                .filter(invoice -> invoice.getType().equals(InvoiceType.INTERNAL))
-                .filter(invoice -> !invoice.getStatus().equals(InvoiceStatus.DRAFT))
-                .filter(invoice -> invoiceList.stream().anyMatch(i -> i.getInvoicenumber() == invoice.getInvoiceref()))
-                .map((Invoice i) -> apply(i, exchangeRate))
+        // Build set of invoicenumbers to join against (for internal counterpart)
+        Set<Integer> invoiceNumbers = invoiceList.stream()
+                .map(Invoice::getInvoicenumber)
+                .filter(n -> n != null && n > 0)
+                .collect(Collectors.toSet());
+
+        List<DateValueDTO> internalInvoicedSumList = invoiceNumbers.isEmpty()
+                ? List.of()
+                : Invoice.<Invoice>find(
+                        "company.uuid <> ?1 AND type = ?2 AND status <> ?3 AND invoiceref IN (?4)",
+                        companyuuid, InvoiceType.INTERNAL, InvoiceStatus.DRAFT, invoiceNumbers)
+                .list()
+                .stream()
+                .map(i -> apply(i, exchangeRate))
                 .toList();
 
-        LocalDate testDate = fromdate;
+        // Monthly bucket
+        LocalDate cursor = fromdate;
         List<DateValueDTO> result = new ArrayList<>();
-        do {
-            LocalDate finalTestDate = testDate;
-            double invoicedSum = invoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
-            double internalInvoicedSum = internalInvoicedSumList.stream().filter(i -> i.getDate().isEqual(finalTestDate)).mapToDouble(DateValueDTO::getValue).sum();
-            result.add(new DateValueDTO(testDate, invoicedSum - internalInvoicedSum));
-
-            testDate = testDate.plusMonths(1);
-        } while (testDate.isBefore(todate));
+        while (cursor.isBefore(todate)) {
+            final LocalDate month = cursor;
+            double invoicedSum = invoicedSumList.stream()
+                    .filter(d -> d.getDate().isEqual(month)).mapToDouble(DateValueDTO::getValue).sum();
+            double internalSum = internalInvoicedSumList.stream()
+                    .filter(d -> d.getDate().isEqual(month)).mapToDouble(DateValueDTO::getValue).sum();
+            result.add(new DateValueDTO(month, invoicedSum - internalSum));
+            cursor = cursor.plusMonths(1);
+        }
         return result;
     }
 
@@ -696,7 +727,7 @@ public class InvoiceService {
                 .build(InvoiceAPI.class);
     }
 
-    public long countBonusApproval(java.util.List<InvoiceStatus> statuses) {
+    public long countBonusApproval(List<InvoiceStatus> statuses) {
         // Only invoices with at least one bonus row
         String jpql = """
         SELECT COUNT(i) FROM Invoice i
@@ -710,15 +741,15 @@ public class InvoiceService {
     }
 
     // ADD this helper to parse statuses if caller passed none
-    private static java.util.List<InvoiceStatus> defaultStatuses(java.util.List<InvoiceStatus> statuses) {
+    private static List<InvoiceStatus> defaultStatuses(List<InvoiceStatus> statuses) {
         if (statuses == null || statuses.isEmpty()) {
-            return java.util.List.of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE);
+            return List.of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE);
         }
         return statuses;
     }
 
     // ADD main page builder for the grid
-    public java.util.List<BonusApprovalRow> findBonusApprovalPage(java.util.List<InvoiceStatus> rawStatuses,
+    public List<BonusApprovalRow> findBonusApprovalPage(List<InvoiceStatus> rawStatuses,
                                                                   int pageIdx, int pageSize) {
 
         var statuses = defaultStatuses(rawStatuses);
@@ -727,7 +758,7 @@ public class InvoiceService {
         String baseJpql = """
         SELECT i FROM Invoice i
         WHERE i.status IN :st
-          AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+          AND EXISTS (SELECT 1 FROM InvoiceBonus b
                       WHERE b.invoiceuuid = i.uuid)
         ORDER BY i.invoicedate DESC, i.invoicenumber DESC
     """;
@@ -736,14 +767,14 @@ public class InvoiceService {
                 .setFirstResult(pageIdx * pageSize)
                 .setMaxResults(pageSize);
 
-        java.util.List<Invoice> page = q.getResultList();
-        if (page.isEmpty()) return java.util.List.of();
+        List<Invoice> page = q.getResultList();
+        if (page.isEmpty()) return List.of();
 
         // Collect uuids
         var ids = page.stream().map(Invoice::getUuid).toList();
 
         // 2) Amount (excl. VAT): SUM(hours*rate) grouped by invoiceuuid
-        var amountByInvoice = new java.util.HashMap<String, Double>();
+        var amountByInvoice = new HashMap<String, Double>();
         {
             String sumItems = "SELECT ii.invoiceuuid, SUM(ii.rate * ii.hours) " +
                     "FROM InvoiceItem ii WHERE ii.invoiceuuid IN :ids GROUP BY ii.invoiceuuid";
@@ -756,8 +787,8 @@ public class InvoiceService {
         }
 
         // 3) Bonus aggregates: sum(computedAmount) + aggregated status
-        var bonusSumByInvoice = new java.util.HashMap<String, Double>();
-        var statusAggByInvoice = new java.util.HashMap<String, SalesApprovalStatus>();
+        var bonusSumByInvoice = new HashMap<String, Double>();
+        var statusAggByInvoice = new HashMap<String, SalesApprovalStatus>();
         {
             String qBonus = "SELECT b.invoiceuuid, b.status, b.computedAmount " +
                     "FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b " +
@@ -767,13 +798,13 @@ public class InvoiceService {
                     .getResultList();
 
             // prepare buckets
-            var tmp = new java.util.HashMap<String, java.util.List<InvoiceBonus>>();
+            var tmp = new HashMap<String, List<InvoiceBonus>>();
             for (Object[] r : rows) {
                 var ib = new InvoiceBonus();
                 ib.setInvoiceuuid((String) r[0]);
                 ib.setStatus((SalesApprovalStatus) r[1]);
                 ib.setComputedAmount(((Number) r[2]).doubleValue());
-                tmp.computeIfAbsent(ib.getInvoiceuuid(), k -> new java.util.ArrayList<>()).add(ib);
+                tmp.computeIfAbsent(ib.getInvoiceuuid(), k -> new ArrayList<>()).add(ib);
             }
             for (var e : tmp.entrySet()) {
                 var list = e.getValue();
@@ -789,21 +820,399 @@ public class InvoiceService {
             }
         }
 
-        // 4) Build rows (clientName from invoice label for speed; if you must resolve CRM name, join here once)
-        java.util.List<BonusApprovalRow> rows = new java.util.ArrayList<>(page.size());
+        // 4) Gather consultant UUIDs per invoice (only non-null)
+        Map<String, Set<String>> usersByInvoice = new HashMap<>();
+        Set<String> allUserIds = new HashSet<>();
+        {
+            String qUsers = "SELECT ii.invoiceuuid, ii.consultantuuid FROM InvoiceItem ii " +
+                    "WHERE ii.invoiceuuid IN :ids AND ii.consultantuuid IS NOT NULL";
+            var rs = em.createQuery(qUsers, Object[].class)
+                    .setParameter("ids", ids)
+                    .getResultList();
+            for (Object[] r : rs) {
+                String invId = (String) r[0];
+                String userId = (String) r[1];
+                if (userId == null || userId.isBlank()) continue;
+                usersByInvoice.computeIfAbsent(invId, k -> new LinkedHashSet<>()).add(userId);
+                allUserIds.add(userId);
+            }
+        }
+
+        // 5) Load users (shallow), then hydrate statuses; build quick map
+        List<User> users = allUserIds.isEmpty() ? List.of()
+                : User.<User>list("uuid in ?1", allUserIds);
+        users.forEach(UserService::addChildrenToUser);
+        Map<String, User> userById = new HashMap<>();
+        users.forEach(u -> userById.put(u.getUuid(), u));
+
+        // 6) Build rows incl. companies
+        List<BonusApprovalRow> rows = new ArrayList<>(page.size());
         for (Invoice i : page) {
+            double amountNoTax = engineAmountNoVat(i);
+
+            // Compute unique companies for this invoice at invoice date
+            Set<Company> companies = new LinkedHashSet<>();
+            for (String uid : usersByInvoice.getOrDefault(i.getUuid(), Set.of())) {
+                User u = userById.get(uid);
+                if (u == null) continue;
+                UserStatus st = userService.getUserStatus(u, i.getInvoicedate());
+                if (st != null && st.getCompany() != null) companies.add(st.getCompany());
+            }
+
             rows.add(new BonusApprovalRow(
                     i.getUuid(),
                     i.getInvoicenumber(),
                     i.getInvoicedate(),
                     i.getCurrency(),
                     i.getClientname(),
-                    amountByInvoice.getOrDefault(i.getUuid(), 0.0),
+                    amountNoTax,
                     statusAggByInvoice.getOrDefault(i.getUuid(), SalesApprovalStatus.PENDING),
-                    bonusSumByInvoice.getOrDefault(i.getUuid(), 0.0)
+                    bonusSumByInvoice.getOrDefault(i.getUuid(), 0.0),
+                    new ArrayList<>(companies)
             ));
         }
         return rows;
     }
+
+    private double engineAmountNoVat(Invoice i) {
+        Map<String, String> cti = new HashMap<>();
+        ContractTypeItem.<ContractTypeItem>find("contractuuid", i.getContractuuid())
+                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+        var pr = pricingEngine.price(i, cti);
+        return pr.sumAfterDiscounts.doubleValue(); // "Amount (excl. VAT)"
+    }
+
+    /** Count invoices (within default invoice lifecycle set) filtered by aggregated bonus status. */
+    public long countBonusApprovalByBonusStatus(List<SalesApprovalStatus> bonusStatuses) {
+        var invStatuses = defaultStatuses(List.of()); // -> CREATED, SUBMITTED, PAID, CREDIT_NOTE
+        String aggWhere = buildAggregatedStatusWhere(bonusStatuses);
+        String jpql = """
+            SELECT COUNT(i) FROM Invoice i
+            WHERE i.status IN :st
+              """ + aggWhere;
+
+        var q = em.createQuery(jpql, Long.class)
+                .setParameter("st", invStatuses)
+                .setParameter("P", SalesApprovalStatus.PENDING)
+                .setParameter("R", SalesApprovalStatus.REJECTED)
+                .setParameter("A", SalesApprovalStatus.APPROVED);
+
+        return q.getSingleResult();
+    }
+
+    /** Page invoices (within default invoice lifecycle set) filtered by aggregated bonus status. */
+    public List<BonusApprovalRow> findBonusApprovalPageByBonusStatus(
+            List<SalesApprovalStatus> bonusStatuses,
+            int pageIdx, int pageSize) {
+
+        var invStatuses = defaultStatuses(List.of()); // default lifecycle statuses
+        String aggWhere = buildAggregatedStatusWhere(bonusStatuses);
+
+        String baseJpql = """
+            SELECT i FROM Invoice i
+            WHERE i.status IN :st
+              """ + aggWhere + """
+            ORDER BY i.invoicedate DESC, i.invoicenumber DESC
+        """;
+
+        var q = em.createQuery(baseJpql, Invoice.class)
+                .setParameter("st", invStatuses)
+                .setParameter("P", SalesApprovalStatus.PENDING)
+                .setParameter("R", SalesApprovalStatus.REJECTED)
+                .setParameter("A", SalesApprovalStatus.APPROVED)
+                .setFirstResult(pageIdx * pageSize)
+                .setMaxResults(pageSize);
+
+        List<Invoice> page = q.getResultList();
+        if (page.isEmpty()) return List.of();
+
+        // --- reuse your existing aggregation logic below ---
+
+        var ids = page.stream().map(Invoice::getUuid).toList();
+
+        var amountByInvoice = new HashMap<String, Double>();
+        {
+            String sumItems = "SELECT ii.invoiceuuid, SUM(ii.rate * ii.hours) " +
+                    "FROM InvoiceItem ii WHERE ii.invoiceuuid IN :ids GROUP BY ii.invoiceuuid";
+            var rows = em.createQuery(sumItems, Object[].class)
+                    .setParameter("ids", ids)
+                    .getResultList();
+            for (Object[] r : rows) {
+                amountByInvoice.put((String) r[0], ((Number) r[1]).doubleValue());
+            }
+        }
+
+        var bonusSumByInvoice = new HashMap<String, Double>();
+        var statusAggByInvoice = new HashMap<String, SalesApprovalStatus>();
+        {
+            String qBonus = "SELECT b.invoiceuuid, b.status, b.computedAmount " +
+                    "FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b " +
+                    "WHERE b.invoiceuuid IN :ids";
+            var rows = em.createQuery(qBonus, Object[].class)
+                    .setParameter("ids", ids)
+                    .getResultList();
+
+            var tmp = new HashMap<String, List<dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus>>();
+            for (Object[] r : rows) {
+                var ib = new dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus();
+                ib.setInvoiceuuid((String) r[0]);
+                ib.setStatus((SalesApprovalStatus) r[1]);
+                ib.setComputedAmount(((Number) r[2]).doubleValue());
+                tmp.computeIfAbsent(ib.getInvoiceuuid(), k -> new ArrayList<>()).add(ib);
+            }
+            for (var e : tmp.entrySet()) {
+                var list = e.getValue();
+                double sum = list.stream().mapToDouble(InvoiceBonus::getComputedAmount).sum();
+                boolean hasPending  = list.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.PENDING);
+                boolean hasRejected = list.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.REJECTED);
+                boolean hasApproved = list.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.APPROVED);
+                SalesApprovalStatus agg = hasPending ? SalesApprovalStatus.PENDING
+                        : (hasRejected ? SalesApprovalStatus.REJECTED
+                        : (hasApproved ? SalesApprovalStatus.APPROVED : SalesApprovalStatus.PENDING));
+                bonusSumByInvoice.put(e.getKey(), sum);
+                statusAggByInvoice.put(e.getKey(), agg);
+            }
+        }
+
+        // 4) Gather consultant UUIDs per invoice (only non-null)
+        Map<String, Set<String>> usersByInvoice = new HashMap<>();
+        Set<String> allUserIds = new HashSet<>();
+        {
+            String qUsers = "SELECT ii.invoiceuuid, ii.consultantuuid FROM InvoiceItem ii " +
+                    "WHERE ii.invoiceuuid IN :ids AND ii.consultantuuid IS NOT NULL";
+            var rs = em.createQuery(qUsers, Object[].class)
+                    .setParameter("ids", ids)
+                    .getResultList();
+            for (Object[] r : rs) {
+                String invId = (String) r[0];
+                String userId = (String) r[1];
+                if (userId == null || userId.isBlank()) continue;
+                usersByInvoice.computeIfAbsent(invId, k -> new LinkedHashSet<>()).add(userId);
+                allUserIds.add(userId);
+            }
+        }
+
+        // 5) Load users (shallow), then hydrate statuses; build quick map
+        List<User> users = allUserIds.isEmpty() ? List.of()
+                : User.<User>list("uuid in ?1", allUserIds);
+        users.forEach(UserService::addChildrenToUser);
+        Map<String, User> userById = new HashMap<>();
+        users.forEach(u -> userById.put(u.getUuid(), u));
+
+        // 6) Build rows incl. companies
+        List<BonusApprovalRow> rows = new ArrayList<>(page.size());
+        for (Invoice i : page) {
+            double amountNoTax = engineAmountNoVat(i);
+
+            // Compute unique companies for this invoice at invoice date
+            Set<Company> companies = new LinkedHashSet<>();
+            for (String uid : usersByInvoice.getOrDefault(i.getUuid(), Set.of())) {
+                User u = userById.get(uid);
+                if (u == null) continue;
+                UserStatus st = userService.getUserStatus(u, i.getInvoicedate());
+                if (st != null && st.getCompany() != null) companies.add(st.getCompany());
+            }
+
+            rows.add(new BonusApprovalRow(
+                    i.getUuid(),
+                    i.getInvoicenumber(),
+                    i.getInvoicedate(),
+                    i.getCurrency(),
+                    i.getClientname(),
+                    amountNoTax,
+                    statusAggByInvoice.getOrDefault(i.getUuid(), SalesApprovalStatus.PENDING),
+                    bonusSumByInvoice.getOrDefault(i.getUuid(), 0.0),
+                    new ArrayList<>(companies)
+            ));
+        }
+        return rows;
+    }
+
+    /**
+     * Builds the JPQL predicate for aggregated bonus status.
+     * Aggregation rules:
+     *  - PENDING   : exists any PENDING
+     *  - REJECTED  : no PENDING and exists any REJECTED
+     *  - APPROVED  : no PENDING and no REJECTED and exists any APPROVED
+     *
+     * If list is null/empty -> accept any invoice that has bonus rows.
+     */
+    private static String buildAggregatedStatusWhere(List<SalesApprovalStatus> agg) {
+        if (agg == null || agg.isEmpty()) {
+            return "AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b WHERE b.invoiceuuid = i.uuid) ";
+        }
+        boolean wantP = agg.contains(SalesApprovalStatus.PENDING);
+        boolean wantR = agg.contains(SalesApprovalStatus.REJECTED);
+        boolean wantA = agg.contains(SalesApprovalStatus.APPROVED);
+
+        List<String> parts = new ArrayList<>();
+        if (wantP) {
+            parts.add("""
+                EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b1
+                        WHERE b1.invoiceuuid = i.uuid AND b1.status = :P)
+            """);
+        }
+        if (wantR) {
+            parts.add("""
+                NOT EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus bp
+                            WHERE bp.invoiceuuid = i.uuid AND bp.status = :P)
+                AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus br
+                            WHERE br.invoiceuuid = i.uuid AND br.status = :R)
+            """);
+        }
+        if (wantA) {
+            parts.add("""
+                NOT EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus bp
+                            WHERE bp.invoiceuuid = i.uuid AND bp.status = :P)
+                AND NOT EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus br
+                                WHERE br.invoiceuuid = i.uuid AND br.status = :R)
+                AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus ba
+                            WHERE ba.invoiceuuid = i.uuid AND ba.status = :A)
+            """);
+        }
+
+        if (parts.isEmpty()) {
+            return "AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b WHERE b.invoiceuuid = i.uuid) ";
+        }
+        return "AND (" + String.join(" OR ", parts) + ") ";
+    }
+
+    public List<MyBonusRow> findMyBonusPage(String useruuid,
+                                            List<SalesApprovalStatus> statuses,
+                                            LocalDate from, LocalDate to,
+                                            int pageIdx, int pageSize) {
+        String base = """
+        FROM Invoice i, dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+        WHERE b.invoiceuuid = i.uuid AND b.useruuid = :user
+    """;
+        if (statuses != null && !statuses.isEmpty()) base += " AND b.status IN :st ";
+        if (from != null) base += " AND i.invoicedate >= :from ";
+        if (to   != null) base += " AND i.invoicedate <  :to ";
+
+        String select = "SELECT i.uuid, i.invoicenumber, i.invoicedate, i.currency, i.clientname, i.type, " +
+                "b.uuid, b.shareType, b.shareValue, b.computedAmount, b.status, b.approvedBy, b.approvedAt, b.createdAt, b.updatedAt, b.overrideNote " +
+                base + " ORDER BY i.invoicedate DESC, i.invoicenumber DESC";
+
+        var q = em.createQuery(select, Object[].class)
+                .setParameter("user", useruuid)
+                .setFirstResult(pageIdx * pageSize)
+                .setMaxResults(pageSize);
+        if (statuses != null && !statuses.isEmpty()) q.setParameter("st", statuses);
+        if (from != null) q.setParameter("from", from);
+        if (to != null) q.setParameter("to", to);
+
+        var rs = q.getResultList();
+        List<MyBonusRow> out = new ArrayList<>(rs.size());
+        for (Object[] r : rs) {
+            String invId = (String) r[0];
+            String userId = (String) r[11]; // careful: adjust index if needed; safer to read explicitly below
+            // safer: pull userId from bonus load instead:
+            String bonusUuid = (String) r[6];
+            var inv = Invoice.<Invoice>findById(invId);
+            var bonus = InvoiceBonus.<InvoiceBonus>findById(bonusUuid);
+            double original = computeDefaultOriginalForUser(inv, bonus.getUseruuid());
+
+            out.add(new MyBonusRow(
+                    (String) r[0], (Integer) r[1], (LocalDate) r[2], (String) r[3], (String) r[4], (InvoiceType) r[5],
+                    bonusUuid,
+                    (InvoiceBonus.ShareType) r[7], ((Number) r[8]).doubleValue(), ((Number) r[9]).doubleValue(),
+                    (SalesApprovalStatus) r[10], (String) r[11], (LocalDateTime) r[12], (LocalDateTime) r[13],
+                    (LocalDateTime) r[14], (String) r[15],
+                    original
+            ));
+        }
+        return out;
+    }
+
+    public long countMyBonus(String useruuid,
+                             List<SalesApprovalStatus> statuses,
+                             LocalDate from, LocalDate to) {
+        String base = """
+        FROM Invoice i, InvoiceBonus b
+        WHERE b.invoiceuuid = i.uuid AND b.useruuid = :user
+    """;
+        if (statuses != null && !statuses.isEmpty()) base += " AND b.status IN :st ";
+        if (from != null) base += " AND i.invoicedate >= :from ";
+        if (to   != null) base += " AND i.invoicedate <  :to ";
+
+        var q = em.createQuery("SELECT COUNT(b) " + base, Long.class)
+                .setParameter("user", useruuid);
+        if (statuses != null && !statuses.isEmpty()) q.setParameter("st", statuses);
+        if (from != null) q.setParameter("from", from);
+        if (to != null) q.setParameter("to", to);
+        return q.getSingleResult();
+    }
+
+    public List<MyBonusFySum> myBonusFySummary(String useruuid) {
+        String sel = """
+        SELECT i.uuid, i.invoicedate, b.status, b.computedAmount, b.useruuid
+        FROM Invoice i, dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+        WHERE b.invoiceuuid = i.uuid AND b.useruuid = :user
+    """;
+        var rows = em.createQuery(sel, Object[].class)
+                .setParameter("user", useruuid)
+                .getResultList();
+
+        Map<LocalDate, double[]> acc = new HashMap<>(); // fyStart -> [approved, pending]
+        for (Object[] r : rows) {
+            String invoiceId = (String) r[0];
+            LocalDate d = (LocalDate) r[1];
+            SalesApprovalStatus st = (SalesApprovalStatus) r[2];
+            double approvedAmt = ((Number) r[3]).doubleValue();
+            String userId = (String) r[4];
+
+            dk.trustworks.intranet.aggregates.invoice.model.Invoice inv =
+                    dk.trustworks.intranet.aggregates.invoice.model.Invoice.findById(invoiceId);
+
+            double engineOriginalForUser = computeDefaultOriginalForUser(inv, userId);
+
+            LocalDate fyStart = fiscalYearStart(d);
+            var a = acc.computeIfAbsent(fyStart, k -> new double[2]);
+            if (st == SalesApprovalStatus.APPROVED) {
+                a[0] += approvedAmt;                    // approved
+            } else {
+                a[1] += engineOriginalForUser;          // pending = engine original
+            }
+        }
+        return acc.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> new MyBonusFySum(e.getKey(),
+                        round2(e.getValue()[0]),                // approved
+                        round2(e.getValue()[0] + e.getValue()[1]) // total = approved + pending
+                ))
+                .toList();
+    }
+
+    /** Default user "original": 100% of non-self BASE lines + pro‑rata of CALCULATED lines. */
+    private static double computeDefaultOriginalForUser(Invoice inv, String useruuid) {
+        if (inv == null) return 0.0;
+        double baseTotal = inv.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() != InvoiceItemOrigin.CALCULATED)
+                .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                .sum();
+
+        double baseSelected = inv.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() != InvoiceItemOrigin.CALCULATED)
+                .filter(ii -> !Objects.equals(ii.getConsultantuuid(), useruuid)) // not own lines => 100%
+                .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                .sum();
+
+        double syntheticTotal = inv.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.CALCULATED)
+                .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                .sum();
+
+        double ratio = baseTotal == 0.0 ? 0.0 : baseSelected / baseTotal;
+        double amount = baseSelected + ratio * syntheticTotal;
+        if (inv.getType() == InvoiceType.CREDIT_NOTE) amount = -amount;
+        return round2(amount);
+    }
+
+
+    private static LocalDate fiscalYearStart(LocalDate d) {
+        int y = (d.getMonthValue() >= 7) ? d.getYear() : d.getYear() - 1;
+        return LocalDate.of(y, 7, 1);
+    }
+    private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
 
 }
