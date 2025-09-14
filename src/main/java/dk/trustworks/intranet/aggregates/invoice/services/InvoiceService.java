@@ -1211,4 +1211,73 @@ public class InvoiceService {
     }
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
 
+    // Single-row BonusApprovalRow DTO for one invoice
+    public BonusApprovalRow findBonusApprovalRow(String invoiceuuid) {
+        Invoice i = Invoice.findById(invoiceuuid);
+        if (i == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+
+        // Amount excl. VAT (fast aggregation like paged version)
+        Map<String, Double> amountByInvoice = sumAmountNoTaxByInvoice(java.util.List.of(invoiceuuid));
+        double amountNoTax = amountByInvoice.getOrDefault(invoiceuuid, 0.0);
+
+        // Bonus aggregates
+        double total = 0.0;
+        boolean hasPending = false, hasRejected = false, hasApproved = false;
+        {
+            String qBonus = """
+                SELECT b.status, b.computedAmount
+                FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+                WHERE b.invoiceuuid = :id
+            """;
+            var rows = em.createQuery(qBonus, Object[].class)
+                    .setParameter("id", invoiceuuid)
+                    .getResultList();
+            for (Object[] r : rows) {
+                SalesApprovalStatus st = (SalesApprovalStatus) r[0];
+                double amt = ((Number) r[1]).doubleValue();
+                total += amt;
+                if (st == SalesApprovalStatus.PENDING) hasPending = true;
+                else if (st == SalesApprovalStatus.REJECTED) hasRejected = true;
+                else if (st == SalesApprovalStatus.APPROVED) hasApproved = true;
+            }
+        }
+        SalesApprovalStatus agg = hasPending ? SalesApprovalStatus.PENDING
+                : (hasRejected ? SalesApprovalStatus.REJECTED
+                : (hasApproved ? SalesApprovalStatus.APPROVED : SalesApprovalStatus.PENDING));
+
+        // Companies derived from users on items
+        java.util.Set<String> userIds = new java.util.LinkedHashSet<>();
+        {
+            String qUsers = """
+                SELECT ii.consultantuuid
+                FROM InvoiceItem ii
+                WHERE ii.invoiceuuid = :id AND ii.consultantuuid IS NOT NULL
+            """;
+            var rs = em.createQuery(qUsers, String.class)
+                    .setParameter("id", invoiceuuid)
+                    .getResultList();
+            for (String uid : rs) if (uid != null && !uid.isBlank()) userIds.add(uid);
+        }
+        java.util.List<User> users = userIds.isEmpty() ? java.util.List.of()
+                : User.<User>list("uuid in ?1", userIds);
+        users.forEach(UserService::addChildrenToUser);
+        java.util.Set<Company> companies = new java.util.LinkedHashSet<>();
+        for (User u : users) {
+            var st = userService.getUserStatus(u, i.getInvoicedate());
+            if (st != null && st.getCompany() != null) companies.add(st.getCompany());
+        }
+
+        return new BonusApprovalRow(
+                i.getUuid(),
+                i.getInvoicenumber(),
+                i.getInvoicedate(),
+                i.getCurrency(),
+                i.getClientname(),
+                amountNoTax,
+                agg,
+                total,
+                new java.util.ArrayList<>(companies)
+        );
+    }
+
 }

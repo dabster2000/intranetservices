@@ -25,6 +25,23 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class InvoiceBonusService {
 
+    public dk.trustworks.intranet.model.enums.SalesApprovalStatus aggregatedStatusForInvoice(String invoiceuuid) {
+        List<InvoiceBonus> bonuses = InvoiceBonus.list("invoiceuuid = ?1", invoiceuuid);
+        boolean hasPending = bonuses.stream().anyMatch(b -> b.getStatus() == dk.trustworks.intranet.model.enums.SalesApprovalStatus.PENDING);
+        boolean hasRejected = bonuses.stream().anyMatch(b -> b.getStatus() == dk.trustworks.intranet.model.enums.SalesApprovalStatus.REJECTED);
+        boolean hasApproved = bonuses.stream().anyMatch(b -> b.getStatus() == dk.trustworks.intranet.model.enums.SalesApprovalStatus.APPROVED);
+        if (hasPending) return dk.trustworks.intranet.model.enums.SalesApprovalStatus.PENDING;
+        if (hasRejected) return dk.trustworks.intranet.model.enums.SalesApprovalStatus.REJECTED;
+        if (hasApproved) return dk.trustworks.intranet.model.enums.SalesApprovalStatus.APPROVED;
+        return dk.trustworks.intranet.model.enums.SalesApprovalStatus.PENDING;
+    }
+
+    public double totalBonusAmountForInvoice(String invoiceuuid) {
+        return InvoiceBonus.<InvoiceBonus>stream("invoiceuuid = ?1", invoiceuuid)
+                .mapToDouble(InvoiceBonus::getComputedAmount)
+                .sum();
+    }
+
     public List<InvoiceBonus> findByInvoice(String invoiceuuid) {
         return InvoiceBonus.list("invoiceuuid = ?1", invoiceuuid);
     }

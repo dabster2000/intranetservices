@@ -105,6 +105,12 @@ public class InvoiceResource {
         return invoiceService.countBonusApproval(invoiceStatuses);
     }
 
+    @GET
+    @Path("/bonus-approval/{invoiceuuid}")
+    public BonusApprovalRow bonusApprovalRow(@PathParam("invoiceuuid") String invoiceuuid) {
+        return invoiceService.findBonusApprovalRow(invoiceuuid);
+    }
+
     // ---------------- helpers ----------------
 
     /** Parse CSV and repeated query params into an enum list, ignoring invalid values. */

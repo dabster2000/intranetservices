@@ -254,7 +254,7 @@ public class InvoiceBonusResource {
     @POST
     @Path("/{bonusuuid}/approve")
     @Transactional
-    public void approve(@PathParam("bonusuuid") String bonusuuid,
+    public dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse approve(@PathParam("bonusuuid") String bonusuuid,
                         @HeaderParam("X-Requested-By") String approver) {
         String resolved = (approver != null && !approver.isBlank())
                 ? approver
@@ -262,12 +262,17 @@ public class InvoiceBonusResource {
         if (resolved == null || resolved.isBlank())
             throw new WebApplicationException(Response.Status.UNAUTHORIZED);
         service.approve(bonusuuid, resolved);
+        InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
+        String invoiceuuid = ib.getInvoiceuuid();
+        var agg = service.aggregatedStatusForInvoice(invoiceuuid);
+        double total = service.totalBonusAmountForInvoice(invoiceuuid);
+        return new dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
     @POST
     @Path("/{bonusuuid}/reject")
     @Transactional
-    public void reject(@PathParam("bonusuuid") String bonusuuid,
+    public dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse reject(@PathParam("bonusuuid") String bonusuuid,
                        @HeaderParam("X-Requested-By") String approver,
                        String note) {
         String resolved = (approver != null && !approver.isBlank())
@@ -276,6 +281,11 @@ public class InvoiceBonusResource {
         if (resolved == null || resolved.isBlank())
             throw new WebApplicationException(Response.Status.UNAUTHORIZED);
         service.reject(bonusuuid, resolved, note);
+        InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
+        String invoiceuuid = ib.getInvoiceuuid();
+        var agg = service.aggregatedStatusForInvoice(invoiceuuid);
+        double total = service.totalBonusAmountForInvoice(invoiceuuid);
+        return new dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
     // ------------------- NYT: linjevalg pr. bonus -------------------
@@ -291,7 +301,7 @@ public class InvoiceBonusResource {
     @PUT
     @Path("/{bonusuuid}/lines")
     @Transactional
-    public Response putLines(@PathParam("invoiceuuid") String invoiceuuid,
+    public dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse putLines(@PathParam("invoiceuuid") String invoiceuuid,
                              @PathParam("bonusuuid") String bonusuuid,
                              List<LineDTO> body) {
         List<InvoiceBonusLine> mapped = body == null ? List.of() :
@@ -302,7 +312,9 @@ public class InvoiceBonusResource {
                     return l;
                 }).toList();
         service.putLines(invoiceuuid, bonusuuid, mapped);
-        return Response.noContent().build();
+        var agg = service.aggregatedStatusForInvoice(invoiceuuid);
+        double total = service.totalBonusAmountForInvoice(invoiceuuid);
+        return new dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
     @DELETE
