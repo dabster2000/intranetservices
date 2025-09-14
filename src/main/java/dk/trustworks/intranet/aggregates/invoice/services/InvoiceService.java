@@ -748,13 +748,12 @@ public class InvoiceService {
         return statuses;
     }
 
-    // ADD main page builder for the grid
     public List<BonusApprovalRow> findBonusApprovalPage(List<InvoiceStatus> rawStatuses,
-                                                                  int pageIdx, int pageSize) {
+                                                        int pageIdx, int pageSize) {
 
         var statuses = defaultStatuses(rawStatuses);
 
-        // 1) Pick invoice page (only those that have bonus rows)
+        // 1) page of invoices that have at least one bonus row
         String baseJpql = """
         SELECT i FROM Invoice i
         WHERE i.status IN :st
@@ -770,34 +769,25 @@ public class InvoiceService {
         List<Invoice> page = q.getResultList();
         if (page.isEmpty()) return List.of();
 
-        // Collect uuids
+        // Collect invoice ids once
         var ids = page.stream().map(Invoice::getUuid).toList();
 
-        // 2) Amount (excl. VAT): SUM(hours*rate) grouped by invoiceuuid
-        var amountByInvoice = new HashMap<String, Double>();
-        {
-            String sumItems = "SELECT ii.invoiceuuid, SUM(ii.rate * ii.hours) " +
-                    "FROM InvoiceItem ii WHERE ii.invoiceuuid IN :ids GROUP BY ii.invoiceuuid";
-            var rows = em.createQuery(sumItems, Object[].class)
-                    .setParameter("ids", ids)
-                    .getResultList();
-            for (Object[] r : rows) {
-                amountByInvoice.put((String) r[0], ((Number) r[1]).doubleValue());
-            }
-        }
+        // 2) Amount (excl. VAT) = SUM(hours * rate) over *persisted* items (incl. CALCULATED)
+        Map<String, Double> amountByInvoice = sumAmountNoTaxByInvoice(ids);
 
-        // 3) Bonus aggregates: sum(computedAmount) + aggregated status
+        // 3) Bonus aggregates (sum + aggregated status)
         var bonusSumByInvoice = new HashMap<String, Double>();
         var statusAggByInvoice = new HashMap<String, SalesApprovalStatus>();
         {
-            String qBonus = "SELECT b.invoiceuuid, b.status, b.computedAmount " +
-                    "FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b " +
-                    "WHERE b.invoiceuuid IN :ids";
+            String qBonus = """
+            SELECT b.invoiceuuid, b.status, b.computedAmount
+            FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+            WHERE b.invoiceuuid IN :ids
+        """;
             var rows = em.createQuery(qBonus, Object[].class)
                     .setParameter("ids", ids)
                     .getResultList();
 
-            // prepare buckets
             var tmp = new HashMap<String, List<InvoiceBonus>>();
             for (Object[] r : rows) {
                 var ib = new InvoiceBonus();
@@ -820,12 +810,15 @@ public class InvoiceService {
             }
         }
 
-        // 4) Gather consultant UUIDs per invoice (only non-null)
+        // 4) Users per invoice
         Map<String, Set<String>> usersByInvoice = new HashMap<>();
         Set<String> allUserIds = new HashSet<>();
         {
-            String qUsers = "SELECT ii.invoiceuuid, ii.consultantuuid FROM InvoiceItem ii " +
-                    "WHERE ii.invoiceuuid IN :ids AND ii.consultantuuid IS NOT NULL";
+            String qUsers = """
+            SELECT ii.invoiceuuid, ii.consultantuuid
+            FROM InvoiceItem ii
+            WHERE ii.invoiceuuid IN :ids AND ii.consultantuuid IS NOT NULL
+        """;
             var rs = em.createQuery(qUsers, Object[].class)
                     .setParameter("ids", ids)
                     .getResultList();
@@ -838,20 +831,19 @@ public class InvoiceService {
             }
         }
 
-        // 5) Load users (shallow), then hydrate statuses; build quick map
+        // 5) Load users (once), hydrate statuses, build map
         List<User> users = allUserIds.isEmpty() ? List.of()
                 : User.<User>list("uuid in ?1", allUserIds);
         users.forEach(UserService::addChildrenToUser);
         Map<String, User> userById = new HashMap<>();
         users.forEach(u -> userById.put(u.getUuid(), u));
 
-        // 6) Build rows incl. companies
+        // 6) Build rows, using precomputed SUM instead of PricingEngine
         List<BonusApprovalRow> rows = new ArrayList<>(page.size());
         for (Invoice i : page) {
-            double amountNoTax = engineAmountNoVat(i);
-
-            // Compute unique companies for this invoice at invoice date
+            double amountNoTax = amountByInvoice.getOrDefault(i.getUuid(), 0.0);
             Set<Company> companies = new LinkedHashSet<>();
+
             for (String uid : usersByInvoice.getOrDefault(i.getUuid(), Set.of())) {
                 User u = userById.get(uid);
                 if (u == null) continue;
@@ -900,20 +892,18 @@ public class InvoiceService {
         return q.getSingleResult();
     }
 
-    /** Page invoices (within default invoice lifecycle set) filtered by aggregated bonus status. */
-    public List<BonusApprovalRow> findBonusApprovalPageByBonusStatus(
-            List<SalesApprovalStatus> bonusStatuses,
-            int pageIdx, int pageSize) {
+    public List<BonusApprovalRow> findBonusApprovalPageByBonusStatus(List<SalesApprovalStatus> bonusStatuses,
+                                                                     int pageIdx, int pageSize) {
 
-        var invStatuses = defaultStatuses(List.of()); // default lifecycle statuses
+        var invStatuses = defaultStatuses(List.of());
         String aggWhere = buildAggregatedStatusWhere(bonusStatuses);
 
         String baseJpql = """
-            SELECT i FROM Invoice i
-            WHERE i.status IN :st
-              """ + aggWhere + """
-            ORDER BY i.invoicedate DESC, i.invoicenumber DESC
-        """;
+        SELECT i FROM Invoice i
+        WHERE i.status IN :st
+          """ + aggWhere + """
+        ORDER BY i.invoicedate DESC, i.invoicenumber DESC
+    """;
 
         var q = em.createQuery(baseJpql, Invoice.class)
                 .setParameter("st", invStatuses)
@@ -926,28 +916,19 @@ public class InvoiceService {
         List<Invoice> page = q.getResultList();
         if (page.isEmpty()) return List.of();
 
-        // --- reuse your existing aggregation logic below ---
-
         var ids = page.stream().map(Invoice::getUuid).toList();
 
-        var amountByInvoice = new HashMap<String, Double>();
-        {
-            String sumItems = "SELECT ii.invoiceuuid, SUM(ii.rate * ii.hours) " +
-                    "FROM InvoiceItem ii WHERE ii.invoiceuuid IN :ids GROUP BY ii.invoiceuuid";
-            var rows = em.createQuery(sumItems, Object[].class)
-                    .setParameter("ids", ids)
-                    .getResultList();
-            for (Object[] r : rows) {
-                amountByInvoice.put((String) r[0], ((Number) r[1]).doubleValue());
-            }
-        }
+        // Reuse fast SUM aggregation
+        Map<String, Double> amountByInvoice = sumAmountNoTaxByInvoice(ids);
 
         var bonusSumByInvoice = new HashMap<String, Double>();
         var statusAggByInvoice = new HashMap<String, SalesApprovalStatus>();
         {
-            String qBonus = "SELECT b.invoiceuuid, b.status, b.computedAmount " +
-                    "FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b " +
-                    "WHERE b.invoiceuuid IN :ids";
+            String qBonus = """
+            SELECT b.invoiceuuid, b.status, b.computedAmount
+            FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+            WHERE b.invoiceuuid IN :ids
+        """;
             var rows = em.createQuery(qBonus, Object[].class)
                     .setParameter("ids", ids)
                     .getResultList();
@@ -974,12 +955,14 @@ public class InvoiceService {
             }
         }
 
-        // 4) Gather consultant UUIDs per invoice (only non-null)
         Map<String, Set<String>> usersByInvoice = new HashMap<>();
         Set<String> allUserIds = new HashSet<>();
         {
-            String qUsers = "SELECT ii.invoiceuuid, ii.consultantuuid FROM InvoiceItem ii " +
-                    "WHERE ii.invoiceuuid IN :ids AND ii.consultantuuid IS NOT NULL";
+            String qUsers = """
+            SELECT ii.invoiceuuid, ii.consultantuuid
+            FROM InvoiceItem ii
+            WHERE ii.invoiceuuid IN :ids AND ii.consultantuuid IS NOT NULL
+        """;
             var rs = em.createQuery(qUsers, Object[].class)
                     .setParameter("ids", ids)
                     .getResultList();
@@ -992,19 +975,15 @@ public class InvoiceService {
             }
         }
 
-        // 5) Load users (shallow), then hydrate statuses; build quick map
         List<User> users = allUserIds.isEmpty() ? List.of()
                 : User.<User>list("uuid in ?1", allUserIds);
         users.forEach(UserService::addChildrenToUser);
         Map<String, User> userById = new HashMap<>();
         users.forEach(u -> userById.put(u.getUuid(), u));
 
-        // 6) Build rows incl. companies
         List<BonusApprovalRow> rows = new ArrayList<>(page.size());
         for (Invoice i : page) {
-            double amountNoTax = engineAmountNoVat(i);
-
-            // Compute unique companies for this invoice at invoice date
+            double amountNoTax = amountByInvoice.getOrDefault(i.getUuid(), 0.0);
             Set<Company> companies = new LinkedHashSet<>();
             for (String uid : usersByInvoice.getOrDefault(i.getUuid(), Set.of())) {
                 User u = userById.get(uid);
@@ -1012,7 +991,6 @@ public class InvoiceService {
                 UserStatus st = userService.getUserStatus(u, i.getInvoicedate());
                 if (st != null && st.getCompany() != null) companies.add(st.getCompany());
             }
-
             rows.add(new BonusApprovalRow(
                     i.getUuid(),
                     i.getInvoicenumber(),
@@ -1026,6 +1004,24 @@ public class InvoiceService {
             ));
         }
         return rows;
+    }
+
+    // --- ADD THIS SMALL HELPER (in the same class) ---
+    private Map<String, Double> sumAmountNoTaxByInvoice(Collection<String> ids) {
+        if (ids == null || ids.isEmpty()) return Map.of();
+        var rows = em.createQuery("""
+            SELECT ii.invoiceuuid, SUM(ii.rate * ii.hours)
+            FROM InvoiceItem ii
+            WHERE ii.invoiceuuid IN :ids
+            GROUP BY ii.invoiceuuid
+        """, Object[].class)
+                .setParameter("ids", ids)
+                .getResultList();
+        Map<String, Double> out = new HashMap<>();
+        for (Object[] r : rows) {
+            out.put((String) r[0], ((Number) r[1]).doubleValue());
+        }
+        return out;
     }
 
     /**
