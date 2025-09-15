@@ -575,7 +575,11 @@ High-level Flow
 
 5) Reference and bonus handling
     - Reference numbers and invoice references can be updated via InvoiceService.updateInvoiceReference.
-    - Sales/bonus approval: Invoice.bonusConsultant, bonus amounts/override and SalesApprovalStatus are handled via InvoiceService.updateInvoiceBonusStatus.
+    - **Legacy bonus fields**: Invoice.bonusConsultant, bonus amounts/override handled via InvoiceService.updateInvoiceBonusStatus.
+    - **New bonus system**: Comprehensive bonus management via InvoiceBonusService with eligibility validation, self-assignment, and approval workflows.
+    - **Financial year-based eligibility**: BonusEligibility entries control self-assignment per FY (July 1 - June 30).
+    - **Bonus types**: PERCENT (0-100% of invoice) or AMOUNT (fixed value in invoice currency).
+    - **Per-line allocation**: InvoiceBonusLine enables distribution across specific invoice items.
 
 6) Economics and payment lifecycle
     - EconomicsInvoiceStatus reflects integration status with e-conomics:
@@ -1030,12 +1034,28 @@ This allows lazy loading of larger datasets while still enabling `setAllRowsVisi
 
 ## Notes & Bonus Handling
 
+### Invoice Notes
 - **Notes lifecycle:** One `InvoiceNote` per **contract+project+month**. Edited via `InvoiceService.getInvoiceNote` / `updateInvoiceNote` from the UI. (Note: `InvoiceNote` is stored outside this schema.)
+
+### Legacy Bonus System (invoice table columns)
 - **Bonus handling:**
     - `bonus_consultant`: recipient of sales/bonus.
     - `bonus_consultant_approved`: 0/1 approval switch.
     - `bonus_override_amount`, `bonus_override_note`: absolute override and rationale.
     - Updated via `InvoiceService.updateInvoiceBonusStatus`.
+
+### New Bonus System (separate tables)
+- **invoice_bonuses**: One bonus per user per invoice with share type/value, computed amount, and approval status
+- **invoice_bonus_lines**: Per-item allocation of bonuses across invoice line items
+- **invoice_bonus_eligibility**: Whitelist controlling self-assignment permissions per financial year
+- **invoice_bonus_eligibility_group**: Groups organizing eligibility entries by financial year
+
+#### Bonus Workflow
+1. **Eligibility Setup**: Admin creates BonusEligibilityGroup for FY and adds users with canSelfAssign flag
+2. **Self-Assignment**: Eligible consultants add bonuses via `/invoices/{id}/bonuses/self`
+3. **Admin Override**: Admins can add bonuses for any user via `/invoices/{id}/bonuses`
+4. **Approval**: Finance/Admin approves or rejects bonuses, updating status
+5. **Aggregation**: Invoice shows aggregated bonus status (PENDING if any pending, REJECTED if any rejected, else APPROVED)
 
 ---
 
@@ -1127,6 +1147,8 @@ WHERE duedate BETWEEN CURRENT_DATE() AND DATE_ADD(CURRENT_DATE(), INTERVAL 7 DAY
 
 > Exact DDL from the current database.
 
+### Core Invoice Tables
+
 ```sql
 CREATE TABLE `invoices` (
   `uuid` varchar(40) NOT NULL,
@@ -1189,6 +1211,63 @@ CREATE TABLE `invoiceitems` (
   KEY `invoiceitems_invoices_uuid_fk` (`invoiceuuid`),
   CONSTRAINT `invoiceitems_invoices_uuid_fk` FOREIGN KEY (`invoiceuuid`) REFERENCES `invoices` (`uuid`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
+```
+
+### Invoice Bonus Tables
+
+```sql
+CREATE TABLE invoice_bonuses (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    invoiceuuid VARCHAR(40) NOT NULL,
+    useruuid VARCHAR(36) NOT NULL,
+    share_type VARCHAR(16) NOT NULL,
+    share_value DOUBLE NOT NULL,
+    computed_amount DOUBLE NOT NULL DEFAULT 0,
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    override_note TEXT NULL,
+    added_by VARCHAR(36) NOT NULL,
+    approved_by VARCHAR(36) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    approved_at DATETIME NULL,
+    UNIQUE KEY ux_invoice_bonuses_invoice_user (invoiceuuid, useruuid),
+    KEY idx_invbon_invoiceuuid (invoiceuuid),
+    KEY idx_invbon_useruuid (useruuid),
+    CONSTRAINT fk_invbonus_invoice FOREIGN KEY (invoiceuuid) REFERENCES invoices(uuid) ON DELETE CASCADE,
+    CONSTRAINT fk_invbonus_user FOREIGN KEY (useruuid) REFERENCES user(uuid) ON DELETE CASCADE,
+    CONSTRAINT chk_share_type CHECK (share_type IN ('PERCENT','AMOUNT')),
+    CONSTRAINT chk_status CHECK (status IN ('PENDING','APPROVED','REJECTED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE invoice_bonus_lines (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    bonusuuid VARCHAR(36) NOT NULL,
+    invoiceuuid VARCHAR(40) NOT NULL,
+    invoiceitemuuid VARCHAR(36) NOT NULL,
+    percentage DOUBLE NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY ux_invbonusline_bonus_item (bonusuuid, invoiceitemuuid),
+    KEY idx_invbonus_lines_bonus (bonusuuid),
+    CONSTRAINT fk_invbonus_lines_bonus FOREIGN KEY (bonusuuid) REFERENCES invoice_bonuses(uuid) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE invoice_bonus_eligibility_group (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    financial_year INT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE invoice_bonus_eligibility (
+    uuid VARCHAR(36) NOT NULL PRIMARY KEY,
+    group_uuid VARCHAR(36) NULL,
+    useruuid VARCHAR(36) NOT NULL,
+    financial_year INT NOT NULL,
+    can_self_assign TINYINT(1) NOT NULL DEFAULT 0,
+    UNIQUE KEY uq_eligibility_user_fy (useruuid, financial_year),
+    KEY idx_invoice_bonus_eligibility_group_uuid (group_uuid),
+    CONSTRAINT fk_inv_bonus_elig_user FOREIGN KEY (useruuid) REFERENCES user(uuid) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 ```
 
 # Manual Invoice Ledger Entry

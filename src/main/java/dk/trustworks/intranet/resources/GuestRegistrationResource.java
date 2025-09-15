@@ -16,7 +16,7 @@ import java.util.List;
 @JBossLog
 @Path("/registration/guest")
 @RequestScoped
-@RolesAllowed({"APPLICATION"})
+@RolesAllowed({"APPLICATION", "SYSTEM"})
 @SecurityRequirement(name = "jwt")
 @Produces("application/json")
 @Consumes("application/json")

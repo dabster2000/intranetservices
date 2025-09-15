@@ -252,8 +252,8 @@ public class InvoiceBonusResource {
     @POST
     @Path("/{bonusuuid}/approve")
     @Transactional
-    public dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse approve(@PathParam("bonusuuid") String bonusuuid,
-                        @HeaderParam("X-Requested-By") String approver) {
+    public BonusAggregateResponse approve(@PathParam("bonusuuid") String bonusuuid,
+                                          @HeaderParam("X-Requested-By") String approver) {
         String resolved = (approver != null && !approver.isBlank())
                 ? approver
                 : (jwt.containsClaim("uuid") ? jwt.getClaim("uuid") : jwt.getSubject());
@@ -264,13 +264,13 @@ public class InvoiceBonusResource {
         String invoiceuuid = ib.getInvoiceuuid();
         var agg = service.aggregatedStatusForInvoice(invoiceuuid);
         double total = service.totalBonusAmountForInvoice(invoiceuuid);
-        return new dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse(invoiceuuid, agg, total);
+        return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
     @POST
     @Path("/{bonusuuid}/reject")
     @Transactional
-    public dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse reject(@PathParam("bonusuuid") String bonusuuid,
+    public BonusAggregateResponse reject(@PathParam("bonusuuid") String bonusuuid,
                        @HeaderParam("X-Requested-By") String approver,
                        String note) {
         String resolved = (approver != null && !approver.isBlank())
@@ -283,7 +283,7 @@ public class InvoiceBonusResource {
         String invoiceuuid = ib.getInvoiceuuid();
         var agg = service.aggregatedStatusForInvoice(invoiceuuid);
         double total = service.totalBonusAmountForInvoice(invoiceuuid);
-        return new dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse(invoiceuuid, agg, total);
+        return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
     // ------------------- NYT: linjevalg pr. bonus -------------------
