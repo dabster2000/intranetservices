@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -28,15 +29,15 @@ import dk.trustworks.intranet.utils.DateUtils;
 @ApplicationScoped
 public class InvoiceBonusService {
 
-    public dk.trustworks.intranet.model.enums.SalesApprovalStatus aggregatedStatusForInvoice(String invoiceuuid) {
+    public SalesApprovalStatus aggregatedStatusForInvoice(String invoiceuuid) {
         List<InvoiceBonus> bonuses = InvoiceBonus.list("invoiceuuid = ?1", invoiceuuid);
-        boolean hasPending = bonuses.stream().anyMatch(b -> b.getStatus() == dk.trustworks.intranet.model.enums.SalesApprovalStatus.PENDING);
-        boolean hasRejected = bonuses.stream().anyMatch(b -> b.getStatus() == dk.trustworks.intranet.model.enums.SalesApprovalStatus.REJECTED);
-        boolean hasApproved = bonuses.stream().anyMatch(b -> b.getStatus() == dk.trustworks.intranet.model.enums.SalesApprovalStatus.APPROVED);
-        if (hasPending) return dk.trustworks.intranet.model.enums.SalesApprovalStatus.PENDING;
-        if (hasRejected) return dk.trustworks.intranet.model.enums.SalesApprovalStatus.REJECTED;
-        if (hasApproved) return dk.trustworks.intranet.model.enums.SalesApprovalStatus.APPROVED;
-        return dk.trustworks.intranet.model.enums.SalesApprovalStatus.PENDING;
+        boolean hasPending = bonuses.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.PENDING);
+        boolean hasRejected = bonuses.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.REJECTED);
+        boolean hasApproved = bonuses.stream().anyMatch(b -> b.getStatus() == SalesApprovalStatus.APPROVED);
+        if (hasPending) return SalesApprovalStatus.PENDING;
+        if (hasRejected) return SalesApprovalStatus.REJECTED;
+        if (hasApproved) return SalesApprovalStatus.APPROVED;
+        return SalesApprovalStatus.PENDING;
     }
 
     public double totalBonusAmountForInvoice(String invoiceuuid) {
@@ -420,5 +421,194 @@ public class InvoiceBonusService {
     public void deleteEligibilityByUseruuid(String useruuid) {
         long deleted = BonusEligibility.delete("useruuid", useruuid);
         if (deleted == 0) throw new WebApplicationException(Response.Status.NOT_FOUND);
+    }
+
+    /**
+     * Calculates approved bonus amounts per user, split by their company affiliation
+     * at the time of each invoice for a given financial year.
+     *
+     * @param financialYear The financial year (e.g., 2025 for FY 2025-07-01 to 2026-06-30)
+     * @param periodStart   Start date of the financial year (inclusive)
+     * @param periodEnd     End date of the financial year (inclusive)
+     * @return Map of user UUID to list of company amounts
+     */
+    public Map<String, List<dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount>>
+    calculateCompanyBonusShareByFinancialYear(int financialYear, LocalDate periodStart, LocalDate periodEnd) {
+        // Result map: userId -> List of CompanyAmount
+        Map<String, Map<String, Double>> userCompanyAmounts = new HashMap<>();
+        Map<String, String> companyNames = new HashMap<>();
+
+        // Cache for user status lookups to avoid repeated queries
+        Map<String, Map<LocalDate, UserStatus>> userStatusCache = new HashMap<>();
+
+        // Query all invoices within the financial year that have approved bonuses
+        // Optimized: Get only invoices that actually have approved bonuses
+        List<Invoice> invoicesWithBonuses = Panache.getEntityManager()
+                .createQuery("""
+                    SELECT DISTINCT i FROM Invoice i
+                    WHERE i.invoicedate >= :startDate
+                    AND i.invoicedate <= :endDate
+                    AND EXISTS (
+                        SELECT 1 FROM InvoiceBonus b
+                        WHERE b.invoiceuuid = i.uuid
+                        AND b.status = :approvedStatus
+                    )
+                    """, Invoice.class)
+                .setParameter("startDate", periodStart)
+                .setParameter("endDate", periodEnd)
+                .setParameter("approvedStatus", SalesApprovalStatus.APPROVED)
+                .getResultList();
+
+        // Batch load all approved bonuses for these invoices
+        if (invoicesWithBonuses.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        List<String> invoiceIds = invoicesWithBonuses.stream()
+                .map(Invoice::getUuid)
+                .toList();
+
+        List<InvoiceBonus> allApprovedBonuses = InvoiceBonus.list(
+                "invoiceuuid in ?1 and status = ?2",
+                invoiceIds, SalesApprovalStatus.APPROVED
+        );
+
+        // Group bonuses by invoice for efficient processing
+        Map<String, List<InvoiceBonus>> bonusesByInvoice = allApprovedBonuses.stream()
+                .collect(Collectors.groupingBy(InvoiceBonus::getInvoiceuuid));
+
+        // Batch load all bonus lines
+        List<String> bonusIds = allApprovedBonuses.stream()
+                .map(InvoiceBonus::getUuid)
+                .toList();
+
+        List<InvoiceBonusLine> allBonusLines = bonusIds.isEmpty() ?
+                new ArrayList<>() :
+                InvoiceBonusLine.list("bonusuuid in ?1", bonusIds);
+
+        Map<String, List<InvoiceBonusLine>> linesByBonus = allBonusLines.stream()
+                .collect(Collectors.groupingBy(InvoiceBonusLine::getBonusuuid));
+
+        // Process each invoice with its bonuses
+        for (Invoice invoice : invoicesWithBonuses) {
+            LocalDate invoiceDate = invoice.getInvoicedate();
+            if (invoiceDate == null) continue;
+
+            List<InvoiceBonus> invoiceBonuses = bonusesByInvoice.getOrDefault(invoice.getUuid(), new ArrayList<>());
+
+            // Process each approved bonus
+            for (InvoiceBonus bonus : invoiceBonuses) {
+                String userId = bonus.getUseruuid();
+                double bonusAmount = bonus.getComputedAmount();
+
+                // Get user's company at invoice date (with caching)
+                UserStatus userStatus = getUserStatusCached(userId, invoiceDate, userStatusCache);
+
+                String companyId = "unknown";
+                String companyName = "Unknown Company";
+
+                if (userStatus != null && userStatus.getCompany() != null) {
+                    companyId = userStatus.getCompany().getUuid();
+                    companyName = userStatus.getCompany().getName();
+                    companyNames.put(companyId, companyName);
+                }
+
+                // Check if there are line-level allocations
+                List<InvoiceBonusLine> bonusLines = linesByBonus.getOrDefault(bonus.getUuid(), new ArrayList<>());
+
+                if (!bonusLines.isEmpty()) {
+                    // Calculate amount based on line allocations
+                    for (InvoiceBonusLine line : bonusLines) {
+                        double lineAmount = bonusAmount * (line.getPercentage() / 100.0);
+                        lineAmount = round2(lineAmount);
+
+                        // Add to user's company total
+                        userCompanyAmounts
+                                .computeIfAbsent(userId, k -> new HashMap<>())
+                                .merge(companyId, lineAmount, Double::sum);
+                    }
+                } else {
+                    // No line allocations, use full bonus amount
+                    userCompanyAmounts
+                            .computeIfAbsent(userId, k -> new HashMap<>())
+                            .merge(companyId, bonusAmount, Double::sum);
+                }
+            }
+        }
+
+        // Transform the aggregated data into the response format
+        Map<String, List<dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount>> result = new HashMap<>();
+
+        for (Map.Entry<String, Map<String, Double>> userEntry : userCompanyAmounts.entrySet()) {
+            String userId = userEntry.getKey();
+            Map<String, Double> companyTotals = userEntry.getValue();
+
+            List<dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount> companyAmountList =
+                    companyTotals.entrySet().stream()
+                            .map(entry -> new dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount(
+                                    entry.getKey(),
+                                    companyNames.getOrDefault(entry.getKey(), "Unknown Company"),
+                                    round2(entry.getValue())
+                            ))
+                            .sorted((a, b) -> Double.compare(b.amount(), a.amount())) // Sort by amount descending
+                            .toList();
+
+            result.put(userId, companyAmountList);
+        }
+
+        return result;
+    }
+
+    /**
+     * Gets the full name of a user by their UUID.
+     *
+     * @param userId The user UUID
+     * @return Full name (firstname + lastname) or "Unknown User" if not found
+     */
+    public String getUserFullName(String userId) {
+        User user = User.findById(userId);
+        if (user == null) {
+            return "Unknown User";
+        }
+        return user.getFirstname() + " " + user.getLastname();
+    }
+
+    /**
+     * Helper method to get user status with caching to avoid repeated queries.
+     *
+     * @param userId The user UUID
+     * @param date The date to get status for
+     * @param cache The cache map to use
+     * @return UserStatus at the given date, or null if not found
+     */
+    private UserStatus getUserStatusCached(String userId,
+                                          LocalDate date,
+                                          Map<String, Map<LocalDate, UserStatus>> cache) {
+        // Check cache first
+        Map<LocalDate, UserStatus> userCache = cache.get(userId);
+        if (userCache != null && userCache.containsKey(date)) {
+            return userCache.get(date);
+        }
+
+        // Load user and get status
+        User user = User.findById(userId);
+        if (user == null) {
+            // Cache null result
+            cache.computeIfAbsent(userId, k -> new HashMap<>()).put(date, null);
+            return null;
+        }
+
+        // Load user statuses if not already loaded
+        if (user.getStatuses() == null || user.getStatuses().isEmpty()) {
+            List<UserStatus> statuses = UserStatus.findByUseruuid(userId);
+            user.setStatuses(statuses);
+        }
+
+        UserStatus status = user.getUserStatus(date);
+
+        // Cache the result
+        cache.computeIfAbsent(userId, k -> new HashMap<>()).put(date, status);
+
+        return status;
     }
 }
