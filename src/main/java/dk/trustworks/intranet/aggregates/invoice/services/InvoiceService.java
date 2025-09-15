@@ -866,14 +866,6 @@ public class InvoiceService {
         return rows;
     }
 
-    private double engineAmountNoVat(Invoice i) {
-        Map<String, String> cti = new HashMap<>();
-        ContractTypeItem.<ContractTypeItem>find("contractuuid", i.getContractuuid())
-                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
-        var pr = pricingEngine.price(i, cti);
-        return pr.sumAfterDiscounts.doubleValue(); // "Amount (excl. VAT)"
-    }
-
     /** Count invoices (within default invoice lifecycle set) filtered by aggregated bonus status. */
     public long countBonusApprovalByBonusStatus(List<SalesApprovalStatus> bonusStatuses) {
         var invStatuses = defaultStatuses(List.of()); // -> CREATED, SUBMITTED, PAID, CREDIT_NOTE

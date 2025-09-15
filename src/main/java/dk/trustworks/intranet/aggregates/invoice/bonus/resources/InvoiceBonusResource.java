@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -301,7 +302,7 @@ public class InvoiceBonusResource {
     @PUT
     @Path("/{bonusuuid}/lines")
     @Transactional
-    public dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse putLines(@PathParam("invoiceuuid") String invoiceuuid,
+    public BonusAggregateResponse putLines(@PathParam("invoiceuuid") String invoiceuuid,
                              @PathParam("bonusuuid") String bonusuuid,
                              List<LineDTO> body) {
         List<InvoiceBonusLine> mapped = body == null ? List.of() :
@@ -314,7 +315,7 @@ public class InvoiceBonusResource {
         service.putLines(invoiceuuid, bonusuuid, mapped);
         var agg = service.aggregatedStatusForInvoice(invoiceuuid);
         double total = service.totalBonusAmountForInvoice(invoiceuuid);
-        return new dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse(invoiceuuid, agg, total);
+        return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
     @DELETE

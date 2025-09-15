@@ -2,6 +2,7 @@
 package dk.trustworks.intranet.aggregates.invoice.bonus.services;
 
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
+import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibilityGroup;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus.ShareType;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
@@ -183,16 +184,6 @@ public class InvoiceBonusService {
         ib.persist();
     }
 
-    /*
-    private String resolveUserUuid(String input) {
-        if (input == null || input.isBlank()) return null;
-        try { java.util.UUID.fromString(input); } catch (Exception e) { input = null; }
-        if (input != null && User.findById(input) != null) return input;
-        return User.findByUsername(input).map(u -> u.uuid).orElse(null);
-    }
-
-     */
-
     private String resolveUserUuid(String input) {
         if (input == null || input.isBlank()) return null;
         // If it's a UUID and exists as a user, accept it
@@ -364,19 +355,42 @@ public class InvoiceBonusService {
     }
 
     @Transactional
-    public BonusEligibility upsertEligibility(String useruuid, boolean canSelfAssign, LocalDate activeFrom, LocalDate activeTo) {
+    public BonusEligibility upsertEligibility(String useruuid,
+                                              boolean canSelfAssign,
+                                              LocalDate activeFrom,
+                                              LocalDate activeTo,
+                                              String groupUuid) {
         if (activeFrom != null && activeTo != null && activeFrom.isAfter(activeTo)) {
             throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
                     .entity("activeFrom must be on or before activeTo").build());
         }
+
+        BonusEligibilityGroup desiredGroup = null;
+        if (groupUuid != null && !groupUuid.isBlank()) {
+            desiredGroup = BonusEligibilityGroup.find("uuid", groupUuid).firstResult();
+            if (desiredGroup == null) {
+                throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                        .entity("groupUuid does not exist: " + groupUuid).build());
+            }
+        }
+
         BonusEligibility be = BonusEligibility.find("useruuid", useruuid).firstResult();
         if (be == null) {
             be = new BonusEligibility();
             be.setUseruuid(useruuid);
         }
+
+        // ✅ Assign / Unassign
+        if (desiredGroup != null) {
+            be.setGroup(desiredGroup);
+        } else {
+            be.setGroup(null); // <— vigtig for “Unassign”
+        }
+
         be.setCanSelfAssign(canSelfAssign);
         if (activeFrom != null) be.setActiveFrom(activeFrom);
-        if (activeTo != null) be.setActiveTo(activeTo);
+        if (activeTo != null)   be.setActiveTo(activeTo);
+
         be.persist();
         return be;
     }

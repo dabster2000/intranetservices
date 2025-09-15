@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import jakarta.annotation.security.RolesAllowed;
@@ -32,8 +34,17 @@ public class BonusEligibilityResource {
             @Schema(description = "User UUID") String useruuid,
             @Schema(description = "May self-assign?") boolean canSelfAssign,
             @Schema(description = "Active from (inclusive)") LocalDate activeFrom,
-            @Schema(description = "Active to (inclusive)") LocalDate activeTo
-    ) {}
+            @Schema(description = "Active to (inclusive)") LocalDate activeTo,
+            @JsonProperty("groupuuid")
+            //@JsonAlias({"groupuuid", "group_uuid"})
+            @Schema(description = "Optional: Target BonusEligibilityGroup UUID to assign")
+            String groupUuid
+    ) {
+        @Override public String toString() { /* uændret eller som før */
+            return "EligibilityDTO{useruuid='%s', canSelfAssign=%s, activeFrom=%s, activeTo=%s, groupUuid='%s'}"
+                    .formatted(useruuid, canSelfAssign, activeFrom, activeTo, groupUuid);
+        }
+    }
 
     @GET
     @Operation(summary = "List eligibility entries",
@@ -47,6 +58,7 @@ public class BonusEligibilityResource {
     @Operation(summary = "Upsert eligibility",
                description = "Create or update an eligibility row for a user")
     public Response upsertEligibility(EligibilityDTO dto) {
+        System.out.println("dto = " + dto);
         if (dto == null || dto.useruuid() == null || dto.useruuid().isBlank()) {
             throw new BadRequestException("useruuid is required");
         }
@@ -54,7 +66,8 @@ public class BonusEligibilityResource {
                 dto.useruuid(),
                 dto.canSelfAssign(),
                 dto.activeFrom(),
-                dto.activeTo()
+                dto.activeTo(),
+                dto.groupUuid()
         );
         return Response.status(Response.Status.CREATED).entity(be).build();
     }
