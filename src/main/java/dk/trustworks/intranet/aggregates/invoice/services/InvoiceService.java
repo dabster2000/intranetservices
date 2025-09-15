@@ -1158,8 +1158,8 @@ public class InvoiceService {
             var a = acc.computeIfAbsent(fyStart, k -> new double[2]);
             if (st == SalesApprovalStatus.APPROVED) {
                 a[0] += approvedAmt;                    // approved
-            } else {
-                a[1] += engineOriginalForUser;          // pending = engine original
+            } else if (st == SalesApprovalStatus.PENDING) {
+                a[1] += engineOriginalForUser;          // pending = engine original (exclude REJECTED)
             }
         }
         return acc.entrySet().stream()

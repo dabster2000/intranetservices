@@ -160,27 +160,25 @@ public class BonusEligibilityGroupResource {
     }
 
     /**
-     * --- NEW (endpoint) ---
+     * --- UPDATED (endpoint) ---
      * Convenience endpoint wrapping {@link #sumApprovedForGroupPeriod(BonusEligibilityGroup, LocalDate, LocalDate)}.
-     * If 'from'/'to' are omitted, the group's financial year dates are used.
+     * Takes a financialYear (YYYY). If omitted, the group's own financialYear is used.
      */
     @GET
     @Path("/{uuid}/approved-total")
     @Operation(
-            summary = "Sum approved bonuses for a group within a period",
-            description = "Returns the sum of per-invoice APPROVED bonus totals for all invoices that have at least one approved bonus by a member of the group within the specified period."
+            summary = "Sum approved bonuses for a group in a financial year",
+            description = "Returns the sum of per-invoice APPROVED bonus totals for all invoices that have at least one approved bonus by a member of the group within the specified financial year (July 1 to June 30). If financialYear is not provided, the group's financialYear is used."
     )
     public ApprovedTotalDTO approvedTotalEndpoint(@PathParam("uuid") String uuid,
-                                                  @QueryParam("from") LocalDate from,
-                                                  @QueryParam("to") LocalDate to) {
+                                                  @QueryParam("financialYear") Integer financialYear) {
         BonusEligibilityGroup g = BonusEligibilityGroup.findById(uuid);
         if (g == null) throw new NotFoundException();
 
-        LocalDate start = (from != null) ? from : g.getFinancialYearStart();
-        LocalDate end   = (to   != null) ? to   : g.getFinancialYearEnd();
-        if (start == null || end == null || start.isAfter(end)) {
-            throw new BadRequestException("from must be on or before to");
-        }
+        int fy = (financialYear != null) ? financialYear : g.getFinancialYear();
+        if (fy < 2000 || fy > 2999) throw new BadRequestException("financialYear must be between 2000 and 2999");
+        LocalDate start = LocalDate.of(fy, 7, 1);
+        LocalDate end   = LocalDate.of(fy + 1, 6, 30);
 
         double total = sumApprovedForGroupPeriod(g, start, end);
         return new ApprovedTotalDTO(g.getUuid(), start, end, total);

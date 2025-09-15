@@ -23,6 +23,8 @@ import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import dk.trustworks.intranet.utils.DateUtils;
+
 @ApplicationScoped
 public class InvoiceBonusService {
 
@@ -57,7 +59,7 @@ public class InvoiceBonusService {
     @Transactional
     public InvoiceBonus addSelfAssign(String invoiceuuid, String useruuid,
                                       InvoiceBonus.ShareType type, double value, String note) {
-        assertEligible(useruuid);
+        assertEligibleForInvoice(invoiceuuid, useruuid);
         return addInternal(invoiceuuid, useruuid, useruuid, type, value, note);
     }
 
@@ -345,6 +347,28 @@ public class InvoiceBonusService {
         }
     }
 
+    private static int fiscalYearOf(LocalDate date) {
+        LocalDate fyStart = DateUtils.getFiscalStartDateBasedOnDate(date);
+        return fyStart.getYear();
+    }
+
+    private static String fiscalYearLabel(int fyStartYear) {
+        return fyStartYear + "/" + (fyStartYear + 1);
+    }
+
+    private static void assertEligibleForInvoice(String invoiceuuid, String useruuid) {
+        Invoice inv = Invoice.findById(invoiceuuid);
+        if (inv == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        LocalDate date = inv.getInvoicedate();
+        if (date == null) date = LocalDate.now();
+        int fy = fiscalYearOf(date);
+        BonusEligibility be = BonusEligibility.find("useruuid = ?1 and financialYear = ?2", useruuid, fy).firstResult();
+        if (be == null) {
+            String msg = "User not eligible to self-assign for FY " + fiscalYearLabel(fy);
+            throw new WebApplicationException(Response.status(Response.Status.FORBIDDEN).entity(msg).build());
+        }
+    }
+
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
 
 
@@ -352,32 +376,41 @@ public class InvoiceBonusService {
         return BonusEligibility.listAll();
     }
 
+    public List<BonusEligibility> listEligibility(String useruuid, Integer financialYear) {
+        if (useruuid != null && financialYear != null) {
+            return BonusEligibility.list("useruuid = ?1 and financialYear = ?2", useruuid, financialYear);
+        } else if (useruuid != null) {
+            return BonusEligibility.list("useruuid", useruuid);
+        } else if (financialYear != null) {
+            return BonusEligibility.list("financialYear", financialYear);
+        } else {
+            return listEligibility();
+        }
+    }
+
     @Transactional
     public BonusEligibility upsertEligibility(String useruuid,
                                              boolean canSelfAssign,
                                              String groupUuid) {
-        BonusEligibilityGroup desiredGroup = null;
-        if (groupUuid != null && !groupUuid.isBlank()) {
-            desiredGroup = BonusEligibilityGroup.find("uuid", groupUuid).firstResult();
-            if (desiredGroup == null) {
-                throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
-                        .entity("groupUuid does not exist: " + groupUuid).build());
-            }
+        if (groupUuid == null || groupUuid.isBlank()) {
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity("groupUuid is required").build());
         }
+        BonusEligibilityGroup desiredGroup = BonusEligibilityGroup.find("uuid", groupUuid).firstResult();
+        if (desiredGroup == null) {
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity("groupUuid does not exist: " + groupUuid).build());
+        }
+        int fy = desiredGroup.getFinancialYear();
 
-        BonusEligibility be = BonusEligibility.find("useruuid", useruuid).firstResult();
+        BonusEligibility be = BonusEligibility.find("useruuid = ?1 and financialYear = ?2", useruuid, fy).firstResult();
         if (be == null) {
             be = new BonusEligibility();
             be.setUseruuid(useruuid);
+            be.setFinancialYear(fy);
         }
 
-        // Assign / Unassign
-        if (desiredGroup != null) {
-            be.setGroup(desiredGroup);
-        } else {
-            be.setGroup(null); // Unassign
-        }
-
+        be.setGroup(desiredGroup);
         be.setCanSelfAssign(canSelfAssign);
         be.persist();
         return be;
@@ -385,8 +418,7 @@ public class InvoiceBonusService {
 
     @Transactional
     public void deleteEligibilityByUseruuid(String useruuid) {
-        BonusEligibility be = BonusEligibility.find("useruuid", useruuid).firstResult();
-        if (be == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
-        be.delete();
+        long deleted = BonusEligibility.delete("useruuid", useruuid);
+        if (deleted == 0) throw new WebApplicationException(Response.Status.NOT_FOUND);
     }
 }

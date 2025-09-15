@@ -11,7 +11,7 @@ import java.util.UUID;
 @Getter @Setter
 @Entity
 @Table(name = "invoice_bonus_eligibility_group")
-@Schema(name = "BonusEligibilityGroup", description = "Group of bonus eligibility entries for a financial year (July 1 - June 30)")
+@Schema(name = "BonusEligibilityGroup", description = "Group of bonus eligibility entries for a financial year (July 1 - June 30). Brugere kan være med i forskellige grupper på tværs af år, men kun én eligibility per finansår (håndhæves i BonusEligibility).")
 public class BonusEligibilityGroup extends PanacheEntityBase {
 
     @Id
