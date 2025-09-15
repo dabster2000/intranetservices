@@ -339,9 +339,7 @@ public class InvoiceBonusService {
 
     private static void assertEligible(String useruuid) {
         BonusEligibility be = BonusEligibility.find("useruuid", useruuid).firstResult();
-        var today = LocalDate.now();
-        if (be == null || !be.isCanSelfAssign()
-                || today.isBefore(be.getActiveFrom()) || today.isAfter(be.getActiveTo())) {
+        if (be == null) {
             throw new WebApplicationException(Response.status(Response.Status.FORBIDDEN)
                     .entity("User is not allowed to self‑assign bonus").build());
         }
@@ -356,15 +354,8 @@ public class InvoiceBonusService {
 
     @Transactional
     public BonusEligibility upsertEligibility(String useruuid,
-                                              boolean canSelfAssign,
-                                              LocalDate activeFrom,
-                                              LocalDate activeTo,
-                                              String groupUuid) {
-        if (activeFrom != null && activeTo != null && activeFrom.isAfter(activeTo)) {
-            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
-                    .entity("activeFrom must be on or before activeTo").build());
-        }
-
+                                             boolean canSelfAssign,
+                                             String groupUuid) {
         BonusEligibilityGroup desiredGroup = null;
         if (groupUuid != null && !groupUuid.isBlank()) {
             desiredGroup = BonusEligibilityGroup.find("uuid", groupUuid).firstResult();
@@ -380,17 +371,14 @@ public class InvoiceBonusService {
             be.setUseruuid(useruuid);
         }
 
-        // ✅ Assign / Unassign
+        // Assign / Unassign
         if (desiredGroup != null) {
             be.setGroup(desiredGroup);
         } else {
-            be.setGroup(null); // <— vigtig for “Unassign”
+            be.setGroup(null); // Unassign
         }
 
         be.setCanSelfAssign(canSelfAssign);
-        if (activeFrom != null) be.setActiveFrom(activeFrom);
-        if (activeTo != null)   be.setActiveTo(activeTo);
-
         be.persist();
         return be;
     }

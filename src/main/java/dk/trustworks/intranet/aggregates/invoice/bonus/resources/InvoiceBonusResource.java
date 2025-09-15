@@ -3,7 +3,6 @@ package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
-import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusAggregateResponse;
 import jakarta.annotation.security.RolesAllowed;
@@ -23,9 +22,7 @@ import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
-// ... OpenAPI imports (som i din eksisterende fil) ...
 
-import java.time.LocalDate;
 import java.util.List;
 
 @Path("/invoices/{invoiceuuid}/bonuses")

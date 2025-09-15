@@ -4,7 +4,6 @@ import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Getter; import lombok.Setter;
 
-import java.time.LocalDate;
 import java.util.UUID;
 
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
@@ -14,7 +13,7 @@ import org.eclipse.microprofile.openapi.annotations.media.Schema;
 @Table(name = "invoice_bonus_eligibility")
 @Schema(
         name = "BonusEligibility",
-        description = "Whitelist for brugere, der må self-assign bonus på fakturaer i en given periode."
+        description = "Whitelist over brugere, der må self-assign bonus på fakturaer."
 )
 public class BonusEligibility extends PanacheEntityBase {
 
@@ -34,14 +33,6 @@ public class BonusEligibility extends PanacheEntityBase {
     @Schema(description = "Må brugeren selvtilføje bonus?", example = "true")
     public boolean canSelfAssign;
 
-    @Column(name="active_from", nullable=false)
-    @Schema(description = "Gyldig fra (inklusiv)", example = "2025-01-01")
-    public LocalDate activeFrom = LocalDate.of(2000,1,1);
-
-    @Column(name="active_to", nullable=false)
-    @Schema(description = "Gyldig til (inklusiv)", example = "2999-12-31")
-    public LocalDate activeTo = LocalDate.of(2999,12,31);
-
     @PrePersist
     public void prePersist() {
         if (uuid == null) uuid = UUID.randomUUID().toString();
@@ -54,8 +45,6 @@ public class BonusEligibility extends PanacheEntityBase {
                 ", group=" + group +
                 ", useruuid='" + useruuid + '\'' +
                 ", canSelfAssign=" + canSelfAssign +
-                ", activeFrom=" + activeFrom +
-                ", activeTo=" + activeTo +
                 '}';
     }
 }

@@ -33,16 +33,13 @@ public class BonusEligibilityResource {
     public record EligibilityDTO(
             @Schema(description = "User UUID") String useruuid,
             @Schema(description = "May self-assign?") boolean canSelfAssign,
-            @Schema(description = "Active from (inclusive)") LocalDate activeFrom,
-            @Schema(description = "Active to (inclusive)") LocalDate activeTo,
             @JsonProperty("groupuuid")
-            //@JsonAlias({"groupuuid", "group_uuid"})
             @Schema(description = "Optional: Target BonusEligibilityGroup UUID to assign")
             String groupUuid
     ) {
-        @Override public String toString() { /* uændret eller som før */
-            return "EligibilityDTO{useruuid='%s', canSelfAssign=%s, activeFrom=%s, activeTo=%s, groupUuid='%s'}"
-                    .formatted(useruuid, canSelfAssign, activeFrom, activeTo, groupUuid);
+        @Override public String toString() {
+            return "EligibilityDTO{useruuid='%s', canSelfAssign=%s, groupUuid='%s'}"
+                    .formatted(useruuid, canSelfAssign, groupUuid);
         }
     }
 
@@ -65,8 +62,6 @@ public class BonusEligibilityResource {
         BonusEligibility be = service.upsertEligibility(
                 dto.useruuid(),
                 dto.canSelfAssign(),
-                dto.activeFrom(),
-                dto.activeTo(),
                 dto.groupUuid()
         );
         return Response.status(Response.Status.CREATED).entity(be).build();
