@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibilityGro
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus.ShareType;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
+import dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
@@ -340,14 +341,6 @@ public class InvoiceBonusService {
         }
     }
 
-    private static void assertEligible(String useruuid) {
-        BonusEligibility be = BonusEligibility.find("useruuid", useruuid).firstResult();
-        if (be == null) {
-            throw new WebApplicationException(Response.status(Response.Status.FORBIDDEN)
-                    .entity("User is not allowed to self‑assign bonus").build());
-        }
-    }
-
     private static int fiscalYearOf(LocalDate date) {
         LocalDate fyStart = DateUtils.getFiscalStartDateBasedOnDate(date);
         return fyStart.getYear();
@@ -424,138 +417,185 @@ public class InvoiceBonusService {
     }
 
     /**
-     * Calculates approved bonus amounts per user, split by their company affiliation
-     * at the time of each invoice for a given financial year.
+     * Splits each user's approved bonus sales by consultant company at invoice date for a given FY.
      *
-     * @param financialYear The financial year (e.g., 2025 for FY 2025-07-01 to 2026-06-30)
-     * @param periodStart   Start date of the financial year (inclusive)
-     * @param periodEnd     End date of the financial year (inclusive)
-     * @return Map of user UUID to list of company amounts
+     * Algorithm (per APPROVED bonus):
+     *  1) Load the invoice and its items.
+     *  2) Build the selection map: use stored InvoiceBonusLine percentages; if none exist,
+     *     simulate the default selection (0% for applicant's own lines, 100% for others).
+     *  3) For each selected BASE line:
+     *      - baseContribution = (hours * rate) * (pct/100).
+     *      - If CALCULATED items exist: add pro‑rata share of syntheticTotal using the line's
+     *        baseContribution / baseSelectedSum.
+     *        Otherwise: apply invoice discount to baseContribution.
+     *      - For credit notes, invert the sign.
+     *      - Attribute the final line amount to the consultant's company at invoice date.
+     *
+     * The per-line amounts sum up to the same total computed by computeAmountFromLines().
      */
-    public Map<String, List<dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount>>
+    public Map<String, List<BonusAggregateResource.CompanyAmount>>
     calculateCompanyBonusShareByFinancialYear(int financialYear, LocalDate periodStart, LocalDate periodEnd) {
-        // Result map: userId -> List of CompanyAmount
-        Map<String, Map<String, Double>> userCompanyAmounts = new HashMap<>();
-        Map<String, String> companyNames = new HashMap<>();
 
-        // Cache for user status lookups to avoid repeated queries
+        // userId -> (companyId -> amount)
+        Map<String, Map<String, Double>> acc = new HashMap<>();
+        Map<String, String> companyNames     = new HashMap<>();
+
+        // Cache for consultant status resolution
         Map<String, Map<LocalDate, UserStatus>> userStatusCache = new HashMap<>();
 
-        // Query all invoices within the financial year that have approved bonuses
-        // Optimized: Get only invoices that actually have approved bonuses
-        List<Invoice> invoicesWithBonuses = Panache.getEntityManager()
+        // 1) Load invoices in FY having APPROVED bonuses (to avoid scanning all invoices)
+        List<dk.trustworks.intranet.aggregates.invoice.model.Invoice> invoices = Panache.getEntityManager()
                 .createQuery("""
-                    SELECT DISTINCT i FROM Invoice i
-                    WHERE i.invoicedate >= :startDate
-                    AND i.invoicedate <= :endDate
-                    AND EXISTS (
-                        SELECT 1 FROM InvoiceBonus b
-                        WHERE b.invoiceuuid = i.uuid
-                        AND b.status = :approvedStatus
-                    )
-                    """, Invoice.class)
-                .setParameter("startDate", periodStart)
-                .setParameter("endDate", periodEnd)
-                .setParameter("approvedStatus", SalesApprovalStatus.APPROVED)
+                    SELECT DISTINCT i FROM dk.trustworks.intranet.aggregates.invoice.model.Invoice i
+                    WHERE i.invoicedate >= :from AND i.invoicedate <= :to
+                      AND EXISTS (
+                        SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
+                        WHERE b.invoiceuuid = i.uuid AND b.status = :approved
+                      )
+                    """, dk.trustworks.intranet.aggregates.invoice.model.Invoice.class)
+                .setParameter("from", periodStart)
+                .setParameter("to", periodEnd)
+                .setParameter("approved", SalesApprovalStatus.APPROVED)
                 .getResultList();
 
-        // Batch load all approved bonuses for these invoices
-        if (invoicesWithBonuses.isEmpty()) {
-            return new HashMap<>();
+        if (invoices.isEmpty()) {
+            return Map.of();
         }
 
-        List<String> invoiceIds = invoicesWithBonuses.stream()
-                .map(Invoice::getUuid)
-                .toList();
+        List<String> invoiceIds = invoices.stream().map(dk.trustworks.intranet.aggregates.invoice.model.Invoice::getUuid).toList();
 
-        List<InvoiceBonus> allApprovedBonuses = InvoiceBonus.list(
-                "invoiceuuid in ?1 and status = ?2",
-                invoiceIds, SalesApprovalStatus.APPROVED
-        );
-
-        // Group bonuses by invoice for efficient processing
-        Map<String, List<InvoiceBonus>> bonusesByInvoice = allApprovedBonuses.stream()
+        // 2) Load APPROVED bonuses and group by invoice
+        List<InvoiceBonus> approvedBonuses = InvoiceBonus.list(
+                "invoiceuuid in ?1 and status = ?2", invoiceIds, SalesApprovalStatus.APPROVED);
+        Map<String, List<InvoiceBonus>> bonusesByInvoice = approvedBonuses.stream()
                 .collect(Collectors.groupingBy(InvoiceBonus::getInvoiceuuid));
 
-        // Batch load all bonus lines
-        List<String> bonusIds = allApprovedBonuses.stream()
-                .map(InvoiceBonus::getUuid)
-                .toList();
+        // 3) Load items per invoice (1 bulk query)
+        Map<String, List<dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem>> itemsByInvoice = new HashMap<>();
+        {
+            List<dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem> allItems =
+                    dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem
+                            .list("invoiceuuid in ?1", invoiceIds);
+            for (dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem ii : allItems) {
+                itemsByInvoice.computeIfAbsent(ii.getInvoiceuuid(), k -> new ArrayList<>()).add(ii);
+            }
+        }
 
-        List<InvoiceBonusLine> allBonusLines = bonusIds.isEmpty() ?
-                new ArrayList<>() :
-                InvoiceBonusLine.list("bonusuuid in ?1", bonusIds);
-
-        Map<String, List<InvoiceBonusLine>> linesByBonus = allBonusLines.stream()
-                .collect(Collectors.groupingBy(InvoiceBonusLine::getBonusuuid));
-
-        // Process each invoice with its bonuses
-        for (Invoice invoice : invoicesWithBonuses) {
-            LocalDate invoiceDate = invoice.getInvoicedate();
-            if (invoiceDate == null) continue;
-
-            List<InvoiceBonus> invoiceBonuses = bonusesByInvoice.getOrDefault(invoice.getUuid(), new ArrayList<>());
-
-            // Process each approved bonus
-            for (InvoiceBonus bonus : invoiceBonuses) {
-                String userId = bonus.getUseruuid();
-                double bonusAmount = bonus.getComputedAmount();
-
-                // Get user's company at invoice date (with caching)
-                UserStatus userStatus = getUserStatusCached(userId, invoiceDate, userStatusCache);
-
-                String companyId = "unknown";
-                String companyName = "Unknown Company";
-
-                if (userStatus != null && userStatus.getCompany() != null) {
-                    companyId = userStatus.getCompany().getUuid();
-                    companyName = userStatus.getCompany().getName();
-                    companyNames.put(companyId, companyName);
-                }
-
-                // Check if there are line-level allocations
-                List<InvoiceBonusLine> bonusLines = linesByBonus.getOrDefault(bonus.getUuid(), new ArrayList<>());
-
-                if (!bonusLines.isEmpty()) {
-                    // Calculate amount based on line allocations
-                    for (InvoiceBonusLine line : bonusLines) {
-                        double lineAmount = bonusAmount * (line.getPercentage() / 100.0);
-                        lineAmount = round2(lineAmount);
-
-                        // Add to user's company total
-                        userCompanyAmounts
-                                .computeIfAbsent(userId, k -> new HashMap<>())
-                                .merge(companyId, lineAmount, Double::sum);
-                    }
-                } else {
-                    // No line allocations, use full bonus amount
-                    userCompanyAmounts
-                            .computeIfAbsent(userId, k -> new HashMap<>())
-                            .merge(companyId, bonusAmount, Double::sum);
+        // 4) Load saved line selections for all bonuses once
+        Map<String, List<InvoiceBonusLine>> linesByBonus = new HashMap<>();
+        {
+            List<String> bonusIds = approvedBonuses.stream().map(InvoiceBonus::getUuid).toList();
+            if (!bonusIds.isEmpty()) {
+                List<InvoiceBonusLine> allLines = InvoiceBonusLine.list("bonusuuid in ?1", bonusIds);
+                for (InvoiceBonusLine l : allLines) {
+                    linesByBonus.computeIfAbsent(l.getBonusuuid(), k -> new ArrayList<>()).add(l);
                 }
             }
         }
 
-        // Transform the aggregated data into the response format
-        Map<String, List<dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount>> result = new HashMap<>();
+        // 5) Process invoice by invoice
+        for (dk.trustworks.intranet.aggregates.invoice.model.Invoice inv : invoices) {
+            LocalDate invoiceDate = inv.getInvoicedate();
+            List<dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem> items =
+                    itemsByInvoice.getOrDefault(inv.getUuid(), List.of());
+            if (items.isEmpty()) continue;
 
-        for (Map.Entry<String, Map<String, Double>> userEntry : userCompanyAmounts.entrySet()) {
-            String userId = userEntry.getKey();
-            Map<String, Double> companyTotals = userEntry.getValue();
+            // Precompute invoice totals
+            double baseTotal = items.stream()
+                    .filter(ii -> ii.getOrigin() != InvoiceItemOrigin.CALCULATED)
+                    .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                    .sum();
 
-            List<dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount> companyAmountList =
-                    companyTotals.entrySet().stream()
-                            .map(entry -> new dk.trustworks.intranet.aggregates.invoice.bonus.resources.BonusAggregateResource.CompanyAmount(
-                                    entry.getKey(),
-                                    companyNames.getOrDefault(entry.getKey(), "Unknown Company"),
-                                    round2(entry.getValue())
-                            ))
-                            .sorted((a, b) -> Double.compare(b.amount(), a.amount())) // Sort by amount descending
-                            .toList();
+            double syntheticTotal = items.stream()
+                    .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.CALCULATED)
+                    .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                    .sum();
 
-            result.put(userId, companyAmountList);
+            double discountPct = Optional.ofNullable(inv.getDiscount()).orElse(0.0);
+
+            Map<String, dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem> itemById = items.stream()
+                    .collect(Collectors.toMap(dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem::getUuid, Function.identity(), (a,b)->a));
+
+            // Bonuses on this invoice
+            for (InvoiceBonus bonus : bonusesByInvoice.getOrDefault(inv.getUuid(), List.of())) {
+                String applicantUserId = bonus.getUseruuid();
+
+                // Build selection map: stored lines or default (0% own, 100% others)
+                Map<String, Double> pctByItem = new LinkedHashMap<>();
+                List<InvoiceBonusLine> saved = linesByBonus.getOrDefault(bonus.getUuid(), List.of());
+
+                if (!saved.isEmpty()) {
+                    for (InvoiceBonusLine l : saved) {
+                        var ii = itemById.get(l.getInvoiceitemuuid());
+                        if (ii == null) continue;
+                        if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue;
+                        pctByItem.put(ii.getUuid(), sanitizePct(l.getPercentage()));
+                    }
+                } else {
+                    // Simulate approval defaults (§ ensureDefaultLinesIfEmptyBulk)
+                    for (var ii : items) {
+                        if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue;
+                        double pct = Objects.equals(ii.getConsultantuuid(), applicantUserId) ? 0.0 : 100.0;
+                        pctByItem.put(ii.getUuid(), pct);
+                    }
+                }
+
+                // baseSelectedSum and per‑item base contribution
+                Map<String, Double> baseContribution = new HashMap<>();
+                double baseSelectedSum = 0.0;
+                for (var en : pctByItem.entrySet()) {
+                    var ii = itemById.get(en.getKey());
+                    if (ii == null) continue;
+                    double c = (ii.getHours() * ii.getRate()) * (sanitizePct(en.getValue()) / 100.0);
+                    baseContribution.put(ii.getUuid(), c);
+                    baseSelectedSum += c;
+                }
+
+                // Attribute each selected BASE line to the consultant's company
+                for (var en : pctByItem.entrySet()) {
+                    var ii = itemById.get(en.getKey());
+                    if (ii == null) continue;
+
+                    double baseC = baseContribution.getOrDefault(ii.getUuid(), 0.0);
+                    double lineFinal;
+                    if (Math.abs(syntheticTotal) > 1e-9) {
+                        double ratio = (baseSelectedSum == 0.0) ? 0.0 : (baseC / baseSelectedSum);
+                        lineFinal = baseC + ratio * syntheticTotal;
+                    } else {
+                        lineFinal = baseC * (1.0 - discountPct / 100.0);
+                    }
+                    if (inv.getType() == dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.CREDIT_NOTE) {
+                        lineFinal = -lineFinal;
+                    }
+
+                    // Consultant's company at invoice date (same approach as findBonusApprovalRow)
+                    String consultantId = ii.getConsultantuuid();
+                    UserStatus st = getUserStatusCached(consultantId, invoiceDate, userStatusCache);
+
+                    String compId   = (st != null && st.getCompany() != null) ? st.getCompany().getUuid() : "unknown";
+                    String compName = (st != null && st.getCompany() != null) ? st.getCompany().getName() : "Unknown Company";
+                    companyNames.put(compId, compName);
+
+                    acc.computeIfAbsent(applicantUserId, k -> new HashMap<>())
+                            .merge(compId, round2(lineFinal), Double::sum);
+                }
+            }
         }
 
+        // Transform to response shape: userId -> List<CompanyAmount>
+        Map<String, List<BonusAggregateResource.CompanyAmount>> result = new HashMap<>();
+        for (var e : acc.entrySet()) {
+            String userId = e.getKey();
+            Map<String, Double> perCompany = e.getValue();
+            List<BonusAggregateResource.CompanyAmount> list = perCompany.entrySet().stream()
+                    .map(x -> new BonusAggregateResource.CompanyAmount(
+                            x.getKey(),
+                            companyNames.getOrDefault(x.getKey(), "Unknown Company"),
+                            round2(x.getValue())))
+                    .sorted((a, b) -> Double.compare(b.amount(), a.amount()))
+                    .toList();
+            result.put(userId, list);
+        }
         return result;
     }
 
@@ -582,8 +622,13 @@ public class InvoiceBonusService {
      * @return UserStatus at the given date, or null if not found
      */
     private UserStatus getUserStatusCached(String userId,
-                                          LocalDate date,
-                                          Map<String, Map<LocalDate, UserStatus>> cache) {
+                                           LocalDate date,
+                                           Map<String, Map<LocalDate, UserStatus>> cache) {
+        // If no consultant is associated, there is no status to resolve
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+
         // Check cache first
         Map<LocalDate, UserStatus> userCache = cache.get(userId);
         if (userCache != null && userCache.containsKey(date)) {

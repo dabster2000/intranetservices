@@ -106,7 +106,6 @@ public class BonusEligibilityGroupResource {
     }
 
     /**
-     * --- NEW (helper) ---
      * Computes the sum of approved bonus totals for all invoices that:
      *  - have at least one APPROVED InvoiceBonus for a user in the given group, and
      *  - have invoice date within [periodStart; periodEnd] (inclusive).
@@ -160,7 +159,6 @@ public class BonusEligibilityGroupResource {
     }
 
     /**
-     * --- UPDATED (endpoint) ---
      * Convenience endpoint wrapping {@link #sumApprovedForGroupPeriod(BonusEligibilityGroup, LocalDate, LocalDate)}.
      * Takes a financialYear (YYYY). If omitted, the group's own financialYear is used.
      */

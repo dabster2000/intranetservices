@@ -286,8 +286,6 @@ public class InvoiceBonusResource {
         return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
-    // ------------------- NYT: linjevalg pr. bonus -------------------
-
     public record LineDTO(String invoiceitemuuid, double percentage) {}
 
     @GET

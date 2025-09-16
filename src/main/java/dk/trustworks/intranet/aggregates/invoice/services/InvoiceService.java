@@ -1238,7 +1238,7 @@ public class InvoiceService {
                 : (hasApproved ? SalesApprovalStatus.APPROVED : SalesApprovalStatus.PENDING));
 
         // Companies derived from users on items
-        java.util.Set<String> userIds = new java.util.LinkedHashSet<>();
+        Set<String> userIds = new LinkedHashSet<>();
         {
             String qUsers = """
                 SELECT ii.consultantuuid
