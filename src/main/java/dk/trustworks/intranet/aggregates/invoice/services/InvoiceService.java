@@ -60,11 +60,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
-import static java.util.stream.Collectors.toList;
 
 @JBossLog
 @ApplicationScoped
@@ -360,12 +358,11 @@ public class InvoiceService {
         invoice.getInvoiceitems().forEach(System.out::println);
     }
 
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public Invoice updateInvoiceStatus(Invoice invoice, InvoiceStatus status) {
-                Invoice.update("status = ?1 WHERE uuid like ?2",
+    @Transactional
+    public void updateInvoiceStatus(Invoice invoice, InvoiceStatus status) {
+                Invoice.update("status = ?1 WHERE uuid = ?2",
                 status,
                 invoice.getUuid());
-        return invoice;
     }
 
     /** Legacy fallback hvis engine ikke må køre for denne type */

@@ -6,17 +6,19 @@ import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
 import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.proxy.HibernateProxy;
+
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.Objects;
 
-@Data
-@Entity
+@Getter
+@Setter
+@ToString
 @NoArgsConstructor
+@Entity
 @AllArgsConstructor
 @Table(name = "teamroles")
 public class TeamRole extends PanacheEntityBase {
@@ -35,7 +37,24 @@ public class TeamRole extends PanacheEntityBase {
     @Column(name = "membertype")
     private TeamMemberType teammembertype;
 
+
     public static Collection<? extends TeamRole> getTeamrolesByUser(String useruuid) {
         return TeamRole.find("useruuid like ?1", useruuid).list();
+    }
+
+    @Override
+    public final boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null) return false;
+        Class<?> oEffectiveClass = o instanceof HibernateProxy ? ((HibernateProxy) o).getHibernateLazyInitializer().getPersistentClass() : o.getClass();
+        Class<?> thisEffectiveClass = this instanceof HibernateProxy ? ((HibernateProxy) this).getHibernateLazyInitializer().getPersistentClass() : this.getClass();
+        if (thisEffectiveClass != oEffectiveClass) return false;
+        TeamRole teamRole = (TeamRole) o;
+        return getUuid() != null && Objects.equals(getUuid(), teamRole.getUuid());
+    }
+
+    @Override
+    public final int hashCode() {
+        return this instanceof HibernateProxy ? ((HibernateProxy) this).getHibernateLazyInitializer().getPersistentClass().hashCode() : getClass().hashCode();
     }
 }
