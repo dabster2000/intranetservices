@@ -2,9 +2,46 @@
 
 ### Architecture proposal + phased rollout plan (with detailed accept/exit criteria)
 
-**Audience:** Engineering (backend, frontend, data), Product, Finance/Operations  
-**Scope:** Improvements to user flow, service/process orchestration, data model & APIs for invoices, including credit/internal/phantom flows and the e‑conomics integration.  
+**Audience:** Engineering (backend, frontend, data), Product, Finance/Operations
+**Scope:** Improvements to user flow, service/process orchestration, data model & APIs for invoices, including credit/internal/phantom flows and the e‑conomics integration.
 **Principles:** Single source of truth, explicit state machines, idempotency, traceability, correctness of money, performance, operability, and backwards compatibility during migration.
+
+⸻
+
+## CURRENT IMPLEMENTATION STATUS (As of 2025-09-26)
+
+Based on code analysis, the following discrepancies exist between this architecture proposal and the current implementation:
+
+### ✅ Implemented Features:
+1. **Economics Status** (Phase 2) - `EconomicsInvoiceStatus` enum with NA, UPLOADED, BOOKED, PAID states exists
+2. **Credit Notes** (Phase 6) - `creditnote_for_uuid` field with unique constraint is implemented
+3. **New Bonus System** (Phase 6) - `invoice_bonuses`, `invoice_bonus_lines`, `invoice_bonus_eligibility` tables are fully implemented with:
+   - Share types (PERCENT/AMOUNT)
+   - Per-user bonuses with approval workflow
+   - Financial year-based eligibility
+   - Line-level allocation
+4. **Pricing Engine Support** - `invoiceitems` has `origin`, `calculation_ref`, `rule_id`, `label` fields for derived lines
+5. **Generic Outbox Pattern** - `outbox_events` table exists but is generic, not invoice-specific
+
+### ❌ Not Implemented (Gaps):
+1. **Invoice Outbox Pattern** (Phase 2) - No `invoice_outbox` table; ERP calls are synchronous via `EconomicsInvoiceService.sendVoucher()`
+2. **Position Field** (Phase 1) - Java entity has `position` field but NO database migration exists
+3. **Exchange Rate** (Phase 1) - Not persisted; only used as method parameter
+4. **Server Totals** (Phase 1) - No persistent `subtotal`, `discount_total`, `vat_total`, `grand_total` fields
+5. **Decimal Types** (Phase 4) - Still using `double` for money fields instead of `DECIMAL`
+6. **UTF-8 Migration** (Phase 4) - Still using `latin1_swedish_ci` collation
+7. **Work Traceability** (Phase 5) - No `invoice_item_sources` table or work entry linkage
+8. **Optimistic Locking** (Phase 3) - No `version` field for conflict resolution
+9. **Audit Fields** (Phase 3) - No `created_at`, `updated_at`, `created_by`, `updated_by`
+10. **Address Normalization** (Phase 8) - Still using `clientaddresse` (with typo) instead of normalized fields
+11. **PDF Object Storage** (Phase 7) - PDFs still stored as `longblob` in database
+12. **Intercompany Links** (Phase 6) - No `intercompany_link` table for internal invoice tracking
+
+### ⚠️ Implementation Differences:
+1. **ERP Integration** - Direct synchronous calls instead of outbox+worker pattern, causing potential UI blocking
+2. **Invoice Numbering** - No sequence table; likely using `MAX()+1` approach
+3. **State Machine** - Application states exist but transitions not explicitly enforced
+4. **Idempotency** - Partial implementation with `invoice-{uuid}` key but no retry mechanism
 
 ⸻
 
@@ -1146,6 +1183,7 @@ WHERE duedate BETWEEN CURRENT_DATE() AND DATE_ADD(CURRENT_DATE(), INTERVAL 7 DAY
 ## Appendix: Full SQL Schema
 
 > Exact DDL from the current database.
+> **NOTE**: The schema below reflects the ACTUAL current implementation, not the proposed changes above.
 
 ### Core Invoice Tables
 
