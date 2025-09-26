@@ -188,7 +188,27 @@ public class InvoiceGenerator {
                         //throw new BadRequestException("No client contact information on the contract");
                     }
                     Clientdata clientdata = clientdataAPI.findByUuid(contract.getClientdatauuid());
-                    if (clientdata == null) clientdata = new Clientdata();
+                    if (clientdata == null) {
+                        log.error("Client data UUID '" + contract.getClientdatauuid() + "' not found in database for contract '" + contract.getUuid() + "'");
+                        Response response = Response
+                                .status(Response.Status.BAD_REQUEST)
+                                .entity("Contract references invalid client contact data. The client contact information could not be found. Please update the contract with valid client contact details.")
+                                .type(MediaType.TEXT_PLAIN)
+                                .build();
+                        throw new WebApplicationException(response);
+                    }
+
+                    // Validate that essential client data fields are present
+                    String validationError = validateClientdata(clientdata);
+                    if (validationError != null) {
+                        log.error("Client data validation failed for contract '" + contract.getUuid() + "': " + validationError);
+                        Response response = Response
+                                .status(Response.Status.BAD_REQUEST)
+                                .entity("Client contact data is incomplete: " + validationError + ". Please update the contract's client contact information.")
+                                .type(MediaType.TEXT_PLAIN)
+                                .build();
+                        throw new WebApplicationException(response);
+                    }
 
                     if (invoice == null) {
                         invoice = new Invoice(0, InvoiceType.INVOICE,
@@ -272,5 +292,33 @@ public class InvoiceGenerator {
         Invoice priced = invoiceService.updateDraftInvoice(created);
         log.info("Priced draft invoice: " + priced.getUuid());
         return created;
+    }
+
+    /**
+     * Validates that the client data contains the minimum required fields for invoice generation.
+     * @param clientdata The client data to validate
+     * @return null if valid, or an error message describing what's missing
+     */
+    private String validateClientdata(Clientdata clientdata) {
+        List<String> missingFields = new ArrayList<>();
+
+        if (clientdata.getClientname() == null || clientdata.getClientname().trim().isEmpty()) {
+            missingFields.add("client name");
+        }
+        if (clientdata.getStreetnamenumber() == null || clientdata.getStreetnamenumber().trim().isEmpty()) {
+            missingFields.add("street address");
+        }
+        if (clientdata.getPostalcode() == null) {
+            missingFields.add("postal code");
+        }
+        if (clientdata.getCity() == null || clientdata.getCity().trim().isEmpty()) {
+            missingFields.add("city");
+        }
+
+        if (!missingFields.isEmpty()) {
+            return "missing " + String.join(", ", missingFields);
+        }
+
+        return null; // Valid
     }
 }
