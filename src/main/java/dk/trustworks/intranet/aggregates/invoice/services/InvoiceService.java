@@ -265,6 +265,42 @@ public class InvoiceService {
         return Invoice.find("contractuuid = ?1 AND status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC", contractuuid).list();
     }
 
+    /**
+     * Efficiently fetches invoices for multiple contracts in a single query.
+     * This method retrieves all invoices for the given contract UUIDs and groups them by contract.
+     *
+     * @param contractUuids List of contract UUIDs to fetch invoices for
+     * @return Map of contract UUID to list of invoices for that contract
+     */
+    public Map<String, List<Invoice>> findInvoicesForContracts(List<String> contractUuids) {
+        if (contractUuids == null || contractUuids.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        Map<String, List<Invoice>> results = new HashMap<>();
+
+        // Initialize all contracts with empty lists to ensure all requested contracts are in the result
+        for (String uuid : contractUuids) {
+            results.put(uuid, new ArrayList<>());
+        }
+
+        // Fetch all invoices for all contracts in a single query
+        List<Invoice> invoices = Invoice.find(
+                "contractuuid IN ?1 AND status IN ('CREATED','CREDIT_NOTE')",
+                Sort.by("year", Sort.Direction.Descending).and("month", Sort.Direction.Descending),
+                contractUuids
+        ).list();
+
+        // Group invoices by contract UUID
+        Map<String, List<Invoice>> groupedInvoices = invoices.stream()
+                .collect(Collectors.groupingBy(Invoice::getContractuuid));
+
+        // Merge with results map to ensure all requested contracts are present
+        results.putAll(groupedInvoices);
+
+        return results;
+    }
+
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice createDraftInvoice(Invoice invoice) {
         log.debug("Persisting draft invoice");

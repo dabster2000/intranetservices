@@ -281,6 +281,47 @@ public class WorkService {
         return findByContract(contractuuid).stream().mapToDouble(value -> value.getRate()*value.getWorkduration()).sum();
     }
 
+    /**
+     * Efficiently calculates the total registered amounts for multiple contracts in a single query.
+     * This method uses an aggregate SQL query to calculate sums directly in the database,
+     * which is much more efficient than fetching all records and calculating in memory.
+     *
+     * @param contractUuids List of contract UUIDs to calculate amounts for
+     * @return Map of contract UUID to total registered amount
+     */
+    public Map<String, Double> findAmountsForContracts(List<String> contractUuids) {
+        if (contractUuids == null || contractUuids.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        Map<String, Double> results = new HashMap<>();
+
+        // Initialize all contracts with 0.0 to ensure all requested contracts are in the result
+        for (String uuid : contractUuids) {
+            results.put(uuid, 0.0);
+        }
+
+        // Use native query for efficient aggregation
+        String sql = "SELECT contractuuid, SUM(rate * workduration) as amount " +
+                     "FROM work_full " +
+                     "WHERE contractuuid IN (:uuids) " +
+                     "GROUP BY contractuuid";
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> queryResults = em.createNativeQuery(sql)
+                .setParameter("uuids", contractUuids)
+                .getResultList();
+
+        // Map results
+        for (Object[] row : queryResults) {
+            String contractUuid = (String) row[0];
+            Double amount = row[1] != null ? ((Number) row[1]).doubleValue() : 0.0;
+            results.put(contractUuid, amount);
+        }
+
+        return results;
+    }
+
 
 
     @Transactional

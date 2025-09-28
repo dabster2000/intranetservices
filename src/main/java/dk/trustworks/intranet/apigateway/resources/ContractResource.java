@@ -23,6 +23,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -189,5 +190,37 @@ public class ContractResource {
     @Path("/{contractuuid}/contracttypeitems")
     public void updateContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
         contractService.updateContractTypeItem(contractTypeItem);
+    }
+
+    /**
+     * Batch endpoint to get registered amounts for multiple contracts.
+     * This is much more efficient than calling the individual endpoint multiple times.
+     * @param contractUuids List of contract UUIDs to fetch amounts for
+     * @return Map of contract UUID to registered amount
+     */
+    @POST
+    @Path("/batch/registeredamounts")
+    public Map<String, Double> calcRegisteredAmountsForContracts(List<String> contractUuids) {
+        log.debug("ContractResource.calcRegisteredAmountsForContracts for " + contractUuids.size() + " contracts");
+        if (contractUuids == null || contractUuids.isEmpty()) {
+            return new HashMap<>();
+        }
+        return workService.findAmountsForContracts(contractUuids);
+    }
+
+    /**
+     * Batch endpoint to get invoices for multiple contracts.
+     * This is much more efficient than calling the individual endpoint multiple times.
+     * @param contractUuids List of contract UUIDs to fetch invoices for
+     * @return Map of contract UUID to list of invoices
+     */
+    @POST
+    @Path("/batch/invoices")
+    public Map<String, List<Invoice>> findInvoicesForContracts(List<String> contractUuids) {
+        log.debug("ContractResource.findInvoicesForContracts for " + contractUuids.size() + " contracts");
+        if (contractUuids == null || contractUuids.isEmpty()) {
+            return new HashMap<>();
+        }
+        return invoiceService.findInvoicesForContracts(contractUuids);
     }
 }
