@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static dk.trustworks.intranet.userservice.model.enums.StatusType.MATERNITY_LEAVE;
@@ -55,6 +56,148 @@ public class WorkService {
      */
     public List<WorkFull> findByPeriod(LocalDate fromDate, LocalDate toDate) {
         return WorkFull.find("registered >= ?1 AND registered < ?2", fromDate, toDate).list();
+    }
+
+    /**
+     * Optimized method for fetching work data by period with pagination.
+     * Use this for large date ranges to avoid memory issues.
+     * @param fromDate Including
+     * @param toDate Excluding
+     * @param page Page number (0-based)
+     * @param pageSize Number of records per page
+     * @return List of WorkFull
+     */
+    public List<WorkFull> findByPeriodPaged(LocalDate fromDate, LocalDate toDate, int page, int pageSize) {
+        return WorkFull.find("registered >= ?1 AND registered < ?2", fromDate, toDate)
+                .page(Page.of(page, pageSize))
+                .list();
+    }
+
+    /**
+     * Stream work data for memory-efficient processing of large datasets.
+     * Remember to close the stream when done.
+     * @param fromDate Including
+     * @param toDate Excluding
+     * @return Stream of WorkFull
+     */
+    public Stream<WorkFull> findByPeriodStream(LocalDate fromDate, LocalDate toDate) {
+        return WorkFull.find("registered >= ?1 AND registered < ?2", fromDate, toDate)
+                .stream();
+    }
+
+    /**
+     * Lightweight query that returns only essential work data fields.
+     * Uses native query to fetch only necessary columns for better performance.
+     * @param fromDate Including
+     * @param toDate Excluding
+     * @return List of lightweight work data
+     */
+    public List<Map<String, Object>> findByPeriodLightweight(LocalDate fromDate, LocalDate toDate) {
+        String sql = "SELECT w.uuid, w.useruuid, w.registered, w.workduration, " +
+                     "w.taskuuid, w.billable, w.rate, t.projectuuid " +
+                     "FROM work w " +
+                     "LEFT JOIN task t ON w.taskuuid = t.uuid " +
+                     "WHERE w.registered >= :fromDate AND w.registered < :toDate " +
+                     "ORDER BY w.registered, w.useruuid";
+
+        List<Object[]> results = em.createNativeQuery(sql)
+                .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
+                .setParameter("toDate", java.sql.Date.valueOf(toDate))
+                .getResultList();
+
+        return results.stream()
+                .map(row -> {
+                    Map<String, Object> map = new HashMap<>();
+                    map.put("uuid", row[0]);
+                    map.put("useruuid", row[1]);
+                    map.put("registered", ((java.sql.Date)row[2]).toLocalDate());
+                    map.put("workduration", row[3]);
+                    map.put("taskuuid", row[4]);
+                    map.put("billable", row[5]);
+                    map.put("rate", row[6]);
+                    map.put("projectuuid", row[7]);
+                    return map;
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Count total records for a period without fetching all data.
+     * Useful for pagination metadata.
+     * @param fromDate Including
+     * @param toDate Excluding
+     * @return Total count of work records
+     */
+    public long countByPeriod(LocalDate fromDate, LocalDate toDate) {
+        return WorkFull.count("registered >= ?1 AND registered < ?2", fromDate, toDate);
+    }
+
+    /**
+     * Batch fetch work data grouped by user for performance.
+     * Optimized for yearly data processing with minimal memory footprint.
+     * @param fromDate Including
+     * @param toDate Excluding
+     * @return Map of user UUID to their work data
+     */
+    public Map<String, List<WorkFull>> findByPeriodGroupedByUser(LocalDate fromDate, LocalDate toDate) {
+        String sql = "SELECT useruuid FROM work " +
+                     "WHERE registered >= :fromDate AND registered < :toDate " +
+                     "GROUP BY useruuid";
+
+        List<String> userIds = em.createNativeQuery(sql)
+                .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
+                .setParameter("toDate", java.sql.Date.valueOf(toDate))
+                .getResultList();
+
+        Map<String, List<WorkFull>> result = new HashMap<>();
+
+        // Fetch data for each user in batches to avoid memory issues
+        for (String userId : userIds) {
+            List<WorkFull> userWork = WorkFull.find(
+                "useruuid = ?1 AND registered >= ?2 AND registered < ?3",
+                userId, fromDate, toDate
+            ).list();
+            result.put(userId, userWork);
+        }
+
+        return result;
+    }
+
+    /**
+     * Optimized method to get work summary by period.
+     * Returns aggregated data without loading full entities.
+     * @param fromDate Including
+     * @param toDate Excluding
+     * @return Aggregated work summary
+     */
+    public Map<String, Object> getWorkSummaryByPeriod(LocalDate fromDate, LocalDate toDate) {
+        String sql = "SELECT " +
+                     "COUNT(DISTINCT w.useruuid) as unique_users, " +
+                     "COUNT(DISTINCT w.taskuuid) as unique_tasks, " +
+                     "COUNT(DISTINCT t.projectuuid) as unique_projects, " +
+                     "SUM(w.workduration) as total_hours, " +
+                     "SUM(w.workduration * w.rate) as total_revenue, " +
+                     "COUNT(*) as total_entries " +
+                     "FROM work w " +
+                     "LEFT JOIN task t ON w.taskuuid = t.uuid " +
+                     "WHERE w.registered >= :fromDate AND w.registered < :toDate";
+
+        Object[] result = (Object[]) em.createNativeQuery(sql)
+                .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
+                .setParameter("toDate", java.sql.Date.valueOf(toDate))
+                .getSingleResult();
+
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("uniqueUsers", ((Number) result[0]).intValue());
+        summary.put("uniqueTasks", ((Number) result[1]).intValue());
+        summary.put("uniqueProjects", ((Number) result[2]).intValue());
+        summary.put("totalHours", result[3] != null ? ((Number) result[3]).doubleValue() : 0.0);
+        summary.put("totalRevenue", result[4] != null ? ((Number) result[4]).doubleValue() : 0.0);
+        summary.put("totalEntries", ((Number) result[5]).longValue());
+        summary.put("fromDate", fromDate);
+        summary.put("toDate", toDate);
+
+        return summary;
     }
 
     public WorkFull findByRegisteredAndUseruuidAndTaskuuid(LocalDate registered, String useruuid, String taskuuid) {
@@ -271,12 +414,12 @@ public class WorkService {
         return findByPeriod(getFirstDayOfMonth(month), getFirstDayOfMonth(month).plusMonths(1));
     }
 
-    //@Cacheable(value = "work")
+    @io.quarkus.cache.CacheResult(cacheName = "work-cache")
     public List<WorkFull> findByYearAndMonthAndProject(int year, int month, String projectuuid) {
         return findByPeriodAndProject(getFirstDayOfMonth(year, month).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), getFirstDayOfMonth(year, month).plusMonths(1).format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), projectuuid);
     }
 
-    //@Cacheable("work")
+    @io.quarkus.cache.CacheResult(cacheName = "work-cache")
     public Double findAmountUsedByContract(String contractuuid) {
         return findByContract(contractuuid).stream().mapToDouble(value -> value.getRate()*value.getWorkduration()).sum();
     }

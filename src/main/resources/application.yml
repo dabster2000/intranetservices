@@ -102,6 +102,9 @@ event-topics:
         expire-after-write: 30M  # Expire after 30 minutes
       employee-revenue:
         expire-after-write: 30M
+      work-cache:
+        expire-after-write: 15M  # Expire after 15 minutes for work data
+        maximum-size: 10000  # Maximum number of cached entries
   s3:
     sync-client:
       type: APACHE
