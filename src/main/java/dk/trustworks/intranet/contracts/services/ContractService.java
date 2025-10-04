@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.contracts.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.contracts.dto.ValidationReport;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.dao.crm.model.Project;
@@ -26,6 +27,9 @@ public class ContractService {
 
     @Inject
     ProjectService projectService;
+
+    @Inject
+    ContractValidationService validationService;
 
     @Inject
     EntityManager em;
@@ -184,6 +188,15 @@ public class ContractService {
     public void save(Contract contract) {
         log.info("ContractService.save");
         log.info("contract = " + contract);
+
+        // Validate the contract if it's being activated
+        if (contract.getStatus() == ContractStatus.BUDGET ||
+            contract.getStatus() == ContractStatus.SIGNED ||
+            contract.getStatus() == ContractStatus.TIME) {
+            ValidationReport report = validationService.validateContractActivation(contract);
+            validationService.enforceValidation(report);
+        }
+
         contract.setContractConsultants(new HashSet<>());
         if(contract.getUuid()==null || contract.getUuid().trim().isEmpty()) contract.setUuid(UUID.randomUUID().toString());
         Contract.persist(contract);
@@ -212,6 +225,19 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
+        // Validate the contract if it's being activated or is already active
+        if (contract.getStatus() == ContractStatus.BUDGET ||
+            contract.getStatus() == ContractStatus.SIGNED ||
+            contract.getStatus() == ContractStatus.TIME) {
+            // Get the full contract with consultants and projects for validation
+            Contract fullContract = Contract.findById(contract.getUuid());
+            if (fullContract != null) {
+                addConsultantsToContract(fullContract);
+                ValidationReport report = validationService.validateContractActivation(fullContract);
+                validationService.enforceValidation(report);
+            }
+        }
+
         Contract.update(
                         "amount = ?1, " +
                         "status = ?2, " +
@@ -235,7 +261,13 @@ public class ContractService {
 
     @Transactional
     public void addProject(String contractuuid, String projectuuid) {
-        ContractProject.persist(new ContractProject(contractuuid, projectuuid));
+        ContractProject projectLink = new ContractProject(contractuuid, projectuuid);
+
+        // Validate the project linkage
+        ValidationReport report = validationService.validateContractProject(projectLink);
+        validationService.enforceValidation(report);
+
+        ContractProject.persist(projectLink);
     }
 
     @Transactional
@@ -247,12 +279,20 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void addConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
+        // Validate the consultant before adding
+        ValidationReport report = validationService.validateContractConsultant(contractConsultant);
+        validationService.enforceValidation(report);
+
         ContractConsultant.persist(contractConsultant);
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void updateConsultant(ContractConsultant contractConsultant) {
+        // Validate the consultant before updating
+        ValidationReport report = validationService.validateContractConsultant(contractConsultant);
+        validationService.enforceValidation(report);
+
         ContractConsultant.update(
                 "hours = ?1, " +
                         "rate = ?2, " +

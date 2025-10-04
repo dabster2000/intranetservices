@@ -3,11 +3,14 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.contracts.dto.ValidationReport;
 import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
+import dk.trustworks.intranet.contracts.model.ContractProject;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.services.ContractService;
+import dk.trustworks.intranet.contracts.services.ContractValidationService;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -44,6 +47,9 @@ public class ContractResource {
 
     @Inject
     ContractService contractService;
+
+    @Inject
+    ContractValidationService validationService;
 
     @Inject
     WorkService workService;
@@ -190,6 +196,41 @@ public class ContractResource {
     @Path("/{contractuuid}/contracttypeitems")
     public void updateContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
         contractService.updateContractTypeItem(contractTypeItem);
+    }
+
+    /**
+     * Validate a contract before saving or activating.
+     * Returns a validation report with errors and warnings.
+     */
+    @POST
+    @Path("/validate")
+    public ValidationReport validateContract(Contract contract) {
+        log.debug("ContractResource.validateContract");
+        return validationService.validateContractActivation(contract);
+    }
+
+    /**
+     * Validate a consultant before adding or updating.
+     * Returns a validation report with overlaps and conflicts.
+     */
+    @POST
+    @Path("/{contractuuid}/consultants/validate")
+    public ValidationReport validateConsultant(@PathParam("contractuuid") String contractuuid, ContractConsultant consultant) {
+        log.debug("ContractResource.validateConsultant for contract: " + contractuuid);
+        consultant.setContractuuid(contractuuid);
+        return validationService.validateContractConsultant(consultant);
+    }
+
+    /**
+     * Validate a project linkage before adding.
+     * Returns a validation report with consultant conflicts.
+     */
+    @POST
+    @Path("/{contractuuid}/projects/{projectuuid}/validate")
+    public ValidationReport validateProjectLinkage(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
+        log.debug("ContractResource.validateProjectLinkage for contract: " + contractuuid + ", project: " + projectuuid);
+        ContractProject projectLink = new ContractProject(contractuuid, projectuuid);
+        return validationService.validateContractProject(projectLink);
     }
 
     /**

@@ -17,7 +17,7 @@ public class BatchScheduler {
     JobOperator jobOperator;
 
     //@Scheduled(cron = "0 0 3 ? * 7-1")
-    @Scheduled(every = "1d")
+    @Scheduled(every = "12h")
     void trigger() {
         LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(24);
         LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);
