@@ -23,14 +23,15 @@ public class WorkCacheRefreshJob {
 
     /**
      * Refresh recent work data cache every 15 minutes during business hours.
-     * This covers the most frequently accessed data (last 3 months).
+     * This covers the most frequently accessed data (last 3 months), excluding today.
+     * Note: Today's data is handled by refreshTodayCache() to avoid overlap.
      */
     //@Scheduled(cron = "0 */15 7-19 ? * MON-FRI")
     @Scheduled(every = "15m")
     @Transactional
     public void refreshRecentCache() {
         LocalDate fromDate = LocalDate.now().minusMonths(3);
-        LocalDate toDate = LocalDate.now().plusDays(1);
+        LocalDate toDate = LocalDate.now(); // Changed from plusDays(1) to avoid overlap with refreshTodayCache
 
         log.infof("Starting recent work cache refresh from %s to %s", fromDate, toDate);
 
@@ -44,7 +45,12 @@ public class WorkCacheRefreshJob {
 
             log.infof("Recent work cache refresh completed. Period: %s to %s", fromDate, toDate);
         } catch (Exception e) {
-            log.errorf(e, "Failed to refresh recent work cache for period %s to %s", fromDate, toDate);
+            // Check if this is a lock conflict (expected when another refresh is running)
+            if (e.getMessage() != null && e.getMessage().contains("Cache refresh already in progress")) {
+                log.debugf("Recent cache refresh skipped (another refresh in progress): %s to %s", fromDate, toDate);
+            } else {
+                log.errorf(e, "Failed to refresh recent work cache for period %s to %s", fromDate, toDate);
+            }
         }
     }
 
@@ -83,7 +89,12 @@ public class WorkCacheRefreshJob {
 
             log.infof("Historical work cache refresh completed");
         } catch (Exception e) {
-            log.errorf(e, "Failed to refresh historical work cache", e);
+            // Check if this is a lock conflict (expected when another refresh is running)
+            if (e.getMessage() != null && e.getMessage().contains("Cache refresh already in progress")) {
+                log.debugf("Historical cache refresh skipped (another refresh in progress)");
+            } else {
+                log.errorf(e, "Failed to refresh historical work cache");
+            }
         }
     }
 
@@ -108,7 +119,12 @@ public class WorkCacheRefreshJob {
 
             log.debugf("Today's work cache refreshed: %s", today);
         } catch (Exception e) {
-            log.errorf(e, "Failed to refresh today's work cache for %s", today);
+            // Check if this is a lock conflict (expected when another refresh is running)
+            if (e.getMessage() != null && e.getMessage().contains("Cache refresh already in progress")) {
+                log.debugf("Today's cache refresh skipped (another refresh in progress): %s", today);
+            } else {
+                log.errorf(e, "Failed to refresh today's work cache for %s", today);
+            }
         }
     }
 
@@ -131,8 +147,14 @@ public class WorkCacheRefreshJob {
 
             log.infof("Manual cache refresh completed: %s to %s", fromDate, toDate);
         } catch (Exception e) {
-            log.errorf(e, "Manual cache refresh failed for period %s to %s", fromDate, toDate);
-            throw new RuntimeException("Cache refresh failed", e);
+            // Check if this is a lock conflict (expected when another refresh is running)
+            if (e.getMessage() != null && e.getMessage().contains("Cache refresh already in progress")) {
+                log.warnf("Manual cache refresh skipped (another refresh in progress): %s to %s", fromDate, toDate);
+                throw new RuntimeException("Cache refresh already in progress, please try again later", e);
+            } else {
+                log.errorf(e, "Manual cache refresh failed for period %s to %s", fromDate, toDate);
+                throw new RuntimeException("Cache refresh failed", e);
+            }
         }
     }
 
