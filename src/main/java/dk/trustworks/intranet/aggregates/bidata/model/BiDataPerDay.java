@@ -115,7 +115,18 @@ public class BiDataPerDay extends PanacheEntityBase {
     @Transient
     @JsonIgnore
     public Double getNetAvailableHours() {
-        return grossAvailableHours!=null?Math.max(grossAvailableHours.doubleValue() - unavailableHours.doubleValue() - vacationHours.doubleValue() - sickHours.doubleValue()- maternityLeaveHours.doubleValue() - nonPaydLeaveHours.doubleValue() - paidLeaveHours.doubleValue(), 0.0):0.0;
+        if (grossAvailableHours == null) return 0.0;
+
+        return Math.max(
+            grossAvailableHours.doubleValue()
+            - (unavailableHours != null ? unavailableHours.doubleValue() : 0.0)
+            - (vacationHours != null ? vacationHours.doubleValue() : 0.0)
+            - (sickHours != null ? sickHours.doubleValue() : 0.0)
+            - (maternityLeaveHours != null ? maternityLeaveHours.doubleValue() : 0.0)
+            - (nonPaydLeaveHours != null ? nonPaydLeaveHours.doubleValue() : 0.0)
+            - (paidLeaveHours != null ? paidLeaveHours.doubleValue() : 0.0),
+            0.0
+        );
     }
 
     public BiDataPerDay(Company company) {

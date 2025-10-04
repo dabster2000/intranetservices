@@ -16,7 +16,8 @@ public class BatchScheduler {
     @Inject
     JobOperator jobOperator;
 
-    @Scheduled(cron = "0 0 3 ? * 7-1")
+    //@Scheduled(cron = "0 0 3 ? * 7-1")
+    @Scheduled(every = "1d")
     void trigger() {
         LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(24);
         LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);
@@ -27,7 +28,7 @@ public class BatchScheduler {
 
         // Let config drive concurrency; or override here if needed:
         params.setProperty("threads", "12");
-
+        log.infof("Starting BI date update with start=%s end=%s", start, end);
         jobOperator.start("bi-date-update", params);
     }
 

@@ -15,8 +15,6 @@ import java.util.Objects;
 @Getter
 @Setter
 @ToString
-@RequiredArgsConstructor
-@NoArgsConstructor
 @Entity(name = "news")
 public class News extends PanacheEntityBase {
 
@@ -45,6 +43,9 @@ public class News extends PanacheEntityBase {
     @JoinColumn(name = "news_uuid")
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.EAGER, orphanRemoval = true)
     private List<RelatedResource> relatedResources;
+
+    public News() {
+    }
 
     public News(LocalDateTime eventDate, NewsType newsType, String createdBy, String text) {
         this.eventDate = eventDate;
