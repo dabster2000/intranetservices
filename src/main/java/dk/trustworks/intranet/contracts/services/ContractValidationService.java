@@ -71,9 +71,6 @@ public class ContractValidationService {
         // 3. Check for work in affected period (for rate changes)
         checkForAffectedWork(consultant, report);
 
-        // 4. Validate rate
-        validateRate(consultant, report);
-
         // Add all errors to report
         errors.forEach(report::addError);
 
@@ -397,7 +394,6 @@ public class ContractValidationService {
             WHERE w.useruuid = :useruuid
               AND cp.contractuuid = :contractuuid
               AND w.registered BETWEEN :fromdate AND :todate
-              AND w.invoice_line_uuid IS NULL
             """;
 
         Query query = em.createNativeQuery(sql);
@@ -427,42 +423,6 @@ public class ContractValidationService {
                     ));
                 }
             }
-        }
-    }
-
-    /**
-     * Validate consultant rate.
-     */
-    private void validateRate(ContractConsultant consultant, ValidationReport report) {
-        if (consultant.getRate() <= 0) {
-            report.addError(new ValidationError(
-                "rate",
-                "Rate must be greater than zero",
-                ErrorType.RATE_CONFLICT
-            ));
-            return;
-        }
-
-        // Check for unusually high or low rates (configurable thresholds)
-        double MIN_EXPECTED_RATE = 500.0;
-        double MAX_EXPECTED_RATE = 2500.0;
-
-        if (consultant.getRate() < MIN_EXPECTED_RATE) {
-            report.addWarning(new ValidationReport.Warning(
-                "rate",
-                String.format("Rate %.2f is below expected minimum of %.2f",
-                    consultant.getRate(), MIN_EXPECTED_RATE),
-                ValidationReport.WarningType.LOW_RATE
-            ));
-        }
-
-        if (consultant.getRate() > MAX_EXPECTED_RATE) {
-            report.addWarning(new ValidationReport.Warning(
-                "rate",
-                String.format("Rate %.2f is above expected maximum of %.2f",
-                    consultant.getRate(), MAX_EXPECTED_RATE),
-                ValidationReport.WarningType.HIGH_RATE
-            ));
         }
     }
 

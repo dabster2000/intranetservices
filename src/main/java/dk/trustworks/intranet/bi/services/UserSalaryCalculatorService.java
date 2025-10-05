@@ -31,7 +31,7 @@ public class UserSalaryCalculatorService {
 
     @Transactional
     public void recalculateSalary(String useruuid, LocalDate testDay) {
-        log.info("Recalculate salary for " + useruuid + " on " + testDay + " started");
+        log.trace("Recalculate salary for " + useruuid + " on " + testDay + " started");
         List<UserStatus> userStatusList = userService.findUserStatuses(useruuid);
         List<Salary> salaryList = salaryService.findByUseruuid(useruuid);
 
@@ -68,7 +68,7 @@ public class UserSalaryCalculatorService {
 
         //    startDate = startDate.plusDays(1);
         //} while (startDate.isBefore(endDate));
-        log.info("Recalculate salary for " + useruuid + " done");
+        log.trace("Recalculate salary for " + useruuid + " done");
     }
 
     private void updateSalary(String useruuid, LocalDate activeFrom, int salary) {

@@ -125,8 +125,17 @@ public class BudgetCalculatingExecutor {
             if(userContract.getHours()==0.0) continue;
 
             discountModifier.set(1.0);
-            if(contract.getContractTypeItems()!=null)
-                contract.getContractTypeItems().forEach(cti -> discountModifier.updateAndGet(v -> (v - Double.parseDouble(cti.getValue()) / 100.0)));
+            if(contract.getContractTypeItems()!=null) {
+                contract.getContractTypeItems().forEach(cti -> {
+                    if (cti.getValue() != null && !cti.getValue().trim().isEmpty()) {
+                        try {
+                            discountModifier.updateAndGet(v -> (v - Double.parseDouble(cti.getValue()) / 100.0));
+                        } catch (NumberFormatException e) {
+                            log.warnf("Invalid discount value '%s' for contract %s, skipping", cti.getValue(), contract.getUuid());
+                        }
+                    }
+                });
+            }
             EmployeeBudgetPerDayAggregate employeeBudgetPerDayAggregate = new EmployeeBudgetPerDayAggregate(testDay, getClient(clientList, contract), user, contract, userContract.getHours() / 5.0, userContract.getHours() / 5.0, userContract.getRate() * discountModifier.get());
 
             if(employeeBudgetPerDayAggregate.getBudgetHours()==0.0) continue;

@@ -11,7 +11,13 @@
             </properties>
         </batchlet>
         <partition>
-            <mapper ref="userDayPartitionMapper"/>
+            <mapper ref="userDayPartitionMapper">
+                <properties>
+                    <property name="startDate" value="#{jobParameters['startDate']}"/>
+                    <property name="endDate" value="#{jobParameters['endDate']}"/>
+                    <property name="threads" value="#{jobParameters['threads']}"/>
+                </properties>
+            </mapper>
             <analyzer ref="resultBasedPartitionAnalyzer"/>
             <collector ref="userDayBatchletEnhanced"/>
         </partition>

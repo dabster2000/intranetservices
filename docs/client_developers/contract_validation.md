@@ -8,7 +8,7 @@ Key Validation Rules
 
 1. No Overlapping Assignments: A consultant cannot have overlapping date ranges for the same project across different contracts
 2. Valid Date Ranges: activeFrom must be ≤ activeTo
-3. Positive Rates: Consultant rates must be > 0
+3. Positive Rates: Consultant rates must be >= 0
 4. Contract Consistency: Active contracts must have valid consultant and project configurations
 
   ---
@@ -150,15 +150,15 @@ Response Format - ValidationReport
 
 Error Types
 
-| Type               | Description                                            |
-  |--------------------|--------------------------------------------------------|
+| Type               | Description                                           |
+  |--------------------|-------------------------------------------------------|
 | OVERLAP_CONFLICT   | Consultant has overlapping assignment for same project |
-| DATE_RANGE_INVALID | activeFrom > activeTo                                  |
-| MISSING_REQUIRED   | Required field is null                                 |
-| RATE_CONFLICT      | Rate is invalid (≤ 0)                                  |
-| CONTRACT_INACTIVE  | Contract is not active                                 |
-| WORK_EXISTS        | Work entries exist in affected period                  |
-| DUPLICATE_PROJECT  | Project already linked to contract                     |
+| DATE_RANGE_INVALID | activeFrom > activeTo                                 |
+| MISSING_REQUIRED   | Required field is null                                |
+| RATE_CONFLICT      | Rate is invalid (< 0)                                 |
+| CONTRACT_INACTIVE  | Contract is not active                                |
+| WORK_EXISTS        | Work entries exist in affected period                 |
+| DUPLICATE_PROJECT  | Project already linked to contract                    |
 
 Warning Types
 
@@ -199,71 +199,6 @@ Response Body:
 }
 
 Client-Side Handling
-
-JavaScript/TypeScript Example
-
-async function addConsultant(contractUuid: string, consultant: Consultant) {
-try {
-// Option 1: Preview validation first (recommended)
-const validationReport = await fetch(
-`/contracts/${contractUuid}/consultants/validate`,
-{
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify(consultant)
-}
-).then(r => r.json());
-
-      if (!validationReport.valid) {
-        // Show errors to user
-        displayValidationErrors(validationReport);
-        return;
-      }
-
-      // Warnings don't block, but should be confirmed
-      if (validationReport.warnings.length > 0) {
-        const confirmed = await confirmWarnings(validationReport.warnings);
-        if (!confirmed) return;
-      }
-
-      // Validation passed, proceed with save
-      await fetch(`/contracts/${contractUuid}/consultants/${consultant.uuid}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(consultant)
-      });
-
-      showSuccess('Consultant added successfully');
-
-    } catch (error) {
-      if (error.response?.status === 500) {
-        // Option 2: Handle validation exception after the fact
-        const errorData = await error.response.json();
-        if (errorData.error === 'ContractValidationException') {
-          displayValidationErrors(errorData);
-        } else {
-          showError('An unexpected error occurred');
-        }
-      }
-    }
-}
-
-function displayValidationErrors(report: ValidationReport) {
-// Show errors
-report.errors.forEach(error => {
-alert(`${error.field}: ${error.message}`);
-});
-
-    // Show overlaps with details
-    report.overlaps.forEach(overlap => {
-      alert(overlap.description);
-    });
-
-    // Show warnings
-    report.warnings.forEach(warning => {
-      console.warn(`${warning.field}: ${warning.message}`);
-    });
-}
 
 Java Client Example
 
@@ -308,43 +243,7 @@ ValidationReport report = restClient
       }
 }
 
-Python Client Example
 
-def add_consultant(contract_uuid: str, consultant: dict):
-# Preview validation
-validation_url = f"/contracts/{contract_uuid}/consultants/validate"
-response = requests.post(validation_url, json=consultant)
-report = response.json()
-
-      if not report['valid']:
-          # Display errors
-          for error in report['errors']:
-              print(f"Error: {error['message']}")
-
-          for overlap in report['overlaps']:
-              print(f"Overlap: {overlap['description']}")
-
-          raise ValidationError("Validation failed", report)
-
-      # Check warnings
-      if report['warnings']:
-          for warning in report['warnings']:
-              print(f"Warning: {warning['message']}")
-
-          if not confirm_warnings():
-              return
-
-      # Save
-      save_url = f"/contracts/{contract_uuid}/consultants/{consultant['uuid']}"
-      try:
-          requests.post(save_url, json=consultant)
-      except requests.HTTPError as e:
-          if e.response.status_code == 500:
-              error_data = e.response.json()
-              if error_data.get('error') == 'ContractValidationException':
-                  handle_validation_exception(error_data)
-
-  ---
 Best Practices
 
 1. Always Preview Before Save (Recommended Workflow)

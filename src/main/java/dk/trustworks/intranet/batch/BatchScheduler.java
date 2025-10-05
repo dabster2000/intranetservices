@@ -50,7 +50,7 @@ public class BatchScheduler {
     }
 
     // Birthdays
-    @Scheduled(cron = "0 0 5 * * ?")
+    //@Scheduled(cron = "0 0 5 * * ?")
     void scheduleBirthdayNotifications() {
         jobOperator.start("birthday-notification", new Properties());
     }
