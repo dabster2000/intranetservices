@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.communicationsservice.resources;
 
+import dk.trustworks.intranet.communicationsservice.model.EmailAttachment;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.model.enums.MailStatus;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
@@ -234,5 +235,48 @@ public class MailResource {
         TrustworksMail mail = new TrustworksMail(UUID.randomUUID().toString(), to, subject, body);
         mail.setStatus(MailStatus.READY);
         mail.persist();
+    }
+
+    /**
+     * Send an email immediately with attachments.
+     * This method bypasses the queue and sends the email directly.
+     *
+     * @param trustworksMail the email with attachments to send
+     * @throws RuntimeException if email sending fails
+     */
+    public void sendWithAttachments(TrustworksMail trustworksMail) {
+        log.info("MailResource.sendWithAttachments");
+        log.info("to = " + trustworksMail.getTo());
+        log.info("subject = " + trustworksMail.getSubject());
+        log.info("attachment count = " + (trustworksMail.getAttachments() != null ? trustworksMail.getAttachments().size() : 0));
+
+        try {
+            Mail mail = Mail.withHtml(
+                trustworksMail.getTo(),
+                trustworksMail.getSubject(),
+                trustworksMail.getBody()
+            );
+
+            // Add attachments if present
+            if (trustworksMail.hasAttachments()) {
+                for (EmailAttachment attachment : trustworksMail.getAttachments()) {
+                    log.info("Adding attachment: " + attachment.getFilename() +
+                            " (" + attachment.getContentType() + ", " +
+                            attachment.getSize() + " bytes)");
+                    mail.addAttachment(
+                        attachment.getFilename(),
+                        attachment.getContent(),
+                        attachment.getContentType()
+                    );
+                }
+            }
+
+            mailer.send(mail);
+            log.info("Email with attachments sent successfully to " + trustworksMail.getTo());
+
+        } catch (Exception e) {
+            log.error("Failed to send email with attachments to " + trustworksMail.getTo(), e);
+            throw new RuntimeException("Failed to send email: " + e.getMessage(), e);
+        }
     }
 }

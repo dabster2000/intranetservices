@@ -11,6 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `./mvnw package -Pnative` - Build native executable
 - `java -jar target/quarkus-app/quarkus-run.jar` - Run packaged application
 
+### Environment Variables
+
+
 ### Docker
 - `docker-compose.yaml` - Main docker compose file
 - `config/docker-compose.yaml` - Additional configuration

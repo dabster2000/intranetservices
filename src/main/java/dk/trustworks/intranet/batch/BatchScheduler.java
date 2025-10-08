@@ -16,8 +16,8 @@ public class BatchScheduler {
     @Inject
     JobOperator jobOperator;
 
-    //@Scheduled(cron = "0 0 3 ? * 7-1")
-    @Scheduled(every = "12h")
+    @Scheduled(cron = "0 0 3 ? * 7-1")
+    //@Scheduled(every = "12h")
     void trigger() {
         LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(24);
         LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);
@@ -83,6 +83,22 @@ public class BatchScheduler {
     @Scheduled(every = "1m")
     void scheduleMailSend() {
         jobOperator.start("mail-send", new Properties());
+    }
+
+    @Scheduled(every = "1m")
+    void scheduleBulkMailSend() {
+        try {
+            // Only start if no bulk-mail-send job is currently running
+            if (jobOperator.getJobNames().contains("bulk-mail-send")) {
+                if (!jobOperator.getRunningExecutions("bulk-mail-send").isEmpty()) {
+                    return; // Already running, skip this cycle
+                }
+            }
+            jobOperator.start("bulk-mail-send", new Properties());
+        } catch (Exception e) {
+            // Log and continue - will retry in next cycle
+            log.warn("Could not schedule bulk-mail-send: " + e.getMessage());
+        }
     }
 
     @Scheduled(every = "10m")

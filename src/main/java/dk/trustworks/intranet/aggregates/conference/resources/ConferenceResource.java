@@ -5,12 +5,20 @@ import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhas
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceService;
-import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
+import dk.trustworks.intranet.communicationsservice.model.*;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
+import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
 import dk.trustworks.intranet.knowledgeservice.model.Conference;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import dk.trustworks.intranet.knowledgeservice.model.ConferencePhase;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.ExampleObject;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.RequestBody;
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import jakarta.annotation.security.PermitAll;
@@ -19,16 +27,33 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 import java.time.LocalDateTime;
-import java.util.Comparator;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @JBossLog
 @Tag(name = "Conference")
 @Path("/knowledge/conferences")
 @RequestScoped
 public class ConferenceResource {
+
+    // Email attachment validation constants
+    private static final int MAX_ATTACHMENT_COUNT = 10;
+    private static final long MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+    private static final long MAX_TOTAL_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
+    private static final Set<String> ALLOWED_MIME_TYPES = Set.of(
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "image/jpeg",
+        "image/png",
+        "image/gif"
+    );
 
     @Inject
     AggregateEventSender aggregateEventSender;
@@ -38,6 +63,9 @@ public class ConferenceResource {
 
     @Inject
     MailResource mailResource;
+
+    @Inject
+    BulkEmailService bulkEmailService;
 
     @GET
     public List<Conference> findAllConferences() {
@@ -170,7 +198,252 @@ public class ConferenceResource {
 
     @POST
     @Path("/message")
-    public void message(TrustworksMail mail) {
-        mailResource.sendingHTML(mail);
+    @Operation(
+        summary = "Send email to conference participant",
+        description = "Sends an email with optional file attachments to a conference participant. " +
+                     "Emails without attachments are queued for batch processing. " +
+                     "Emails with attachments are sent immediately."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Email sent successfully or queued for sending"
+        ),
+        @APIResponse(
+            responseCode = "400",
+            description = "Invalid request (bad file type, too many files, etc.)",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                schema = @Schema(implementation = EmailErrorResponse.class),
+                examples = @ExampleObject(
+                    name = "Invalid file type",
+                    value = "{\"error\": \"Invalid file type\", \"message\": \"File 'malicious.exe' has unsupported type. Allowed types: pdf, doc, docx, xls, xlsx, ppt, pptx, jpg, jpeg, png, gif\"}"
+                )
+            )
+        ),
+        @APIResponse(
+            responseCode = "413",
+            description = "Payload too large (file size exceeded)",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                schema = @Schema(implementation = EmailErrorResponse.class),
+                examples = @ExampleObject(
+                    name = "Size exceeded",
+                    value = "{\"error\": \"Payload too large\", \"message\": \"Total attachment size (30.00 MB) exceeds maximum allowed (25 MB)\"}"
+                )
+            )
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Email send failed",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                schema = @Schema(implementation = EmailErrorResponse.class),
+                examples = @ExampleObject(
+                    name = "Send failure",
+                    value = "{\"error\": \"Email send failed\", \"message\": \"Failed to send email to participant@example.com\"}"
+                )
+            )
+        )
+    })
+    @RequestBody(
+        required = true,
+        content = @Content(
+            mediaType = MediaType.APPLICATION_JSON,
+            schema = @Schema(implementation = TrustworksMail.class),
+            examples = {
+                @ExampleObject(
+                    name = "With attachments",
+                    value = "{\"uuid\": \"123e4567-e89b-12d3-a456-426614174000\", \"to\": \"participant@example.com\", \"subject\": \"Conference Agenda\", \"body\": \"<html><body>Please find the agenda attached.</body></html>\", \"attachments\": [{\"filename\": \"agenda.pdf\", \"contentType\": \"application/pdf\", \"content\": \"JVBERi0xLjQK...\"}]}"
+                ),
+                @ExampleObject(
+                    name = "Without attachments",
+                    value = "{\"uuid\": \"123e4567-e89b-12d3-a456-426614174000\", \"to\": \"participant@example.com\", \"subject\": \"Conference Information\", \"body\": \"<html><body>Hello!</body></html>\"}"
+                )
+            }
+        )
+    )
+    public Response message(TrustworksMail mail) {
+        log.info("ConferenceResource.message - Processing email to: " + mail.getTo());
+
+        // If no attachments, use existing deferred send mechanism
+        if (!mail.hasAttachments()) {
+            log.info("No attachments, using deferred send");
+            mailResource.sendingHTML(mail);
+            return Response.ok().build();
+        }
+
+        // Validate attachments
+        try {
+            validateAttachments(mail.getAttachments());
+        } catch (WebApplicationException e) {
+            throw e; // Re-throw JAX-RS exceptions directly
+        }
+
+        // Send immediately with attachments
+        try {
+            mailResource.sendWithAttachments(mail);
+            return Response.ok().build();
+        } catch (Exception e) {
+            log.error("Failed to send email with attachments", e);
+            EmailErrorResponse error = new EmailErrorResponse(
+                "Email send failed",
+                "Failed to send email to " + mail.getTo()
+            );
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(error)
+                    .build();
+        }
+    }
+
+    /**
+     * Validate email attachments according to business rules
+     */
+    private void validateAttachments(List<EmailAttachment> attachments) {
+        if (attachments == null || attachments.isEmpty()) {
+            return;
+        }
+
+        // Validate attachment count
+        if (attachments.size() > MAX_ATTACHMENT_COUNT) {
+            EmailErrorResponse error = new EmailErrorResponse(
+                "Too many attachments",
+                String.format("Maximum %d attachments allowed, got %d", MAX_ATTACHMENT_COUNT, attachments.size())
+            );
+            throw new WebApplicationException(
+                Response.status(Response.Status.BAD_REQUEST).entity(error).build()
+            );
+        }
+
+        // Validate individual file sizes and MIME types
+        for (EmailAttachment attachment : attachments) {
+            long fileSize = attachment.getSize();
+
+            if (fileSize > MAX_FILE_SIZE_BYTES) {
+                EmailErrorResponse error = new EmailErrorResponse(
+                    "Payload too large",
+                    String.format("File '%s' exceeds maximum size of %d MB (size: %.2f MB)",
+                        attachment.getFilename(),
+                        MAX_FILE_SIZE_BYTES / (1024 * 1024),
+                        fileSize / (1024.0 * 1024.0))
+                );
+                throw new WebApplicationException(
+                    Response.status(Response.Status.REQUEST_ENTITY_TOO_LARGE).entity(error).build()
+                );
+            }
+
+            if (!ALLOWED_MIME_TYPES.contains(attachment.getContentType())) {
+                String allowedTypes = "pdf, doc, docx, xls, xlsx, ppt, pptx, jpg, jpeg, png, gif";
+                EmailErrorResponse error = new EmailErrorResponse(
+                    "Invalid file type",
+                    String.format("File '%s' has unsupported type. Allowed types: %s",
+                        attachment.getFilename(), allowedTypes)
+                );
+                throw new WebApplicationException(
+                    Response.status(Response.Status.BAD_REQUEST).entity(error).build()
+                );
+            }
+        }
+
+        // Validate total size
+        long totalSize = attachments.stream()
+                .mapToLong(EmailAttachment::getSize)
+                .sum();
+
+        if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+            EmailErrorResponse error = new EmailErrorResponse(
+                "Payload too large",
+                String.format("Total attachment size (%.2f MB) exceeds maximum allowed (%d MB)",
+                    totalSize / (1024.0 * 1024.0),
+                    MAX_TOTAL_SIZE_BYTES / (1024 * 1024))
+            );
+            throw new WebApplicationException(
+                Response.status(Response.Status.REQUEST_ENTITY_TOO_LARGE).entity(error).build()
+            );
+        }
+    }
+
+    @POST
+    @Path("/bulk-message")
+    @Operation(
+        summary = "Send bulk email to multiple conference participants",
+        description = "Sends the same email with optional attachments to multiple recipients. " +
+                     "Emails are queued and sent asynchronously by a batch job with 5-second throttling " +
+                     "between each send. Maximum 1000 recipients per request."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Bulk email job created successfully",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                examples = @ExampleObject(
+                    value = "{\"jobId\": \"123e4567-e89b-12d3-a456-426614174000\", \"recipientCount\": 50, \"status\": \"PENDING\"}"
+                )
+            )
+        ),
+        @APIResponse(
+            responseCode = "400",
+            description = "Invalid request (bad file type, too many files, too many recipients, etc.)",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                schema = @Schema(implementation = EmailErrorResponse.class)
+            )
+        ),
+        @APIResponse(
+            responseCode = "413",
+            description = "Payload too large (file size exceeded)",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                schema = @Schema(implementation = EmailErrorResponse.class)
+            )
+        )
+    })
+    @RequestBody(
+        required = true,
+        content = @Content(
+            mediaType = MediaType.APPLICATION_JSON,
+            schema = @Schema(implementation = BulkEmailRequest.class),
+            examples = @ExampleObject(
+                value = "{\"subject\": \"Conference Update\", \"body\": \"<html><body>Dear participants...</body></html>\", \"recipients\": [\"participant1@example.com\", \"participant2@example.com\"], \"attachments\": [{\"filename\": \"agenda.pdf\", \"contentType\": \"application/pdf\", \"content\": \"JVBERi0xLjQK...\"}]}"
+            )
+        )
+    )
+    public Response bulkMessage(BulkEmailRequest request) {
+        log.info("ConferenceResource.bulkMessage - Processing bulk email: subject='" +
+                 request.getSubject() + "', recipients=" + request.getRecipients().size());
+
+        // Validate attachments (same rules as single email)
+        if (request.hasAttachments()) {
+            try {
+                validateAttachments(request.getAttachments());
+            } catch (WebApplicationException e) {
+                throw e;
+            }
+        }
+
+        // Create bulk email job
+        try {
+            BulkEmailJob job = bulkEmailService.createBulkEmailJob(request);
+
+            // Return job information
+            Map<String, Object> response = new HashMap<>();
+            response.put("jobId", job.getUuid());
+            response.put("recipientCount", job.getTotalRecipients());
+            response.put("status", job.getStatus().toString());
+            response.put("message", "Bulk email job created successfully. Emails will be sent asynchronously.");
+
+            return Response.ok(response).build();
+
+        } catch (Exception e) {
+            log.error("Failed to create bulk email job", e);
+            EmailErrorResponse error = new EmailErrorResponse(
+                "Bulk email creation failed",
+                "Failed to create bulk email job: " + e.getMessage()
+            );
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity(error)
+                    .build();
+        }
     }
 }

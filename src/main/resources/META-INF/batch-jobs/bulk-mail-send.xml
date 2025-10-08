@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="bulk-mail-send" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="send-bulk-emails">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <chunk item-count="10" checkpoint-policy="item">
+            <reader ref="bulkEmailItemReader"/>
+            <writer ref="bulkEmailItemWriter">
+                <properties>
+                    <!-- Throttle: 5000ms (5 seconds) between each email -->
+                    <property name="throttleMs" value="5000"/>
+                </properties>
+            </writer>
+        </chunk>
+    </step>
+</job>

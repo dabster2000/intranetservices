@@ -1,0 +1,19 @@
+=== DDD Scan Log - Wed Oct  8 12:09:16 CEST 2025 ===
+Phase 1: repo-cartographer starting at Wed Oct  8 12:09:25 CEST 2025
+Collected stats at Wed Oct  8 12:09:49 CEST 2025:
+- REST Resources: 95
+- Entities: 125
+- Services: 137
+- Messaging endpoints: 9
+- Reactive (Uni/Multi): 1
+- External REST clients: 8
+- Entity relationships: 62 occurrences in 40 files
+Phase 1: repo-cartographer completed at Wed Oct  8 12:11:29 CEST 2025
+Phase 2: feature-miner starting at Wed Oct  8 12:11:29 CEST 2025
+Phase 2: feature-miner completed at Wed Oct  8 12:13:06 CEST 2025
+Phase 3: ddd-aggregate-hunter starting at Wed Oct  8 12:13:06 CEST 2025
+Phase 3: ddd-aggregate-hunter completed at Wed Oct  8 12:15:09 CEST 2025
+Phase 4: Synthesis starting at Wed Oct  8 12:15:09 CEST 2025
+Phase 4: Synthesis completed at Wed Oct  8 12:36:37 CEST 2025
+
+=== DDD Scan Complete ===

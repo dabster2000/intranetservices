@@ -1,0 +1,166 @@
+{
+  "project": {
+    "name": "intranetservices",
+    "groupId": "dk.trustworks.intranet",
+    "version": "1.0.0-SNAPSHOT",
+    "buildTool": "Maven",
+    "javaVersion": "21",
+    "framework": "Quarkus",
+    "frameworkVersion": "3.26.1"
+  },
+  "statistics": {
+    "restResources": 95,
+    "entities": 125,
+    "services": 137,
+    "messagingEndpoints": 9,
+    "externalRestClients": 8,
+    "entityRelationships": 62,
+    "reactiveFraction": "1/95 (1%)"
+  },
+  "aggregates": [
+    {
+      "name": "invoice",
+      "path": "dk.trustworks.intranet.aggregates.invoice",
+      "resources": ["InvoiceResource", "PricingResource"],
+      "entities": ["Invoice", "InvoiceItem", "InvoiceNote"],
+      "services": ["InvoiceService", "InvoiceGenerator", "InvoiceNotesService", "PricingEngine", "PricingRuleCatalog"],
+      "subAggregates": ["bonus"],
+      "transactionalMethods": 15,
+      "externalIntegrations": ["InvoiceAPI", "CurrencyAPI"]
+    },
+    {
+      "name": "invoice.bonus",
+      "path": "dk.trustworks.intranet.aggregates.invoice.bonus",
+      "resources": ["InvoiceBonusResource", "BonusEligibilityResource", "BonusEligibilityGroupResource", "BonusAggregateResource", "LockedBonusPoolResource"],
+      "entities": ["InvoiceBonus", "InvoiceBonusLine", "BonusEligibility", "BonusEligibilityGroup", "LockedBonusPoolData"],
+      "services": ["InvoiceBonusService", "LockedBonusPoolService"],
+      "repositories": ["LockedBonusPoolRepository"],
+      "transactionalMethods": 20,
+      "notes": "Complex bonus calculation subsystem with locking"
+    },
+    {
+      "name": "users",
+      "path": "dk.trustworks.intranet.aggregates.users",
+      "resources": ["UserResource", "StatusResource", "SalaryResource", "SalaryLumpSumResource", "SalarySupplementResource", "UserBankInfoResource", "UserPensionResource", "UserDstStatisticsResource", "VacationResource", "TransportationRegistrationResource", "CompanyUserResource", "BankInfoResource"],
+      "entities": ["User", "UserStatus", "Salary", "SalaryLumpSum", "SalarySupplement", "UserBankInfo", "UserPension", "UserDstStatistic", "UserContactinfo", "Role"],
+      "services": ["UserService", "StatusService", "SalaryService", "SalaryLumpSumService", "SalarySupplementService", "UserBankInfoService", "UserPensionService", "UserDstStatisticsService", "VacationService", "TransportationRegistrationService", "AccrualService"],
+      "eventHandlers": ["UserEventHandler"],
+      "events": ["CreateUserEvent", "UpdateUserEvent", "CreateUserStatusEvent", "UpdateUserStatusEvent", "DeleteUserStatusEvent", "CreateSalaryLogEvent", "UpdateSalaryEvent", "DeleteSalaryEvent", "CreateSalarySupplementEvent", "CreateBankInfoEvent"],
+      "transactionalMethods": 30,
+      "notes": "Core user aggregate with event sourcing patterns"
+    },
+    {
+      "name": "conference",
+      "path": "dk.trustworks.intranet.aggregates.conference",
+      "resources": ["ConferenceResource"],
+      "services": ["ConferenceService"],
+      "eventHandlers": ["ConferenceEventHandler"],
+      "events": ["CreateParticipantEvent", "UpdateParticipantDataEvent", "ChangeParticipantPhaseEvent"],
+      "transactionalMethods": 5
+    },
+    {
+      "name": "utilization",
+      "path": "dk.trustworks.intranet.aggregates.utilization",
+      "resources": ["UtilizationResource", "UserUtilizationResource"],
+      "services": ["UtilizationService"],
+      "transactionalMethods": 0,
+      "notes": "Read-heavy reporting aggregate"
+    },
+    {
+      "name": "revenue",
+      "path": "dk.trustworks.intranet.aggregates.revenue",
+      "resources": ["RevenueResource", "EmployeeRevenueResource"],
+      "services": ["RevenueService"],
+      "transactionalMethods": 0,
+      "notes": "Read-heavy reporting aggregate"
+    },
+    {
+      "name": "budgets",
+      "path": "dk.trustworks.intranet.aggregates.budgets",
+      "resources": ["CompanyBudgetResource", "UserBudgetResource"],
+      "entities": ["EmployeeBudgetPerDayAggregate"],
+      "services": ["BudgetService"],
+      "transactionalMethods": 1
+    },
+    {
+      "name": "availability",
+      "path": "dk.trustworks.intranet.aggregates.availability",
+      "resources": ["CompanyAvailabilityResource", "UserAvailabilityResource"],
+      "entities": ["EmployeeAvailabilityPerDayAggregate"],
+      "services": ["AvailabilityService", "AvailabilityServiceCache"],
+      "transactionalMethods": 0
+    },
+    {
+      "name": "work",
+      "path": "dk.trustworks.intranet.aggregates.work",
+      "services": ["WorkAggregateService"],
+      "eventHandlers": ["WorkEventHandler"],
+      "events": ["UpdateWorkEvent"],
+      "transactionalMethods": 1,
+      "notes": "Event-driven work tracking"
+    },
+    {
+      "name": "lunch",
+      "path": "dk.trustworks.intranet.aggregates.lunch",
+      "resources": ["MenuResource", "MealPlanResource", "MealChoiceResource", "MealBufferResource"],
+      "entities": ["MealPlan", "MealPlanUser", "MealPlanBuffer", "MealChoice", "MealBuffer"],
+      "services": ["MenuService", "SummaryService"],
+      "transactionalMethods": 4
+    },
+    {
+      "name": "crm",
+      "path": "dk.trustworks.intranet.aggregates.crm",
+      "resources": ["CrmResource"],
+      "services": ["CrmService"]
+    },
+    {
+      "name": "accounting",
+      "path": "dk.trustworks.intranet.aggregates.accounting",
+      "resources": ["AccountingResource", "DanlonResource"],
+      "services": ["IntercompanyCalcService"],
+      "transactionalMethods": 6
+    }
+  ],
+  "messaging": {
+    "consumers": [
+      {"name": "UserStatusUpdateConsumer", "topic": "@Incoming", "aggregate": "users"},
+      {"name": "UserSalaryUpdateConsumer", "topic": "@Incoming", "aggregate": "users"},
+      {"name": "ContractConsultantUpdateConsumer", "topic": "@Incoming", "aggregate": "contracts"},
+      {"name": "WorkUpdateConsumer", "topic": "@Incoming", "aggregate": "work"},
+      {"name": "BudgetUpdateConsumer", "topic": "@Incoming", "aggregate": "budgets"},
+      {"name": "ExpenseCreatedConsumer", "topic": "@Incoming", "aggregate": "expense"},
+      {"name": "WorkHandler", "topic": "@Incoming", "aggregate": "work"}
+    ],
+    "producers": [
+      {"name": "ExpenseCreatedProducer", "topic": "@Outgoing", "aggregate": "expense"}
+    ],
+    "infrastructure": [
+      "AggregateMessageEmitter",
+      "KafkaEventPublisher",
+      "OutboxDispatcher",
+      "ExternalEventBridge",
+      "EventRoutingRegistry",
+      "SNSEventSender"
+    ]
+  },
+  "externalClients": [
+    {"name": "EconomicsAPI", "service": "expense", "protocol": "REST"},
+    {"name": "EconomicsAPIAccount", "service": "expense", "protocol": "REST"},
+    {"name": "EconomicsPagingAPI", "service": "finance", "protocol": "REST"},
+    {"name": "InvoiceAPI", "service": "finance", "protocol": "REST"},
+    {"name": "InvoiceAPI", "service": "invoice", "protocol": "REST"},
+    {"name": "CurrencyAPI", "service": "invoice", "protocol": "REST"},
+    {"name": "OpenAIClient", "service": "apis", "protocol": "REST"},
+    {"name": "MailAPI", "service": "userservice", "protocol": "REST"}
+  ],
+  "batchJobs": {
+    "scheduler": "BatchScheduler",
+    "tracking": "BatchJobTrackingService",
+    "launchers": ["StatusRecalcJobLauncher", "SalaryRecalcJobLauncher", "ContractConsultantRecalcJobLauncher"],
+    "jobs": ["BirthdayNotificationJob", "SlackUserSyncJob", "AchievementCheckerJob", "UpdateBudgetDocumentsJob", "FinanceLoadJob", "ProjectLockJob", "CheckBudgetsJob", "UserDayBatchletEnhanced"]
+  },
+  "reactive": {
+    "sseEndpoints": ["SSEResource"],
+    "notes": "Only 1 of 95 resources uses reactive types (Uni/Multi)"
+  }
+}

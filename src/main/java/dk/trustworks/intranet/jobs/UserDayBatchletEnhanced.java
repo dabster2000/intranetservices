@@ -52,6 +52,7 @@ public class UserDayBatchletEnhanced extends AbstractBatchlet implements Partiti
                         "Missing partition properties: userUuid=" + userUuid + ", day=" + dayIso)
                 );
                 executionResult.setPartitionId(partitionId);
+                stepContext.setTransientUserData(executionResult);
                 return "FAILED";
             }
             
@@ -74,11 +75,13 @@ public class UserDayBatchletEnhanced extends AbstractBatchlet implements Partiti
                 executionResult = BatchletResult.partial("Partial success: " + r.summary());
                 executionResult.setPartitionId(partitionId);
                 executionResult.setProcessingTimeMs(processingTime);
+                stepContext.setTransientUserData(executionResult);
                 return "PARTIAL";
             } else {
                 executionResult = BatchletResult.success("Successfully processed user " + userUuid + " for " + day + "; " + r.summary());
                 executionResult.setPartitionId(partitionId);
                 executionResult.setProcessingTimeMs(processingTime);
+                stepContext.setTransientUserData(executionResult);
                 return "COMPLETED";
             }
             
@@ -91,19 +94,28 @@ public class UserDayBatchletEnhanced extends AbstractBatchlet implements Partiti
             );
             executionResult.setPartitionId(partitionId);
             executionResult.setProcessingTimeMs(processingTime);
+            stepContext.setTransientUserData(executionResult);
             return "FAILED";
         }
     }
     
     @Override
     public Serializable collectPartitionData() throws Exception {
-        // This is called after process() to collect results from this partition
-        if (executionResult == null) {
-            String partitionId = (userUuid != null ? userUuid : "unknownUser") + "_" + (dayIso != null ? dayIso : "unknownDay");
-            BatchletResult fallback = BatchletResult.failure("No execution result was produced for this partition");
-            fallback.setPartitionId(partitionId);
-            return fallback;
+        // Try to get result from StepContext first (handles CDI scoping issues)
+        BatchletResult result = (BatchletResult) stepContext.getTransientUserData();
+        if (result != null) {
+            return result;
         }
-        return executionResult;
+
+        // Fallback to instance field (shouldn't normally happen)
+        if (executionResult != null) {
+            return executionResult;
+        }
+
+        // Last resort fallback
+        String partitionId = (userUuid != null ? userUuid : "unknownUser") + "_" + (dayIso != null ? dayIso : "unknownDay");
+        BatchletResult fallback = BatchletResult.failure("No execution result was produced for this partition");
+        fallback.setPartitionId(partitionId);
+        return fallback;
     }
 }
