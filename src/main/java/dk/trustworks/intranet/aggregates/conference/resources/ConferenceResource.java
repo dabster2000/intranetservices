@@ -11,6 +11,7 @@ import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
 import dk.trustworks.intranet.knowledgeservice.model.Conference;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
 import dk.trustworks.intranet.knowledgeservice.model.ConferencePhase;
+import dk.trustworks.intranet.knowledgeservice.model.ConferencePhaseAttachment;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
@@ -121,6 +122,93 @@ public class ConferenceResource {
         ConferencePhase.delete("uuid", phaseuuid);
     }
 
+    @GET
+    @Path("/{conferenceuuid}/phases/{phaseuuid}/attachments")
+    @Operation(
+        summary = "Get all attachments for a conference phase",
+        description = "Returns all file attachments associated with a specific conference phase"
+    )
+    public List<ConferencePhaseAttachment> getPhaseAttachments(@PathParam("conferenceuuid") String conferenceuuid, @PathParam("phaseuuid") String phaseuuid) {
+        return ConferencePhaseAttachment.list("phaseuuid", phaseuuid);
+    }
+
+    @POST
+    @Path("/{conferenceuuid}/phases/{phaseuuid}/attachments")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Transactional
+    @Operation(
+        summary = "Add attachment to conference phase",
+        description = "Uploads a file attachment to be sent with emails when participants transition to this phase. " +
+                     "Same validation rules as bulk email attachments apply."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Attachment added successfully"
+        ),
+        @APIResponse(
+            responseCode = "400",
+            description = "Invalid request (bad file type, file too large, etc.)",
+            content = @Content(
+                mediaType = MediaType.APPLICATION_JSON,
+                schema = @Schema(implementation = EmailErrorResponse.class)
+            )
+        )
+    })
+    public Response addPhaseAttachment(
+            @PathParam("conferenceuuid") String conferenceuuid,
+            @PathParam("phaseuuid") String phaseuuid,
+            EmailAttachment attachment) {
+
+        log.info("Adding attachment to phase " + phaseuuid + ": " + attachment.getFilename());
+
+        // Validate attachment (reuse existing validation logic)
+        try {
+            validateAttachments(List.of(attachment));
+        } catch (WebApplicationException e) {
+            throw e;
+        }
+
+        // Create and persist the phase attachment
+        ConferencePhaseAttachment phaseAttachment = new ConferencePhaseAttachment(
+                phaseuuid,
+                attachment.getFilename(),
+                attachment.getContentType(),
+                attachment.getContent()
+        );
+        phaseAttachment.persist();
+
+        log.info("Phase attachment added: id=" + phaseAttachment.getId() + ", filename=" + attachment.getFilename());
+        return Response.ok().entity(phaseAttachment).build();
+    }
+
+    @DELETE
+    @Path("/{conferenceuuid}/phases/{phaseuuid}/attachments/{attachmentid}")
+    @Transactional
+    @Operation(
+        summary = "Delete phase attachment",
+        description = "Removes a file attachment from a conference phase"
+    )
+    public Response deletePhaseAttachment(
+            @PathParam("conferenceuuid") String conferenceuuid,
+            @PathParam("phaseuuid") String phaseuuid,
+            @PathParam("attachmentid") Long attachmentId) {
+
+        log.info("Deleting phase attachment: id=" + attachmentId);
+
+        boolean deleted = ConferencePhaseAttachment.deleteById(attachmentId);
+
+        if (deleted) {
+            log.info("Phase attachment deleted: id=" + attachmentId);
+            return Response.ok().build();
+        } else {
+            log.warn("Phase attachment not found: id=" + attachmentId);
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(new EmailErrorResponse("Not found", "Attachment with id " + attachmentId + " not found"))
+                    .build();
+        }
+    }
+
     @POST
     @PermitAll
     @Path("/{conferenceuuid}/participants")
@@ -158,11 +246,45 @@ public class ConferenceResource {
     @POST
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants/list")
     public void changeParticipantPhase(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, List<ConferenceParticipant> conferenceParticipantList) {
+        // Fetch the target phase to check for email and attachments
+        ConferencePhase targetPhase = conferenceService.findConferencePhase(conferenceUUID, phaseNumber);
+
+        // If phase uses email and has attachments, create a bulk email job for all participants
+        if (targetPhase.isUseMail() && targetPhase.hasAttachments()) {
+            log.info("Phase " + phaseNumber + " has attachments, creating bulk email job for " + conferenceParticipantList.size() + " participants");
+
+            // Collect recipient emails
+            List<String> recipientEmails = conferenceParticipantList.stream()
+                    .map(ConferenceParticipant::getEmail)
+                    .toList();
+
+            // Convert phase attachments to email attachments
+            List<EmailAttachment> emailAttachments = targetPhase.getAttachments().stream()
+                    .map(ConferencePhaseAttachment::toEmailAttachment)
+                    .toList();
+
+            // Decode the Base64-encoded mail body
+            String decodedBody = new String(org.apache.commons.codec.binary.Base64.decodeBase64(targetPhase.getMail().getBytes()));
+
+            // Create bulk email request
+            BulkEmailRequest bulkEmailRequest = new BulkEmailRequest(
+                    targetPhase.getSubject(),
+                    decodedBody,
+                    recipientEmails,
+                    emailAttachments
+            );
+
+            // Create the bulk email job
+            bulkEmailService.createBulkEmailJob(bulkEmailRequest);
+            log.info("Bulk email job created for phase transition with " + emailAttachments.size() + " attachments");
+        }
+
+        // Update each participant's phase in the database (email already sent or will be sent individually)
         conferenceParticipantList.forEach(conferenceParticipant -> {
             conferenceParticipant.setRegistered(LocalDateTime.now());
             conferenceParticipant.setUuid(UUID.randomUUID().toString());
             conferenceParticipant.setConferenceuuid(conferenceUUID);
-            conferenceParticipant.setConferencePhase(conferenceService.findConferencePhase(conferenceUUID, phaseNumber));
+            conferenceParticipant.setConferencePhase(targetPhase);
             ChangeParticipantPhaseEvent event = new ChangeParticipantPhaseEvent(conferenceUUID, conferenceParticipant);
             aggregateEventSender.handleEvent(event);
         });

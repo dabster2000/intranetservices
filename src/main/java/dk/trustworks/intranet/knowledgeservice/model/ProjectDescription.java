@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -13,6 +15,7 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -24,7 +27,8 @@ import java.util.TreeSet;
 @AllArgsConstructor
 @Entity
 @Table(name = "projectdescriptions")
-public class ProjectDescription extends PanacheEntityBase {
+@EntityListeners(AuditEntityListener.class)
+public class ProjectDescription extends PanacheEntityBase implements Auditable {
 
     @Id
     @EqualsAndHashCode.Include
@@ -54,6 +58,21 @@ public class ProjectDescription extends PanacheEntityBase {
     @Column(name = "active_to")
     private LocalDate toDate;
 
+    @Column(name = "created_at", nullable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime updatedAt;
+
+    @Column(name = "created_by", nullable = false, length = 255)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String createdBy;
+
+    @Column(name = "modified_by", length = 255)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String modifiedBy;
 
     @OneToMany(fetch = FetchType.EAGER, mappedBy = "projectDescription", cascade = CascadeType.REMOVE)
     private List<ProjectDescriptionUser> projectDescriptionUserList;

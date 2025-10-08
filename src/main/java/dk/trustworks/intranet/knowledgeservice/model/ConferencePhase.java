@@ -6,6 +6,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
+import java.util.ArrayList;
+import java.util.List;
 
 @Data
 @NoArgsConstructor
@@ -22,4 +24,15 @@ public class ConferencePhase extends PanacheEntityBase {
     private boolean useMail;
     private String subject;
     private String mail;
+
+    @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JoinColumn(name = "phaseuuid")
+    private List<ConferencePhaseAttachment> attachments = new ArrayList<>();
+
+    /**
+     * Check if this phase has email attachments
+     */
+    public boolean hasAttachments() {
+        return attachments != null && !attachments.isEmpty();
+    }
 }

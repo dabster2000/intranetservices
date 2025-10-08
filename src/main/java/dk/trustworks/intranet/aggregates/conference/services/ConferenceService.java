@@ -77,9 +77,13 @@ public class ConferenceService {
     @Transactional
     public void changeParticipantPhase(ConferenceParticipant conferenceParticipant) {
         ConferencePhase conferencePhase = conferenceParticipant.getConferencePhase();
-        if(conferencePhase.isUseMail()) {
+
+        // Only send individual emails if phase uses mail AND has no attachments
+        // If attachments exist, bulk email is sent from the Resource layer
+        if(conferencePhase.isUseMail() && !conferencePhase.hasAttachments()) {
             mailResource.sendingMail(conferenceParticipant.getEmail(), conferencePhase.getSubject(), new String(Base64.decodeBase64(conferencePhase.getMail().getBytes())));
         }
+
         conferenceParticipant.persist();
     }
 
