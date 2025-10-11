@@ -2,6 +2,8 @@ package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.LockedBonusPoolData;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.LockedBonusPoolService;
+import dk.trustworks.intranet.snapshot.model.ImmutableSnapshot;
+import dk.trustworks.intranet.snapshot.service.SnapshotService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -23,7 +25,13 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
-@Tag(name = "locked-bonus-pool", description = "Manage locked bonus pool data snapshots for fiscal years. Ensures audit compliance and data immutability.")
+/**
+ * @deprecated This API is deprecated. Use the new generic snapshot API at /snapshots/bonus_pool/{fiscalYear} instead.
+ * This facade maintains backward compatibility while delegating to the new SnapshotService.
+ * Will be removed in a future version after client migration.
+ */
+@Deprecated(since = "V91", forRemoval = true)
+@Tag(name = "locked-bonus-pool", description = "DEPRECATED: Use /snapshots API. Manage locked bonus pool data snapshots for fiscal years. Ensures audit compliance and data immutability.")
 @Path("/bonuspool/locked")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
@@ -34,6 +42,9 @@ public class LockedBonusPoolResource {
 
     @Inject
     LockedBonusPoolService service;
+
+    @Inject
+    SnapshotService snapshotService;
 
     public record LockRequest(
             @Schema(description = "Fiscal year to lock", example = "2024", required = true)
@@ -100,8 +111,8 @@ public class LockedBonusPoolResource {
     @GET
     @Path("/{fiscalYear}")
     @Operation(
-            summary = "Get locked bonus pool data by fiscal year",
-            description = "Returns the complete locked bonus pool snapshot for a specific fiscal year with checksum validation"
+            summary = "Get locked bonus pool data by fiscal year (DEPRECATED: Use /snapshots API)",
+            description = "Returns the complete locked bonus pool snapshot for a specific fiscal year with checksum validation. DEPRECATED: Use GET /snapshots/bonus_pool/{fiscalYear} instead."
     )
     @APIResponses({
             @APIResponse(
@@ -121,22 +132,26 @@ public class LockedBonusPoolResource {
             @Parameter(name = "fiscalYear", description = "Fiscal year", example = "2024", required = true)
             @PathParam("fiscalYear") Integer fiscalYear) {
 
-        Optional<LockedBonusPoolData> data = service.getValidatedData(fiscalYear);
+        // Delegate to new generic snapshot service
+        Optional<ImmutableSnapshot> snapshot = snapshotService.getLatestSnapshot("bonus_pool", fiscalYear.toString());
 
-        if (data.isEmpty()) {
+        if (snapshot.isEmpty()) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(String.format("No locked data found for fiscal year %d", fiscalYear))
                     .build();
         }
 
-        return Response.ok(data.get()).build();
+        // Transform to old format for backward compatibility
+        LockedBonusPoolData data = convertToLegacyFormat(snapshot.get());
+
+        return Response.ok(data).build();
     }
 
     @GET
     @Path("/{fiscalYear}/exists")
     @Operation(
-            summary = "Check if fiscal year is locked",
-            description = "Returns boolean indicating whether bonus pool data is locked for the given fiscal year"
+            summary = "Check if fiscal year is locked (DEPRECATED: Use /snapshots API)",
+            description = "Returns boolean indicating whether bonus pool data is locked for the given fiscal year. DEPRECATED: Use GET /snapshots/bonus_pool/{fiscalYear}/exists instead."
     )
     @APIResponses({
             @APIResponse(
@@ -154,13 +169,13 @@ public class LockedBonusPoolResource {
     public boolean isLocked(
             @Parameter(name = "fiscalYear", description = "Fiscal year", example = "2024", required = true)
             @PathParam("fiscalYear") Integer fiscalYear) {
-        return service.isLocked(fiscalYear);
+        return snapshotService.isSnapshotted("bonus_pool", fiscalYear.toString());
     }
 
     @POST
     @Operation(
-            summary = "Lock bonus pool data for a fiscal year",
-            description = "Creates an immutable snapshot of bonus pool data with SHA-256 checksum. Once locked, data cannot be modified (only deleted by admin in exceptional cases)."
+            summary = "Lock bonus pool data for a fiscal year (DEPRECATED: Use /snapshots API)",
+            description = "Creates an immutable snapshot of bonus pool data with SHA-256 checksum. Once locked, data cannot be modified (only deleted by admin in exceptional cases). DEPRECATED: Use POST /snapshots with entityType=bonus_pool instead."
     )
     @APIResponses({
             @APIResponse(
@@ -195,20 +210,42 @@ public class LockedBonusPoolResource {
             throw new BadRequestException("lockedBy is required");
         }
 
-        LockedBonusPoolData data = service.lockBonusPool(
-                request.fiscalYear,
+        // Delegate to new generic snapshot service
+        ImmutableSnapshot snapshot = snapshotService.createSnapshot(
+                "bonus_pool",
+                request.fiscalYear.toString(),
                 request.poolContextJson,
                 request.lockedBy
         );
 
+        // Transform to old format for backward compatibility
+        LockedBonusPoolData data = convertToLegacyFormat(snapshot);
+
         return Response.status(Response.Status.CREATED).entity(data).build();
+    }
+
+    /**
+     * Convert ImmutableSnapshot to legacy LockedBonusPoolData format.
+     * Maintains backward compatibility with existing clients.
+     */
+    private LockedBonusPoolData convertToLegacyFormat(ImmutableSnapshot snapshot) {
+        LockedBonusPoolData legacy = new LockedBonusPoolData();
+        legacy.fiscalYear = Integer.parseInt(snapshot.getEntityId());
+        legacy.poolContextJson = snapshot.getSnapshotData();
+        legacy.lockedAt = snapshot.getLockedAt();
+        legacy.lockedBy = snapshot.getLockedBy();
+        legacy.checksum = snapshot.getChecksum();
+        legacy.version = snapshot.getVersion();
+        legacy.createdAt = snapshot.getCreatedAt();
+        legacy.updatedAt = snapshot.getUpdatedAt();
+        return legacy;
     }
 
     @DELETE
     @Path("/{fiscalYear}")
     @Operation(
-            summary = "Unlock (delete) bonus pool data",
-            description = "DANGEROUS: Deletes locked bonus pool data for a fiscal year. This breaks the audit trail and should only be used in exceptional circumstances."
+            summary = "Unlock (delete) bonus pool data (DEPRECATED: Use /snapshots API)",
+            description = "DANGEROUS: Deletes locked bonus pool data for a fiscal year. This breaks the audit trail and should only be used in exceptional circumstances. DEPRECATED: Use DELETE /snapshots/bonus_pool/{fiscalYear} instead."
     )
     @APIResponses({
             @APIResponse(responseCode = "204", description = "Deleted successfully"),
@@ -220,9 +257,10 @@ public class LockedBonusPoolResource {
             @Parameter(name = "fiscalYear", description = "Fiscal year to unlock", example = "2024", required = true)
             @PathParam("fiscalYear") Integer fiscalYear) {
 
-        boolean deleted = service.unlockBonusPool(fiscalYear);
+        // Delegate to new generic snapshot service - delete all versions
+        long deleted = snapshotService.deleteAllVersions("bonus_pool", fiscalYear.toString());
 
-        if (!deleted) {
+        if (deleted == 0) {
             return Response.status(Response.Status.NOT_FOUND)
                     .entity(String.format("No locked data found for fiscal year %d", fiscalYear))
                     .build();
