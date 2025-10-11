@@ -121,7 +121,18 @@ public class ContractService {
 
     public List<Project> findProjectsByContract(String contractuuid) {
         Set<ContractProject> contractProjects = getContractProjects(contractuuid);
-        return contractProjects.stream().map(contractProject -> projectService.findByUuid(contractProject.getProjectuuid())).collect(Collectors.toList());
+        return contractProjects.stream()
+                .filter(cp -> {
+                    if (cp.getProjectuuid() == null) {
+                        log.warnf("Found ContractProject with null projectuuid: contract=%s, uuid=%s",
+                                contractuuid, cp.getUuid());
+                        return false;
+                    }
+                    return true;
+                })
+                .map(cp -> projectService.findByUuid(cp.getProjectuuid()))
+                .filter(project -> project != null)
+                .collect(Collectors.toList());
     }
 
     public Set<ContractProject> getContractProjects(String contractuuid) {
@@ -178,9 +189,18 @@ public class ContractService {
 
     public List<Contract> findByProjectuuid(String projectuuid) {
         List<ContractProject> contractProject = ContractProject.find("projectuuid LIKE ?1", projectuuid).list();
-        List<Contract> result = new ArrayList<>();
-        contractProject.forEach(contractProject1 -> result.add(Contract.findById(contractProject1.getContractuuid()))); //result.add(addConsultantsToContract(Contract.findById(contractProject1.getContractuuid()))));
-        return result;
+        return contractProject.stream()
+                .filter(cp -> {
+                    if (cp.getContractuuid() == null) {
+                        log.warnf("Found ContractProject with null contractuuid: project=%s, uuid=%s",
+                                projectuuid, cp.getUuid());
+                        return false;
+                    }
+                    return true;
+                })
+                .map(cp -> (Contract) Contract.findById(cp.getContractuuid()))
+                .filter(contract -> contract != null)
+                .collect(Collectors.toList());
     }
 
     @Transactional
@@ -232,7 +252,6 @@ public class ContractService {
             // Get the full contract with consultants and projects for validation
             Contract fullContract = Contract.findById(contract.getUuid());
             if (fullContract != null) {
-                addConsultantsToContract(fullContract);
                 ValidationReport report = validationService.validateContractActivation(fullContract);
                 validationService.enforceValidation(report);
             }

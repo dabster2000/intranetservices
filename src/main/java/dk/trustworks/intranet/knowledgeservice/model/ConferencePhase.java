@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.knowledgeservice.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -25,6 +26,7 @@ public class ConferencePhase extends PanacheEntityBase {
     private String subject;
     private String mail;
 
+    @JsonIgnore
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @JoinColumn(name = "phaseuuid")
     private List<ConferencePhaseAttachment> attachments = new ArrayList<>();

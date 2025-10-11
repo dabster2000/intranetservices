@@ -64,8 +64,11 @@ public abstract class AbstractEnhancedBatchlet extends AbstractBatchlet implemen
             // Set partition ID and processing time
             executionResult.setPartitionId(partitionId);
             executionResult.setProcessingTimeMs(System.currentTimeMillis() - startTime);
-            
-            log.debugf("Completed processing for partition %s with status %s in %dms", 
+
+            // Store in StepContext to survive CDI proxy instance changes
+            stepContext.setTransientUserData(executionResult);
+
+            log.debugf("Completed processing for partition %s with status %s in %dms",
                       partitionId, executionResult.getStatus(), executionResult.getProcessingTimeMs());
             
             // Return appropriate exit status based on result
@@ -83,14 +86,17 @@ public abstract class AbstractEnhancedBatchlet extends AbstractBatchlet implemen
         } catch (Exception e) {
             long processingTime = System.currentTimeMillis() - startTime;
             log.errorf(e, "Fatal error processing partition %s", partitionId);
-            
+
             executionResult = BatchletResult.failure(
                 "Fatal error processing partition " + partitionId,
                 e
             );
             executionResult.setPartitionId(partitionId);
             executionResult.setProcessingTimeMs(processingTime);
-            
+
+            // Store in StepContext to survive CDI proxy instance changes
+            stepContext.setTransientUserData(executionResult);
+
             return "FAILED";
         }
     }
@@ -98,12 +104,20 @@ public abstract class AbstractEnhancedBatchlet extends AbstractBatchlet implemen
     @Override
     public final Serializable collectPartitionData() throws Exception {
         // This is called after process() to collect results from this partition
-        if (executionResult == null) {
-            BatchletResult fallback = BatchletResult.failure("No execution result was produced for this partition");
-            // partitionId and processingTime are best-effort here; they should have been set in process()
-            return fallback;
+        // Try to get result from StepContext first (handles CDI scoping issues)
+        BatchletResult result = (BatchletResult) stepContext.getTransientUserData();
+        if (result != null) {
+            return result;
         }
-        return executionResult;
+
+        // Fallback to instance field (shouldn't normally happen)
+        if (executionResult != null) {
+            return executionResult;
+        }
+
+        // Last resort fallback
+        BatchletResult fallback = BatchletResult.failure("No execution result was produced for this partition");
+        return fallback;
     }
     
     /**

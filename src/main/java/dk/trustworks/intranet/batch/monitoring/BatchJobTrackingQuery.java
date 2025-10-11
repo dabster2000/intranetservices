@@ -4,6 +4,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
+import jakarta.transaction.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -98,6 +99,7 @@ public class BatchJobTrackingQuery {
         return new PageResult<>(items, page, size, total);
     }
 
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Optional<BatchJobExecutionTracking> findByExecutionId(long executionId) {
         List<BatchJobExecutionTracking> list = em.createQuery(
                         "select e from BatchJobExecutionTracking e where e.executionId = :id",

@@ -360,7 +360,7 @@ Consider this work entry:
 
 ### 4.1 Contract Type Overview
 
-The system supports four distinct contract types, each with specific pricing and discount rules:
+The system supports five distinct contract types, each with specific pricing and discount rules:
 
 #### 4.1.1 PERIOD Contracts
 - **Description**: Standard time-and-materials contracts
@@ -395,6 +395,16 @@ The system supports four distinct contract types, each with specific pricing and
   2. **General Discount**: Optional percentage discount
 - **Key Difference**: No step discount, simplified pricing structure
 - **Use Case**: Danish public sector contracts under the 2025 SKI 02.15 framework
+
+#### 4.1.5 SKI0217_2025_V2 Contracts
+- **Description**: Alternative SKI framework contract with standard pricing
+- **Pricing Rules**:
+  - Base hourly rates as defined in contract_consultant
+  - Optional general discount percentage
+  - No automatic fees or deductions
+  - **Behaves identically to PERIOD contracts**
+- **Key Difference**: Named after SKI framework but uses standard PERIOD pricing
+- **Use Case**: Special case SKI framework contracts that follow standard time-and-materials pricing
 
 ### 4.2 Invoice Calculation Process
 

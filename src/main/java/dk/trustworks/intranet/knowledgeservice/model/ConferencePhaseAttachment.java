@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.knowledgeservice.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import dk.trustworks.intranet.communicationsservice.model.EmailAttachment;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;

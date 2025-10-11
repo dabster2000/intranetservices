@@ -1,0 +1,7 @@
+-- Add SKI0217_2025_V2 contract type
+-- This contract type behaves identically to PERIOD contracts:
+-- - Only applies general discount (no admin fees, no trapperabat, no fixed deductions)
+-- - Uses the same pricing rules as standard time-and-materials contracts
+--
+-- No schema changes required as ContractType is stored as VARCHAR in the database
+-- and the enum is defined in Java code.
