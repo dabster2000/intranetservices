@@ -1305,4 +1305,43 @@ public class InvoiceService {
         );
     }
 
+    /**
+     * Find invoices where the invoice is issued by one company but contains invoice items
+     * with consultants from another company. This is determined by checking the consultant's
+     * company in bi_data_per_day for the invoice period.
+     *
+     * @param fromdate Start date (inclusive) for invoice date range
+     * @param todate End date (exclusive) for invoice date range
+     * @return List of invoices with cross-company consultants
+     */
+    @SuppressWarnings("unchecked")
+    public List<Invoice> findCrossCompanyInvoicesByDateRange(LocalDate fromdate, LocalDate todate) {
+        LocalDate finalFromdate = fromdate != null ? fromdate : LocalDate.of(2014, 1, 1);
+        LocalDate finalTodate = todate != null ? todate : LocalDate.now();
+
+        String sql = """
+            SELECT DISTINCT i.*
+            FROM invoices i
+            WHERE EXISTS (
+                SELECT 1
+                FROM invoiceitems ii
+                JOIN bi_data_per_day bd ON ii.consultantuuid = bd.useruuid
+                WHERE ii.invoiceuuid = i.uuid
+                  AND bd.year = i.year
+                  AND bd.month = i.month + 1
+                  AND i.companyuuid != bd.companyuuid
+                  AND i.companyuuid IS NOT NULL
+                  AND bd.companyuuid IS NOT NULL
+            )
+            AND i.invoicedate >= :fromdate
+            AND i.invoicedate < :todate
+            ORDER BY i.invoicedate DESC, i.invoicenumber DESC
+        """;
+
+        return em.createNativeQuery(sql, Invoice.class)
+                .setParameter("fromdate", finalFromdate)
+                .setParameter("todate", finalTodate)
+                .getResultList();
+    }
+
 }

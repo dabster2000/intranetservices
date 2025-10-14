@@ -332,4 +332,11 @@ public class InvoiceResource {
     public List<MyBonusFySum> myBonusSummary(@QueryParam("useruuid") String useruuid) {
         return invoiceService.myBonusFySummary(useruuid);
     }
+
+    @GET
+    @Path("/cross-company")
+    public List<Invoice> findCrossCompanyInvoices(@QueryParam("fromdate") String fromdate,
+                                                   @QueryParam("todate") String todate) {
+        return invoiceService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
+    }
 }
