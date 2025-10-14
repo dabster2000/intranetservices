@@ -339,4 +339,24 @@ public class InvoiceResource {
                                                    @QueryParam("todate") String todate) {
         return invoiceService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
     }
+
+    @POST
+    @Path("/{invoiceuuid}/queue")
+    @Transactional
+    public Response queueInternalInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
+        log.infof("queueInternalInvoice: invoiceuuid=%s", invoiceuuid);
+
+        try {
+            invoiceService.queueInternalInvoice(invoiceuuid);
+            return Response.ok().entity("Invoice queued successfully").build();
+        } catch (WebApplicationException wae) {
+            log.warn("Failed to queue invoice: " + wae.getMessage(), wae);
+            throw wae;
+        } catch (Exception e) {
+            log.error("Unexpected error queuing invoice: " + invoiceuuid, e);
+            return Response.serverError()
+                    .entity("Failed to queue invoice: " + e.getMessage())
+                    .build();
+        }
+    }
 }

@@ -766,6 +766,7 @@ Both endpoints log debug messages indicating requested page information and coun
         - **Internal invoice drafts**: `createInternalInvoiceDraft(from company)`
         - **Internal service invoice drafts**: `createInternalServiceInvoiceDraft(from→to company, month)`
         - **Phantom invoices**: `createPhantomInvoice` (pro forma/placeholder)
+        - **Queued internal invoices**: `POST /invoices/{uuid}/queue` - queues INTERNAL invoice until referenced external invoice is PAID (see [Queued Internal Invoices](queued-internal-invoices.md))
 
 3) **Edit draft invoice**
     - Opens in **InvoiceDesign** with address/contact fields, dates, currency, VAT, discount, notes.

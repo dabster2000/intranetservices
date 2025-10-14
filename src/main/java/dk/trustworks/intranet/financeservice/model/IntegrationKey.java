@@ -30,10 +30,11 @@ public class IntegrationKey extends PanacheEntityBase {
         int expenseJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("expense-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
         int invoiceJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("invoice-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
         int invoiceAccountNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("invoice-account-number")).findFirst().orElse(new IntegrationKey()).getValue());
-        IntegrationKeyValue result = new IntegrationKeyValue(url, appSecretToken, agreementGrantToken, expenseJournalNumber, invoiceJournalNumber, invoiceAccountNumber);
+        int internalJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("internal-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
+        IntegrationKeyValue result = new IntegrationKeyValue(url, appSecretToken, agreementGrantToken, expenseJournalNumber, invoiceJournalNumber, invoiceAccountNumber, internalJournalNumber);
         return result;
     }
 
-    public record IntegrationKeyValue(String url, String appSecretToken, String agreementGrantToken, int expenseJournalNumber, int invoiceJournalNumber, int invoiceAccountNumber) {
+    public record IntegrationKeyValue(String url, String appSecretToken, String agreementGrantToken, int expenseJournalNumber, int invoiceJournalNumber, int invoiceAccountNumber, int internalJournalNumber) {
     }
 }

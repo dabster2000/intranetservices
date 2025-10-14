@@ -22,21 +22,22 @@ import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
+import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.domain.user.entity.User;
-import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -776,7 +777,7 @@ public class InvoiceService {
     // ADD this helper to parse statuses if caller passed none
     private static List<InvoiceStatus> defaultStatuses(List<InvoiceStatus> statuses) {
         if (statuses == null || statuses.isEmpty()) {
-            return List.of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.PAID, InvoiceStatus.CREDIT_NOTE);
+            return List.of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.CREDIT_NOTE);
         }
         return statuses;
     }
@@ -1235,6 +1236,171 @@ public class InvoiceService {
         return LocalDate.of(y, 7, 1);
     }
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
+
+    /**
+     * Queues an INTERNAL DRAFT invoice to be automatically created when the referenced invoice is PAID.
+     *
+     * Validation:
+     * - Invoice must be DRAFT status
+     * - Invoice must be INTERNAL type
+     * - Invoice must have valid invoice_ref (references an existing invoice)
+     * - Invoice must have valid debtorCompanyuuid
+     * - Debtor company must have internal-journal-number configured
+     *
+     * @param invoiceuuid UUID of the invoice to queue
+     * @throws WebApplicationException if validation fails
+     */
+    @Transactional
+    public void queueInternalInvoice(String invoiceuuid) {
+        log.info("Queueing internal invoice: " + invoiceuuid);
+
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            throw new WebApplicationException("Invoice not found: " + invoiceuuid, Response.Status.NOT_FOUND);
+        }
+
+        // Validation 1: Must be DRAFT
+        if (invoice.getStatus() != InvoiceStatus.DRAFT) {
+            throw new WebApplicationException(
+                "Invoice must be DRAFT status to queue. Current status: " + invoice.getStatus(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Validation 2: Must be INTERNAL type
+        if (invoice.getType() != InvoiceType.INTERNAL) {
+            throw new WebApplicationException(
+                "Only INTERNAL invoices can be queued. Current type: " + invoice.getType(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Validation 3: Must have valid invoice_ref
+        if (invoice.getInvoiceref() <= 0) {
+            throw new WebApplicationException(
+                "Invoice must reference an external invoice (invoice_ref must be > 0)",
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Check that referenced invoice exists
+        Invoice referencedInvoice = Invoice.find("invoicenumber = ?1", invoice.getInvoiceref()).firstResult();
+        if (referencedInvoice == null) {
+            throw new WebApplicationException(
+                "Referenced invoice not found: " + invoice.getInvoiceref(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Validation 4: Must have debtor company
+        if (invoice.getDebtorCompanyuuid() == null || invoice.getDebtorCompanyuuid().isBlank()) {
+            throw new WebApplicationException(
+                "Invoice must specify debtor company (debtorCompanyuuid)",
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        Company debtorCompany = Company.findById(invoice.getDebtorCompanyuuid());
+        if (debtorCompany == null) {
+            throw new WebApplicationException(
+                "Debtor company not found: " + invoice.getDebtorCompanyuuid(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Validation 5: Debtor company must have internal-journal-number configured
+        try {
+            IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(debtorCompany);
+            if (keys.internalJournalNumber() <= 0) {
+                throw new WebApplicationException(
+                    "Debtor company " + debtorCompany.getName() + " does not have internal-journal-number configured",
+                    Response.Status.BAD_REQUEST
+                );
+            }
+        } catch (Exception e) {
+            throw new WebApplicationException(
+                "Failed to validate debtor company integration keys: " + e.getMessage(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // All validations passed - queue the invoice
+        invoice.setStatus(InvoiceStatus.QUEUED);
+        invoice.persist();
+
+        log.info("Invoice successfully queued: " + invoiceuuid +
+                 ", references invoice: " + invoice.getInvoiceref() +
+                 ", debtor company: " + debtorCompany.getName());
+    }
+
+    /**
+     * Creates a queued internal invoice. Used by the batch processor.
+     * Similar to createInvoice() but handles QUEUED → CREATED transition.
+     */
+    @Transactional
+    public Invoice createQueuedInvoice(Invoice queuedInvoice) throws JsonProcessingException {
+        log.info("Creating queued invoice: " + queuedInvoice.getUuid());
+
+        if (queuedInvoice.getStatus() != InvoiceStatus.QUEUED) {
+            throw new RuntimeException("Invoice is not queued: " + queuedInvoice.getUuid());
+        }
+
+        // Assign invoice number
+        queuedInvoice.invoicenumber = getMaxInvoiceNumber(queuedInvoice) + 1;
+
+        // Create PDF
+        queuedInvoice.setStatus(InvoiceStatus.CREATED);
+        queuedInvoice.pdf = createInvoicePdf(queuedInvoice);
+
+        log.debug("Saving queued invoice...");
+        saveInvoice(queuedInvoice);
+        log.debug("Invoice saved: " + queuedInvoice.getUuid());
+
+        // Upload to e-conomics for BOTH companies
+        log.debug("Uploading queued invoice to e-conomics...");
+        uploadQueuedInvoiceToEconomics(queuedInvoice);
+        log.debug("Invoice uploaded to e-conomics: " + queuedInvoice.getUuid());
+
+        return queuedInvoice;
+    }
+
+    /**
+     * Uploads a queued INTERNAL invoice to e-conomics for both issuing and debtor companies.
+     */
+    @Transactional
+    private void uploadQueuedInvoiceToEconomics(Invoice invoice) {
+        if (invoice.invoicenumber == 0) return;
+
+        // Upload to issuing company (normal flow)
+        uploadToEconomics(invoice);
+
+        // Upload to debtor company using internal journal number
+        Company debtorCompany = Company.findById(invoice.getDebtorCompanyuuid());
+        if (debtorCompany != null) {
+            try {
+                log.info("Uploading internal invoice to debtor company: " + debtorCompany.getName());
+                IntegrationKey.IntegrationKeyValue debtorKeys = IntegrationKey.getIntegrationKeyValue(debtorCompany);
+
+                // Upload to debtor company using their internal journal number
+                Response response = economicsInvoiceService.sendVoucherToCompany(
+                    invoice,
+                    debtorCompany,
+                    debtorKeys.internalJournalNumber()
+                );
+
+                if ((response.getStatus() >= 200) && (response.getStatus() < 300)) {
+                    log.infof("Internal invoice %s successfully uploaded to debtor company %s",
+                            invoice.getUuid(), debtorCompany.getName());
+                } else {
+                    log.warnf("Failed to upload internal invoice to debtor company %s. Status: %d",
+                            debtorCompany.getName(), response.getStatus());
+                }
+            } catch (Exception e) {
+                log.error("Failed to upload to debtor company e-conomics, but issuer upload succeeded", e);
+                // Don't throw - we don't want to rollback the issuer upload
+            }
+        }
+    }
 
     // Single-row BonusApprovalRow DTO for one invoice
     public BonusApprovalRow findBonusApprovalRow(String invoiceuuid) {

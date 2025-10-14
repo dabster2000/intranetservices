@@ -110,6 +110,9 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "creditnote_for_uuid")
     public String creditnoteForUuid;
 
+    @Column(name = "debtor_companyuuid")
+    public String debtorCompanyuuid;
+
     @Transient
     public Double sumBeforeDiscounts;
 

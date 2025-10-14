@@ -140,6 +140,62 @@ public class EconomicsInvoiceService {
     }
 
 
+    /**
+     * Sends a voucher to e-conomics for a specific company using their custom journal number.
+     * This is used for internal invoices that need to be uploaded to multiple companies.
+     *
+     * @param invoice The invoice to send
+     * @param targetCompany The company whose e-conomics to upload to
+     * @param journalNumber The journal number to use (e.g., internal-journal-number)
+     * @return Response from e-conomics API
+     * @throws IOException if upload fails
+     */
+    public Response sendVoucherToCompany(Invoice invoice, dk.trustworks.intranet.model.Company targetCompany, int journalNumber) throws IOException {
+        log.info("EconomicsInvoiceService.sendVoucherToCompany");
+        log.infof("Sending invoice %d to company %s using journal %d",
+                invoice.invoicenumber, targetCompany.getName(), journalNumber);
+
+        IntegrationKey.IntegrationKeyValue targetKeys = IntegrationKey.getIntegrationKeyValue(targetCompany);
+        log.info("integrationKeyValue = " + targetKeys);
+
+        Journal journal = new Journal(journalNumber);
+        String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
+
+        Voucher voucher = buildJSONRequest(invoice, journal, text, targetKeys);
+        ObjectMapper o = new ObjectMapper();
+        String json = o.writeValueAsString(voucher);
+        log.info("json = " + json);
+
+        // call e-conomics endpoint
+        try {
+            EconomicsAPI economicsAPI = getEconomicsAPI(targetKeys);
+            String idem = "invoice-" + invoice.getUuid() + "-" + targetCompany.getUuid();
+            Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json);
+
+            if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                String responseAsString = response.readEntity(String.class);
+                JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
+                JsonNode object = array.get(0);
+                int voucherNumber = object.get("voucherNumber").intValue();
+
+                log.infof("Voucher posted successfully to company %s. VoucherNumber: %d",
+                        targetCompany.getName(), voucherNumber);
+
+                // Upload file to e-conomics voucher
+                return sendFile(invoice, voucher, voucherNumber);
+            } else {
+                String errorBody = response.readEntity(String.class);
+                log.error("Voucher not posted successfully to company " + targetCompany.getName() +
+                         ". Status: " + response.getStatus() + ", body: " + errorBody);
+                return response;
+            }
+        } catch (Exception e) {
+            log.error("Failed to send voucher to company " + targetCompany.getName(), e);
+            throw new RuntimeException(e);
+        }
+    }
+
     private static EconomicsAPI getEconomicsAPI(IntegrationKey.IntegrationKeyValue result) {
         log.info("EconomicsInvoiceService.getEconomicsAPI");
         return RestClientBuilder.newBuilder()

@@ -141,4 +141,26 @@ public class BatchScheduler {
         }
     }
 
+    // Queued internal invoice processor - runs daily at 2 AM
+    @Scheduled(cron = "0 0 2 * * ?")
+    void scheduleQueuedInternalInvoiceProcessor() {
+        try {
+            if (jobOperator.getJobNames().contains("queued-internal-invoice-processor")) {
+                if (!jobOperator.getRunningExecutions("queued-internal-invoice-processor").isEmpty()) {
+                    return; // one is already running
+                }
+            }
+            log.info("Starting queued-internal-invoice-processor");
+            jobOperator.start("queued-internal-invoice-processor", new Properties());
+        } catch (Exception e) {
+            log.warn("Could not schedule queued-internal-invoice-processor: " + e.getMessage());
+            // Retry on exception
+            try {
+                jobOperator.start("queued-internal-invoice-processor", new Properties());
+            } catch (Exception ex) {
+                log.error("Failed to start queued-internal-invoice-processor after retry", ex);
+            }
+        }
+    }
+
 }
