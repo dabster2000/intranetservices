@@ -165,25 +165,81 @@ grep "QueuedInternalInvoiceProcessorBatchlet" /var/log/application.log
 
 ## E-conomics Integration
 
-### Dual Upload
+### Robust Upload System with Retry Logic
 
-QUEUED internal invoices are uploaded to TWO companies in e-conomics:
+QUEUED internal invoices use a **robust upload tracking system** that handles failures gracefully:
+
+#### Upload Tracking Table
+
+All uploads are tracked in `invoice_economics_uploads`:
+```sql
+CREATE TABLE invoice_economics_uploads (
+    uuid VARCHAR(36) PRIMARY KEY,
+    invoiceuuid VARCHAR(40) NOT NULL,
+    companyuuid VARCHAR(36) NOT NULL,
+    upload_type ENUM('ISSUER', 'DEBTOR'),
+    status ENUM('PENDING', 'SUCCESS', 'FAILED'),
+    attempt_count INT DEFAULT 0,
+    max_attempts INT DEFAULT 5,
+    last_attempt_at DATETIME NULL,
+    last_error TEXT NULL
+);
+```
+
+#### Dual Upload Process
+
+QUEUED internal invoices are uploaded to TWO companies:
 
 1. **Issuing Company** (invoice.company)
+   - Type: `ISSUER`
    - Uses `invoice-journal-number`
    - Standard invoice upload flow
 
 2. **Debtor Company** (invoice.debtorCompanyuuid)
+   - Type: `DEBTOR`
    - Uses `internal-journal-number`
    - Specialized upload via `EconomicsInvoiceService.sendVoucherToCompany()`
 
+#### Upload Workflow
+
+```
+1. Invoice Created → Status: CREATED, Economics: NA
+2. queueUploads() → Create 2 upload tasks (ISSUER + DEBTOR)
+                  → Invoice Economics: PENDING
+3. processUploads() → Attempt both uploads
+   - Both succeed → Economics: UPLOADED
+   - 1 succeeds → Economics: PARTIALLY_UPLOADED
+   - Both fail → Economics: PENDING (stays)
+4. Retry job (every 15 min) → Retry FAILED uploads with backoff
+```
+
+#### Exponential Backoff
+
+Failed uploads are automatically retried with increasing delays:
+- Attempt 1: Wait 1 minute
+- Attempt 2: Wait 5 minutes
+- Attempt 3: Wait 15 minutes
+- Attempt 4: Wait 1 hour
+- Attempt 5: Wait 4 hours
+- After 5 attempts: Manual intervention required
+
+#### New Economics Statuses
+
+- `PENDING`: Upload queued but not yet attempted
+- `PARTIALLY_UPLOADED`: At least one company uploaded successfully
+- `UPLOADED`: All companies uploaded successfully
+
 ### Idempotency
 
-Each upload uses a unique idempotency key:
-- Issuing company: `invoice-{invoice.uuid}`
-- Debtor company: `invoice-{invoice.uuid}-{debtorCompany.uuid}`
+Each upload task has a unique constraint on `(invoiceuuid, companyuuid, upload_type)`, preventing duplicate upload attempts.
 
-This prevents duplicate uploads if the job is retried.
+### Resilience Features
+
+1. **Partial Success Handling**: If issuer upload succeeds but debtor fails, invoice is `PARTIALLY_UPLOADED` and debtor upload will retry
+2. **Automatic Retry**: EconomicsUploadRetryBatchlet runs every 15 minutes
+3. **Observable**: Query `invoice_economics_uploads` to see upload status
+4. **Audit Trail**: Full history of attempts with error messages
+5. **Transaction Safety**: Each upload persisted independently
 
 ## Configuration
 
@@ -275,39 +331,98 @@ The `QueuedInternalInvoiceProcessorBatchlet` will:
    WHERE status = 'QUEUED';
    ```
 
-### Upload to Debtor Company Fails
+### Upload Failures
 
-**Symptom:** Invoice created but only shows in issuing company's e-conomics
+**Symptom:** Invoice created with `PARTIALLY_UPLOADED` or `PENDING` status
 
 **Checks:**
 
-1. Verify debtor company integration keys:
+1. **Check upload tracking table:**
+   ```sql
+   SELECT u.*, c.name as company_name
+   FROM invoice_economics_uploads u
+   JOIN company c ON c.uuid = u.companyuuid
+   WHERE u.invoiceuuid = '<invoice-uuid>'
+   ORDER BY u.upload_type;
+   ```
+
+2. **View failed uploads with errors:**
+   ```sql
+   SELECT u.uuid, i.invoicenumber, c.name as company,
+          u.upload_type, u.attempt_count, u.last_error, u.last_attempt_at
+   FROM invoice_economics_uploads u
+   JOIN invoices i ON i.uuid = u.invoiceuuid
+   JOIN company c ON c.uuid = u.companyuuid
+   WHERE u.status = 'FAILED'
+     AND u.invoiceuuid = '<invoice-uuid>';
+   ```
+
+3. **Check retry job status:**
+   ```bash
+   grep "EconomicsUploadRetryBatchlet" /var/log/application.log | tail -20
+   ```
+
+4. **Verify company integration keys:**
    ```sql
    SELECT key, value
    FROM integration_keys
-   WHERE companyuuid = '<debtor-company-uuid>'
-     AND key = 'internal-journal-number';
+   WHERE companyuuid = '<company-uuid>'
+     AND key IN ('internal-journal-number', 'invoice-journal-number',
+                 'X-AppSecretToken', 'X-AgreementGrantToken');
    ```
 
-2. Check e-conomics API logs:
-   ```bash
-   grep "sendVoucherToCompany" /var/log/application.log | grep "<debtor-company-name>"
-   ```
+### Upload Status Reference
 
-3. Verify debtor company e-conomics credentials are valid
+| Invoice Status | Economics Status | Meaning |
+|----------------|------------------|---------|
+| CREATED | NA | Not uploaded yet |
+| CREATED | PENDING | Upload tasks created, not attempted |
+| CREATED | PARTIALLY_UPLOADED | 1 of 2 uploads succeeded |
+| CREATED | UPLOADED | All uploads succeeded |
+| CREATED | BOOKED | Invoice booked in e-conomics |
+| CREATED | PAID | Invoice paid |
 
 ### Manual Retry
 
-If a queued invoice fails to process, you can manually trigger:
+#### Reset Upload to Retry Immediately
 
 ```sql
--- Reset status to re-queue
+-- Reset failed upload to PENDING for immediate retry
+UPDATE invoice_economics_uploads
+SET status = 'PENDING',
+    attempt_count = 0,
+    last_attempt_at = NULL,
+    last_error = NULL
+WHERE invoiceuuid = '<invoice-uuid>'
+  AND status = 'FAILED';
+```
+
+#### Force Process Uploads
+
+```java
+// Via REST or manual execution
+invoiceEconomicsUploadService.processUploads("<invoice-uuid>");
+```
+
+#### Check Retryable Uploads
+
+```sql
+-- Find uploads eligible for retry
+SELECT COUNT(*) as retryable_uploads
+FROM invoice_economics_uploads
+WHERE status = 'FAILED'
+  AND attempt_count < max_attempts;
+```
+
+#### Reset Queued Invoice
+
+```sql
+-- Reset invoice to re-queue (if invoice creation failed)
 UPDATE invoices
 SET status = 'QUEUED'
-WHERE uuid = '<invoice-uuid>';
-
--- Manually trigger batch job (if needed)
--- Via JBeret console or wait for next scheduled run
+WHERE uuid = '<invoice-uuid>'
+  AND status = 'CREATED'
+  AND invoicenumber > 0;
 ```
 
 ## Database Queries
@@ -341,13 +456,93 @@ WHERE i.status = 'QUEUED'
 ```sql
 -- Find invoices that were queued and are now created
 SELECT i.uuid, i.invoicenumber, i.invoice_ref,
-       i.invoicedate, i.status, i.created_at
+       i.invoicedate, i.status, i.economics_status
 FROM invoices i
 WHERE i.type = 'INTERNAL'
   AND i.debtor_companyuuid IS NOT NULL
   AND i.status IN ('CREATED', 'SUBMITTED', 'PAID')
 ORDER BY i.invoicedate DESC
 LIMIT 50;
+```
+
+### Upload Tracking Queries
+
+#### Dashboard: All Upload Statuses
+```sql
+SELECT
+    i.invoicenumber,
+    i.economics_status,
+    u.upload_type,
+    c.name as company,
+    u.status,
+    u.attempt_count,
+    u.last_attempt_at,
+    SUBSTRING(u.last_error, 1, 100) as error_preview
+FROM invoices i
+JOIN invoice_economics_uploads u ON u.invoiceuuid = i.uuid
+JOIN company c ON c.uuid = u.companyuuid
+WHERE i.type = 'INTERNAL'
+  AND i.debtor_companyuuid IS NOT NULL
+ORDER BY i.invoicedate DESC, u.upload_type
+LIMIT 50;
+```
+
+#### Invoices with Partial Upload Success
+```sql
+SELECT
+    i.invoicenumber,
+    i.economics_status,
+    COUNT(CASE WHEN u.status = 'SUCCESS' THEN 1 END) as successful_uploads,
+    COUNT(CASE WHEN u.status = 'FAILED' THEN 1 END) as failed_uploads,
+    COUNT(*) as total_uploads
+FROM invoices i
+LEFT JOIN invoice_economics_uploads u ON u.invoiceuuid = i.uuid
+WHERE i.type = 'INTERNAL'
+  AND i.economics_status IN ('PENDING', 'PARTIALLY_UPLOADED')
+GROUP BY i.uuid, i.invoicenumber, i.economics_status
+HAVING failed_uploads > 0
+ORDER BY i.invoicedate DESC;
+```
+
+#### Failed Uploads Needing Attention
+```sql
+SELECT
+    i.invoicenumber,
+    c.name as company,
+    u.upload_type,
+    u.attempt_count,
+    u.max_attempts,
+    u.last_error,
+    u.last_attempt_at,
+    CASE
+        WHEN u.attempt_count >= u.max_attempts THEN 'NEEDS MANUAL INTERVENTION'
+        ELSE 'WILL AUTO-RETRY'
+    END as action_needed
+FROM invoice_economics_uploads u
+JOIN invoices i ON i.uuid = u.invoiceuuid
+JOIN company c ON c.uuid = u.companyuuid
+WHERE u.status = 'FAILED'
+ORDER BY
+    CASE WHEN u.attempt_count >= u.max_attempts THEN 0 ELSE 1 END,
+    u.last_attempt_at DESC;
+```
+
+#### Upload Success Rate Statistics
+```sql
+SELECT
+    DATE(i.invoicedate) as invoice_date,
+    COUNT(DISTINCT i.uuid) as total_invoices,
+    COUNT(DISTINCT CASE WHEN i.economics_status = 'UPLOADED' THEN i.uuid END) as fully_uploaded,
+    COUNT(DISTINCT CASE WHEN i.economics_status = 'PARTIALLY_UPLOADED' THEN i.uuid END) as partial_uploads,
+    COUNT(DISTINCT CASE WHEN i.economics_status = 'PENDING' THEN i.uuid END) as pending_uploads,
+    ROUND(100.0 * COUNT(DISTINCT CASE WHEN i.economics_status = 'UPLOADED' THEN i.uuid END) / COUNT(DISTINCT i.uuid), 2) as success_rate
+FROM invoices i
+WHERE i.type = 'INTERNAL'
+  AND i.debtor_companyuuid IS NOT NULL
+  AND i.status = 'CREATED'
+  AND i.invoicedate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+GROUP BY DATE(i.invoicedate)
+ORDER BY invoice_date DESC;
 ```
 
 ## Security Considerations

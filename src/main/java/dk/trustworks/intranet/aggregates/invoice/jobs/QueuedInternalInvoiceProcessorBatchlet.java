@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceEconomicsUploadService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
@@ -28,13 +29,18 @@ import java.util.List;
  *     <ul>
  *       <li>Sets invoicedate to today and duedate to tomorrow</li>
  *       <li>Creates the invoice (assigns number, generates PDF)</li>
- *       <li>Uploads to both issuing company and debtor company e-conomics</li>
+ *       <li>Queues uploads to e-conomics for tracking and retry</li>
+ *       <li>Attempts uploads to both issuing company and debtor company</li>
  *     </ul>
  *   </li>
  * </ol>
  *
+ * <p>Upload failures are tracked in invoice_economics_uploads table and automatically
+ * retried by EconomicsUploadRetryBatchlet with exponential backoff.
+ *
  * @see InvoiceService#queueInternalInvoice(String)
- * @see InvoiceService#createQueuedInvoice(Invoice)
+ * @see InvoiceService#createQueuedInvoiceWithoutUpload(Invoice)
+ * @see InvoiceEconomicsUploadService
  */
 @JBossLog
 @Named("queuedInternalInvoiceProcessorBatchlet")
@@ -44,6 +50,9 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
 
     @Inject
     InvoiceService invoiceService;
+
+    @Inject
+    InvoiceEconomicsUploadService uploadService;
 
     @Override
     @Transactional
@@ -95,11 +104,33 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
                 queuedInvoice.setInvoicedate(LocalDate.now());
                 queuedInvoice.setDuedate(LocalDate.now().plusDays(1));
 
-                // Create the invoice (this handles PDF generation and e-conomics upload)
-                Invoice createdInvoice = invoiceService.createQueuedInvoice(queuedInvoice);
+                // Create the invoice (assigns number, generates PDF - NO upload yet)
+                Invoice createdInvoice = invoiceService.createQueuedInvoiceWithoutUpload(queuedInvoice);
 
-                log.infof("Successfully created queued invoice %s with number %d",
+                log.infof("Created queued invoice %s with number %d - now queuing uploads",
                         createdInvoice.getUuid(), createdInvoice.getInvoicenumber());
+
+                // Queue uploads for both issuing and debtor companies
+                uploadService.queueUploads(createdInvoice);
+
+                // Process uploads immediately (failures will be retried by separate job)
+                InvoiceEconomicsUploadService.UploadResult result = uploadService.processUploads(createdInvoice.getUuid());
+
+                log.infof("Invoice %d upload result: %d succeeded, %d failed (total: %d)",
+                        createdInvoice.getInvoicenumber(),
+                        result.successCount(), result.failedCount(), result.totalCount());
+
+                if (result.allSucceeded()) {
+                    log.infof("Successfully created and uploaded invoice %d to all companies",
+                            createdInvoice.getInvoicenumber());
+                } else if (result.partialSuccess()) {
+                    log.warnf("Invoice %d partially uploaded (%d of %d succeeded) - failures will be retried",
+                            createdInvoice.getInvoicenumber(), result.successCount(), result.totalCount());
+                } else if (result.allFailed()) {
+                    log.errorf("Invoice %d creation succeeded but all uploads failed - will retry automatically",
+                            createdInvoice.getInvoicenumber());
+                }
+
                 processed++;
 
             } catch (Exception e) {

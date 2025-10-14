@@ -163,4 +163,21 @@ public class BatchScheduler {
         }
     }
 
+    // Economics upload retry - runs every 15 minutes to retry failed uploads
+    @Scheduled(cron = "0 */15 * * * ?")
+    void scheduleEconomicsUploadRetry() {
+        try {
+            if (jobOperator.getJobNames().contains("economics-upload-retry")) {
+                if (!jobOperator.getRunningExecutions("economics-upload-retry").isEmpty()) {
+                    return; // one is already running
+                }
+            }
+            log.debug("Starting economics-upload-retry");
+            jobOperator.start("economics-upload-retry", new Properties());
+        } catch (Exception e) {
+            // Log at debug level since this runs frequently
+            log.debug("Could not schedule economics-upload-retry: " + e.getMessage());
+        }
+    }
+
 }

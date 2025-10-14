@@ -562,7 +562,8 @@ public class InvoiceService {
                 invoice.contractType,
                 Company.findById(companyuuid),
                 invoice.getCurrency(),
-                "Intern faktura knyttet til " + invoice.getInvoicenumber());
+                "Intern faktura knyttet til " + invoice.getInvoicenumber(),
+                invoice.getCompany().getUuid());
         int position = 1;
         for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
             if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
@@ -1334,12 +1335,16 @@ public class InvoiceService {
     }
 
     /**
-     * Creates a queued internal invoice. Used by the batch processor.
-     * Similar to createInvoice() but handles QUEUED → CREATED transition.
+     * Creates a queued internal invoice without uploading to e-conomics.
+     * Upload is handled separately by InvoiceEconomicsUploadService for robust retry support.
+     *
+     * @param queuedInvoice Invoice in QUEUED status
+     * @return Created invoice
+     * @throws JsonProcessingException if PDF generation fails
      */
     @Transactional
-    public Invoice createQueuedInvoice(Invoice queuedInvoice) throws JsonProcessingException {
-        log.info("Creating queued invoice: " + queuedInvoice.getUuid());
+    public Invoice createQueuedInvoiceWithoutUpload(Invoice queuedInvoice) throws JsonProcessingException {
+        log.info("Creating queued invoice (without upload): " + queuedInvoice.getUuid());
 
         if (queuedInvoice.getStatus() != InvoiceStatus.QUEUED) {
             throw new RuntimeException("Invoice is not queued: " + queuedInvoice.getUuid());
@@ -1356,50 +1361,7 @@ public class InvoiceService {
         saveInvoice(queuedInvoice);
         log.debug("Invoice saved: " + queuedInvoice.getUuid());
 
-        // Upload to e-conomics for BOTH companies
-        log.debug("Uploading queued invoice to e-conomics...");
-        uploadQueuedInvoiceToEconomics(queuedInvoice);
-        log.debug("Invoice uploaded to e-conomics: " + queuedInvoice.getUuid());
-
         return queuedInvoice;
-    }
-
-    /**
-     * Uploads a queued INTERNAL invoice to e-conomics for both issuing and debtor companies.
-     */
-    @Transactional
-    private void uploadQueuedInvoiceToEconomics(Invoice invoice) {
-        if (invoice.invoicenumber == 0) return;
-
-        // Upload to issuing company (normal flow)
-        uploadToEconomics(invoice);
-
-        // Upload to debtor company using internal journal number
-        Company debtorCompany = Company.findById(invoice.getDebtorCompanyuuid());
-        if (debtorCompany != null) {
-            try {
-                log.info("Uploading internal invoice to debtor company: " + debtorCompany.getName());
-                IntegrationKey.IntegrationKeyValue debtorKeys = IntegrationKey.getIntegrationKeyValue(debtorCompany);
-
-                // Upload to debtor company using their internal journal number
-                Response response = economicsInvoiceService.sendVoucherToCompany(
-                    invoice,
-                    debtorCompany,
-                    debtorKeys.internalJournalNumber()
-                );
-
-                if ((response.getStatus() >= 200) && (response.getStatus() < 300)) {
-                    log.infof("Internal invoice %s successfully uploaded to debtor company %s",
-                            invoice.getUuid(), debtorCompany.getName());
-                } else {
-                    log.warnf("Failed to upload internal invoice to debtor company %s. Status: %d",
-                            debtorCompany.getName(), response.getStatus());
-                }
-            } catch (Exception e) {
-                log.error("Failed to upload to debtor company e-conomics, but issuer upload succeeded", e);
-                // Don't throw - we don't want to rollback the issuer upload
-            }
-        }
     }
 
     // Single-row BonusApprovalRow DTO for one invoice

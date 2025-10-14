@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="economics-upload-retry" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+    <step id="retry-failed-uploads">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+        <batchlet ref="economicsUploadRetryBatchlet"/>
+    </step>
+</job>

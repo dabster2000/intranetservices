@@ -102,7 +102,6 @@ public class InvoiceGenerator {
                             invoice.getContractuuid().equals(work.getContractuuid()) && (
                             invoice.status.equals(CREATED)
                                     || invoice.status.equals(InvoiceStatus.SUBMITTED)
-                                    || invoice.status.equals(InvoiceStatus.PAID)
                                     || invoice.status.equals(InvoiceStatus.CREDIT_NOTE))) {
                         numberOfInvoicesRelatedToProject++;
                         relatedInvoices.add(invoice);

@@ -167,6 +167,11 @@ public class Invoice extends PanacheEntityBase {
         uuid = UUID.randomUUID().toString();
     }
 
+    public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription, String debtorCompanyuuid) {
+        this(invoiceref, type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription);
+        this.debtorCompanyuuid = debtorCompanyuuid;
+    }
+
     public Invoice(int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, double vat, String specificdescription, String bonusConsultant, SalesApprovalStatus bonusConsultantApprovedStatus) {
         this(invoiceref, type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription);
         this.vat = vat;
