@@ -75,8 +75,8 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
             try {
                 // Find the referenced external invoice
                 Invoice referencedInvoice = Invoice.find(
-                        "invoicenumber = ?1",
-                        queuedInvoice.getInvoiceref()
+                        "uuid = ?1",
+                        queuedInvoice.getInvoiceRefUuid()
                 ).firstResult();
 
                 if (referencedInvoice == null) {

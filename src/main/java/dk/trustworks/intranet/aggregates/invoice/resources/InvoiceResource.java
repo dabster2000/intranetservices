@@ -9,6 +9,7 @@ import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
+import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -131,7 +132,7 @@ public class InvoiceResource {
     @GET
     @Path("/months/{month}")
     public List<Invoice> findByYearAndMonth(@PathParam("month") String month) {
-        return invoiceService.findInvoicesForSingleMonth(dateIt(month), "CREATED", "CREDIT_NOTE", "DRAFT");
+        return invoiceService.findInvoicesForSingleMonth(dateIt(month), "CREATED", "CREDIT_NOTE", "DRAFT", "QUEUED");
     }
 
     @GET
@@ -457,11 +458,11 @@ public class InvoiceResource {
     @POST
     @Path("/{invoiceuuid}/queue")
     @Transactional
-    public Response queueInternalInvoice(@PathParam("invoiceuuid") String invoiceuuid, String body) {
+    public Response queueInternalInvoice(@PathParam("invoiceuuid") String invoiceuuid, KeyValueDTO body) {
         log.infof("queueInternalInvoice: invoiceuuid=%s", invoiceuuid);
         try {
             invoiceService.queueInternalInvoice(invoiceuuid);
-            return Response.ok().entity("{'result' : 'Invoice queued successfully'}").build();
+            return Response.ok().entity(new KeyValueDTO("result", "success")).build();
         } catch (WebApplicationException wae) {
             log.warn("Failed to queue invoice: " + wae.getMessage(), wae);
             throw wae;

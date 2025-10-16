@@ -161,7 +161,7 @@ public class InvoiceService {
         List<InvoiceStatus> statuses =
                 (type != null && type.length > 0)
                         ? Arrays.stream(type).map(InvoiceStatus::valueOf).toList()
-                        : List.of(InvoiceStatus.CREATED, InvoiceStatus.CREDIT_NOTE, InvoiceStatus.DRAFT);
+                        : List.of(InvoiceStatus.CREATED, InvoiceStatus.CREDIT_NOTE, InvoiceStatus.DRAFT, InvoiceStatus.QUEUED);
 
         LocalDate from = (fromdate != null) ? fromdate : LocalDate.of(2014, 1, 1);
         LocalDate to   = (todate   != null) ? todate   : LocalDate.now();
@@ -252,7 +252,7 @@ public class InvoiceService {
 
     @SuppressWarnings("unchecked")
     public List<Invoice> findInvoicesForSingleMonth(LocalDate month, String... type) {
-        String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT"};
+        String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT", "QUEUED"};
         LocalDate date = month.withDayOfMonth(1);
         String sql = "SELECT * FROM invoices i WHERE " +
                 "i.year = " + date.getYear() + " AND i.month = " + (date.getMonthValue() - 1) + " " +
@@ -328,11 +328,11 @@ public class InvoiceService {
         if (invoice.getStatus() != InvoiceStatus.DRAFT) throw new WebApplicationException(Response.Status.CONFLICT);
 
         Invoice.update("attention = ?1, bookingdate = ?2, clientaddresse = ?3, contractref = ?4, clientname = ?5, cvr = ?6, " +
-                        "discount = ?7, ean = ?8, invoicedate = ?9, invoiceref = ?10, month = ?11, otheraddressinfo = ?12, " +
-                        "projectname = ?13, projectref = ?14, projectuuid = ?15, specificdescription = ?16, status = ?17, " +
-                        "invoicenumber = ?18, type = ?19, year = ?20, zipcity = ?21, company = ?22, currency = ?23, " +
-                        "bonusConsultant = ?24, bonusConsultantApprovedStatus = ?25, bonusOverrideAmount = ?26, bonusOverrideNote = ?27, " +
-                        "duedate = ?28, vat = ?29 WHERE uuid like ?30",
+                        "discount = ?7, ean = ?8, invoicedate = ?9, invoiceref = ?10, invoiceRefUuid = ?11, month = ?12, otheraddressinfo = ?13, " +
+                        "projectname = ?14, projectref = ?15, projectuuid = ?16, specificdescription = ?17, status = ?18, " +
+                        "invoicenumber = ?19, type = ?20, year = ?21, zipcity = ?22, company = ?23, currency = ?24, " +
+                        "bonusConsultant = ?25, bonusConsultantApprovedStatus = ?26, bonusOverrideAmount = ?27, bonusOverrideNote = ?28, " +
+                        "duedate = ?29, vat = ?30 WHERE uuid like ?31",
                 invoice.getAttention(),
                 invoice.getBookingdate(),
                 invoice.getClientaddresse(),
@@ -343,6 +343,7 @@ public class InvoiceService {
                 invoice.getEan(),
                 invoice.getInvoicedate(),
                 invoice.getInvoiceref(),
+                invoice.getInvoiceRefUuid(),
                 invoice.getMonth(),
                 invoice.getOtheraddressinfo(),
                 invoice.getProjectname(),
@@ -513,7 +514,7 @@ public class InvoiceService {
             );
         }
 
-        Invoice creditNote = new Invoice(invoice.getInvoicenumber(), InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
+        Invoice creditNote = new Invoice(invoice.getUuid(), invoice.getInvoicenumber(), InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
                 invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
                 invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
                 invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(), LocalDate.now().plusMonths(1),
@@ -546,6 +547,7 @@ public class InvoiceService {
     @Transactional
     public void createInternalInvoiceDraft(String companyuuid, Invoice invoice) {
         Invoice internalInvoice = new Invoice(
+                invoice.getUuid(),
                 invoice.getInvoicenumber(),
                 InvoiceType.INTERNAL,
                 invoice.getContractuuid(),
@@ -643,7 +645,7 @@ public class InvoiceService {
 
         // Create the invoice shell
         Invoice invoice = new Invoice(
-                0, InvoiceType.INTERNAL_SERVICE,
+                InvoiceType.INTERNAL_SERVICE,
                 "", "", "",
                 0.0, month.getYear(), month.getMonthValue(),
                 toCompany.getName(), toCompany.getAddress(), "",

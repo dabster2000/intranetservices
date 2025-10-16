@@ -210,7 +210,7 @@ public class InvoiceGenerator {
                     }
 
                     if (invoice == null) {
-                        invoice = new Invoice(0, InvoiceType.INVOICE,
+                        invoice = new Invoice(InvoiceType.INVOICE,
                                 contract.getUuid(),
                                 project.getUuid(),
                                 project.getName(),
