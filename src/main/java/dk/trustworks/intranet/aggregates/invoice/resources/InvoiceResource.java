@@ -5,9 +5,7 @@ import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
@@ -19,6 +17,7 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -340,15 +339,129 @@ public class InvoiceResource {
         return invoiceService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
     }
 
+    /**
+     * Returns client invoices that contain cross-company consultant lines within the
+     * specified date range, bundled with an optional referring internal invoice.
+     *
+     * Semantics:
+     * - fromdate inclusive; todate exclusive (aligns with existing /cross-company).
+     * - For each client invoice (status CREATED, type INVOICE) that contains at least
+     *   one cross-company consultant, include zero or one internal invoice (status
+     *   in QUEUED or CREATED) where invoice_ref = client's invoicenumber.
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate end date (exclusive), format yyyy-MM-dd
+     * @return List of pairs (client + optional internal) with header data and lines.
+     */
+    @GET
+    @Path("/cross-company/with-internal")
+    public List<CrossCompanyInvoicePairDTO> findCrossCompanyInvoicesWithInternal(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate) {
+        return invoiceService.findCrossCompanyInvoicesWithInternal(dateIt(fromdate), dateIt(todate));
+    }
+
+    /**
+     * Returns client/internal invoice pairs where:
+     * - The client invoice (CREATED, INVOICE) has at least one cross-company consultant line, and
+     * - A referring internal invoice exists (INTERNAL, status in QUEUED/CREATED), and
+     * - The sum of client invoice lines (hours * rate) is strictly less than the sum of the
+     *   internal invoice lines.
+     *
+     * Date window semantics: from inclusive, to exclusive.
+     *
+     * Note: Amounts are compared in the invoices' native currency without conversion.
+     * Ensure client and internal invoices use the same currency if you rely on the comparison.
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate end date (exclusive), format yyyy-MM-dd
+     * @return list of pairs (client + internal) with header data and per-line cross-company flags
+     */
+    @GET
+    @Path("/cross-company/with-internal/client-less-than-internal")
+    public List<CrossCompanyInvoicePairDTO>
+    findCrossCompanyClientLessThanInternal(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate
+    ) {
+        return invoiceService.findCrossCompanyClientLessThanInternal(dateIt(fromdate), dateIt(todate));
+    }
+
+    /**
+     * Returns client invoices that contain cross-company consultant lines within the
+     * specified date range but have no referring INTERNAL invoice (status in QUEUED/CREATED)
+     * linked via invoice_ref.
+     *
+     * Semantics:
+     * - fromdate inclusive; todate exclusive.
+     * - Client invoices considered are status CREATED and type INVOICE.
+     * - Cross-company determination uses userstatus as-of the invoice date.
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate end date (exclusive), format yyyy-MM-dd
+     * @return List of client invoices without a corresponding internal invoice
+     */
+    @GET
+    @Path("/cross-company/without-internal")
+    public List<SimpleInvoiceDTO>
+    findCrossCompanyClientInvoicesWithoutInternal(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate
+    ) {
+        return invoiceService.findCrossCompanyClientInvoicesWithoutInternal(dateIt(fromdate), dateIt(todate));
+    }
+
+    /**
+     * Returns pairs where the client invoice is a regular client invoice (type INVOICE)
+     * that currently has status CREDIT_NOTE, contains at least one cross-company consultant
+     * line, and has one INTERNAL invoice (status in QUEUED/CREATED) referencing it via invoice_ref.
+     *
+     * Cross-company determination uses userstatus as-of the invoice date and compares the
+     * consultant company UUID against the issuing invoice's company UUID.
+     *
+     * Date window semantics: from inclusive, to exclusive.
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate   end date (exclusive), format yyyy-MM-dd
+     * @return list of pairs (client + internal) with header and line-level crossCompany flags
+     */
+    @GET
+    @Path("/cross-company/clients-status-credit-note-with-internal")
+    public List<CrossCompanyInvoicePairDTO>
+    findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate
+    ) {
+        return invoiceService.findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(dateIt(fromdate), dateIt(todate));
+    }
+
+    /**
+     * Returns client invoices (type INVOICE) that have more than one INTERNAL invoice
+     * (status in QUEUED/CREATED) referencing them via invoice_ref. The date window applies
+     * to the client's invoicedate and follows from inclusive, to exclusive semantics.
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate   end date (exclusive), format yyyy-MM-dd
+     * @return list of client invoices each bundled with all their internal invoices and a count
+     */
+    @GET
+    @Path("/internal/multiple")
+    public List<ClientWithInternalsDTO>
+    findClientInvoicesWithMultipleInternals(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate
+    ) {
+        return invoiceService.findClientInvoicesWithMultipleInternals(dateIt(fromdate), dateIt(todate));
+    }
+
     @POST
     @Path("/{invoiceuuid}/queue")
     @Transactional
-    public Response queueInternalInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
+    public Response queueInternalInvoice(@PathParam("invoiceuuid") String invoiceuuid, String body) {
         log.infof("queueInternalInvoice: invoiceuuid=%s", invoiceuuid);
-
         try {
             invoiceService.queueInternalInvoice(invoiceuuid);
-            return Response.ok().entity("Invoice queued successfully").build();
+            return Response.ok().entity("{'result' : 'Invoice queued successfully'}").build();
         } catch (WebApplicationException wae) {
             log.warn("Failed to queue invoice: " + wae.getMessage(), wae);
             throw wae;

@@ -63,6 +63,8 @@ public class Invoice extends PanacheEntityBase {
     public String attention;
     @Column(name = "invoice_ref")
     public int invoiceref;
+    @Column(name = "invoice_ref_uuid")
+    public String invoiceRefUuid;
     public int invoicenumber;
     public String currency;
     public double vat;
