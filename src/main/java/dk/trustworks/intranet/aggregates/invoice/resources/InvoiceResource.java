@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
+import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
@@ -43,6 +44,9 @@ public class InvoiceResource {
 
     @Inject
     InvoiceService invoiceService;
+
+    @Inject
+    InternalInvoiceControllingService internalInvoiceControllingService;
 
     @Inject
     InvoiceNotesService invoiceNotesService;
@@ -337,7 +341,7 @@ public class InvoiceResource {
     @Path("/cross-company")
     public List<Invoice> findCrossCompanyInvoices(@QueryParam("fromdate") String fromdate,
                                                    @QueryParam("todate") String todate) {
-        return invoiceService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
+        return internalInvoiceControllingService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
     }
 
     /**
@@ -359,7 +363,7 @@ public class InvoiceResource {
     public List<CrossCompanyInvoicePairDTO> findCrossCompanyInvoicesWithInternal(
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate) {
-        return invoiceService.findCrossCompanyInvoicesWithInternal(dateIt(fromdate), dateIt(todate));
+        return internalInvoiceControllingService.findCrossCompanyInvoicesWithInternal(dateIt(fromdate), dateIt(todate));
     }
 
     /**
@@ -385,7 +389,7 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return invoiceService.findCrossCompanyClientLessThanInternal(dateIt(fromdate), dateIt(todate));
+        return internalInvoiceControllingService.findCrossCompanyClientLessThanInternal(dateIt(fromdate), dateIt(todate));
     }
 
     /**
@@ -409,7 +413,7 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return invoiceService.findCrossCompanyClientInvoicesWithoutInternal(dateIt(fromdate), dateIt(todate));
+        return internalInvoiceControllingService.findCrossCompanyClientInvoicesWithoutInternal(dateIt(fromdate), dateIt(todate));
     }
 
     /**
@@ -433,7 +437,7 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return invoiceService.findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(dateIt(fromdate), dateIt(todate));
+        return internalInvoiceControllingService.findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(dateIt(fromdate), dateIt(todate));
     }
 
     /**
@@ -452,7 +456,7 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return invoiceService.findClientInvoicesWithMultipleInternals(dateIt(fromdate), dateIt(todate));
+        return internalInvoiceControllingService.findClientInvoicesWithMultipleInternals(dateIt(fromdate), dateIt(todate));
     }
 
     @POST

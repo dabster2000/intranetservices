@@ -33,6 +33,8 @@ public class NumberUtils {
         return NumberFormat.getCurrencyInstance(DanishLocale).format(d);
     }
 
+    public static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
+
     public static double parseDouble(String d) {
         try {
             return NumberFormat.getInstance().parse(d).doubleValue();

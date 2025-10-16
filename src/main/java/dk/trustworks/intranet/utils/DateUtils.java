@@ -303,6 +303,11 @@ public final class DateUtils {
         return (date.getMonthValue()>6 && date.getMonthValue()<13)?date.withMonth(7).withDayOfMonth(1):date.minusYears(1).withMonth(7).withDayOfMonth(1);
     }
 
+    public static LocalDate fiscalYearStart(LocalDate d) {
+        int y = (d.getMonthValue() >= 7) ? d.getYear() : d.getYear() - 1;
+        return LocalDate.of(y, 7, 1);
+    }
+
     /**
      * Returns the accounting year label used in e-conomic for the given fiscal
      * start date and company. Normally this is "YYYY/YYYY+1", but certain

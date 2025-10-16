@@ -66,6 +66,11 @@ public class InvoiceItem extends PanacheEntityBase {
         this.position = position;
     }
 
+    public InvoiceItem(String useruuid, String itemname, String description, double rate, double hours, int position, String invoiceuuid, InvoiceItemOrigin origin) {
+        this(useruuid, itemname, description, rate, hours, position, invoiceuuid);
+        this.origin = origin;
+    }
+
     @Override
     public String toString() {
         return "InvoiceItem{" +
