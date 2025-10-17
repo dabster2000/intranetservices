@@ -316,7 +316,7 @@ public class InvoiceService {
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Invoice updateDraftInvoice(Invoice invoice) {
-        if (invoice.getType() == InvoiceType.CREDIT_NOTE || invoice.getType() == InvoiceType.INTERNAL) {
+        if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
             return legacyUpdateDraft(invoice);
         }
 
@@ -361,13 +361,26 @@ public class InvoiceService {
                 invoice.getUuid());
 
         recalculateInvoiceItems(invoice);
-        bonusService.recalcForInvoice(invoice.getUuid());
+        // Bonus calculation only for non-internal invoices
+        if (invoice.getType() != InvoiceType.INTERNAL) {
+            bonusService.recalcForInvoice(invoice.getUuid());
+        }
         return invoice;
     }
 
     private void recalculateInvoiceItems(Invoice invoice) {
         var baseItems = invoice.getInvoiceitems().stream()
-                .filter(ii -> ii.getOrigin() == null || ii.getOrigin() == BASE)
+                .filter(ii -> {
+                    // Explicitly exclude CALCULATED items
+                    if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) return false;
+                    // Also exclude items with CALCULATED-specific metadata (prevents
+                    // preserving CALCULATED items when origin defaults to BASE during JSON deserialization)
+                    if (ii.getCalculationRef() != null) return false;
+                    if (ii.getRuleId() != null) return false;
+                    if (ii.getLabel() != null) return false;
+                    // Keep only true BASE items
+                    return true;
+                })
                 .toList();
         System.out.print("PRE: ");
         baseItems.forEach(System.out::println);
@@ -426,9 +439,12 @@ public class InvoiceService {
             updateInvoiceStatus(parentInvoice, InvoiceStatus.CREDIT_NOTE);
         }
 
-        if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE && draftInvoice.getType() != InvoiceType.INTERNAL) {
+        if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE) {
             recalculateInvoiceItems(draftInvoice);
-            bonusService.recalcForInvoice(draftInvoice.getUuid());
+            // Bonus calculation only for non-internal invoices
+            if (draftInvoice.getType() != InvoiceType.INTERNAL) {
+                bonusService.recalcForInvoice(draftInvoice.getUuid());
+            }
         }
         draftInvoice.setStatus(InvoiceStatus.CREATED);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
@@ -1392,6 +1408,11 @@ public class InvoiceService {
 
         // Assign invoice number
         queuedInvoice.invoicenumber = getMaxInvoiceNumber(queuedInvoice) + 1;
+
+        // Apply pricing engine for INTERNAL invoices (but not bonus calculation)
+        if (queuedInvoice.getType() == InvoiceType.INTERNAL) {
+            recalculateInvoiceItems(queuedInvoice);
+        }
 
         // Create PDF
         queuedInvoice.setStatus(InvoiceStatus.CREATED);

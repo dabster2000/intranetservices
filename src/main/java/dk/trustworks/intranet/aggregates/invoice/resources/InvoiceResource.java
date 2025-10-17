@@ -12,6 +12,7 @@ import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.dto.ProjectSummary;
+import dk.trustworks.intranet.exceptions.InconsistantDataException;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
@@ -196,6 +197,9 @@ public class InvoiceResource {
         } catch (WebApplicationException wae) {
             log.warn("Draft invoice creation failed", wae);
             throw wae;
+        } catch (InconsistantDataException ide) {
+            log.warn("Data inconsistency detected during draft invoice creation", ide);
+            throw ide;  // Let InconsistantDataExceptionMapper handle it
         } catch (Exception e) {
             log.error("Failed to create draft invoice", e);
             return Response.serverError().entity("Failed to create draft invoice").build();
