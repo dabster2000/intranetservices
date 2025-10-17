@@ -178,6 +178,11 @@
 
 
     <!-- LOGGING -->
+    <!-- Bridge commons-logging (used by AWS SDK v1) to JBoss Logging for native image support -->
+    <dependency>
+      <groupId>org.jboss.logging</groupId>
+      <artifactId>commons-logging-jboss-logging</artifactId>
+    </dependency>
     <!--
     <dependency>
       <groupId>com.newrelic.agent.java</groupId>
@@ -449,7 +454,7 @@
     <profile>
       <id>build</id>
       <properties>
-        <quarkus.additional-build-args>-H:IncludeResources=privateKey.pem</quarkus.additional-build-args>
+        <quarkus.additional-build-args>-H:IncludeResources=.*\\.pem -H:IncludeResources=META-INF/resources/.* --initialize-at-run-time=org.apache.commons.logging.impl.Log4JLogger --initialize-at-run-time=io.netty.util.internal.logging.Log4JLogger</quarkus.additional-build-args>
       </properties>
     </profile>
   </profiles>

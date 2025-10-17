@@ -115,6 +115,12 @@ event-topics:
         static-provider:
           access-key-id: ${AWS_ACCESS_KEY_ID:xx}
           secret-access-key: ${AWS_SECRET_ACCESS_KEY:xx}
+  native:
+    additional-build-args:
+      - -H:IncludeResources=.*\\.pem
+      - -H:IncludeResources=META-INF/resources/.*
+      - --initialize-at-run-time=org.apache.commons.logging.impl.Log4JLogger
+      - --initialize-at-run-time=io.netty.util.internal.logging.Log4JLogger
 mp:
   messaging:
     connector:
