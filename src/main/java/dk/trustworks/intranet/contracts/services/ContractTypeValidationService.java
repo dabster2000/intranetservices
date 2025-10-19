@@ -5,6 +5,8 @@ import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
+
 /**
  * Service for validating contract type codes.
  * Supports both legacy enum-based contract types and dynamic database-defined types.
@@ -28,6 +30,18 @@ public class ContractTypeValidationService {
      * @return true if valid, false otherwise
      */
     public boolean isValidContractType(String contractTypeCode) {
+        return isValidContractType(contractTypeCode, null);
+    }
+
+    /**
+     * Validate if a contract type code is valid on a specific date.
+     * Checks both legacy enum values and database-defined types with date validity.
+     *
+     * @param contractTypeCode The contract type code to validate (e.g., "SKI0217_2025")
+     * @param validationDate The date to validate against (if null, no date validation)
+     * @return true if valid, false otherwise
+     */
+    public boolean isValidContractType(String contractTypeCode, LocalDate validationDate) {
         if (contractTypeCode == null || contractTypeCode.trim().isEmpty()) {
             log.debug("Contract type code is null or empty");
             return false;
@@ -42,12 +56,12 @@ public class ContractTypeValidationService {
         }
 
         // Check if it exists in the database
-        if (existsInDatabase(code)) {
-            log.debug("Contract type " + code + " exists in database");
+        if (existsInDatabase(code, validationDate)) {
+            log.debug("Contract type " + code + " exists in database and is valid on " + validationDate);
             return true;
         }
 
-        log.warn("Contract type " + code + " is not valid - not in enum or database");
+        log.warn("Contract type " + code + " is not valid on " + validationDate + " - not in enum or database");
         return false;
     }
 
@@ -73,8 +87,29 @@ public class ContractTypeValidationService {
      * @return true if it exists and is active
      */
     public boolean existsInDatabase(String code) {
+        return existsInDatabase(code, null);
+    }
+
+    /**
+     * Check if a contract type code exists in the database and is valid on a specific date.
+     *
+     * @param code The contract type code
+     * @param validationDate The date to validate against (if null, only checks active status)
+     * @return true if it exists, is active, and is valid on the specified date
+     */
+    public boolean existsInDatabase(String code, LocalDate validationDate) {
         ContractTypeDefinition definition = ContractTypeDefinition.findByCode(code);
-        return definition != null && definition.isActive();
+        if (definition == null || !definition.isActive()) {
+            return false;
+        }
+
+        // If no validation date provided, only check active status
+        if (validationDate == null) {
+            return true;
+        }
+
+        // Check if the contract type is valid on the specified date
+        return definition.isValidOn(validationDate);
     }
 
     /**

@@ -5,6 +5,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -20,6 +21,8 @@ public class ContractTypeDefinitionDTO {
     private String code;
     private String name;
     private String description;
+    private LocalDate validFrom;
+    private LocalDate validUntil;
     private boolean active;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -33,6 +36,8 @@ public class ContractTypeDefinitionDTO {
             entity.getCode(),
             entity.getName(),
             entity.getDescription(),
+            entity.getValidFrom(),
+            entity.getValidUntil(),
             entity.isActive(),
             entity.getCreatedAt(),
             entity.getUpdatedAt()
@@ -48,6 +53,8 @@ public class ContractTypeDefinitionDTO {
             entity.getCode(),
             entity.getName(),
             entity.getDescription(),
+            entity.getValidFrom(),
+            entity.getValidUntil(),
             entity.isActive(),
             entity.getCreatedAt(),
             entity.getUpdatedAt()

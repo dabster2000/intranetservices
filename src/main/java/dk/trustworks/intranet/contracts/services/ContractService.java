@@ -212,11 +212,16 @@ public class ContractService {
         log.info("ContractService.save");
         log.info("contract = " + contract);
 
-        // Validate contract type
-        if (contract.getContractType() != null && !contractTypeValidationService.isValidContractType(contract.getContractType())) {
-            String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
-            log.error("Invalid contract type: " + errorMessage);
-            throw new jakarta.ws.rs.BadRequestException(errorMessage);
+        // Validate contract type against creation date
+        if (contract.getContractType() != null) {
+            LocalDate createdDate = contract.getCreated() != null
+                    ? contract.getCreated().toLocalDate()
+                    : LocalDate.now();
+            if (!contractTypeValidationService.isValidContractType(contract.getContractType(), createdDate)) {
+                String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
+                log.error("Invalid contract type: " + errorMessage);
+                throw new jakarta.ws.rs.BadRequestException(errorMessage);
+            }
         }
 
         // Validate the contract if it's being activated
@@ -255,11 +260,19 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
-        // Validate contract type
-        if (contract.getContractType() != null && !contractTypeValidationService.isValidContractType(contract.getContractType())) {
-            String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
-            log.error("Invalid contract type: " + errorMessage);
-            throw new jakarta.ws.rs.BadRequestException(errorMessage);
+        // Validate contract type against the ORIGINAL contract creation date (grandfathered)
+        if (contract.getContractType() != null) {
+            // Get the original contract to check its creation date
+            Contract originalContract = Contract.findById(contract.getUuid());
+            LocalDate validationDate = originalContract != null && originalContract.getCreated() != null
+                    ? originalContract.getCreated().toLocalDate()
+                    : LocalDate.now();
+
+            if (!contractTypeValidationService.isValidContractType(contract.getContractType(), validationDate)) {
+                String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
+                log.error("Invalid contract type: " + errorMessage);
+                throw new jakarta.ws.rs.BadRequestException(errorMessage);
+            }
         }
 
         // Validate the contract if it's being activated or is already active

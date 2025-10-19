@@ -39,11 +39,20 @@ public class ContractTypeDefinitionService {
             throw new BadRequestException("Contract type with code '" + request.getCode() + "' already exists");
         }
 
+        // Validate date range if both dates are provided
+        if (request.getValidFrom() != null && request.getValidUntil() != null) {
+            if (!request.getValidUntil().isAfter(request.getValidFrom())) {
+                throw new BadRequestException("validUntil must be after validFrom");
+            }
+        }
+
         // Create entity
         ContractTypeDefinition entity = new ContractTypeDefinition();
         entity.setCode(request.getCode());
         entity.setName(request.getName());
         entity.setDescription(request.getDescription());
+        entity.setValidFrom(request.getValidFrom());
+        entity.setValidUntil(request.getValidUntil());
         entity.setActive(request.isActive());
 
         // Persist
@@ -72,9 +81,18 @@ public class ContractTypeDefinitionService {
             throw new NotFoundException("Contract type with code '" + code + "' not found");
         }
 
+        // Validate date range if both dates are provided
+        if (request.getValidFrom() != null && request.getValidUntil() != null) {
+            if (!request.getValidUntil().isAfter(request.getValidFrom())) {
+                throw new BadRequestException("validUntil must be after validFrom");
+            }
+        }
+
         // Update fields
         entity.setName(request.getName());
         entity.setDescription(request.getDescription());
+        entity.setValidFrom(request.getValidFrom());
+        entity.setValidUntil(request.getValidUntil());
         entity.setActive(request.isActive());
 
         // Persist (automatic with @Transactional)

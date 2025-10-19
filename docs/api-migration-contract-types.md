@@ -87,6 +87,45 @@ Content-Type: application/json
 }
 ```
 
+### Time-Limited Contract Types (Optional Date Ranges)
+
+Contract types can have optional validity periods to support versioning and phasing out old types:
+
+```bash
+POST /api/contract-types
+Authorization: Bearer <JWT_TOKEN>
+Content-Type: application/json
+
+{
+  "code": "SKI0217_2025",
+  "name": "SKI Framework Agreement 2025",
+  "description": "2025 framework agreement",
+  "validFrom": "2025-01-01",
+  "validUntil": "2026-01-01",
+  "active": true
+}
+```
+
+**Date Semantics:**
+- `validFrom`: **Inclusive** - the contract type becomes valid starting from this date
+- `validUntil`: **Exclusive** - the contract type stops being valid before this date
+- Both fields are **optional** - null means no date restriction on that end
+
+**Example Timeline:**
+```
+2024-12-31: Contract type not yet valid (validFrom is 2025-01-01)
+2025-01-01: Contract type becomes valid ✓
+2025-06-15: Contract type is valid ✓
+2025-12-31: Contract type is valid ✓
+2026-01-01: Contract type no longer valid (validUntil is 2026-01-01)
+```
+
+**Validation Behavior:**
+- When creating a contract, the contract type must be valid on the **contract creation date**
+- Existing contracts are **grandfathered in** - they continue to work even if their contract type later becomes invalid
+- Only new contracts are subject to date-based validation
+- Legacy contract types (PERIOD, SKI0217_2021, etc.) have no date restrictions
+
 ## Validation Rules
 
 ### Valid Contract Type Codes
@@ -198,9 +237,17 @@ Content-Type: application/json
   "code": "SKI0217_2026",
   "name": "SKI Framework Agreement 2026",
   "description": "Updated framework with 5% admin fee",
+  "validFrom": "2026-01-01",
+  "validUntil": "2027-01-01",
   "active": true
 }
 ```
+
+**Optional Fields:**
+- `validFrom` (date, optional): When the contract type becomes valid (inclusive)
+- `validUntil` (date, optional): When the contract type stops being valid (exclusive)
+- Both can be null (no date restriction)
+- `validUntil` must be after `validFrom` if both are provided
 
 #### Update Contract Type
 ```
@@ -210,6 +257,8 @@ Content-Type: application/json
 {
   "name": "SKI Framework Agreement 2026 - Updated",
   "description": "New description",
+  "validFrom": "2026-01-01",
+  "validUntil": "2027-01-01",
   "active": true
 }
 ```
@@ -289,6 +338,70 @@ POST /contracts
 }
 ```
 
+### 4. Test Date-Based Validity
+
+Create a time-limited contract type and verify date validation:
+
+```bash
+# Create a contract type valid only in 2026
+POST /api/contract-types
+{
+  "code": "FUTURE_TYPE_2026",
+  "name": "Future Contract Type",
+  "validFrom": "2026-01-01",
+  "validUntil": "2027-01-01",
+  "active": true
+}
+
+# Create contract TODAY (2025-10-19) - should FAIL (type not valid yet)
+POST /contracts
+{
+  "contractType": "FUTURE_TYPE_2026",
+  "amount": 100000,
+  "status": "DRAFT",
+  ...
+}
+# Response: 400 Bad Request - Contract type not valid on 2025-10-19
+
+# Update contract type to remove start date
+PUT /api/contract-types/FUTURE_TYPE_2026
+{
+  "name": "Future Contract Type",
+  "validFrom": null,
+  "validUntil": "2027-01-01",
+  "active": true
+}
+
+# Create contract NOW - should SUCCEED (no validFrom restriction)
+POST /contracts
+{
+  "contractType": "FUTURE_TYPE_2026",
+  "amount": 100000,
+  "status": "DRAFT",
+  ...
+}
+# Response: 201 Created - Contract created successfully
+
+# Set validUntil to the past - existing contract still works (grandfathered)
+PUT /api/contract-types/FUTURE_TYPE_2026
+{
+  "name": "Future Contract Type",
+  "validFrom": null,
+  "validUntil": "2024-01-01",
+  "active": true
+}
+
+# Try to create NEW contract with expired type - should FAIL
+POST /contracts
+{
+  "contractType": "FUTURE_TYPE_2026",
+  "amount": 100000,
+  "status": "DRAFT",
+  ...
+}
+# Response: 400 Bad Request - Contract type not valid on 2025-10-19
+```
+
 ## Common Issues & Solutions
 
 ### Issue: "Invalid contract type" error for existing types
@@ -312,6 +425,42 @@ POST /contracts
 
 **Solution**: Delete or deactivate all pricing rules first, then delete the contract type.
 
+### Issue: "Contract type not valid on [date]" error when creating contract
+
+**Cause**: The contract type has a validity period that does not include the contract creation date.
+
+**Solution**:
+1. Check the contract type's `validFrom` and `validUntil` dates
+2. Either:
+   - Wait until the type's `validFrom` date to create the contract, OR
+   - Update the contract type to remove/extend the date restrictions, OR
+   - Use a different contract type that is valid on the current date
+
+### Issue: validUntil must be after validFrom error
+
+**Cause**: When creating or updating a contract type, `validUntil` date is not after `validFrom` date.
+
+**Solution**: Ensure that `validUntil` is a date that comes after `validFrom`:
+```bash
+# ❌ Invalid - validUntil is before validFrom
+{
+  "validFrom": "2026-01-01",
+  "validUntil": "2025-01-01"
+}
+
+# ✓ Valid
+{
+  "validFrom": "2025-01-01",
+  "validUntil": "2026-01-01"
+}
+
+# ✓ Valid - Only validUntil specified
+{
+  "validFrom": null,
+  "validUntil": "2025-12-31"
+}
+```
+
 ## Timeline
 
 | Date | Milestone |
@@ -332,7 +481,9 @@ For questions or issues:
 
 ✅ **No breaking changes for existing REST clients using legacy contract types**
 ✅ **New capability to create contract types dynamically via API**
+✅ **Optional date-based validity periods for versioning and phasing out types**
+✅ **Grandfathering of existing contracts ensures no disruption**
 ✅ **Backward compatible with all existing integrations**
 ✅ **Comprehensive validation ensures data integrity**
 
-The system gracefully supports both old and new approaches, allowing you to migrate at your own pace.
+The system gracefully supports both old and new approaches, allowing you to migrate at your own pace. Date-based validity periods enable sophisticated contract type management including versioning strategies and controlled rollouts of new agreement terms.

@@ -8,6 +8,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -60,6 +61,21 @@ public class ContractTypeDefinition extends PanacheEntityBase {
     private String description;
 
     /**
+     * Date when this contract type becomes valid (inclusive).
+     * Null means no restriction on the start date.
+     */
+    @Column(name = "valid_from")
+    private LocalDate validFrom;
+
+    /**
+     * Date when this contract type stops being valid (exclusive).
+     * Null means no restriction on the end date.
+     * Must be after validFrom if both are set.
+     */
+    @Column(name = "valid_until")
+    private LocalDate validUntil;
+
+    /**
      * Soft delete flag. Inactive types are hidden but preserved for historical data.
      */
     @Column(nullable = false)
@@ -80,6 +96,36 @@ public class ContractTypeDefinition extends PanacheEntityBase {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+
+    // --- Validity checking ---
+
+    /**
+     * Check if this contract type is valid on the specified date.
+     *
+     * @param date The date to check validity for
+     * @return true if the contract type is valid on this date, false otherwise
+     */
+    public boolean isValidOn(LocalDate date) {
+        if (!this.active) {
+            return false;
+        }
+
+        if (date == null) {
+            return true; // No date restriction if date is null
+        }
+
+        // Check validFrom (inclusive)
+        if (validFrom != null && date.isBefore(validFrom)) {
+            return false;
+        }
+
+        // Check validUntil (exclusive)
+        if (validUntil != null && !date.isBefore(validUntil)) {
+            return false;
+        }
+
+        return true;
     }
 
     // --- Panache finder methods ---

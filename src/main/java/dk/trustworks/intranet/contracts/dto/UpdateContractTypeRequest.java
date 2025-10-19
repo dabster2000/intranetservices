@@ -6,6 +6,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 
+import java.time.LocalDate;
+
 /**
  * Request DTO for updating an existing contract type definition.
  * Note: Code cannot be changed after creation.
@@ -26,6 +28,19 @@ public class UpdateContractTypeRequest {
      * Detailed description of the contract type.
      */
     private String description;
+
+    /**
+     * Date when this contract type becomes valid (inclusive).
+     * Optional - null means no restriction on the start date.
+     */
+    private LocalDate validFrom;
+
+    /**
+     * Date when this contract type stops being valid (exclusive).
+     * Optional - null means no restriction on the end date.
+     * Must be after validFrom if both are provided.
+     */
+    private LocalDate validUntil;
 
     /**
      * Whether the contract type is active.
