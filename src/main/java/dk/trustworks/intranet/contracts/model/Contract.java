@@ -6,7 +6,8 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -33,9 +34,14 @@ public class Contract extends PanacheEntityBase {
 
     private double amount;
 
+    /**
+     * Contract type code. Can be either a legacy enum value (PERIOD, SKI0217_2021, etc.)
+     * or a dynamically defined contract type code from the contract_type_definitions table.
+     */
     @Column(name = "contracttype")
-    @Enumerated(EnumType.STRING)
-    private ContractType contractType;
+    @NotBlank(message = "Contract type is required")
+    @Pattern(regexp = "^[A-Z0-9_]+$", message = "Contract type must contain only uppercase letters, numbers, and underscores")
+    private String contractType;
 
     private String refid;
 
@@ -123,6 +129,21 @@ public class Contract extends PanacheEntityBase {
     @Override
     public int hashCode() {
         return com.google.common.base.Objects.hashCode(super.hashCode(), getUuid());
+    }
+
+    /**
+     * Check if this contract uses a legacy enum-based contract type.
+     *
+     * @return true if the contract type is a legacy enum value
+     */
+    public boolean isLegacyContractType() {
+        if (contractType == null) return false;
+        try {
+            dk.trustworks.intranet.contracts.model.enums.ContractType.valueOf(contractType);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     @Override

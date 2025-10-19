@@ -697,7 +697,7 @@ public class InvoiceService {
                 LocalDate.of(2025, 7, 30),
                 //month.plusMonths(1).withDayOfMonth(1).minusDays(1),
                 //month.plusMonths(1).withDayOfMonth(1).minusDays(1).plusMonths(1),
-                "", "", ContractType.PERIOD, fromCompany, "DKK",
+                "", "", "PERIOD", fromCompany, "DKK",
                 "Intern faktura knyttet til " + month.getMonth().name() + " " + month.getYear() + " fra " + fromCompany.getName() + " til " + toCompany.getName());
 
         invoice.persistAndFlush();

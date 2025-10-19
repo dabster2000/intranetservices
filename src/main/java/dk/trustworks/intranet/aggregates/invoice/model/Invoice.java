@@ -11,7 +11,6 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -81,9 +80,11 @@ public class Invoice extends PanacheEntityBase {
     public LocalDate bookingdate; //date from e-conomics
     public String projectref;
     public String contractref;
+    /**
+     * Contract type code. Can be either a legacy enum value or a dynamically defined type.
+     */
     @Column(name = "contract_type")
-    @Enumerated(EnumType.STRING)
-    public ContractType contractType;
+    public String contractType;
     public String specificdescription;
     @OneToMany(fetch = FetchType.EAGER, cascade={CascadeType.ALL})
     @JoinColumn(name="invoiceuuid")
@@ -136,7 +137,7 @@ public class Invoice extends PanacheEntityBase {
         this.economicsStatus = EconomicsInvoiceStatus.NA;
     }
 
-    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription) {
+    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, String specificdescription) {
         this();
         this.type = type;
         this.contractType = contractType;
@@ -168,14 +169,14 @@ public class Invoice extends PanacheEntityBase {
         uuid = UUID.randomUUID().toString();
     }
 
-    public Invoice(String uuid, int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, String specificdescription, String debtorCompanyuuid) {
+    public Invoice(String uuid, int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, String specificdescription, String debtorCompanyuuid) {
         this(type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription);
         this.debtorCompanyuuid = debtorCompanyuuid;
         this.invoiceref = invoiceref;
         this.invoiceRefUuid = uuid;
     }
 
-    public Invoice(String uuid, int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, ContractType contractType, Company company, String currency, double vat, String specificdescription, String bonusConsultant, SalesApprovalStatus bonusConsultantApprovedStatus) {
+    public Invoice(String uuid, int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, double vat, String specificdescription, String bonusConsultant, SalesApprovalStatus bonusConsultantApprovedStatus) {
         this(uuid, invoiceref, type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription, null);
         this.vat = vat;
         this.bonusConsultant = bonusConsultant;

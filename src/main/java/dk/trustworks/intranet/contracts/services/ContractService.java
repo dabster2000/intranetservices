@@ -32,6 +32,9 @@ public class ContractService {
     ContractValidationService validationService;
 
     @Inject
+    ContractTypeValidationService contractTypeValidationService;
+
+    @Inject
     EntityManager em;
 
     public List<Contract> findAll() {
@@ -209,6 +212,13 @@ public class ContractService {
         log.info("ContractService.save");
         log.info("contract = " + contract);
 
+        // Validate contract type
+        if (contract.getContractType() != null && !contractTypeValidationService.isValidContractType(contract.getContractType())) {
+            String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
+            log.error("Invalid contract type: " + errorMessage);
+            throw new jakarta.ws.rs.BadRequestException(errorMessage);
+        }
+
         // Validate the contract if it's being activated
         if (contract.getStatus() == ContractStatus.BUDGET ||
             contract.getStatus() == ContractStatus.SIGNED ||
@@ -245,6 +255,13 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
+        // Validate contract type
+        if (contract.getContractType() != null && !contractTypeValidationService.isValidContractType(contract.getContractType())) {
+            String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
+            log.error("Invalid contract type: " + errorMessage);
+            throw new jakarta.ws.rs.BadRequestException(errorMessage);
+        }
+
         // Validate the contract if it's being activated or is already active
         if (contract.getStatus() == ContractStatus.BUDGET ||
             contract.getStatus() == ContractStatus.SIGNED ||
