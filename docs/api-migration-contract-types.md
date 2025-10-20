@@ -477,13 +477,199 @@ For questions or issues:
 - **GitHub Issues**: Report bugs at https://github.com/trustworks/intranetservices/issues
 - **Slack**: #api-support channel
 
+## Contract Type Rules: Three Separate Systems
+
+The contract type system now supports **three independent rule categories**, each managing a different aspect of contract behavior:
+
+### 1. **Pricing Rules** - Invoice Calculation
+Controls how invoices are calculated (discounts, fees, deductions).
+- **Endpoint**: `/api/contract-types/{code}/pricing-rules` (via pricing rule steps)
+- **Use Case**: "Apply 4% admin fee then 2% discount"
+- **Execution**: During invoice generation
+- **Documentation**: See existing pricing rule documentation
+
+### 2. **Validation Rules** - Business Constraints ✨ NEW
+Enforces business requirements during work registration and operations.
+- **Endpoint**: `/api/contract-types/{code}/validation-rules`
+- **Use Cases**:
+  - Require notes on time registration
+  - Set minimum hours per entry
+  - Set maximum hours per day
+  - Require task selection
+- **Execution**: During work entry validation
+
+### 3. **Rate Adjustment Rules** - Time-Based Rate Modifications ✨ NEW
+Handles automatic rate increases over time (annual increases, inflation adjustments).
+- **Endpoint**: `/api/contract-types/{code}/rate-adjustments`
+- **Use Cases**:
+  - 3% annual rate increase
+  - Quarterly inflation-linked adjustments
+  - One-time rate adjustments
+- **Execution**: During rate calculation for invoices/contracts
+
+---
+
+## Validation Rules (NEW)
+
+Validation rules enforce business constraints like requiring notes on time entries or setting hour thresholds.
+
+### Create Validation Rule - Notes Required
+
+```bash
+POST /api/contract-types/SKI0217_2025/validation-rules
+Authorization: Bearer <JWT_TOKEN>
+Content-Type: application/json
+
+{
+  "ruleId": "ski-notes-required",
+  "label": "Notes required for time registration",
+  "validationType": "NOTES_REQUIRED",
+  "required": true,
+  "priority": 10
+}
+```
+
+### Create Validation Rule - Minimum Hours
+
+```bash
+POST /api/contract-types/CONSULTING_2025/validation-rules
+{
+  "ruleId": "min-hours-threshold",
+  "label": "Minimum 0.25 hours per entry",
+  "validationType": "MIN_HOURS_PER_ENTRY",
+  "thresholdValue": 0.25,
+  "priority": 20
+}
+```
+
+### Validation Types
+
+- `NOTES_REQUIRED` - Time registration must include comments (`required`: boolean)
+- `MIN_HOURS_PER_ENTRY` - Minimum work duration (`thresholdValue`: decimal)
+- `MAX_HOURS_PER_DAY` - Maximum daily hours (`thresholdValue`: decimal)
+- `REQUIRE_TASK_SELECTION` - Task must be selected (`required`: boolean)
+
+### List Validation Rules
+
+```bash
+GET /api/contract-types/SKI0217_2025/validation-rules
+
+Response:
+[
+  {
+    "id": 1,
+    "ruleId": "ski-notes-required",
+    "label": "Notes required for time registration",
+    "validationType": "NOTES_REQUIRED",
+    "required": true,
+    "thresholdValue": null,
+    "priority": 10,
+    "active": true
+  }
+]
+```
+
+---
+
+## Rate Adjustment Rules (NEW)
+
+Rate adjustment rules handle time-based rate modifications like annual increases.
+
+### Create Annual Rate Increase
+
+```bash
+POST /api/contract-types/CONSULTING_2025/rate-adjustments
+Authorization: Bearer <JWT_TOKEN>
+Content-Type: application/json
+
+{
+  "ruleId": "annual-increase-2025",
+  "label": "3% annual rate increase",
+  "adjustmentType": "ANNUAL_INCREASE",
+  "adjustmentPercent": 3.0,
+  "frequency": "YEARLY",
+  "effectiveDate": "2025-01-01",
+  "priority": 10
+}
+```
+
+### Calculate Adjusted Rate
+
+```bash
+GET /api/contract-types/CONSULTING_2025/rate-adjustments/calculate?baseRate=1000&date=2026-01-15
+
+Response:
+{
+  "baseRate": 1000.00,
+  "adjustedRate": 1030.00,
+  "effectiveDate": "2026-01-15"
+}
+```
+
+### Adjustment Types
+
+- `ANNUAL_INCREASE` - Yearly percentage increase
+- `INFLATION_LINKED` - Linked to external inflation index
+- `STEP_BASED` - Tiered increases based on milestones
+- `FIXED_ADJUSTMENT` - One-time rate adjustment
+
+### Adjustment Frequencies
+
+- `YEARLY` - Applied annually on anniversary
+- `QUARTERLY` - Every 3 months
+- `MONTHLY` - Every month
+- `ONE_TIME` - Single application, does not repeat
+
+---
+
+## Get All Rules for a Contract Type
+
+New composite endpoint returns all three rule categories in one call:
+
+```bash
+GET /api/contract-types/SKI0217_2025/all-rules
+
+Response:
+{
+  "contractType": {
+    "code": "SKI0217_2025",
+    "name": "SKI Framework Agreement 2025",
+    ...
+  },
+  "pricingRules": [
+    { "ruleId": "ski-admin", "ruleStepType": "ADMIN_FEE_PERCENT", ... }
+  ],
+  "validationRules": [
+    { "ruleId": "ski-notes-required", "validationType": "NOTES_REQUIRED", ... }
+  ],
+  "rateAdjustments": [
+    { "ruleId": "annual-increase", "adjustmentType": "ANNUAL_INCREASE", ... }
+  ]
+}
+```
+
+---
+
+## Rule Types Comparison
+
+| Feature | Pricing Rules | Validation Rules | Rate Adjustments |
+|---------|--------------|------------------|------------------|
+| **Purpose** | Calculate invoice amounts | Enforce business constraints | Modify rates over time |
+| **Execution** | Invoice generation | Work entry validation | Rate calculation |
+| **Examples** | Admin fees, discounts | Required notes, hour limits | Annual increases |
+| **Endpoint** | `/pricing-rules` | `/validation-rules` | `/rate-adjustments` |
+| **Key Fields** | `percent`, `amount`, `stepBase` | `required`, `thresholdValue` | `adjustmentPercent`, `frequency` |
+
+---
+
 ## Summary
 
 ✅ **No breaking changes for existing REST clients using legacy contract types**
 ✅ **New capability to create contract types dynamically via API**
 ✅ **Optional date-based validity periods for versioning and phasing out types**
+✅ **Three independent rule systems for pricing, validation, and rate adjustments**
 ✅ **Grandfathering of existing contracts ensures no disruption**
 ✅ **Backward compatible with all existing integrations**
 ✅ **Comprehensive validation ensures data integrity**
 
-The system gracefully supports both old and new approaches, allowing you to migrate at your own pace. Date-based validity periods enable sophisticated contract type management including versioning strategies and controlled rollouts of new agreement terms.
+The system gracefully supports both old and new approaches, allowing you to migrate at your own pace. Date-based validity periods enable sophisticated contract type management including versioning strategies and controlled rollouts of new agreement terms. The three rule systems provide clean separation of concerns for different aspects of contract management.

@@ -1,10 +1,9 @@
 package dk.trustworks.intranet.contracts.resources;
 
-import dk.trustworks.intranet.contracts.dto.ContractTypeDefinitionDTO;
-import dk.trustworks.intranet.contracts.dto.ContractTypeWithRulesDTO;
-import dk.trustworks.intranet.contracts.dto.CreateContractTypeRequest;
-import dk.trustworks.intranet.contracts.dto.UpdateContractTypeRequest;
+import dk.trustworks.intranet.contracts.dto.*;
 import dk.trustworks.intranet.contracts.services.ContractTypeDefinitionService;
+import dk.trustworks.intranet.contracts.services.ContractValidationRuleService;
+import dk.trustworks.intranet.contracts.services.ContractRateAdjustmentService;
 import dk.trustworks.intranet.contracts.services.PricingRuleStepService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -45,6 +44,12 @@ public class ContractTypeResource {
 
     @Inject
     PricingRuleStepService pricingRuleService;
+
+    @Inject
+    ContractValidationRuleService validationRuleService;
+
+    @Inject
+    ContractRateAdjustmentService rateAdjustmentService;
 
     /**
      * List all contract types.
@@ -106,6 +111,36 @@ public class ContractTypeResource {
         var rules = pricingRuleService.getRulesForContractType(code, true);
 
         ContractTypeWithRulesDTO result = new ContractTypeWithRulesDTO(contractType, rules);
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Get a contract type with ALL its rules (pricing, validation, rate adjustments).
+     *
+     * @param code The contract type code
+     * @return Contract type with all rules DTO
+     */
+    @GET
+    @Path("/{code}/all-rules")
+    @Operation(summary = "Get contract type with all rules",
+               description = "Returns a contract type with pricing rules, validation rules, and rate adjustments")
+    @APIResponse(responseCode = "200", description = "Contract type with all rules found")
+    @APIResponse(responseCode = "404", description = "Contract type not found")
+    public Response getAllRules(@Parameter(description = "Contract type code") @PathParam("code") String code) {
+        log.info("ContractTypeResource.getAllRules");
+        log.info("code = " + code);
+
+        ContractTypeDefinitionDTO contractType = contractTypeService.findByCode(code);
+        var pricingRules = pricingRuleService.getRulesForContractType(code, true);
+        var validationRules = validationRuleService.listAll(code, false);
+        var rateAdjustments = rateAdjustmentService.listAll(code, false);
+
+        ContractTypeWithAllRulesDTO result = new ContractTypeWithAllRulesDTO(
+            contractType,
+            pricingRules,
+            validationRules,
+            rateAdjustments
+        );
         return Response.ok(result).build();
     }
 
