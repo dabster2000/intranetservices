@@ -81,40 +81,40 @@ The `BorrowedDevice` endpoints manage devices lent to users. A new `clientuuid` 
 
 ## Expense Processing
 
-The expense upload flow is documented in [docs/expense-processing.md](docs/expense-processing.md).
+The expense upload flow is documented in [docs/expense-processing.md](../docs/expense-processing.md).
 
 ## Invoice Sorting
 
-The sorting options for invoices are documented in [docs/invoice-sorting.md](docs/invoice/invoice-sorting.md).
+The sorting options for invoices are documented in [docs/invoice-sorting.md](../docs/invoice/invoice-sorting.md).
 
 ## Guest Registration
 
-The guest registration endpoints are documented in [docs/guest-registration.md](docs/guest-registration.md).
+The guest registration endpoints are documented in [docs/guest-registration.md](../docs/guest-registration.md).
 
 ## Slack User Sync
 
-Slack user ids are synchronized nightly. Details in [docs/slack-user-sync.md](docs/slack-user-sync.md).
+Slack user ids are synchronized nightly. Details in [docs/slack-user-sync.md](../docs/slack-user-sync.md).
 
 ## Draft Invoice Creation
 
-The improved draft invoice creation flow is documented in [docs/draft-invoice-creation.md](docs/invoice/draft-invoice-creation.md).
+The improved draft invoice creation flow is documented in [docs/draft-invoice-creation.md](../docs/invoice/draft-invoice-creation.md).
 
 ## Draft Invoice API for Frontend
 
-See [docs/draft-invoice-frontend.md](docs/invoice/draft-invoice-frontend.md) for usage instructions and error handling guidelines.
+See [docs/draft-invoice-frontend.md](../docs/invoice/draft-invoice-frontend.md) for usage instructions and error handling guidelines.
 
 ## Photo Service
 
-Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](docs/photo-service.md). Images are resized through the Claid API.
+Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](../docs/photo-service.md). Images are resized through the Claid API.
 
 ## API Usage Logging
 
 The centralized request logging and the `/api-usage-logs` endpoint are described
-in [docs/api-usage-logging.md](docs/api-usage-logging.md). Client developers can
+in [docs/api-usage-logging.md](../docs/api-usage-logging.md). Client developers can
 learn how to query the log API in
-[docs/api-usage-log-client-guide.md](docs/api-usage-log-client-guide.md).
+[docs/api-usage-log-client-guide.md](../docs/api-usage-log-client-guide.md).
 
 ## Voucher Upload Errors
 
 Information about the new voucher upload error logging can be found in
-[docs/voucher-upload-error-logging.md](docs/voucher-upload-error-logging.md).
+[docs/voucher-upload-error-logging.md](../docs/voucher-upload-error-logging.md).
