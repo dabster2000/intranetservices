@@ -105,6 +105,9 @@ event-topics:
       work-cache:
         expire-after-write: 15M  # Expire after 15 minutes for work data
         maximum-size: 10000  # Maximum number of cached entries
+      contract-effective-rules:
+        expire-after-write: ${feature.contract.overrides.cache.ttl-seconds:3600}s  # Contract rule override cache
+        maximum-size: ${feature.contract.overrides.cache.max-size:1000}  # Maximum cached rule sets
   s3:
     sync-client:
       type: APACHE
@@ -121,6 +124,8 @@ event-topics:
       - -H:IncludeResources=META-INF/resources/.*
       - --initialize-at-run-time=org.apache.commons.logging.impl.Log4JLogger
       - --initialize-at-run-time=io.netty.util.internal.logging.Log4JLogger
+
+
 mp:
   messaging:
     connector:
@@ -234,6 +239,31 @@ feature:
       enabled: true
     consumers:
       shadow: false
+  # Contract Rule Override System feature flags
+  contract:
+    overrides:
+      # Master switch - controls all override functionality
+      enabled: true  # Set to true to enable override system
+
+      # Sub-feature flags
+      api:
+        # Control REST API endpoints availability
+        enabled: true  # Set to true to expose override APIs
+        read-only: false  # Set to true for read-only mode (no creates/updates/deletes)
+
+      ui:
+        # Control UI component visibility (used by frontend)
+        enabled: true  # Frontend reads this for menu items, buttons
+
+      # Rollout control
+      rollout:
+        percentage: 0  # Percentage-based rollout (0-100)
+        whitelist: ['50b1c03c-3429-4b3b-b0ed-ab5a59f7dc6f', 'bc5e2eab-1119-4d73-aeb9-e8aba4591cfa', 'd27a7fae-9b40-4a4c-9020-e7eb28fa1a75']  # List of contract UUIDs to enable (for pilot testing)
+
+      # Performance tuning
+      cache:
+        ttl-seconds: 3600  # 1 hour cache (matching spec)
+        max-size: 10000    # Max cached rule sets
 slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}

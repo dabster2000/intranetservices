@@ -190,6 +190,30 @@ feature:
       enabled: true
     consumers:
       shadow: false
+  contract:
+    overrides:
+      # Master switch - controls all override functionality
+      enabled: true  # Set to true to enable override system
+
+      # Sub-feature flags
+      api:
+        # Control REST API endpoints availability
+        enabled: true  # Set to true to expose override APIs
+        read-only: false  # Set to true for read-only mode (no creates/updates/deletes)
+
+      ui:
+        # Control UI component visibility (used by frontend)
+        enabled: true  # Frontend reads this for menu items, buttons
+
+      # Rollout control
+      rollout:
+        percentage: 0  # Percentage-based rollout (0-100)
+        whitelist: [ '50b1c03c-3429-4b3b-b0ed-ab5a59f7dc6f', 'bc5e2eab-1119-4d73-aeb9-e8aba4591cfa', 'd27a7fae-9b40-4a4c-9020-e7eb28fa1a75']  # List of contract UUIDs to enable (for pilot testing)
+
+      # Performance tuning
+      cache:
+        ttl-seconds: 3600  # 1 hour cache (matching spec)
+        max-size: 10000    # Max cached rule sets
 jwt:
     verify:
       issuer: https://trustworks.dk
