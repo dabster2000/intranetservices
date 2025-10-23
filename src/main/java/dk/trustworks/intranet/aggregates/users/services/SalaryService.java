@@ -83,7 +83,6 @@ public class SalaryService {
         optionalSalary.ifPresent(salary -> aggregateEventSender.handleEvent(new DeleteSalaryEvent(salary.getUseruuid(), salaryuuid)));
     }
 
-    @CacheResult(cacheName = "user-cache")
     public List<Salary> findByUseruuid(String useruuid) {
         return Salary.findByUseruuid(useruuid);
     }

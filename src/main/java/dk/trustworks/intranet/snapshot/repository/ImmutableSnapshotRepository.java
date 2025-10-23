@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.snapshot.repository;
 
 import dk.trustworks.intranet.snapshot.model.ImmutableSnapshot;
-import io.quarkus.cache.CacheInvalidate;
+import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.cache.CacheResult;
 import io.quarkus.hibernate.orm.panache.PanacheRepository;
 import io.quarkus.panache.common.Page;
@@ -213,7 +213,7 @@ public class ImmutableSnapshotRepository implements PanacheRepository<ImmutableS
      * @return the saved entity
      */
     @Transactional
-    @CacheInvalidate(cacheName = "immutableSnapshots")
+    @CacheInvalidateAll(cacheName = "immutableSnapshots")
     public ImmutableSnapshot save(ImmutableSnapshot entity) {
         persist(entity);
         return entity;
@@ -225,7 +225,7 @@ public class ImmutableSnapshotRepository implements PanacheRepository<ImmutableS
      * @param entity the entity to delete
      */
     @Transactional
-    @CacheInvalidate(cacheName = "immutableSnapshots")
+    @CacheInvalidateAll(cacheName = "immutableSnapshots")
     public void remove(ImmutableSnapshot entity) {
         delete(entity);
     }
@@ -239,7 +239,7 @@ public class ImmutableSnapshotRepository implements PanacheRepository<ImmutableS
      * @return true if deleted, false if not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "immutableSnapshots")
+    @CacheInvalidateAll(cacheName = "immutableSnapshots")
     public boolean deleteByEntityTypeAndIdAndVersion(
             String entityType, String entityId, Integer snapshotVersion) {
         return delete("entityType = ?1 and entityId = ?2 and snapshotVersion = ?3",
@@ -254,7 +254,7 @@ public class ImmutableSnapshotRepository implements PanacheRepository<ImmutableS
      * @return number of snapshots deleted
      */
     @Transactional
-    @CacheInvalidate(cacheName = "immutableSnapshots")
+    @CacheInvalidateAll(cacheName = "immutableSnapshots")
     public long deleteByEntityTypeAndId(String entityType, String entityId) {
         return delete("entityType = ?1 and entityId = ?2", entityType, entityId);
     }
@@ -267,7 +267,7 @@ public class ImmutableSnapshotRepository implements PanacheRepository<ImmutableS
      * @return number of snapshots deleted
      */
     @Transactional
-    @CacheInvalidate(cacheName = "immutableSnapshots")
+    @CacheInvalidateAll(cacheName = "immutableSnapshots")
     public long deleteByEntityType(String entityType) {
         return delete("entityType", entityType);
     }
@@ -277,7 +277,7 @@ public class ImmutableSnapshotRepository implements PanacheRepository<ImmutableS
      * Use with extreme caution - destroys entire audit trail.
      */
     @Transactional
-    @CacheInvalidate(cacheName = "immutableSnapshots")
+    @CacheInvalidateAll(cacheName = "immutableSnapshots")
     public void removeAll() {
         deleteAll();
     }

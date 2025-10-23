@@ -106,7 +106,7 @@ public class BatchScheduler {
         jobOperator.start("expense-consume", new Properties());
     }
 
-    @Scheduled(every = "24h", delayed = "1m")
+    @Scheduled(cron = "0 0 3 * * ?")
     void scheduleExpenseSync() {
         try {
             // Only query running executions if the job is known to the repository

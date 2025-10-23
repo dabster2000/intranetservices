@@ -48,10 +48,8 @@ public class UserSalaryDayRecalcBatchletEnhanced extends AbstractEnhancedBatchle
             
             LocalDate date = LocalDate.parse(dateStr);
             
-            log.debugf("Recalculating salary for user %s on %s", userUuid, date);
             userSalaryCalculatorService.recalculateSalary(userUuid, date);
-            log.debugf("Successfully recalculated salary for user %s on %s", userUuid, date);
-            
+
             return BatchletResult.success("Successfully processed salary for user " + userUuid + " on " + date);
             
         } catch (Exception e) {

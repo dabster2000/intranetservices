@@ -239,7 +239,6 @@ public class UserService {
         });
     }
 
-    @CacheResult(cacheName = "user-status-cache")
     public List<UserStatus> findUserStatuses(String useruuid) {
         return UserStatus.findByUseruuid(useruuid);
     }

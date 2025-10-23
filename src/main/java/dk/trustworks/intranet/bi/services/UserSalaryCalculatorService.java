@@ -31,44 +31,23 @@ public class UserSalaryCalculatorService {
 
     @Transactional
     public void recalculateSalary(String useruuid, LocalDate testDay) {
-        log.trace("Recalculate salary for " + useruuid + " on " + testDay + " started");
-        List<UserStatus> userStatusList = userService.findUserStatuses(useruuid);
-        List<Salary> salaryList = salaryService.findByUseruuid(useruuid);
 
-        //LocalDate startDate = DateUtils.getCompanyStartDate();
-        //LocalDate endDate = DateUtils.getCurrentFiscalStartDate().plusYears(1);
-        //do {
+        int sal = salaryService.getUserSalaryByMonth(useruuid, testDay).getSalary(); // uses DB order/filter
 
-        Salary sal = salaryList.stream()
-                    .sorted(Comparator.comparing(Salary::getActivefrom).reversed())
-                    .filter(s -> s.getActivefrom().isBefore(testDay) || s.getActivefrom().isEqual(testDay))
-                    .findFirst()
-                    .orElse(new Salary(DateUtils.getCurrentFiscalStartDate().plusYears(1), 0, useruuid));
+        StatusType userStatus = userService.findUserStatuses(useruuid).stream()
+                .sorted(Comparator.comparing(UserStatus::getStatusdate).reversed())
+                .filter(s -> !s.getStatusdate().isAfter(testDay))
+                .map(UserStatus::getStatus)
+                .findFirst()
+                .orElse(StatusType.TERMINATED);
 
-            StatusType userStatus = userStatusList.stream()
-                    .sorted(Comparator.comparing(UserStatus::getStatusdate).reversed())
-                    .filter(s -> s.getStatusdate().isBefore(testDay) || s.getStatusdate().isEqual(testDay))
-                    .map(UserStatus::getStatus)
-                    .findFirst()
-                    .orElse(StatusType.TERMINATED);
-            /*
-            if(startDate.getDayOfMonth() == 1) {
-                log.info("User: " + useruuid + " - " + startDate + " - " + userStatus + " - " + sal.getSalary());
-            }
-             */
-            if(userStatus.equals(StatusType.TERMINATED) || userStatus.equals(StatusType.PREBOARDING) || userStatus.equals(StatusType.NON_PAY_LEAVE)) sal.setSalary(0);
-            /*
-            if(startDate.getDayOfMonth() == 1) {
-                log.info("User: " + useruuid + " - " + startDate + " - " + userStatus + " - " + sal.getSalary() + " - [ADJUSTED]");
-            }
+        if (userStatus == StatusType.TERMINATED ||
+                userStatus == StatusType.PREBOARDING ||
+                userStatus == StatusType.NON_PAY_LEAVE) {
+            sal = 0;
+        }
 
-             */
-
-            updateSalary(useruuid, testDay, sal.getSalary());
-
-        //    startDate = startDate.plusDays(1);
-        //} while (startDate.isBefore(endDate));
-        log.trace("Recalculate salary for " + useruuid + " done");
+        updateSalary(useruuid, testDay, sal);
     }
 
     private void updateSalary(String useruuid, LocalDate activeFrom, int salary) {
