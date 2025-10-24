@@ -125,13 +125,16 @@ public class SalesService {
     }
 
     @Transactional
-    public void persist(SalesLead salesLead) {
+    public SalesLead persist(SalesLead salesLead) {
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
             salesLead.setUuid(UUID.randomUUID().toString());
             salesLead.setCreated(LocalDateTime.now());
             salesLead.persist();
+            log.info("Created new SalesLead with UUID: " + salesLead.getUuid());
         } else if(SalesLead.findById(salesLead.getUuid())==null) salesLead.persist();
         else update(salesLead);
+
+        return salesLead;
     }
 
     @Transactional

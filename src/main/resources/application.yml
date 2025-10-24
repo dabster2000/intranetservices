@@ -1,6 +1,7 @@
 quarkus:
   application:
     name: trustworks-intranet
+    base-url: ${APPLICATION_BASE_URL:http://localhost:8080}
   datasource:
     db-kind: mariadb
     jdbc:

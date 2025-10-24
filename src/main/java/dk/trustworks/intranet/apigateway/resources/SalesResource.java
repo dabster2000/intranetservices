@@ -98,8 +98,8 @@ public class SalesResource {
     }
 
     @POST
-    public void persist(SalesLead salesLead) {
-        salesService.persist(salesLead);
+    public SalesLead persist(SalesLead salesLead) {
+        return salesService.persist(salesLead);
     }
 
     @PUT

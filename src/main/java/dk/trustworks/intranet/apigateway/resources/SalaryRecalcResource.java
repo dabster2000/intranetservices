@@ -152,6 +152,7 @@ public class SalaryRecalcResource {
         @APIResponse(responseCode = "401", description = "Unauthorized"),
         @APIResponse(responseCode = "403", description = "Forbidden - requires SYSTEM role")
     })
+
     public Response triggerBulkRecalc(BulkRecalcRequest request) {
         // Validate request
         if (request == null) {
