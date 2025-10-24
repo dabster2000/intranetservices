@@ -91,7 +91,11 @@ public class ExpenseResource {
     public List<Expense> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        return Expense.find("datecreated >= ?1 and expensedate <= ?2", localFromDate, localToDate).list();
+        // Filter by paidOut date to match ExpenseManagementView expectations
+        // Use LocalDateTime for paidOut field and include full last day with < endDate+1
+        return Expense.find("paidOut >= ?1 and paidOut < ?2",
+            localFromDate.atStartOfDay(),
+            localToDate.plusDays(1).atStartOfDay()).list();
     }
 
     @GET
