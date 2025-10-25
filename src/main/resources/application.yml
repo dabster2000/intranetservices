@@ -108,6 +108,12 @@ event-topics:
       contract-effective-rules:
         expire-after-write: ${feature.contract.overrides.cache.ttl-seconds:3600}s  # Contract rule override cache
         maximum-size: ${feature.contract.overrides.cache.max-size:1000}  # Maximum cached rule sets
+      client-health:
+        expire-after-write: 1H  # Client health cache (1 hour TTL)
+        maximum-size: 1000  # Maximum number of client health entries
+      consultant-allocation:
+        expire-after-write: 1H  # Consultant allocation cache (1 hour TTL)
+        maximum-size: 1000  # Maximum number of allocation entries
   s3:
     sync-client:
       type: APACHE
