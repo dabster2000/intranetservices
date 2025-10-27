@@ -13,7 +13,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
-import jakarta.enterprise.context.RequestScoped;
+import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.io.ByteArrayInputStream;
@@ -25,7 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @JBossLog
-@RequestScoped
+@ApplicationScoped
 public class EconomicsInvoiceService {
 
     private IntegrationKey.IntegrationKeyValue integrationKeyValue;
@@ -39,7 +39,7 @@ public class EconomicsInvoiceService {
         Journal journal = new Journal(integrationKeyValue.invoiceJournalNumber());
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
-        Voucher voucher = buildJSONRequest(invoice, journal, text, integrationKeyValue);
+        Voucher voucher = buildJSONRequest(invoice, journal, text, integrationKeyValue, invoice.getCompany());
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
         log.info("json = " + json);
@@ -64,7 +64,7 @@ public class EconomicsInvoiceService {
 
                 //upload file to e-conomics voucher
                 log.info("voucher posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", voucherNumber: " + voucherNumber);
-                return sendFile(invoice, voucher, voucherNumber);
+                return sendFile(invoice, voucher, voucherNumber, integrationKeyValue);
             } else {
                 String errorBody = response.readEntity(String.class);
                 log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", status: " + response.getStatus() + ", body: " + errorBody);
@@ -76,7 +76,7 @@ public class EconomicsInvoiceService {
         }
     }
 
-    public Response sendFile(Invoice invoice, Voucher voucher, int voucherNumber) throws IOException {
+    public Response sendFile(Invoice invoice, Voucher voucher, int voucherNumber, IntegrationKey.IntegrationKeyValue integrationKeyValue) throws IOException {
         log.info("EconomicsInvoiceService.sendFile");
         log.info("invoice = " + invoice + ", voucher = " + voucher + ", voucherNumber = " + voucherNumber);
         // format accountingYear to URL output
@@ -110,7 +110,7 @@ public class EconomicsInvoiceService {
         return fileResponse;
     }
 
-    public Voucher buildJSONRequest(Invoice invoice, Journal journal, String text, IntegrationKey.IntegrationKeyValue integrationKeyValue){
+    public Voucher buildJSONRequest(Invoice invoice, Journal journal, String text, IntegrationKey.IntegrationKeyValue integrationKeyValue, dk.trustworks.intranet.model.Company targetCompany){
         log.debug("EconomicsInvoiceService.buildJSONRequest");
         ContraAccount contraAccount = new ContraAccount(integrationKeyValue.invoiceAccountNumber());
         log.debug("contraAccount = " + contraAccount.getAccountNumber());
@@ -118,9 +118,9 @@ public class EconomicsInvoiceService {
         log.debug("account = " + account.getAccountNumber());
         String fiscalYearName = DateUtils.getFiscalYearName(
                 DateUtils.getFiscalStartDateBasedOnDate(invoice.getInvoicedate()),
-                invoice.getCompany().getUuid());
+                targetCompany.getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
-        log.debug("Using accounting year " + accountingYear.getYear() + " for company " + invoice.getCompany().getUuid());
+        log.debug("Using accounting year " + accountingYear.getYear() + " for company " + targetCompany.getUuid());
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 
@@ -161,7 +161,7 @@ public class EconomicsInvoiceService {
         Journal journal = new Journal(journalNumber);
         String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
-        Voucher voucher = buildJSONRequest(invoice, journal, text, targetKeys);
+        Voucher voucher = buildJSONRequest(invoice, journal, text, targetKeys, targetCompany);
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
         log.info("json = " + json);
@@ -183,7 +183,7 @@ public class EconomicsInvoiceService {
                         targetCompany.getName(), voucherNumber);
 
                 // Upload file to e-conomics voucher
-                return sendFile(invoice, voucher, voucherNumber);
+                return sendFile(invoice, voucher, voucherNumber, targetKeys);
             } else {
                 String errorBody = response.readEntity(String.class);
                 log.error("Voucher not posted successfully to company " + targetCompany.getName() +

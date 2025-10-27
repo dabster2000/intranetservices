@@ -203,6 +203,16 @@ public class InvoiceEconomicsUploadService {
                 return false;
             }
 
+            // Log detailed upload context for debugging
+            log.infof("Uploading to e-conomics: invoice=%s (number: %d), company=%s (%s), type=%s, journal=%d, PDF size=%d bytes",
+                    invoice.getUuid(),
+                    invoice.getInvoicenumber(),
+                    targetCompany.getName(),
+                    targetCompany.getUuid(),
+                    upload.getUploadType(),
+                    upload.getJournalNumber(),
+                    invoice.getPdf() != null ? invoice.getPdf().length : 0);
+
             // Perform upload to e-conomics
             try (Response response = economicsInvoiceService.sendVoucherToCompany(
                     invoice, targetCompany, upload.getJournalNumber())) {
@@ -230,7 +240,14 @@ public class InvoiceEconomicsUploadService {
             upload.markFailed(error);
             upload.persist();
 
-            log.errorf(e, "Upload %s failed with exception", upload.getUuid());
+            // Log detailed error context for debugging
+            log.errorf(e, "Upload %s failed with exception. Invoice: %s, Company: %s, Type: %s, Journal: %d, Error: %s",
+                    upload.getUuid(),
+                    invoice.getUuid(),
+                    upload.getCompanyuuid(),
+                    upload.getUploadType(),
+                    upload.getJournalNumber(),
+                    error);
             return false;
         }
     }

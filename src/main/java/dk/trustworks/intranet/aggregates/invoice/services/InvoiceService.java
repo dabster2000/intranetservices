@@ -1425,6 +1425,58 @@ public class InvoiceService {
         return queuedInvoice;
     }
 
+    /**
+     * Forces creation of a queued internal invoice immediately, bypassing the wait for referenced invoice to be PAID.
+     * This method is identical to the batch job processing but without the PAID status check.
+     *
+     * Use case: Manual intervention when user wants to create internal invoice before client invoice is paid.
+     *
+     * @param invoiceuuid UUID of the invoice to force-create
+     * @return Created invoice
+     * @throws JsonProcessingException if PDF generation fails
+     * @throws WebApplicationException if validation fails
+     */
+    @Transactional
+    public Invoice forceCreateQueuedInvoice(String invoiceuuid) throws JsonProcessingException {
+        log.info("Force creating queued invoice (manual bypass): " + invoiceuuid);
+
+        Invoice queuedInvoice = Invoice.findById(invoiceuuid);
+        if (queuedInvoice == null) {
+            throw new WebApplicationException("Invoice not found: " + invoiceuuid, Response.Status.NOT_FOUND);
+        }
+
+        // Validation 1: Must be QUEUED
+        if (queuedInvoice.getStatus() != InvoiceStatus.QUEUED) {
+            throw new WebApplicationException(
+                "Invoice must be QUEUED status. Current status: " + queuedInvoice.getStatus(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Validation 2: Must be INTERNAL type
+        if (queuedInvoice.getType() != InvoiceType.INTERNAL) {
+            throw new WebApplicationException(
+                "Only INTERNAL invoices can be force-created. Current type: " + queuedInvoice.getType(),
+                Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Set dates: invoicedate = today, duedate = tomorrow (same as batch job)
+        queuedInvoice.setInvoicedate(LocalDate.now());
+        queuedInvoice.setDuedate(LocalDate.now().plusDays(1));
+
+        // Create the invoice (assigns number, generates PDF - NO upload yet)
+        Invoice createdInvoice = createQueuedInvoiceWithoutUpload(queuedInvoice);
+
+        log.infof("Force-created invoice %s with number %d - now handling uploads",
+                createdInvoice.getUuid(), createdInvoice.getInvoicenumber());
+
+        // Note: Upload handling will be done by InvoiceEconomicsUploadService in the REST layer
+        // to match the pattern used in the batch job
+
+        return createdInvoice;
+    }
+
     // Single-row BonusApprovalRow DTO for one invoice
     public BonusApprovalRow findBonusApprovalRow(String invoiceuuid) {
         Invoice i = Invoice.findById(invoiceuuid);
