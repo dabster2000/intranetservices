@@ -3,10 +3,20 @@
     <listeners>
         <listener ref="jobMonitoringListener"/>
     </listeners>
+
     <step id="expense-consume-step">
         <listeners>
             <listener ref="stepProgressListener"/>
         </listeners>
-        <batchlet ref="expenseConsumeBatchlet"/>
+
+        <chunk item-count="5" checkpoint-policy="item">
+            <reader ref="expenseItemReader"/>
+            <writer ref="expenseItemWriter">
+                <properties>
+                    <!-- Throttle: 10000ms (10 seconds) between each expense upload -->
+                    <property name="throttleMs" value="10000"/>
+                </properties>
+            </writer>
+        </chunk>
     </step>
 </job>

@@ -99,6 +99,26 @@ public class ExpenseResource {
     }
 
     @GET
+    @Path("/search/statuses")
+    @RolesAllowed({"ADMIN", "HR", "SYSTEM"})
+    public List<Expense> findByStatuses(@QueryParam("statuses") String statusesParam) {
+        if (statusesParam == null || statusesParam.isEmpty()) {
+            return List.of();
+        }
+        String[] statuses = statusesParam.split(",");
+        StringBuilder queryBuilder = new StringBuilder("status IN (");
+        for (int i = 0; i < statuses.length; i++) {
+            queryBuilder.append("?").append(i + 1);
+            if (i < statuses.length - 1) {
+                queryBuilder.append(", ");
+            }
+        }
+        queryBuilder.append(")");
+
+        return Expense.find(queryBuilder.toString(), Sort.by("datecreated").descending(), (Object[]) statuses).list();
+    }
+
+    @GET
     @Path("/categories")
     public List<ExpenseCategory> getCategories(@QueryParam("useruuid") String useruuid) {
         User user = userService.findById(useruuid, false);
@@ -131,24 +151,56 @@ public class ExpenseResource {
         expenseService.processExpense(expense);
     }
 
-    //todo
-    //validate expense is found in status created, otherwise return error
     @PUT
     @Path("/{uuid}")
     @Transactional
+    @RolesAllowed({"USER", "ADMIN", "HR", "SYSTEM"})
     public void updateOne(@PathParam("uuid") String uuid, Expense expense) {
-        Expense.update("amount = ?1, " +
-                        "account = ?2, " +
-                        "description = ?3, " +
-                        "projectuuid = ?4, " +
-                        "expensedate = ?5 " +
-                        "WHERE uuid like ?6 ",
-                expense.getAmount(),
-                expense.getAccount(),
-                expense.getDescription(),
-                expense.getProjectuuid(),
-                expense.getExpensedate(),
-                uuid);
+        Expense existing = Expense.findById(uuid);
+        if (existing == null) {
+            throw new WebApplicationException("Expense not found", 404);
+        }
+
+        // Build dynamic update query based on what's being updated
+        StringBuilder updateQuery = new StringBuilder();
+        List<Object> params = new java.util.ArrayList<>();
+
+        if (expense.getAmount() != null) {
+            updateQuery.append("amount = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getAmount());
+        }
+        if (expense.getAccount() != null) {
+            updateQuery.append("account = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getAccount());
+        }
+        if (expense.getDescription() != null) {
+            updateQuery.append("description = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getDescription());
+        }
+        if (expense.getProjectuuid() != null) {
+            updateQuery.append("projectuuid = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getProjectuuid());
+        }
+        if (expense.getExpensedate() != null) {
+            updateQuery.append("expensedate = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getExpensedate());
+        }
+        // Allow HR/ADMIN to update status (for retry functionality)
+        if (expense.getStatus() != null) {
+            updateQuery.append("status = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getStatus());
+        }
+
+        if (updateQuery.length() == 0) {
+            return; // Nothing to update
+        }
+
+        // Remove trailing comma and space
+        updateQuery.setLength(updateQuery.length() - 2);
+        updateQuery.append(" WHERE uuid = ?").append(params.size() + 1);
+        params.add(uuid);
+
+        Expense.update(updateQuery.toString(), params.toArray());
     }
 
     @DELETE

@@ -84,8 +84,8 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 } else {
                     log.debug("Expense " + expense.getUuid() + ": account unchanged based on journal");
                 }
-                expenseService.updateStatus(expense, ExpenseService.STATUS_PROCESSING);
-                log.info("Expense " + expense.getUuid() + " marked PROCESSING (unbooked in journal)");
+                expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
+                log.info("Expense " + expense.getUuid() + " marked VERIFIED_UNBOOKED (unbooked in journal)");
                 return;
             }
 
@@ -104,14 +104,14 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             boolean booked = yrStatus >= 200 && yrStatus < 300 && hasAnyEntries(yrBody);
             if (booked) {
-                // Booked; update account and mark processed
+                // Booked; update account and mark verified booked to ledger
                 String accountFromEntries = extractFirstAccount(yrBody);
                 if (accountFromEntries != null && !accountFromEntries.equals(expense.getAccount())) {
                     log.info("Expense " + expense.getUuid() + ": account differs (booked); updating " + expense.getAccount() + " -> " + accountFromEntries);
                     expense.setAccount(accountFromEntries);
                 }
-                expenseService.updateStatus(expense, ExpenseService.STATUS_PROCESSED);
-                log.info("Expense " + expense.getUuid() + " marked PROCESSED (booked under accounting-years)");
+                expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
+                log.info("Expense " + expense.getUuid() + " marked VERIFIED_BOOKED (booked to ledger under accounting-years)");
                 return;
             }
 

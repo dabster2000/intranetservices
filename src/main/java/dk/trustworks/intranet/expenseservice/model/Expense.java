@@ -66,6 +66,20 @@ public class Expense extends PanacheEntityBase {
     @JsonIgnore
     private String accountingyear;
 
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    private String errorMessage;
+
+    @Column(name = "retry_count")
+    private Integer retryCount = 0;
+
+    @Column(name = "last_retry_at")
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime lastRetryAt;
+
+    @Column(name = "is_orphaned")
+    private Boolean isOrphaned = false;
+
     public Expense() {
         uuid = UUID.randomUUID().toString();
         datecreated = LocalDate.now();
@@ -80,5 +94,72 @@ public class Expense extends PanacheEntityBase {
     @JsonProperty("isLocked")
     public boolean isLocked() {
         return datecreated.isBefore(LocalDate.now());
+    }
+
+    /**
+     * Increment retry count and update last retry timestamp.
+     * Used when retrying expense upload after failure.
+     */
+    public void incrementRetryCount() {
+        if (this.retryCount == null) {
+            this.retryCount = 0;
+        }
+        this.retryCount++;
+        this.lastRetryAt = LocalDateTime.now();
+    }
+
+    /**
+     * Mark this expense as having an orphaned voucher reference.
+     * This happens when our database has a voucher number but it doesn't exist in e-conomics.
+     */
+    public void markAsOrphaned() {
+        this.isOrphaned = true;
+        this.lastRetryAt = LocalDateTime.now();
+    }
+
+    /**
+     * Clear orphaned status after successful recovery.
+     */
+    public void clearOrphaned() {
+        this.isOrphaned = false;
+    }
+
+    /**
+     * Check if this expense is eligible for retry based on retry count and time since last attempt.
+     * @param maxRetries Maximum number of retry attempts allowed
+     * @param minMinutesBetweenRetries Minimum minutes to wait between retry attempts
+     * @return true if eligible for retry
+     */
+    public boolean shouldRetry(int maxRetries, int minMinutesBetweenRetries) {
+        // Never retry if max retries exceeded
+        if (retryCount != null && retryCount >= maxRetries) {
+            return false;
+        }
+
+        // If never retried, eligible
+        if (lastRetryAt == null) {
+            return true;
+        }
+
+        // Check if enough time has passed since last retry
+        LocalDateTime nextRetryTime = lastRetryAt.plusMinutes(minMinutesBetweenRetries);
+        return LocalDateTime.now().isAfter(nextRetryTime);
+    }
+
+    /**
+     * Get safe retry count (never null).
+     */
+    public int getSafeRetryCount() {
+        return retryCount != null ? retryCount : 0;
+    }
+
+    /**
+     * Check if this expense has a cached voucher issue.
+     * This is detected when we have voucher details but the voucher doesn't exist.
+     */
+    public boolean hasKnownCacheIssue() {
+        return Boolean.TRUE.equals(isOrphaned) ||
+               (vouchernumber > 0 && "UP_FAILED".equals(status) &&
+                errorMessage != null && errorMessage.contains("not found"));
     }
 }

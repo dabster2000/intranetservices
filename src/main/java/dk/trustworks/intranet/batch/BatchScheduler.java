@@ -101,9 +101,22 @@ public class BatchScheduler {
         }
     }
 
-    @Scheduled(every = "10m")
+    @Scheduled(every = "1h")
     void scheduleExpenseConsume() {
-        jobOperator.start("expense-consume", new Properties());
+        try {
+            // Only start if no expense-consume job is currently running
+            if (jobOperator.getJobNames().contains("expense-consume")) {
+                if (!jobOperator.getRunningExecutions("expense-consume").isEmpty()) {
+                    log.debug("expense-consume job already running, skipping this cycle");
+                    return; // Already running, skip this cycle
+                }
+            }
+            log.info("Starting expense-consume job");
+            jobOperator.start("expense-consume", new Properties());
+        } catch (Exception e) {
+            // Log and continue - will retry in next cycle
+            log.warn("Could not schedule expense-consume: " + e.getMessage());
+        }
     }
 
     @Scheduled(cron = "0 0 3 * * ?")
@@ -123,6 +136,23 @@ public class BatchScheduler {
             // (You can narrow this to NoSuchJobException if you prefer)
             // log.warn("Could not schedule expense-sync now: " + e.getMessage(), e);
             jobOperator.start("expense-sync", new Properties());
+        }
+    }
+
+    @Scheduled(cron = "0 15 * * * ?") // Run every hour at 15 minutes past
+    void scheduleExpenseOrphanDetection() {
+        try {
+            // Only start if no orphan detection job is currently running
+            if (jobOperator.getJobNames().contains("expense-orphan-detection")) {
+                if (!jobOperator.getRunningExecutions("expense-orphan-detection").isEmpty()) {
+                    log.debug("expense-orphan-detection job already running, skipping this cycle");
+                    return;
+                }
+            }
+            log.info("Starting expense-orphan-detection job");
+            jobOperator.start("expense-orphan-detection", new Properties());
+        } catch (Exception e) {
+            log.warn("Could not schedule expense-orphan-detection: " + e.getMessage());
         }
     }
 

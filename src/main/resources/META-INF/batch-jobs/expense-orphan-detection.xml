@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="expense-orphan-detection" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <properties>
+        <property name="job.description" value="Detects and marks orphaned expense vouchers in e-conomics"/>
+    </properties>
+    <step id="expense-orphan-detection-step">
+        <batchlet ref="expenseOrphanDetectionBatchlet"/>
+    </step>
+</job>
