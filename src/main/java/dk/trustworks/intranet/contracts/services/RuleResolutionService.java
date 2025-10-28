@@ -56,10 +56,9 @@ public class RuleResolutionService {
      * @param effectiveDate The date for which to calculate effective rules
      * @return Complete rule set with all overrides applied
      */
-    @CacheResult(cacheName = "contract-effective-rules")
     public ContractRuleSetDTO getEffectiveRuleSet(
-        @CacheKey String contractUuid,
-        @CacheKey LocalDate effectiveDate
+        String contractUuid,
+        LocalDate effectiveDate
     ) {
         log.debugf("Resolving effective rules for contract %s on date %s", contractUuid, effectiveDate);
 

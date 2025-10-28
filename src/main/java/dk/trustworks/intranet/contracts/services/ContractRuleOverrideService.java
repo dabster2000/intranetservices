@@ -61,7 +61,6 @@ public class ContractRuleOverrideService {
      * @throws IllegalStateException if feature is disabled
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public ValidationOverrideDTO createValidationOverride(String contractUuid, ValidationOverrideDTO dto) {
         log.infof("Creating validation override for contract %s, rule %s", contractUuid, dto.getRuleId());
 
@@ -108,7 +107,6 @@ public class ContractRuleOverrideService {
      * @throws NotFoundException if override not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public ValidationOverrideDTO updateValidationOverride(String contractUuid, Integer id, ValidationOverrideDTO dto) {
         log.infof("Updating validation override id=%d for contract %s", id, contractUuid);
 
@@ -138,7 +136,6 @@ public class ContractRuleOverrideService {
      * @throws NotFoundException if override not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public void deleteValidationOverride(String contractUuid, Integer id) {
         log.infof("Deleting validation override id=%d for contract %s", id, contractUuid);
 
@@ -178,7 +175,6 @@ public class ContractRuleOverrideService {
      * @throws IllegalStateException if feature is disabled
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public RateOverrideDTO createRateOverride(String contractUuid, RateOverrideDTO dto) {
         log.infof("Creating rate override for contract %s, rule %s", contractUuid, dto.getRuleId());
 
@@ -226,7 +222,6 @@ public class ContractRuleOverrideService {
      * @throws NotFoundException if override not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public RateOverrideDTO updateRateOverride(String contractUuid, Integer id, RateOverrideDTO dto) {
         log.infof("Updating rate override id=%d for contract %s", id, contractUuid);
 
@@ -256,7 +251,6 @@ public class ContractRuleOverrideService {
      * @throws NotFoundException if override not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public void deleteRateOverride(String contractUuid, Integer id) {
         log.infof("Deleting rate override id=%d for contract %s", id, contractUuid);
 
@@ -304,7 +298,6 @@ public class ContractRuleOverrideService {
      * @throws IllegalStateException if feature is disabled
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public PricingOverrideDTO createPricingOverride(String contractUuid, PricingOverrideDTO dto) {
         log.infof("Creating pricing override for contract %s, rule %s", contractUuid, dto.getRuleId());
 
@@ -352,7 +345,6 @@ public class ContractRuleOverrideService {
      * @throws NotFoundException if override not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public PricingOverrideDTO updatePricingOverride(String contractUuid, Integer id, PricingOverrideDTO dto) {
         log.infof("Updating pricing override id=%d for contract %s", id, contractUuid);
 
@@ -382,7 +374,6 @@ public class ContractRuleOverrideService {
      * @throws NotFoundException if override not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "contract-effective-rules")
     public void deletePricingOverride(String contractUuid, Integer id) {
         log.infof("Deleting pricing override id=%d for contract %s", id, contractUuid);
 

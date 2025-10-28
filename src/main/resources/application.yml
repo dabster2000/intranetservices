@@ -264,7 +264,7 @@ feature:
 
       # Rollout control
       rollout:
-        percentage: 0  # Percentage-based rollout (0-100)
+        percentage: 100  # Percentage-based rollout (0-100)
         whitelist: ['50b1c03c-3429-4b3b-b0ed-ab5a59f7dc6f', 'bc5e2eab-1119-4d73-aeb9-e8aba4591cfa', 'd27a7fae-9b40-4a4c-9020-e7eb28fa1a75']  # List of contract UUIDs to enable (for pilot testing)
 
       # Performance tuning
