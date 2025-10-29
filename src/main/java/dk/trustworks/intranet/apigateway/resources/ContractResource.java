@@ -116,6 +116,14 @@ public class ContractResource {
         return new KeyValueDTO("rate", contractService.findRateByProjectuuidAndUseruuidAndDate(projectuuid, useruuid, date).getRate()+"");
     }
 
+    @GET
+    @Path("/count-by-type/{contractTypeCode}")
+    public Long countContractsByType(@PathParam("contractTypeCode") String contractTypeCode) {
+        log.debug("ContractResource.countContractsByType");
+        log.debug("contractTypeCode = " + contractTypeCode);
+        return Contract.count("contractType", contractTypeCode);
+    }
+
     @POST
     public void save(Contract contract) {
         contractService.save(contract);
