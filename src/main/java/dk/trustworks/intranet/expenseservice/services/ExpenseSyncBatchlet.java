@@ -91,7 +91,11 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             // 2) If not in journal, check booked entries under accounting-years
             String yearFilter = "voucherNumber$eq:" + vn;
-            Response yr = api.getYearEntries(year, yearFilter, 1000);
+            // Convert to API format for e-conomics calls
+            String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsApiYear(
+                dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year)
+            );
+            Response yr = api.getYearEntries(yearId, yearFilter, 1000);
             int yrStatus = yr != null ? yr.getStatus() : -1;
             String yrBody = null;
             try {
@@ -99,7 +103,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             } finally {
                 if (yr != null) yr.close();
             }
-            log.info("Expense " + expense.getUuid() + ": year query year=" + year + ", filter='" + yearFilter + "', status=" + yrStatus);
+            log.info("Expense " + expense.getUuid() + ": year query year=" + yearId + ", filter='" + yearFilter + "', status=" + yrStatus);
             log.debug("Year response body (truncated): " + truncate(yrBody, 800));
 
             boolean booked = yrStatus >= 200 && yrStatus < 300 && hasAnyEntries(yrBody);

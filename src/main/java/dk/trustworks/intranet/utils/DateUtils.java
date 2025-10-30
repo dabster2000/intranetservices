@@ -371,4 +371,63 @@ public final class DateUtils {
 
         return date.equals(firstThursday) || date.equals(firstFriday);
     }
+
+    /**
+     * IMPORTANT: This method should NOT be used for e-conomics API calls.
+     * The e-conomics API expects the accounting year in its original slash format (e.g., "2025/2026a").
+     * This method is for internal storage and processing only.
+     *
+     * Convert a fiscal year label into internal storage format (YYYY_6_YYYY).
+     * PRESERVES any trailing letter suffix to match e-conomics accounting year names exactly.
+     *
+     * Examples:
+     *  - "2025/2026"   -> "2025_6_2026"
+     *  - "2025/2026a"  -> "2025_6_2026a"  (suffix preserved)
+     *  - "2025_6_2026" -> "2025_6_2026"
+     *  - "2025_6_2026a"-> "2025_6_2026a"  (suffix preserved)
+     */
+    public static String toEconomicsUrlYear(String label) {
+        if (label == null) return null;
+        String raw = label.trim();
+        if (raw.isEmpty()) return raw;
+
+        // Extract any trailing lowercase letter suffix to preserve it
+        String suffix = "";
+        String baseYear = raw;
+        if (raw.matches(".*[a-z]$")) {
+            suffix = raw.substring(raw.length() - 1);
+            baseYear = raw.substring(0, raw.length() - 1);
+        }
+
+        // If it's already in the canonical underscore form (e.g., 2025_6_2026), keep it with suffix
+        if (baseYear.contains("_6_")) return baseYear + suffix;
+        // Otherwise, replace slash format with canonical underscore form
+        if (baseYear.contains("/")) return baseYear.replace("/", "_6_") + suffix;
+        // If neither, return as-is (unknown/custom format) with suffix
+        return baseYear + suffix;
+    }
+
+    /**
+     * Convert internal storage format back to e-conomics API format.
+     * The e-conomics API expects the accounting year in slash format (e.g., "2025/2026a").
+     *
+     * Examples:
+     *  - "2025_6_2026"  -> "2025/2026"
+     *  - "2025_6_2026a" -> "2025/2026a"  (suffix preserved)
+     *  - "2025/2026"    -> "2025/2026"    (already in correct format)
+     *  - "2025/2026a"   -> "2025/2026a"   (already in correct format)
+     */
+    public static String toEconomicsApiYear(String storedYear) {
+        if (storedYear == null) return null;
+        String year = storedYear.trim();
+        if (year.isEmpty()) return year;
+
+        // If it contains underscore format, convert back to slash
+        if (year.contains("_6_")) {
+            return year.replace("_6_", "/");
+        }
+
+        // Already in slash format or other format - return as-is
+        return year;
+    }
 }

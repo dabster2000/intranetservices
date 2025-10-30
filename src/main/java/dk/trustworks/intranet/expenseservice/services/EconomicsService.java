@@ -103,10 +103,11 @@ public class  EconomicsService {
             }
             int voucherNumber = first.get("voucherNumber").asInt();
             expense.setVouchernumber(voucherNumber);
-            // persist accountingYear and journal too
-            String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2024/2025
-            String[] parts = fiscalYearName.split("/");
-            String urlYear = parts.length == 2 ? parts[0] + "_6_" + parts[1] : fiscalYearName;
+            // persist accountingYear (canonical URL form without any trailing letters) and journal too
+            String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2025/2026 or 2025/2026a
+            String urlYear = DateUtils.toEconomicsUrlYear(fiscalYearName);
+            log.debugf("Storing accounting year for expense %s: fiscalYear=%s -> storedFormat=%s",
+                expense.getUuid(), fiscalYearName, urlYear);
             expense.setAccountingyear(urlYear);
             expense.setJournalnumber(journal.getJournalNumber());
 
@@ -127,23 +128,28 @@ public class  EconomicsService {
         // This prevents attempting to upload files to non-existent vouchers
         // (can happen if e-conomics returned cached success but voucher wasn't actually created)
         if (expense.getVouchernumber() > 0 && !verifyVoucherExists(expense)) {
-            log.errorf("Voucher %d doesn't exist in e-conomics for expense %s - orphaned reference detected",
-                expense.getVouchernumber(), expense.getUuid());
+            String storedYear = expense.getAccountingyear();
+            // Show the actual URL format used in verification (underscore format)
+            String urlYear = DateUtils.toEconomicsUrlYear(storedYear);
+            log.errorf("Voucher %d doesn't exist in e-conomics for expense %s - orphaned reference detected (storedYear=%s, urlYear=%s)",
+                expense.getVouchernumber(), expense.getUuid(), storedYear, urlYear);
             throw new ExpenseUploadException(
                 "Orphaned voucher detected - voucher exists in cache but not in e-conomics",
                 null,
                 404,
-                String.format("Voucher %d not found in journal %d for year %s",
+                String.format("Voucher %d not found in journal %d for year %s (urlYear=%s)",
                     expense.getVouchernumber(),
                     expense.getJournalnumber(),
-                    expense.getAccountingyear())
+                    storedYear,
+                    urlYear)
             );
         }
 
-        final String fiscal = voucher.getAccountingYear().getYear();             // fx "2025/2026" or "2025/2026a"
-        // Strip any suffix letters (a, b, c, etc.) for URL consistency
-        final String cleanFiscal = fiscal.replaceAll("[a-z]$", "");              // "2025/2026"
-        final String urlYear = cleanFiscal.contains("/") ? cleanFiscal.replace("/", "_6_") : cleanFiscal; // sti-format som i eksisterende kode
+        // Convert to URL format (underscore format) for API path parameters - same as invoice code
+        String originalYear = voucher.getAccountingYear().getYear();
+        final String urlYear = DateUtils.toEconomicsUrlYear(originalYear);
+        log.debugf("File upload for expense %s: originalYear=%s -> urlYear=%s, voucher=%d",
+            expense.getUuid(), originalYear, urlYear, expense.getVouchernumber());
 
         byte[] bytes = ImageProcessor.convertBase64ToImageAndCompress(expensefile.getExpensefile());
         if (bytes == null || bytes.length == 0) {
@@ -154,7 +160,7 @@ public class  EconomicsService {
         }
 
         MultipartFormDataOutput form = new MultipartFormDataOutput();
-        form.addFormData("file", new ByteArrayInputStream(bytes), MediaType.APPLICATION_OCTET_STREAM_TYPE, "receipt.jpg");
+        form.addFormData("file", new ByteArrayInputStream(bytes), MediaType.valueOf("image/jpeg"), "receipt.jpg");
 
         EconomicsAPI api = getApiForExpense(expense);
 
@@ -178,6 +184,8 @@ public class  EconomicsService {
             Response r;
 
             if (!hasAttachment) {
+                log.debug("POST file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
+                    "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
                 r = api.postExpenseFile(
                         voucher.getJournal().getJournalNumber(),
                         urlYear,
@@ -221,6 +229,8 @@ public class  EconomicsService {
                     }
                 }
             } else {
+                log.debug("PATCH file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
+                    "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
                 r = api.patchFile(
                         voucher.getJournal().getJournalNumber(),
                         urlYear,
@@ -391,35 +401,53 @@ public class  EconomicsService {
         try {
             EconomicsAPI api = getApiForExpense(expense);
 
-            // Normalize accounting year for URL consistency
-            // Examples:
-            //  - "2025_6_2026a" -> "2025_6_2026"
-            //  - "2025/2026a"   -> "2025_6_2026"
-            String raw = expense.getAccountingyear();
-            String clean = raw != null ? raw.replaceAll("[a-z]$", "") : null;
-            String urlYear = clean != null && clean.contains("/") ? clean.replace("/", "_6_") : clean;
+            // Convert stored year to e-conomics URL format (underscore format)
+            String storedYear = expense.getAccountingyear();
+            String urlYear = DateUtils.toEconomicsUrlYear(storedYear);
 
-            Response response = api.getVoucher(
-                expense.getJournalnumber(),
-                urlYear,
-                expense.getVouchernumber()
-            );
+            log.debugf("Verifying voucher existence for expense %s: journal=%d, storedYear=%s -> urlYear=%s, voucher=%d",
+                expense.getUuid(), expense.getJournalnumber(), storedYear, urlYear, expense.getVouchernumber());
 
-            int status = response != null ? response.getStatus() : 0;
-            if (response != null) {
-                try { response.close(); } catch (Exception ignore) {}
-            }
+            // Retry a few times in case of eventual consistency right after creation
+            int attempts = 3;
+            int lastStatus = 0;
+            for (int i = 0; i < attempts; i++) {
+                log.debugf("Attempt %d: GET /journals/%d/vouchers/%s-%d",
+                    i + 1, expense.getJournalnumber(), urlYear, expense.getVouchernumber());
 
-            if (status >= 200 && status < 300) {
-                return true;
-            }
-            if (status == 404) {
-                // Not found -> treat as non-existing voucher (orphan)
+                Response response = api.getVoucher(
+                        expense.getJournalnumber(),
+                        urlYear,
+                        expense.getVouchernumber()
+                );
+                int status = response != null ? response.getStatus() : 0;
+                lastStatus = status;
+
+                log.debugf("Voucher verification response: status=%d for voucher %d", status, expense.getVouchernumber());
+
+                if (response != null) {
+                    try { response.close(); } catch (Exception ignore) {}
+                }
+
+                if (status >= 200 && status < 300) {
+                    log.debugf("Voucher %d exists (status %d)", expense.getVouchernumber(), status);
+                    return true;
+                }
+                if (status == 404) {
+                    log.debugf("Voucher %d not found (404), retrying after delay...", expense.getVouchernumber());
+                    // Wait briefly and try again to allow e-conomic to persist the voucher
+                    try { Thread.sleep(1500L); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    continue;
+                }
+
+                // Unexpected status -> stop retrying
+                log.warnf("Voucher verification unexpected status for expense %s: journal=%d, year=%s, voucher=%d, status=%d",
+                        expense.getUuid(), expense.getJournalnumber(), urlYear, expense.getVouchernumber(), status);
                 return false;
             }
 
-            log.warnf("Voucher verification unexpected status for expense %s: journal=%d, year=%s, voucher=%d, status=%d",
-                    expense.getUuid(), expense.getJournalnumber(), urlYear, expense.getVouchernumber(), status);
+            // After retries, still not found -> treat as orphan
+            if (lastStatus == 404) return false;
             return false;
         } catch (RuntimeException e) {
             // If a provider still mapped a 404 to exception, treat as not found
