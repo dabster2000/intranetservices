@@ -124,6 +124,14 @@ public class ContractResource {
         return Contract.count("contractType", contractTypeCode);
     }
 
+    @GET
+    @Path("/by-type/{contractTypeCode}")
+    public List<Contract> findContractsByType(@PathParam("contractTypeCode") String contractTypeCode) {
+        log.debug("ContractResource.findContractsByType");
+        log.debug("contractTypeCode = " + contractTypeCode);
+        return Contract.find("contractType", contractTypeCode).list();
+    }
+
     @POST
     public void save(Contract contract) {
         contractService.save(contract);
@@ -271,5 +279,23 @@ public class ContractResource {
             return new HashMap<>();
         }
         return invoiceService.findInvoicesForContracts(contractUuids);
+    }
+
+    /**
+     * Get monthly revenue aggregated by contract type.
+     * Uses database-level aggregation for optimal performance.
+     * Only includes invoices with status='CREATED' and type='INVOICE'.
+     *
+     * @param contractType the contract type code to filter by
+     * @return list of DateValueDTO with date (first of month) and revenue value
+     */
+    @GET
+    @Path("/revenue/monthly")
+    public List<DateValueDTO> getMonthlyRevenueByContractType(@QueryParam("contractType") String contractType) {
+        log.debug("ContractResource.getMonthlyRevenueByContractType: " + contractType);
+        if (contractType == null || contractType.isEmpty()) {
+            return List.of();
+        }
+        return contractService.getMonthlyRevenueByContractType(contractType);
     }
 }

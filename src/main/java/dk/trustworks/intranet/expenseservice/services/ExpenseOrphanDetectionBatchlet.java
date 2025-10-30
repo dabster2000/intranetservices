@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
@@ -87,9 +88,11 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
                             expense.markAsOrphaned();
                             expense.setLastRetryAt(LocalDateTime.now());
 
-                            // Update database
-                            Expense.update("isOrphaned = ?1, lastRetryAt = ?2 WHERE uuid = ?3",
-                                true, LocalDateTime.now(), expense.getUuid());
+                            // Update database in its own transaction to avoid TransactionRequiredException
+                            QuarkusTransaction.requiringNew().run(() -> {
+                                Expense.update("isOrphaned = ?1, lastRetryAt = ?2 WHERE uuid = ?3",
+                                        true, LocalDateTime.now(), expense.getUuid());
+                            });
 
                             orphansFound.incrementAndGet();
                         }

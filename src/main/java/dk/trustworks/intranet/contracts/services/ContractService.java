@@ -6,6 +6,7 @@ import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
+import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
 import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -401,6 +402,46 @@ public class ContractService {
     @Transactional
     public void updateContractTypeItem(ContractTypeItem contractTypeItem) {
         ContractTypeItem.update("key = ?1, value = ?2 where id = ?3", contractTypeItem.getKey(), contractTypeItem.getValue(), contractTypeItem.getId());
+    }
+
+    /**
+     * Calculates monthly revenue for contracts using a specific contract type.
+     * Uses SQL aggregation for optimal performance - calculates revenue from invoice items
+     * in the database rather than loading full objects into memory.
+     *
+     * Only includes invoices with status='CREATED' and type='INVOICE'.
+     * Revenue calculation: SUM(hours * rate * (1 - discount/100))
+     *
+     * @param contractType the contract type code to filter by
+     * @return list of DateValueDTO with date (first of month) and revenue value
+     */
+    public List<DateValueDTO> getMonthlyRevenueByContractType(String contractType) {
+        log.debugf("ContractService.getMonthlyRevenueByContractType: %s", contractType);
+
+        String sql = "SELECT i.year, i.month, " +
+                     "       SUM(ii.hours * ii.rate * (1 - i.discount/100)) AS totalRevenue " +
+                     "FROM invoices i " +
+                     "INNER JOIN invoiceitems ii ON i.uuid = ii.invoiceuuid " +
+                     "WHERE i.status = 'CREATED' " +
+                     "  AND i.type = 'INVOICE' " +
+                     "  AND i.contract_type = :contractType " +
+                     "GROUP BY i.year, i.month " +
+                     "ORDER BY i.year, i.month";
+
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("contractType", contractType)
+                .getResultList()).stream()
+                .map(tuple -> {
+                    int year = ((Number) tuple.get(0)).intValue();
+                    int rawMonth = ((Number) tuple.get(1)).intValue();
+                    int monthOneBased = (rawMonth >= 1 && rawMonth <= 12) ? rawMonth : rawMonth + 1; // handle 0-based months
+                    Double revenue = tuple.get(2) != null ? ((Number) tuple.get(2)).doubleValue() : 0.0;
+
+                    // Create date as first day of the month (month must be 1-12)
+                    LocalDate date = LocalDate.of(year, monthOneBased, 1);
+                    return new DateValueDTO(date, revenue);
+                })
+                .toList();
     }
 
 }

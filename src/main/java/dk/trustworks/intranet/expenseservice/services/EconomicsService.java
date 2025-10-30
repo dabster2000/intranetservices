@@ -390,8 +390,14 @@ public class  EconomicsService {
 
         try {
             EconomicsAPI api = getApiForExpense(expense);
-            // Use the same year format as in file upload
-            String urlYear = expense.getAccountingyear();
+
+            // Normalize accounting year for URL consistency
+            // Examples:
+            //  - "2025_6_2026a" -> "2025_6_2026"
+            //  - "2025/2026a"   -> "2025_6_2026"
+            String raw = expense.getAccountingyear();
+            String clean = raw != null ? raw.replaceAll("[a-z]$", "") : null;
+            String urlYear = clean != null && clean.contains("/") ? clean.replace("/", "_6_") : clean;
 
             Response response = api.getVoucher(
                 expense.getJournalnumber(),
@@ -399,22 +405,30 @@ public class  EconomicsService {
                 expense.getVouchernumber()
             );
 
-            boolean exists = response != null && response.getStatus() >= 200 && response.getStatus() < 300;
-
-            if (!exists) {
-                log.warnf("Voucher verification failed for expense %s: journal=%d, year=%s, voucher=%d, status=%s",
-                    expense.getUuid(),
-                    expense.getJournalnumber(),
-                    urlYear,
-                    expense.getVouchernumber(),
-                    response != null ? String.valueOf(response.getStatus()) : "null");
-            }
-
+            int status = response != null ? response.getStatus() : 0;
             if (response != null) {
-                response.close();
+                try { response.close(); } catch (Exception ignore) {}
             }
 
-            return exists;
+            if (status >= 200 && status < 300) {
+                return true;
+            }
+            if (status == 404) {
+                // Not found -> treat as non-existing voucher (orphan)
+                return false;
+            }
+
+            log.warnf("Voucher verification unexpected status for expense %s: journal=%d, year=%s, voucher=%d, status=%d",
+                    expense.getUuid(), expense.getJournalnumber(), urlYear, expense.getVouchernumber(), status);
+            return false;
+        } catch (RuntimeException e) {
+            // If a provider still mapped a 404 to exception, treat as not found
+            String msg = e.getMessage();
+            if (msg != null && (msg.contains("httpStatusCode\":404") || msg.contains("HTTP 404"))) {
+                return false;
+            }
+            log.error("Error verifying voucher existence for expense " + expense.getUuid(), e);
+            return false;
         } catch (Exception e) {
             log.error("Error verifying voucher existence for expense " + expense.getUuid(), e);
             return false;
