@@ -110,7 +110,7 @@ public class WorkService {
                     Map<String, Object> map = new HashMap<>();
                     map.put("uuid", row[0]);
                     map.put("useruuid", row[1]);
-                    map.put("registered", ((java.sql.Date)row[2]).toLocalDate());
+                    map.put("registered", (LocalDate) row[2]);
                     map.put("workduration", row[3]);
                     map.put("taskuuid", row[4]);
                     map.put("billable", row[5]);

@@ -248,8 +248,8 @@ public class ContractValidationService {
             // Existing contract info
             overlap.setExistingConsultantUuid((String) row[0]);
             overlap.setExistingContractUuid((String) row[1]);
-            overlap.setExistingActiveFrom(((java.sql.Date) row[4]).toLocalDate());
-            overlap.setExistingActiveTo(((java.sql.Date) row[5]).toLocalDate());
+            overlap.setExistingActiveFrom((LocalDate) row[4]);
+            overlap.setExistingActiveTo((LocalDate) row[5]);
             overlap.setExistingRate(((Number) row[6]).doubleValue());
             overlap.setExistingContractName((String) row[10]);
 
@@ -307,8 +307,8 @@ public class ContractValidationService {
 
             overlap.setExistingConsultantUuid((String) row[0]);
             overlap.setExistingContractUuid((String) row[1]);
-            overlap.setExistingActiveFrom(((java.sql.Date) row[4]).toLocalDate());
-            overlap.setExistingActiveTo(((java.sql.Date) row[5]).toLocalDate());
+            overlap.setExistingActiveFrom((LocalDate) row[4]);
+            overlap.setExistingActiveTo((LocalDate) row[5]);
             overlap.setExistingRate(((Number) row[6]).doubleValue());
             overlap.setExistingContractName((String) row[10]);
 

@@ -174,8 +174,8 @@ public class WorkCacheRefreshJob {
 
         CacheStatistics stats = new CacheStatistics();
         stats.totalEntries = ((Number) result[0]).longValue();
-        stats.oldestEntry = result[1] != null ? ((java.sql.Date) result[1]).toLocalDate() : null;
-        stats.newestEntry = result[2] != null ? ((java.sql.Date) result[2]).toLocalDate() : null;
+        stats.oldestEntry = result[1] != null ? (LocalDate) result[1] : null;
+        stats.newestEntry = result[2] != null ? (LocalDate) result[2] : null;
         stats.lastUpdate = result[3] != null ? ((java.sql.Timestamp) result[3]).toLocalDateTime() : null;
 
         return stats;
