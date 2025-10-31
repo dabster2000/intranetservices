@@ -23,6 +23,11 @@ import java.time.LocalDate;
 @Table(name = "files")
 public class File extends PanacheEntityBase {
 
+    // File type constants
+    public static final String TYPE_PHOTO = "PHOTO";
+    public static final String TYPE_DOCUMENT = "DOCUMENT";
+    public static final String TYPE_VIDEO = "VIDEO";
+
     @Id
     @NonNull
     @EqualsAndHashCode.Include

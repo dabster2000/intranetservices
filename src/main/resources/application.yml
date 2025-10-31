@@ -115,6 +115,9 @@ event-topics:
       consultant-allocation:
         expire-after-write: 1H  # Consultant allocation cache (1 hour TTL)
         maximum-size: 1000  # Maximum number of allocation entries
+      videos:
+        expire-after-write: 3H  # Video metadata cache (3 hour TTL)
+        maximum-size: 500  # Maximum number of video entries
   s3:
     sync-client:
       type: APACHE
@@ -287,6 +290,7 @@ currencyapi:
 bucket:
   expenses: expensefiles
   files: trustworksfiles
+  videos: tw-video-bucket
 claid:
   ai:
     apikey: ${CLAID_APIKEY:xx}
