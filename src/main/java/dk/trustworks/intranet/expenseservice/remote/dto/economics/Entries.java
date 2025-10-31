@@ -19,6 +19,9 @@ public class Entries {
     @JsonProperty("manualCustomerInvoices")
     public List<ManualCustomerInvoice> manualCustomerInvoices = null;
 
+    @JsonProperty("supplierInvoices")
+    public List<SupplierInvoice> supplierInvoices = null;
+
 
     public Entries(){
     }
@@ -45,6 +48,16 @@ public class Entries {
     @JsonProperty("manualCustomerInvoices")
     public void setManualCustomerInvoices(List<ManualCustomerInvoice> manualCustomerInvoices) {
         this.manualCustomerInvoices = manualCustomerInvoices;
+    }
+
+    @JsonProperty("supplierInvoices")
+    public List<SupplierInvoice> getSupplierInvoices() {
+        return supplierInvoices;
+    }
+
+    @JsonProperty("supplierInvoices")
+    public void setSupplierInvoices(List<SupplierInvoice> supplierInvoices) {
+        this.supplierInvoices = supplierInvoices;
     }
 
 

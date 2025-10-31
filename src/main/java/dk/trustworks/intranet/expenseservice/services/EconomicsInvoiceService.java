@@ -124,16 +124,26 @@ public class EconomicsInvoiceService {
 
         String date = DateUtils.stringIt(invoice.getInvoicedate());
 
-        log.info("Creating manual customer invoice for number " + invoice.getInvoicenumber());
-        ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal(), contraAccount, date);
-        log.debug("ManualCustomerInvoice text=" + manualCustomerInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
-        List<ManualCustomerInvoice> manualCustomerInvoices = new ArrayList<>();
-        manualCustomerInvoices.add(manualCustomerInvoice);
-
         Entries entries = new Entries();
         Voucher voucher = new Voucher(accountingYear, journal, entries);
 
-        entries.setManualCustomerInvoices(manualCustomerInvoices);
+        // Check if this is an internal journal (supplier invoice) or regular journal (customer invoice)
+        if (journal.getJournalNumber() == integrationKeyValue.internalJournalNumber()) {
+            log.info("Creating supplier invoice for number " + invoice.getInvoicenumber());
+            SupplierInvoice supplierInvoice = new SupplierInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal(), contraAccount, date);
+            log.debug("SupplierInvoice text=" + supplierInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
+            List<SupplierInvoice> supplierInvoices = new ArrayList<>();
+            supplierInvoices.add(supplierInvoice);
+            entries.setSupplierInvoices(supplierInvoices);
+        } else {
+            log.info("Creating manual customer invoice for number " + invoice.getInvoicenumber());
+            ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal(), contraAccount, date);
+            log.debug("ManualCustomerInvoice text=" + manualCustomerInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
+            List<ManualCustomerInvoice> manualCustomerInvoices = new ArrayList<>();
+            manualCustomerInvoices.add(manualCustomerInvoice);
+            entries.setManualCustomerInvoices(manualCustomerInvoices);
+        }
+
         voucher.setEntries(entries);
 
         return voucher;
