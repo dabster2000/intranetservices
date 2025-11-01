@@ -26,12 +26,12 @@ public class SupplierInvoice {
     @JsonProperty("date")
     public String date;
     @JsonProperty("supplierInvoiceNumber")
-    public int supplierInvoiceNumber;
+    public String supplierInvoiceNumber;
 
     public SupplierInvoice(){
 
     }
-    public SupplierInvoice(ExpenseAccount account, int supplierInvoiceNumber, String text, double amount,
+    public SupplierInvoice(ExpenseAccount account, String supplierInvoiceNumber, String text, double amount,
                                  ContraAccount contraAccount, String date) {
         this.account = account;
         this.supplierInvoiceNumber = supplierInvoiceNumber;
@@ -92,12 +92,12 @@ public class SupplierInvoice {
     }
 
     @JsonProperty("supplierInvoiceNumber")
-    public int getSupplierInvoiceNumber() {
+    public String getSupplierInvoiceNumber() {
         return supplierInvoiceNumber;
     }
 
     @JsonProperty("supplierInvoiceNumber")
-    public void setSupplierInvoiceNumber(int supplierInvoiceNumber) {
+    public void setSupplierInvoiceNumber(String supplierInvoiceNumber) {
         this.supplierInvoiceNumber = supplierInvoiceNumber;
     }
 

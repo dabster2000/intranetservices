@@ -130,14 +130,14 @@ public class EconomicsInvoiceService {
         // Check if this is an internal journal (supplier invoice) or regular journal (customer invoice)
         if (journal.getJournalNumber() == integrationKeyValue.internalJournalNumber()) {
             log.info("Creating supplier invoice for number " + invoice.getInvoicenumber());
-            SupplierInvoice supplierInvoice = new SupplierInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal(), contraAccount, date);
+            SupplierInvoice supplierInvoice = new SupplierInvoice(account, StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()), text, invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0, contraAccount, date);
             log.debug("SupplierInvoice text=" + supplierInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
             List<SupplierInvoice> supplierInvoices = new ArrayList<>();
             supplierInvoices.add(supplierInvoice);
             entries.setSupplierInvoices(supplierInvoices);
         } else {
             log.info("Creating manual customer invoice for number " + invoice.getInvoicenumber());
-            ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal(), contraAccount, date);
+            ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0, contraAccount, date);
             log.debug("ManualCustomerInvoice text=" + manualCustomerInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
             List<ManualCustomerInvoice> manualCustomerInvoices = new ArrayList<>();
             manualCustomerInvoices.add(manualCustomerInvoice);
