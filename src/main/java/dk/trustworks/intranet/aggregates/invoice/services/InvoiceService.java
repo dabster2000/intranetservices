@@ -101,6 +101,9 @@ public class InvoiceService {
     @Inject InvoiceBonusService bonusService;
 
     @Inject
+    InvoiceEconomicsUploadService uploadService;
+
+    @Inject
     JPAStreamer jpaStreamer;
     @Inject
     WorkService workService;
@@ -451,9 +454,10 @@ public class InvoiceService {
         log.debug("Saving invoice...");
         saveInvoice(draftInvoice);
         log.debug("Invoice saved: "+draftInvoice.getUuid());
-        log.debug("Uploading invoice to economics...");
-        uploadToEconomics(draftInvoice);
-        log.debug("Invoice uploaded to economics: "+draftInvoice.getUuid());
+        log.debug("Queueing invoice for economics upload...");
+        uploadService.queueUploads(draftInvoice);
+        uploadService.processUploads(draftInvoice.getUuid());
+        log.debug("Invoice upload processed: "+draftInvoice.getUuid());
         String contractuuid = draftInvoice.getContractuuid();
         String projectuuid = draftInvoice.getProjectuuid();
         workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth()+1, draftInvoice.getYear());
@@ -493,8 +497,9 @@ public class InvoiceService {
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         saveInvoice(draftInvoice);
         if(!"dev".equals(LaunchMode.current().getProfileKey())) {
-            uploadToEconomics(draftInvoice);
-            log.info("Uploaded invoice to economics ("+draftInvoice.invoicenumber+"): "+draftInvoice.getUuid());
+            uploadService.queueUploads(draftInvoice);
+            uploadService.processUploads(draftInvoice.getUuid());
+            log.info("Processed invoice upload ("+draftInvoice.invoicenumber+"): "+draftInvoice.getUuid());
         } else {
             log.warn("The invoice is not uploaded to e-conomics in Dev environment");
         }
@@ -767,6 +772,12 @@ public class InvoiceService {
                 invoiceReference.getBookingdate(), invoiceReference.getReferencenumber(), invoiceuuid);
     }
 
+    /**
+     * @deprecated Use InvoiceEconomicsUploadService.queueUploads() + processUploads() instead.
+     * This method is kept for backward compatibility only. All new code should use the async
+     * queue system which provides automatic retries, partial success handling, and audit trails.
+     */
+    @Deprecated
     @Transactional
     public void uploadToEconomics(Invoice invoice) {
         if (invoice.invoicenumber == 0) return;

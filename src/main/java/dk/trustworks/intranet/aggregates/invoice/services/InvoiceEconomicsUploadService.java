@@ -236,6 +236,17 @@ public class InvoiceEconomicsUploadService {
                 }
             }
         } catch (Exception e) {
+            // Check if voucher was created despite exception (e.g., attachment failure)
+            // This prevents duplicate vouchers on retry
+            if (invoice.getEconomicsVoucherNumber() > 0) {
+                log.warnf("Upload %s had exception but voucher %d was created - marking SUCCESS",
+                        upload.getUuid(), invoice.getEconomicsVoucherNumber());
+                upload.markSuccess(invoice.getEconomicsVoucherNumber());
+                upload.persist();
+                return true;
+            }
+
+            // Otherwise mark as failed for retry
             String error = e.getClass().getSimpleName() + ": " + e.getMessage();
             upload.markFailed(error);
             upload.persist();

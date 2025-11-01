@@ -179,7 +179,10 @@ public class EconomicsInvoiceService {
         // call e-conomics endpoint
         try {
             EconomicsAPI economicsAPI = getEconomicsAPI(targetKeys);
-            String idem = "invoice-" + invoice.getUuid() + "-" + targetCompany.getUuid();
+            // Use simple key for ISSUER (regular invoices), compound key for DEBTOR (internal)
+            String idem = invoice.getCompany().getUuid().equals(targetCompany.getUuid())
+                ? "invoice-" + invoice.getUuid()
+                : "invoice-" + invoice.getUuid() + "-" + targetCompany.getUuid();
             Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json);
 
             if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
