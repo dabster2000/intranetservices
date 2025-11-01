@@ -554,4 +554,72 @@ public class InvoiceResource {
                     .build();
         }
     }
+
+    /**
+     * Get e-conomics upload status for an invoice.
+     * Shows all upload tasks (ISSUER/DEBTOR) with their current status.
+     */
+    @GET
+    @Path("/{invoiceuuid}/economics-upload-status")
+    public Response getEconomicsUploadStatus(@PathParam("invoiceuuid") String invoiceuuid) {
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+
+        var uploads = uploadService.getUploadsForInvoice(invoiceuuid);
+
+        return Response.ok(java.util.Map.of(
+            "invoiceUuid", invoiceuuid,
+            "invoiceNumber", invoice.getInvoicenumber(),
+            "economicsStatus", invoice.getEconomicsStatus(),
+            "uploads", uploads.stream().map(u -> java.util.Map.of(
+                "uuid", u.getUuid(),
+                "uploadType", u.getUploadType(),
+                "companyUuid", u.getCompanyuuid(),
+                "status", u.getStatus(),
+                "attemptCount", u.getAttemptCount(),
+                "maxAttempts", u.getMaxAttempts(),
+                "lastAttemptAt", u.getLastAttemptAt() != null ? u.getLastAttemptAt().toString() : null,
+                "voucherNumber", u.getVoucherNumber(),
+                "lastError", u.getLastError() != null ? u.getLastError() : ""
+            )).toList()
+        )).build();
+    }
+
+    /**
+     * Manually trigger e-conomics upload retry for an invoice.
+     * Useful for urgent cases or after fixing e-conomics connectivity.
+     */
+    @POST
+    @Path("/{invoiceuuid}/retry-economics-upload")
+    @Transactional
+    public Response retryEconomicsUpload(@PathParam("invoiceuuid") String invoiceuuid) {
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+
+        log.infof("Manual retry triggered for invoice %s", invoiceuuid);
+
+        var result = uploadService.processUploads(invoiceuuid);
+
+        return Response.ok(java.util.Map.of(
+            "message", "Upload retry processed",
+            "successCount", result.successCount(),
+            "failedCount", result.failedCount(),
+            "totalCount", result.totalCount()
+        )).build();
+    }
+
+    /**
+     * Get overall e-conomics upload statistics.
+     * Useful for monitoring/dashboard.
+     */
+    @GET
+    @Path("/economics-upload-stats")
+    public Response getEconomicsUploadStats() {
+        var stats = uploadService.getUploadStats();
+        return Response.ok(stats).build();
+    }
 }

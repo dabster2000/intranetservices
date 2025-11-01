@@ -193,8 +193,8 @@ public class BatchScheduler {
         }
     }
 
-    // Economics upload retry - runs every 15 minutes to retry failed uploads
-    @Scheduled(cron = "0 */15 * * * ?")
+    // Economics upload processing - runs every 1 minute to process pending/failed uploads
+    @Scheduled(cron = "0 * * * * ?")
     void scheduleEconomicsUploadRetry() {
         try {
             if (jobOperator.getJobNames().contains("economics-upload-retry")) {

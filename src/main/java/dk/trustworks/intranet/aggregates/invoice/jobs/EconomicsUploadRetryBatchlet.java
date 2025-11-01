@@ -10,12 +10,12 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 /**
- * Batch job that retries failed e-conomics uploads with exponential backoff.
+ * Batch job that processes pending e-conomics uploads and retries failed ones.
  *
- * <p>This job runs every 15 minutes and:
+ * <p>This job runs every 1 minute and:
  * <ol>
- *   <li>Finds failed uploads that are eligible for retry (attempt_count < max_attempts)</li>
- *   <li>Applies exponential backoff based on attempt count:
+ *   <li>Processes brand-new PENDING uploads (never attempted) - initial upload attempt</li>
+ *   <li>Retries FAILED uploads with exponential backoff:
  *     <ul>
  *       <li>Attempt 1: 1 minute wait</li>
  *       <li>Attempt 2: 5 minutes wait</li>
@@ -24,12 +24,12 @@ import lombok.extern.jbosslog.JBossLog;
  *       <li>Attempt 5: 4 hours wait</li>
  *     </ul>
  *   </li>
- *   <li>Retries eligible uploads</li>
- *   <li>Updates status based on retry result</li>
+ *   <li>Updates status based on result</li>
  * </ol>
  *
  * <p>Uploads that exceed max_attempts remain in FAILED status and require manual intervention.
  *
+ * @see InvoiceEconomicsUploadService#processPendingUploads()
  * @see InvoiceEconomicsUploadService#retryFailedUploads()
  */
 @JBossLog
@@ -47,20 +47,24 @@ public class EconomicsUploadRetryBatchlet extends AbstractBatchlet {
         log.info("EconomicsUploadRetryBatchlet started");
 
         try {
-            // Get current stats before retry
+            // Get current stats before processing
             InvoiceEconomicsUploadService.UploadStats statsBefore = uploadService.getUploadStats();
-            log.infof("Upload stats before retry: pending=%d, success=%d, failed=%d, retryable=%d",
+            log.infof("Upload stats before processing: pending=%d, success=%d, failed=%d, retryable=%d",
                     statsBefore.pending(), statsBefore.success(), statsBefore.failed(), statsBefore.retryable());
 
-            // Perform retries
-            int processed = uploadService.retryFailedUploads();
+            // Process brand-new pending uploads (never attempted)
+            int pendingProcessed = uploadService.processPendingUploads();
 
-            // Get stats after retry
+            // Retry previously failed uploads with exponential backoff
+            int failedRetried = uploadService.retryFailedUploads();
+
+            // Get stats after processing
             InvoiceEconomicsUploadService.UploadStats statsAfter = uploadService.getUploadStats();
-            log.infof("Upload stats after retry: pending=%d, success=%d, failed=%d, retryable=%d",
+            log.infof("Upload stats after processing: pending=%d, success=%d, failed=%d, retryable=%d",
                     statsAfter.pending(), statsAfter.success(), statsAfter.failed(), statsAfter.retryable());
 
-            log.infof("EconomicsUploadRetryBatchlet completed: processed %d retries", processed);
+            log.infof("EconomicsUploadRetryBatchlet completed: %d pending processed, %d failed retried",
+                    pendingProcessed, failedRetried);
             return "COMPLETED";
         } catch (Exception e) {
             log.error("EconomicsUploadRetryBatchlet failed", e);

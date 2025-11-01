@@ -310,6 +310,43 @@ public class InvoiceEconomicsUploadService {
     }
 
     /**
+     * Processes pending uploads that have never been attempted.
+     * Called by batch job to handle initial upload attempts.
+     *
+     * @return Number of uploads processed
+     */
+    @Transactional
+    public int processPendingUploads() {
+        log.info("Processing pending uploads (initial attempts)");
+
+        // Find uploads that are PENDING and have never been attempted
+        List<InvoiceEconomicsUpload> pendingUploads = em.createQuery("""
+            SELECT u FROM InvoiceEconomicsUpload u
+            WHERE u.status = :pending
+              AND u.attemptCount = 0
+            ORDER BY u.createdAt ASC
+            """, InvoiceEconomicsUpload.class)
+                .setParameter("pending", UploadStatus.PENDING)
+                .setMaxResults(50) // Process in batches
+                .getResultList();
+
+        log.infof("Found %d pending uploads to process", pendingUploads.size());
+
+        int processed = 0;
+        for (InvoiceEconomicsUpload upload : pendingUploads) {
+            try {
+                processUploads(upload.getInvoiceuuid());
+                processed++;
+            } catch (Exception e) {
+                log.errorf(e, "Failed to process pending upload %s", upload.getUuid());
+            }
+        }
+
+        log.infof("Processed %d pending uploads", processed);
+        return processed;
+    }
+
+    /**
      * Retries failed uploads with exponential backoff.
      *
      * <p>Called by scheduled batch job to automatically retry failed uploads.

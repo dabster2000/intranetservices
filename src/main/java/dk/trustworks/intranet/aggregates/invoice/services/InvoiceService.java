@@ -454,10 +454,9 @@ public class InvoiceService {
         log.debug("Saving invoice...");
         saveInvoice(draftInvoice);
         log.debug("Invoice saved: "+draftInvoice.getUuid());
-        log.debug("Queueing invoice for economics upload...");
+        log.debug("Queued invoice for economics upload (will process in background)");
         uploadService.queueUploads(draftInvoice);
-        uploadService.processUploads(draftInvoice.getUuid());
-        log.debug("Invoice upload processed: "+draftInvoice.getUuid());
+        log.infof("Invoice %s queued for e-conomics upload with status PENDING", draftInvoice.getUuid());
         String contractuuid = draftInvoice.getContractuuid();
         String projectuuid = draftInvoice.getProjectuuid();
         workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth()+1, draftInvoice.getYear());
@@ -498,8 +497,7 @@ public class InvoiceService {
         saveInvoice(draftInvoice);
         if(!"dev".equals(LaunchMode.current().getProfileKey())) {
             uploadService.queueUploads(draftInvoice);
-            uploadService.processUploads(draftInvoice.getUuid());
-            log.info("Processed invoice upload ("+draftInvoice.invoicenumber+"): "+draftInvoice.getUuid());
+            log.infof("Queued phantom invoice %s for e-conomics upload (will process in background)", draftInvoice.getUuid());
         } else {
             log.warn("The invoice is not uploaded to e-conomics in Dev environment");
         }
