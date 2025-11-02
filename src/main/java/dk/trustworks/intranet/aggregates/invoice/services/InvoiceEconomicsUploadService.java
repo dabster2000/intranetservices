@@ -107,8 +107,8 @@ public class InvoiceEconomicsUploadService {
         }
 
         // Update invoice status to PENDING
+        // Note: No persist() needed - invoice is already managed by Hibernate
         invoice.setEconomicsStatus(EconomicsInvoiceStatus.PENDING);
-        invoice.persist();
 
         log.infof("Queued uploads for invoice %s", invoice.getUuid());
     }
