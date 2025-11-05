@@ -62,14 +62,17 @@ public class InvoiceDTO {
                         && ii.getOrigin() == InvoiceItemOrigin.CALCULATED);
 
         // When synthetic lines exist, we must not also use the API-level "Discounts" row
+        // Convert BigDecimal headerDiscountPct to percentage value (e.g., 5.00 → 5.0)
+        double headerDiscountPercentage = invoice.getHeaderDiscountPct().doubleValue();
         String discountsFieldMode = hasSyntheticLines ? "false"
-                : (invoice.getDiscount() > 0.0 ? "%" : "false");
-        double discountsValue = hasSyntheticLines ? 0.0 : invoice.getDiscount();
+                : (headerDiscountPercentage > 0.0 ? "%" : "false");
+        double discountsValue = hasSyntheticLines ? 0.0 : headerDiscountPercentage;
 
         this.header = invoice.getType().name();
         this.fields  = new InvoiceFieldsDTO(discountsFieldMode, false); // tax defaults to "%", shipping disabled
         this.currency = invoice.getCurrency();
-        this.tax = dk.trustworks.intranet.utils.NumberUtils.convertDoubleToInt(invoice.getVat());
+        // Convert BigDecimal vatPct to int (e.g., 25.00 → 25)
+        this.tax = dk.trustworks.intranet.utils.NumberUtils.convertDoubleToInt(invoice.getVatPct().doubleValue());
 
         this.from = invoice.getCompany().getName() + "\n" +
                 invoice.getCompany().getAddress() + "\n" +
@@ -78,14 +81,38 @@ public class InvoiceDTO {
                 "Phone: " + invoice.getCompany().getPhone() + "\n" +
                 "Email: " + invoice.getCompany().getEmail();
 
-        this.to = invoice.getClientname() + "\n" +
-                invoice.getClientaddresse() + "\n" +
-                invoice.getZipcity() + "\n" +
-                ((invoice.getCvr() != null && !invoice.getCvr().isEmpty()) ? "CVR: " + invoice.getCvr() + "\n" : "") +
-                ((invoice.getEan() != null && !invoice.getEan().isEmpty()) ? "EAN: " + invoice.getEan() + "\n" : "") +
-                ((invoice.getAttention() != null && !invoice.getAttention().isEmpty()) ? "ATT: " + invoice.getAttention() + "\n" : "");
+        // Build 'to' address from structured billTo fields
+        StringBuilder toBuilder = new StringBuilder();
+        if (invoice.getBillToName() != null && !invoice.getBillToName().isEmpty()) {
+            toBuilder.append(invoice.getBillToName()).append("\n");
+        }
+        if (invoice.getBillToLine1() != null && !invoice.getBillToLine1().isEmpty()) {
+            toBuilder.append(invoice.getBillToLine1()).append("\n");
+        }
+        if (invoice.getBillToLine2() != null && !invoice.getBillToLine2().isEmpty()) {
+            toBuilder.append(invoice.getBillToLine2()).append("\n");
+        }
+        // Combine zip and city for zipcity field
+        if (invoice.getBillToZip() != null || invoice.getBillToCity() != null) {
+            String zip = invoice.getBillToZip() != null ? invoice.getBillToZip() : "";
+            String city = invoice.getBillToCity() != null ? invoice.getBillToCity() : "";
+            String zipCity = (zip + " " + city).trim();
+            if (!zipCity.isEmpty()) {
+                toBuilder.append(zipCity).append("\n");
+            }
+        }
+        if (invoice.getBillToCvr() != null && !invoice.getBillToCvr().isEmpty()) {
+            toBuilder.append("CVR: ").append(invoice.getBillToCvr()).append("\n");
+        }
+        if (invoice.getBillToEan() != null && !invoice.getBillToEan().isEmpty()) {
+            toBuilder.append("EAN: ").append(invoice.getBillToEan()).append("\n");
+        }
+        if (invoice.getBillToAttn() != null && !invoice.getBillToAttn().isEmpty()) {
+            toBuilder.append("ATT: ").append(invoice.getBillToAttn()).append("\n");
+        }
+        this.to = toBuilder.toString();
 
-        this.number = dk.trustworks.intranet.aggregates.invoice.utils.StringUtils.convertInvoiceNumberToString(invoice.invoicenumber);
+        this.number = dk.trustworks.intranet.aggregates.invoice.utils.StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
         this.date   = invoice.getInvoicedate().format(java.time.format.DateTimeFormatter.ofPattern("dd. MMM yyyy"));
         this.due_date = (invoice.getDuedate() != null
                 ? invoice.getDuedate()
@@ -95,9 +122,9 @@ public class InvoiceDTO {
         // IMPORTANT: set API-level discounts according to the above switch
         this.discounts = discountsValue;
 
-        this.notes = ((invoice.getContractref() != null && !invoice.getContractref().isEmpty()) ? invoice.getContractref() + "\n" : "") +
-                ((invoice.getProjectref() != null  && !invoice.getProjectref().isEmpty())  ? invoice.getProjectref()  + "\n" : "") +
-                ((invoice.getSpecificdescription() != null && !invoice.getSpecificdescription().isEmpty()) ? invoice.getSpecificdescription() : "");
+        // Notes: invoice doesn't have contractref/projectref/specificdescription fields in unified model
+        // Leave notes empty for now - these may need to be derived from other sources
+        this.notes = "";
 
         // Line items (base + synthetic already in the entity)
         invoice.getInvoiceitems().stream()
