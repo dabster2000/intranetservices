@@ -41,16 +41,16 @@ public class PricingResource {
         var pr = pricingEngine.price(draft, cti);
 
         // Byg et svar-objekt som Invoice + transient totals + syntetiske linjer
-        draft.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
-        draft.sumAfterDiscounts  = pr.sumAfterDiscounts.doubleValue();
-        draft.vatAmount          = pr.vatAmount.doubleValue();
-        draft.grandTotal         = pr.grandTotal.doubleValue();
-        draft.calculationBreakdown = pr.breakdown;
+        draft.setSumBeforeDiscounts(pr.sumBeforeDiscounts.doubleValue());
+        draft.setSumAfterDiscounts(pr.sumAfterDiscounts.doubleValue());
+        draft.setVatAmount(pr.vatAmount.doubleValue());
+        draft.setGrandTotal(pr.grandTotal.doubleValue());
+        draft.setCalculationBreakdown(pr.breakdown);
 
         // Til UI preview: vis base + syntetiske (men persistér ikke)
         var combined = new ArrayList<>(draft.getInvoiceitems());
         combined.addAll(pr.syntheticItems);
-        draft.invoiceitems = combined;
+        draft.setInvoiceitems(combined);
 
         return Response.ok(draft).build();
     }

@@ -30,7 +30,11 @@ public class PricingEngine {
         Objects.requireNonNull(draft, "invoice draft");
         final LocalDate date = draft.getInvoicedate() != null ? draft.getInvoicedate() : LocalDate.now();
 
-        var ruleSet = catalog.select(draft.getContractType(), date);
+        // Extract contractType from contractTypeItems map if available, otherwise use default
+        String contractType = contractTypeItems != null && contractTypeItems.containsKey("contractType")
+            ? contractTypeItems.get("contractType")
+            : "FIXED_PRICE";
+        var ruleSet = catalog.select(contractType, date);
 
         BigDecimal sumBefore = draft.getInvoiceitems().stream()
                 .filter(ii -> ii.getOrigin() != InvoiceItemOrigin.CALCULATED)
@@ -65,7 +69,7 @@ public class PricingEngine {
                     delta = amt.setScale(SCALE, RM).negate();
                 }
                 case GENERAL_DISCOUNT_PERCENT -> {
-                    BigDecimal pct = BigDecimal.valueOf(Optional.ofNullable(draft.getDiscount()).orElse(0.0));
+                    BigDecimal pct = draft.getHeaderDiscountPct() != null ? draft.getHeaderDiscountPct() : BigDecimal.ZERO;
                     if (pct.compareTo(BigDecimal.ZERO) > 0) {
                         delta = base.multiply(pct).divide(BigDecimal.valueOf(100), SCALE + 2, RM).setScale(SCALE, RM).negate();
                         label = String.format("%s (%s%%)", step.label, pct.stripTrailingZeros().toPlainString());
@@ -90,7 +94,7 @@ public class PricingEngine {
                 line.base = base.setScale(SCALE, RM);
                 line.rateOrAmount = step.percent != null && step.type != RuleStepType.FIXED_DEDUCTION
                         ? step.percent : (step.type == RuleStepType.GENERAL_DISCOUNT_PERCENT
-                        ? BigDecimal.valueOf(Optional.ofNullable(draft.getDiscount()).orElse(0.0)) : step.amount);
+                        ? (draft.getHeaderDiscountPct() != null ? draft.getHeaderDiscountPct() : BigDecimal.ZERO) : step.amount);
                 line.delta = delta;
                 line.cumulative = current;
                 breakdown.add(line);
@@ -102,7 +106,7 @@ public class PricingEngine {
         }
 
         BigDecimal sumAfter = current.max(BigDecimal.ZERO); // aldrig negativ total
-        BigDecimal vatPct = BigDecimal.valueOf(Optional.ofNullable(draft.getVat()).orElse(0.0));
+        BigDecimal vatPct = draft.getVatPct() != null ? draft.getVatPct() : new BigDecimal("25.00");
         BigDecimal vatAmount = sumAfter.multiply(vatPct).divide(BigDecimal.valueOf(100), SCALE + 2, RM).setScale(SCALE, RM);
         BigDecimal grand = sumAfter.add(vatAmount).setScale(SCALE, RM);
 

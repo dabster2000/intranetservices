@@ -10,10 +10,15 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
+import software.amazon.awssdk.core.sync.ResponseTransformer;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.io.ByteArrayInputStream;
@@ -28,16 +33,22 @@ import java.util.List;
 @ApplicationScoped
 public class EconomicsInvoiceService {
 
+    @Inject
+    S3Client s3;
+
+    @ConfigProperty(name = "bucket.invoices")
+    String invoiceBucket;
+
     private IntegrationKey.IntegrationKeyValue integrationKeyValue;
 
     public Response sendVoucher(Invoice invoice) throws IOException {
         log.info("EconomicsInvoiceService.sendVoucher");
-        log.info("Sending invoice number " + invoice.invoicenumber);
+        log.info("Sending invoice number " + invoice.getInvoicenumber());
         integrationKeyValue = IntegrationKey.getIntegrationKeyValue(invoice.getCompany());
         log.info("integrationKeyValue = " + integrationKeyValue);
 
         Journal journal = new Journal(integrationKeyValue.invoiceJournalNumber());
-        String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
+        String text = invoice.getBillToName() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
         Voucher voucher = buildJSONRequest(invoice, journal, text, integrationKeyValue, invoice.getCompany());
         ObjectMapper o = new ObjectMapper();
@@ -87,7 +98,9 @@ public class EconomicsInvoiceService {
         // format file to outputstream as MultipartFormDataOutput
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
 
-        outputStream.write(invoice.getPdf());
+        // Fetch PDF from S3 using pdfUrl
+        byte[] pdfBytes = fetchPdfFromS3(invoice);
+        outputStream.write(pdfBytes);
 
         byte [] finalByteArray = outputStream.toByteArray();
 
@@ -127,17 +140,20 @@ public class EconomicsInvoiceService {
         Entries entries = new Entries();
         Voucher voucher = new Voucher(accountingYear, journal, entries);
 
+        // Calculate grand total for the invoice
+        double grandTotal = invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0;
+
         // Check if this is an internal journal (supplier invoice) or regular journal (customer invoice)
         if (journal.getJournalNumber() == integrationKeyValue.internalJournalNumber()) {
             log.info("Creating supplier invoice for number " + invoice.getInvoicenumber());
-            SupplierInvoice supplierInvoice = new SupplierInvoice(account, StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()), text, invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0, contraAccount, date);
+            SupplierInvoice supplierInvoice = new SupplierInvoice(account, StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()), text, grandTotal, contraAccount, date);
             log.debug("SupplierInvoice text=" + supplierInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
             List<SupplierInvoice> supplierInvoices = new ArrayList<>();
             supplierInvoices.add(supplierInvoice);
             entries.setSupplierInvoices(supplierInvoices);
         } else {
             log.info("Creating manual customer invoice for number " + invoice.getInvoicenumber());
-            ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0, contraAccount, date);
+            ManualCustomerInvoice manualCustomerInvoice = new ManualCustomerInvoice(account, invoice.getInvoicenumber(), text, grandTotal, contraAccount, date);
             log.debug("ManualCustomerInvoice text=" + manualCustomerInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
             List<ManualCustomerInvoice> manualCustomerInvoices = new ArrayList<>();
             manualCustomerInvoices.add(manualCustomerInvoice);
@@ -163,13 +179,13 @@ public class EconomicsInvoiceService {
     public Response sendVoucherToCompany(Invoice invoice, dk.trustworks.intranet.model.Company targetCompany, int journalNumber) throws IOException {
         log.info("EconomicsInvoiceService.sendVoucherToCompany");
         log.infof("Sending invoice %d to company %s using journal %d",
-                invoice.invoicenumber, targetCompany.getName(), journalNumber);
+                invoice.getInvoicenumber(), targetCompany.getName(), journalNumber);
 
         IntegrationKey.IntegrationKeyValue targetKeys = IntegrationKey.getIntegrationKeyValue(targetCompany);
         log.info("integrationKeyValue = " + targetKeys);
 
         Journal journal = new Journal(journalNumber);
-        String text = invoice.getClientname() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
+        String text = invoice.getBillToName() + ", Faktura " + StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber());
 
         Voucher voucher = buildJSONRequest(invoice, journal, text, targetKeys, targetCompany);
         ObjectMapper o = new ObjectMapper();
@@ -215,6 +231,56 @@ public class EconomicsInvoiceService {
                 .baseUri(URI.create(result.url()))
                 .register(new EconomicsDynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
                 .build(EconomicsAPI.class);
+    }
+
+    /**
+     * Fetches PDF bytes from S3 using the invoice's pdfUrl.
+     * Parses the S3 URL format: s3://bucket-name/key/path
+     *
+     * @param invoice Invoice containing pdfUrl
+     * @return PDF bytes
+     * @throws IOException if PDF cannot be fetched
+     */
+    private byte[] fetchPdfFromS3(Invoice invoice) throws IOException {
+        String pdfUrl = invoice.getPdfUrl();
+        if (pdfUrl == null || pdfUrl.isBlank()) {
+            throw new IOException("Invoice " + invoice.getUuid() + " has no PDF URL");
+        }
+
+        log.infof("Fetching PDF from S3: %s", pdfUrl);
+
+        // Parse S3 URL: s3://bucket-name/key/path
+        if (!pdfUrl.startsWith("s3://")) {
+            throw new IOException("Invalid S3 URL format: " + pdfUrl);
+        }
+
+        String pathAfterS3 = pdfUrl.substring(5); // Remove "s3://"
+        int firstSlash = pathAfterS3.indexOf('/');
+        if (firstSlash == -1) {
+            throw new IOException("Invalid S3 URL format (no key): " + pdfUrl);
+        }
+
+        String bucket = pathAfterS3.substring(0, firstSlash);
+        String key = pathAfterS3.substring(firstSlash + 1);
+
+        log.debugf("Parsed S3 URL: bucket=%s, key=%s", bucket, key);
+
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            s3.getObject(
+                GetObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(key)
+                    .build(),
+                ResponseTransformer.toOutputStream(baos)
+            );
+            byte[] pdfBytes = baos.toByteArray();
+            log.debugf("Fetched %d bytes from S3", pdfBytes.length);
+            return pdfBytes;
+        } catch (Exception e) {
+            log.errorf(e, "Failed to fetch PDF from S3: %s", pdfUrl);
+            throw new IOException("Failed to fetch PDF from S3: " + e.getMessage(), e);
+        }
     }
 
 }

@@ -187,6 +187,9 @@ public class Invoice extends PanacheEntityBase {
     @Transient
     private Double grandTotal;
 
+    @Transient
+    private java.util.List<dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine> calculationBreakdown;
+
     public Invoice() {
         this.uuid = UUID.randomUUID().toString();
         this.createdAt = LocalDateTime.now();
