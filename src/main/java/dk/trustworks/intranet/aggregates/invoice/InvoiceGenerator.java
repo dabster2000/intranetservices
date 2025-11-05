@@ -19,8 +19,10 @@ import dk.trustworks.intranet.dto.enums.ProjectSummaryType;
 import dk.trustworks.intranet.exceptions.InconsistantDataException;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.ProcessingState;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -32,11 +34,12 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus.CREATED;
+import static dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus.CREATED;
 
 @JBossLog
 @ApplicationScoped
@@ -98,25 +101,25 @@ public class InvoiceGenerator {
 
                 List<Invoice> relatedInvoices = new ArrayList<>();
                 for (Invoice invoice : invoices) {
-                    if(invoice.projectuuid.equals(work.getProjectuuid()) &&
+                    if(invoice.getProjectuuid().equals(work.getProjectuuid()) &&
                             invoice.getContractuuid().equals(work.getContractuuid()) && (
-                            invoice.status.equals(CREATED)
-                                    || invoice.status.equals(InvoiceStatus.SUBMITTED)
-                                    || invoice.status.equals(InvoiceStatus.CREDIT_NOTE))) {
+                            invoice.getLifecycleStatus().equals(CREATED)
+                                    || invoice.getLifecycleStatus().equals(LifecycleStatus.SUBMITTED)
+                                    || invoice.getType().equals(InvoiceType.CREDIT_NOTE))) {
                         numberOfInvoicesRelatedToProject++;
                         relatedInvoices.add(invoice);
-                        for (InvoiceItem invoiceitem : invoice.invoiceitems) {
-                            invoicedamount += (invoice.type.equals(InvoiceType.INVOICE)?
-                                    (invoiceitem.hours*invoiceitem.rate):
-                                    -(invoiceitem.hours*invoiceitem.rate));
+                        for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
+                            invoicedamount += (invoice.getType().equals(InvoiceType.INVOICE)?
+                                    (invoiceitem.getHours()*invoiceitem.getRate()):
+                                    -(invoiceitem.getHours()*invoiceitem.getRate()));
                         }
                     }
                 }
 
                 List<Invoice> relatedDraftInvoices = invoices.stream().filter(invoice ->
-                        invoice.projectuuid.equals(work.getProjectuuid()) &&
+                        invoice.getProjectuuid().equals(work.getProjectuuid()) &&
                                 invoice.getContractuuid().equals(work.getContractuuid()) && (
-                                invoice.status.equals(InvoiceStatus.DRAFT))
+                                invoice.getLifecycleStatus().equals(LifecycleStatus.DRAFT))
                 ).collect(Collectors.toList());
 
                 ProjectSummary projectSummary = new ProjectSummary(
@@ -210,26 +213,40 @@ public class InvoiceGenerator {
                     }
 
                     if (invoice == null) {
-                        invoice = new Invoice(InvoiceType.INVOICE,
-                                contract.getUuid(),
-                                project.getUuid(),
-                                project.getName(),
-                                0.0,
-                                month.getYear(),
-                                month.getMonthValue()-1,
-                                clientdata.getClientname(),
-                                clientdata.getStreetnamenumber(),
-                                clientdata.getOtheraddressinfo(),
-                                clientdata.getPostalcode() + " " + clientdata.getCity(),
-                                clientdata.getEan(),
-                                clientdata.getCvr(),
-                                clientdata.getContactperson(),
-                                LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
-                                LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()).plusMonths(1),
-                                project.getCustomerreference(),
-                                contract.getRefid(), contract.getContractType(), contract.getCompany(),
-                                "DKK",
-                                "");
+                        invoice = new Invoice();
+                        invoice.setType(InvoiceType.INVOICE);
+                        invoice.setLifecycleStatus(LifecycleStatus.DRAFT);
+                        invoice.setFinanceStatus(FinanceStatus.NONE);
+                        invoice.setProcessingState(ProcessingState.IDLE);
+                        invoice.setContractuuid(contract.getUuid());
+                        invoice.setProjectuuid(project.getUuid());
+                        invoice.setIssuerCompanyuuid(contract.getCompany().getUuid());
+
+                        // Bill-to address fields
+                        invoice.setBillToName(clientdata.getClientname());
+                        invoice.setBillToLine1(clientdata.getStreetnamenumber());
+                        invoice.setBillToLine2(clientdata.getOtheraddressinfo());
+                        invoice.setBillToAttn(clientdata.getContactperson());
+
+                        // Split zip and city
+                        String zipCity = clientdata.getPostalcode() + " " + clientdata.getCity();
+                        String[] zipCityParts = zipCity.split(" ", 2);
+                        invoice.setBillToZip(zipCityParts[0]);
+                        invoice.setBillToCity(zipCityParts.length > 1 ? zipCityParts[1] : "");
+
+                        invoice.setBillToEan(clientdata.getEan());
+                        invoice.setBillToCvr(clientdata.getCvr());
+
+                        // Dates
+                        LocalDate lastDayOfMonth = LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth());
+                        invoice.setInvoicedate(lastDayOfMonth);
+                        invoice.setDuedate(lastDayOfMonth.plusMonths(1));
+
+                        // Currency and money fields
+                        invoice.setCurrency("DKK");
+                        invoice.setVatPct(new BigDecimal("25.00"));
+                        invoice.setHeaderDiscountPct(BigDecimal.ZERO);
+
                         log.info("Created new invoice: " + invoice);
                     }
 
@@ -253,13 +270,14 @@ public class InvoiceGenerator {
                         InvoiceItem invoiceItem = new InvoiceItem(user.getUuid(), invoiceItemName,
                                 task.getName(),
                                 workFull.getRate(),
-                                0.0, nextPos, invoice.uuid);
-                        invoiceItem.uuid = UUID.randomUUID().toString();
+                                0.0, nextPos, invoice.getUuid());
+                        invoiceItem.setUuid(UUID.randomUUID().toString());
                         invoiceItemMap.put(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid(), invoiceItem);
-                        invoice.invoiceitems.add(invoiceItem);
+                        invoice.getInvoiceitems().add(invoiceItem);
                         log.info("Created new invoice item: " + invoiceItem);
                     }
-                    invoiceItemMap.get(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid()).hours += workFull.getWorkduration();
+                    InvoiceItem existingItem = invoiceItemMap.get(contract.getUuid() + project.getUuid() + workFull.getUseruuid() + workFull.getTaskuuid());
+                    existingItem.setHours(existingItem.getHours() + workFull.getWorkduration());
                 }
             }
         }
