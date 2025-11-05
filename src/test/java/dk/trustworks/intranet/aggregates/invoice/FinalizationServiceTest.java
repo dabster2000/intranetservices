@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.aggregates.invoice;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.ProcessingState;
-import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceV2Repository;
+import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceRepository;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.FinalizationService;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -32,7 +32,7 @@ public class FinalizationServiceTest {
     FinalizationService finalizationService;
 
     @Inject
-    InvoiceV2Repository repository;
+    InvoiceRepository repository;
 
     private final List<String> testInvoiceUuids = new ArrayList<>();
 
@@ -48,7 +48,7 @@ public class FinalizationServiceTest {
     public void tearDown() {
         // Clean up test invoices
         for (String uuid : testInvoiceUuids) {
-            InvoiceV2 invoice = repository.findById(uuid);
+            Invoice invoice = repository.findById(uuid);
             if (invoice != null) {
                 repository.delete(invoice);
             }
@@ -60,10 +60,10 @@ public class FinalizationServiceTest {
     @Transactional
     public void testFinalizeDraftInvoice() {
         // Create draft invoice
-        InvoiceV2 draft = createDraftInvoice(InvoiceType.INVOICE);
+        Invoice draft = createDraftInvoice(InvoiceType.INVOICE);
 
         // Finalize
-        InvoiceV2 finalized = finalizationService.finalize(draft.getUuid());
+        Invoice finalized = finalizationService.finalize(draft.getUuid());
 
         // Assertions
         assertNotNull(finalized);
@@ -88,10 +88,10 @@ public class FinalizationServiceTest {
     @Transactional
     public void testFinalizePhantomInvoice() {
         // Create draft PHANTOM invoice
-        InvoiceV2 draft = createDraftInvoice(InvoiceType.PHANTOM);
+        Invoice draft = createDraftInvoice(InvoiceType.PHANTOM);
 
         // Finalize
-        InvoiceV2 finalized = finalizationService.finalize(draft.getUuid());
+        Invoice finalized = finalizationService.finalize(draft.getUuid());
 
         // Assertions
         assertNotNull(finalized);
@@ -106,7 +106,7 @@ public class FinalizationServiceTest {
     @Transactional
     public void testCannotFinalizeNonDraftInvoice() {
         // Create invoice in CREATED state
-        InvoiceV2 created = createDraftInvoice(InvoiceType.INVOICE);
+        Invoice created = createDraftInvoice(InvoiceType.INVOICE);
         created.setLifecycleStatus(LifecycleStatus.CREATED);
         repository.persist(created);
 
@@ -138,7 +138,7 @@ public class FinalizationServiceTest {
     @Transactional
     public void testCanFinalize() {
         // Create draft invoice
-        InvoiceV2 draft = createDraftInvoice(InvoiceType.INVOICE);
+        Invoice draft = createDraftInvoice(InvoiceType.INVOICE);
 
         // Should be able to finalize draft
         assertTrue(finalizationService.canFinalize(draft.getUuid()));
@@ -156,19 +156,19 @@ public class FinalizationServiceTest {
         String companyUuid = UUID.randomUUID().toString();
 
         // Create two draft invoices for same company
-        InvoiceV2 draft1 = createDraftInvoice(InvoiceType.INVOICE);
+        Invoice draft1 = createDraftInvoice(InvoiceType.INVOICE);
         draft1.setIssuerCompanyuuid(companyUuid);
         draft1.setInvoiceSeries("TEST");
         repository.persist(draft1);
 
-        InvoiceV2 draft2 = createDraftInvoice(InvoiceType.INVOICE);
+        Invoice draft2 = createDraftInvoice(InvoiceType.INVOICE);
         draft2.setIssuerCompanyuuid(companyUuid);
         draft2.setInvoiceSeries("TEST");
         repository.persist(draft2);
 
         // Finalize both
-        InvoiceV2 finalized1 = finalizationService.finalize(draft1.getUuid());
-        InvoiceV2 finalized2 = finalizationService.finalize(draft2.getUuid());
+        Invoice finalized1 = finalizationService.finalize(draft1.getUuid());
+        Invoice finalized2 = finalizationService.finalize(draft2.getUuid());
 
         // Numbers should be sequential
         assertNotNull(finalized1.getInvoicenumber());
@@ -179,8 +179,8 @@ public class FinalizationServiceTest {
     /**
      * Helper method to create a draft invoice for testing.
      */
-    private InvoiceV2 createDraftInvoice(InvoiceType type) {
-        InvoiceV2 invoice = new InvoiceV2();
+    private Invoice createDraftInvoice(InvoiceType type) {
+        Invoice invoice = new Invoice();
         invoice.setUuid(UUID.randomUUID().toString());
         invoice.setLifecycleStatus(LifecycleStatus.DRAFT);
         invoice.setProcessingState(ProcessingState.IDLE);
