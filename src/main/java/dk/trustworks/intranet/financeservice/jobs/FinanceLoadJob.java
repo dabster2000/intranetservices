@@ -84,11 +84,12 @@ public class FinanceLoadJob {
         log.info("Found "+invoiceList.size()+" invoices");
 
         expenseList.forEach(expenseDetails -> {
-            invoiceList.stream().filter(invoice -> invoice.invoicenumber == expenseDetails.getInvoicenumber())
+            invoiceList.stream().filter(invoice -> invoice.getInvoicenumber() == expenseDetails.getInvoicenumber())
                     .findFirst()
                     .ifPresent(invoice -> {
                         invoice.setBookingdate(expenseDetails.getExpensedate());
-                        invoice.setReferencenumber(expenseDetails.getInvoicenumber());
+                        // Note: referencenumber field no longer exists in unified Invoice model
+                        // updateInvoiceReference only updates bookingdate
                         invoiceService.updateInvoiceReference(invoice.getUuid(), new InvoiceReference(expenseDetails.getExpensedate(), expenseDetails.getInvoicenumber()));
                     });
         });

@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.aggregates.invoice.jobs;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.ProcessingState;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceEconomicsUploadService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
@@ -61,8 +61,8 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
 
         // Find all QUEUED INTERNAL invoices that reference another invoice
         List<Invoice> queuedInvoices = Invoice.list(
-                "status = ?1 AND type = ?2 AND invoiceref > 0",
-                InvoiceStatus.QUEUED, InvoiceType.INTERNAL
+                "processingState = ?1 AND type = ?2 AND sourceInvoiceUuid IS NOT NULL",
+                ProcessingState.QUEUED, InvoiceType.INTERNAL
         );
 
         log.infof("Found %d queued internal invoices to process", queuedInvoices.size());
@@ -76,22 +76,22 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
                 // Find the referenced external invoice
                 Invoice referencedInvoice = Invoice.find(
                         "uuid = ?1",
-                        queuedInvoice.getInvoiceRefUuid()
+                        queuedInvoice.getSourceInvoiceUuid()
                 ).firstResult();
 
                 if (referencedInvoice == null) {
-                    log.warnf("Queued invoice %s references non-existent invoice number %d - skipping",
-                            queuedInvoice.getUuid(), queuedInvoice.getInvoiceref());
+                    log.warnf("Queued invoice %s references non-existent invoice uuid %s - skipping",
+                            queuedInvoice.getUuid(), queuedInvoice.getSourceInvoiceUuid());
                     skipped++;
                     continue;
                 }
 
                 // Check if referenced invoice is PAID in e-conomics
-                if (referencedInvoice.getEconomicsStatus() != EconomicsInvoiceStatus.PAID) {
-                    log.debugf("Queued invoice %s waiting for invoice %d to be PAID (current status: %s)",
+                if (referencedInvoice.getFinanceStatus() != FinanceStatus.PAID) {
+                    log.debugf("Queued invoice %s waiting for invoice %d to be PAID (current finance status: %s)",
                             queuedInvoice.getUuid(),
                             referencedInvoice.getInvoicenumber(),
-                            referencedInvoice.getEconomicsStatus());
+                            referencedInvoice.getFinanceStatus());
                     skipped++;
                     continue;
                 }
