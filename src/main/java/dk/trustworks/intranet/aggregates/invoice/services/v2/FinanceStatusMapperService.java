@@ -1,9 +1,9 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
-import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceV2Repository;
+import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceRepository;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -24,7 +24,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 public class FinanceStatusMapperService {
 
     @Inject
-    InvoiceV2Repository repository;
+    InvoiceRepository repository;
 
     @Inject
     InvoiceStateMachine stateMachine;
@@ -44,7 +44,7 @@ public class FinanceStatusMapperService {
      */
     @Transactional
     public void updateFinanceStatus(String invoiceUuid, String uploadStatus, String voucherNumber) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             Log.warnf("Invoice not found for finance status update: %s", invoiceUuid);
             return;
@@ -138,7 +138,7 @@ public class FinanceStatusMapperService {
      */
     @Transactional
     public void resetFinanceStatus(String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             Log.warnf("Invoice not found for finance status reset: %s", invoiceUuid);
             return;

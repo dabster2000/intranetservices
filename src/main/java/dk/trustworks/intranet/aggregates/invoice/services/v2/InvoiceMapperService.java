@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.*;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDtoV1;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDtoV2;
@@ -9,7 +9,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.math.BigDecimal;
 
 /**
- * Maps between InvoiceV2 entity and DTOs (V1 backward-compatible and V2 clean).
+ * Maps between Invoice entity and DTOs (V1 backward-compatible and V2 clean).
  *
  * @see <a href="/docs/new-features/invoice-status-design/backend-developer_guide.md">Backend Developer Guide - Section 4.4</a>
  */
@@ -17,9 +17,9 @@ import java.math.BigDecimal;
 public class InvoiceMapperService {
 
     /**
-     * Map InvoiceV2 entity to V2 DTO (clean API).
+     * Map Invoice entity to V2 DTO (clean API).
      */
-    public InvoiceDtoV2 toV2Dto(InvoiceV2 invoice) {
+    public InvoiceDtoV2 toV2Dto(Invoice invoice) {
         if (invoice == null) return null;
 
         InvoiceDtoV2 dto = new InvoiceDtoV2();
@@ -82,11 +82,11 @@ public class InvoiceMapperService {
     }
 
     /**
-     * Map InvoiceV2 entity to V1 DTO (backward compatible API).
+     * Map Invoice entity to V1 DTO (backward compatible API).
      *
      * Derives legacy 'status' field from type, lifecycleStatus, and processingState.
      */
-    public InvoiceDtoV1 toV1Dto(InvoiceV2 invoice) {
+    public InvoiceDtoV1 toV1Dto(Invoice invoice) {
         if (invoice == null) return null;
 
         InvoiceDtoV1 dto = new InvoiceDtoV1();

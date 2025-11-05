@@ -1,9 +1,9 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
-import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceV2Repository;
+import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceRepository;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -33,7 +33,7 @@ import java.util.List;
 public class InternalInvoicePromotionService {
 
     @Inject
-    InvoiceV2Repository repository;
+    InvoiceRepository repository;
 
     @Inject
     FinalizationService finalizationService;
@@ -51,7 +51,7 @@ public class InternalInvoicePromotionService {
     @Scheduled(every = "30s")
     @Transactional
     public void promoteQueuedInternals() {
-        List<InvoiceV2> queued = repository.findQueuedForPromotion();
+        List<Invoice> queued = repository.findQueuedForPromotion();
 
         if (queued.isEmpty()) {
             Log.debug("No queued internal invoices to promote");
@@ -62,7 +62,7 @@ public class InternalInvoicePromotionService {
 
         int promoted = 0, waiting = 0, errors = 0;
 
-        for (InvoiceV2 invoice : queued) {
+        for (Invoice invoice : queued) {
             try {
                 if (shouldPromote(invoice)) {
                     finalizationService.finalize(invoice.getUuid());
@@ -96,14 +96,14 @@ public class InternalInvoicePromotionService {
      * @param invoice The internal invoice to evaluate
      * @return true if source invoice is paid and internal should be promoted
      */
-    private boolean shouldPromote(InvoiceV2 invoice) {
+    private boolean shouldPromote(Invoice invoice) {
         String sourceInvoiceUuid = invoice.getSourceInvoiceUuid();
         if (sourceInvoiceUuid == null) {
             Log.warnf("Queued internal invoice %s has no source invoice UUID", invoice.getUuid());
             return false;
         }
 
-        InvoiceV2 sourceInvoice = repository.findById(sourceInvoiceUuid);
+        Invoice sourceInvoice = repository.findById(sourceInvoiceUuid);
         if (sourceInvoice == null) {
             Log.warnf(
                 "Source invoice not found for internal invoice %s: %s",
@@ -133,8 +133,8 @@ public class InternalInvoicePromotionService {
      * @return The finalized invoice
      */
     @Transactional
-    public InvoiceV2 manuallyPromote(String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+    public Invoice manuallyPromote(String invoiceUuid) {
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new IllegalArgumentException("Invoice not found: " + invoiceUuid);
         }
@@ -148,7 +148,7 @@ public class InternalInvoicePromotionService {
             );
         }
 
-        InvoiceV2 promoted = finalizationService.finalize(invoiceUuid);
+        Invoice promoted = finalizationService.finalize(invoiceUuid);
         Log.infof("Manually promoted internal invoice %s", invoiceUuid);
 
         return promoted;

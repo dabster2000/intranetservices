@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.repositories;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.ProcessingState;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.QueueReason;
@@ -10,18 +10,18 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 
 /**
- * Panache repository for InvoiceV2 entity.
+ * Panache repository for Invoice entity.
  * Provides custom query methods for invoice management operations.
  */
 @ApplicationScoped
-public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, String> {
+public class InvoiceRepository implements PanacheRepositoryBase<Invoice, String> {
 
     /**
      * Find all invoices queued for promotion (internal invoices waiting for source invoice to be paid).
      *
      * @return List of invoices in DRAFT state, QUEUED for processing, with AWAIT_SOURCE_PAID reason
      */
-    public List<InvoiceV2> findQueuedForPromotion() {
+    public List<Invoice> findQueuedForPromotion() {
         return find("lifecycleStatus = ?1 AND processingState = ?2 AND queueReason = ?3",
                     LifecycleStatus.DRAFT, ProcessingState.QUEUED, QueueReason.AWAIT_SOURCE_PAID)
                .list();
@@ -33,7 +33,7 @@ public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, Str
      *
      * @return List of invoices in CREATED state missing PDF artifacts
      */
-    public List<InvoiceV2> findPendingPdfGeneration() {
+    public List<Invoice> findPendingPdfGeneration() {
         return find("lifecycleStatus = ?1 AND (pdfUrl IS NULL OR pdfSha256 IS NULL)",
                     LifecycleStatus.CREATED)
                .list();
@@ -45,7 +45,7 @@ public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, Str
      * @param issuerCompanyUuid The company UUID
      * @return List of invoices for the company
      */
-    public List<InvoiceV2> findByIssuerCompany(String issuerCompanyUuid) {
+    public List<Invoice> findByIssuerCompany(String issuerCompanyUuid) {
         return find("issuerCompanyuuid", issuerCompanyUuid).list();
     }
 
@@ -55,7 +55,7 @@ public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, Str
      * @param customerCompanyUuid The customer company UUID
      * @return List of invoices for the customer
      */
-    public List<InvoiceV2> findByCustomerCompany(String customerCompanyUuid) {
+    public List<Invoice> findByCustomerCompany(String customerCompanyUuid) {
         return find("customerCompanyuuid", customerCompanyUuid).list();
     }
 
@@ -65,7 +65,7 @@ public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, Str
      * @param status The lifecycle status
      * @return List of invoices with the specified status
      */
-    public List<InvoiceV2> findByLifecycleStatus(LifecycleStatus status) {
+    public List<Invoice> findByLifecycleStatus(LifecycleStatus status) {
         return find("lifecycleStatus", status).list();
     }
 
@@ -75,7 +75,7 @@ public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, Str
      * @param state The processing state
      * @return List of invoices with the specified processing state
      */
-    public List<InvoiceV2> findByProcessingState(ProcessingState state) {
+    public List<Invoice> findByProcessingState(ProcessingState state) {
         return find("processingState", state).list();
     }
 
@@ -85,7 +85,7 @@ public class InvoiceV2Repository implements PanacheRepositoryBase<InvoiceV2, Str
      * @param sourceInvoiceUuid The source invoice UUID
      * @return List of internal invoices derived from the source invoice
      */
-    public List<InvoiceV2> findBySourceInvoice(String sourceInvoiceUuid) {
+    public List<Invoice> findBySourceInvoice(String sourceInvoiceUuid) {
         return find("sourceInvoiceUuid", sourceInvoiceUuid).list();
     }
 }

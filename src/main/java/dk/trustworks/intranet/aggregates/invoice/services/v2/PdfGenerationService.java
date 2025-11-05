@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDtoV2;
-import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceV2Repository;
+import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceRepository;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.InvoiceMapperService;
 import io.quarkus.logging.Log;
 import io.quarkus.scheduler.Scheduled;
@@ -45,7 +45,7 @@ import java.util.List;
 public class PdfGenerationService {
 
     @Inject
-    InvoiceV2Repository repository;
+    InvoiceRepository repository;
 
     @Inject
     InvoiceMapperService mapper;
@@ -69,7 +69,7 @@ public class PdfGenerationService {
     //@Scheduled(cron = "0 */5 * * * ?")
     @Transactional
     public void generatePendingPdfs() {
-        List<InvoiceV2> pending = repository.findPendingPdfGeneration();
+        List<Invoice> pending = repository.findPendingPdfGeneration();
 
         if (pending.isEmpty()) {
             Log.debug("No invoices pending PDF generation");
@@ -80,7 +80,7 @@ public class PdfGenerationService {
 
         int success = 0, failed = 0;
 
-        for (InvoiceV2 invoice : pending) {
+        for (Invoice invoice : pending) {
             try {
                 generatePdf(invoice);
                 success++;
@@ -97,7 +97,7 @@ public class PdfGenerationService {
      * Generate PDF for a single invoice.
      *
      * Process:
-     * 1. Convert InvoiceV2 entity to InvoiceDtoV2 DTO
+     * 1. Convert Invoice entity to InvoiceDtoV2 DTO
      * 2. Call external invoice-generator API with invoice data
      * 3. Receive PDF byte array from generator
      * 4. Compute SHA-256 hash for integrity verification
@@ -112,7 +112,7 @@ public class PdfGenerationService {
      * @throws Exception if PDF generation or S3 upload fails
      */
     @Transactional
-    public void generatePdf(InvoiceV2 invoice) {
+    public void generatePdf(Invoice invoice) {
         String invoiceUuid = invoice.getUuid();
 
         try {
@@ -231,7 +231,7 @@ public class PdfGenerationService {
      * @param invoice The invoice to generate mock PDF for
      * @return Mock PDF bytes
      */
-    private byte[] generateMockPdf(InvoiceV2 invoice) {
+    private byte[] generateMockPdf(Invoice invoice) {
         // Simple mock PDF (valid PDF header for testing)
         String mockPdfContent = "%PDF-1.4\n" +
             "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
@@ -256,7 +256,7 @@ public class PdfGenerationService {
      */
     @Transactional
     public void regeneratePdf(String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             Log.warnf("Cannot regenerate PDF: invoice %s not found", invoiceUuid);
             return;

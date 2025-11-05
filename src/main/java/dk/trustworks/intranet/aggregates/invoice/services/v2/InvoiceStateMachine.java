@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -53,7 +53,7 @@ public class InvoiceStateMachine {
      * @throws WebApplicationException if transition is not allowed
      */
     @Transactional
-    public void transition(InvoiceV2 invoice, LifecycleStatus newStatus) {
+    public void transition(Invoice invoice, LifecycleStatus newStatus) {
         LifecycleStatus currentStatus = invoice.getLifecycleStatus();
 
         if (currentStatus == newStatus) {

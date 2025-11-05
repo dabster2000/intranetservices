@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.jobs;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
@@ -72,7 +72,7 @@ import java.util.List;
  *
  * @see dk.trustworks.intranet.aggregates.invoice.resources.InvoiceMigrationResource
  * @see dk.trustworks.intranet.aggregates.invoice.model.Invoice Legacy invoice table
- * @see dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2 New invoice table
+ * @see dk.trustworks.intranet.aggregates.invoice.model.Invoice New invoice table
  */
 @Named("invoicePdfMigrationBatchlet")
 @Dependent
@@ -174,7 +174,7 @@ public class InvoicePdfMigrationBatchlet extends AbstractBatchlet {
         long remainingCount = countInvoicesToMigrate();
 
         // Count how many have already been migrated
-        long migratedCount = InvoiceV2.count(
+        long migratedCount = Invoice.count(
             "pdfUrl LIKE ?1",
             "s3://" + invoiceBucket + "/" + S3_KEY_PREFIX + "%"
         );

@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.aggregates.invoice.resources;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDtoV2;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
-import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceV2Repository;
+import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceRepository;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.InvoiceMapperService;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.FinalizationService;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.InvoiceStateMachine;
@@ -46,7 +46,7 @@ import java.util.stream.Collectors;
 public class InvoiceResourceV2 {
 
     @Inject
-    InvoiceV2Repository repository;
+    InvoiceRepository repository;
 
     @Inject
     InvoiceMapperService mapper;
@@ -78,7 +78,7 @@ public class InvoiceResourceV2 {
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("1000") int size) {
 
-        PanacheQuery<InvoiceV2> query;
+        PanacheQuery<Invoice> query;
 
         // Build query based on date filters
         if (fromdate != null && todate != null) {
@@ -99,7 +99,7 @@ public class InvoiceResourceV2 {
         if (type != null) {
             String queryStr = query.toString();
             if (queryStr.contains("WHERE")) {
-                query = (PanacheQuery<InvoiceV2>) repository.find(queryStr + " AND type = :type",
+                query = (PanacheQuery<Invoice>) repository.find(queryStr + " AND type = :type",
                         Parameters.with("type", type));
             } else {
                 query = repository.find("type", type);
@@ -110,7 +110,7 @@ public class InvoiceResourceV2 {
         if (lifecycleStatus != null) {
             String queryStr = query.toString();
             if (queryStr.contains("WHERE")) {
-                query = (PanacheQuery<InvoiceV2>) repository.find(queryStr + " AND lifecycleStatus = :status",
+                query = (PanacheQuery<Invoice>) repository.find(queryStr + " AND lifecycleStatus = :status",
                         Parameters.with("status", lifecycleStatus));
             } else {
                 query = repository.find("lifecycleStatus", lifecycleStatus);
@@ -134,7 +134,7 @@ public class InvoiceResourceV2 {
     @Path("/{invoiceUuid}")
     @Operation(summary = "Get invoice", description = "Get a single invoice by UUID")
     public InvoiceDtoV2 findOne(@PathParam("invoiceUuid") String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new WebApplicationException(
                 "Invoice not found: " + invoiceUuid,
@@ -162,7 +162,7 @@ public class InvoiceResourceV2 {
     @Operation(summary = "Finalize invoice", description = "Finalize a draft invoice (DRAFT → CREATED)")
     public InvoiceDtoV2 finalize(@PathParam("invoiceUuid") String invoiceUuid) {
         Log.infof("Finalizing invoice %s", invoiceUuid);
-        InvoiceV2 finalized = finalizationService.finalize(invoiceUuid);
+        Invoice finalized = finalizationService.finalize(invoiceUuid);
         return mapper.toV2Dto(finalized);
     }
 
@@ -179,7 +179,7 @@ public class InvoiceResourceV2 {
     @Transactional
     @Operation(summary = "Submit invoice", description = "Mark invoice as submitted (CREATED → SUBMITTED)")
     public InvoiceDtoV2 submit(@PathParam("invoiceUuid") String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new WebApplicationException(
                 "Invoice not found: " + invoiceUuid,
@@ -207,7 +207,7 @@ public class InvoiceResourceV2 {
     @Transactional
     @Operation(summary = "Mark as paid", description = "Mark invoice as paid (SUBMITTED → PAID)")
     public InvoiceDtoV2 pay(@PathParam("invoiceUuid") String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new WebApplicationException(
                 "Invoice not found: " + invoiceUuid,
@@ -235,7 +235,7 @@ public class InvoiceResourceV2 {
     @Transactional
     @Operation(summary = "Cancel invoice", description = "Cancel an invoice (any state → CANCELLED)")
     public InvoiceDtoV2 cancel(@PathParam("invoiceUuid") String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new WebApplicationException(
                 "Invoice not found: " + invoiceUuid,
@@ -262,7 +262,7 @@ public class InvoiceResourceV2 {
     @Path("/{invoiceUuid}/state-machine")
     @Operation(summary = "Get state machine info", description = "Get valid next lifecycle states")
     public Response getStateMachineInfo(@PathParam("invoiceUuid") String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new WebApplicationException(
                 "Invoice not found: " + invoiceUuid,

@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.ProcessingState;
-import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceV2Repository;
+import dk.trustworks.intranet.aggregates.invoice.repositories.InvoiceRepository;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.InvoiceNumberingService;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -31,7 +31,7 @@ import java.time.LocalDate;
 public class FinalizationService {
 
     @Inject
-    InvoiceV2Repository repository;
+    InvoiceRepository repository;
 
     @Inject
     InvoiceNumberingService numberingService;
@@ -56,8 +56,8 @@ public class FinalizationService {
      * @throws WebApplicationException if invoice not found or not in DRAFT state
      */
     @Transactional
-    public InvoiceV2 finalize(String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+    public Invoice finalize(String invoiceUuid) {
+        Invoice invoice = repository.findById(invoiceUuid);
         if (invoice == null) {
             throw new WebApplicationException(
                 "Invoice not found: " + invoiceUuid,
@@ -127,7 +127,7 @@ public class FinalizationService {
      * @return true if invoice is in DRAFT state and can be finalized
      */
     public boolean canFinalize(String invoiceUuid) {
-        InvoiceV2 invoice = repository.findById(invoiceUuid);
+        Invoice invoice = repository.findById(invoiceUuid);
         return invoice != null && invoice.getLifecycleStatus() == LifecycleStatus.DRAFT;
     }
 }
