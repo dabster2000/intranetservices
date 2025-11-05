@@ -92,17 +92,15 @@ quarkus:
       employee-revenue:
         expire-after-write: 30M
   s3:
-    endpoint-override: http://localhost:9000   # MinIO API endpoint
-    path-style-access: true                    # MinIO expects /bucket/key
     sync-client:
       type: APACHE
     aws:
-      region: us-east-1                        # any region string is fine
+      region: eu-west-1
       credentials:
         type: STATIC
         static-provider:
-          access-key-id: minioadmin
-          secret-access-key: minioadmin
+          access-key-id: ${AWS_ACCESS_KEY_ID:xx}
+          secret-access-key: ${AWS_SECRET_ACCESS_KEY:xx}
 vertx:
   worker-pool-size: 10
 mp:

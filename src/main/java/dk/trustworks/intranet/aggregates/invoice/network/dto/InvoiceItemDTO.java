@@ -1,48 +1,35 @@
 package dk.trustworks.intranet.aggregates.invoice.network.dto;
 
-public class InvoiceItemDTO {
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-    String name;
-    double quantity;
-    double unit_cost;
-    String description;
+/**
+ * Invoice line item DTO (shared between V1 and V2 APIs).
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class InvoiceItemDto {
+    private String uuid;
+    private String consultantuuid;
+    private String itemname;
+    private String description;
+    private Double rate;
+    private Double hours;
+    private Integer position;
+    private String origin;
+    private String calculationRef;
+    private String ruleId;
+    private String label;
 
-    public InvoiceItemDTO(String name, double quantity, double unit_cost, String description) {
-        this.name = name;
-        this.quantity = quantity;
-        this.unit_cost = unit_cost;
-        this.description = description;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public double getQuantity() {
-        return quantity;
-    }
-
-    public void setQuantity(double quantity) {
-        this.quantity = quantity;
-    }
-
-    public double getUnit_cost() {
-        return unit_cost;
-    }
-
-    public void setUnit_cost(double unit_cost) {
-        this.unit_cost = unit_cost;
-    }
-
-    public String getDescription() {
-        return description;
-    }
-
-    public void setDescription(String description) {
+    /**
+     * Convenience constructor for basic invoice items.
+     */
+    public InvoiceItemDto(String itemname, double hours, double rate, String description) {
+        this.itemname = itemname;
+        this.hours = hours;
+        this.rate = rate;
         this.description = description;
     }
 }

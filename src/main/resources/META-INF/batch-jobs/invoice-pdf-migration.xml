@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="invoice-pdf-migration" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+    <step id="migrate-pdfs-to-s3">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+        <batchlet ref="invoicePdfMigrationBatchlet"/>
+    </step>
+</job>

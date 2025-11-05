@@ -28,7 +28,7 @@ public class InvoiceDTO {
     String date; //Invoice date	current date
     String payment_terms; //Payment terms summary (i.e. NET 30)	null
     String due_date; //Invoice due date	null
-    List<InvoiceItemDTO> items = new ArrayList<>();
+    List<InvoiceItemDto> items = new ArrayList<>();
     double discounts; //Subtotal discounts - numbers only	0
     int tax; //Tax - numbers only	0
     int shipping; //Shipping - numbers only	0
@@ -104,7 +104,7 @@ public class InvoiceDTO {
                 .sorted(java.util.Comparator.comparingInt(dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem::getPosition)
                         .thenComparing(ii -> ii.getItemname() == null ? "" : ii.getItemname(), String::compareToIgnoreCase)
                         .thenComparing(dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem::getUuid))
-                .forEach(ii -> items.add(new InvoiceItemDTO(
+                .forEach(ii -> items.add(new InvoiceItemDto(
                         ii.getItemname(), ii.getHours(), ii.getRate(), ii.getDescription())));
 
         this.terms = "Payment via bank transfer to the following account: Nykredit, reg.nr. "
@@ -202,11 +202,11 @@ public class InvoiceDTO {
         this.due_date = due_date;
     }
 
-    public List<InvoiceItemDTO> getItems() {
+    public List<InvoiceItemDto> getItems() {
         return items;
     }
 
-    public void setItems(List<InvoiceItemDTO> items) {
+    public void setItems(List<InvoiceItemDto> items) {
         this.items = items;
     }
 

@@ -287,6 +287,7 @@ currencyapi:
 bucket:
   expenses: expensefiles
   files: trustworksfiles
+  invoices: tw.invoice.pdf.files  # Separate bucket for invoice PDFs (sensitive financial documents)
 claid:
   ai:
     apikey: ${CLAID_APIKEY:xx}
@@ -318,3 +319,17 @@ dk:
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
 pricingEngine:
   enabled: true
+
+# Invoice V2 Feature Flags (Phase 2)
+invoice:
+  # Internal invoice promotion control
+  promotion:
+    use-finance-status: true  # Use finance_status to check if source invoice is paid (instead of lifecycle_status)
+  # Lifecycle automation
+  lifecycle:
+    auto-advance-on-erp-paid: true  # Auto-advance lifecycle_status to PAID when ERP reports invoice as paid
+  # PDF generation
+  pdf:
+    async: true  # Generate PDFs asynchronously (don't block finalization)
+    generation-job:
+      cron: "0 */5 * * * ?"  # Run PDF generation job every 5 minutes
