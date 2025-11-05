@@ -4,7 +4,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.ProcessingState;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
@@ -94,7 +96,7 @@ public class InvoiceResource {
         }
 
         // Backward compatibility: interpret as invoice lifecycle statuses (CREATED/PAID/...)
-        var invoiceStatuses = parseEnumList(statuses, InvoiceStatus::valueOf);
+        var invoiceStatuses = parseEnumList(statuses, LifecycleStatus::valueOf);
         return invoiceService.findBonusApprovalPage(invoiceStatuses, page, size);
     }
 
@@ -109,7 +111,7 @@ public class InvoiceResource {
         }
 
         // Backward compatibility: interpret as invoice lifecycle statuses
-        var invoiceStatuses = parseEnumList(statuses, InvoiceStatus::valueOf);
+        var invoiceStatuses = parseEnumList(statuses, LifecycleStatus::valueOf);
         return invoiceService.countBonusApproval(invoiceStatuses);
     }
 
@@ -140,7 +142,10 @@ public class InvoiceResource {
     @GET
     @Path("/months/{month}")
     public List<Invoice> findByYearAndMonth(@PathParam("month") String month) {
-        return invoiceService.findInvoicesForSingleMonth(dateIt(month), "CREATED", "CREDIT_NOTE", "DRAFT", "QUEUED");
+        // Only pass valid lifecycle statuses (DRAFT, CREATED)
+        // Note: CREDIT_NOTE is now a type (InvoiceType), not a lifecycle status
+        // Note: QUEUED is now a processing state (ProcessingState), not a lifecycle status
+        return invoiceService.findInvoicesForSingleMonth(dateIt(month), "CREATED", "DRAFT");
     }
 
     @GET
@@ -215,7 +220,7 @@ public class InvoiceResource {
         System.out.println("InvoiceResource.updateDraftInvoice");
         System.out.println("draftInvoice = " + draftInvoice);
         System.out.print("INCOMING: ");
-        draftInvoice.invoiceitems.forEach(System.out::println);
+        draftInvoice.getInvoiceitems().forEach(System.out::println);
         if (draftInvoice.getUuid() != null && !invoiceuuid.equals(draftInvoice.getUuid())) {
             throw new WebApplicationException("Path and body uuid mismatch", Response.Status.BAD_REQUEST);
         }
@@ -298,11 +303,16 @@ public class InvoiceResource {
         invoiceService.updateInvoiceStatus(invoiceuuid, SalesApprovalStatus.valueOf(bonusStatus));
     }
 
+    // DEPRECATED: Bonus fields removed from unified Invoice model during Phase 1 consolidation
+    // Bonus data now managed separately through bonus service
+    // Use PUT /{invoiceuuid}/bonusstatus/{bonusStatus} endpoint instead
+    /*
     @PUT
     @Path("/{invoiceuuid}/bonusstatus")
     public void updateInvoiceStatus(Invoice invoice) {
         invoiceService.updateInvoiceBonusStatus(invoice);
     }
+    */
 
     @GET
     @Path("/notes")
@@ -572,7 +582,7 @@ public class InvoiceResource {
         return Response.ok(java.util.Map.of(
             "invoiceUuid", invoiceuuid,
             "invoiceNumber", invoice.getInvoicenumber(),
-            "economicsStatus", invoice.getEconomicsStatus(),
+            "financeStatus", invoice.getFinanceStatus(),
             "uploads", uploads.stream().map(u -> java.util.Map.of(
                 "uuid", u.getUuid(),
                 "uploadType", u.getUploadType(),
