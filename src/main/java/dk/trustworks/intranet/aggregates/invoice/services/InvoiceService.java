@@ -111,6 +111,9 @@ public class InvoiceService {
     @Inject
     UserService userService;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.invoice.services.v2.InvoiceNumberingService numberingService;
+
     private static DateValueDTO apply(Invoice invoice, double exchangeRate) {
         double sum = switch (invoice.getType()) {
             case INVOICE -> invoice.getSumWithNoTaxInDKK(exchangeRate);
@@ -419,7 +422,12 @@ public class InvoiceService {
     @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
-        draftInvoice.setInvoicenumber(getMaxInvoiceNumber(draftInvoice) + 1);
+        // Assign invoice number atomically using V2 numbering service (race-free)
+        Integer nextNumber = numberingService.getNextInvoiceNumber(
+            draftInvoice.getIssuerCompanyuuid(),
+            draftInvoice.getInvoiceSeries()
+        );
+        draftInvoice.setInvoicenumber(nextNumber);
         if(draftInvoice.getType() == InvoiceType.CREDIT_NOTE) {
             Invoice parentInvoice = Invoice.findById(draftInvoice.getCreditnoteForUuid());
             updateInvoiceStatus(parentInvoice, LifecycleStatus.CREATED);
@@ -721,11 +729,6 @@ public class InvoiceService {
         InvoiceAPI invoiceAPI = getInvoiceAPI();
         // Note: PDF storage handled externally
         invoice.persist();
-    }
-
-    public Integer getMaxInvoiceNumber(Invoice invoice) {
-        Optional<Invoice> latestInvoice = Invoice.find("company = ?1", Sort.descending("invoicenumber"), invoice.getCompany()).firstResultOptional();
-        return latestInvoice.map(Invoice::getInvoicenumber).orElse(1);
     }
 
     @Transactional
@@ -1392,8 +1395,12 @@ public class InvoiceService {
             throw new RuntimeException("Invoice is not queued: " + queuedInvoice.getUuid());
         }
 
-        // Assign invoice number
-        queuedInvoice.setInvoicenumber(getMaxInvoiceNumber(queuedInvoice) + 1);
+        // Assign invoice number atomically using V2 numbering service (race-free)
+        Integer nextNumber = numberingService.getNextInvoiceNumber(
+            queuedInvoice.getIssuerCompanyuuid(),
+            queuedInvoice.getInvoiceSeries()
+        );
+        queuedInvoice.setInvoicenumber(nextNumber);
 
         // Apply pricing engine for INTERNAL invoices (but not bonus calculation)
         if (queuedInvoice.getType() == InvoiceType.INTERNAL) {
