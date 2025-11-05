@@ -1,16 +1,25 @@
 package dk.trustworks.intranet.aggregates.invoice.model.enums;
 
 /**
- * E-conomics lifecycle status for an invoice.
+ * DEPRECATED: Legacy e-conomics integration status enum.
+ *
+ * <p>This enum tracked e-conomics upload and payment status.
+ * It has been replaced by {@link FinanceStatus} which provides clearer semantics:</p>
+ *
  * <ul>
- *   <li>NA: not uploaded to e-conomics yet</li>
- *   <li>PENDING: upload queued but not yet attempted</li>
- *   <li>PARTIALLY_UPLOADED: at least one company received upload, but not all</li>
- *   <li>UPLOADED: voucher and attachment uploaded to all required e-conomics journals</li>
- *   <li>BOOKED: accountant has booked the voucher/invoice</li>
- *   <li>PAID: invoice has been fully paid (remainder == 0)</li>
+ *   <li>NA → {@link FinanceStatus#NONE} or {@link FinanceStatus#ERROR}</li>
+ *   <li>PENDING → (use ProcessingState for queue management instead)</li>
+ *   <li>PARTIALLY_UPLOADED → {@link FinanceStatus#ERROR} (with retry logic)</li>
+ *   <li>UPLOADED → {@link FinanceStatus#UPLOADED}</li>
+ *   <li>BOOKED → {@link FinanceStatus#BOOKED}</li>
+ *   <li>PAID → {@link FinanceStatus#PAID}</li>
  * </ul>
+ *
+ * <p>See the invoice status refactoring documentation for migration details.</p>
+ *
+ * @deprecated Use {@link FinanceStatus} instead
  */
+@Deprecated(since = "Phase 1 consolidation", forRemoval = true)
 public enum EconomicsInvoiceStatus {
     NA,
     PENDING,
