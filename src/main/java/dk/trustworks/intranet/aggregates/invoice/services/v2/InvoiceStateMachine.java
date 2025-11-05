@@ -1,9 +1,12 @@
 package dk.trustworks.intranet.aggregates.invoice.services.v2;
 
+import dk.trustworks.intranet.aggregates.invoice.events.InvoiceLifecycleChanged;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -19,9 +22,15 @@ import java.time.LocalDateTime;
  *    CANCELLED            CANCELLED
  *
  * Terminal states (no transitions out): PAID, CANCELLED
+ *
+ * Events: This state machine emits InvoiceLifecycleChanged events for all successful transitions.
+ * Observers can listen to these events to trigger side effects.
  */
 @ApplicationScoped
 public class InvoiceStateMachine {
+
+    @Inject
+    Event<InvoiceLifecycleChanged> lifecycleEvent;
 
     /**
      * Validate if a lifecycle status transition is allowed.
@@ -47,6 +56,7 @@ public class InvoiceStateMachine {
     /**
      * Transition an invoice to a new lifecycle status.
      * Validates the transition is allowed and updates the invoice entity.
+     * Emits an InvoiceLifecycleChanged event for all successful transitions.
      *
      * @param invoice The invoice to transition
      * @param newStatus The target lifecycle status
@@ -76,6 +86,19 @@ public class InvoiceStateMachine {
         invoice.setUpdatedAt(LocalDateTime.now());
 
         Log.infof("Invoice %s transitioned: %s → %s", invoice.getUuid(), oldStatus, newStatus);
+
+        // Emit lifecycle event for all successful transitions
+        InvoiceLifecycleChanged event = new InvoiceLifecycleChanged(
+            invoice.getUuid(),
+            oldStatus,
+            newStatus,
+            invoice.getType(),
+            LocalDateTime.now()
+        );
+        lifecycleEvent.fire(event);
+
+        Log.debugf("Emitted InvoiceLifecycleChanged event: %s → %s for invoice %s",
+                  oldStatus, newStatus, invoice.getUuid());
     }
 
     /**

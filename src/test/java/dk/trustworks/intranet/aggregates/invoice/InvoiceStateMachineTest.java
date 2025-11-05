@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice;
 
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceV2;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import dk.trustworks.intranet.aggregates.invoice.services.v2.InvoiceStateMachine;
 import io.quarkus.test.junit.QuarkusTest;
@@ -106,9 +107,11 @@ public class InvoiceStateMachineTest {
 
     @Test
     public void testTransitionWithInvalidState() {
-        InvoiceV2 invoice = new InvoiceV2();
+        Invoice invoice = new Invoice();
         invoice.setUuid(UUID.randomUUID().toString());
         invoice.setLifecycleStatus(LifecycleStatus.DRAFT);
+        invoice.setType(InvoiceType.INVOICE);
+        invoice.setIssuerCompanyuuid("test-company-uuid");
 
         // Try to skip from DRAFT to PAID (invalid)
         WebApplicationException exception = assertThrows(
@@ -123,9 +126,11 @@ public class InvoiceStateMachineTest {
 
     @Test
     public void testTransitionUpdatesInvoice() {
-        InvoiceV2 invoice = new InvoiceV2();
+        Invoice invoice = new Invoice();
         invoice.setUuid(UUID.randomUUID().toString());
         invoice.setLifecycleStatus(LifecycleStatus.DRAFT);
+        invoice.setType(InvoiceType.INVOICE);
+        invoice.setIssuerCompanyuuid("test-company-uuid");
 
         // Valid transition
         stateMachine.transition(invoice, LifecycleStatus.CREATED);
