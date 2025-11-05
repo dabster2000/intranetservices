@@ -1,209 +1,228 @@
 package dk.trustworks.intranet.aggregates.invoice.model;
 
-import com.fasterxml.jackson.annotation.JsonGetter;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
-import dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine;
-import dk.trustworks.intranet.contracts.model.ContractTypeItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.*;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
-import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
-import lombok.ToString;
-import org.eclipse.microprofile.config.ConfigProvider;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
 
 /**
- * Created by hans on 08/07/2017.
+ * Invoice - Unified invoice entity with separated status concerns.
+ *
+ * Key improvements:
+ * - Separate type, lifecycle_status, finance_status, processing_state
+ * - DECIMAL for money fields (no floating point errors)
+ * - Explicit bill-to snapshot fields
+ * - Cleaner audit trail with created_at/updated_at
+ *
+ * @see <a href="/docs/new-features/invoice-status-design/backend-developer_guide.md">Backend Developer Guide</a>
  */
-
 @Getter
 @Setter
 @Entity
-@Table(name = "invoices")
+@Table(name = "invoices_v2")
 public class Invoice extends PanacheEntityBase {
 
     @Id
-    @EqualsAndHashCode.Include
-    public String uuid;
-    public String contractuuid;
-    public String projectuuid;
-    public String projectname;
-    @Column(name = "bonus_consultant")
-    public String bonusConsultant;
-    @Column(name = "bonus_consultant_approved")
-    public SalesApprovalStatus bonusConsultantApprovedStatus;
-    @Column(name = "bonus_override_amount")
-    public double bonusOverrideAmount;
-    @Column(name = "bonus_override_note")
-    public String bonusOverrideNote;
-    public int year;
-    public int month;
-    public double discount;
-    public String clientname;
-    public String clientaddresse;
-    public String otheraddressinfo;
-    public String zipcity;
-    public String cvr;
-    public String ean;
-    public String attention;
-    @Column(name = "invoice_ref")
-    public int invoiceref;
-    @Column(name = "invoice_ref_uuid")
-    public String invoiceRefUuid;
-    public int invoicenumber;
-    public String currency;
-    public double vat;
-    @Column(name = "referencenumber")
-    public int referencenumber;
-    @JsonDeserialize(using = LocalDateDeserializer.class)
-    @JsonSerialize(using = LocalDateSerializer.class)
-    public LocalDate invoicedate;
-    @JsonDeserialize(using = LocalDateDeserializer.class)
-    @JsonSerialize(using = LocalDateSerializer.class)
-    public LocalDate duedate;
-    @JsonDeserialize(using = LocalDateDeserializer.class)
-    @JsonSerialize(using = LocalDateSerializer.class)
-    public LocalDate bookingdate; //date from e-conomics
-    public String projectref;
-    public String contractref;
-    /**
-     * Contract type code. Can be either a legacy enum value or a dynamically defined type.
-     */
-    @Column(name = "contract_type")
-    public String contractType;
-    public String specificdescription;
-    @OneToMany(fetch = FetchType.EAGER, cascade={CascadeType.ALL})
-    @JoinColumn(name="invoiceuuid")
-    public List<InvoiceItem> invoiceitems;
-    @Transient
-    @JsonIgnore
-    public boolean errors;
+    @Column(length = 36)
+    private String uuid;
+
+    // Company references
+    @Column(name = "issuer_companyuuid", length = 36, nullable = false)
+    private String issuerCompanyuuid;
+
+    @Column(name = "debtor_companyuuid", length = 36)
+    private String debtorCompanyuuid;
+
+    // Invoice identification
+    @Column(name = "invoicenumber")
+    private Integer invoicenumber;
+
+    @Column(name = "invoice_series", length = 20)
+    private String invoiceSeries;
+
+    // Separated status dimensions
     @Enumerated(EnumType.STRING)
-    public InvoiceType type;
+    @Column(nullable = false)
+    private InvoiceType type;
+
     @Enumerated(EnumType.STRING)
-    public InvoiceStatus status;
+    @Column(name = "lifecycle_status", nullable = false)
+    private LifecycleStatus lifecycleStatus = LifecycleStatus.DRAFT;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "finance_status", nullable = false)
+    private FinanceStatus financeStatus = FinanceStatus.NONE;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "processing_state", nullable = false)
+    private ProcessingState processingState = ProcessingState.IDLE;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "queue_reason")
+    private QueueReason queueReason;
+
+    // Dates
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @Column(name = "invoicedate")
+    private LocalDate invoicedate;
+
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @Column(name = "duedate")
+    private LocalDate duedate;
+
+    @JsonDeserialize(using = LocalDateDeserializer.class)
+    @JsonSerialize(using = LocalDateSerializer.class)
+    @Column(name = "bookingdate")
+    private LocalDate bookingdate;
+
+    // Financial configuration
+    @Column(length = 3, nullable = false)
+    private String currency = "DKK";
+
+    @Column(name = "vat_pct", precision = 5, scale = 2, nullable = false)
+    private BigDecimal vatPct = new BigDecimal("25.00");
+
+    @Column(name = "header_discount_pct", precision = 7, scale = 4, nullable = false)
+    private BigDecimal headerDiscountPct = BigDecimal.ZERO;
+
+    // References
+    @Column(name = "contractuuid", length = 36)
+    private String contractuuid;
+
+    @Column(name = "projectuuid", length = 36)
+    private String projectuuid;
+
+    @Column(name = "source_invoice_uuid", length = 36)
+    private String sourceInvoiceUuid;
+
+    @Column(name = "creditnote_for_uuid", length = 36)
+    private String creditnoteForUuid;
+
+    // Bill-to snapshot (captured at creation time)
+    @Column(name = "bill_to_name", length = 150)
+    private String billToName;
+
+    @Column(name = "bill_to_attn", length = 150)
+    private String billToAttn;
+
+    @Column(name = "bill_to_line1", length = 200)
+    private String billToLine1;
+
+    @Column(name = "bill_to_line2", length = 150)
+    private String billToLine2;
+
+    @Column(name = "bill_to_zip", length = 20)
+    private String billToZip;
+
+    @Column(name = "bill_to_city", length = 100)
+    private String billToCity;
+
+    @Column(name = "bill_to_country", length = 2)
+    private String billToCountry;
+
+    @Column(name = "bill_to_ean", length = 40)
+    private String billToEan;
+
+    @Column(name = "bill_to_cvr", length = 40)
+    private String billToCvr;
+
+    // ERP integration
+    @Column(name = "economics_voucher_number", nullable = false)
+    private Integer economicsVoucherNumber = 0;
+
+    @Column(name = "pdf_url", length = 500)
+    private String pdfUrl;
+
+    @Column(name = "pdf_sha256", length = 64)
+    private String pdfSha256;
+
+    // Computed columns (read-only, managed by database)
+    @Column(name = "invoice_year", insertable = false, updatable = false)
+    private Integer invoiceYear;
+
+    @Column(name = "invoice_month", insertable = false, updatable = false)
+    private Integer invoiceMonth;
+
+    // Audit timestamps
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    // Relationships
     @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "companyuuid")
-    public Company company;
-    @Lob
-    @ToString.Exclude
-    public byte[] pdf;
+    @JoinColumn(name = "issuer_companyuuid", insertable = false, updatable = false)
+    private Company company;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "economics_status")
-    public EconomicsInvoiceStatus economicsStatus;
+    @OneToMany(fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    @JoinColumn(name = "invoiceuuid", referencedColumnName = "uuid")
+    private List<InvoiceItem> invoiceitems = new LinkedList<>();
 
-    @Column(name = "economics_voucher_number")
-    public int economicsVoucherNumber;
-
-    @Column(name = "creditnote_for_uuid")
-    public String creditnoteForUuid;
-
-    @Column(name = "debtor_companyuuid")
-    public String debtorCompanyuuid;
+    // Transient calculated fields
+    @Transient
+    private Double sumBeforeDiscounts;
 
     @Transient
-    public Double sumBeforeDiscounts;
+    private Double sumAfterDiscounts;
 
     @Transient
-    public Double sumAfterDiscounts;
+    private Double vatAmount;
 
     @Transient
-    public Double vatAmount;
-
-    @Transient
-    public Double grandTotal;
-
-    @Transient
-    public List<CalculationBreakdownLine> calculationBreakdown;
+    private Double grandTotal;
 
     public Invoice() {
-        this.invoiceitems = new LinkedList<>();
-        this.errors = false;
-        this.economicsStatus = EconomicsInvoiceStatus.NA;
+        this.uuid = UUID.randomUUID().toString();
+        this.createdAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now();
     }
 
-    public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, String specificdescription) {
-        this();
-        this.type = type;
-        this.contractType = contractType;
-        this.currency = currency;
-        if(currency.equals("DKK")) this.vat = 25.0;
-        else this.vat = 0.0;
-        this.bookingdate = LocalDate.of(1900,1,1);
-        this.contractuuid = contractuuid;
-        this.discount = discount;
-        this.otheraddressinfo = otheraddressinfo;
-        this.ean = ean;
-        this.cvr = cvr;
-        this.contractref = contractref;
-        this.status = InvoiceStatus.DRAFT;
-        this.economicsStatus = EconomicsInvoiceStatus.NA;
-        this.projectuuid = projectuuid;
-        this.projectname = projectname;
-        this.year = year;
-        this.month = month;
-        this.clientname = clientname;
-        this.clientaddresse = clientaddresse;
-        this.zipcity = zipcity;
-        this.attention = attention;
-        this.invoicedate = invoicedate;
-        this.duedate = duedate;
-        this.projectref = projectref;
-        this.company = company;
-        this.specificdescription = specificdescription;
-        uuid = UUID.randomUUID().toString();
-    }
-
-    public Invoice(String uuid, int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, String specificdescription, String debtorCompanyuuid) {
-        this(type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription);
-        this.debtorCompanyuuid = debtorCompanyuuid;
-        this.invoiceref = invoiceref;
-        this.invoiceRefUuid = uuid;
-    }
-
-    public Invoice(String uuid, int invoiceref, InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, double vat, String specificdescription, String bonusConsultant, SalesApprovalStatus bonusConsultantApprovedStatus) {
-        this(uuid, invoiceref, type, contractuuid, projectuuid, projectname, discount, year, month, clientname, clientaddresse, otheraddressinfo, zipcity, ean, cvr, attention, invoicedate, duedate, projectref, contractref, contractType, company, currency, specificdescription, null);
-        this.vat = vat;
-        this.bonusConsultant = bonusConsultant;
-        this.bonusConsultantApprovedStatus = bonusConsultantApprovedStatus;
-    }
-
-    @JsonGetter
-    public ContractTypeItem getContractTypeItem() {
-        return ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().orElse(null);
-    }
-
+    /**
+     * Calculate sum of all line items before discounts.
+     */
     public double getSumNoTax() {
         return invoiceitems.stream()
-                .mapToDouble(ii -> ii.hours * ii.rate)
-                .sum(); // Rabatter er allerede udtrykt som syntetiske linjer
+                .mapToDouble(ii -> ii.getHours() * ii.getRate())
+                .sum();
     }
 
-
+    /**
+     * Calculate sum in DKK using exchange rate.
+     */
     public double getSumWithNoTaxInDKK(double exchangeRate) {
-        if(getCurrency().equals("DKK")) return getSumNoTax();
+        if ("DKK".equals(currency)) return getSumNoTax();
         return getSumNoTax() * exchangeRate;
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        this.updatedAt = LocalDateTime.now();
     }
 
     @Override
     public String toString() {
         return "Invoice{" +
                 "uuid='" + uuid + '\'' +
+                ", type=" + type +
+                ", lifecycleStatus=" + lifecycleStatus +
+                ", financeStatus=" + financeStatus +
+                ", invoicenumber=" + invoicenumber +
                 '}';
     }
 }
