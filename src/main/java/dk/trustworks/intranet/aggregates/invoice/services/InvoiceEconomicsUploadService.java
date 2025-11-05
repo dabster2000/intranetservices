@@ -6,7 +6,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceEconomicsUpload;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceEconomicsUpload.UploadStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceEconomicsUpload.UploadType;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.model.Company;
@@ -106,9 +106,9 @@ public class InvoiceEconomicsUploadService {
             }
         }
 
-        // Update invoice status to PENDING
+        // Update invoice finance status to NONE (awaiting upload)
         // Note: No persist() needed - invoice is already managed by Hibernate
-        invoice.setEconomicsStatus(EconomicsInvoiceStatus.PENDING);
+        invoice.setFinanceStatus(FinanceStatus.NONE);
 
         log.infof("Queued uploads for invoice %s", invoice.getUuid());
     }
@@ -204,14 +204,14 @@ public class InvoiceEconomicsUploadService {
             }
 
             // Log detailed upload context for debugging
-            log.infof("Uploading to e-conomics: invoice=%s (number: %d), company=%s (%s), type=%s, journal=%d, PDF size=%d bytes",
+            log.infof("Uploading to e-conomics: invoice=%s (number: %d), company=%s (%s), type=%s, journal=%d, PDF URL=%s",
                     invoice.getUuid(),
                     invoice.getInvoicenumber(),
                     targetCompany.getName(),
                     targetCompany.getUuid(),
                     upload.getUploadType(),
                     upload.getJournalNumber(),
-                    invoice.getPdf() != null ? invoice.getPdf().length : 0);
+                    invoice.getPdfUrl());
 
             // Perform upload to e-conomics
             try (Response response = economicsInvoiceService.sendVoucherToCompany(
@@ -282,30 +282,30 @@ public class InvoiceEconomicsUploadService {
     }
 
     /**
-     * Updates invoice economics_status based on upload results.
+     * Updates invoice finance_status based on upload results.
      */
     private void updateInvoiceEconomicsStatus(Invoice invoice, int successCount,
                                                int failedCount, int totalCount) {
-        EconomicsInvoiceStatus newStatus;
+        FinanceStatus newStatus;
 
         if (successCount == totalCount) {
             // All uploads succeeded
-            newStatus = EconomicsInvoiceStatus.UPLOADED;
+            newStatus = FinanceStatus.UPLOADED;
         } else if (successCount > 0) {
-            // Partial success
-            newStatus = EconomicsInvoiceStatus.PARTIALLY_UPLOADED;
+            // Partial success - mark as ERROR for manual review
+            newStatus = FinanceStatus.ERROR;
         } else if (failedCount == totalCount) {
-            // All failed, keep pending or set back to NA
-            newStatus = EconomicsInvoiceStatus.PENDING;
+            // All failed, set to ERROR
+            newStatus = FinanceStatus.ERROR;
         } else {
             // No uploads processed (shouldn't happen)
-            newStatus = invoice.getEconomicsStatus();
+            newStatus = invoice.getFinanceStatus();
         }
 
-        log.infof("Updating invoice %s economics_status: %s → %s",
-                invoice.getUuid(), invoice.getEconomicsStatus(), newStatus);
+        log.infof("Updating invoice %s finance_status: %s → %s",
+                invoice.getUuid(), invoice.getFinanceStatus(), newStatus);
 
-        invoice.setEconomicsStatus(newStatus);
+        invoice.setFinanceStatus(newStatus);
         invoice.persist();
     }
 

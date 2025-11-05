@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.resources.dto;
 
-import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import java.time.LocalDate;
@@ -20,8 +20,8 @@ public record SimpleInvoiceDTO(
         String creditorCompanyUuid,
         String creditorCompanyName,
         String clientName,
-        InvoiceStatus status,
-        EconomicsInvoiceStatus economicsStatus,
+        LifecycleStatus lifecycleStatus,
+        FinanceStatus financeStatus,
         double totalAmountNoTax,
         List<InvoiceLineDTO> lines
 ) {}

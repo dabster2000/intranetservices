@@ -54,9 +54,9 @@ public class InternalInvoiceControllingService {
                   AND invoicedate <  :todate
             ),
             status_pick AS (
-                SELECT 
+                SELECT
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     ii.consultantuuid,
                     us.companyuuid AS users_companyuuid,
                     ROW_NUMBER() OVER (
@@ -73,12 +73,12 @@ public class InternalInvoiceControllingService {
             )
             SELECT DISTINCT i.*
             FROM inv i
-            JOIN status_pick sp 
+            JOIN status_pick sp
               ON sp.invoiceuuid = i.uuid
             WHERE sp.rn = 1
-              AND i.companyuuid IS NOT NULL
+              AND i.issuer_companyuuid IS NOT NULL
               AND sp.users_companyuuid IS NOT NULL
-              AND sp.users_companyuuid <> i.companyuuid
+              AND sp.users_companyuuid <> i.issuer_companyuuid
             ORDER BY i.invoicedate DESC, i.invoicenumber DESC
         """;
 
@@ -125,13 +125,13 @@ public class InternalInvoiceControllingService {
             FROM invoices
             WHERE invoicedate >= :from
               AND invoicedate <  :to
-              AND status = 'CREATED'
+              AND lifecycle_status = 'CREATED'
               AND type   = 'INVOICE'
         ),
         status_pick AS (
-            SELECT 
+            SELECT
                 i.uuid AS invoiceuuid,
-                i.companyuuid AS invoice_companyuuid,
+                i.issuer_companyuuid AS invoice_companyuuid,
                 ii.consultantuuid,
                 us.companyuuid AS users_companyuuid,
                 ROW_NUMBER() OVER (
@@ -151,12 +151,12 @@ public class InternalInvoiceControllingService {
             FROM inv i
             JOIN status_pick sp ON sp.invoiceuuid = i.uuid
             WHERE sp.rn = 1
-              AND i.companyuuid IS NOT NULL
+              AND i.issuer_companyuuid IS NOT NULL
               AND sp.users_companyuuid IS NOT NULL
-              AND sp.users_companyuuid <> i.companyuuid
+              AND sp.users_companyuuid <> i.issuer_companyuuid
         ),
         internal_pick AS (
-            SELECT 
+            SELECT
                 ci.uuid AS client_uuid,
                 ii.uuid AS internal_uuid,
                 ROW_NUMBER() OVER (
@@ -165,9 +165,9 @@ public class InternalInvoiceControllingService {
                 ) AS r
             FROM cross_clients ci
             JOIN invoices ii
-              ON ii.invoice_ref_uuid = ci.uuid
+              ON ii.source_invoice_uuid = ci.uuid
              AND ii.type          = 'INTERNAL'
-             AND ii.status IN ('QUEUED','CREATED')
+             AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
         )
         SELECT 
             ci.uuid       AS client_uuid,
@@ -209,9 +209,9 @@ public class InternalInvoiceControllingService {
 
         String linesSql = """
         WITH base AS (
-            SELECT 
+            SELECT
                 i.uuid AS invoiceuuid,
-                i.companyuuid AS invoice_companyuuid,
+                i.issuer_companyuuid AS invoice_companyuuid,
                 i.invoicedate,
                 ii.uuid AS line_uuid,
                 ii.itemname,
@@ -301,8 +301,8 @@ public class InternalInvoiceControllingService {
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
                     resolvedClientName,
-                    client.getStatus(),
-                    client.getEconomicsStatus(),
+                    client.getLifecycleStatus(),
+                    client.getFinanceStatus(),
                     round2(clientTotal),
                     clientLines
             );
@@ -320,8 +320,8 @@ public class InternalInvoiceControllingService {
                             internal.getCompany() != null ? internal.getCompany().getUuid() : null,
                             internal.getCompany() != null ? internal.getCompany().getName() : null,
                             null,
-                            internal.getStatus(),
-                            internal.getEconomicsStatus(),
+                            internal.getLifecycleStatus(),
+                            internal.getFinanceStatus(),
                             round2(itotal),
                             ilines
                     );
@@ -367,13 +367,13 @@ public class InternalInvoiceControllingService {
                 FROM invoices
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
-                  AND status = 'CREATED'
+                  AND lifecycle_status = 'CREATED'
                   AND type   = 'INVOICE'
             ),
             status_pick AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     ii.consultantuuid,
                     us.companyuuid AS users_companyuuid,
                     ROW_NUMBER() OVER (
@@ -407,9 +407,9 @@ public class InternalInvoiceControllingService {
                     ) AS r
                 FROM cross_clients ci
                 JOIN invoices ii
-                  ON ii.invoice_ref_uuid = ci.uuid
+                  ON ii.source_invoice_uuid = ci.uuid
                  AND ii.type          = 'INTERNAL'
-                 AND ii.status IN ('QUEUED','CREATED')
+                 AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
             ),
             chosen AS (
                 SELECT client_uuid, internal_uuid
@@ -469,7 +469,7 @@ public class InternalInvoiceControllingService {
             WITH base AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     i.invoicedate,
                     ii.uuid AS line_uuid,
                     ii.itemname,
@@ -567,8 +567,8 @@ public class InternalInvoiceControllingService {
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
                     resolvedClientName,
-                    client.getStatus(),
-                    client.getEconomicsStatus(),
+                    client.getLifecycleStatus(),
+                    client.getFinanceStatus(),
                     round2(clientTotal),
                     clientLines
             );
@@ -580,8 +580,8 @@ public class InternalInvoiceControllingService {
                     internal.getCompany() != null ? internal.getCompany().getUuid() : null,
                     internal.getCompany() != null ? internal.getCompany().getName() : null,
                     null,
-                    internal.getStatus(),
-                    internal.getEconomicsStatus(),
+                    internal.getLifecycleStatus(),
+                    internal.getFinanceStatus(),
                     round2(internalTotal),
                     internalLines
             );
@@ -621,13 +621,13 @@ public class InternalInvoiceControllingService {
                 FROM invoices
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
-                  AND status = 'CREATED'
+                  AND lifecycle_status = 'CREATED'
                   AND type   = 'INVOICE'
             ),
             status_pick AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     ii.consultantuuid,
                     us.companyuuid AS users_companyuuid,
                     ROW_NUMBER() OVER (
@@ -654,9 +654,9 @@ public class InternalInvoiceControllingService {
             SELECT ci.uuid AS client_uuid
             FROM cross_clients ci
             LEFT JOIN invoices ii
-              ON ii.invoice_ref_uuid = ci.uuid
+              ON ii.source_invoice_uuid = ci.uuid
              AND ii.type = 'INTERNAL'
-             AND ii.status IN ('QUEUED','CREATED')
+             AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
             WHERE ii.uuid IS NULL
             ORDER BY ci.invoicedate DESC, ci.invoicenumber DESC
         """;
@@ -685,7 +685,7 @@ public class InternalInvoiceControllingService {
             WITH base AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     i.invoicedate,
                     ii.uuid AS line_uuid,
                     ii.itemname,
@@ -774,8 +774,8 @@ public class InternalInvoiceControllingService {
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
                     resolvedClientName,
-                    client.getStatus(),
-                    client.getEconomicsStatus(),
+                    client.getLifecycleStatus(),
+                    client.getFinanceStatus(),
                     round2(clientTotal),
                     clientLines
             );
@@ -811,13 +811,14 @@ public class InternalInvoiceControllingService {
                 FROM invoices
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
-                  AND status = 'CREDIT_NOTE'
+                  AND lifecycle_status = 'CREATED'
+                  AND type = 'CREDIT_NOTE'
                   AND type   = 'INVOICE'
             ),
             status_pick AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     ii.consultantuuid,
                     us.companyuuid AS users_companyuuid,
                     ROW_NUMBER() OVER (
@@ -851,9 +852,9 @@ public class InternalInvoiceControllingService {
                     ) AS r
                 FROM cross_clients ci
                 JOIN invoices ii
-                  ON ii.invoice_ref_uuid = ci.uuid
+                  ON ii.source_invoice_uuid = ci.uuid
                  AND ii.type          = 'INTERNAL'
-                 AND ii.status IN ('QUEUED','CREATED')
+                 AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
             )
             SELECT ip.client_uuid, ip.internal_uuid
             FROM internal_pick ip
@@ -889,7 +890,7 @@ public class InternalInvoiceControllingService {
             WITH base AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     i.invoicedate,
                     ii.uuid AS line_uuid,
                     ii.itemname,
@@ -985,8 +986,8 @@ public class InternalInvoiceControllingService {
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
                     resolvedClientName,
-                    client.getStatus(),
-                    client.getEconomicsStatus(),
+                    client.getLifecycleStatus(),
+                    client.getFinanceStatus(),
                     round2(clientTotal),
                     clientLines
             );
@@ -998,8 +999,8 @@ public class InternalInvoiceControllingService {
                     internal.getCompany() != null ? internal.getCompany().getUuid() : null,
                     internal.getCompany() != null ? internal.getCompany().getName() : null,
                     null,
-                    internal.getStatus(),
-                    internal.getEconomicsStatus(),
+                    internal.getLifecycleStatus(),
+                    internal.getFinanceStatus(),
                     round2(internalTotal),
                     internalLines
             );
@@ -1039,18 +1040,18 @@ public class InternalInvoiceControllingService {
                 WHERE i.invoicedate >= :from
                   AND i.invoicedate <  :to
                   AND i.type = 'INVOICE'
-                  AND i.status <> 'DRAFT'
+                  AND i.lifecycle_status <> 'DRAFT'
             ),
             internals AS (
                 SELECT ii.*
                 FROM invoices ii
                 WHERE ii.type = 'INTERNAL'
-                  AND ii.status IN ('QUEUED','CREATED')
+                  AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
             ),
             pairs AS (
                 SELECT c.uuid AS client_uuid, i.uuid AS internal_uuid
                 FROM clients c
-                JOIN internals i ON i.invoice_ref_uuid = c.uuid
+                JOIN internals i ON i.source_invoice_uuid = c.uuid
             ),
             dup_clients AS (
                 SELECT client_uuid, COUNT(*) AS internal_count
@@ -1099,7 +1100,7 @@ public class InternalInvoiceControllingService {
             WITH base AS (
                 SELECT 
                     i.uuid AS invoiceuuid,
-                    i.companyuuid AS invoice_companyuuid,
+                    i.issuer_companyuuid AS invoice_companyuuid,
                     i.invoicedate,
                     ii.uuid AS line_uuid,
                     ii.itemname,
@@ -1191,8 +1192,8 @@ public class InternalInvoiceControllingService {
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
                     resolvedClientName,
-                    client.getStatus(),
-                    client.getEconomicsStatus(),
+                    client.getLifecycleStatus(),
+                    client.getFinanceStatus(),
                     round2(clientTotal),
                     clientLines
             );
@@ -1210,8 +1211,8 @@ public class InternalInvoiceControllingService {
                         inv.getCompany() != null ? inv.getCompany().getUuid() : null,
                         inv.getCompany() != null ? inv.getCompany().getName() : null,
                         null,
-                        inv.getStatus(),
-                        inv.getEconomicsStatus(),
+                        inv.getLifecycleStatus(),
+                        inv.getFinanceStatus(),
                         round2(total),
                         lines
                 ));
@@ -1256,6 +1257,6 @@ public class InternalInvoiceControllingService {
         } catch (Exception ignore) {
             // Fall back to invoice snapshot if anything fails
         }
-        return invoice.getClientname();
+        return invoice.getBillToName();
     }
 }
