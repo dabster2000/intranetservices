@@ -29,6 +29,19 @@ import java.util.stream.Collectors;
 /**
  * REST API V2 for invoice management.
  *
+ * @deprecated This resource has been merged into InvoiceResource at /api/invoices.
+ *             Use /api/invoices with format=v2 parameter (or omit for default V2 format).
+ *             This endpoint is maintained for backward compatibility but will be removed in a future release.
+ *
+ * Migration path:
+ * - GET /api/v2/invoices → GET /api/invoices (default V2 format)
+ * - GET /api/v2/invoices/{uuid} → GET /api/invoices/{uuid} (default V2 format)
+ * - POST /api/v2/invoices/{uuid}/finalize → POST /api/invoices/{uuid}/finalize
+ * - POST /api/v2/invoices/{uuid}/submit → POST /api/invoices/{uuid}/submit
+ * - POST /api/v2/invoices/{uuid}/pay → POST /api/invoices/{uuid}/pay
+ * - POST /api/v2/invoices/{uuid}/cancel → POST /api/invoices/{uuid}/cancel
+ * - GET /api/v2/invoices/{uuid}/state-machine → GET /api/invoices/{uuid}/state-machine
+ *
  * This is the clean v2 API with separated status fields:
  * - lifecycle_status: DRAFT, CREATED, SUBMITTED, PAID, CANCELLED
  * - finance_status: NONE, UPLOADED, BOOKED, PAID, ERROR
@@ -36,11 +49,12 @@ import java.util.stream.Collectors;
  *
  * All endpoints accept and return InvoiceDtoV2 with clean field names.
  */
+@Deprecated(since = "Phase 3 Consolidation", forRemoval = true)
 @Path("/api/v2/invoices")
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@Tag(name = "invoice-v2", description = "Invoice API V2 - Clean separated status fields")
+@Tag(name = "invoice-v2-deprecated", description = "DEPRECATED: Use /api/invoices instead. Invoice API V2 - Clean separated status fields")
 @SecurityRequirement(name = "jwt")
 @RolesAllowed({"SYSTEM"})
 public class InvoiceResourceV2 {
