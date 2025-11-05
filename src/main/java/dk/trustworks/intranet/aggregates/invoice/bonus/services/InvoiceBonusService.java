@@ -20,6 +20,7 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.function.Function;
@@ -298,7 +299,8 @@ public class InvoiceBonusService {
             double ratio = baseTotal == 0.0 ? 0.0 : (baseSelected / baseTotal);
             amount = baseSelected + ratio * syntheticTotal;
         } else {
-            double discountPct = Optional.ofNullable(inv.getDiscount()).orElse(0.0);
+            double discountPct = Optional.ofNullable(inv.getHeaderDiscountPct())
+                    .map(BigDecimal::doubleValue).orElse(0.0);
             amount = baseSelected * (1.0 - discountPct/100.0);
         }
 
@@ -511,7 +513,8 @@ public class InvoiceBonusService {
                     .mapToDouble(ii -> ii.getHours() * ii.getRate())
                     .sum();
 
-            double discountPct = Optional.ofNullable(inv.getDiscount()).orElse(0.0);
+            double discountPct = Optional.ofNullable(inv.getHeaderDiscountPct())
+                    .map(BigDecimal::doubleValue).orElse(0.0);
 
             Map<String, dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem> itemById = items.stream()
                     .collect(Collectors.toMap(dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem::getUuid, Function.identity(), (a,b)->a));
