@@ -72,6 +72,17 @@ This is a Quarkus-based Java 21 modular monolith for Trustworks intranet service
 - Baseline version 1.0 with migrate-at-start enabled
 - Connection pooling (5-10 connections)
 
+### Invoice V2 Schema (invoices_v2)
+- **Generated Columns**: `invoice_year` and `invoice_month` are computed columns
+  - Defined as: `invoice_year SMALLINT AS (YEAR(invoicedate)) PERSISTENT`
+  - Defined as: `invoice_month TINYINT AS (MONTH(invoicedate)) PERSISTENT`
+  - **CRITICAL**: These use MySQL's `MONTH()` function which returns **1-12** (NOT 0-11)
+  - **When querying**: Use `date.getMonthValue()` directly, **DO NOT** subtract 1
+  - **Example**: October is month 10, not 9
+- Lifecycle states: DRAFT, CREATED, SUBMITTED, PAID, CANCELLED
+- Finance states: NONE, UPLOADED, BOOKED, PAID, ERROR
+- Processing states: IDLE, QUEUED
+
 ## Key Features
 
 - Multi-tenant company data aggregation

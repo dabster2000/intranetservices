@@ -255,7 +255,7 @@ public class InvoiceService {
         String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "DRAFT"};
         LocalDate date = month.withDayOfMonth(1);
         String sql = "SELECT * FROM invoices_v2 i WHERE " +
-                "i.invoice_year = " + date.getYear() + " AND i.invoice_month = " + (date.getMonthValue() - 1) + " " +
+                "i.invoice_year = " + date.getYear() + " AND i.invoice_month = " + date.getMonthValue() + " " +
                 " AND i.lifecycle_status IN ('"+String.join("','", finalType)+"');";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
@@ -330,8 +330,8 @@ public class InvoiceService {
         Invoice.update("billToAttn = ?1, bookingdate = ?2, billToLine1 = ?3, billToName = ?4, billToCvr = ?5, " +
                         "headerDiscountPct = ?6, billToEan = ?7, invoicedate = ?8, sourceInvoiceUuid = ?9, " +
                         "billToLine2 = ?10, projectuuid = ?11, lifecycleStatus = ?12, " +
-                        "invoicenumber = ?13, type = ?14, billToZip = ?15, billToCity = ?16, company = ?17, currency = ?18, " +
-                        "duedate = ?19, vatPct = ?20 WHERE uuid like ?21",
+                        "invoicenumber = ?13, type = ?14, billToZip = ?15, billToCity = ?16, currency = ?17, " +
+                        "duedate = ?18, vatPct = ?19, issuerCompanyuuid = ?20 WHERE uuid like ?21",
                 invoice.getBillToAttn(),
                 invoice.getBookingdate(),
                 invoice.getBillToLine1(),
@@ -348,10 +348,10 @@ public class InvoiceService {
                 invoice.getType(),
                 invoice.getBillToZip(),
                 invoice.getBillToCity(),
-                invoice.getCompany(),
                 invoice.getCurrency(),
                 invoice.getDuedate(),
                 invoice.getVatPct(),
+                invoice.getIssuerCompanyuuid(),
                 invoice.getUuid());
 
         recalculateInvoiceItems(invoice);
