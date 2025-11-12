@@ -1,10 +1,13 @@
 package dk.trustworks.intranet.aggregates.invoice.model;
 
+import com.fasterxml.jackson.annotation.JsonGetter;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.*;
+import dk.trustworks.intranet.model.BillToAddress;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -158,6 +161,13 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "invoice_month", insertable = false, updatable = false)
     private Integer invoiceMonth;
 
+    // Work period fields (manually set for grouping/filtering)
+    @Column(name = "work_year", nullable = false)
+    private Integer workYear;
+
+    @Column(name = "work_month", nullable = false)
+    private Integer workMonth;
+
     // Audit timestamps
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -189,6 +199,55 @@ public class Invoice extends PanacheEntityBase {
 
     @Transient
     private java.util.List<dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine> calculationBreakdown;
+
+    /**
+     * Constructs a BillToAddress object from the flat bill_to_* fields for JSON serialization.
+     * This enables the frontend to receive a structured BillToAddress object.
+     */
+    @JsonGetter("billTo")
+    public BillToAddress getBillTo() {
+        if (billToName == null) return null;
+        return BillToAddress.builder()
+            .name(billToName)
+            .attn(billToAttn)
+            .line1(billToLine1)
+            .line2(billToLine2)
+            .zip(billToZip)
+            .city(billToCity)
+            .country(billToCountry)
+            .ean(billToEan)
+            .cvr(billToCvr)
+            .build();
+    }
+
+    /**
+     * Accepts a BillToAddress object from JSON and populates the flat bill_to_* fields.
+     * This enables the frontend to send structured BillToAddress objects.
+     */
+    @JsonSetter("billTo")
+    public void setBillTo(BillToAddress billTo) {
+        if (billTo == null) {
+            this.billToName = null;
+            this.billToAttn = null;
+            this.billToLine1 = null;
+            this.billToLine2 = null;
+            this.billToZip = null;
+            this.billToCity = null;
+            this.billToCountry = null;
+            this.billToEan = null;
+            this.billToCvr = null;
+        } else {
+            this.billToName = billTo.getName();
+            this.billToAttn = billTo.getAttn();
+            this.billToLine1 = billTo.getLine1();
+            this.billToLine2 = billTo.getLine2();
+            this.billToZip = billTo.getZip();
+            this.billToCity = billTo.getCity();
+            this.billToCountry = billTo.getCountry();
+            this.billToEan = billTo.getEan();
+            this.billToCvr = billTo.getCvr();
+        }
+    }
 
     public Invoice() {
         this.uuid = UUID.randomUUID().toString();

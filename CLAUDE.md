@@ -79,6 +79,20 @@ This is a Quarkus-based Java 21 modular monolith for Trustworks intranet service
   - **CRITICAL**: These use MySQL's `MONTH()` function which returns **1-12** (NOT 0-11)
   - **When querying**: Use `date.getMonthValue()` directly, **DO NOT** subtract 1
   - **Example**: October is month 10, not 9
+- **Work Period Fields**: `work_year` and `work_month` track business categorization
+  - **Purpose**: Track which work period/batch an invoice belongs to (independent of invoice date)
+  - **Usage**: Grouping, filtering, and correlating invoices by work period
+  - **Format**: Both use **1-12** month format (1=January, 12=December)
+  - **Setting**: Must be set manually when creating invoices from user-selected date:
+    ```java
+    invoice.setWorkYear(month.getYear());
+    invoice.setWorkMonth(month.getMonthValue()); // 1-12
+    ```
+  - **Querying**: Use `workYear`/`workMonth` fields for filtering by work period:
+    ```java
+    Invoice.find("workYear = ?1 AND workMonth = ?2", year, month).list();
+    ```
+  - **Migration**: Old `year`/`month` fields (0-11 format) were migrated to `work_year`/`work_month` (1-12 format) via V110 migration
 - Lifecycle states: DRAFT, CREATED, SUBMITTED, PAID, CANCELLED
 - Finance states: NONE, UPLOADED, BOOKED, PAID, ERROR
 - Processing states: IDLE, QUEUED

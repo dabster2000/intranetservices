@@ -418,6 +418,8 @@ public class ContractService {
     public List<DateValueDTO> getMonthlyRevenueByContractType(String contractType) {
         log.debugf("ContractService.getMonthlyRevenueByContractType: %s", contractType);
 
+        // TODO: This query still uses the old 'invoices' table because 'contract_type' field was NOT migrated to invoices_v2
+        // BLOCKER: Need to add contract_type field to invoices_v2 schema first before migrating this query
         String sql = "SELECT i.year, i.month, " +
                      "       SUM(ii.hours * ii.rate * (1 - i.discount/100)) AS totalRevenue " +
                      "FROM invoices i " +

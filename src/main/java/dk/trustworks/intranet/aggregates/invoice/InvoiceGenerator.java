@@ -247,6 +247,10 @@ public class InvoiceGenerator {
                         invoice.setVatPct(new BigDecimal("25.00"));
                         invoice.setHeaderDiscountPct(BigDecimal.ZERO);
 
+                        // Set work period from selected month (for grouping/filtering)
+                        invoice.setWorkYear(month.getYear());
+                        invoice.setWorkMonth(month.getMonthValue());
+
                         log.info("Created new invoice: " + invoice);
                     }
 

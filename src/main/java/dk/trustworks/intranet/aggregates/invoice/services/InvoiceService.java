@@ -2,16 +2,12 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.speedment.jpastreamer.application.JPAStreamer;
 import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.FinanceStatus;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.LifecycleStatus;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.*;
 import dk.trustworks.intranet.aggregates.invoice.network.CurrencyAPI;
 import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
 import dk.trustworks.intranet.aggregates.invoice.network.InvoiceDynamicHeaderFilter;
@@ -21,16 +17,8 @@ import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.ClientWithInternalsDTO;
-import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
-import dk.trustworks.intranet.contracts.model.Contract;
-import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
@@ -58,7 +46,6 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
-import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -103,8 +90,6 @@ public class InvoiceService {
     @Inject
     InvoiceEconomicsUploadService uploadService;
 
-    @Inject
-    JPAStreamer jpaStreamer;
     @Inject
     WorkService workService;
 
@@ -255,7 +240,7 @@ public class InvoiceService {
         String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "DRAFT"};
         LocalDate date = month.withDayOfMonth(1);
         String sql = "SELECT * FROM invoices_v2 i WHERE " +
-                "i.invoice_year = " + date.getYear() + " AND i.invoice_month = " + date.getMonthValue() + " " +
+                "i.work_year = " + date.getYear() + " AND i.work_month = " + date.getMonthValue() + " " +
                 " AND i.lifecycle_status IN ('"+String.join("','", finalType)+"');";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
@@ -263,13 +248,13 @@ public class InvoiceService {
 
     @SuppressWarnings("unchecked")
     public List<Invoice> findProjectInvoices(String projectuuid) {
-        String sql = "SELECT * FROM invoices_v2 i WHERE i.projectuuid like '"+projectuuid+"' AND i.lifecycle_status IN ('CREATED') ORDER BY invoice_year DESC, invoice_month DESC;";
+        String sql = "SELECT * FROM invoices_v2 i WHERE i.projectuuid like '"+projectuuid+"' AND i.lifecycle_status IN ('CREATED') ORDER BY work_year DESC, work_month DESC;";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
     }
 
     public List<Invoice> findContractInvoices(String contractuuid) {
-        return Invoice.find("contractuuid = ?1 AND lifecycleStatus IN ('CREATED') ORDER BY invoiceYear DESC, invoiceMonth DESC", contractuuid).list();
+        return Invoice.find("contractuuid = ?1 AND lifecycleStatus IN ('CREATED') ORDER BY workYear DESC, workMonth DESC", contractuuid).list();
     }
 
     /**
@@ -294,7 +279,7 @@ public class InvoiceService {
         // Fetch all invoices for all contracts in a single query
         List<Invoice> invoices = Invoice.find(
                 "contractuuid IN ?1 AND lifecycleStatus IN ('CREATED')",
-                Sort.by("invoiceYear", Sort.Direction.Descending).and("invoiceMonth", Sort.Direction.Descending),
+                Sort.by("workYear", Sort.Direction.Descending).and("workMonth", Sort.Direction.Descending),
                 contractUuids
         ).list();
 
@@ -487,6 +472,15 @@ public class InvoiceService {
 
     @Transactional
     public Invoice createCreditNote(Invoice invoice) {
+        // Validate not a Phantom invoice
+        if (invoice.getType() == InvoiceType.PHANTOM) {
+            throw new WebApplicationException(
+                    Response.status(Response.Status.BAD_REQUEST)
+                            .entity("Cannot create credit note for Phantom invoices. Delete the phantom invoice instead.")
+                            .build()
+            );
+        }
+
         // Validate no existing credit note for this invoice
         if (Invoice.find("creditnoteForUuid = ?1", invoice.getUuid()).count() > 0) {
             throw new WebApplicationException(
@@ -518,6 +512,10 @@ public class InvoiceService {
         creditNote.setCurrency(invoice.getCurrency());
         creditNote.setVatPct(invoice.getVatPct());
         creditNote.setCreditnoteForUuid(invoice.getUuid());
+
+        // Copy work period from source invoice (for grouping credit notes with original invoices)
+        creditNote.setWorkYear(invoice.getWorkYear());
+        creditNote.setWorkMonth(invoice.getWorkMonth());
 
         for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
             InvoiceItem newItem = new InvoiceItem(
@@ -557,31 +555,46 @@ public class InvoiceService {
 
     @Transactional
     public void createInternalInvoiceDraft(String companyuuid, Invoice invoice) {
+        // CRITICAL FIX: Fetch the FULL source invoice from database instead of using the passed DTO
+        // The DTO from REST may not include CALCULATED discount items due to serialization/filtering
+        Invoice sourceInvoice = Invoice.findById(invoice.getUuid());
+        if (sourceInvoice == null) {
+            throw new WebApplicationException("Source invoice not found: " + invoice.getUuid(), Response.Status.NOT_FOUND);
+        }
+
+        // Load the source invoice's company (bill-to party for internal invoice)
+        Company sourceCompany = Company.findById(sourceInvoice.getIssuerCompanyuuid());
+
         Invoice internalInvoice = new Invoice();
         internalInvoice.setUuid(UUID.randomUUID().toString());
-        internalInvoice.setSourceInvoiceUuid(invoice.getUuid());
+        internalInvoice.setSourceInvoiceUuid(sourceInvoice.getUuid());
         internalInvoice.setType(InvoiceType.INTERNAL);
-        internalInvoice.setContractuuid(invoice.getContractuuid());
-        internalInvoice.setProjectuuid(invoice.getProjectuuid());
-        internalInvoice.setHeaderDiscountPct(invoice.getHeaderDiscountPct());
-        internalInvoice.setBillToName(invoice.getCompany().getName());
-        internalInvoice.setBillToLine1(invoice.getCompany().getAddress());
+        internalInvoice.setContractuuid(sourceInvoice.getContractuuid());
+        internalInvoice.setProjectuuid(sourceInvoice.getProjectuuid());
+        internalInvoice.setHeaderDiscountPct(sourceInvoice.getHeaderDiscountPct());
+        internalInvoice.setBillToName(sourceCompany.getName());
+        internalInvoice.setBillToLine1(sourceCompany.getAddress());
         internalInvoice.setBillToLine2("");
-        internalInvoice.setBillToZip(invoice.getCompany().getZipcode());
+        internalInvoice.setBillToZip(sourceCompany.getZipcode());
         internalInvoice.setBillToCity("");
         internalInvoice.setBillToEan("");
-        internalInvoice.setBillToCvr(invoice.getCompany().getCvr());
+        internalInvoice.setBillToCvr(sourceCompany.getCvr());
         internalInvoice.setBillToAttn("Tobias Kjølsen");
         internalInvoice.setInvoicedate(LocalDate.now());
         internalInvoice.setDuedate(LocalDate.now().plusMonths(1));
         internalInvoice.setCompany(Company.findById(companyuuid));
         internalInvoice.setIssuerCompanyuuid(companyuuid);
-        internalInvoice.setCurrency(invoice.getCurrency());
-        internalInvoice.setVatPct(invoice.getVatPct());
-        internalInvoice.setDebtorCompanyuuid(invoice.getIssuerCompanyuuid());
+        internalInvoice.setCurrency(sourceInvoice.getCurrency());
+        internalInvoice.setVatPct(sourceInvoice.getVatPct());
+        internalInvoice.setDebtorCompanyuuid(sourceInvoice.getIssuerCompanyuuid());
+
+        // Copy work period from source invoice (for grouping internal invoices with original)
+        internalInvoice.setWorkYear(sourceInvoice.getWorkYear());
+        internalInvoice.setWorkMonth(sourceInvoice.getWorkMonth());
 
         int position = 1;
-        for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
+        // Copy ALL items from database-loaded invoice (includes CALCULATED discount items)
+        for (InvoiceItem invoiceitem : sourceInvoice.getInvoiceitems()) {
             if(invoiceitem.getRate() == 0.0 || invoiceitem.getHours() == 0.0) continue;
             InvoiceItem newItem = new InvoiceItem(
                 invoiceitem.getConsultantuuid(),
@@ -689,6 +702,10 @@ public class InvoiceService {
         invoice.setCurrency("DKK");
         invoice.setVatPct(BigDecimal.ZERO);
 
+        // Set work period from the selected month (for grouping/filtering)
+        invoice.setWorkYear(month.getYear());
+        invoice.setWorkMonth(month.getMonthValue());
+
         invoice.persistAndFlush();
 
         // Add one invoice item per parent category (like before)
@@ -705,7 +722,7 @@ public class InvoiceService {
 
     public List<Invoice> findInternalServiceInvoicesByMonth(String month) {
         LocalDate localDate = DateUtils.dateIt(month).withDayOfMonth(1);
-        return Invoice.find("type = ?1 and invoiceYear = ?2 AND invoiceMonth = ?3 ", InvoiceType.INTERNAL_SERVICE, localDate.getYear(), localDate.getMonthValue()).list();
+        return Invoice.find("type = ?1 and workYear = ?2 AND workMonth = ?3 ", InvoiceType.INTERNAL_SERVICE, localDate.getYear(), localDate.getMonthValue()).list();
     }
 
     public List<Invoice> findInternalServicesPaged(int pageIdx, int pageSize, List<String> sortParams) {
@@ -741,7 +758,7 @@ public class InvoiceService {
     }
 
     private boolean isDraftOrPhantom(String invoiceuuid) {
-        return Invoice.find("uuid LIKE ?1 AND (lifecycleStatus LIKE ?2 OR type = ?3 OR invoicenumber = 0)", invoiceuuid, LifecycleStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
+        return Invoice.find("uuid = ?1 AND (lifecycleStatus = ?2 OR type = ?3 OR invoicenumber IS NULL OR invoicenumber = 0)", invoiceuuid, LifecycleStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
     }
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)
@@ -1358,20 +1375,36 @@ public class InvoiceService {
             );
         }
 
-        // Additional validation: ensure there is no existing non-DRAFT INTERNAL invoice for this client invoice
-        long existing = Invoice.count("type = ?1 and lifecycleStatus in ?2 and sourceInvoiceUuid = ?3",
+        // Guard: if referenced invoice has CALCULATED items, internal must also have them
+        long referencedCalcCount = referencedInvoice.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.CALCULATED)
+                .count();
+        long internalCalcCount = invoice.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.CALCULATED)
+                .count();
+        if (referencedCalcCount > 0 && internalCalcCount == 0) {
+            throw new WebApplicationException(
+                    "Invalid INTERNAL invoice: referenced client invoice contains CALCULATED discount lines, but the internal invoice does not. Please recreate the internal invoice or run the backfill repair.",
+                    Response.Status.BAD_REQUEST
+            );
+        }
+
+        // Additional validation: ensure there is no existing QUEUED or finalized INTERNAL invoice for this client invoice
+        long existing = Invoice.count("type = ?1 and (processingState = ?2 or lifecycleStatus in ?3) and sourceInvoiceUuid = ?4",
                 InvoiceType.INTERNAL,
-                java.util.List.of(LifecycleStatus.CREATED),
+                ProcessingState.QUEUED,
+                java.util.List.of(LifecycleStatus.CREATED, LifecycleStatus.SUBMITTED, LifecycleStatus.PAID),
                 invoice.getSourceInvoiceUuid());
         if (existing > 0) {
             throw new WebApplicationException(
-                    "An INTERNAL invoice already exists (QUEUED or CREATED) for client source_invoice_uuid=" + invoice.getSourceInvoiceUuid(),
+                    "An INTERNAL invoice already exists (QUEUED or finalized) for client source_invoice_uuid=" + invoice.getSourceInvoiceUuid(),
                     Response.Status.CONFLICT
             );
         }
 
         // All validations passed - queue the invoice
-        invoice.setLifecycleStatus(LifecycleStatus.CREATED);
+        invoice.setProcessingState(ProcessingState.QUEUED);
+        invoice.setQueueReason(QueueReason.AWAIT_SOURCE_PAID);
         invoice.persist();
 
         log.info("Invoice successfully queued: " + invoiceuuid +
@@ -1391,8 +1424,12 @@ public class InvoiceService {
     public Invoice createQueuedInvoiceWithoutUpload(Invoice queuedInvoice) throws JsonProcessingException {
         log.info("Creating queued invoice (without upload): " + queuedInvoice.getUuid());
 
-        if (queuedInvoice.getLifecycleStatus() != LifecycleStatus.CREATED) {
-            throw new RuntimeException("Invoice is not queued: " + queuedInvoice.getUuid());
+        if (queuedInvoice.getProcessingState() != ProcessingState.QUEUED) {
+            throw new RuntimeException(
+                "Invoice is not in QUEUED processing state: " + queuedInvoice.getUuid() +
+                " (current processingState: " + queuedInvoice.getProcessingState() +
+                ", lifecycleStatus: " + queuedInvoice.getLifecycleStatus() + ")"
+            );
         }
 
         // Assign invoice number atomically using V2 numbering service (race-free)
@@ -1409,6 +1446,10 @@ public class InvoiceService {
 
         // Create PDF - handled externally
         queuedInvoice.setLifecycleStatus(LifecycleStatus.CREATED);
+
+        // Clear queue state after successful promotion
+        queuedInvoice.setProcessingState(ProcessingState.IDLE);
+        queuedInvoice.setQueueReason(null);
 
         log.debug("Saving queued invoice...");
         saveInvoice(queuedInvoice);
@@ -1437,10 +1478,12 @@ public class InvoiceService {
             throw new WebApplicationException("Invoice not found: " + invoiceuuid, Response.Status.NOT_FOUND);
         }
 
-        // Validation 1: Must be QUEUED (CREATED in new model represents queued state)
-        if (queuedInvoice.getLifecycleStatus() != LifecycleStatus.CREATED) {
+        // Validation 1: Must be QUEUED (check processingState field)
+        if (queuedInvoice.getProcessingState() != ProcessingState.QUEUED) {
             throw new WebApplicationException(
-                "Invoice must be QUEUED status. Current status: " + queuedInvoice.getLifecycleStatus(),
+                "Invoice must be in QUEUED processing state. Current processingState: " +
+                queuedInvoice.getProcessingState() + ", lifecycleStatus: " +
+                queuedInvoice.getLifecycleStatus(),
                 Response.Status.BAD_REQUEST
             );
         }

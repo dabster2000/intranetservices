@@ -215,9 +215,11 @@ public class ClientHealthService {
      * @return OverdueInvoiceStats with count and total amount
      */
     private OverdueInvoiceStats calculateOverdueInvoices(String clientUuid, LocalDate overdueThreshold) {
+        // TODO: This query sums header_discount_pct which is a percentage (0-100), not invoice amounts
+        // This appears to be a bug - should probably sum invoice totals instead
         String sql = """
-            SELECT COUNT(*) AS invoice_count, COALESCE(SUM(i.discount), 0) AS total_amount
-            FROM invoices i
+            SELECT COUNT(*) AS invoice_count, COALESCE(SUM(i.header_discount_pct), 0) AS total_amount
+            FROM invoices_v2 i
             INNER JOIN contracts c ON i.contractuuid = c.uuid
             WHERE c.clientuuid = :clientUuid
             AND i.bookingdate IS NULL

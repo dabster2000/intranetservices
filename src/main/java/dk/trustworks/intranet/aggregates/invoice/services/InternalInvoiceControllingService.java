@@ -49,7 +49,7 @@ public class InternalInvoiceControllingService {
         String sql = """
             WITH inv AS (
                 SELECT *
-                FROM invoices
+                FROM invoices_v2
                 WHERE invoicedate >= :fromdate
                   AND invoicedate <  :todate
             ),
@@ -122,7 +122,7 @@ public class InternalInvoiceControllingService {
         String pickSql = """
         WITH inv AS (
             SELECT *
-            FROM invoices
+            FROM invoices_v2
             WHERE invoicedate >= :from
               AND invoicedate <  :to
               AND lifecycle_status = 'CREATED'
@@ -164,7 +164,7 @@ public class InternalInvoiceControllingService {
                    ORDER BY ii.invoicedate DESC, ii.invoicenumber DESC
                 ) AS r
             FROM cross_clients ci
-            JOIN invoices ii
+            JOIN invoices_v2 ii
               ON ii.source_invoice_uuid = ci.uuid
              AND ii.type          = 'INTERNAL'
              AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
@@ -219,7 +219,7 @@ public class InternalInvoiceControllingService {
                 ii.hours,
                 ii.rate,
                 ii.consultantuuid
-            FROM invoices i
+            FROM invoices_v2 i
             JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
             WHERE i.uuid IN (%s)
         ),
@@ -296,7 +296,7 @@ public class InternalInvoiceControllingService {
             String resolvedClientName = resolveClientName(client);
             SimpleInvoiceDTO clientDto = new SimpleInvoiceDTO(
                     client.getUuid(),
-                    client.getInvoicenumber(),
+                    client.getInvoicenumber() != null ? client.getInvoicenumber() : 0,
                     client.getInvoicedate(),
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
@@ -315,7 +315,7 @@ public class InternalInvoiceControllingService {
                     double itotal = ilines.stream().mapToDouble(InvoiceLineDTO::amountNoTax).sum();
                     internalDto = new SimpleInvoiceDTO(
                             internal.getUuid(),
-                            internal.getInvoicenumber(),
+                            internal.getInvoicenumber() != null ? internal.getInvoicenumber() : 0,
                             internal.getInvoicedate(),
                             internal.getCompany() != null ? internal.getCompany().getUuid() : null,
                             internal.getCompany() != null ? internal.getCompany().getName() : null,
@@ -364,7 +364,7 @@ public class InternalInvoiceControllingService {
         String pairSql = """
             WITH inv AS (
                 SELECT *
-                FROM invoices
+                FROM invoices_v2
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
                   AND lifecycle_status = 'CREATED'
@@ -393,9 +393,9 @@ public class InternalInvoiceControllingService {
                 FROM inv i
                 JOIN status_pick sp ON sp.invoiceuuid = i.uuid
                 WHERE sp.rn = 1
-                  AND i.companyuuid IS NOT NULL
+                  AND i.issuer_companyuuid IS NOT NULL
                   AND sp.users_companyuuid IS NOT NULL
-                  AND sp.users_companyuuid <> i.companyuuid
+                  AND sp.users_companyuuid <> i.issuer_companyuuid
             ),
             internal_pick AS (
                 SELECT 
@@ -406,7 +406,7 @@ public class InternalInvoiceControllingService {
                        ORDER BY ii.invoicedate DESC, ii.invoicenumber DESC
                     ) AS r
                 FROM cross_clients ci
-                JOIN invoices ii
+                JOIN invoices_v2 ii
                   ON ii.source_invoice_uuid = ci.uuid
                  AND ii.type          = 'INTERNAL'
                  AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
@@ -418,14 +418,14 @@ public class InternalInvoiceControllingService {
             ),
             client_totals AS (
                 SELECT i.uuid AS invoiceuuid, COALESCE(SUM(ii.hours * ii.rate), 0) AS total
-                FROM invoices i
+                FROM invoices_v2 i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.uuid IN (SELECT client_uuid FROM chosen)
                 GROUP BY i.uuid
             ),
             internal_totals AS (
                 SELECT i.uuid AS invoiceuuid, COALESCE(SUM(ii.hours * ii.rate), 0) AS total
-                FROM invoices i
+                FROM invoices_v2 i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.uuid IN (SELECT internal_uuid FROM chosen)
                 GROUP BY i.uuid
@@ -477,7 +477,7 @@ public class InternalInvoiceControllingService {
                     ii.hours,
                     ii.rate,
                     ii.consultantuuid
-                FROM invoices i
+                FROM invoices_v2 i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.uuid IN (%s)
             ),
@@ -562,7 +562,7 @@ public class InternalInvoiceControllingService {
             String resolvedClientName = resolveClientName(client);
             var clientDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                     client.getUuid(),
-                    client.getInvoicenumber(),
+                    client.getInvoicenumber() != null ? client.getInvoicenumber() : 0,
                     client.getInvoicedate(),
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
@@ -575,7 +575,7 @@ public class InternalInvoiceControllingService {
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                     internal.getUuid(),
-                    internal.getInvoicenumber(),
+                    internal.getInvoicenumber() != null ? internal.getInvoicenumber() : 0,
                     internal.getInvoicedate(),
                     internal.getCompany() != null ? internal.getCompany().getUuid() : null,
                     internal.getCompany() != null ? internal.getCompany().getName() : null,
@@ -618,7 +618,7 @@ public class InternalInvoiceControllingService {
         String selectSql = """
             WITH inv AS (
                 SELECT *
-                FROM invoices
+                FROM invoices_v2
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
                   AND lifecycle_status = 'CREATED'
@@ -647,13 +647,13 @@ public class InternalInvoiceControllingService {
                 FROM inv i
                 JOIN status_pick sp ON sp.invoiceuuid = i.uuid
                 WHERE sp.rn = 1
-                  AND i.companyuuid IS NOT NULL
+                  AND i.issuer_companyuuid IS NOT NULL
                   AND sp.users_companyuuid IS NOT NULL
-                  AND sp.users_companyuuid <> i.companyuuid
+                  AND sp.users_companyuuid <> i.issuer_companyuuid
             )
             SELECT ci.uuid AS client_uuid
             FROM cross_clients ci
-            LEFT JOIN invoices ii
+            LEFT JOIN invoices_v2 ii
               ON ii.source_invoice_uuid = ci.uuid
              AND ii.type = 'INTERNAL'
              AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
@@ -693,7 +693,7 @@ public class InternalInvoiceControllingService {
                     ii.hours,
                     ii.rate,
                     ii.consultantuuid
-                FROM invoices i
+                FROM invoices_v2 i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.uuid IN (%s)
             ),
@@ -769,7 +769,7 @@ public class InternalInvoiceControllingService {
             String resolvedClientName = resolveClientName(client);
             var clientDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                     client.getUuid(),
-                    client.getInvoicenumber(),
+                    client.getInvoicenumber() != null ? client.getInvoicenumber() : 0,
                     client.getInvoicedate(),
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
@@ -808,7 +808,7 @@ public class InternalInvoiceControllingService {
         String pairsSql = """
             WITH inv AS (
                 SELECT *
-                FROM invoices
+                FROM invoices_v2
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
                   AND lifecycle_status = 'CREATED'
@@ -838,9 +838,9 @@ public class InternalInvoiceControllingService {
                 FROM inv i
                 JOIN status_pick sp ON sp.invoiceuuid = i.uuid
                 WHERE sp.rn = 1
-                  AND i.companyuuid IS NOT NULL
+                  AND i.issuer_companyuuid IS NOT NULL
                   AND sp.users_companyuuid IS NOT NULL
-                  AND sp.users_companyuuid <> i.companyuuid
+                  AND sp.users_companyuuid <> i.issuer_companyuuid
             ),
             internal_pick AS (
                 SELECT 
@@ -851,7 +851,7 @@ public class InternalInvoiceControllingService {
                        ORDER BY ii.invoicedate DESC, ii.invoicenumber DESC
                     ) AS r
                 FROM cross_clients ci
-                JOIN invoices ii
+                JOIN invoices_v2 ii
                   ON ii.source_invoice_uuid = ci.uuid
                  AND ii.type          = 'INTERNAL'
                  AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
@@ -898,7 +898,7 @@ public class InternalInvoiceControllingService {
                     ii.hours,
                     ii.rate,
                     ii.consultantuuid
-                FROM invoices i
+                FROM invoices_v2 i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.uuid IN (%s)
             ),
@@ -981,7 +981,7 @@ public class InternalInvoiceControllingService {
             String resolvedClientName = resolveClientName(client);
             var clientDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                     client.getUuid(),
-                    client.getInvoicenumber(),
+                    client.getInvoicenumber() != null ? client.getInvoicenumber() : 0,
                     client.getInvoicedate(),
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
@@ -994,7 +994,7 @@ public class InternalInvoiceControllingService {
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                     internal.getUuid(),
-                    internal.getInvoicenumber(),
+                    internal.getInvoicenumber() != null ? internal.getInvoicenumber() : 0,
                     internal.getInvoicedate(),
                     internal.getCompany() != null ? internal.getCompany().getUuid() : null,
                     internal.getCompany() != null ? internal.getCompany().getName() : null,
@@ -1036,7 +1036,7 @@ public class InternalInvoiceControllingService {
         String selectSql = """
             WITH clients AS (
                 SELECT *
-                FROM invoices i
+                FROM invoices_v2 i
                 WHERE i.invoicedate >= :from
                   AND i.invoicedate <  :to
                   AND i.type = 'INVOICE'
@@ -1044,7 +1044,7 @@ public class InternalInvoiceControllingService {
             ),
             internals AS (
                 SELECT ii.*
-                FROM invoices ii
+                FROM invoices_v2 ii
                 WHERE ii.type = 'INTERNAL'
                   AND (ii.processing_state = 'QUEUED' OR ii.lifecycle_status = 'CREATED')
             ),
@@ -1108,7 +1108,7 @@ public class InternalInvoiceControllingService {
                     ii.hours,
                     ii.rate,
                     ii.consultantuuid
-                FROM invoices i
+                FROM invoices_v2 i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.uuid IN (%s)
             ),
@@ -1187,7 +1187,7 @@ public class InternalInvoiceControllingService {
             String resolvedClientName = resolveClientName(client);
             var clientDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                     client.getUuid(),
-                    client.getInvoicenumber(),
+                    client.getInvoicenumber() != null ? client.getInvoicenumber() : 0,
                     client.getInvoicedate(),
                     client.getCompany() != null ? client.getCompany().getUuid() : null,
                     client.getCompany() != null ? client.getCompany().getName() : null,
@@ -1206,7 +1206,7 @@ public class InternalInvoiceControllingService {
                 double total = lines.stream().mapToDouble(dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO::amountNoTax).sum();
                 internals.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
                         inv.getUuid(),
-                        inv.getInvoicenumber(),
+                        inv.getInvoicenumber() != null ? inv.getInvoicenumber() : 0,
                         inv.getInvoicedate(),
                         inv.getCompany() != null ? inv.getCompany().getUuid() : null,
                         inv.getCompany() != null ? inv.getCompany().getName() : null,

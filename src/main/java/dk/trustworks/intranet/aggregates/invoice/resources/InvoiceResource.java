@@ -670,7 +670,7 @@ public class InvoiceResource {
 
         return Response.ok(java.util.Map.of(
             "invoiceUuid", invoiceuuid,
-            "invoiceNumber", invoice.getInvoicenumber(),
+            "invoiceNumber", invoice.getInvoicenumber() != null ? invoice.getInvoicenumber() : 0,
             "financeStatus", invoice.getFinanceStatus(),
             "uploads", uploads.stream().map(u -> java.util.Map.of(
                 "uuid", u.getUuid(),
