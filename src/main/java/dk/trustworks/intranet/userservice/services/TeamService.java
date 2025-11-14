@@ -201,7 +201,15 @@ public class TeamService {
                             "Do not use the word 'Team'. Do not mention specific consultants or their names. \n\n" + teamResumes.get(team) + "\n\n"+
                                     trustworksDescription);
 
-            log.info(teamDescription);
+            log.info("Team: " + team.getName() + " - OpenAI response: " + teamDescription);
+
+            // Validate OpenAI response - don't save if it returned error fallback or empty response
+            if (teamDescription == null || teamDescription.isBlank() || teamDescription.equals("{}")) {
+                log.warnf("Skipping team description update for team '%s' (uuid=%s) - OpenAI returned empty/error response: '%s'",
+                    team.getName(), team.getUuid(), teamDescription);
+                continue; // Skip this team, keep existing description
+            }
+
             team.setDescription(teamDescription);
             QuarkusTransaction.begin();
             Team.update("description = ?1 where uuid like ?2", team.getDescription(), team.getUuid());
