@@ -9,7 +9,6 @@ import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
-import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.dto.ProjectSummary;
 import dk.trustworks.intranet.exceptions.InconsistantDataException;
@@ -20,7 +19,6 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
-import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -260,14 +258,6 @@ public class InvoiceResource {
     @Path("/internal/companies/{companyuuid}")
     public void createInternalInvoiceDraft(@PathParam("companyuuid") String companyuuid, Invoice invoice) {
         invoiceService.createInternalInvoiceDraft(companyuuid, invoice);
-    }
-
-    @POST
-    @Path("/{invoiceuuid}/reference")
-    public void updateInvoiceReference(@PathParam("invoiceuuid") String invoiceuuid, InvoiceReference invoiceReference) {
-        log.info("InvoiceResource.updateInvoiceReference");
-        log.info("invoiceuuid = " + invoiceuuid + ", invoiceReference = " + invoiceReference);
-        invoiceService.updateInvoiceReference(invoiceuuid, invoiceReference);
     }
 
     @GET

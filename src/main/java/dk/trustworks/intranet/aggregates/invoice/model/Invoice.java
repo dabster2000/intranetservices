@@ -19,7 +19,6 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
-import org.eclipse.microprofile.config.ConfigProvider;
 
 import java.time.LocalDate;
 import java.util.LinkedList;
@@ -67,8 +66,6 @@ public class Invoice extends PanacheEntityBase {
     public int invoicenumber;
     public String currency;
     public double vat;
-    @Column(name = "referencenumber")
-    public int referencenumber;
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     public LocalDate invoicedate;
@@ -80,9 +77,6 @@ public class Invoice extends PanacheEntityBase {
     public LocalDate bookingdate; //date from e-conomics
     public String projectref;
     public String contractref;
-    /**
-     * Contract type code. Can be either a legacy enum value or a dynamically defined type.
-     */
     @Column(name = "contract_type")
     public String contractType;
     public String specificdescription;

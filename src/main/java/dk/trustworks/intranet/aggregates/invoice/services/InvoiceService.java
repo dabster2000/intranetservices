@@ -21,21 +21,13 @@ import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.ClientWithInternalsDTO;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
-import dk.trustworks.intranet.contracts.model.Contract;
-import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.dto.DateValueDTO;
-import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
@@ -509,11 +501,13 @@ public class InvoiceService {
         Invoice.update(
                         "status = ?1, " +
                         "invoicenumber = ?2, " +
-                        "pdf = ?3 " +
-                        "WHERE uuid like ?4 ",
+                        "pdf = ?3, " +
+                        "type = ?4 " +
+                        "WHERE uuid like ?5 ",
                 invoice.getStatus(),
                 invoice.getInvoicenumber(),
                 invoice.getPdf(),
+                invoice.getType(),
                 invoice.getUuid());
     }
 
@@ -761,13 +755,6 @@ public class InvoiceService {
 
     private boolean isDraftOrPhantom(String invoiceuuid) {
         return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 OR type = ?3 OR invoicenumber = 0)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
-    }
-
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public void updateInvoiceReference(String invoiceuuid, InvoiceReference invoiceReference) {
-        // Only perform the update if something actually changes to keep transactions short and avoid extra flushes
-        Invoice.update("bookingdate = ?1, referencenumber = ?2 WHERE uuid like ?3 AND (bookingdate <> ?1 OR referencenumber <> ?2 OR bookingdate IS NULL OR referencenumber IS NULL)",
-                invoiceReference.getBookingdate(), invoiceReference.getReferencenumber(), invoiceuuid);
     }
 
     /**

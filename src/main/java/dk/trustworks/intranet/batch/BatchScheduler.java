@@ -1,9 +1,9 @@
 package dk.trustworks.intranet.batch;
 
+import io.quarkus.scheduler.Scheduled;
 import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -153,21 +153,6 @@ public class BatchScheduler {
             jobOperator.start("expense-orphan-detection", new Properties());
         } catch (Exception e) {
             log.warn("Could not schedule expense-orphan-detection: " + e.getMessage());
-        }
-    }
-
-    @Scheduled(cron = "0 38 12 * * ?")
-    void scheduleEconomicsInvoiceStatusSync() {
-        try {
-            if (jobOperator.getJobNames().contains("economics-invoice-status-sync")) {
-                if (!jobOperator.getRunningExecutions("economics-invoice-status-sync").isEmpty()) {
-                    return; // one is already running
-                }
-            }
-            log.info("Starting economics-invoice-status-sync");
-            jobOperator.start("economics-invoice-status-sync", new Properties());
-        } catch (Exception e) {
-            jobOperator.start("economics-invoice-status-sync", new Properties());
         }
     }
 
