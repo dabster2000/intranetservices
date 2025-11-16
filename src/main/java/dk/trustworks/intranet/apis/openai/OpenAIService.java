@@ -36,7 +36,7 @@ public class OpenAIService {
         try {
             ObjectNode req = objectMapper.createObjectNode();
             req.put("model", model);
-            req.put("max_output_tokens", 1024);
+            req.put("max_output_tokens", 4096);  // Increased for GPT-5 reasoning models (was 1024)
 
             // JSON mode in Responses: text.format (not response_format)
             ObjectNode text = req.putObject("text");
@@ -53,13 +53,23 @@ public class OpenAIService {
             user.put("content", question);
 
             String body = objectMapper.writeValueAsString(req);
+
+            // Pre-flight diagnostic logging
+            log.infof("[OpenAIService] Pre-flight check - API Key configured: %s, Model: %s, Request size: %d bytes",
+                (apiKey != null && !apiKey.equals("xx") && !apiKey.isBlank()) ? "YES" : "NO (using default 'xx')",
+                model,
+                body.length());
             log.debugf("[OpenAIService] Sending response. model=%s, bodySize=%d", model, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);
 
+            // Log raw response for debugging (shows actual structure returned by OpenAI)
+            log.infof("[OpenAIService] Received response - Status: %d, Payload: %s", http.getStatus(), payload);
+
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                log.errorf("[OpenAIService] OpenAI API returned error - Status: %d, Model: %s, Endpoint: /v1/responses, Response body: %s",
+                    http.getStatus(), model, payload);
                 return "{}";
             }
 
@@ -98,13 +108,23 @@ public class OpenAIService {
             user.put("content", userMsg);
 
             String body = objectMapper.writeValueAsString(req);
+
+            // Pre-flight diagnostic logging
+            log.infof("[OpenAIService] Pre-flight check (json_schema) - API Key configured: %s, Model: %s, Request size: %d bytes",
+                (apiKey != null && !apiKey.equals("xx") && !apiKey.isBlank()) ? "YES" : "NO (using default 'xx')",
+                model,
+                body.length());
             log.debugf("[OpenAIService] Sending response (json_schema). model=%s, bodySize=%d", model, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);
 
+            // Log raw response for debugging (shows actual structure returned by OpenAI)
+            log.infof("[OpenAIService] Received response - Status: %d, Payload: %s", http.getStatus(), payload);
+
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                log.errorf("[OpenAIService] OpenAI API returned error - Status: %d, Model: %s, Endpoint: /v1/responses, Response body: %s",
+                    http.getStatus(), model, payload);
                 return "{}";
             }
 
@@ -164,13 +184,23 @@ public class OpenAIService {
             user.set("content", content);
 
             String body = objectMapper.writeValueAsString(req);
+
+            // Pre-flight diagnostic logging
+            log.infof("[OpenAIService] Pre-flight check (json_schema + image) - API Key configured: %s, Model: %s, Request size: %d bytes",
+                (apiKey != null && !apiKey.equals("xx") && !apiKey.isBlank()) ? "YES" : "NO (using default 'xx')",
+                model,
+                body.length());
             log.debugf("[OpenAIService] Sending response (json_schema + image). model=%s, bodySize=%d", model, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);
 
+            // Log raw response for debugging (shows actual structure returned by OpenAI)
+            log.infof("[OpenAIService] Received response - Status: %d, Payload: %s", http.getStatus(), payload);
+
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                log.errorf("[OpenAIService] OpenAI API returned error - Status: %d, Model: %s, Endpoint: /v1/responses, Response body: %s",
+                    http.getStatus(), model, payload);
                 return "{}";
             }
 
@@ -193,7 +223,7 @@ public class OpenAIService {
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName) {
         ObjectNode req = objectMapper.createObjectNode();
         req.put("model", model);
-        req.put("max_output_tokens", 1024); // Responses API cap. :contentReference[oaicite:2]{index=2}
+        req.put("max_output_tokens", 4096); // Increased for GPT-5 reasoning models (was 1024)
 
         ObjectNode text = req.putObject("text");
         ObjectNode format = text.putObject("format");

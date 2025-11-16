@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.userservice.services;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.domain.user.entity.Team;
@@ -194,7 +196,7 @@ public class TeamService {
             String teamDescription = openAIService.askQuestion(
                             "I have a teams of employees. " +
                             "I have listed a short resume for each consultant in the team. " +
-                            "Write a very short description (maximum of 120 characters) " +
+                            "Write a very short description (maximum of 160 characters) " +
                             "about the Team and what its collective offering are. " +
                             "Use the team members respective resume descriptions and the most dominant competencies along with Trustworks offerings as inspiration. " +
                                     "Focus on the competencies that make this team unique using one of the six Trustworks main offerings as part of the description. " +
@@ -210,7 +212,23 @@ public class TeamService {
                 continue; // Skip this team, keep existing description
             }
 
-            team.setDescription(teamDescription);
+            // Parse JSON response and extract description field (OpenAI returns {"description":"text"})
+            String description = teamDescription;
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode node = mapper.readTree(teamDescription);
+                if (node.has("description")) {
+                    description = node.get("description").asText();
+                    log.debugf("Extracted description from JSON for team '%s'", team.getName());
+                } else {
+                    log.warnf("OpenAI response missing 'description' field for team '%s', using raw response", team.getName());
+                }
+            } catch (Exception e) {
+                log.warnf("Failed to parse OpenAI JSON for team '%s', using raw response: %s",
+                    team.getName(), e.getMessage());
+            }
+
+            team.setDescription(description);
             QuarkusTransaction.begin();
             Team.update("description = ?1 where uuid like ?2", team.getDescription(), team.getUuid());
             QuarkusTransaction.commit();

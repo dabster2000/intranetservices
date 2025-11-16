@@ -1,20 +1,28 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.batch.execution.BatchJobExecutionService;
+import dk.trustworks.intranet.batch.metadata.BatchJobMetadataService;
+import dk.trustworks.intranet.batch.metadata.JobMetadata;
+import dk.trustworks.intranet.batch.metadata.JobParameter;
 import dk.trustworks.intranet.batch.monitoring.BatchJobExecutionTracking;
 import dk.trustworks.intranet.batch.monitoring.BatchJobTrackingQuery;
 import dk.trustworks.intranet.batch.monitoring.BatchJobTrackingQuery.PageResult;
 import dk.trustworks.intranet.batch.monitoring.BatchJobTrackingQuery.Summary;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.batch.operations.JobStartException;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.SecurityContext;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -30,6 +38,12 @@ public class BatchJobTrackingResource {
 
     @Inject
     BatchJobTrackingQuery query;
+
+    @Inject
+    BatchJobMetadataService metadataService;
+
+    @Inject
+    BatchJobExecutionService executionService;
 
     @GET
     @Path("/executions")
@@ -97,6 +111,79 @@ public class BatchJobTrackingResource {
         return query.summary(jobName);
     }
 
+    /**
+     * List all available batch jobs with metadata.
+     *
+     * @return List of job metadata including schedules, parameters, and execution history
+     */
+    @GET
+    @Path("/jobs")
+    public List<JobMetadataDto> listJobs() {
+        return metadataService.getAllJobs().stream()
+            .map(JobMetadataDto::from)
+            .toList();
+    }
+
+    /**
+     * Get metadata for a specific job.
+     *
+     * @param jobName The job identifier
+     * @return Job metadata including parameter schema
+     */
+    @GET
+    @Path("/jobs/{jobName}")
+    public Response getJob(@PathParam("jobName") String jobName) {
+        return metadataService.getJobMetadata(jobName)
+            .map(JobMetadataDto::from)
+            .map(Response::ok)
+            .orElse(Response.status(Response.Status.NOT_FOUND))
+            .build();
+    }
+
+    /**
+     * Manually start a batch job with parameters.
+     *
+     * @param jobName The job identifier
+     * @param request Request containing parameters for the job
+     * @param securityContext Injected security context for audit logging
+     * @return JobStartResponse with execution ID
+     */
+    @POST
+    @Path("/jobs/{jobName}/start")
+    public Response startJob(
+        @PathParam("jobName") String jobName,
+        JobStartRequest request,
+        @Context SecurityContext securityContext
+    ) {
+        String username = securityContext.getUserPrincipal() != null
+            ? securityContext.getUserPrincipal().getName()
+            : "unknown";
+
+        try {
+            long executionId = executionService.startJob(
+                jobName,
+                request.parameters() != null ? request.parameters() : Map.of(),
+                username
+            );
+
+            return Response.ok(new JobStartResponse(
+                executionId,
+                String.format("Job '%s' started successfully", jobName),
+                jobName
+            )).build();
+
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(new ErrorResponse(e.getMessage()))
+                .build();
+
+        } catch (JobStartException e) {
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                .entity(new ErrorResponse("Failed to start job: " + e.getMessage()))
+                .build();
+        }
+    }
+
     private Optional<LocalDateTime> parseDateTime(String s) {
         if (s == null || s.isBlank()) return Optional.empty();
         try {
@@ -155,4 +242,64 @@ public class BatchJobTrackingResource {
             return dto;
         }
     }
+
+    // Job Management DTOs
+
+    public record JobMetadataDto(
+        String jobName,
+        String description,
+        String type,
+        List<JobParameterDto> parameters,
+        String cronExpression,
+        String lastRun,
+        String lastStatus,
+        boolean isRunning,
+        int runningCount
+    ) {
+        public static JobMetadataDto from(JobMetadata metadata) {
+            return new JobMetadataDto(
+                metadata.jobName(),
+                metadata.description(),
+                metadata.type().name(),
+                metadata.parameters().stream().map(JobParameterDto::from).toList(),
+                metadata.cronExpression(),
+                metadata.lastRun() != null ? metadata.lastRun().toString() : null,
+                metadata.lastStatus(),
+                metadata.isRunning(),
+                metadata.runningCount()
+            );
+        }
+    }
+
+    public record JobParameterDto(
+        String name,
+        String type,
+        boolean required,
+        String defaultValue,
+        String description
+    ) {
+        public static JobParameterDto from(JobParameter param) {
+            return new JobParameterDto(
+                param.name(),
+                param.type().name(),
+                param.required(),
+                param.defaultValue(),
+                param.description()
+            );
+        }
+    }
+
+    public record JobStartRequest(
+        Map<String, String> parameters
+    ) {}
+
+    public record JobStartResponse(
+        long executionId,
+        String message,
+        String jobName
+    ) {}
+
+    public record ErrorResponse(
+        String error
+    ) {}
 }

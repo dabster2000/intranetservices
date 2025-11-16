@@ -56,7 +56,8 @@ public class BatchScheduler {
     }
 
     // Team description monthly (10th at 10:00)
-    @Scheduled(cron = "0 0 10 10 * ?")
+    //@Scheduled(cron = "0 0 10 10 * ?")
+    @Scheduled(every = "12h")
     void scheduleTeamDescription() {
         jobOperator.start("team-description", new Properties());
     }
@@ -80,12 +81,12 @@ public class BatchScheduler {
     }
      */
 
-    @Scheduled(every = "1m")
+    @Scheduled(every = "1h")
     void scheduleMailSend() {
         jobOperator.start("mail-send", new Properties());
     }
 
-    @Scheduled(every = "1m")
+    @Scheduled(every = "1h")
     void scheduleBulkMailSend() {
         try {
             // Only start if no bulk-mail-send job is currently running
@@ -101,7 +102,7 @@ public class BatchScheduler {
         }
     }
 
-    @Scheduled(every = "1h")
+    @Scheduled(cron = "0 0 5 * * ?")
     void scheduleExpenseConsume() {
         try {
             // Only start if no expense-consume job is currently running
@@ -119,7 +120,7 @@ public class BatchScheduler {
         }
     }
 
-    @Scheduled(cron = "0 0 3 * * ?")
+    @Scheduled(cron = "0 0 4 * * ?")
     void scheduleExpenseSync() {
         try {
             // Only query running executions if the job is known to the repository
@@ -130,16 +131,11 @@ public class BatchScheduler {
             }
             jobOperator.start("expense-sync", new Properties());
         } catch (Exception e) {
-            // Log and do not fail the scheduler; it will try again in next tick
-            // If job still isn’t known, the next cycle will typically succeed
-            // once the repository has fully initialized
-            // (You can narrow this to NoSuchJobException if you prefer)
-            // log.warn("Could not schedule expense-sync now: " + e.getMessage(), e);
             jobOperator.start("expense-sync", new Properties());
         }
     }
 
-    @Scheduled(cron = "0 15 * * * ?") // Run every hour at 15 minutes past
+    @Scheduled(cron = "0 0 12 * * ?") // Run every hour at 15 minutes past
     void scheduleExpenseOrphanDetection() {
         try {
             // Only start if no orphan detection job is currently running
@@ -179,7 +175,7 @@ public class BatchScheduler {
     }
 
     // Economics upload processing - runs every 1 minute to process pending/failed uploads
-    @Scheduled(cron = "0 * * * * ?")
+    @Scheduled(cron = "0 0 3 * * ?")
     void scheduleEconomicsUploadRetry() {
         try {
             if (jobOperator.getJobNames().contains("economics-upload-retry")) {

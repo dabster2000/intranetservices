@@ -46,13 +46,6 @@
         </exclusion>
       </exclusions>
     </dependency>
-      <!--
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-resteasy-multipart</artifactId>
-    </dependency>
-    -->
-
 
       <!-- COMMS -->
     <dependency>
@@ -179,34 +172,6 @@
       <groupId>org.jboss.logging</groupId>
       <artifactId>commons-logging-jboss-logging</artifactId>
     </dependency>
-    <!--
-    <dependency>
-      <groupId>com.newrelic.agent.java</groupId>
-      <artifactId>newrelic-java</artifactId>
-      <version>8.13.0</version>
-      <scope>provided</scope>
-      <type>zip</type>
-    </dependency>
-    -->
-    <!--
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-logging-gelf</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-opentelemetry</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-opentelemetry-exporter-jaeger</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.opentelemetry.instrumentation</groupId>
-      <artifactId>opentelemetry-jdbc</artifactId>
-    </dependency>
-    -->
 
     <!-- Amazon S3 -->
     <dependency>
