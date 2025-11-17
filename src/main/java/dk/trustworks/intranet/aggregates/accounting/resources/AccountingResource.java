@@ -1323,7 +1323,7 @@ public class AccountingResource {
     @GET
     @Path("/user-accounts/search/findByAccountNumber")
     public UserAccount getAccount(@QueryParam("companyuuid") String companyuuid, @QueryParam("account") int account) throws IOException {
-        if(account<=0) return new UserAccount(0, "", "No account found");
+        if(account<=0) return new UserAccount(0, "No account found");
         return userAccountAPI.getAccount(companyuuid, account);
     }
 

@@ -10,11 +10,13 @@ import dk.trustworks.intranet.aggregates.users.services.*;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.domain.user.entity.*;
+import dk.trustworks.intranet.domain.user.service.UserDanlonHistoryService;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
+import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.NumberUtils;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -33,6 +35,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.WORK_HOURS;
@@ -68,6 +71,8 @@ public class DanlonResource {
     ExpenseService expenseService;
     @Inject
     AvailabilityService availabilityService;
+    @Inject
+    UserDanlonHistoryService danlonHistoryService;
 
     @PathParam("companyuuid")
     private String companyuuid;
@@ -170,7 +175,8 @@ public class DanlonResource {
 
         // Process each user individually.
         for (User user : activeUsers) {
-            String danlonNumber = user.getUserAccount() != null ? user.getUserAccount().getDanlon() : "";
+            // Get current Danløn number from history table (as of current month)
+            String danlonNumber = danlonHistoryService.getDanlonAsOf(user.getUuid(), currentMonth).orElse("");
             String fullName = user.getFullname();
             String statusType = ""; // Default status (empty means no override)
             StringBuilder salaryNote = new StringBuilder();
@@ -209,6 +215,61 @@ public class DanlonResource {
                 } else {
                     // No salary change detected, so use default note.
                     salaryNote.append("Normal løn. ");
+                }
+
+                // 2b. Salary Type Change Rule: Check for HOURLY → NORMAL transition with new Danløn number
+                if (salaryService.isSalaryChanged(user.getUuid(), currentMonth)) {
+                    Salary previousSalary = salaryService.getUserSalaryByMonth(user.getUuid(), currentMonth.minusMonths(1));
+                    if (previousSalary.getType() == SalaryType.HOURLY &&
+                            currentSalary.getType() == SalaryType.NORMAL) {
+                        // Check if new Danløn number was assigned this month due to salary type change
+                        Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
+                                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                                user.getUuid(),
+                                currentMonth,
+                                "system-salary-type-change"
+                        ).firstResultOptional();
+
+                        if (newDanlon.isPresent()) {
+                            salaryNote.append("Løntype ændret fra timeløn til månedsløn. Nyt Danløn-nummer: ")
+                                    .append(newDanlon.get().getDanlon())
+                                    .append(". ");
+                        } else {
+                            salaryNote.append("Løntype ændret fra timeløn til månedsløn. ");
+                        }
+                    }
+                }
+
+                // 2c. Company Transition Rule: Check for company transition with new Danløn number
+                if (hasCompanyTransitionThisMonth(user, currentMonth)) {
+                    Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
+                            "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                            user.getUuid(),
+                            currentMonth,
+                            "system-company-transition"
+                    ).firstResultOptional();
+
+                    if (newDanlon.isPresent()) {
+                        salaryNote.append("Skiftet firma. Nyt Danløn-nummer: ")
+                                .append(newDanlon.get().getDanlon())
+                                .append(". ");
+                    }
+                }
+
+                // 2d. Re-Employment Rule: Check for re-employment with new Danløn number
+                if (hasReEmploymentThisMonth(user, currentMonth)) {
+                    Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
+                            "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                            user.getUuid(),
+                            currentMonth,
+                            "system-re-employment"
+                    ).firstResultOptional();
+
+                    if (newDanlon.isPresent()) {
+                        salaryNote.append("Genansættelse. Nyt Danløn-nummer: ")
+                                .append(newDanlon.get().getDanlon())
+                                .append(". ");
+                    }
                 }
             }
 
@@ -276,7 +337,7 @@ public class DanlonResource {
         return userList.stream()
                 .filter(user -> !user.getUserStatus(endOfMonth).getStatus().equals(TERMINATED))
                 .map(user -> new DanlonEmployee(
-                user.getUserAccount()!=null?user.getUserAccount().getDanlon():"",
+                danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""),
                 user.getFirstname() + " " + user.getLastname(),
                 user.getUserContactinfo()!=null?user.getUserContactinfo().getStreetname():"",
                 "",
@@ -305,7 +366,8 @@ public class DanlonResource {
         LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
 
         for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
-            if(user.getUserAccount()==null || user.getUserAccount().getDanlon()==null) continue;
+            // Skip users without a Danløn number
+            if(danlonHistoryService.getDanlonAsOf(user.getUuid(), month).isEmpty()) continue;
 
             List<Work> vacationList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
             List<Work> workHoursList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(user.getUuid(), WORK_HOURS, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
@@ -341,7 +403,8 @@ public class DanlonResource {
         LocalDate endOfMonth = month.plusMonths(1).minusDays(1);
 
         for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
-            if(user.getUserAccount()==null || user.getUserAccount().getDanlon()==null) continue;
+            // Skip users without a Danløn number
+            if(danlonHistoryService.getDanlonAsOf(user.getUuid(), month).isEmpty()) continue;
 
             List<Work> paidVacationList = workService.findByUserAndPaidOutMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
             List<Work> paidWorkHoursList = workService.findByUserAndPaidOutMonthAndTaskuuid(user.getUuid(), WORK_HOURS, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
@@ -367,30 +430,31 @@ public class DanlonResource {
         List<DanlonSalarySupplements> result = new ArrayList<>();
 
         for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
-            if(user.getUserAccount()==null || user.getUserAccount().getDanlon()==null) continue;
+            // Skip users without a Danløn number
+            if(danlonHistoryService.getDanlonAsOf(user.getUuid(), month).isEmpty()) continue;
             double bonus = 0;
 
             bonus += salarySupplementService.findByUseruuidAndMonth(user.getUuid(), month).stream().mapToDouble(SalarySupplement::getValue).sum();
             bonus += salaryLumpSumService.findByUseruuidAndMonth(user.getUuid(), month).stream().filter(salaryLumpSum -> salaryLumpSum.getSalaryType().getDanloenType()==41).mapToDouble(SalaryLumpSum::getLumpSum).sum();
 
-            if(bonus>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "41", "Bonus", "", "", formatDouble(bonus)));
+            if(bonus>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "41", "Bonus", "", "", formatDouble(bonus)));
 
             List<Work> vacationList = workService.findByUserAndPaidOutMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
             double vacation = vacationList.stream().mapToDouble(Work::getWorkduration).sum();
-            if(vacation > 0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "60", "Vacation", formatDouble(vacation/7.4), "", ""));
+            if(vacation > 0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "60", "Vacation", formatDouble(vacation/7.4), "", ""));
 
             List<TransportationRegistration> unPaidRegistrations = transportationRegistrationService.findByUseruuidAndPaidOutMonth(user.getUuid(), month);
             int kilometers = unPaidRegistrations.stream().mapToInt(TransportationRegistration::getKilometers).sum();
-            if(kilometers>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "39", "Transportation", formatDouble(kilometers), "", ""));
+            if(kilometers>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "39", "Transportation", formatDouble(kilometers), "", ""));
 
             List<Expense> unPaidExpenses = expenseService.findByUserAndPaidOutMonth(user.getUuid(), month);
             double expenseSum = unPaidExpenses.stream().mapToDouble(Expense::getAmount).sum();
-            if(expenseSum>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "40", "Expenses", "", "", formatDouble(expenseSum)));
-            if(expenseSum<0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "20", "Expenses", "", "", formatDouble(expenseSum)));
+            if(expenseSum>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "40", "Expenses", "", "", formatDouble(expenseSum)));
+            if(expenseSum<0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "20", "Expenses", "", "", formatDouble(expenseSum)));
 
             List<Work> workHoursList = workService.findByUserAndPaidOutMonthAndTaskuuid(user.getUuid(), WORK_HOURS, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();
             double hourSalary = workHoursList.stream().mapToDouble(Work::getWorkduration).sum();
-            if(hourSalary>0) result.add(new DanlonSalarySupplements(company.getCvr(), user.getUserAccount().getDanlon(), user.getFullname(), "1", "Hourly salary", formatDouble(hourSalary), "", ""));
+            if(hourSalary>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "1", "Hourly salary", formatDouble(hourSalary), "", ""));
         }
 
         return result;
@@ -409,7 +473,8 @@ public class DanlonResource {
                         user.getHireDate(companyuuid).withDayOfMonth(1).isEqual(endOfMonth.withDayOfMonth(1)) ||
                                 isUserTerminatedInCurrentMonth(user, endOfMonth, month) ||
                                 user.getUserBankInfos().stream().anyMatch(userBankInfo -> userBankInfo.getActiveDate().withDayOfMonth(1).isEqual(month)) ||
-                                hasUserJustReturnedFromNonPayLeave(user, month, availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1))))
+                                hasUserJustReturnedFromNonPayLeave(user, month, availabilityService.getEmployeeDataPerDay(user.uuid, month, month.plusMonths(1))) ||
+                                hasDanlonNumberChangedThisMonth(user, month))
                 .toList();
     }
 
@@ -465,6 +530,70 @@ public class DanlonResource {
         UserStatus status = user.getUserStatus(endOfMonth);
         return status.getStatus().equals(TERMINATED)
                 && status.getStatusdate().withDayOfMonth(1).isEqual(month);
+    }
+
+    /**
+     * Check if user has a new Danløn number assigned this month (salary type change OR company transition).
+     * <p>
+     * This method looks for UserDanlonHistory records created with either:
+     * <ul>
+     *   <li>"system-salary-type-change" - auto-generated when user transitioned from HOURLY to NORMAL salary</li>
+     *   <li>"system-company-transition" - auto-generated when user transitioned between companies</li>
+     * </ul>
+     * </p>
+     *
+     * @param user  User to check
+     * @param month Month to check (1st of month)
+     * @return true if user has new Danløn number this month
+     */
+    private static boolean hasDanlonNumberChangedThisMonth(User user, LocalDate month) {
+        return UserDanlonHistory.find(
+                "useruuid = ?1 AND active_date = ?2 AND (created_by = ?3 OR created_by = ?4)",
+                user.getUuid(),
+                month,
+                "system-salary-type-change",
+                "system-company-transition"
+        ).firstResultOptional().isPresent();
+    }
+
+    /**
+     * Check if user transitioned between companies this month.
+     * <p>
+     * Detects scenario: TERMINATED in one company AND ACTIVE in target company on same date.
+     * This is indicated by a UserDanlonHistory record created with "system-company-transition" marker.
+     * </p>
+     *
+     * @param user  User to check
+     * @param month Month to check (1st of month)
+     * @return true if user transitioned companies this month
+     */
+    private static boolean hasCompanyTransitionThisMonth(User user, LocalDate month) {
+        return UserDanlonHistory.find(
+                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                user.getUuid(),
+                month,
+                "system-company-transition"
+        ).firstResultOptional().isPresent();
+    }
+
+    /**
+     * Check if user was re-employed this month.
+     * <p>
+     * Detects scenario: User was previously TERMINATED and is now ACTIVE again (either same company or different).
+     * This is indicated by a UserDanlonHistory record created with "system-re-employment" marker.
+     * </p>
+     *
+     * @param user  User to check
+     * @param month Month to check (1st of month)
+     * @return true if user was re-employed this month
+     */
+    private static boolean hasReEmploymentThisMonth(User user, LocalDate month) {
+        return UserDanlonHistory.find(
+                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                user.getUuid(),
+                month,
+                "system-re-employment"
+        ).firstResultOptional().isPresent();
     }
 
     /*

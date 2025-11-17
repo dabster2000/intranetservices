@@ -18,12 +18,10 @@ public class UserAccount extends PanacheEntityBase{
     @Id
     private String useruuid;
     private Integer economics;
-    private String danlon;
     private String username;
 
-    public UserAccount (Integer economics, String danlon, String username) {
+    public UserAccount (Integer economics, String username) {
         this.economics = economics;
-        this.danlon = danlon;
         this.username = username;
     }
 

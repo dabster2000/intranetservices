@@ -174,18 +174,16 @@ public class UserEventHandler {
 
     private void createUser(DomainEventEnvelope env) {
         User user = new JsonObject(env.getPayload()).mapTo(User.class);
-        int nextNumber = 0;
-        List<UserAccount> userAccountList = UserAccount.<UserAccount>findAll().list();
-        for (UserAccount userAccount : userAccountList) {
-            try {
-                int danlonNumber = Integer.parseInt(userAccount.getDanlon());
-                if(danlonNumber>nextNumber) nextNumber = danlonNumber;
-            } catch (NumberFormatException e) {
-                // ignore
-            }
-        }
 
-        UserAccount userAccount = new UserAccount(user.getUuid(), -1, (nextNumber+1)+"", "");
+        // Create UserAccount with economics and username only
+        // Note: Danløn numbers are now managed via UserDanlonHistoryService and generated
+        // by specific business rules (company transition, salary type change, re-employment)
+        // rather than being auto-assigned at user creation
+        UserAccount userAccount = new UserAccount();
+        userAccount.setUseruuid(user.getUuid());
+        userAccount.setEconomics(-1);
+        userAccount.setUsername("");
+
         QuarkusTransaction.begin();
         userAccount.persist();
         QuarkusTransaction.commit();
