@@ -44,31 +44,30 @@ public class EconomicsInvoiceService {
         String json = o.writeValueAsString(voucher);
         log.info("json = " + json);
 
-        // call e-conomics endpoint
-        try {
-            EconomicsAPI economicsAPI = getEconomicsAPI(integrationKeyValue);
+        // call e-conomics endpoint with proper resource management
+        try (EconomicsAPI economicsAPI = getEconomicsAPI(integrationKeyValue)) {
             String idem = "invoice-" + invoice.getUuid();
-            Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json);
+            try (Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json)) {
+                // extract voucher number from response
+                if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    String responseAsString = response.readEntity(String.class);
+                    JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
+                    JsonNode object = array.get(0);
+                    int voucherNumber = object.get("voucherNumber").intValue();
+                    // Persist voucher number on invoice entity; actual DB write will occur in caller @Transactional
+                    invoice.setEconomicsVoucherNumber(voucherNumber);
+                    Invoice.update("economicsVoucherNumber = ?1 WHERE uuid like ?2", voucherNumber, invoice.getUuid());
+                    log.info("Saved e-conomics voucherNumber=" + voucherNumber + " on invoice " + invoice.getUuid());
 
-            // extract voucher number from reponse
-            if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
-                ObjectMapper objectMapper = new ObjectMapper();
-                String responseAsString = response.readEntity(String.class);
-                JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
-                JsonNode object = array.get(0);
-                int voucherNumber = object.get("voucherNumber").intValue();
-                // Persist voucher number on invoice entity; actual DB write will occur in caller @Transactional
-                invoice.setEconomicsVoucherNumber(voucherNumber);
-                Invoice.update("economicsVoucherNumber = ?1 WHERE uuid like ?2", voucherNumber, invoice.getUuid());
-                log.info("Saved e-conomics voucherNumber=" + voucherNumber + " on invoice " + invoice.getUuid());
-
-                //upload file to e-conomics voucher
-                log.info("voucher posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", voucherNumber: " + voucherNumber);
-                return sendFile(invoice, voucher, voucherNumber, integrationKeyValue);
-            } else {
-                String errorBody = response.readEntity(String.class);
-                log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", status: " + response.getStatus() + ", body: " + errorBody);
-                return response;
+                    //upload file to e-conomics voucher
+                    log.info("voucher posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", voucherNumber: " + voucherNumber);
+                    return sendFile(invoice, voucher, voucherNumber, integrationKeyValue);
+                } else {
+                    String errorBody = response.readEntity(String.class);
+                    log.error("voucher not posted successfully to e-conomics. Invoiceuuid: " + invoice.getUuid() + ", voucher: " + voucher + ", status: " + response.getStatus() + ", body: " + errorBody);
+                    throw new RuntimeException("Voucher upload failed with status " + response.getStatus());
+                }
             }
         } catch (Exception e) {
             log.error("Failed to send voucher", e);
@@ -176,32 +175,31 @@ public class EconomicsInvoiceService {
         String json = o.writeValueAsString(voucher);
         log.info("json = " + json);
 
-        // call e-conomics endpoint
-        try {
-            EconomicsAPI economicsAPI = getEconomicsAPI(targetKeys);
+        // call e-conomics endpoint with proper resource management
+        try (EconomicsAPI economicsAPI = getEconomicsAPI(targetKeys)) {
             // Use simple key for ISSUER (regular invoices), compound key for DEBTOR (internal)
             String idem = invoice.getCompany().getUuid().equals(targetCompany.getUuid())
                 ? "invoice-" + invoice.getUuid()
                 : "invoice-" + invoice.getUuid() + "-" + targetCompany.getUuid();
-            Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json);
+            try (Response response = economicsAPI.postVoucher(journal.getJournalNumber(), idem, json)) {
+                if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    String responseAsString = response.readEntity(String.class);
+                    JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
+                    JsonNode object = array.get(0);
+                    int voucherNumber = object.get("voucherNumber").intValue();
 
-            if ((response.getStatus() > 199) & (response.getStatus() < 300)) {
-                ObjectMapper objectMapper = new ObjectMapper();
-                String responseAsString = response.readEntity(String.class);
-                JsonNode array = objectMapper.readValue(responseAsString, JsonNode.class);
-                JsonNode object = array.get(0);
-                int voucherNumber = object.get("voucherNumber").intValue();
+                    log.infof("Voucher posted successfully to company %s. VoucherNumber: %d",
+                            targetCompany.getName(), voucherNumber);
 
-                log.infof("Voucher posted successfully to company %s. VoucherNumber: %d",
-                        targetCompany.getName(), voucherNumber);
-
-                // Upload file to e-conomics voucher
-                return sendFile(invoice, voucher, voucherNumber, targetKeys);
-            } else {
-                String errorBody = response.readEntity(String.class);
-                log.error("Voucher not posted successfully to company " + targetCompany.getName() +
-                         ". Status: " + response.getStatus() + ", body: " + errorBody);
-                return response;
+                    // Upload file to e-conomics voucher
+                    return sendFile(invoice, voucher, voucherNumber, targetKeys);
+                } else {
+                    String errorBody = response.readEntity(String.class);
+                    log.error("Voucher not posted successfully to company " + targetCompany.getName() +
+                             ". Status: " + response.getStatus() + ", body: " + errorBody);
+                    throw new RuntimeException("Voucher upload failed to company " + targetCompany.getName() + " with status " + response.getStatus());
+                }
             }
         } catch (Exception e) {
             log.error("Failed to send voucher to company " + targetCompany.getName(), e);

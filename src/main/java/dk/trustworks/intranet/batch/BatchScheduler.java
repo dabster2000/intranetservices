@@ -119,7 +119,8 @@ public class BatchScheduler {
         }
     }
 
-    @Scheduled(cron = "0 0 3 * * ?")
+    //@Scheduled(cron = "0 0 3 * * ?")
+    @Scheduled(every = "1h")
     void scheduleExpenseSync() {
         try {
             // Only query running executions if the job is known to the repository

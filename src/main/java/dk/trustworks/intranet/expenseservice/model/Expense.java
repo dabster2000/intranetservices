@@ -29,6 +29,10 @@ public class Expense extends PanacheEntityBase {
     private String account;
     private String accountname;
     private String description = "";
+
+    @Column(name = "accountant_notes", columnDefinition = "TEXT")
+    private String accountantNotes;
+
     private String projectuuid = "";
 
     @JsonDeserialize(using = LocalDateDeserializer.class)

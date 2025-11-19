@@ -166,7 +166,7 @@ public class SalaryResource {
 
         // Process available vacation days
         try {
-            VacationPool vacationPool = vacationService.calculateRemainingVacationDays(useruuid);
+            VacationPool vacationPool = null;// vacationService.calculateRemainingVacationDays(useruuid);
             if (vacationPool == null) {
                 log.warnf("VacationPool is null for user: %s", useruuid);
             } else {

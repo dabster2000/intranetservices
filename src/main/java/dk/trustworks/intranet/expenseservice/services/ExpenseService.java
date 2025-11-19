@@ -309,8 +309,9 @@ public class ExpenseService {
                     "errorMessage = ?6, " +
                     "retryCount = ?7, " +
                     "lastRetryAt = ?8, " +
-                    "isOrphaned = ?9 " +
-                    "WHERE uuid like ?10 ",
+                    "isOrphaned = ?9, " +
+                    "accountantNotes = ?10 " +
+                    "WHERE uuid like ?11 ",
                     status,
                     expense.getVouchernumber(),
                     expense.getJournalnumber(),
@@ -320,6 +321,7 @@ public class ExpenseService {
                     expense.getRetryCount(),
                     expense.getLastRetryAt(),
                     expense.getIsOrphaned(),
+                    expense.getAccountantNotes(),
                     expense.getUuid());
             log.infof("Updated expense uuid=%s -> status=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
                     expense.getUuid(), status,

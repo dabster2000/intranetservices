@@ -41,7 +41,7 @@ public class  EconomicsService {
     @Inject
     UserService userService;
 
-    public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws IOException {
+    public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws Exception {
         log.info("Sending voucher for expense " + expense.getUuid());
 
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
@@ -58,70 +58,74 @@ public class  EconomicsService {
 
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(voucher);
-        // call e-conomics endpoint
-        EconomicsAPI remoteApi = getEconomicsAPI(result);
+        // call e-conomics endpoint with proper resource management
         log.info("Voucher payload = " + json);
-        Response response = null;
-        try {
-            // SMART IDEMPOTENCY STRATEGY:
-            // Use deterministic key for normal operations to maintain true idempotency
-            // Only modify key when we detect orphaned/cached responses from previous attempts
-            String idempotencyKey;
 
-            if (expense.hasKnownCacheIssue() || Boolean.TRUE.equals(expense.getIsOrphaned())) {
-                // Known cache issue: Add retry count to force fresh processing
-                // This bypasses stale cache while maintaining determinism
-                idempotencyKey = String.format("expense-%s-retry-%d",
-                    expense.getUuid(), expense.getSafeRetryCount());
-                log.infof("Using retry idempotency key for orphaned/cached expense %s (retry %d)",
-                    expense.getUuid(), expense.getSafeRetryCount());
-            } else {
-                // Normal case: Use deterministic key for true idempotency
-                idempotencyKey = "expense-" + expense.getUuid();
-                log.debugf("Using standard idempotency key for expense %s", expense.getUuid());
+        try (EconomicsAPI remoteApi = getEconomicsAPI(result)) {
+            Response response = null;
+            try {
+                // SMART IDEMPOTENCY STRATEGY:
+                // Use deterministic key for normal operations to maintain true idempotency
+                // Only modify key when we detect orphaned/cached responses from previous attempts
+                String idempotencyKey;
+
+                if (expense.hasKnownCacheIssue() || Boolean.TRUE.equals(expense.getIsOrphaned())) {
+                    // Known cache issue: Add retry count to force fresh processing
+                    // This bypasses stale cache while maintaining determinism
+                    idempotencyKey = String.format("expense-%s-retry-%d",
+                        expense.getUuid(), expense.getSafeRetryCount());
+                    log.infof("Using retry idempotency key for orphaned/cached expense %s (retry %d)",
+                        expense.getUuid(), expense.getSafeRetryCount());
+                } else {
+                    // Normal case: Use deterministic key for true idempotency
+                    idempotencyKey = "expense-" + expense.getUuid();
+                    log.debugf("Using standard idempotency key for expense %s", expense.getUuid());
+                }
+
+                response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
+            } catch (WebApplicationException e) {
+                String errorDetails = safeRead(e.getResponse());
+                log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails);
+                throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, e.getResponse().getStatus(), errorDetails);
+            } catch (Exception e) {
+                log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
+                throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, null, e.getMessage());
             }
 
-            response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
-        } catch (WebApplicationException e) {
-            String errorDetails = safeRead(e.getResponse());
-            log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails);
-            throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, e.getResponse().getStatus(), errorDetails);
-        } catch (Exception e) {
-            log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
-            throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, null, e.getMessage());
-        }
+            // extract voucher number from response
+            try (Response voucherResponse = response) {
+                if ((Objects.requireNonNull(voucherResponse).getStatus() > 199) & (voucherResponse.getStatus() < 300)) {
+                    ObjectMapper objectMapper = new ObjectMapper();
+                    String responseAsString = voucherResponse.readEntity(String.class);
+                    JsonNode root = objectMapper.readValue(responseAsString, JsonNode.class);
+                    JsonNode first = root.isArray() ? (root.size() > 0 ? root.get(0) : null) : root;
+                    if (first == null || first.get("voucherNumber") == null) {
+                        log.error("Unexpected voucher POST response: " + responseAsString);
+                        throw new ExpenseUploadException("Unexpected voucher response from e-conomics", null, 502, responseAsString);
+                    }
+                    int voucherNumber = first.get("voucherNumber").asInt();
+                    expense.setVouchernumber(voucherNumber);
+                    // persist accountingYear (canonical URL form without any trailing letters) and journal too
+                    String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2025/2026 or 2025/2026a
+                    String urlYear = DateUtils.toEconomicsUrlYear(fiscalYearName);
+                    log.debugf("Storing accounting year for expense %s: fiscalYear=%s -> storedFormat=%s",
+                        expense.getUuid(), fiscalYearName, urlYear);
+                    expense.setAccountingyear(urlYear);
+                    expense.setJournalnumber(journal.getJournalNumber());
 
-        // extract voucher number from reponse
-        if ((Objects.requireNonNull(response).getStatus() > 199) & (response.getStatus() < 300)) {
-            ObjectMapper objectMapper = new ObjectMapper();
-            String responseAsString = response.readEntity(String.class);
-            JsonNode root = objectMapper.readValue(responseAsString, JsonNode.class);
-            JsonNode first = root.isArray() ? (root.size() > 0 ? root.get(0) : null) : root;
-            if (first == null || first.get("voucherNumber") == null) {
-                log.error("Unexpected voucher POST response: " + responseAsString);
-                throw new ExpenseUploadException("Unexpected voucher response from e-conomics", null, 502, responseAsString);
+                    //upload file to e-conomics voucher
+                    return sendFile(expense, expensefile, voucher);
+
+                } else {
+                    String errorDetails = safeRead(voucherResponse);
+                    log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + voucherResponse.getStatus() + ", details: " + errorDetails);
+                    throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, voucherResponse.getStatus(), errorDetails);
+                }
             }
-            int voucherNumber = first.get("voucherNumber").asInt();
-            expense.setVouchernumber(voucherNumber);
-            // persist accountingYear (canonical URL form without any trailing letters) and journal too
-            String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2025/2026 or 2025/2026a
-            String urlYear = DateUtils.toEconomicsUrlYear(fiscalYearName);
-            log.debugf("Storing accounting year for expense %s: fiscalYear=%s -> storedFormat=%s",
-                expense.getUuid(), fiscalYearName, urlYear);
-            expense.setAccountingyear(urlYear);
-            expense.setJournalnumber(journal.getJournalNumber());
-
-            //upload file to e-conomics voucher
-            return sendFile(expense, expensefile, voucher);
-
-        } else {
-            String errorDetails = safeRead(response);
-            log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + response.getStatus() + ", details: " + errorDetails);
-            throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, response.getStatus(), errorDetails);
         }
     }
 
-    public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws IOException {
+    public Response sendFile(Expense expense, ExpenseFile expensefile, Voucher voucher) throws Exception {
         log.info("Uploading file for expense " + expense.getUuid());
 
         // DEFENSIVE CHECK: Verify voucher actually exists before attempting file upload
@@ -162,102 +166,105 @@ public class  EconomicsService {
         MultipartFormDataOutput form = new MultipartFormDataOutput();
         form.addFormData("file", new ByteArrayInputStream(bytes), MediaType.valueOf("image/jpeg"), "receipt.jpg");
 
-        EconomicsAPI api = getApiForExpense(expense);
-
-        // 1) Check om der allerede er en vedhæftning
-        boolean hasAttachment = false;
-        try {
-            Response meta = api.getAttachment(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber());
-            if (meta.getStatus() / 100 == 2) {
-                String json = meta.readEntity(String.class);
-                hasAttachment = json.contains("\"pages\"") && !json.contains("\"pages\":0");
-            }
-        } catch (Exception ignore) { /* fortsæt defensivt */ }
-
-        // 2) POST hvis ingen vedhæftning, ellers PATCH
-        try {
-            // Smart idempotency for file upload: Use operation type and retry count
-            // This maintains determinism while allowing retries when needed
-            String operation = !hasAttachment ? "POST" : "PATCH";
-            String idemp = String.format("attach-%s-%s-v%d",
-                expense.getUuid(), operation, expense.getSafeRetryCount());
-            Response r;
-
-            if (!hasAttachment) {
-                log.debug("POST file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
-                    "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
-                r = api.postExpenseFile(
-                        voucher.getJournal().getJournalNumber(),
-                        urlYear,
-                        expense.getVouchernumber(),
-                        idemp,
-                        form
-                );
-                if (r.getStatus() == 400) {
-                    String body = safeRead(r);
-
-                    // Check for idempotency key collision (URLChanged error)
-                    if (body != null && body.contains("URLChanged")) {
-                        log.warnf("Idempotency key conflict detected for expense %s - retrying with incremented version. Error: %s",
-                                 expense.getUuid(), body);
-                        // Increment retry count for new idempotency version
-                        expense.incrementRetryCount();
-                        String retryIdemp = String.format("attach-%s-POST-v%d",
-                            expense.getUuid(), expense.getSafeRetryCount());
-                        r = api.postExpenseFile(
-                                voucher.getJournal().getJournalNumber(),
-                                urlYear,
-                                expense.getVouchernumber(),
-                                retryIdemp,
-                                form
-                        );
-                        log.info("Retry with new idempotency key completed, status: " + r.getStatus());
-                    }
-                    // Existing fallback for "Voucher already has attachment"
-                    else if (body != null && body.contains("Voucher already has attachment")) {
-                        log.infof("Voucher already has attachment, switching to PATCH for expense %s", expense.getUuid());
-                        // fallback til PATCH with deterministic idempotency key
-                        String patchIdemp = String.format("attach-%s-PATCH-v%d",
-                            expense.getUuid(), expense.getSafeRetryCount());
-                        r = api.patchFile(
-                                voucher.getJournal().getJournalNumber(),
-                                urlYear,
-                                expense.getVouchernumber(),
-                                patchIdemp,
-                                form
-                        );
-                    }
+        try (EconomicsAPI api = getApiForExpense(expense)) {
+            // 1) Check om der allerede er en vedhæftning
+            boolean hasAttachment = false;
+            try (Response meta = api.getAttachment(voucher.getJournal().getJournalNumber(), urlYear, expense.getVouchernumber())) {
+                if (meta.getStatus() / 100 == 2) {
+                    String json = meta.readEntity(String.class);
+                    hasAttachment = json.contains("\"pages\"") && !json.contains("\"pages\":0");
                 }
-            } else {
-                log.debug("PATCH file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
-                    "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
-                r = api.patchFile(
-                        voucher.getJournal().getJournalNumber(),
-                        urlYear,
-                        expense.getVouchernumber(),
-                        idemp,
-                        form
-                );
-            }
+            } catch (Exception ignore) { /* fortsæt defensivt */ }
 
-            // Check if file upload was successful
-            if (r.getStatus() < 200 || r.getStatus() >= 300) {
-                String errorDetails = safeRead(r);
-                log.error("File upload failed for expense " + expense.getUuid() + ", status: " + r.getStatus() + ", details: " + errorDetails);
-                throw new ExpenseUploadException("File upload to e-conomics failed", null, r.getStatus(), errorDetails);
-            }
+            // 2) POST hvis ingen vedhæftning, ellers PATCH
+            try {
+                // Smart idempotency for file upload: Use operation type and retry count
+                // This maintains determinism while allowing retries when needed
+                String operation = !hasAttachment ? "POST" : "PATCH";
+                String idemp = String.format("attach-%s-%s-v%d",
+                    expense.getUuid(), operation, expense.getSafeRetryCount());
+                Response r;
 
-            return r;
-        } catch (WebApplicationException wae) {
-            String errorDetails = safeRead(wae.getResponse());
-            log.error("WebApplicationException during file upload for expense " + expense.getUuid() + ", status: " + wae.getResponse().getStatus() + ", details: " + errorDetails);
-            throw new ExpenseUploadException("File upload to e-conomics failed", wae, wae.getResponse().getStatus(), errorDetails);
-        } catch (ExpenseUploadException e) {
-            // Re-throw our custom exceptions
-            throw e;
-        } catch (Exception e) {
-            log.error("Unexpected error when posting file for expense " + expense.getUuid(), e);
-            throw new ExpenseUploadException("Unexpected error during attachment upload", e, 502, e.getMessage());
+                if (!hasAttachment) {
+                    log.debug("POST file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
+                        "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
+                    r = api.postExpenseFile(
+                            voucher.getJournal().getJournalNumber(),
+                            urlYear,
+                            expense.getVouchernumber(),
+                            idemp,
+                            form
+                    );
+                    if (r.getStatus() == 400) {
+                        String body = safeRead(r);
+
+                        // Check for idempotency key collision (URLChanged error)
+                        if (body != null && body.contains("URLChanged")) {
+                            log.warnf("Idempotency key conflict detected for expense %s - retrying with incremented version. Error: %s",
+                                     expense.getUuid(), body);
+                            // Close the failed response before retrying
+                            try { r.close(); } catch (Exception ignore) {}
+                            // Increment retry count for new idempotency version
+                            expense.incrementRetryCount();
+                            String retryIdemp = String.format("attach-%s-POST-v%d",
+                                expense.getUuid(), expense.getSafeRetryCount());
+                            r = api.postExpenseFile(
+                                    voucher.getJournal().getJournalNumber(),
+                                    urlYear,
+                                    expense.getVouchernumber(),
+                                    retryIdemp,
+                                    form
+                            );
+                            log.info("Retry with new idempotency key completed, status: " + r.getStatus());
+                        }
+                        // Existing fallback for "Voucher already has attachment"
+                        else if (body != null && body.contains("Voucher already has attachment")) {
+                            log.infof("Voucher already has attachment, switching to PATCH for expense %s", expense.getUuid());
+                            // Close the failed response before retrying
+                            try { r.close(); } catch (Exception ignore) {}
+                            // fallback til PATCH with deterministic idempotency key
+                            String patchIdemp = String.format("attach-%s-PATCH-v%d",
+                                expense.getUuid(), expense.getSafeRetryCount());
+                            r = api.patchFile(
+                                    voucher.getJournal().getJournalNumber(),
+                                    urlYear,
+                                    expense.getVouchernumber(),
+                                    patchIdemp,
+                                    form
+                            );
+                        }
+                    }
+                } else {
+                    log.debug("PATCH file attachment: /journals/" + voucher.getJournal().getJournalNumber() +
+                        "/vouchers/" + urlYear + "-" + expense.getVouchernumber() + "/attachment/file");
+                    r = api.patchFile(
+                            voucher.getJournal().getJournalNumber(),
+                            urlYear,
+                            expense.getVouchernumber(),
+                            idemp,
+                            form
+                    );
+                }
+
+                // Check if file upload was successful
+                if (r.getStatus() < 200 || r.getStatus() >= 300) {
+                    String errorDetails = safeRead(r);
+                    log.error("File upload failed for expense " + expense.getUuid() + ", status: " + r.getStatus() + ", details: " + errorDetails);
+                    throw new ExpenseUploadException("File upload to e-conomics failed", null, r.getStatus(), errorDetails);
+                }
+
+                return r;
+            } catch (WebApplicationException wae) {
+                String errorDetails = safeRead(wae.getResponse());
+                log.error("WebApplicationException during file upload for expense " + expense.getUuid() + ", status: " + wae.getResponse().getStatus() + ", details: " + errorDetails);
+                throw new ExpenseUploadException("File upload to e-conomics failed", wae, wae.getResponse().getStatus(), errorDetails);
+            } catch (ExpenseUploadException e) {
+                // Re-throw our custom exceptions
+                throw e;
+            } catch (Exception e) {
+                log.error("Unexpected error when posting file for expense " + expense.getUuid(), e);
+                throw new ExpenseUploadException("Unexpected error during attachment upload", e, 502, e.getMessage());
+            }
         }
     }
 
@@ -296,15 +303,16 @@ public class  EconomicsService {
         }
     }
 
-    public String getAccount(String companyuuid, Integer account) throws IOException{
-        // call e-conomics endpoint
+    public String getAccount(String companyuuid, Integer account) throws Exception {
+        // call e-conomics endpoint with proper resource management
         String response = null;
-        EconomicsAPIAccount economicsAccountAPI = getEconomicsAccountAPI(getIntegrationKeyValue(Company.findById(companyuuid)));
-        try (Response accountResponse = economicsAccountAPI.getAccount(account)) {
-            response = accountResponse.readEntity(String.class);
-        } catch (Exception e) {
-            log.error("account = "+account);
-            log.error(e.getMessage());
+        try (EconomicsAPIAccount economicsAccountAPI = getEconomicsAccountAPI(getIntegrationKeyValue(Company.findById(companyuuid)))) {
+            try (Response accountResponse = economicsAccountAPI.getAccount(account)) {
+                response = accountResponse.readEntity(String.class);
+            } catch (Exception e) {
+                log.error("account = "+account);
+                log.error(e.getMessage());
+            }
         }
         if(response==null) return "";
         ObjectMapper objectMapper = new ObjectMapper();
@@ -398,9 +406,7 @@ public class  EconomicsService {
             return false;
         }
 
-        try {
-            EconomicsAPI api = getApiForExpense(expense);
-
+        try (EconomicsAPI api = getApiForExpense(expense)) {
             // Convert stored year to e-conomics URL format (underscore format)
             String storedYear = expense.getAccountingyear();
             String urlYear = DateUtils.toEconomicsUrlYear(storedYear);

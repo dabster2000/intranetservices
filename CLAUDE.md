@@ -56,6 +56,133 @@ This is a Quarkus-based Java 21 modular monolith for Trustworks intranet service
 - **Claid AI** - Image processing
 - **OpenAI** - AI services for resume parsing and text improvement
 
+## e-conomic API Integration (Critical Patterns)
+
+**CRITICAL - Accounting Year Format for Path Parameters** (Fixed 2025-11-19):
+
+The e-conomic REST API requires **different accounting year formats** depending on usage:
+
+### Path Parameters (URL segments) - Use Underscore Format
+**✅ CORRECT Pattern:**
+```java
+// For /accounting-years/{accountingYear}/entries endpoint
+String yearId = DateUtils.toEconomicsUrlYear(year);  // Returns "2025_6_2026"
+Response response = api.getYearEntries(yearId, filter, pagesize);
+```
+
+**❌ INCORRECT Pattern (causes HTTP 404):**
+```java
+// DON'T double-convert - produces slash format
+String yearId = DateUtils.toEconomicsApiYear(
+    DateUtils.toEconomicsUrlYear(year)  // Returns "2025/2026" ❌
+);
+Response response = api.getYearEntries(yearId, filter, pagesize);  // HTTP 404!
+```
+
+**Why This Matters:**
+- Slash format `"2025/2026"` creates URL: `/accounting-years/2025/2026/entries`
+- Server interprets this as THREE path segments, not matching route pattern
+- Results in HTTP 404 Not Found error
+- Underscore format `"2025_6_2026"` creates correct URL: `/accounting-years/2025_6_2026/entries`
+
+### Request Bodies (JSON payloads) - Use Slash Format
+```java
+// For JSON request bodies, use slash format
+String accountingYear = DateUtils.toEconomicsApiYear(year);  // Returns "2025/2026"
+// Include in POST/PUT request body
+```
+
+### Conversion Methods (DateUtils)
+- `toEconomicsUrlYear(String year)` → Returns `"2025_6_2026"` (for URL path parameters)
+- `toEconomicsApiYear(String year)` → Returns `"2025/2026"` (for JSON request bodies)
+
+**Working Reference Implementation:**
+- `EconomicsInvoiceStatusService.toAccountingYearId()` (lines 36-47) - Correct underscore conversion
+- `ExpenseSyncBatchlet.syncExpense()` (line 95) - Fixed 2025-11-19
+
+**Test Pattern:**
+```java
+// Test that path parameters work correctly
+@Test
+void testAccountingYearPathParameter() {
+    String year = "2025/2026";  // Input from database
+    String yearId = DateUtils.toEconomicsUrlYear(year);  // "2025_6_2026"
+
+    Response response = api.getYearEntries(yearId, filter, 1000);
+    assertEquals(200, response.getStatus());  // Should succeed, not 404
+}
+```
+
+### Accountant Notes Synchronization (Added 2025-11-19)
+
+The expense-sync batch job extracts and stores voucher text/notes from e-conomic that accountants add during the verification/booking process.
+
+**Field Mapping**:
+- **e-conomic API**: `entry.text` (from both journal entries and accounting year entries)
+- **Database**: `expenses.accountant_notes` (TEXT column)
+- **Entity**: `Expense.accountantNotes` (separate from user `description`)
+
+**Data Flow**:
+```
+Journal Entries (VERIFIED_UNBOOKED)  → entry.text → expense.accountantNotes
+Accounting Year Entries (VERIFIED_BOOKED) → entry.text → expense.accountantNotes
+User-entered description → expense.description (unchanged, preserved separately)
+```
+
+**Sync Behavior**:
+- Runs every 24 hours as part of `expense-sync` batch job
+- Updates accountant notes for both VERIFIED_UNBOOKED and VERIFIED_BOOKED states
+- Only updates if text has changed (avoids unnecessary database writes)
+- Empty or null text from e-conomic is ignored (no update)
+- User descriptions remain untouched in separate `description` field
+
+**Implementation Details**:
+- **Location**: `ExpenseSyncBatchlet.java`
+  - Line 172: `extractFirstText(String body)` - Extracts text field from API response
+  - Line 88-96: Journal entries sync - Updates accountant notes for VERIFIED_UNBOOKED
+  - Line 127-135: Accounting year sync - Updates accountant notes for VERIFIED_BOOKED
+- **Migration**: `V112__Add_accountant_notes_to_expenses.sql`
+- **Entity Field**: `Expense.accountantNotes` (Lombok generates getters/setters)
+
+**Example Scenario**:
+```
+1. User creates expense: description="Taxi to client meeting"
+2. Expense uploaded to e-conomic
+3. Accountant reviews and adds note in e-conomic: "Approved - business expense, client XYZ"
+4. expense-sync job runs (within 24 hours)
+5. Database updated:
+   - expense.description = "Taxi to client meeting" (unchanged)
+   - expense.accountant_notes = "Approved - business expense, client XYZ" (new)
+```
+
+**API Response Structure**:
+```json
+{
+  "collection": [
+    {
+      "entryNumber": 123,
+      "voucherNumber": 456,
+      "account": {
+        "accountNumber": "5810"
+      },
+      "text": "Approved - business expense, client XYZ",
+      "amount": 1200.00
+    }
+  ]
+}
+```
+
+**Logging**:
+```
+INFO  Expense uuid-123: updating accountant notes (journal): Approved - business expense, client...
+INFO  Expense uuid-456: updating accountant notes (booked): Verified and booked - OK
+```
+
+**References**:
+- Official e-conomic API docs: https://restdocs.e-conomic.com/
+- Journal entries endpoint: https://apis.e-conomic.com/journalsapi/redoc.html
+- Field name: `text` (standard field in all entry responses)
+
 ## Configuration
 
 - `src/main/resources/application.yml` - Main configuration

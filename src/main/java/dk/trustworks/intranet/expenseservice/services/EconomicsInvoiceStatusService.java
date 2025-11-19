@@ -73,22 +73,23 @@ public class EconomicsInvoiceStatusService {
                 String filter = "voucherNumber$eq:" + voucherNumber;
                 String accountingYearId = toAccountingYearId(fiscalYearName);
                 log.debugf("Calling getYearEntries with accountingYearId='%s' and filter='%s'", accountingYearId, filter);
-                Response r = api.getYearEntries(accountingYearId, filter, 1);
-                int status = r.getStatus();
-                log.debugf("getYearEntries status=%d", status);
-                if (status != 200) {
-                    log.warnf("isBooked: non-200 status=%d for invoice %s", status, invoice.getUuid());
-                    return false;
+                try (Response r = api.getYearEntries(accountingYearId, filter, 1)) {
+                    int status = r.getStatus();
+                    log.debugf("getYearEntries status=%d", status);
+                    if (status != 200) {
+                        log.warnf("isBooked: non-200 status=%d for invoice %s", status, invoice.getUuid());
+                        return false;
+                    }
+                    String s = readEntity(r);
+                    if (s == null) {
+                        log.warnf("isBooked: empty response entity for invoice %s", invoice.getUuid());
+                        return false;
+                    }
+                    JsonNode coll = new ObjectMapper().readTree(s).get("collection");
+                    int size = (coll != null && coll.isArray()) ? coll.size() : 0;
+                    log.debugf("isBooked: entries found=%d for invoice %s", size, invoice.getUuid());
+                    return size > 0;
                 }
-                String s = readEntity(r);
-                if (s == null) {
-                    log.warnf("isBooked: empty response entity for invoice %s", invoice.getUuid());
-                    return false;
-                }
-                JsonNode coll = new ObjectMapper().readTree(s).get("collection");
-                int size = (coll != null && coll.isArray()) ? coll.size() : 0;
-                log.debugf("isBooked: entries found=%d for invoice %s", size, invoice.getUuid());
-                return size > 0;
             }
         } catch (Exception e) {
             log.errorf(e, "isBooked failed for invoice %s", invoice != null ? invoice.getUuid() : "null");
@@ -114,32 +115,33 @@ public class EconomicsInvoiceStatusService {
                 String filter = "voucherNumber$eq:" + voucherNumber;
                 String accountingYearId = toAccountingYearId(fiscalYearName);
                 log.debugf("Calling getYearEntries with accountingYearId='%s' and filter='%s'", accountingYearId, filter);
-                Response r = api.getYearEntries(accountingYearId, filter, 1);
-                int status = r.getStatus();
-                log.debugf("getYearEntries status=%d", status);
-                if (status != 200) {
-                    log.warnf("isPaid: non-200 status=%d for invoice %s", status, invoice.getUuid());
-                    return false;
+                try (Response r = api.getYearEntries(accountingYearId, filter, 1)) {
+                    int status = r.getStatus();
+                    log.debugf("getYearEntries status=%d", status);
+                    if (status != 200) {
+                        log.warnf("isPaid: non-200 status=%d for invoice %s", status, invoice.getUuid());
+                        return false;
+                    }
+                    String s = readEntity(r);
+                    if (s == null) {
+                        log.warnf("isPaid: empty response entity for invoice %s", invoice.getUuid());
+                        return false;
+                    }
+                    JsonNode coll = new ObjectMapper().readTree(s).get("collection");
+                    if (coll == null || !coll.isArray() || coll.size() == 0) {
+                        log.debugf("isPaid: no entries yet for invoice %s (likely not booked)", invoice.getUuid());
+                        return false; // not booked yet
+                    }
+                    JsonNode entry = coll.get(0);
+                    if (entry == null || entry.get("remainder") == null) {
+                        log.debugf("isPaid: entry missing remainder for invoice %s", invoice.getUuid());
+                        return false;
+                    }
+                    BigDecimal remainder = entry.get("remainder").decimalValue();
+                    boolean paid = remainder.compareTo(BigDecimal.ZERO) == 0;
+                    log.debugf("isPaid: remainder=%s, paid=%s for invoice %s", remainder.toPlainString(), paid, invoice.getUuid());
+                    return paid;
                 }
-                String s = readEntity(r);
-                if (s == null) {
-                    log.warnf("isPaid: empty response entity for invoice %s", invoice.getUuid());
-                    return false;
-                }
-                JsonNode coll = new ObjectMapper().readTree(s).get("collection");
-                if (coll == null || !coll.isArray() || coll.size() == 0) {
-                    log.debugf("isPaid: no entries yet for invoice %s (likely not booked)", invoice.getUuid());
-                    return false; // not booked yet
-                }
-                JsonNode entry = coll.get(0);
-                if (entry == null || entry.get("remainder") == null) {
-                    log.debugf("isPaid: entry missing remainder for invoice %s", invoice.getUuid());
-                    return false;
-                }
-                BigDecimal remainder = entry.get("remainder").decimalValue();
-                boolean paid = remainder.compareTo(BigDecimal.ZERO) == 0;
-                log.debugf("isPaid: remainder=%s, paid=%s for invoice %s", remainder.toPlainString(), paid, invoice.getUuid());
-                return paid;
             }
         } catch (Exception e) {
             log.errorf(e, "isPaid failed for invoice %s", invoice != null ? invoice.getUuid() : "null");

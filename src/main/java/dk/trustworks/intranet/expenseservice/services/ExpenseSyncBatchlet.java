@@ -53,8 +53,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     }
 
     private void syncExpense(Expense expense) {
-        try {
-            EconomicsAPI api = economicsService.getApiForExpense(expense);
+        try (EconomicsAPI api = economicsService.getApiForExpense(expense)) {
             int jn = expense.getJournalnumber();
             String year = expense.getAccountingyear();
             int vn = expense.getVouchernumber();
@@ -84,6 +83,17 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 } else {
                     log.debug("Expense " + expense.getUuid() + ": account unchanged based on journal");
                 }
+
+                // Extract and update accountant text/notes from e-conomic
+                String textFromEntries = extractFirstText(jrBody);
+                if (textFromEntries != null && !textFromEntries.isEmpty()) {
+                    String currentNotes = expense.getAccountantNotes();
+                    if (currentNotes == null || !currentNotes.equals(textFromEntries)) {
+                        log.info("Expense " + expense.getUuid() + ": updating accountant notes (journal): " + truncate(textFromEntries, 80));
+                        expense.setAccountantNotes(textFromEntries);
+                    }
+                }
+
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
                 log.info("Expense " + expense.getUuid() + " marked VERIFIED_UNBOOKED (unbooked in journal)");
                 return;
@@ -91,10 +101,8 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             // 2) If not in journal, check booked entries under accounting-years
             String yearFilter = "voucherNumber$eq:" + vn;
-            // Convert to API format for e-conomics calls
-            String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsApiYear(
-                dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year)
-            );
+            // Convert to underscore format for accounting-years path parameter
+            String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year);
             Response yr = api.getYearEntries(yearId, yearFilter, 1000);
             int yrStatus = yr != null ? yr.getStatus() : -1;
             String yrBody = null;
@@ -114,6 +122,17 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                     log.info("Expense " + expense.getUuid() + ": account differs (booked); updating " + expense.getAccount() + " -> " + accountFromEntries);
                     expense.setAccount(accountFromEntries);
                 }
+
+                // Extract and update accountant text/notes from e-conomic
+                String textFromEntries = extractFirstText(yrBody);
+                if (textFromEntries != null && !textFromEntries.isEmpty()) {
+                    String currentNotes = expense.getAccountantNotes();
+                    if (currentNotes == null || !currentNotes.equals(textFromEntries)) {
+                        log.info("Expense " + expense.getUuid() + ": updating accountant notes (booked): " + truncate(textFromEntries, 80));
+                        expense.setAccountantNotes(textFromEntries);
+                    }
+                }
+
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
                 log.info("Expense " + expense.getUuid() + " marked VERIFIED_BOOKED (booked to ledger under accounting-years)");
                 return;
@@ -167,6 +186,44 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
             return null;
         } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String extractFirstText(String body) {
+        if (body == null || body.isEmpty()) return null;
+        try {
+            JsonNode root = MAPPER.readTree(body);
+            JsonNode first = null;
+            // Handle different response structures (same as extractFirstAccount)
+            if (root.isArray()) {
+                first = root.size() > 0 ? root.get(0) : null;
+            } else if (root.has("collection") && root.get("collection").isArray()) {
+                JsonNode arr = root.get("collection");
+                first = arr.size() > 0 ? arr.get(0) : null;
+            } else if (root.has("items") && root.get("items").isArray()) {
+                JsonNode arr = root.get("items");
+                first = arr.size() > 0 ? arr.get(0) : null;
+            }
+            if (first == null) return null;
+
+            // Extract text field from entry
+            JsonNode textNode = first.get("text");
+            if (textNode != null && !textNode.isNull() && !textNode.asText().isEmpty()) {
+                return textNode.asText();
+            }
+
+            // Alternative nested structure: entry.text
+            if (first.has("entry") && first.get("entry").has("text")) {
+                JsonNode entryText = first.get("entry").get("text");
+                if (entryText != null && !entryText.isNull() && !entryText.asText().isEmpty()) {
+                    return entryText.asText();
+                }
+            }
+
+            return null;
+        } catch (Exception e) {
+            log.debug("Failed to extract text from response: " + e.getMessage());
             return null;
         }
     }
