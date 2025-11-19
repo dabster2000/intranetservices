@@ -224,16 +224,36 @@ public class DanlonResource {
                             currentSalary.getType() == SalaryType.NORMAL) {
                         // Check if new Danløn number was assigned this month due to salary type change
                         Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
-                                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                                 user.getUuid(),
                                 currentMonth,
                                 "system-salary-type-change"
                         ).firstResultOptional();
 
                         if (newDanlon.isPresent()) {
-                            salaryNote.append("Løntype ændret fra timeløn til månedsløn. Nyt Danløn-nummer: ")
+                            // Look up the previous Danløn number (most recent before current month)
+                            String previousDanlon = danlonHistoryService.getDanlonAsOf(
+                                    user.getUuid(),
+                                    currentMonth.minusMonths(1)
+                            ).orElse("N/A");
+
+                            salaryNote.append("Løntype ændret fra timeløn til månedsløn. ");
+
+                            if (!previousDanlon.equals("N/A")) {
+                                salaryNote.append("Gammelt Danløn-nummer: ")
+                                        .append(previousDanlon)
+                                        .append(". ");
+                            }
+
+                            salaryNote.append("Nyt Danløn-nummer: ")
                                     .append(newDanlon.get().getDanlon())
                                     .append(". ");
+
+                            if (!previousDanlon.equals("N/A")) {
+                                salaryNote.append("Husk at lukke det gamle Danløn-nummer (")
+                                        .append(previousDanlon)
+                                        .append(") i lønsystemet. ");
+                            }
                         } else {
                             salaryNote.append("Løntype ændret fra timeløn til månedsløn. ");
                         }
@@ -243,32 +263,72 @@ public class DanlonResource {
                 // 2c. Company Transition Rule: Check for company transition with new Danløn number
                 if (hasCompanyTransitionThisMonth(user, currentMonth)) {
                     Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
-                            "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                            "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                             user.getUuid(),
                             currentMonth,
                             "system-company-transition"
                     ).firstResultOptional();
 
                     if (newDanlon.isPresent()) {
-                        salaryNote.append("Skiftet firma. Nyt Danløn-nummer: ")
+                        // Look up the previous Danløn number (most recent before current month)
+                        String previousDanlon = danlonHistoryService.getDanlonAsOf(
+                                user.getUuid(),
+                                currentMonth.minusMonths(1)
+                        ).orElse("N/A");
+
+                        salaryNote.append("Skiftet firma. ");
+
+                        if (!previousDanlon.equals("N/A")) {
+                            salaryNote.append("Gammelt Danløn-nummer: ")
+                                    .append(previousDanlon)
+                                    .append(". ");
+                        }
+
+                        salaryNote.append("Nyt Danløn-nummer: ")
                                 .append(newDanlon.get().getDanlon())
                                 .append(". ");
+
+                        if (!previousDanlon.equals("N/A")) {
+                            salaryNote.append("Husk at lukke det gamle Danløn-nummer (")
+                                    .append(previousDanlon)
+                                    .append(") i lønsystemet. ");
+                        }
                     }
                 }
 
                 // 2d. Re-Employment Rule: Check for re-employment with new Danløn number
                 if (hasReEmploymentThisMonth(user, currentMonth)) {
                     Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
-                            "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                            "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                             user.getUuid(),
                             currentMonth,
                             "system-re-employment"
                     ).firstResultOptional();
 
                     if (newDanlon.isPresent()) {
-                        salaryNote.append("Genansættelse. Nyt Danløn-nummer: ")
+                        // Look up the previous Danløn number
+                        String previousDanlon = danlonHistoryService.getDanlonAsOf(
+                                user.getUuid(),
+                                currentMonth.minusMonths(1)
+                        ).orElse("N/A");
+
+                        salaryNote.append("Genansættelse. ");
+
+                        if (!previousDanlon.equals("N/A")) {
+                            salaryNote.append("Gammelt Danløn-nummer: ")
+                                    .append(previousDanlon)
+                                    .append(". ");
+                        }
+
+                        salaryNote.append("Nyt Danløn-nummer: ")
                                 .append(newDanlon.get().getDanlon())
                                 .append(". ");
+
+                        if (!previousDanlon.equals("N/A")) {
+                            salaryNote.append("Husk at lukke det gamle Danløn-nummer (")
+                                    .append(previousDanlon)
+                                    .append(") i lønsystemet. ");
+                        }
                     }
                 }
             }
@@ -526,10 +586,17 @@ public class DanlonResource {
     }
 
     // Helper method: Checks if the user is terminated in the current month (based on next month's period).
+    // Updated to detect company transitions: checks if user has ANY TERMINATED status effective from
+    // the first day of next month, even if they're ACTIVE in a different company on the same date.
     private static boolean isUserTerminatedInCurrentMonth(User user, LocalDate endOfMonth, LocalDate month) {
-        UserStatus status = user.getUserStatus(endOfMonth);
-        return status.getStatus().equals(TERMINATED)
-                && status.getStatusdate().withDayOfMonth(1).isEqual(month);
+        // Check if user has ANY TERMINATED status effective from first day of next month
+        // This handles company transitions where user is TERMINATED from one company
+        // and ACTIVE in another on the same date
+        return user.getStatuses().stream()
+                .anyMatch(status ->
+                        status.getStatus().equals(TERMINATED)
+                                && status.getStatusdate().withDayOfMonth(1).isEqual(month.withDayOfMonth(1))
+                );
     }
 
     /**
@@ -548,7 +615,7 @@ public class DanlonResource {
      */
     private static boolean hasDanlonNumberChangedThisMonth(User user, LocalDate month) {
         return UserDanlonHistory.find(
-                "useruuid = ?1 AND active_date = ?2 AND (created_by = ?3 OR created_by = ?4)",
+                "useruuid = ?1 AND activeDate = ?2 AND (createdBy = ?3 OR createdBy = ?4)",
                 user.getUuid(),
                 month,
                 "system-salary-type-change",
@@ -569,7 +636,7 @@ public class DanlonResource {
      */
     private static boolean hasCompanyTransitionThisMonth(User user, LocalDate month) {
         return UserDanlonHistory.find(
-                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                 user.getUuid(),
                 month,
                 "system-company-transition"
@@ -589,7 +656,7 @@ public class DanlonResource {
      */
     private static boolean hasReEmploymentThisMonth(User user, LocalDate month) {
         return UserDanlonHistory.find(
-                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                 user.getUuid(),
                 month,
                 "system-re-employment"

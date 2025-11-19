@@ -62,6 +62,10 @@ public class StatusService {
         existingStatus.ifPresentOrElse(s -> {
             log.info("StatusService.create -> updating status");
             log.info("status = " + status);
+
+            // VALIDATION: Prevent updates that would orphan Danløn numbers
+            validateStatusUpdate(s, status);
+
             s.setStatus(status.getStatus());
             s.setStatusdate(status.getStatusdate());
             s.setType(status.getType());
@@ -140,9 +144,47 @@ public class StatusService {
         log.info("statusuuid = " + statusuuid);
         UserStatus entity = UserStatus.<UserStatus>findById(statusuuid);
 
-        // CLEANUP RULE: If deleting an ACTIVE status, clean up re-employment Danløn history
+        // CLEANUP RULE 1: Company transition Danløn
+        // Delete company transition Danløn if EITHER TERMINATED or ACTIVE status is deleted
+        // Company transition requires BOTH statuses (TERMINATED in one company, ACTIVE in another on same date)
+        // Deleting either status invalidates the transition, so Danløn must be removed
+        if (entity != null && (entity.getStatus() == StatusType.TERMINATED || entity.getStatus() == StatusType.ACTIVE)) {
+            LocalDate monthStart = entity.getStatusdate().withDayOfMonth(1);
+            String useruuid = entity.getUseruuid();
+
+            log.infof("Deleting %s status for user %s on date %s - checking for company transition Danløn cleanup",
+                    entity.getStatus(), useruuid, entity.getStatusdate());
+
+            // Find company transition Danløn history for this month
+            Optional<UserDanlonHistory> companyTransitionDanlon = UserDanlonHistory.find(
+                    "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
+                    useruuid,
+                    monthStart,
+                    "system-company-transition"
+            ).firstResultOptional();
+
+            if (companyTransitionDanlon.isPresent()) {
+                UserDanlonHistory danlonToDelete = (UserDanlonHistory) companyTransitionDanlon.get();
+                log.warnf("Deleting company transition Danløn history for user %s: uuid=%s, danlon=%s, activeDate=%s (triggered by %s status deletion)",
+                        useruuid, danlonToDelete.getUuid(), danlonToDelete.getDanlon(), danlonToDelete.getActiveDate(), entity.getStatus());
+
+                try {
+                    // Use the service method to ensure denormalized field is updated correctly
+                    danlonHistoryService.deleteDanlonHistory(danlonToDelete.getUuid());
+                    log.infof("Successfully deleted company transition Danløn history for user %s", useruuid);
+                } catch (Exception e) {
+                    // Log error but don't fail the status deletion
+                    log.errorf(e, "Failed to delete company transition Danløn history for user %s", useruuid);
+                }
+            } else {
+                log.debugf("No company transition Danløn history found for user %s in month %s - skipping cleanup",
+                        useruuid, monthStart);
+            }
+        }
+
+        // CLEANUP RULE 2: If deleting an ACTIVE status, clean up re-employment Danløn history
         // Only delete Danløn history with marker 'system-re-employment' to preserve other markers
-        // (company transition, salary type change, manual entries)
+        // (salary type change, manual entries)
         if (entity != null && entity.getStatus() == StatusType.ACTIVE) {
             LocalDate monthStart = entity.getStatusdate().withDayOfMonth(1);
             String useruuid = entity.getUseruuid();
@@ -152,7 +194,7 @@ public class StatusService {
 
             // Find re-employment Danløn history for this month
             Optional<UserDanlonHistory> reEmploymentDanlon = UserDanlonHistory.find(
-                    "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                    "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                     useruuid,
                     monthStart,
                     "system-re-employment"
@@ -175,6 +217,31 @@ public class StatusService {
                 log.debugf("No re-employment Danløn history found for user %s in month %s - skipping cleanup",
                         useruuid, monthStart);
             }
+
+            // CLEANUP RULE 3: Also clean up salary type change Danløn
+            // This handles the case where deleting the UserStatus that enabled the salary type change Danløn
+            Optional<UserDanlonHistory> salaryChangeDanlon = UserDanlonHistory.find(
+                    "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
+                    useruuid,
+                    monthStart,
+                    "system-salary-type-change"
+            ).firstResultOptional();
+
+            if (salaryChangeDanlon.isPresent()) {
+                UserDanlonHistory danlonToDelete = (UserDanlonHistory) salaryChangeDanlon.get();
+                log.warnf("Deleting salary-type-change Danløn history for user %s: uuid=%s, danlon=%s, activeDate=%s",
+                        useruuid, danlonToDelete.getUuid(), danlonToDelete.getDanlon(), danlonToDelete.getActiveDate());
+
+                try {
+                    danlonHistoryService.deleteDanlonHistory(danlonToDelete.getUuid());
+                    log.infof("Successfully deleted salary-type-change Danløn history for user %s", useruuid);
+                } catch (Exception e) {
+                    log.errorf(e, "Failed to delete salary-type-change Danløn history for user %s", useruuid);
+                }
+            } else {
+                log.debugf("No salary-type-change Danløn history found for user %s in month %s - skipping cleanup",
+                        useruuid, monthStart);
+            }
         }
 
         UserStatus.deleteById(statusuuid);
@@ -190,6 +257,61 @@ public class StatusService {
     private void sendUpdateEvent(UserStatus status) {
         UpdateUserStatusEvent event = new UpdateUserStatusEvent(status.getUseruuid(), status);
         aggregateEventSender.handleEvent(event);
+    }
+
+    /**
+     * Validates that a UserStatus update will not orphan Danløn numbers.
+     * <p>
+     * This method enforces strict validation to prevent updates that would create orphaned Danløn history records.
+     * Users must DELETE the old status and CREATE a new one instead of UPDATE when:
+     * 1. Changing status type from ACTIVE to something else (would orphan re-employment/company transition Danløn)
+     * 2. Changing statusdate to a different month (would orphan Danløn in old month)
+     * </p>
+     *
+     * @param existingStatus The current UserStatus in the database
+     * @param newStatus The updated UserStatus being saved
+     * @throws IllegalStateException if the update would orphan Danløn numbers
+     */
+    private void validateStatusUpdate(UserStatus existingStatus, UserStatus newStatus) {
+        String useruuid = existingStatus.getUseruuid();
+        LocalDate oldMonth = existingStatus.getStatusdate().withDayOfMonth(1);
+        LocalDate newMonth = newStatus.getStatusdate().withDayOfMonth(1);
+
+        // VALIDATION 1: Prevent status type changes from ACTIVE if Danløn exists
+        boolean statusChangingFromActive = existingStatus.getStatus() == StatusType.ACTIVE
+                && newStatus.getStatus() != StatusType.ACTIVE;
+
+        if (statusChangingFromActive) {
+            // Check if there's a Danløn number for this user in this month
+            boolean hasDanlonThisMonth = danlonHistoryService.hasDanlonChangedInMonth(useruuid, oldMonth);
+
+            if (hasDanlonThisMonth) {
+                throw new IllegalStateException(
+                    "Cannot change status from ACTIVE to " + newStatus.getStatus() +
+                    " because it would orphan Danløn number for " + oldMonth.getMonth() + " " + oldMonth.getYear() + ". " +
+                    "Please DELETE this status and CREATE a new " + newStatus.getStatus() + " status instead."
+                );
+            }
+        }
+
+        // VALIDATION 2: Prevent date changes to different month if Danløn exists in old month
+        boolean dateChangingToNewMonth = !oldMonth.equals(newMonth);
+
+        if (dateChangingToNewMonth) {
+            // Check if there's a Danløn number for the OLD month
+            boolean hasDanlonInOldMonth = danlonHistoryService.hasDanlonChangedInMonth(useruuid, oldMonth);
+
+            if (hasDanlonInOldMonth) {
+                throw new IllegalStateException(
+                    "Cannot change status date from " + existingStatus.getStatusdate() +
+                    " to " + newStatus.getStatusdate() +
+                    " because it would orphan Danløn number for " + oldMonth.getMonth() + " " + oldMonth.getYear() + ". " +
+                    "Please DELETE this status and CREATE a new status for " + newMonth.getMonth() + " " + newMonth.getYear() + " instead."
+                );
+            }
+        }
+
+        log.debugf("Status update validation passed for user %s", useruuid);
     }
 
     /**
@@ -241,7 +363,10 @@ public class StatusService {
         ).firstResultOptional();
 
         if (currentMonthSalary.isEmpty()) {
-            log.debugf("No NORMAL salary found for user %s in month %s - skipping", useruuid, monthStart);
+            log.warnf("No NORMAL salary found for user %s in month %s - skipping Danløn generation. " +
+                    "This may indicate a timing issue where UserStatus was created before Salary record. " +
+                    "Salary type change detection will be handled by SalaryService when salary is created later.",
+                    useruuid, monthStart);
             return;
         }
 

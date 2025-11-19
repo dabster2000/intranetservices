@@ -204,6 +204,25 @@ LocalDate transitionDate = LocalDate.of(2025, 11, 1);
 // with marker "system-company-transition"
 ```
 
+**Cleanup Behavior** (Updated 2025-11-18):
+- When EITHER TERMINATED or ACTIVE status is deleted, the corresponding company transition Danløn is automatically deleted
+- Company transition requires BOTH statuses (TERMINATED in one company + ACTIVE in another on same date)
+- Deleting EITHER status invalidates the transition → Danløn must be removed
+- Cleanup location: `StatusService.delete()` (lines 143-179)
+
+**Cleanup Rationale**:
+```java
+// Delete ACTIVE status → Company transition Danløn deleted
+// User is just TERMINATED, not transitioning
+
+// Delete TERMINATED status → Company transition Danløn deleted
+// User is just becoming ACTIVE (new hire or re-employment), not transitioning
+```
+
+**Difference from Re-Employment Cleanup**:
+- Company transition: Delete when EITHER TERMINATED or ACTIVE is deleted (requires both statuses)
+- Re-employment: Delete only when ACTIVE is deleted (defined only by ACTIVE status)
+
 #### 2. Salary Type Change (HOURLY → NORMAL)
 **Marker**: `created_by = 'system-salary-type-change'`
 
@@ -256,7 +275,7 @@ admin.changeSalaryType(HOURLY → NORMAL);  // SalaryService: finds UserStatus �
 **Cleanup Behavior**:
 - When ACTIVE status is deleted, the corresponding re-employment Danløn is automatically deleted
 - Other Danløn markers (company transition, salary type change, manual entries) are preserved
-- Cleanup location: `StatusService.delete()` (lines 137-182)
+- Cleanup location: `StatusService.delete()` (lines 181-215)
 
 **Example**:
 ```java

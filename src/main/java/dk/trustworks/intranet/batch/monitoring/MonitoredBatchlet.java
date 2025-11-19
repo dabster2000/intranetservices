@@ -49,13 +49,13 @@ public abstract class MonitoredBatchlet extends AbstractBatchlet {
         long executionId = jobContext.getExecutionId();
         String jobName = jobContext.getJobName();
         
-        log.infof("Starting monitored execution of job %s (execution %d)", jobName, executionId);
+        log.debugf("Starting monitored execution of job %s (execution %d)", jobName, executionId);
         
         try {
             // Call the template method that subclasses implement
             String result = doProcess();
             
-            log.infof("Job %s (execution %d) completed successfully with result: %s",
+            log.debugf("Job %s (execution %d) completed successfully with result: %s",
                       jobName, executionId, result);
             
             return result;

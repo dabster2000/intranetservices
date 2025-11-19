@@ -30,6 +30,6 @@ public class MailSendBatchlet extends MonitoredBatchlet {
     @Override
     protected void onFinally(long executionId, String jobName) {
         // Optional cleanup
-        log.info("Cleaning up after job execution");
+        log.debugf("Cleaning up after job execution");
     }
 }

@@ -37,7 +37,7 @@ public class BatchJobTrackingService {
        ========================================================= */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void onJobFailure(long executionId, Throwable error, String exitStatus) {
-        log.infof("[BATCH-MONITOR] onJobFailure called for execution %d with exitStatus: %s", executionId, exitStatus);
+        log.errorf("[BATCH-MONITOR] onJobFailure called for execution %d with exitStatus: %s", executionId, exitStatus);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
         if (e == null) {
             log.warnf("[BATCH-MONITOR] Cannot update job failure - no tracking record found for execution %d", executionId);
@@ -51,7 +51,7 @@ public class BatchJobTrackingService {
         e.setEndTime(LocalDateTime.now());
         e.setTraceLog(stackTraceOf(error));
         em.merge(e);
-        log.infof("[BATCH-MONITOR] Job failure recorded for execution %d", executionId);
+        log.errorf("[BATCH-MONITOR] Job failure recorded for execution %d", executionId);
     }
 
     /* =========================================================
@@ -89,11 +89,11 @@ public class BatchJobTrackingService {
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void onJobStart(long executionId, String jobName) {
-        log.infof("[BATCH-MONITOR] onJobStart called for job '%s' execution %d", jobName, executionId);
+        log.debugf("[BATCH-MONITOR] onJobStart called for job '%s' execution %d", jobName, executionId);
         try {
             // ALWAYS create a new record - NEVER update existing ones
             // This prevents data corruption when JBatch reuses execution IDs after server restart
-            log.infof("[BATCH-MONITOR] Creating new tracking record for job '%s' execution %d", jobName, executionId);
+            log.debugf("[BATCH-MONITOR] Creating new tracking record for job '%s' execution %d", jobName, executionId);
             
             BatchJobExecutionTracking e = new BatchJobExecutionTracking();
             e.setExecutionId(executionId);
@@ -106,8 +106,7 @@ public class BatchJobTrackingService {
             em.persist(e);
             em.flush(); // Force immediate persistence
             
-            log.infof("[BATCH-MONITOR] Successfully created tracking record (id=%d) for job '%s' execution %d", 
-                     e.getId(), jobName, executionId);
+            //log.infof("[BATCH-MONITOR] Successfully created tracking record (id=%d) for job '%s' execution %d", e.getId(), jobName, executionId);
         } catch (Exception ex) {
             log.errorf(ex, "[BATCH-MONITOR] Failed to create tracking record for job '%s' execution %d", jobName, executionId);
             throw ex;
@@ -116,7 +115,7 @@ public class BatchJobTrackingService {
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void onJobEnd(long executionId, String batchStatus, String exitStatus) {
-        log.infof("[BATCH-MONITOR] onJobEnd called for execution %d - batchStatus: %s, exitStatus: %s", 
+        log.debugf("[BATCH-MONITOR] onJobEnd called for execution %d - batchStatus: %s, exitStatus: %s",
                  executionId, batchStatus, exitStatus);
         try {
             // Small delay to allow partition progress updates to commit
@@ -163,7 +162,7 @@ public class BatchJobTrackingService {
                 e.setProgressPercent(100);
             } else if ("FAILED".equalsIgnoreCase(batchStatus) || "STOPPED".equalsIgnoreCase(batchStatus)) {
                 result = "FAILED";
-                log.infof("[BATCH-MONITOR] Job marked as FAILED (status: %s)", batchStatus);
+                log.errorf("[BATCH-MONITOR] Job marked as FAILED (status: %s)", batchStatus);
             } else {
                 result = batchStatus; // fallback
                 log.warnf("[BATCH-MONITOR] Unknown batch status '%s', using as result", batchStatus);
@@ -171,7 +170,7 @@ public class BatchJobTrackingService {
             e.setResult(result);
             em.merge(e);
             em.flush(); // Force immediate persistence
-            log.infof("[BATCH-MONITOR] Successfully updated job end for execution %d with result: %s", 
+            log.debugf("[BATCH-MONITOR] Successfully updated job end for execution %d with result: %s",
                      executionId, result);
         } catch (Exception ex) {
             log.errorf(ex, "[BATCH-MONITOR] Failed to update job end for execution %d", executionId);
@@ -230,7 +229,7 @@ public class BatchJobTrackingService {
 
     @Transactional(Transactional.TxType.REQUIRED)
     public void setTotalSubtasks(long executionId, int total) {
-        log.infof("[BATCH-MONITOR] Setting total subtasks to %d for execution %d", total, executionId);
+        log.debugf("[BATCH-MONITOR] Setting total subtasks to %d for execution %d", total, executionId);
         BatchJobExecutionTracking e = findByExecutionIdForUpdate(executionId);
         if (e == null) {
             log.warnf("[BATCH-MONITOR] Cannot set total subtasks - no tracking record found for execution %d", executionId);

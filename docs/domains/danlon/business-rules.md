@@ -107,6 +107,16 @@ Result: New Danløn number T1234 generated with marker "system-salary-type-chang
 
 **Precedence**: This rule takes **absolute precedence** over Rule 2b (salary type change). If both company transition AND salary type change occur in the same month, only the company transition generates a Danløn number.
 
+**Cleanup**: When EITHER the TERMINATED or ACTIVE status is deleted, the corresponding company transition Danløn history is automatically deleted.
+
+**Cleanup Rationale**:
+- Company transition is defined by BOTH statuses existing on the same date (TERMINATED in one company + ACTIVE in another)
+- Deleting TERMINATED status: Termination didn't happen → no transition occurred
+- Deleting ACTIVE status: Activation didn't happen → no transition occurred
+- Either deletion invalidates the company transition, requiring Danløn removal
+
+**Cleanup Location**: `StatusService.delete()` (lines 143-179)
+
 **Implementation Details**:
 - **Exact Date Matching**: Termination and activation must be on the exact same date
 - **Company Filtering**: Query uses `company.uuid != ?` to ensure different companies
@@ -144,6 +154,28 @@ Company B: User PREBOARDING on 2025-11-01
 Result: No Danløn number generated (PREBOARDING excluded)
 ```
 
+**Cleanup Example Scenarios**:
+
+**🧹 Cleanup: Delete ACTIVE status**:
+```
+Step 1: Company A TERMINATED on 2025-11-01, Company B ACTIVE on 2025-11-01
+        → Company transition Danløn T1234 generated with marker "system-company-transition"
+
+Step 2: Admin deletes ACTIVE status (oops, user didn't actually start at Company B)
+        → Company transition Danløn T1234 automatically deleted
+        → User is just TERMINATED, not transitioning
+```
+
+**🧹 Cleanup: Delete TERMINATED status**:
+```
+Step 1: Company A TERMINATED on 2025-11-01, Company B ACTIVE on 2025-11-01
+        → Company transition Danløn T1234 generated with marker "system-company-transition"
+
+Step 2: Admin deletes TERMINATED status (oops, termination didn't happen)
+        → Company transition Danløn T1234 automatically deleted
+        → User is just becoming ACTIVE (new hire or re-employment)
+```
+
 ---
 
 ### Rule 4: Re-Employment (NEW - Third Priority)
@@ -172,6 +204,7 @@ Result: No Danløn number generated (PREBOARDING excluded)
 - **Time Gap**: No minimum gap required (same date allowed)
 - **Error Handling**: Gracefully handles race conditions with try-catch for `IllegalArgumentException`
 - **Cleanup Location**: `StatusService.delete()` (lines 137-182)
+- **UI Refresh**: Frontend automatically reloads Danløn field after UserStatus deletion via callback pattern (EmployeeInfoPage.reloadDanlonId())
 
 **Example Scenarios**:
 
@@ -211,8 +244,9 @@ Result: Re-employment detected (PREBOARDING ignored as transition state)
 # Create re-employment Danløn
 statusService.create(activeStatus) → Danløn T6789 created
 
-# Delete ACTIVE status
+# Delete ACTIVE status (via UI or API)
 statusService.delete(activeStatus.uuid) → Danløn T6789 automatically deleted
+UI reloadDanlonCallback.run() → Danløn field refreshes immediately (no page reload needed)
 ```
 
 ---
@@ -253,6 +287,250 @@ When multiple rules could apply in the same month, the following precedence orde
 4. **Rule 1, 2a, 5**: Other Rules
    - Do not generate new Danløn numbers
    - Reported in change detection endpoints
+
+---
+
+## Update Restrictions and Orphan Prevention (Added 2025-11-18)
+
+**CRITICAL**: UserStatus updates that would orphan Danløn numbers are BLOCKED by strict validation.
+
+### Problem Statement
+
+When a UserStatus record is updated (status type or date changes), it can invalidate the business rules that generated the associated Danløn number, creating "orphaned" Danløn history records that no longer correspond to valid employment states.
+
+**Orphaning Scenarios**:
+
+1. **Status Type Change** (ACTIVE → TERMINATED):
+   - Re-employment Danløn was generated because user was ACTIVE
+   - Changing to TERMINATED invalidates the re-employment
+   - Danløn T6789 now orphaned in the payroll system
+
+2. **Date Change Across Months** (Nov 1 → Dec 1):
+   - Danløn T1234 was generated for November with marker "system-re-employment"
+   - Changing date to December moves the ACTIVE status to different month
+   - Danløn T1234 orphaned in November (no ACTIVE status exists)
+
+### Solution: Strict Validation
+
+**Philosophy**: PREVENT orphaning at validation layer rather than cleanup after the fact.
+
+**Enforcement**: Users MUST delete the existing UserStatus and create a new one instead of updating when:
+- Changing status type from ACTIVE to any other status (if Danløn exists)
+- Changing statusdate to a different month (if Danløn exists in old month)
+
+### Validation Rules
+
+#### Validation 1: Prevent Status Type Changes from ACTIVE
+
+**Check**: If status type is changing FROM `ACTIVE` to any other status AND Danløn number exists for this month.
+
+**Error Message**:
+```
+Cannot change status from ACTIVE to TERMINATED because it would orphan Danløn number for NOVEMBER 2025.
+Please DELETE this status and CREATE a new TERMINATED status instead.
+```
+
+**Implementation**: `StatusService.validateStatusUpdate()` (lines 275-315)
+
+**Code Pattern**:
+```java
+boolean statusChangingFromActive = existingStatus.getStatus() == StatusType.ACTIVE
+        && newStatus.getStatus() != StatusType.ACTIVE;
+
+if (statusChangingFromActive) {
+    boolean hasDanlonThisMonth = danlonHistoryService.hasDanlonChangedInMonth(useruuid, oldMonth);
+    if (hasDanlonThisMonth) {
+        throw new IllegalStateException("Cannot change status from ACTIVE to " + newStatus.getStatus() + "...");
+    }
+}
+```
+
+#### Validation 2: Prevent Date Changes Across Months
+
+**Check**: If statusdate is changing to a different month AND Danløn number exists in the OLD month.
+
+**Error Message**:
+```
+Cannot change status date from 2025-11-01 to 2025-12-01 because it would orphan Danløn number for NOVEMBER 2025.
+Please DELETE this status and CREATE a new status for DECEMBER 2025 instead.
+```
+
+**Implementation**: `StatusService.validateStatusUpdate()` (lines 275-315)
+
+**Code Pattern**:
+```java
+LocalDate oldMonth = existingStatus.getStatusdate().withDayOfMonth(1);
+LocalDate newMonth = newStatus.getStatusdate().withDayOfMonth(1);
+boolean dateChangingToNewMonth = !oldMonth.equals(newMonth);
+
+if (dateChangingToNewMonth) {
+    boolean hasDanlonInOldMonth = danlonHistoryService.hasDanlonChangedInMonth(useruuid, oldMonth);
+    if (hasDanlonInOldMonth) {
+        throw new IllegalStateException("Cannot change status date from " + existingStatus.getStatusdate() + "...");
+    }
+}
+```
+
+### Correct Workflow
+
+**Instead of UPDATE, use DELETE + CREATE**:
+
+**Step 1**: DELETE the existing UserStatus
+- Automatic cleanup removes associated Danløn number (if applicable)
+- See "Rule 4: Re-Employment" cleanup behavior
+
+**Step 2**: CREATE new UserStatus with desired changes
+- Business rules re-evaluate based on new status
+- New Danløn may be generated if rules apply
+
+**Example**:
+```
+# Original state
+UserStatus: ACTIVE on 2025-11-01 (Company A)
+Danløn: T6789 with marker "system-re-employment"
+
+# User wants to change to TERMINATED on 2025-11-01
+# ❌ BLOCKED: Cannot UPDATE status type from ACTIVE to TERMINATED
+
+# ✅ CORRECT workflow:
+Step 1: DELETE UserStatus(ACTIVE, 2025-11-01)
+        → Danløn T6789 automatically deleted (re-employment cleanup)
+
+Step 2: CREATE UserStatus(TERMINATED, 2025-11-01)
+        → No new Danløn generated (termination rule doesn't generate)
+```
+
+### Frontend Integration
+
+#### Error Handling
+
+**Location**: `UserStatusEdit.java` save listener (lines 215-244)
+
+**Pattern**:
+```java
+try {
+    userService.create(getCurrentUser().getUuid(), userStatus);
+    // ... success notification
+} catch (Exception e) {
+    if (e.getMessage() != null && e.getMessage().contains("orphan Danløn")) {
+        // Show user-friendly error with full backend message
+        Notification.show("Update blocked: " + e.getMessage(), 5000, Notification.Position.MIDDLE)
+                .addThemeVariants(NotificationVariant.LUMO_ERROR);
+
+        // Cancel edit operation to prevent data loss
+        crud.getEditor().cancel();
+        dataProvider.refreshAll();
+    } else {
+        // Re-throw unexpected errors
+        throw new RuntimeException(e);
+    }
+}
+```
+
+**Behavior**:
+- Catches `IllegalStateException` from backend validation
+- Displays full error message to user (includes actionable instructions)
+- Cancels the editor to prevent confusion
+- Refreshes grid to show original values
+
+#### User Guidance
+
+**Location**: `UserStatusEdit.java` help text (lines 159-182)
+
+**UI Component**: Warning box with yellow background positioned in form help section
+
+**Content**:
+```
+⚠️ IMPORTANT: Danløn Number Protection
+
+If a user has an automatically generated Danløn number (re-employment, company transition),
+you CANNOT update the status type or date. You must DELETE the existing status and CREATE
+a new one instead. This prevents orphaned Danløn numbers in the payroll system.
+```
+
+**Styling**:
+- Yellow background (`#fff3cd`)
+- Warning border (`#ffc107`)
+- Bold title with warning emoji
+- Clear, actionable instructions
+
+### Implementation Details
+
+**Backend Validation**:
+- Called in `StatusService.create()` before update branch (line 67)
+- Only validates UPDATE operations (INSERT operations skip validation)
+- Throws `IllegalStateException` with detailed error messages
+- Error messages include specific dates and months for clarity
+
+**Pattern Recognition**:
+```java
+// In StatusService.create()
+status.findByIdOptional(status.getUuid()).ifPresentOrElse(
+    s -> {
+        // VALIDATION: Prevent updates that would orphan Danløn numbers
+        validateStatusUpdate(s, status);  // ← Validation before update
+
+        // ... update logic
+    },
+    () -> {
+        // ... insert logic (no validation needed)
+    }
+);
+```
+
+**Error Message Design**:
+- Explains WHAT is blocked ("Cannot change status from ACTIVE to TERMINATED")
+- Explains WHY ("would orphan Danløn number for NOVEMBER 2025")
+- Provides SOLUTION ("Please DELETE this status and CREATE a new one instead")
+
+### Testing Strategy
+
+**Unit Tests** (Recommended):
+- `StatusService.validateStatusUpdate()` with various scenarios
+- Status type changes: ACTIVE → TERMINATED, ACTIVE → PREBOARDING
+- Date changes: Same month (allowed), different month (blocked if Danløn exists)
+- Edge cases: No Danløn exists (updates allowed), multiple Danløn markers
+
+**Integration Tests** (Recommended):
+- Full workflow: Create status with Danløn → Attempt update → Verify blocked
+- DELETE + CREATE workflow: Verify cleanup and re-generation
+- Frontend error handling: Verify notification and editor cancel
+
+**Manual Testing Checklist**:
+1. Create ACTIVE status that triggers re-employment (generates Danløn)
+2. Attempt to change status type to TERMINATED → Verify blocked with error
+3. Attempt to change date to different month → Verify blocked with error
+4. DELETE the ACTIVE status → Verify Danløn removed
+5. CREATE new status with desired changes → Verify business rules re-evaluate
+
+### Rationale and Trade-offs
+
+**Why Strict Validation Instead of Automatic Cleanup?**
+
+**✅ Advantages**:
+- **Data Integrity**: Prevents inconsistent state from ever occurring
+- **Audit Trail**: Clear separation between DELETE and CREATE events
+- **User Awareness**: Forces users to understand Danløn implications
+- **Simplicity**: Single validation method vs complex cleanup logic for all update scenarios
+
+**❌ Disadvantages**:
+- **User Friction**: Requires DELETE + CREATE instead of simple UPDATE
+- **Multi-Step Workflow**: More clicks in UI
+
+**Decision**: Data integrity and audit clarity outweigh user convenience for payroll-critical operations.
+
+### Migration Notes
+
+**Existing Code Compatibility**:
+- Validation only applies to UPDATE operations (existing INSERT logic unchanged)
+- Error messages reference backend validation (no changes to REST API contracts)
+- Frontend error handling gracefully degrades (shows generic error if pattern not matched)
+
+**Rollback Plan**:
+If validation causes issues in production:
+1. Comment out `validateStatusUpdate()` call in `StatusService.create()` (line 67)
+2. Redeploy backend
+3. Frontend continues to work (catches any errors generically)
 
 ## Implementation Architecture
 
@@ -404,3 +682,5 @@ Historical data migration followed this pattern:
 | 2025-11-17 | 1.0 | System | Initial documentation of Danløn generation rules |
 | 2025-11-17 | 1.1 | System | Added Rule 3 (Company Transition) with precedence logic |
 | 2025-11-17 | 1.2 | System | Added Rule 4 (Re-Employment) with cleanup logic and precedence ordering |
+| 2025-11-18 | 1.3 | System | Extended Rule 3 cleanup to delete company transition Danløn when EITHER TERMINATED or ACTIVE status is deleted (not just ACTIVE). Fixed termination detection in DanlonResource to handle company transitions. |
+| 2025-11-18 | 1.4 | System | Added comprehensive "Update Restrictions and Orphan Prevention" section documenting strict validation rules that prevent UserStatus updates from orphaning Danløn numbers. Includes validation logic, error messages, correct DELETE + CREATE workflow, frontend integration patterns, and rationale for strict validation approach. |

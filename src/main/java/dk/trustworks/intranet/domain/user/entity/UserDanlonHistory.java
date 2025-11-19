@@ -115,7 +115,7 @@ public class UserDanlonHistory extends PanacheEntityBase {
      * @return List of history records, newest first
      */
     public static List<UserDanlonHistory> findByUseruuid(String useruuid) {
-        return UserDanlonHistory.find("useruuid = ?1 ORDER BY active_date DESC", useruuid).list();
+        return UserDanlonHistory.find("useruuid = ?1 ORDER BY activeDate DESC", useruuid).list();
     }
 
     /**
@@ -128,7 +128,7 @@ public class UserDanlonHistory extends PanacheEntityBase {
      */
     public static String findDanlonAsOf(String useruuid, LocalDate asOfDate) {
         return UserDanlonHistory.find(
-            "useruuid = ?1 AND active_date <= ?2 ORDER BY active_date DESC",
+            "useruuid = ?1 AND activeDate <= ?2 ORDER BY activeDate DESC",
             useruuid,
             asOfDate
         ).firstResultOptional()
@@ -166,7 +166,7 @@ public class UserDanlonHistory extends PanacheEntityBase {
      */
     public static UserDanlonHistory findLatestRecord(String useruuid) {
         return UserDanlonHistory.find(
-            "useruuid = ?1 ORDER BY active_date DESC",
+            "useruuid = ?1 ORDER BY activeDate DESC",
             useruuid
         ).firstResultOptional()
          .map(entity -> (UserDanlonHistory) entity)

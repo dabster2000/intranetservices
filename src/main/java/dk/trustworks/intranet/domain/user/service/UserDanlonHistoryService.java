@@ -75,7 +75,7 @@ public class UserDanlonHistoryService {
         }
 
         // Check for duplicate
-        long existingCount = UserDanlonHistory.count("useruuid = ?1 AND active_date = ?2", useruuid, normalizedDate);
+        long existingCount = UserDanlonHistory.count("useruuid = ?1 AND activeDate = ?2", useruuid, normalizedDate);
         if (existingCount > 0) {
             String error = String.format(
                     "Danløn history already exists for user %s on date %s. Use updateDanlonHistory() to modify existing records.",
@@ -257,7 +257,7 @@ public class UserDanlonHistoryService {
      */
     public boolean hasDanlonChangedInMonth(String useruuid, LocalDate month) {
         LocalDate normalizedMonth = month.withDayOfMonth(1);
-        return UserDanlonHistory.count("useruuid = ?1 AND active_date = ?2", useruuid, normalizedMonth) > 0;
+        return UserDanlonHistory.count("useruuid = ?1 AND activeDate = ?2", useruuid, normalizedMonth) > 0;
     }
 
     /**
@@ -279,7 +279,7 @@ public class UserDanlonHistoryService {
     public boolean hasDanlonChangedInMonthBy(String useruuid, LocalDate month, String createdBy) {
         LocalDate normalizedMonth = month.withDayOfMonth(1);
         return UserDanlonHistory.count(
-                "useruuid = ?1 AND active_date = ?2 AND created_by = ?3",
+                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
                 useruuid, normalizedMonth, createdBy
         ) > 0;
     }

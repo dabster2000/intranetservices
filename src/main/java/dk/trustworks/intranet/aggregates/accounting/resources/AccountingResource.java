@@ -9,6 +9,7 @@ import dk.trustworks.intranet.dto.DateAccountCategoriesDTO;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
+import dk.trustworks.intranet.expenseservice.model.UserAccountDTO;
 import dk.trustworks.intranet.expenseservice.resources.ExpenseResource;
 import dk.trustworks.intranet.expenseservice.resources.UserAccountResource;
 import dk.trustworks.intranet.financeservice.model.AccountLumpSum;
@@ -25,7 +26,9 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.SecurityContext;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -1316,7 +1319,7 @@ public class AccountingResource {
 
     @GET
     @Path("/user-accounts/{useruuid}")
-    public UserAccount getUserAccountByUser(@PathParam("useruuid") String useruuid) {
+    public UserAccountDTO getUserAccountByUser(@PathParam("useruuid") String useruuid) {
         return userAccountAPI.getAccountByUser(useruuid);
     }
 
@@ -1329,14 +1332,16 @@ public class AccountingResource {
 
     @POST
     @Path("/user-accounts")
-    public void saveUserAccount(UserAccount userAccount) {
-        userAccountAPI.saveAccount(userAccount);
+    public void saveUserAccount(UserAccountDTO userAccount, @Context SecurityContext securityContext) {
+        userAccountAPI.saveAccount(userAccount, securityContext);
     }
 
     @PUT
     @Path("/user-accounts/{useruuid}")
-    public void updateUserAccount(@PathParam("useruuid") String useruuid, UserAccount userAccount) {
-        userAccountAPI.updateAccount(useruuid, userAccount);
+    public void updateUserAccount(@PathParam("useruuid") String useruuid,
+                                  UserAccountDTO userAccount,
+                                  @Context SecurityContext securityContext) {
+        userAccountAPI.updateAccount(useruuid, userAccount, securityContext);
     }
 
     // AccountPlan Resource
