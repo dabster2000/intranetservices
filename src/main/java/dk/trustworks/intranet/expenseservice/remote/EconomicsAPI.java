@@ -78,4 +78,10 @@ public interface EconomicsAPI extends AutoCloseable {
                            @PathParam("voucherNumber") int voucherNumber,
                            @HeaderParam("Idempotency-Key") String idempotencyKey,
                            MultipartFormDataOutput file);
+
+        @DELETE
+        @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}")
+        Response deleteVoucher(@PathParam("journalNumber") int journalNumber,
+                               @PathParam("accountingYear") String accountingYear,
+                               @PathParam("voucherNumber") int voucherNumber);
 }

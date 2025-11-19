@@ -46,6 +46,9 @@ public class ExpenseResource {
     @Inject
     EntityManager em;
 
+    @Inject
+    dk.trustworks.intranet.expenseservice.services.EconomicsService economicsService;
+
     @GET
     @Path("/{uuid}")
     public Expense findByUuid(@PathParam("uuid") String uuid) {
@@ -60,10 +63,24 @@ public class ExpenseResource {
 
     @GET
     @Path("/user/{useruuid}")
-    public List<Expense> findByUser(@PathParam("useruuid") String useruuid, @QueryParam("limit") String limit, @QueryParam("page") String page) {
+    public List<Expense> findByUser(@PathParam("useruuid") String useruuid,
+                                     @QueryParam("limit") String limit,
+                                     @QueryParam("page") String page,
+                                     @QueryParam("includeDeleted") @DefaultValue("false") boolean includeDeleted) {
         int pageInt = Integer.parseInt(page);
         int limitInt = Integer.parseInt(limit);
-        return Expense.find("useruuid = ?1 and status not like ?2", Sort.by("expensedate").descending(), useruuid, "DELETED").page(Page.of(pageInt, limitInt)).list();
+
+        if (includeDeleted) {
+            // Include ALL expenses (including DELETED)
+            return Expense.find("useruuid = ?1", Sort.by("expensedate").descending(), useruuid)
+                    .page(Page.of(pageInt, limitInt))
+                    .list();
+        } else {
+            // Exclude DELETED (current behavior - backward compatible)
+            return Expense.find("useruuid = ?1 and status not like ?2", Sort.by("expensedate").descending(), useruuid, "DELETED")
+                    .page(Page.of(pageInt, limitInt))
+                    .list();
+        }
     }
 
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid) {
@@ -191,7 +208,7 @@ public class ExpenseResource {
             params.add(expense.getStatus());
         }
 
-        if (updateQuery.length() == 0) {
+        if (updateQuery.isEmpty()) {
             return; // Nothing to update
         }
 
@@ -212,11 +229,62 @@ public class ExpenseResource {
         if (expense == null) {
             throw new WebApplicationException("Expense not found", 404);
         }
-        if (!expense.isLocked()) {
-            Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
-        } else {
+
+        // Check if expense is locked
+        if (expense.isLocked()) {
             throw new WebApplicationException("Cannot delete a locked expense", 400);
         }
+
+        // Check if expense has voucher in e-conomic (vouchernumber > 0)
+        if (expense.getVouchernumber() > 0) {
+            log.infof("Expense %s has voucher reference: journal=%d, voucher=%d, year=%s, status=%s",
+                    uuid, expense.getJournalnumber(), expense.getVouchernumber(), expense.getAccountingyear(), expense.getStatus());
+
+            // Prevent deletion of booked vouchers
+            if ("VERIFIED_BOOKED".equals(expense.getStatus())) {
+                log.errorf("Cannot delete expense %s: voucher has been booked to ledger", uuid);
+                throw new WebApplicationException("Cannot delete booked expense - voucher has been posted to ledger", 400);
+            }
+
+            // Delete voucher from e-conomic
+            try {
+                log.infof("Deleting voucher from e-conomic for expense %s", uuid);
+                economicsService.deleteVoucher(expense);
+
+                // Clear voucher references after successful deletion
+                log.infof("Clearing voucher references for expense %s", uuid);
+                Expense.update("vouchernumber = 0, journalnumber = null, accountingyear = null, " +
+                              "status = ?1, datemodified = ?2 WHERE uuid = ?3",
+                        "DELETED", LocalDate.now(), uuid);
+
+            } catch (IllegalArgumentException e) {
+                // Missing voucher references - shouldn't happen but handle gracefully
+                log.warnf(e, "Expense %s has vouchernumber but missing other references", uuid);
+                // Proceed with local soft delete
+                Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+
+            } catch (Exception e) {
+                // Check if it's a 404 (voucher not found) - auto-reconcile
+                String errorMsg = e.getMessage();
+                if (errorMsg != null && errorMsg.contains("404")) {
+                    log.warnf("Voucher not found in e-conomic (404) for expense %s - auto-reconciling by soft deleting locally", uuid);
+                    // Clear voucher references and soft delete
+                    Expense.update("vouchernumber = 0, journalnumber = null, accountingyear = null, " +
+                                  "status = ?1, datemodified = ?2 WHERE uuid = ?3",
+                            "DELETED", LocalDate.now(), uuid);
+                } else {
+                    // Other errors - rethrow
+                    log.errorf(e, "Failed to delete voucher from e-conomic for expense %s", uuid);
+                    throw new WebApplicationException("Failed to delete voucher from e-conomic: " + e.getMessage(), 500);
+                }
+            }
+        } else {
+            // No voucher reference - just soft delete locally
+            log.infof("Expense %s has no voucher reference - soft deleting locally only", uuid);
+            Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+        }
+
+        log.infof("Expense %s deleted successfully", uuid);
     }
 
 }

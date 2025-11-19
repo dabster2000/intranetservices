@@ -1273,7 +1273,7 @@ public class AccountingResource {
     @Path("/receipts/user/{useruuid}")
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid, @QueryParam("limit") Optional<String> limit, @QueryParam("page") Optional<String> page) {
         if(limit.isPresent() && page.isPresent())
-            return expenseAPI.findByUser(useruuid, limit.get(), page.get());
+            return expenseAPI.findByUser(useruuid, limit.get(), page.get(), false);  // Exclude DELETED expenses
         else
             return expenseAPI.findByUser(useruuid);
     }

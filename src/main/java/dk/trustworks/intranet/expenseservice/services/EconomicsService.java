@@ -468,4 +468,84 @@ public class  EconomicsService {
             return false;
         }
     }
+
+    /**
+     * Deletes a voucher from e-conomic journal (unbooked vouchers only).
+     * <p>
+     * This method deletes an unbooked voucher from the e-conomic journal.
+     * Vouchers that have been booked to the accounting year cannot be deleted.
+     * </p>
+     *
+     * @param expense The expense with voucher reference (journalnumber, vouchernumber, accountingyear)
+     * @return Response from e-conomic API
+     * @throws Exception if deletion fails (404 is treated as success - voucher already deleted)
+     */
+    public Response deleteVoucher(Expense expense) throws Exception {
+        log.info("EconomicsService.deleteVoucher");
+        log.infof("Deleting voucher for expense %s: journal=%d, voucher=%d, accountingYear=%s",
+                expense.getUuid(), expense.getJournalnumber(), expense.getVouchernumber(), expense.getAccountingyear());
+
+        // Validate voucher references exist
+        if (expense.getVouchernumber() <= 0 ||
+            expense.getJournalnumber() == null ||
+            expense.getAccountingyear() == null) {
+            log.warnf("Cannot delete voucher for expense %s: missing voucher references", expense.getUuid());
+            throw new IllegalArgumentException("Expense has no voucher reference to delete");
+        }
+
+        // Get integration keys for expense company
+        IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
+        log.info("integrationKeyValue = " + result);
+
+        // Convert accounting year to URL format (underscore format)
+        String urlYear = DateUtils.toEconomicsUrlYear(expense.getAccountingyear());
+        log.infof("Converted accounting year %s to URL format: %s", expense.getAccountingyear(), urlYear);
+
+        try (EconomicsAPI economicsAPI = getEconomicsAPI(result)) {
+            Response response = economicsAPI.deleteVoucher(
+                    expense.getJournalnumber(),
+                    urlYear,
+                    expense.getVouchernumber()
+            );
+
+            int status = response.getStatus();
+            log.infof("DELETE voucher response: status=%d for expense %s", status, expense.getUuid());
+
+            // Success: 2xx response
+            if (status >= 200 && status < 300) {
+                log.infof("Voucher deleted successfully in e-conomic: journal=%d, voucher=%d",
+                        expense.getJournalnumber(), expense.getVouchernumber());
+                return response;
+            }
+
+            // 404: Voucher already deleted or doesn't exist - treat as success
+            if (status == 404) {
+                log.warnf("Voucher not found in e-conomic (404) - may have been manually deleted: journal=%d, voucher=%d",
+                        expense.getJournalnumber(), expense.getVouchernumber());
+                // Don't throw exception - auto-reconcile by continuing with local deletion
+                return response;
+            }
+
+            // 409: Conflict - voucher may be booked
+            if (status == 409) {
+                String errorBody = safeRead(response);
+                log.errorf("Cannot delete booked voucher (409): journal=%d, voucher=%d, error: %s",
+                        expense.getJournalnumber(), expense.getVouchernumber(), errorBody);
+                throw new ExpenseUploadException("Cannot delete booked voucher", null, status, errorBody);
+            }
+
+            // Other errors
+            String errorBody = safeRead(response);
+            log.errorf("Failed to delete voucher: status=%d, journal=%d, voucher=%d, error: %s",
+                    status, expense.getJournalnumber(), expense.getVouchernumber(), errorBody);
+            throw new ExpenseUploadException("Failed to delete voucher from e-conomic", null, status, errorBody);
+
+        } catch (ExpenseUploadException e) {
+            // Re-throw our own exceptions
+            throw e;
+        } catch (Exception e) {
+            log.errorf(e, "Failed to delete voucher for expense %s", expense.getUuid());
+            throw new RuntimeException("Failed to delete voucher from e-conomic", e);
+        }
+    }
 }
