@@ -123,6 +123,74 @@ public class OpenAIService {
     }
 
     /**
+     * Simple text response + VISION: include base64 image (data URL) alongside text.
+     * Returns plain text response without structured JSON schema.
+     *
+     * NOTE: Requires a vision-capable model (e.g., gpt-5-nano, gpt-4o).
+     * The request uses content parts:
+     * [{ type: "input_text", ... }, { type: "input_image", image_url: "data:<mime>;base64,<...>" }]
+     */
+    public String askSimpleQuestionWithImage(String system,
+                                             String userInstructionText,
+                                             String base64Image,
+                                             String mimeType) { // e.g., "image/jpeg", "image/png"
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", model);
+            req.put("max_output_tokens", 4096);
+
+            // No format constraints - just plain text response
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+
+            // content array: input_text + input_image
+            ArrayNode content = objectMapper.createArrayNode();
+            ObjectNode textPart = content.addObject();
+            textPart.put("type", "input_text");
+            textPart.put("text", userInstructionText == null ? "" : userInstructionText);
+
+            ObjectNode imagePart = content.addObject();
+            imagePart.put("type", "input_image");
+            String dataUrl = toDataUrl(base64Image, mimeType);
+            imagePart.put("image_url", dataUrl);
+
+            user.set("content", content);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (simple text + image). model=%s, bodySize=%d", model, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return "Validation error: OpenAI API returned status " + http.getStatus();
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String result = extractOutputTextOrEmpty(root);
+
+            // If result is empty or just "{}", return a fallback message
+            if (result == null || result.isBlank() || result.equals("{}")) {
+                return "Validation error: Unable to process image";
+            }
+
+            return result;
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (simple text + image)", e);
+            return "Validation error: " + e.getMessage();
+        }
+    }
+
+    /**
      * Structured output + VISION: include base64 image (data URL) alongside text.
      * If the model refuses, returns the provided refusalFallbackJson (must match schema).
      *

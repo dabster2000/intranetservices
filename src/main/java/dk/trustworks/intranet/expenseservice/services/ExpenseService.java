@@ -53,6 +53,9 @@ public class ExpenseService {
     @Inject
     dk.trustworks.intranet.expenseservice.events.ExpenseCreatedProducer expenseCreatedProducer;
 
+    @Inject
+    dk.trustworks.intranet.apis.openai.OpenAIService openAIService;
+
     public List<Expense> findByUser(String useruuid) {
         return Expense.find("useruuid", useruuid).list();
     }
@@ -398,6 +401,71 @@ public class ExpenseService {
                 // sendExpense already updates status to UP_FAILED with error message
             }
         }
+    }
+
+    /**
+     * Validates an expense receipt image using OpenAI vision API.
+     * Returns a short validation message (max 160 characters) about receipt readability and completeness.
+     *
+     * @param expenseUuid UUID of the expense to validate
+     * @return Validation message from OpenAI or error message if validation fails
+     */
+    public String validateExpenseReceipt(String expenseUuid) {
+        log.infof("Validating expense receipt for uuid=%s", expenseUuid);
+
+        // 1. Load expense
+        Expense expense = Expense.findById(expenseUuid);
+        if (expense == null) {
+            log.warnf("Expense not found: %s", expenseUuid);
+            return "Expense not found";
+        }
+
+        // 2. Load expense file from S3
+        ExpenseFile expenseFile;
+        try {
+            expenseFile = expenseFileService.getFileById(expenseUuid);
+        } catch (Exception e) {
+            log.errorf(e, "Failed to load expense file from S3 for uuid=%s", expenseUuid);
+            return "Failed to load receipt image from storage";
+        }
+
+        if (expenseFile == null || expenseFile.getExpensefile() == null || expenseFile.getExpensefile().isEmpty()) {
+            log.warnf("No expense file found for uuid=%s", expenseUuid);
+            return "No receipt image found";
+        }
+
+        // 3. Prepare OpenAI prompt
+        String systemPrompt = "You are a receipt validation assistant. Provide concise validation feedback.";
+        String userPrompt = """
+            The attached image is an image of a receipt that is meant to be booked in a ERP system so employees can be reimbursed.
+            1) Verify that the image is readable.
+            2) Verify that the total amount is readable.
+            3) Verify that no information is missing from the image, that would be needed for reimbursement.
+            4) Return a short validation text with a maximum of 160 characters.
+            """;
+
+        // 4. Call OpenAI with base64 image (already in base64 format from S3)
+        String validationResult;
+        try {
+            validationResult = openAIService.askSimpleQuestionWithImage(
+                systemPrompt,
+                userPrompt,
+                expenseFile.getExpensefile(),  // Already base64-encoded
+                "image/jpeg"  // Default to JPEG (most common for receipts)
+            );
+        } catch (Exception e) {
+            log.errorf(e, "OpenAI validation failed for uuid=%s", expenseUuid);
+            return "Validation error: Unable to process receipt image";
+        }
+
+        log.infof("Validation complete for uuid=%s, result length=%d chars", expenseUuid, validationResult.length());
+
+        // 5. Truncate to 160 chars if needed (OpenAI should respect the limit, but enforce it client-side)
+        if (validationResult.length() > 160) {
+            validationResult = validationResult.substring(0, 157) + "...";
+        }
+
+        return validationResult;
     }
 }
 

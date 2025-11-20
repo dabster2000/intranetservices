@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.resources;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.dto.ExpenseFile;
+import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
@@ -59,6 +60,23 @@ public class ExpenseResource {
     @Path("/file/{uuid}")
     public ExpenseFile getFileById(@PathParam("uuid") String uuid) {
         return expenseFileService.getFileById(uuid);
+    }
+
+    /**
+     * Validates an expense receipt using OpenAI vision API.
+     * Returns a short validation message about receipt readability and completeness.
+     * Restricted to ADMIN and HR roles only.
+     *
+     * @param uuid UUID of the expense to validate
+     * @return KeyValueDTO with expense UUID as key and validation message as value
+     */
+    @GET
+    @Path("/{uuid}/validate")
+    @RolesAllowed({"ADMIN", "HR"})
+    public KeyValueDTO validateExpense(@PathParam("uuid") String uuid) {
+        log.infof("Validating expense receipt via REST API for uuid=%s", uuid);
+        String validationMessage = expenseService.validateExpenseReceipt(uuid);
+        return new KeyValueDTO(uuid, validationMessage);
     }
 
     @GET
