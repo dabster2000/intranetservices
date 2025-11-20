@@ -79,9 +79,6 @@ public interface EconomicsAPI extends AutoCloseable {
                            @HeaderParam("Idempotency-Key") String idempotencyKey,
                            MultipartFormDataOutput file);
 
-        @DELETE
-        @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}")
-        Response deleteVoucher(@PathParam("journalNumber") int journalNumber,
-                               @PathParam("accountingYear") String accountingYear,
-                               @PathParam("voucherNumber") int voucherNumber);
+        // NOTE: DELETE endpoint removed - not supported by OLD REST API (returns HTTP 405)
+        // Use EconomicsJournalsAPI.deleteDraftEntry() instead (NEW Journals API)
 }

@@ -9,6 +9,9 @@ import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPIAccount;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsJournalsAPI;
+import dk.trustworks.intranet.expenseservice.remote.JournalEntryResponse;
+import dk.trustworks.intranet.expenseservice.remote.DraftEntryDeleteRequest;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
@@ -339,6 +342,51 @@ public class  EconomicsService {
                 .build(EconomicsAPIAccount.class);
     }
 
+    /**
+     * Create Journals API client (NEW API for draft entry deletion).
+     * Base URL: https://apis.e-conomic.com/journalsapi/v13.0.1
+     */
+    private static EconomicsJournalsAPI getJournalsAPI(IntegrationKey.IntegrationKeyValue result) {
+        return RestClientBuilder.newBuilder()
+                .baseUri(URI.create("https://apis.e-conomic.com/journalsapi/v13.0.1"))
+                .register(new EconomicsDynamicHeaderFilter(result.appSecretToken(), result.agreementGrantToken()))
+                .build(EconomicsJournalsAPI.class);
+    }
+
+    /**
+     * Get entry details from journal to obtain entryNumber and objectVersion.
+     * Required for deleting draft entries via NEW Journals API.
+     *
+     * @param expense Expense with voucher reference
+     * @param integrationKey Integration keys for authentication
+     * @return Entry details or null if not found
+     */
+    private JournalEntryResponse.Entry getEntryDetails(Expense expense, IntegrationKey.IntegrationKeyValue integrationKey) throws Exception {
+        try (EconomicsJournalsAPI journalsAPI = getJournalsAPI(integrationKey)) {
+            // Filter must include BOTH journalNumber AND voucherNumber for NEW Journals API
+            String filter = String.format("journalNumber$eq:%d$and:voucherNumber$eq:%d",
+                expense.getJournalnumber(), expense.getVouchernumber());
+            log.infof("Fetching draft entries with filter: %s", filter);
+
+            JournalEntryResponse response = journalsAPI.getDraftEntries(
+                filter,
+                null,  // cursor (optional, for pagination)
+                1000   // pagesize
+            );
+
+            if (response.collection == null || response.collection.isEmpty()) {
+                log.warnf("No draft entries found for filter: %s", filter);
+                return null;
+            }
+
+            // Return first matching entry (expenses typically have one entry per voucher)
+            JournalEntryResponse.Entry entry = response.collection.get(0);
+            log.infof("Found draft entry: entryNumber=%d, voucherNumber=%d, objectVersion=%s",
+                entry.entryNumber, entry.voucherNumber, entry.objectVersion);
+            return entry;
+        }
+    }
+
     private IntegrationKey.IntegrationKeyValue getIntegrationKey(Expense expense) {
         Company company = getCompanyFromExpense(expense);
 
@@ -470,15 +518,20 @@ public class  EconomicsService {
     }
 
     /**
-     * Deletes a voucher from e-conomic journal (unbooked vouchers only).
+     * Delete voucher from e-conomic using NEW Journals API.
+     * <p>
+     * Uses GET-then-DELETE pattern: first fetches entry details to obtain
+     * entryNumber and objectVersion, then deletes the draft entry.
+     * </p>
      * <p>
      * This method deletes an unbooked voucher from the e-conomic journal.
-     * Vouchers that have been booked to the accounting year cannot be deleted.
+     * Vouchers that have been booked to the accounting year cannot be deleted (HTTP 409).
+     * If the voucher is not found (HTTP 404), it's treated as already deleted (auto-reconcile).
      * </p>
      *
-     * @param expense The expense with voucher reference (journalnumber, vouchernumber, accountingyear)
-     * @return Response from e-conomic API
-     * @throws Exception if deletion fails (404 is treated as success - voucher already deleted)
+     * @param expense Expense with voucher reference to delete
+     * @return Response from DELETE operation (HTTP 204 on success, HTTP 404 if not found)
+     * @throws Exception if deletion fails or voucher is booked
      */
     public Response deleteVoucher(Expense expense) throws Exception {
         log.info("EconomicsService.deleteVoucher");
@@ -497,54 +550,71 @@ public class  EconomicsService {
         IntegrationKey.IntegrationKeyValue result = getIntegrationKey(expense);
         log.info("integrationKeyValue = " + result);
 
-        // Convert accounting year to URL format (underscore format)
-        String urlYear = DateUtils.toEconomicsUrlYear(expense.getAccountingyear());
-        log.infof("Converted accounting year %s to URL format: %s", expense.getAccountingyear(), urlYear);
+        try {
+            // STEP 1: GET entry details (to obtain entryNumber and objectVersion)
+            log.infof("Step 1: Fetching entry details for voucher %d in journal %d",
+                expense.getVouchernumber(), expense.getJournalnumber());
 
-        try (EconomicsAPI economicsAPI = getEconomicsAPI(result)) {
-            Response response = economicsAPI.deleteVoucher(
-                    expense.getJournalnumber(),
-                    urlYear,
-                    expense.getVouchernumber()
-            );
+            JournalEntryResponse.Entry entry = getEntryDetails(expense, result);
 
-            int status = response.getStatus();
-            log.infof("DELETE voucher response: status=%d for expense %s", status, expense.getUuid());
-
-            // Success: 2xx response
-            if (status >= 200 && status < 300) {
-                log.infof("Voucher deleted successfully in e-conomic: journal=%d, voucher=%d",
-                        expense.getJournalnumber(), expense.getVouchernumber());
-                return response;
-            }
-
-            // 404: Voucher already deleted or doesn't exist - treat as success
-            if (status == 404) {
+            if (entry == null) {
+                // Voucher not found - treat as already deleted (auto-reconcile)
                 log.warnf("Voucher not found in e-conomic (404) - may have been manually deleted: journal=%d, voucher=%d",
                         expense.getJournalnumber(), expense.getVouchernumber());
-                // Don't throw exception - auto-reconcile by continuing with local deletion
-                return response;
+                return Response.status(404).build();
             }
 
-            // 409: Conflict - voucher may be booked
-            if (status == 409) {
+            // STEP 2: DELETE draft entry using details from GET
+            log.infof("Step 2: Deleting draft entry %d for voucher %d", entry.entryNumber, entry.voucherNumber);
+
+            DraftEntryDeleteRequest deleteRequest = new DraftEntryDeleteRequest(
+                expense.getJournalnumber(),
+                expense.getVouchernumber(),
+                entry.entryNumber,
+                entry.objectVersion
+            );
+
+            try (EconomicsJournalsAPI journalsAPI = getJournalsAPI(result)) {
+                Response response = journalsAPI.deleteDraftEntry(deleteRequest);
+
+                int status = response.getStatus();
+                log.infof("DELETE draft entry response: status=%d for expense %s", status, expense.getUuid());
+
+                // Success: 204 No Content or other 2xx
+                if (status == 204 || (status >= 200 && status < 300)) {
+                    log.infof("Draft entry deleted successfully in e-conomic: journal=%d, voucher=%d, entry=%d",
+                            expense.getJournalnumber(), expense.getVouchernumber(), entry.entryNumber);
+                    return response;
+                }
+
+                // 409: Conflict - voucher may be booked
+                if (status == 409) {
+                    String errorBody = safeRead(response);
+                    log.errorf("Cannot delete booked voucher (409): journal=%d, voucher=%d, error: %s",
+                            expense.getJournalnumber(), expense.getVouchernumber(), errorBody);
+                    throw new ExpenseUploadException("Cannot delete booked voucher", null, status, errorBody);
+                }
+
+                // Other errors
                 String errorBody = safeRead(response);
-                log.errorf("Cannot delete booked voucher (409): journal=%d, voucher=%d, error: %s",
-                        expense.getJournalnumber(), expense.getVouchernumber(), errorBody);
-                throw new ExpenseUploadException("Cannot delete booked voucher", null, status, errorBody);
+                log.errorf("Failed to delete draft entry: status=%d, journal=%d, voucher=%d, entry=%d, error: %s",
+                        status, expense.getJournalnumber(), expense.getVouchernumber(), entry.entryNumber, errorBody);
+                throw new ExpenseUploadException("Failed to delete draft entry from e-conomic", null, status, errorBody);
             }
-
-            // Other errors
-            String errorBody = safeRead(response);
-            log.errorf("Failed to delete voucher: status=%d, journal=%d, voucher=%d, error: %s",
-                    status, expense.getJournalnumber(), expense.getVouchernumber(), errorBody);
-            throw new ExpenseUploadException("Failed to delete voucher from e-conomic", null, status, errorBody);
 
         } catch (ExpenseUploadException e) {
             // Re-throw our own exceptions
             throw e;
         } catch (Exception e) {
-            log.errorf(e, "Failed to delete voucher for expense %s", expense.getUuid());
+            // Check if it's a 404 from GET (voucher not found) - auto-reconcile
+            String errorMsg = e.getMessage();
+            if (errorMsg != null && errorMsg.contains("404")) {
+                log.warnf("Voucher not found in e-conomic (404) - auto-reconciling for expense %s", expense.getUuid());
+                return Response.status(404).build();
+            }
+
+            // Other errors - rethrow
+            log.errorf(e, "Failed to delete voucher from e-conomic for expense %s", expense.getUuid());
             throw new RuntimeException("Failed to delete voucher from e-conomic", e);
         }
     }

@@ -53,6 +53,9 @@ quarkus:
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
+    economics-journals-api:
+      url: https://apis.e-conomic.com/journalsapi/v13.0.1
+      scope: jakarta.inject.Singleton
   thread-pool:
     core-threads: 10
     max-threads: 30

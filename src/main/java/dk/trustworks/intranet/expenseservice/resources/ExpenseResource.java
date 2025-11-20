@@ -230,11 +230,6 @@ public class ExpenseResource {
             throw new WebApplicationException("Expense not found", 404);
         }
 
-        // Check if expense is locked
-        if (expense.isLocked()) {
-            throw new WebApplicationException("Cannot delete a locked expense", 400);
-        }
-
         // Check if expense has voucher in e-conomic (vouchernumber > 0)
         if (expense.getVouchernumber() > 0) {
             log.infof("Expense %s has voucher reference: journal=%d, voucher=%d, year=%s, status=%s",
@@ -257,11 +252,21 @@ public class ExpenseResource {
                               "status = ?1, datemodified = ?2 WHERE uuid = ?3",
                         "DELETED", LocalDate.now(), uuid);
 
+                // Verify database update
+                Expense verifyExpense = Expense.findById(uuid);
+                log.infof("Verification: expense %s status=%s (after successful e-conomic delete)",
+                    uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
+
             } catch (IllegalArgumentException e) {
                 // Missing voucher references - shouldn't happen but handle gracefully
                 log.warnf(e, "Expense %s has vouchernumber but missing other references", uuid);
                 // Proceed with local soft delete
                 Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+
+                // Verify database update
+                Expense verifyExpense = Expense.findById(uuid);
+                log.infof("Verification: expense %s status=%s (after IllegalArgumentException)",
+                    uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
 
             } catch (Exception e) {
                 // Check if it's a 404 (voucher not found) - auto-reconcile
@@ -272,6 +277,11 @@ public class ExpenseResource {
                     Expense.update("vouchernumber = 0, journalnumber = null, accountingyear = null, " +
                                   "status = ?1, datemodified = ?2 WHERE uuid = ?3",
                             "DELETED", LocalDate.now(), uuid);
+
+                    // Verify database update
+                    Expense verifyExpense = Expense.findById(uuid);
+                    log.infof("Verification: expense %s status=%s (after 404 auto-reconcile)",
+                        uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
                 } else {
                     // Other errors - rethrow
                     log.errorf(e, "Failed to delete voucher from e-conomic for expense %s", uuid);
@@ -282,6 +292,11 @@ public class ExpenseResource {
             // No voucher reference - just soft delete locally
             log.infof("Expense %s has no voucher reference - soft deleting locally only", uuid);
             Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+
+            // Verify database update
+            Expense verifyExpense = Expense.findById(uuid);
+            log.infof("Verification: expense %s status=%s (no voucher reference)",
+                uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
         }
 
         log.infof("Expense %s deleted successfully", uuid);
