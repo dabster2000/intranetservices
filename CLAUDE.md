@@ -183,6 +183,159 @@ INFO  Expense uuid-456: updating accountant notes (booked): Verified and booked 
 - Journal entries endpoint: https://apis.e-conomic.com/journalsapi/redoc.html
 - Field name: `text` (standard field in all entry responses)
 
+### Expense Receipt Validation with Home Address Proximity Check (Added 2025-11-20)
+
+**Overview:**
+The `ExpenseService.validateExpenseReceipt()` method validates expense receipts using OpenAI Vision API with enhanced fraud prevention through home address proximity checking.
+
+**Key Features:**
+- **AI-powered receipt validation**: Verifies image readability, amount clarity, and completeness
+- **Web search enabled**: GPT-5 searches the internet for actual store locations and addresses
+- **Precise distance calculation**: AI calculates real distances between home and store locations (~2 km threshold)
+- **Context-aware analysis**: AI evaluates whether expenses near home are legitimate (e.g., work-from-home, client meetings)
+- **Graceful fallback**: Continues validation even if home address is unavailable
+
+**Implementation Details:**
+- **Location**: `ExpenseService.java`, lines 406-509
+- **Method**: `validateExpenseReceipt(String expenseUuid)`
+- **Returns**: String (max 160 characters) - validation message or warning
+- **Data Sources**:
+  - `Expense` entity - expense details and user reference
+  - `UserContactinfo` entity - employee home address (street, postal code, city)
+  - `ExpenseFile` - receipt image from S3 storage (base64-encoded)
+
+**Validation Flow**:
+```
+1. Load expense by UUID
+2. Retrieve employee home address from UserContactinfo
+3. Load receipt image from S3
+4. Send to OpenAI Vision API with:
+   - System prompt: fraud prevention assistant
+   - User prompt: validation criteria + home address context
+   - Receipt image (base64 JPEG)
+5. AI evaluates:
+   - Image readability
+   - Amount clarity
+   - Store location proximity to home (~2 km)
+   - Missing information
+   - Work-related context (if near home)
+6. Return validation message (max 160 chars)
+```
+
+**Proximity Validation Behavior**:
+- **Distance Threshold**: ~2 km (walking distance in Copenhagen)
+- **AI Decision**: Context-aware, not hard rejection
+  - ⚠️ **Flag suspicious**: "Receipt near home address - verify work purpose"
+  - ✅ **Allow legitimate**: "Work-from-home expense approved" (clear work context)
+  - ✅ **Allow with context**: Home office supplies, client meeting nearby
+
+**Example Validation Messages** (with web search):
+```
+✅ "Readable: Yes; Total: 76 DKK; Info complete for reimbursement."
+⚠️ "Readable: Yes; Total: 76 DKK; Proximity: ~3 km from home to Nyropsgade 30 – FLAG unless explicit work context"
+✅ "Receipt readable, work-from-home context clear. Amount: 450 DKK. Approved."
+❌ "Image unreadable - please upload clearer photo."
+```
+
+**Note**: The AI performs real web searches to find store addresses (e.g., "Netto Nyropsgade 30 København") and calculates actual distances from the employee's home address.
+
+**Address Data Retrieval**:
+```java
+// Fetch user contact info
+UserContactinfo contactInfo = UserContactinfo.findByUseruuid(expense.getUseruuid());
+
+// Build formatted address
+String homeAddress = String.format("%s, %s %s",
+    contactInfo.getStreetname(),
+    contactInfo.getPostalcode() != null ? contactInfo.getPostalcode() : "",
+    contactInfo.getCity() != null ? contactInfo.getCity() : ""
+).trim();
+// Example: "Rosenvængets Allé 10, 2100 København Ø"
+```
+
+**OpenAI Prompt Structure** (when home address available):
+```
+System: You are a receipt validation assistant for expense fraud prevention.
+        Provide concise validation feedback with context-aware analysis.
+
+User:   The attached image is a receipt for employee expense reimbursement.
+        Employee home address: {homeAddress}
+
+        Validate the following:
+        1) Image is readable and clear
+        2) Total amount is readable
+        3) Store location proximity to home (~2 km threshold) - FLAG if suspicious unless clear work-related context
+        4) No missing information required for reimbursement
+
+        Return validation result (max 160 characters). Include proximity warning if applicable.
+```
+
+**Fallback Mode** (no home address):
+- Validation continues without proximity check
+- AI validates only: readability, amount, missing info
+- No false positives for users without address data
+
+**Error Handling**:
+```java
+// Address lookup failure → graceful fallback (no proximity check)
+try {
+    UserContactinfo contactInfo = UserContactinfo.findByUseruuid(expense.getUseruuid());
+    // ... build address
+} catch (Exception e) {
+    log.warnf(e, "Failed to retrieve home address - continuing without proximity check");
+}
+
+// OpenAI API failure → user-friendly error message
+try {
+    validationResult = openAIService.askSimpleQuestionWithImage(...);
+} catch (Exception e) {
+    return "Validation error: Unable to process receipt image";
+}
+```
+
+**Logging**:
+```
+INFO  Validating expense receipt for uuid=abc-123
+INFO  Retrieved home address for user xyz-456: Rosenvængets Allé 10, 2100 København Ø
+INFO  Validation complete for uuid=abc-123, result length=87 chars
+
+WARN  No home address found for user xyz-789 - proximity check will be skipped
+WARN  Failed to retrieve home address for user xyz-999 - continuing without proximity check
+ERROR OpenAI validation failed for uuid=abc-123
+```
+
+**Integration Points**:
+- **Frontend**: Vaadin expense upload views call this method for real-time validation feedback
+- **OpenAI Service**: `askSimpleQuestionWithImageAndWebSearch()` method with GPT-5 web search enabled
+- **Web Search**: AI actively searches the internet for store locations in Denmark (user_location: "DK")
+- **S3 Storage**: Receipt images stored as base64-encoded JPEG files
+- **User Contact Info**: Home address from `user_contactinfo` table
+
+**Performance Considerations**:
+- **OpenAI API latency**: ~3-6 seconds per validation (includes vision + web search + reasoning)
+- **Web search overhead**: ~1-2 seconds additional latency for real-time store location lookups
+- **Address lookup**: Fast Panache query (indexed by useruuid)
+- **S3 fetch**: Receipt already cached in `ExpenseFile` object
+- **Character limit**: 160 chars enforced client-side (truncated with "..." if exceeded)
+
+**Security & Privacy**:
+- Home addresses are sensitive PII - already stored in database
+- Receipt images may contain personal data - stored in S3 with access control
+- OpenAI API logs may include addresses - ensure vendor compliance
+- Validation messages visible to employee and managers
+
+**Future Enhancements** (not implemented):
+- Configurable distance threshold (currently hardcoded ~2 km in prompt via configuration)
+- Hard rejection option (currently warning-only, allows manager override)
+- Batch validation for multiple expenses
+- Caching of store location lookups to reduce web search API calls
+- Multi-country support (currently optimized for Denmark)
+
+**See Also**:
+- Comprehensive expense processing: `docs/expense-processing.md` (in main docs/)
+- OpenAI integration: `OpenAIService.java`, `apis/openai/`
+- Advanced validation: `ExpenseAIValidationService.java` (async, comprehensive)
+
 ## Configuration
 
 - `src/main/resources/application.yml` - Main configuration

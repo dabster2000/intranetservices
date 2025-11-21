@@ -56,7 +56,7 @@ public class BatchScheduler {
     }
 
     // Team description monthly (10th at 10:00)
-    @Scheduled(cron = "0 0 10 10 * ?")
+    @Scheduled(cron = "0 15 01 L * ?")
     void scheduleTeamDescription() {
         jobOperator.start("team-description", new Properties());
     }

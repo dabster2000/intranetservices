@@ -65,14 +65,14 @@ public class ExpenseResource {
     /**
      * Validates an expense receipt using OpenAI vision API.
      * Returns a short validation message about receipt readability and completeness.
-     * Restricted to ADMIN and HR roles only.
+     * Restricted to ADMIN, HR, and SYSTEM roles.
      *
      * @param uuid UUID of the expense to validate
      * @return KeyValueDTO with expense UUID as key and validation message as value
      */
     @GET
     @Path("/{uuid}/validate")
-    @RolesAllowed({"ADMIN", "HR"})
+    @RolesAllowed({"SYSTEM"})
     public KeyValueDTO validateExpense(@PathParam("uuid") String uuid) {
         log.infof("Validating expense receipt via REST API for uuid=%s", uuid);
         String validationMessage = expenseService.validateExpenseReceipt(uuid);
@@ -126,16 +126,16 @@ public class ExpenseResource {
     public List<Expense> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        // Filter by paidOut date to match ExpenseManagementView expectations
-        // Use LocalDateTime for paidOut field and include full last day with < endDate+1
-        return Expense.find("paidOut >= ?1 and paidOut < ?2",
-            localFromDate.atStartOfDay(),
-            localToDate.plusDays(1).atStartOfDay()).list();
+        // Return all expenses within date range (by expensedate)
+        // Frontend filters for unpaid (paidOut IS NULL) or paid expenses as needed
+        return Expense.find("expensedate >= ?1 and expensedate <= ?2",
+            localFromDate,
+            localToDate).list();
     }
 
     @GET
     @Path("/search/statuses")
-    @RolesAllowed({"ADMIN", "HR", "SYSTEM"})
+    @RolesAllowed({"SYSTEM"})
     public List<Expense> findByStatuses(@QueryParam("statuses") String statusesParam) {
         if (statusesParam == null || statusesParam.isEmpty()) {
             return List.of();
@@ -189,7 +189,6 @@ public class ExpenseResource {
     @PUT
     @Path("/{uuid}")
     @Transactional
-    @RolesAllowed({"USER", "ADMIN", "HR", "SYSTEM"})
     public void updateOne(@PathParam("uuid") String uuid, Expense expense) {
         Expense existing = Expense.findById(uuid);
         if (existing == null) {

@@ -123,6 +123,179 @@ public class OpenAIService {
     }
 
     /**
+     * Structured output + WEB SEARCH: JSON schema validation with internet search capability.
+     * Combines strict schema enforcement with web search for location-based validation.
+     *
+     * NOTE: This is experimental - GPT-5 models may have limitations when combining
+     * json_schema format with web_search tools. If HTTP 400 occurs, fall back to
+     * plain text responses with manual JSON parsing.
+     *
+     * @param system System prompt (role: system)
+     * @param userMsg User message (role: user)
+     * @param jsonSchema JSON schema for structured output
+     * @param schemaName Schema name identifier
+     * @param refusalFallbackJson JSON to return if model refuses (must match schema)
+     * @param userCountry ISO country code for location-aware web search (e.g., "DK" for Denmark)
+     * @return Structured JSON response matching schema, or refusalFallbackJson on error
+     */
+    public String askQuestionWithSchemaAndWebSearch(String system,
+                                                    String userMsg,
+                                                    ObjectNode jsonSchema,
+                                                    String schemaName,
+                                                    String refusalFallbackJson,
+                                                    String userCountry) {
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", model);
+            req.put("max_output_tokens", 4096);
+
+            // Enable web search tool
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode webSearch = tools.addObject();
+            webSearch.put("type", "web_search");
+            ObjectNode userLocation = webSearch.putObject("user_location");
+            userLocation.put("type", "approximate");
+            userLocation.put("country", userCountry != null ? userCountry : "DK");
+            webSearch.put("search_context_size", "medium");
+
+            // Enable reasoning for web search
+            ObjectNode reasoning = req.putObject("reasoning");
+            reasoning.put("effort", "medium");
+
+            // Configure text format with JSON schema
+            ObjectNode text = req.putObject("text");
+            ObjectNode format = text.putObject("format");
+            format.put("type", "json_schema");
+            ObjectNode schema = format.putObject("json_schema");
+            schema.put("name", schemaName == null ? "schema" : schemaName);
+            schema.put("strict", true);
+            schema.set("schema", jsonSchema);
+
+            // Store response and include reasoning
+            req.put("store", true);
+            ArrayNode include = req.putArray("include");
+            include.add("reasoning.encrypted_content");
+            include.add("web_search_call.action.sources");
+
+            // Build input array
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+            user.put("content", userMsg);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (json_schema + web_search). model=%s, country=%s, bodySize=%d",
+                    model, userCountry, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String refusal = extractRefusal(root);
+            if (refusal != null) {
+                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+            return extractOutputTextOrEmpty(root);
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (schema + web search)", e);
+            return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+        }
+    }
+
+    /**
+     * Plain text response + WEB SEARCH: Returns JSON as plain text (no json_schema enforcement).
+     * Works with GPT-5 models that don't support json_schema with tools.
+     * Caller must parse and validate JSON manually.
+     *
+     * This method uses plain text format instead of json_schema because GPT-5 models
+     * do not support combining json_schema with tools (web_search) and reasoning.
+     *
+     * @param system System prompt describing expected JSON schema
+     * @param userMsg User message (validation context)
+     * @param userCountry ISO country code for location-aware web search (e.g., "DK")
+     * @return Plain text JSON response (must be parsed manually by caller)
+     */
+    public String askQuestionWithWebSearchPlainText(String system,
+                                                    String userMsg,
+                                                    String userCountry) {
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", model);
+            req.put("max_output_tokens", 4096);
+
+            // Enable web search tool
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode webSearch = tools.addObject();
+            webSearch.put("type", "web_search");
+            ObjectNode userLocation = webSearch.putObject("user_location");
+            userLocation.put("type", "approximate");
+            userLocation.put("country", userCountry != null ? userCountry : "DK");
+            webSearch.put("search_context_size", "medium");
+
+            // Enable reasoning for web search
+            ObjectNode reasoning = req.putObject("reasoning");
+            reasoning.put("effort", "medium");
+
+            // Plain text format (NOT json_schema) - required for GPT-5 + tools compatibility
+            ObjectNode text = req.putObject("text");
+            ObjectNode format = text.putObject("format");
+            format.put("type", "text");
+            text.put("verbosity", "medium");
+
+            // Store response and include reasoning
+            req.put("store", true);
+            ArrayNode include = req.putArray("include");
+            include.add("reasoning.encrypted_content");
+            include.add("web_search_call.action.sources");
+
+            // Build input array
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+            user.put("content", userMsg);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (plain text + web_search). model=%s, country=%s, bodySize=%d",
+                    model, userCountry, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return "{}";
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String result = extractOutputTextOrEmpty(root);
+
+            // Return raw JSON text (caller must parse and validate)
+            return result;
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (plain text + web search)", e);
+            return "{}";
+        }
+    }
+
+    /**
      * Simple text response + VISION: include base64 image (data URL) alongside text.
      * Returns plain text response without structured JSON schema.
      *
@@ -186,6 +359,110 @@ public class OpenAIService {
 
         } catch (Exception e) {
             log.error("[OpenAIService] Responses request failed (simple text + image)", e);
+            return "Validation error: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Simple text response + VISION + WEB SEARCH: include base64 image alongside text with internet search capability.
+     * Returns plain text response without structured JSON schema.
+     * Enables GPT-5 web search to look up real-time information (e.g., store locations, distances).
+     *
+     * NOTE: Requires a vision-capable model with web search (e.g., gpt-5-nano, gpt-5).
+     * The request uses content parts:
+     * [{ type: "input_text", ... }, { type: "input_image", image_url: "data:<mime>;base64,<...>" }]
+     * plus tools configuration for web_search.
+     *
+     * @param system System prompt (role: system)
+     * @param userInstructionText User instructions (role: user, type: input_text)
+     * @param base64Image Base64-encoded image data
+     * @param mimeType Image MIME type (e.g., "image/jpeg", "image/png")
+     * @param userCountry ISO country code for location-aware web search (e.g., "DK" for Denmark)
+     * @return Plain text response from AI with web search results
+     */
+    public String askSimpleQuestionWithImageAndWebSearch(String system,
+                                                         String userInstructionText,
+                                                         String base64Image,
+                                                         String mimeType,
+                                                         String userCountry) {
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", model);
+            req.put("max_output_tokens", 4096);
+
+            // Enable web search tool
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode webSearch = tools.addObject();
+            webSearch.put("type", "web_search");
+            ObjectNode userLocation = webSearch.putObject("user_location");
+            userLocation.put("type", "approximate");
+            userLocation.put("country", userCountry != null ? userCountry : "DK");
+            webSearch.put("search_context_size", "medium");
+
+            // Enable reasoning for web search
+            ObjectNode reasoning = req.putObject("reasoning");
+            reasoning.put("effort", "medium");
+
+            // Text format configuration
+            ObjectNode text = req.putObject("text");
+            ObjectNode format = text.putObject("format");
+            format.put("type", "text");
+            text.put("verbosity", "medium");
+
+            // Store response and include reasoning/search sources
+            req.put("store", true);
+            ArrayNode include = req.putArray("include");
+            include.add("reasoning.encrypted_content");
+            include.add("web_search_call.action.sources");
+
+            // Build input array with system + user (text + image)
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+
+            // content array: input_text + input_image
+            ArrayNode content = objectMapper.createArrayNode();
+            ObjectNode textPart = content.addObject();
+            textPart.put("type", "input_text");
+            textPart.put("text", userInstructionText == null ? "" : userInstructionText);
+
+            ObjectNode imagePart = content.addObject();
+            imagePart.put("type", "input_image");
+            String dataUrl = toDataUrl(base64Image, mimeType);
+            imagePart.put("image_url", dataUrl);
+
+            user.set("content", content);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (web search + image). model=%s, country=%s, bodySize=%d",
+                    model, userCountry, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return "Validation error: OpenAI API returned status " + http.getStatus();
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String result = extractOutputTextOrEmpty(root);
+
+            // If result is empty or just "{}", return a fallback message
+            if (result == null || result.isBlank() || result.equals("{}")) {
+                return "Validation error: Unable to process image";
+            }
+
+            return result;
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (web search + image)", e);
             return "Validation error: " + e.getMessage();
         }
     }
@@ -261,7 +538,7 @@ public class OpenAIService {
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName) {
         ObjectNode req = objectMapper.createObjectNode();
         req.put("model", model);
-        req.put("max_output_tokens", 1024); // Responses API cap. :contentReference[oaicite:2]{index=2}
+        req.put("max_output_tokens", 4096); // Increased for GPT-5 reasoning overhead (was 1024)
 
         ObjectNode text = req.putObject("text");
         ObjectNode format = text.putObject("format");

@@ -70,6 +70,12 @@ public class Expense extends PanacheEntityBase {
     @JsonIgnore
     private String accountingyear;
 
+    @Column(name = "ai_validation_approved")
+    private Boolean aiValidationApproved;
+
+    @Column(name = "ai_validation_reason", columnDefinition = "TEXT")
+    private String aiValidationReason;
+
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 

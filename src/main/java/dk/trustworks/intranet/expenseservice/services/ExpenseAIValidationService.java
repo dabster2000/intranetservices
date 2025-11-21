@@ -9,6 +9,8 @@ import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
+import dk.trustworks.intranet.expenseservice.services.rules.RuleSeverity;
+import dk.trustworks.intranet.expenseservice.services.rules.ValidationRuleDefinition;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -29,6 +31,162 @@ public class ExpenseAIValidationService {
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
 
+    private static final List<ValidationRuleDefinition> VALIDATION_RULES = List.of(
+
+            // --- OVERRIDE (always approve) ---
+            new ValidationRuleDefinition(
+                    "R_OVERRIDE_WHITELIST_ADDRESS",
+                    "Food & drink at whitelisted addresses are always reimbursed",
+                    """
+                    If the receipt clearly shows a venue located on Nyropsgade or Landgreven
+                    in Copenhagen, mark this rule as FAILED (condition met). This OVERRIDE
+                    means the expense must be approved even if other rules fail.
+                    """,
+                    RuleSeverity.OVERRIDE_APPROVE,
+                    10
+            ),
+
+            // --- Hard rejections ---
+            new ValidationRuleDefinition(
+                    "R_RECEIPT_READABLE",
+                    "Receipt image must be readable",
+                    """
+                    If the receipt image is so blurry, cropped, dark, or low resolution that
+                    you cannot confidently read at least the date, total amount including tax,
+                    and merchant name, mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    10
+            ),
+            new ValidationRuleDefinition(
+                    "R_OFFICE_FOOD_DRINK",
+                    "Food/drink near the office is not reimbursable",
+                    """
+                    If the expense is primarily food or drink and the merchant/address appears
+                    to be within roughly 1 km of the office address
+                    "Pustervig 3, 1126 København K" (use web_search if helpful),
+                    mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    20
+            ),
+            new ValidationRuleDefinition(
+                    "R_MEAL_COST_PER_PERSON",
+                    "Meal cost per person must be <= 125 DKK",
+                    """
+                    If the expense is food or drink, estimate the number of people from the
+                    receipt and/or description (e.g. line items, 'for 2', etc.). If the
+                    total including tax divided by number of people is clearly above
+                    125 DKK per person, mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    30
+            ),
+            new ValidationRuleDefinition(
+                    "R_TRANSPORTATION_ELIGIBLE",
+                    "Transportation requires client budget and work hours",
+                    """
+                    If the expense is transportation (taxi, train, etc.), mark this rule as
+                    FAILED when there is no client budget for the day (0 budgetsForDay) OR
+                    when the trip clearly happens outside normal work hours (approx. 08–17)
+                    based on context and description.
+                    """,
+                    RuleSeverity.REJECT,
+                    40
+            ),
+            new ValidationRuleDefinition(
+                    "R_WEEKEND_FOOD_DRINK",
+                    "Weekend food/drink is not reimbursable",
+                    """
+                    If the expense is food or drink and the expense date (contextDate) falls
+                    on Saturday or Sunday, mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    50
+            ),
+            new ValidationRuleDefinition(
+                    "R_LEAVE_CONFLICT",
+                    "Expenses during leave are not reimbursable",
+                    """
+                    If any leave/absence hours (vacation, sick, paid leave, unpaid leave,
+                    maternity leave) are > 0 on contextDate AND the expense is food/drink
+                    or transportation, mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    60
+            ),
+            new ValidationRuleDefinition(
+                    "R_IT_EQUIPMENT_LIMIT",
+                    "IT equipment over 500 DKK requires pre‑approval",
+                    """
+                    If the expense is IT equipment and the total including tax is clearly
+                    above 500 DKK, mark this rule as FAILED and explain that pre‑approval
+                    from admin is required.
+                    """,
+                    RuleSeverity.REJECT,
+                    70
+            ),
+            new ValidationRuleDefinition(
+                    "R_DATE_MISMATCH",
+                    "Receipt date must match expensedate within 30 days",
+                    """
+                    Compare the receipt date from the image with the expensedate field in the
+                    expense record. If they differ by more than 30 days in absolute value,
+                    mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    80
+            ),
+            new ValidationRuleDefinition(
+                    "R_ENTERTAINMENT_VENUE",
+                    "Entertainment venues are not reimbursable",
+                    """
+                    Use merchant name and (if needed) web_search to check if the venue is a
+                    bar, nightclub, casino, or similar entertainment venue. If so, mark this
+                    rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    90
+            ),
+            new ValidationRuleDefinition(
+                    "R_MULTI_PERSON_MEAL",
+                    "Multi‑person meals are not reimbursable",
+                    """
+                    If the receipt clearly shows that the food/drink is for multiple people
+                    (multiple full meals, wording like 'for 2', 'group dinner', etc.) and
+                    company policy is 'individual meals only', mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    100
+            ),
+            new ValidationRuleDefinition(
+                    "R_SOFTWARE_LICENSE",
+                    "Software subscriptions must go via IT procurement",
+                    """
+                    If the purchase is clearly a software license or subscription (keywords
+                    such as 'license', 'subscription', 'SaaS', or typical vendors like Adobe,
+                    Microsoft, OpenAI, Anthropic, etc.), mark this rule as FAILED and explain
+                    that software purchases must go via IT procurement.
+                    """,
+                    RuleSeverity.REJECT,
+                    110
+            ),
+            new ValidationRuleDefinition(
+                    "R_HOME_PROXIMITY",
+                    "Purchases near home are treated as private",
+                    """
+                    If the merchant/address appears to be within roughly 1 km of the
+                    employee's home address (use web_search if helpful), and there is no clear
+                    work‑related justification, mark this rule as FAILED.
+                    """,
+                    RuleSeverity.REJECT,
+                    120
+            )
+
+            // You can add WARNING/INFO rules later if needed
+    );
+
+
     /**
      * Extracts fields from a RECEIPT IMAGE (base64). Uses vision + Structured Outputs.
      * No internet lookups are attempted.
@@ -42,63 +200,57 @@ public class ExpenseAIValidationService {
                 return new ExtractedExpenseData(null, null, null, null, "other");
             }
 
-            // Build strict JSON Schema for extraction (only expenseType required)
-            ObjectNode schema = MAPPER.createObjectNode();
-            schema.put("type", "object");
-            ObjectNode props = schema.putObject("properties");
+            // System prompt with embedded JSON schema (plain text format, not json_schema)
+            // GPT-5 models don't support json_schema format, so we embed schema in prompt and parse manually
+            String system = """
+                You are a receipt data extraction assistant for expense reimbursement.
+                Return ONLY valid JSON matching this exact schema (no markdown, no code fences):
+                {
+                  "date": "string (YYYY-MM-DD format) or null",
+                  "amountInclTax": number or null,
+                  "issuerCompanyName": "string or null",
+                  "issuerAddress": "string or null",
+                  "expenseType": "one of [food_drink, it_equipment, transportation, other]"
+                }
 
-            ObjectNode dateNode = props.putObject("date");
-            dateNode.putArray("type").add("string").add("null");
-            dateNode.put("pattern", "^\\d{4}-\\d{2}-\\d{2}$");
-
-            props.putObject("amountInclTax")
-                    .putArray("type").add("number").add("null");
-
-            props.putObject("issuerCompanyName")
-                    .putArray("type").add("string").add("null");
-
-            props.putObject("issuerAddress")
-                    .putArray("type").add("string").add("null");
-
-            // FIX spelling -> it_equipment
-            props.putObject("expenseType")
-                    .put("type", "string")
-                    .putArray("enum").add("food_drink").add("it_equipment").add("transportation").add("other");
-
-            schema.putArray("required").add("expenseType");
-            schema.put("additionalProperties", false);
-
-            // Short, vision-focused instruction
-            String system = "You extract receipt fields and MUST return only JSON matching the schema.";
-            String instruction = """
                 From the receipt image, extract:
-                - date (YYYY-MM-DD)
+                - date (YYYY-MM-DD format)
                 - total amount including tax (grand total)
                 - issuer company name
                 - issuer address (as written on the receipt, no web lookups)
                 - expenseType: one of [food_drink, it_equipment, transportation, other]
+
                 If a field is genuinely unknown or unreadable, return null (except expenseType, default to "other").
+                Return ONLY the JSON object, no explanations.
                 """;
 
-            // If the model refuses, we still need schema-valid JSON; fall back to minimal valid object
-            String refusalFallback = "{\"date\":null,\"amountInclTax\":null,\"issuerCompanyName\":null,\"issuerAddress\":null,\"expenseType\":\"other\"}";
-
-            // NOTE: mimeType can be auto-detected upstream; using "image/jpeg" as default here
-            String json = openAIService.askWithSchemaAndImage(
+            // Use plain text vision method (works with GPT-5, unlike json_schema)
+            String json = openAIService.askSimpleQuestionWithImage(
                     system,
-                    instruction,
+                    "", // No separate instruction - all in system prompt
                     base64ReceiptImage,
-                    "image/jpeg",
-                    schema,
-                    "ExtractedExpenseData",
-                    refusalFallback
+                    "image/jpeg"
             );
 
             String resp = json == null ? "" : json.trim();
             String respPreview = resp.length() > 500 ? resp.substring(0, 500) + "..." : resp;
             log.infof("[AI-Extract] OpenAI raw response preview=%s", respPreview);
 
+            // Validate response structure before parsing
+            if (resp.isEmpty() || resp.equals("{}") || resp.startsWith("Validation error:")) {
+                log.warnf("[AI-Extract] Invalid or empty response: %s", respPreview);
+                // Return minimal valid object
+                resp = "{\"date\":null,\"amountInclTax\":null,\"issuerCompanyName\":null,\"issuerAddress\":null,\"expenseType\":\"other\"}";
+            }
+
             JsonNode node = MAPPER.readTree(resp);
+
+            // Validate required field exists
+            if (!node.has("expenseType")) {
+                log.warnf("[AI-Extract] Missing required field 'expenseType': %s", respPreview);
+                // Return minimal valid object
+                return new ExtractedExpenseData(null, null, null, null, "other");
+            }
             LocalDate date = null;
             Double amount = null;
 
@@ -253,40 +405,54 @@ public class ExpenseAIValidationService {
                     .append(mapLine("companyOfficeAddress", officeAddress))
                     .append("\n");
 
-            // Validation policy – keep concise to avoid dilution
+            // Validation policy – explicit rules for LLM enforcement
             ctx.append("Validation rules (DKK):\n")
-                    .append("1) Purchases near home likely private unless clear work reason.\n")
-                    .append("2) food_drink near office can be office catering; otherwise require meeting/client context.\n")
-                    .append("3) food_drink > 125 per person → likely reject unless clearly special/justified.\n")
-                    .append("4) Transportation to/from home not reimbursable unless clearly work-related.\n")
-                    .append("5) Weekend/holiday → require explicit work reason or reject.\n")
-                    .append("6) Sick/vacation/leave → likely reject for food_drink/transport.\n")
-                    .append("7) it_equipment > 500 requires pre-approval stated.\n")
-                    .append("8) Date mismatch > 3 days without reason → reject.\n")
-                    .append("9) Entertainment-only venues w/o client context → reject.\n")
-                    .append("10) No client budgets & no BI activity & no justification → reject.\n")
-                    .append("Decide approve vs reject and give ONE concise reason.\n");
+                    .append("1) Receipt Readability: Verify that the receipt image is readable and clear. Check that text is legible, not blurry, and key information (amount, date, merchant name) is visible. If receipt is unreadable, blurry, or missing critical information, REJECT with reason 'Receipt image unreadable - please upload clear photo'.\n")
+                    .append("2) Office Food/Drink: If expenseType='food_drink' and purchase is within 1 km of the office (Pustervig 3, 1126 København K), REJECT with reason 'Food/drink expenses not reimbursable {give explanation}'.\n")
+                    .append("3) Meal Cost Threshold: If expenseType='food_drink', divide amountInclTax by number of people. If cost per person > 125 DKK, REJECT with reason 'Meal cost exceeds 125 DKK per person limit'.\n")
+                    .append("4) Transportation: If expenseType='transportation', verify: (1) Client budgets exist (EmployeeBudgetPerDayAggregates count > 0), (2) Trip within work hours 8-17. If any rule fails, REJECT with reason 'Transportation not eligible - {explanation}'.\n")
+                    .append("5) Weekend expenses for food and drink: Check if contextDate is weekend (dayOfWeek=SATURDAY/SUNDAY or isWeekend=true). If weekend and food or drink, REJECT with reason 'Weekend food and drink expenses not reimbursable'.\n")
+                    .append("6) Leave/Absence Conflict: Check if any leave hours > 0 (vacationHours, sickHours, paidLeaveHours, nonPaydLeaveHours, maternityLeaveHours). If yes AND expenseType='food_drink' or 'transportation', REJECT with reason 'Expenses {define type} during leave/absence not reimbursable'.\n")
+                    .append("7) IT Equipment: If expenseType='it_equipment' and amountInclTax > 500 DKK, REJECT with reason 'IT equipment over 500 DKK requires pre-approval - contact admin'.\n")
+                    .append("8) Date Mismatch: Calculate absolute difference between extracted receipt date and expensedate field. If difference > 30 days, REJECT with reason 'Receipt date differs by more than 30 days - explanation required'.\n")
+                    .append("9) Entertainment Venues: Use web search to verify if issuerCompanyName is entertainment venue (bar, nightclub, casino). If yes, REJECT with reason 'Entertainment venue expenses not reimbursable'.\n")
+                    .append("11) Multi-Person Meals: If expenseType='food_drink', analyze receipt items/description for multiple people indicators (multiple entrees, 'for 2', 'group dinner'). If for multiple people, REJECT with reason 'Food/drink for multiple people not reimbursable - individual meals only'.\n")
+                    .append("12) Software Licenses: Check if purchase is software license/subscription (keywords: 'software', 'license', 'subscription', 'SaaS', vendors like Adobe, Microsoft, OpenAI, Anthropic). If software license, REJECT with reason 'Software purchases must go through IT procurement - contact IT department'.\n")
+                    .append("13) Home Proximity: Check if purchase location (issuerAddress) is near employee's home address using web search to verify distances. If within ~1km of home, REJECT with reason 'Purchase near home address - private expense'.\n")
+                    .append("\n")
+                    .append("The following rules override the above and means the receipt is approved and reimbursed:\n")
+                    .append("1) Food and drinks on the following addresses are always reimbursed: Nyropsgade or Landgreven\n")
+                    .append("\n")
+                    .append("Decide approve vs reject and give ONE concise concise but meaningful reason so the user can understand the decision.\n");
 
-            // Strict schema for validation: reason must be present and non-trivial
-            ObjectNode validateSchema = MAPPER.createObjectNode();
-            validateSchema.put("type", "object");
-            ObjectNode vProps = validateSchema.putObject("properties");
-            vProps.putObject("approved").put("type", "boolean");
-            ObjectNode reason = vProps.putObject("reason");
-            reason.put("type", "string");
-            reason.put("minLength", 5);
-            validateSchema.putArray("required").add("approved").add("reason");
-            validateSchema.put("additionalProperties", false);
+            // System prompt with JSON schema description (plain text format, not json_schema)
+            // GPT-5 models don't support json_schema with tools (web_search), so we use plain text + manual validation
+            String system = """
+                You are validating a submitted employee expense for compliance with company policy.
+                Return ONLY valid JSON matching this exact schema (no markdown, no code fences):
+                {
+                  "approved": boolean,
+                  "reason": "string (5-200 characters, one concise sentence)"
+                }
 
-            String system = "Return ONLY JSON matching the schema. Keep 'reason' one concise sentence.";
-            String refusalFallback = "{\"approved\": false, \"reason\": \"Model refusal or incomplete output.\"}";
+                Use the data to decide approve vs reject and give one concise but meaningful reason so the user can understand the decision.
+                Keep 'reason' one concise but meaningful sentence.
+                """;
 
-            String aiResponse = openAIService.askQuestionWithSchema(system, ctx.toString(), validateSchema, "ValidationDecision", refusalFallback);
+            String aiResponse = openAIService.askQuestionWithWebSearchPlainText(system, ctx.toString(), "DK");
             String resp = aiResponse == null ? "{}" : aiResponse.trim();
             String respPreview = resp.length() > 500 ? resp.substring(0, 500) + "..." : resp;
             log.infof("[AI-Validate] OpenAI raw response preview=%s", respPreview);
 
+            // Parse and validate JSON structure manually
             JsonNode node = MAPPER.readTree(resp);
+
+            // Validate required fields are present
+            if (!node.has("approved") || !node.has("reason")) {
+                log.warnf("[AI-Validate] Invalid response structure (missing required fields): %s", respPreview);
+                return new ValidationDecision(false, "AI validation error: Invalid response format");
+            }
+
             boolean approved = node.path("approved").asBoolean(false);
             String reasonStr = node.path("reason").asText("No reason provided");
             log.infof("[AI-Validate] Decision -> approved=%s, reason=%s", String.valueOf(approved), reasonStr);
@@ -302,3 +468,4 @@ public class ExpenseAIValidationService {
         return "- " + key + ": " + (val==null?"null":val) + "\n";
     }
 }
+

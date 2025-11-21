@@ -53,6 +53,8 @@ quarkus:
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
+      read-timeout: 120000      # 120 seconds for web search + reasoning (was ~30s default)
+      connect-timeout: 10000    # 10 seconds for connection establishment
     economics-journals-api:
       url: https://apis.e-conomic.com/journalsapi/v13.0.1
       scope: jakarta.inject.Singleton

@@ -21,6 +21,7 @@ import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @JBossLog
 @ApplicationScoped
@@ -42,28 +43,77 @@ public class ExpenseCreatedConsumer {
 
     @Scheduled(every = "1m")
     public void expenseSyncJob() {
-        Expense.find("status", "CREATED").stream().forEach(expense -> ExpenseCreatedConsumer.this.onExpenseCreated(((Expense) expense).getUuid()));
+        // Eager loading to avoid ResultSet timeout during long-running OpenAI processing
+        // Only process expenses that haven't been validated yet (aiValidationApproved = null)
+        List<String> expenseUuids = Expense.find("status = ?1 AND aiValidationApproved IS NULL", ExpenseService.STATUS_CREATED)
+                .stream()
+                .map(e -> ((Expense) e).getUuid())
+                .toList();
+
+        // Process each expense (30+ seconds per expense for OpenAI validation)
+        expenseUuids.forEach(this::onExpenseCreated);
     }
 
     @Incoming("expenses-created-in")
     @Blocking
-    @Transactional
     public void onExpenseCreated(String expenseUuid) {
+
+        log.infof("Received expense created event for uuid=%s", expenseUuid);
+        Expense expense = Expense.findById(expenseUuid);
+        if (expense == null) {
+            log.warnf("Expense not found for uuid=%s", expenseUuid);
+            return;
+        }
+
+        if (!ExpenseService.STATUS_CREATED.equals(expense.getStatus())) {
+            log.infof("Skipping validation for uuid=%s with status=%s", expenseUuid, expense.getStatus());
+            return;  // Actually skip validation when status is not CREATED
+        }
+
+        // Validate expense with OpenAI (30+ seconds, no transaction held)
+        ExpenseAIValidationService.ValidationDecision decision = validateExpense(expense);
+
+        // Persist validation results in separate transaction (fast writes only)
+        persistValidationResult(expense, decision);
+    }
+
+    @Transactional
+    void persistValidationResult(Expense expense, ExpenseAIValidationService.ValidationDecision decision) {
+        // Reload expense to ensure fresh entity in transaction context
+        Expense managedExpense = Expense.findById(expense.getUuid());
+        if (managedExpense == null) {
+            log.warnf("Expense disappeared during validation: %s", expense.getUuid());
+            return;
+        }
+
+        // Skip database update for API/processing errors - allow retry by scheduled job
+        // Detect both "AI validation error:" and "Validation error:" prefixes
+        if (!decision.approved() &&
+            (decision.reason().startsWith("AI validation error:") ||
+             decision.reason().startsWith("Validation error:"))) {
+            log.warnf("Skipping expense %s - Temporary error: %s (will retry later)",
+                      expense.getUuid(), decision.reason());
+            return;  // Early exit - aiValidationApproved stays NULL for retry
+        }
+
+        // Store AI validation result in database (only for legitimate decisions)
+        managedExpense.setAiValidationApproved(decision.approved());
+        managedExpense.setAiValidationReason(decision.reason());
+        managedExpense.persist();
+
+        if (decision.approved()) {
+            expenseService.updateStatus(managedExpense, ExpenseService.STATUS_VALIDATED);
+            log.infof("Expense %s APPROVED by AI. Reason: %s", expense.getUuid(), decision.reason());
+        } else {
+            expenseService.updateStatus(managedExpense, ExpenseService.STATUS_CREATED);
+            log.infof("Expense %s REJECTED by AI. Reason: %s", expense.getUuid(), decision.reason());
+        }
+    }
+
+    public ExpenseAIValidationService.ValidationDecision validateExpense(Expense expense) {
         try {
-            log.infof("Received expense created event for uuid=%s", expenseUuid);
-            Expense expense = Expense.findById(expenseUuid);
-            if (expense == null) {
-                log.warnf("Expense not found for uuid=%s", expenseUuid);
-                return;
-            }
-
-            if (!ExpenseService.STATUS_CREATED.equals(expense.getStatus())) {
-                log.infof("Skipping validation for uuid=%s with status=%s", expenseUuid, expense.getStatus());
-                return;
-            }
-
             // 1) Fetch attachment
-            ExpenseFile expenseFile = expenseFileService.getFileById(expenseUuid);
+            ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
             String attachmentContent = expenseFile != null ? expenseFile.getExpensefile() : null;
 
             // 2) Extract expense date and amount from attachment via OpenAI
@@ -93,16 +143,15 @@ public class ExpenseCreatedConsumer {
                     expense, extracted, user, contact, bi, budgets
             );
 
-            if (decision.approved()) {
-                expenseService.updateStatus(expense, ExpenseService.STATUS_VALIDATED);
-                slackService.sendMessage(userService.findByUsername("hans.lassen", true), decision.reason());
-                log.infof("Expense %s validated by AI. Reason: %s", expenseUuid, decision.reason());
-            } else {
-                expenseService.updateStatus(expense, ExpenseService.STATUS_VALIDATED);
-                log.infof("Expense %s NOT validated by AI. Reason: %s", expenseUuid, decision.reason());
-            }
+            return decision;  // Return the actual decision object
+
         } catch (Exception e) {
-            log.error("Error processing expense created event for uuid=" + expenseUuid, e);
+            log.error("Error processing expense created event for uuid=" + expense.getUuid(), e);
+            // Return a rejection decision on error instead of null (prevents NPE)
+            return new ExpenseAIValidationService.ValidationDecision(
+                false,
+                "Validation error: " + e.getMessage()
+            );
         }
     }
 }
