@@ -14,23 +14,32 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
-import jakarta.enterprise.context.RequestScoped;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 @JBossLog
-@RequestScoped
+@ApplicationScoped  // Changed from @RequestScoped to fix race condition with shared S3Client
 public class ExpenseFileService {
 
     @ConfigProperty(name = "bucket.expenses")
     String bucketName;
 
-    // Region regionNew = Region.EU_WEST_1;
-    Region regionNew = Region.EU_WEST_1;
+    // S3Client is thread-safe for operations, initialized once in constructor
+    private final S3Client s3;
 
-    ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
-    ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder().proxyConfiguration(proxyConfig.build());
-    S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
+    public ExpenseFileService() {
+        // Initialize S3Client once as singleton (thread-safe)
+        Region regionNew = Region.EU_WEST_1;
+        ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
+        ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder()
+                .proxyConfiguration(proxyConfig.build());
+
+        this.s3 = S3Client.builder()
+                .region(regionNew)
+                .httpClientBuilder(httpClientBuilder)
+                .build();
+    }
 
     public PutObjectResponse saveFile(ExpenseFile expenseFile) {
         log.info("Uploading expense file to S3: " + expenseFile.getUuid());

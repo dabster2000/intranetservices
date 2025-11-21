@@ -36,7 +36,7 @@ public class OpenAIService {
         try {
             ObjectNode req = objectMapper.createObjectNode();
             req.put("model", model);
-            req.put("max_output_tokens", 1024);
+            req.put("max_output_tokens", 4096);
 
             // JSON mode in Responses: text.format (not response_format)
             ObjectNode text = req.putObject("text");
@@ -162,14 +162,13 @@ public class OpenAIService {
             ObjectNode reasoning = req.putObject("reasoning");
             reasoning.put("effort", "medium");
 
-            // Configure text format with JSON schema
+            // Configure text format with JSON schema (flat structure, not nested)
             ObjectNode text = req.putObject("text");
             ObjectNode format = text.putObject("format");
             format.put("type", "json_schema");
-            ObjectNode schema = format.putObject("json_schema");
-            schema.put("name", schemaName == null ? "schema" : schemaName);
-            schema.put("strict", true);
-            schema.set("schema", jsonSchema);
+            format.put("name", schemaName == null ? "schema" : schemaName);
+            format.set("schema", jsonSchema);
+            format.put("strict", true);
 
             // Store response and include reasoning
             req.put("store", true);
@@ -210,6 +209,96 @@ public class OpenAIService {
 
         } catch (Exception e) {
             log.error("[OpenAIService] Responses request failed (schema + web search)", e);
+            return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+        }
+    }
+
+    /**
+     * Structured output + WEB SEARCH (NO IMAGE): JSON schema validation with internet search capability.
+     * Combines strict schema enforcement with web search for text-based validation (no vision).
+     *
+     * Use this when you need structured output + web search but don't have an image to analyze.
+     * This is more efficient than image-based methods when working with text descriptions.
+     *
+     * @param system System prompt (role: system)
+     * @param userMsg User message (role: user)
+     * @param jsonSchema JSON schema for structured output
+     * @param schemaName Schema name identifier
+     * @param refusalFallbackJson JSON to return if model refuses (must match schema)
+     * @param userCountry ISO country code for location-aware web search (e.g., "DK" for Denmark)
+     * @return Structured JSON response matching schema, or refusalFallbackJson on error
+     */
+    public String askWithSchemaAndWebSearch(String system,
+                                           String userMsg,
+                                           ObjectNode jsonSchema,
+                                           String schemaName,
+                                           String refusalFallbackJson,
+                                           String userCountry) {
+        try {
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", model);
+            req.put("max_output_tokens", 32768);
+
+            // Enable web search tool
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode webSearch = tools.addObject();
+            webSearch.put("type", "web_search");
+            ObjectNode userLocation = webSearch.putObject("user_location");
+            userLocation.put("type", "approximate");
+            userLocation.put("country", userCountry != null ? userCountry : "DK");
+            webSearch.put("search_context_size", "medium");
+
+            // Enable reasoning for web search
+            ObjectNode reasoning = req.putObject("reasoning");
+            reasoning.put("effort", "medium");
+
+            // Configure text format with JSON schema (flat structure, not nested)
+            ObjectNode text = req.putObject("text");
+            ObjectNode format = text.putObject("format");
+            format.put("type", "json_schema");
+            format.put("name", schemaName == null ? "schema" : schemaName);
+            format.set("schema", jsonSchema);
+            format.put("strict", true);
+
+            // Store response and include reasoning
+            req.put("store", true);
+            ArrayNode include = req.putArray("include");
+            include.add("reasoning.encrypted_content");
+            include.add("web_search_call.action.sources");
+
+            // Build input array
+            ArrayNode input = req.putArray("input");
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+            user.put("content", userMsg);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf("[OpenAIService] Sending response (json_schema + web_search, no image). model=%s, country=%s, bodySize=%d",
+                    model, userCountry, body.length());
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String refusal = extractRefusal(root);
+            if (refusal != null) {
+                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+            return extractOutputTextOrEmpty(root);
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (schema + web search, no image)", e);
             return refusalFallbackJson != null ? refusalFallbackJson : "{}";
         }
     }
@@ -310,7 +399,7 @@ public class OpenAIService {
         try {
             ObjectNode req = objectMapper.createObjectNode();
             req.put("model", model);
-            req.put("max_output_tokens", 4096);
+            req.put("max_output_tokens", 32768);
 
             // No format constraints - just plain text response
             ArrayNode input = req.putArray("input");
@@ -533,20 +622,125 @@ public class OpenAIService {
         }
     }
 
+    /**
+     * Structured output + VISION + WEB SEARCH in a single Responses call.
+     * - Uses JSON Schema via text.format (Responses API style)
+     * - Optionally includes a base64 image (vision)
+     * - Enables the built-in web_search tool
+     */
+    public String askWithSchemaImageAndWebSearch(String system,
+                                                 String userInstructionText,
+                                                 String base64Image,
+                                                 String mimeType,
+                                                 ObjectNode jsonSchema,
+                                                 String schemaName,
+                                                 String userCountry,
+                                                 String refusalFallbackJson) {
+        try {
+            // Base JSON-schema request for Responses API
+            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName);
+
+            // --- Web search tool config ---
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode webSearch = tools.addObject();
+            webSearch.put("type", "web_search");
+            ObjectNode userLocation = webSearch.putObject("user_location");
+            userLocation.put("type", "approximate");
+            userLocation.put("country", userCountry != null ? userCountry : "DK");
+            webSearch.put("search_context_size", "medium"); // low | medium | high
+
+            // --- Reasoning (optional, used by many newer models) ---
+            ObjectNode reasoning = req.putObject("reasoning");
+            reasoning.put("effort", "medium");
+
+            // --- Store + include reasoning and sources ---
+            req.put("store", true);
+            ArrayNode include = req.putArray("include");
+            include.add("reasoning.encrypted_content");
+            include.add("web_search_call.action.sources");
+
+            // --- Input messages (text + optional image) ---
+            ArrayNode input = req.putArray("input");
+
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+
+            ArrayNode content = objectMapper.createArrayNode();
+
+            // Text part
+            ObjectNode textPart = content.addObject();
+            textPart.put("type", "input_text");
+            textPart.put("text", userInstructionText == null ? "" : userInstructionText);
+
+            // Optional image part (only if we actually have an image)
+            if (base64Image != null && !base64Image.isBlank()) {
+                ObjectNode imagePart = content.addObject();
+                imagePart.put("type", "input_image");
+                imagePart.put("image_url", toDataUrl(base64Image, mimeType));
+            }
+
+            user.set("content", content);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf(
+                    "[OpenAIService] Sending response (json_schema + image + web_search). model=%s, bodySize=%d",
+                    model, body.length()
+            );
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                // IMPORTANT: log body to see OpenAI's detailed error next time
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String refusal = extractRefusal(root);
+            if (refusal != null) {
+                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+
+            return extractOutputTextOrEmpty(root);
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (schema + image + web search)", e);
+            return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+        }
+    }
+
+
     /* ----------------- helpers ----------------- */
 
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName) {
         ObjectNode req = objectMapper.createObjectNode();
         req.put("model", model);
-        req.put("max_output_tokens", 4096); // Increased for GPT-5 reasoning overhead (was 1024)
+        req.put("max_output_tokens", 4096);
 
+        // Responses API structured outputs:
+        // text: {
+        //   format: {
+        //     type: "json_schema",
+        //     name: "<schema name>",
+        //     schema: { ... JSON Schema ... },
+        //     strict: true
+        //   }
+        // }
         ObjectNode text = req.putObject("text");
         ObjectNode format = text.putObject("format");
         format.put("type", "json_schema");
-        ObjectNode schema = format.putObject("json_schema");
-        schema.put("name", schemaName == null ? "schema" : schemaName);
-        schema.put("strict", true);
-        schema.set("schema", jsonSchema);
+        format.put("name", schemaName == null ? "schema" : schemaName);
+        format.set("schema", jsonSchema);
+        format.put("strict", true);
+
         return req;
     }
 

@@ -2,13 +2,14 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerDayAggregate;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
-import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
+import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.rules.RuleSeverity;
 import dk.trustworks.intranet.expenseservice.services.rules.ValidationRuleDefinition;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -31,6 +32,57 @@ public class ExpenseAIValidationService {
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
 
+    private static final String VALIDATION_SYSTEM_PROMPT = """
+You are an expense policy validator for Trustworks.
+
+You always:
+- Analyze the extracted receipt description carefully (date, merchant, address, line items, taxes, number of guests, etc.).
+- Use the structured context (expense record, user data, budgets, leave data, company office/home addresses).
+- Apply the validation rules from the catalog strictly and deterministically.
+- Use web search when needed to verify store locations, distances, or venue types.
+
+Severity & decision logic:
+- Each rule has severity in {OVERRIDE_APPROVE, REJECT, WARNING, INFO}.
+- For every rule, decide if it is FAILED, PASSED, or NOT_APPLICABLE.
+- If ANY rule with severity=OVERRIDE_APPROVE has decision=FAILED, the final decision MUST be approved,
+  even if REJECT rules also FAILED.
+- Otherwise, if ANY rule with severity=REJECT has decision=FAILED, the final decision MUST be rejected.
+- Otherwise, the receipt is approved. WARNING and INFO rules never change the approval.
+
+Return ONLY a single JSON object (no markdown, no comments, no code fences) with this shape:
+
+{
+  "approved": boolean,
+  "final_severity": "OVERRIDE_APPROVE" | "REJECT" | "WARNING" | "INFO",
+  "final_rule_id": string | null,
+  "user_message": string,
+  "extracted": {
+    "date": string | null,           // YYYY-MM-DD or null if unreadable
+    "amountInclTax": number | null,  // grand total including tax
+    "issuerCompanyName": string | null,
+    "issuerAddress": string | null,
+    "expenseType": "food_drink" | "it_equipment" | "transportation" | "other"
+  },
+  "rules": [
+    {
+      "id": string,                  // must match one of the rule ids from the catalog
+      "severity": "OVERRIDE_APPROVE" | "REJECT" | "WARNING" | "INFO",
+      "decision": "FAILED" | "PASSED" | "NOT_APPLICABLE",
+      "user_message": string | null  // short explanation when FAILED, otherwise null
+    }
+  ]
+}
+
+Requirements:
+- 'user_message' must be 1–2 short sentences that explain the MAIN reason for approval or rejection,
+  and what the employee should do next (e.g. upload clearer photo, explain weekend expense, etc.).
+- The 'rules' array must contain one entry for EVERY rule in the catalog, reusing the exact id and severity.
+- When information is missing from the extracted description, set it to null in 'extracted' and use NOT_APPLICABLE
+  for rules that depend on that field.
+- Do not add extra top-level fields and do not wrap the JSON in backticks or markdown.
+""";
+
+
     private static final List<ValidationRuleDefinition> VALIDATION_RULES = List.of(
 
             // --- OVERRIDE (always approve) ---
@@ -52,8 +104,7 @@ public class ExpenseAIValidationService {
                     "Receipt image must be readable",
                     """
                     If the receipt image is so blurry, cropped, dark, or low resolution that
-                    you cannot confidently read at least the date, total amount including tax,
-                    and merchant name, mark this rule as FAILED.
+                    you cannot confidently read at least the date and total amount, mark this rule as FAILED.
                     """,
                     RuleSeverity.REJECT,
                     10
@@ -84,7 +135,7 @@ public class ExpenseAIValidationService {
             ),
             new ValidationRuleDefinition(
                     "R_TRANSPORTATION_ELIGIBLE",
-                    "Transportation requires client budget and work hours",
+                    "Transportation requires client budget",
                     """
                     If the expense is transportation (taxi, train, etc.), mark this rule as
                     FAILED when there is no client budget for the day (0 budgetsForDay) OR
@@ -188,100 +239,99 @@ public class ExpenseAIValidationService {
 
 
     /**
-     * Extracts fields from a RECEIPT IMAGE (base64). Uses vision + Structured Outputs.
-     * No internet lookups are attempted.
+     * Extracts comprehensive unstructured text description from a RECEIPT IMAGE (base64).
+     * Uses vision API without web search to describe everything visible in the receipt.
+     * The resulting text will be used for subsequent validation instead of the image itself.
+     *
+     * @param base64ReceiptImage Base64-encoded receipt image (JPEG format)
+     * @return Unstructured text description of the receipt (all visible details)
      */
-    public ExtractedExpenseData extractExpenseData(String base64ReceiptImage) {
+    public String extractExpenseData(String base64ReceiptImage) {
         try {
             int contentLen = base64ReceiptImage == null ? 0 : base64ReceiptImage.length();
-            log.infof("[AI-Extract] Starting extraction from image. base64 len=%d", contentLen);
+            log.infof("[AI-Extract] Starting comprehensive extraction from image. base64 len=%d", contentLen);
             if (base64ReceiptImage == null || base64ReceiptImage.isEmpty()) {
                 log.warn("No image content provided for AI extraction");
-                return new ExtractedExpenseData(null, null, null, null, "other");
+                return "Receipt image not provided or empty.";
             }
 
-            // System prompt with embedded JSON schema (plain text format, not json_schema)
-            // GPT-5 models don't support json_schema format, so we embed schema in prompt and parse manually
+            // System prompt for comprehensive unstructured extraction
             String system = """
-                You are a receipt data extraction assistant for expense reimbursement.
-                Return ONLY valid JSON matching this exact schema (no markdown, no code fences):
-                {
-                  "date": "string (YYYY-MM-DD format) or null",
-                  "amountInclTax": number or null,
-                  "issuerCompanyName": "string or null",
-                  "issuerAddress": "string or null",
-                  "expenseType": "one of [food_drink, it_equipment, transportation, other]"
-                }
+                You are a receipt analysis assistant for expense validation.
 
-                From the receipt image, extract:
-                - date (YYYY-MM-DD format)
-                - total amount including tax (grand total)
-                - issuer company name
-                - issuer address (as written on the receipt, no web lookups)
-                - expenseType: one of [food_drink, it_equipment, transportation, other]
+                Analyze the attached receipt image and provide a COMPREHENSIVE description of everything visible.
+                Extract ALL details that could be relevant for expense validation.
+                Do NOT include information about layout, graphics, colors, fonts.
 
-                If a field is genuinely unknown or unreadable, return null (except expenseType, default to "other").
-                Return ONLY the JSON object, no explanations.
+                Include the following information (if visible):
+
+                **Basic Information:**
+                - Receipt date (exact format as shown)
+                - Store/merchant name
+                - Store address (complete, as written)
+                - Receipt number / transaction ID
+
+                **Financial Details:**
+                - Subtotal amount
+                - Tax/VAT amount and percentage
+                - Total amount (grand total including all taxes)
+                - Currency
+                - Payment method (cash, card, etc.)
+
+                **Line Items (if visible):**
+                - List all purchased items with quantities and prices
+                - Item descriptions
+                - Any discount items or promotions
+
+                **Context Indicators:**
+                - Number of guests / people (if indicated by items, quantities, or text like "for 2")
+                - Time of purchase (if shown)
+                - Any notes about the nature of purchase (business meeting, group meal, etc.)
+
+                **Quality Assessment:**
+                - Is the receipt readable and clear?
+                - Are any parts blurry, cropped, or illegible?
+                - Overall image quality
+
+                **Suspicious Elements (if any):**
+                - Altered or edited sections
+                - Missing information that should be present
+                - Unusual formatting or inconsistencies
+
+                **Store Type Classification:**
+                - Type of establishment (restaurant, cafe, electronics store, taxi service, etc.)
+                - Expense category: food_drink, it_equipment, transportation, or other
+
+                Provide the description as natural text with clear sections. Be thorough and objective.
+                Do not make assumptions - only describe what is actually visible in the image.
                 """;
 
-            // Use plain text vision method (works with GPT-5, unlike json_schema)
-            String json = openAIService.askSimpleQuestionWithImage(
+            String userInstruction = "Analyze this receipt image and provide a comprehensive description of all visible details.";
+
+            // Use plain text vision method (no web search, no structured output)
+            String description = openAIService.askSimpleQuestionWithImage(
                     system,
-                    "", // No separate instruction - all in system prompt
+                    userInstruction,
                     base64ReceiptImage,
                     "image/jpeg"
             );
 
-            String resp = json == null ? "" : json.trim();
-            String respPreview = resp.length() > 500 ? resp.substring(0, 500) + "..." : resp;
-            log.infof("[AI-Extract] OpenAI raw response preview=%s", respPreview);
+            String result = description == null ? "" : description.trim();
+            String resultPreview = result.length() > 500 ? result.substring(0, 500) + "..." : result;
+            log.infof("[AI-Extract] OpenAI comprehensive description preview=%s", resultPreview);
 
-            // Validate response structure before parsing
-            if (resp.isEmpty() || resp.equals("{}") || resp.startsWith("Validation error:")) {
-                log.warnf("[AI-Extract] Invalid or empty response: %s", respPreview);
-                // Return minimal valid object
-                resp = "{\"date\":null,\"amountInclTax\":null,\"issuerCompanyName\":null,\"issuerAddress\":null,\"expenseType\":\"other\"}";
+            // Validate response
+            if (result.isEmpty() || result.equals("{}") || result.startsWith("Validation error:")) {
+                log.warnf("[AI-Extract] Invalid or empty response: %s", resultPreview);
+                return "Error: Unable to extract information from receipt image. " + result;
             }
 
-            JsonNode node = MAPPER.readTree(resp);
-
-            // Validate required field exists
-            if (!node.has("expenseType")) {
-                log.warnf("[AI-Extract] Missing required field 'expenseType': %s", respPreview);
-                // Return minimal valid object
-                return new ExtractedExpenseData(null, null, null, null, "other");
-            }
-            LocalDate date = null;
-            Double amount = null;
-
-            if (node.hasNonNull("date")) {
-                try {
-                    date = LocalDate.parse(node.get("date").asText());
-                } catch (DateTimeParseException e) {
-                    log.warn("AI returned unparsable date: " + node.get("date").asText());
-                }
-            }
-            if (node.has("amountInclTax") && !node.get("amountInclTax").isNull()) {
-                amount = node.get("amountInclTax").asDouble();
-            }
-            String issuerCompanyName = node.hasNonNull("issuerCompanyName") ? node.get("issuerCompanyName").asText() : null;
-            String issuerAddress = (node.has("issuerAddress") && !node.get("issuerAddress").isNull()) ? node.get("issuerAddress").asText() : null;
-
-            String expenseType = node.hasNonNull("expenseType") ? node.get("expenseType").asText() : "other";
-            if (expenseType != null) expenseType = expenseType.trim().toLowerCase();
-            List<String> allowed = List.of("food_drink", "it_equipment", "transportation", "other");
-            if (expenseType == null || !allowed.contains(expenseType)) {
-                expenseType = "other";
-            }
-
-            log.infof("[AI-Extract] Parsed fields -> date=%s, amount=%s, issuerCompanyName=%s, issuerAddress=%s, expenseType=%s",
-                    String.valueOf(date), String.valueOf(amount), String.valueOf(issuerCompanyName), String.valueOf(issuerAddress), String.valueOf(expenseType));
-
-            return new ExtractedExpenseData(date, amount, issuerCompanyName, issuerAddress, expenseType);
+            log.infof("[AI-Extract] Extraction complete, description length=%d characters", result.length());
+            return result;
 
         } catch (Exception e) {
             log.error("Failed to extract expense data via OpenAI (vision)", e);
-            return new ExtractedExpenseData(null, null, null, null, "other");
+            return "Error: Exception during receipt extraction - " + e.getMessage();
         }
     }
 
@@ -464,8 +514,480 @@ public class ExpenseAIValidationService {
         }
     }
 
-    private String mapLine(String key, String val) {
-        return "- " + key + ": " + (val==null?"null":val) + "\n";
+    /**
+     * Validates an expense using extracted receipt text description instead of image.
+     * Uses text-based validation with web search enabled for location/venue verification.
+     *
+     * @param extractedReceiptText Comprehensive text description of receipt (from extractExpenseData)
+     * @param expense Expense record with user-entered details
+     * @param user User making the expense claim
+     * @param contact User contact information (home address for proximity checks)
+     * @param bi Business intelligence data for the expense date
+     * @param budgetsForDay Client budgets for the expense date
+     * @return ValidationDecision with approval status and reason
+     */
+    public ValidationDecision validateWithExtractedText(String extractedReceiptText,
+                                                        Expense expense,
+                                                        User user,
+                                                        UserContactinfo contact,
+                                                        BiDataPerDay bi,
+                                                        List<EmployeeBudgetPerDayAggregate> budgetsForDay) {
+        try {
+            int textLen = extractedReceiptText == null ? 0 : extractedReceiptText.length();
+            log.infof("[AI-Validate] Start (text-based validation). expenseUuid=%s, useruuid=%s, textLen=%d",
+                    expense.getUuid(), expense.getUseruuid(), textLen);
+
+            if (extractedReceiptText == null || extractedReceiptText.isBlank()) {
+                log.warn("[AI-Validate] No extracted text provided");
+                return new ValidationDecision(false, "Validation error: No receipt description available");
+            }
+
+            LocalDate contextDate = deriveContextDate(expense);
+            String officeAddress = "Pustervig 3, 1126 København K";
+            String homeAddress = formatHomeAddress(contact);
+
+            String contextText = buildValidationContext(expense, user, contact, bi,
+                    budgetsForDay, contextDate, officeAddress, homeAddress);
+
+            String rulesText = buildRuleCatalogText();
+
+            StringBuilder userPrompt = new StringBuilder();
+            userPrompt.append("""
+                Validate this expense using the extracted receipt description below, the context
+                data, and the validation rule catalog.
+
+                EXTRACTED RECEIPT DESCRIPTION:
+                """);
+            userPrompt.append(extractedReceiptText);
+            userPrompt.append("\n\n");
+            userPrompt.append("""
+                Use the extracted description to:
+                - Understand the receipt date, merchant, address, and total including tax.
+                - Judge whether the receipt was readable and complete.
+                - Analyze line items (food vs. alcohol, software, number of meals, etc.).
+                - Use web search if needed to verify store locations, distances, or venue types.
+
+                """);
+            userPrompt.append(contextText).append("\n\n").append(rulesText)
+                    .append("\nNow evaluate all rules and return the JSON result.");
+
+            // Use new text-only method with web search and JSON schema
+            String aiResponse = openAIService.askWithSchemaAndWebSearch(
+                    VALIDATION_SYSTEM_PROMPT,
+                    userPrompt.toString(),
+                    buildUnifiedValidationJsonSchema(),
+                    "ExpenseValidationResult",
+                    fallbackJson(),
+                    "DK"
+            );
+
+            String resp = aiResponse == null ? "" : aiResponse.trim();
+            String respPreview = resp.length() > 500 ? resp.substring(0, 500) + "..." : resp;
+            log.infof("[AI-Validate] OpenAI raw response preview=%s", respPreview);
+
+            if (resp.isEmpty() || resp.startsWith("Validation error:")) {
+                log.warnf("[AI-Validate] Invalid or empty AI response: %s", respPreview);
+                return new ValidationDecision(false, "AI validation error: invalid OpenAI response");
+            }
+
+            JsonNode root = safeParseJson(aiResponse);
+
+            boolean approved = root.path("approved").asBoolean(false);
+            String userMessage = root.path("user_message").asText(null);
+            if (userMessage == null || userMessage.isBlank()) {
+                // Backwards compatible: also accept "reason"
+                userMessage = root.path("reason").asText("AI validation error: missing user_message");
+            }
+
+            // Optional: log extracted fields for debugging
+            JsonNode extracted = root.path("extracted");
+            if (extracted.isObject()) {
+                log.infof("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, addr=%s, type=%s",
+                        extracted.path("date").isNull() ? "null" : extracted.path("date").asText(),
+                        extracted.path("amountInclTax").isNull() ? "null" : extracted.path("amountInclTax").asText(),
+                        extracted.path("issuerCompanyName").isNull() ? "null" : extracted.path("issuerCompanyName").asText(),
+                        extracted.path("issuerAddress").isNull() ? "null" : extracted.path("issuerAddress").asText(),
+                        extracted.path("expenseType").isNull() ? "null" : extracted.path("expenseType").asText());
+            }
+
+            // Optional: log rule decisions
+            JsonNode rulesNode = root.path("rules");
+            if (rulesNode.isArray()) {
+                for (JsonNode r : rulesNode) {
+                    log.infof("[AI-Validate] Rule %s severity=%s decision=%s msg=%s",
+                            r.path("id").asText(),
+                            r.path("severity").asText(),
+                            r.path("decision").asText(),
+                            r.path("user_message").asText());
+                }
+            }
+
+            log.infof("[AI-Validate] Final decision -> approved=%s, userMessage=%s",
+                    approved, userMessage);
+            return new ValidationDecision(approved, userMessage);
+
+        } catch (Exception e) {
+            log.error("Failed to validate expense via OpenAI (text-based validation with web search)", e);
+            return new ValidationDecision(false, "AI validation error: " + e.getMessage());
+        }
     }
+
+    private LocalDate deriveContextDate(Expense expense) {
+        if (expense == null) return null;
+        if (expense.getExpensedate() != null) return expense.getExpensedate();
+        return expense.getDatecreated();
+    }
+
+    private String formatHomeAddress(UserContactinfo contact) {
+        if (contact == null) return null;
+        String street = contact.getStreetname() == null ? "" : contact.getStreetname();
+        String postal = contact.getPostalcode() == null ? "" : contact.getPostalcode();
+        String city   = contact.getCity() == null ? "" : contact.getCity();
+        String full   = String.format("%s, %s %s", street, postal, city).trim();
+        return full.isBlank() ? null : full;
+    }
+
+    private String safeHours(java.math.BigDecimal val) {
+        return val == null ? "0" : val.toPlainString();
+    }
+
+    private String buildValidationContext(Expense expense,
+                                          User user,
+                                          UserContactinfo contact,
+                                          BiDataPerDay bi,
+                                          List<EmployeeBudgetPerDayAggregate> budgetsForDay,
+                                          LocalDate contextDate,
+                                          String officeAddress,
+                                          String homeAddress) {
+        StringBuilder ctx = new StringBuilder();
+
+        String dayOfWeek = contextDate != null ? contextDate.getDayOfWeek().name() : "UNKNOWN";
+        boolean isWeekend = contextDate != null && contextDate.getDayOfWeek().getValue() >= 6;
+
+        ctx.append("Derived context:\n")
+                .append(mapLine("contextDate", contextDate == null ? null : contextDate.toString()))
+                .append(mapLine("dayOfWeek", dayOfWeek))
+                .append(mapLine("isWeekend", String.valueOf(isWeekend)))
+                .append(mapLine("companyOfficeAddress", officeAddress))
+                .append(mapLine("homeAddress", homeAddress))
+                .append("\n");
+
+        ctx.append("Expense record:\n")
+                .append(mapLine("uuid", expense.getUuid()))
+                .append(mapLine("useruuid", expense.getUseruuid()))
+                .append(mapLine("amountFieldDKK", String.valueOf(expense.getAmount())))
+                .append(mapLine("expensedateField", String.valueOf(expense.getExpensedate())))
+                .append(mapLine("account", expense.getAccount()))
+                .append(mapLine("description", expense.getDescription()))
+                .append("\n");
+
+        if (user != null) {
+            ctx.append("User:\n")
+                    .append(mapLine("uuid", user.getUuid()))
+                    .append(mapLine("name", user.getFullname()))
+                    .append(mapLine("email", user.getEmail()))
+                    .append("\n");
+        }
+
+        if (bi != null) {
+            ctx.append("BiDataPerDay:\n")
+                    .append(mapLine("documentDate", String.valueOf(bi.documentDate)))
+                    .append(mapLine("registeredBillableHours",
+                            bi.registeredBillableHours != null ? bi.registeredBillableHours.toPlainString() : null))
+                    .append(mapLine("actualUtilization",
+                            bi.actualUtilization != null ? bi.actualUtilization.toPlainString() : null))
+                    .append(mapLine("vacationHours", safeHours(bi.vacationHours)))
+                    .append(mapLine("sickHours", safeHours(bi.sickHours)))
+                    .append(mapLine("paidLeaveHours", safeHours(bi.paidLeaveHours)))
+                    .append(mapLine("nonPaydLeaveHours", safeHours(bi.nonPaydLeaveHours)))
+                    .append(mapLine("maternityLeaveHours", safeHours(bi.maternityLeaveHours)))
+                    .append("\n");
+        }
+
+        ctx.append("EmployeeBudgetPerDayAggregates (count=")
+                .append(budgetsForDay != null ? budgetsForDay.size() : 0)
+                .append("):\n");
+
+        if (budgetsForDay != null && !budgetsForDay.isEmpty()) {
+            int i = 0;
+            StringBuilder clientNames = new StringBuilder();
+            for (EmployeeBudgetPerDayAggregate b : budgetsForDay) {
+                if (i < 5) {
+                    ctx.append("- client=")
+                            .append(b.getClient() != null ? b.getClient().getName() : "null")
+                            .append(", contract=")
+                            .append(b.getContract() != null ? b.getContract().getUuid() : "null")
+                            .append(", hours=").append(b.getBudgetHours())
+                            .append(", rate=").append(b.getRate())
+                            .append("\n");
+                } else if (i == 5) {
+                    ctx.append("...\n");
+                }
+                if (b.getClient() != null) {
+                    if (!clientNames.isEmpty()) clientNames.append(", ");
+                    clientNames.append(b.getClient().getName());
+                }
+                i++;
+            }
+            if (!clientNames.isEmpty()) {
+                ctx.append(mapLine("clientNamesForDay", clientNames.toString()));
+            }
+        }
+
+        return ctx.toString();
+    }
+
+    private JsonNode safeParseJson(String raw) {
+        if (raw == null) return MAPPER.createObjectNode();
+
+        String trimmed = raw.trim();
+
+        // Quick check: if it doesn't start with '{', it's probably not a single JSON object
+        if (!trimmed.startsWith("{")) {
+            log.warnf("[AI-Validate] Response does not start with '{': %s",
+                    trimmed.length() > 200 ? trimmed.substring(0, 200) + "..." : trimmed);
+            return MAPPER.createObjectNode();
+        }
+
+        // Try direct parse first
+        try {
+            return MAPPER.readTree(trimmed);
+        } catch (Exception first) {
+            log.warn("[AI-Validate] Direct JSON parse failed, attempting salvage", first);
+
+            // Try to salvage: cut to last closing brace
+            int lastBrace = trimmed.lastIndexOf('}');
+            if (lastBrace > 0) {
+                String salvaged = trimmed.substring(0, lastBrace + 1);
+                try {
+                    return MAPPER.readTree(salvaged);
+                } catch (Exception second) {
+                    log.error("[AI-Validate] Salvage parse also failed", second);
+                }
+            }
+
+            // Give up and return empty node
+            return MAPPER.createObjectNode();
+        }
+    }
+
+
+
+    private String mapLine(String key, String val) {
+        return "- " + key + ": " + (val == null ? "null" : val) + "\n";
+    }
+
+
+
+    private String buildRuleCatalogText() {
+        StringBuilder sb = new StringBuilder("Validation rule catalog:\n");
+        for (ValidationRuleDefinition rule : VALIDATION_RULES) {
+            sb.append("- id=").append(rule.id())
+                    .append(", severity=").append(rule.severity())
+                    .append(", priority=").append(rule.priority())
+                    .append("\n  ")
+                    .append(rule.description().trim())
+                    .append("\n\n");
+        }
+        sb.append("""
+Decision priority:
+- First, consider rules with severity=OVERRIDE_APPROVE in ascending priority.
+- Next, consider rules with severity=REJECT in ascending priority.
+- WARNING and INFO rules never change approval, but their user_message should still help the employee.
+""");
+        return sb.toString();
+    }
+
+    private static ObjectNode buildUnifiedValidationJsonSchema() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        schema.put("type", "object");
+        schema.put("additionalProperties", false);
+
+        ObjectNode props = schema.putObject("properties");
+
+        // approved: boolean
+        ObjectNode approved = props.putObject("approved");
+        approved.put("type", "boolean");
+        approved.put("description", "Final approval decision for the expense.");
+
+        // final_severity: enum
+        ObjectNode finalSeverity = props.putObject("final_severity");
+        finalSeverity.put("type", "string");
+        finalSeverity.put("description",
+                "Severity of the rule that determined the final decision.");
+        ArrayNode finalSeverityEnum = finalSeverity.putArray("enum");
+        finalSeverityEnum.add("OVERRIDE_APPROVE");
+        finalSeverityEnum.add("REJECT");
+        finalSeverityEnum.add("WARNING");
+        finalSeverityEnum.add("INFO");
+
+        // final_rule_id: string | null
+        ObjectNode finalRuleId = props.putObject("final_rule_id");
+        finalRuleId.put("description",
+                "ID of the rule that primarily determined the decision, or null if none.");
+        ArrayNode finalRuleAnyOf = finalRuleId.putArray("anyOf");
+        finalRuleAnyOf.addObject().put("type", "string");
+        finalRuleAnyOf.addObject().put("type", "null");
+
+        // user_message: string
+        ObjectNode userMessage = props.putObject("user_message");
+        userMessage.put("type", "string");
+        userMessage.put("description",
+                "Short explanation for the employee (1–2 sentences).");
+        userMessage.put("minLength", 5);
+        userMessage.put("maxLength", 500);
+
+        // extracted object
+        ObjectNode extracted = props.putObject("extracted");
+        extracted.put("type", "object");
+        extracted.put("additionalProperties", false);
+        ObjectNode extractedProps = extracted.putObject("properties");
+
+        // extracted.date: string(YYYY-MM-DD) | null
+        ObjectNode date = extractedProps.putObject("date");
+        date.put("description", "Receipt date in YYYY-MM-DD format, or null if unreadable.");
+        ArrayNode dateAnyOf = date.putArray("anyOf");
+        ObjectNode dateString = dateAnyOf.addObject();
+        dateString.put("type", "string");
+        // Simple YYYY-MM-DD pattern
+        dateString.put("pattern", "^\\d{4}-\\d{2}-\\d{2}$");
+        dateAnyOf.addObject().put("type", "null");
+
+        // extracted.amountInclTax: number | null
+        ObjectNode amountInclTax = extractedProps.putObject("amountInclTax");
+        amountInclTax.put("description", "Grand total including tax, or null if unreadable.");
+        ArrayNode amountAnyOf = amountInclTax.putArray("anyOf");
+        amountAnyOf.addObject().put("type", "number");
+        amountAnyOf.addObject().put("type", "null");
+
+        // extracted.issuerCompanyName: string | null
+        ObjectNode issuerCompanyName = extractedProps.putObject("issuerCompanyName");
+        issuerCompanyName.put("description",
+                "Name of the issuing company on the receipt, or null if unreadable.");
+        ArrayNode issuerNameAnyOf = issuerCompanyName.putArray("anyOf");
+        issuerNameAnyOf.addObject().put("type", "string");
+        issuerNameAnyOf.addObject().put("type", "null");
+
+        // extracted.issuerAddress: string | null
+        ObjectNode issuerAddress = extractedProps.putObject("issuerAddress");
+        issuerAddress.put("description",
+                "Address of the issuing company as printed on the receipt, or null.");
+        ArrayNode issuerAddrAnyOf = issuerAddress.putArray("anyOf");
+        issuerAddrAnyOf.addObject().put("type", "string");
+        issuerAddrAnyOf.addObject().put("type", "null");
+
+        // extracted.expenseType: enum (non-null)
+        ObjectNode expenseType = extractedProps.putObject("expenseType");
+        expenseType.put("type", "string");
+        expenseType.put("description",
+                "Normalized expense type classification.");
+        ArrayNode expenseTypeEnum = expenseType.putArray("enum");
+        expenseTypeEnum.add("food_drink");
+        expenseTypeEnum.add("it_equipment");
+        expenseTypeEnum.add("transportation");
+        expenseTypeEnum.add("other");
+
+        ArrayNode extractedRequired = extracted.putArray("required");
+        extractedRequired.add("date");
+        extractedRequired.add("amountInclTax");
+        extractedRequired.add("issuerCompanyName");
+        extractedRequired.add("issuerAddress");
+        extractedRequired.add("expenseType");
+
+        // rules: array of rule evaluation objects
+        ObjectNode rules = props.putObject("rules");
+        rules.put("type", "array");
+        rules.put("description",
+                "Per-rule evaluation results for all validation rules.");
+        rules.put("minItems", 0);
+
+        ObjectNode ruleItem = rules.putObject("items");
+        ruleItem.put("type", "object");
+        ruleItem.put("additionalProperties", false);
+        ObjectNode ruleProps = ruleItem.putObject("properties");
+
+        // rules[*].id: string
+        ObjectNode ruleId = ruleProps.putObject("id");
+        ruleId.put("type", "string");
+        ruleId.put("description",
+                "Rule ID from the rule catalog (e.g. R_MEAL_COST_PER_PERSON).");
+
+        // rules[*].severity: enum (same as final_severity)
+        ObjectNode ruleSeverity = ruleProps.putObject("severity");
+        ruleSeverity.put("type", "string");
+        ruleSeverity.put("description", "Severity of this specific rule.");
+        ArrayNode ruleSeverityEnum = ruleSeverity.putArray("enum");
+        ruleSeverityEnum.add("OVERRIDE_APPROVE");
+        ruleSeverityEnum.add("REJECT");
+        ruleSeverityEnum.add("WARNING");
+        ruleSeverityEnum.add("INFO");
+
+        // rules[*].decision: enum
+        ObjectNode ruleDecision = ruleProps.putObject("decision");
+        ruleDecision.put("type", "string");
+        ruleDecision.put("description",
+                "Evaluation outcome for this rule.");
+        ArrayNode decisionEnum = ruleDecision.putArray("enum");
+        decisionEnum.add("FAILED");
+        decisionEnum.add("PASSED");
+        decisionEnum.add("NOT_APPLICABLE");
+
+        // rules[*].user_message: string | null
+        ObjectNode ruleUserMessage = ruleProps.putObject("user_message");
+        ruleUserMessage.put("description",
+                "Short explanation when the rule FAILED, null otherwise.");
+        ArrayNode ruleUserMsgAnyOf = ruleUserMessage.putArray("anyOf");
+        ruleUserMsgAnyOf.addObject().put("type", "string");
+        ruleUserMsgAnyOf.addObject().put("type", "null");
+
+        ArrayNode ruleRequired = ruleItem.putArray("required");
+        ruleRequired.add("id");
+        ruleRequired.add("severity");
+        ruleRequired.add("decision");
+        ruleRequired.add("user_message");
+
+        // top-level required fields
+        ArrayNode required = schema.putArray("required");
+        required.add("approved");
+        required.add("final_severity");
+        required.add("final_rule_id");
+        required.add("user_message");
+        required.add("extracted");
+        required.add("rules");
+
+        return schema;
+    }
+
+    /**
+     * Fallback JSON that strictly matches the unified validation schema.
+     * Used when the model refuses or the OpenAI call fails.
+     */
+    private static String fallbackJson() {
+        return """
+        {
+          "approved": false,
+          "final_severity": "REJECT",
+          "final_rule_id": "R_FALLBACK",
+          "user_message": "AI validation failed. Please have this expense reviewed manually.",
+          "extracted": {
+            "date": null,
+            "amountInclTax": null,
+            "issuerCompanyName": null,
+            "issuerAddress": null,
+            "expenseType": "other"
+          },
+          "rules": [
+            {
+              "id": "R_FALLBACK",
+              "severity": "REJECT",
+              "decision": "FAILED",
+              "user_message": "AI validation failed internally; this expense must be reviewed manually."
+            }
+          ]
+        }
+        """;
+    }
+
+
 }
 

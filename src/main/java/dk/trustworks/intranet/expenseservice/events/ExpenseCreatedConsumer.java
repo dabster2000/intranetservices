@@ -2,15 +2,13 @@ package dk.trustworks.intranet.expenseservice.events;
 
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerDayAggregate;
-import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
-import dk.trustworks.intranet.domain.user.entity.User;
-import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import io.quarkus.scheduler.Scheduled;
 import io.smallrye.reactive.messaging.annotations.Blocking;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -21,7 +19,6 @@ import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import java.time.LocalDate;
 import java.util.List;
-import java.util.stream.Collectors;
 
 @JBossLog
 @ApplicationScoped
@@ -36,12 +33,7 @@ public class ExpenseCreatedConsumer {
     @Inject
     ExpenseAIValidationService aiValidationService;
 
-    @Inject
-    SlackService slackService;
-    @Inject
-    UserService userService;
-
-    @Scheduled(every = "1m")
+    @Scheduled(every = "50m")
     public void expenseSyncJob() {
         // Eager loading to avoid ResultSet timeout during long-running OpenAI processing
         // Only process expenses that haven't been validated yet (aiValidationApproved = null)
@@ -112,15 +104,15 @@ public class ExpenseCreatedConsumer {
 
     public ExpenseAIValidationService.ValidationDecision validateExpense(Expense expense) {
         try {
-            // 1) Fetch attachment
+            // 1) Fetch attachment (receipt image)
             ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
             String attachmentContent = expenseFile != null ? expenseFile.getExpensefile() : null;
 
-            // 2) Extract expense date and amount from attachment via OpenAI
-            ExpenseAIValidationService.ExtractedExpenseData extracted = aiValidationService.extractExpenseData(attachmentContent);
+            // 2) Extract comprehensive unstructured text description from receipt image
+            String extractedText = aiValidationService.extractExpenseData(attachmentContent);
 
-            // Determine date to use for context
-            LocalDate contextDate = extracted.date() != null ? extracted.date() : (expense.getExpensedate() != null ? expense.getExpensedate() : expense.getDatecreated());
+            // Determine date to use for context (fallback to expense record dates)
+            LocalDate contextDate = expense.getExpensedate() != null ? expense.getExpensedate() : expense.getDatecreated();
 
             // 3) Gather user and contact info
             User user = User.findById(expense.getUseruuid());
@@ -138,12 +130,16 @@ public class ExpenseCreatedConsumer {
                 budgets = EmployeeBudgetPerDayAggregate.find("user = ?1 and documentDate = ?2", user, contextDate).list();
             }
 
-            // 6) Send all data to OpenAI to validate
-            ExpenseAIValidationService.ValidationDecision decision = aiValidationService.validateWithContext(
-                    expense, extracted, user, contact, bi, budgets
-            );
+            // 6) Validate expense using extracted text description (not image)
 
-            return decision;  // Return the actual decision object
+            return aiValidationService.validateWithExtractedText(
+                    extractedText,  // NEW: pass extracted text instead of image
+                    expense,
+                    user,
+                    contact,
+                    bi,
+                    budgets
+            );  // Return the actual decision object
 
         } catch (Exception e) {
             log.error("Error processing expense created event for uuid=" + expense.getUuid(), e);
