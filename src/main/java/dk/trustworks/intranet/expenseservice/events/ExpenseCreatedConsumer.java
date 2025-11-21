@@ -91,15 +91,18 @@ public class ExpenseCreatedConsumer {
         // Store AI validation result in database (only for legitimate decisions)
         managedExpense.setAiValidationApproved(decision.approved());
         managedExpense.setAiValidationReason(decision.reason());
-        managedExpense.persist();
 
+        // Update status based on validation decision (in same transaction)
         if (decision.approved()) {
-            expenseService.updateStatus(managedExpense, ExpenseService.STATUS_VALIDATED);
+            managedExpense.setStatus(ExpenseService.STATUS_VALIDATED);
             log.infof("Expense %s APPROVED by AI. Reason: %s", expense.getUuid(), decision.reason());
         } else {
-            expenseService.updateStatus(managedExpense, ExpenseService.STATUS_CREATED);
+            managedExpense.setStatus(ExpenseService.STATUS_CREATED);
             log.infof("Expense %s REJECTED by AI. Reason: %s", expense.getUuid(), decision.reason());
         }
+
+        // Persist all changes atomically (validation fields + status)
+        managedExpense.persist();
     }
 
     public ExpenseAIValidationService.ValidationDecision validateExpense(Expense expense) {

@@ -71,11 +71,21 @@ public class PhotoService {
     @ConfigProperty(name = "claid.ai.apikey")
     String claidApiKey;
 
-    Region regionNew = Region.EU_WEST_1;
+    // S3Client is thread-safe for operations, initialized once in constructor
+    private final S3Client s3;
 
-    ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
-    ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder().proxyConfiguration(proxyConfig.build());
-    S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
+    public PhotoService() {
+        // Initialize S3Client once as singleton (thread-safe)
+        Region regionNew = Region.EU_WEST_1;
+        ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
+        ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder()
+                .proxyConfiguration(proxyConfig.build());
+
+        this.s3 = S3Client.builder()
+                .region(regionNew)
+                .httpClientBuilder(httpClientBuilder)
+                .build();
+    }
 
     @CacheResult(cacheName = "photo-cache")
     byte[] loadFromS3(@CacheKey String uuid) {

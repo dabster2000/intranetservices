@@ -296,11 +296,11 @@ public final class DateUtils {
     }
 
     public static LocalDate getCurrentFiscalStartDate() {
-        return (LocalDate.now().getMonthValue()>6 && LocalDate.now().getMonthValue()<13)?LocalDate.now().withMonth(7).withDayOfMonth(1):LocalDate.now().minusYears(1).withMonth(7).withDayOfMonth(1);
+        return LocalDate.now().getMonthValue()>6?LocalDate.now().withMonth(7).withDayOfMonth(1):LocalDate.now().minusYears(1).withMonth(7).withDayOfMonth(1);
     }
 
     public static LocalDate getFiscalStartDateBasedOnDate(LocalDate date) {
-        return (date.getMonthValue()>6 && date.getMonthValue()<13)?date.withMonth(7).withDayOfMonth(1):date.minusYears(1).withMonth(7).withDayOfMonth(1);
+        return date.getMonthValue()>6?date.withMonth(7).withDayOfMonth(1):date.minusYears(1).withMonth(7).withDayOfMonth(1);
     }
 
     public static LocalDate fiscalYearStart(LocalDate d) {

@@ -28,11 +28,21 @@ public class UserDocumentResource {
     @ConfigProperty(name = "bucket.files")
     String bucketName;
 
-    Region regionNew = Region.EU_WEST_1;
+    // S3Client is thread-safe for operations, initialized once in constructor
+    private final S3Client s3;
 
-    ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
-    ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder().proxyConfiguration(proxyConfig.build());
-    S3Client s3 = S3Client.builder().region(regionNew).httpClientBuilder(httpClientBuilder).build();
+    public UserDocumentResource() {
+        // Initialize S3Client once as singleton (thread-safe)
+        Region regionNew = Region.EU_WEST_1;
+        ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
+        ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder()
+                .proxyConfiguration(proxyConfig.build());
+
+        this.s3 = S3Client.builder()
+                .region(regionNew)
+                .httpClientBuilder(httpClientBuilder)
+                .build();
+    }
 
     public List<File> findDocuments() {
         log.debug("UserDocumentResource.findDocuments");
