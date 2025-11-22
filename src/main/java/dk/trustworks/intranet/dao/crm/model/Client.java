@@ -1,10 +1,8 @@
 package dk.trustworks.intranet.dao.crm.model;
 
+import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-import jakarta.persistence.Transient;
+import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.proxy.HibernateProxy;
 
@@ -28,6 +26,10 @@ public class Client extends PanacheEntityBase {
     private String crmid;
     private String accountmanager;
 
+    @Column(name = "segment")
+    @Enumerated(EnumType.STRING)
+    private ClientSegment segment;
+
     @Transient private List<Clientdata> clientdata;
     @Transient private List<Project> projects;
 
@@ -35,6 +37,7 @@ public class Client extends PanacheEntityBase {
         this.projects = new ArrayList<>();
         this.clientdata = new ArrayList<>();
         this.created = LocalDateTime.now();
+        this.segment = ClientSegment.OTHER;
     }
 
     public Client(String contactname, String name) {
@@ -44,6 +47,7 @@ public class Client extends PanacheEntityBase {
         this.created = LocalDateTime.now();
         this.name = name;
         this.crmid = "";
+        this.segment = ClientSegment.OTHER;
         this.projects = new ArrayList<>();
         this.clientdata = new ArrayList<>();
     }
