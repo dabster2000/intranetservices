@@ -21,16 +21,9 @@ import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO;
-import dk.trustworks.intranet.aggregates.invoice.resources.dto.ClientWithInternalsDTO;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
-import dk.trustworks.intranet.contracts.model.enums.ContractType;
-import dk.trustworks.intranet.contracts.model.Contract;
-import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
@@ -69,6 +62,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE;
+import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus.*;
 import static dk.trustworks.intranet.utils.DateUtils.fiscalYearStart;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 import static dk.trustworks.intranet.utils.NumberUtils.round2;
@@ -159,7 +153,7 @@ public class InvoiceService {
         List<InvoiceStatus> statuses =
                 (type != null && type.length > 0)
                         ? Arrays.stream(type).map(InvoiceStatus::valueOf).toList()
-                        : List.of(InvoiceStatus.CREATED, InvoiceStatus.CREDIT_NOTE, InvoiceStatus.DRAFT, InvoiceStatus.QUEUED);
+                        : List.of(CREATED, DRAFT, QUEUED);
 
         LocalDate from = (fromdate != null) ? fromdate : LocalDate.of(2014, 1, 1);
         LocalDate to   = (todate   != null) ? todate   : LocalDate.now();
@@ -249,19 +243,19 @@ public class InvoiceService {
     }
 
     @SuppressWarnings("unchecked")
-    public List<Invoice> findInvoicesForSingleMonth(LocalDate month, String... type) {
-        String[] finalType = (type!=null && type.length>0)?type:new String[]{"CREATED", "CREDIT_NOTE", "DRAFT", "QUEUED"};
+    public List<Invoice> findInvoicesForSingleMonth(LocalDate month, String... status) {
+        String[] finalStatus = (status!=null && status.length>0)?status:new String[]{CREATED.name(), DRAFT.name(), QUEUED.name()};
         LocalDate date = month.withDayOfMonth(1);
         String sql = "SELECT * FROM invoices i WHERE " +
                 "i.year = " + date.getYear() + " AND i.month = " + (date.getMonthValue() - 1) + " " +
-                " AND i.status IN ('"+String.join("','", finalType)+"');";
+                " AND i.status IN ('"+String.join("','", finalStatus)+"');";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
     }
 
     @SuppressWarnings("unchecked")
     public List<Invoice> findProjectInvoices(String projectuuid) {
-        String sql = "SELECT * FROM invoices i WHERE i.projectuuid like '"+projectuuid+"' AND i.status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC;";
+        String sql = "SELECT * FROM invoices i WHERE i.projectuuid like '"+projectuuid+"' AND i.status = 'CREATED' ORDER BY year DESC, month DESC;";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
     }
@@ -438,8 +432,6 @@ public class InvoiceService {
             clearBonusFields(parentInvoice);
             clearBonusFields(draftInvoice);
             updateInvoiceBonusStatus(parentInvoice);
-            parentInvoice.status = InvoiceStatus.CREDIT_NOTE;
-            updateInvoiceStatus(parentInvoice, InvoiceStatus.CREDIT_NOTE);
         }
 
         if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE) {
@@ -449,7 +441,7 @@ public class InvoiceService {
                 bonusService.recalcForInvoice(draftInvoice.getUuid());
             }
         }
-        draftInvoice.setStatus(InvoiceStatus.CREATED);
+        draftInvoice.setStatus(CREATED);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
         log.debug("Saving invoice...");
         saveInvoice(draftInvoice);
@@ -490,7 +482,7 @@ public class InvoiceService {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         recalculateInvoiceItems(draftInvoice);
         bonusService.recalcForInvoice(draftInvoice.getUuid());
-        draftInvoice.setStatus(InvoiceStatus.CREATED);
+        draftInvoice.setStatus(CREATED);
         draftInvoice.invoicenumber = 0;
         draftInvoice.setType(InvoiceType.PHANTOM);
         draftInvoice.pdf = createInvoicePdf(draftInvoice);
@@ -838,7 +830,7 @@ public class InvoiceService {
     // ADD this helper to parse statuses if caller passed none
     private static List<InvoiceStatus> defaultStatuses(List<InvoiceStatus> statuses) {
         if (statuses == null || statuses.isEmpty()) {
-            return List.of(InvoiceStatus.CREATED, InvoiceStatus.SUBMITTED, InvoiceStatus.CREDIT_NOTE);
+            return List.of(CREATED);
         }
         return statuses;
     }
@@ -963,7 +955,7 @@ public class InvoiceService {
 
     /** Count invoices (within default invoice lifecycle set) filtered by aggregated bonus status. */
     public long countBonusApprovalByBonusStatus(List<SalesApprovalStatus> bonusStatuses) {
-        var invStatuses = defaultStatuses(List.of()); // -> CREATED, SUBMITTED, PAID, CREDIT_NOTE
+        var invStatuses = defaultStatuses(List.of()); // -> CREATED
         String aggWhere = buildAggregatedStatusWhere(bonusStatuses);
         String jpql = """
             SELECT COUNT(i) FROM Invoice i
@@ -1381,7 +1373,7 @@ public class InvoiceService {
         // Additional validation: ensure there is no existing non-DRAFT INTERNAL invoice for this client invoice
         long existing = Invoice.count("type = ?1 and status in ?2 and invoiceRefUuid = ?3",
                 InvoiceType.INTERNAL,
-                java.util.List.of(InvoiceStatus.QUEUED, InvoiceStatus.CREATED),
+                java.util.List.of(InvoiceStatus.QUEUED, CREATED),
                 invoice.getInvoiceRefUuid());
         if (existing > 0) {
             throw new WebApplicationException(
@@ -1424,7 +1416,7 @@ public class InvoiceService {
         }
 
         // Create PDF
-        queuedInvoice.setStatus(InvoiceStatus.CREATED);
+        queuedInvoice.setStatus(CREATED);
         queuedInvoice.pdf = createInvoicePdf(queuedInvoice);
 
         log.debug("Saving queued invoice...");

@@ -1,0 +1,165 @@
+package dk.trustworks.intranet.aggregates.finance.services;
+
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Tuple;
+import lombok.extern.jbosslog.JBossLog;
+
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * Service for CxO dashboard finance aggregation.
+ * Queries the fact_project_financials view for revenue and margin trends.
+ */
+@JBossLog
+@ApplicationScoped
+public class CxoFinanceService {
+
+    @Inject
+    EntityManager em;
+
+    /**
+     * Retrieves monthly revenue and margin data for the specified period and filters.
+     *
+     * @param fromDate Start date (inclusive, clamped to first of month)
+     * @param toDate End date (inclusive, clamped to last of month)
+     * @param sectors Multi-select sector filter (e.g., "PUBLIC", "HEALTH")
+     * @param serviceLines Multi-select service line filter (e.g., "PM", "DEV")
+     * @param contractTypes Multi-select contract type filter (e.g., "T&M", "FIXED")
+     * @param clientId Single-select client filter (optional)
+     * @return List of monthly data points sorted chronologically
+     */
+    public List<MonthlyRevenueMarginDTO> getRevenueMarginTrend(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId) {
+
+        // Normalize dates: clamp to first/last of month
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1).plusMonths(1).minusDays(1) : LocalDate.now();
+
+        // Convert to YYYYMM month keys for efficient filtering
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("getRevenueMarginTrend: fromDate=%s (%s), toDate=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s",
+                normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId);
+
+        // Build SQL query with conditional filters
+        StringBuilder sql = new StringBuilder(
+                "SELECT " +
+                "    f.month_key, " +
+                "    f.year, " +
+                "    f.month_number, " +
+                "    SUM(f.recognized_revenue_dkk) AS revenue, " +
+                "    SUM(f.direct_delivery_cost_dkk) AS cost " +
+                "FROM fact_project_financials f " +
+                "WHERE 1=1 "
+        );
+
+        // Time range filter
+        sql.append("  AND f.month_key >= :fromMonthKey ")
+           .append("  AND f.month_key <= :toMonthKey ");
+
+        // Conditional sector filter
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("  AND f.sector_id IN (:sectors) ");
+        }
+
+        // Conditional service line filter
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("  AND f.service_line_id IN (:serviceLines) ");
+        }
+
+        // Conditional contract type filter
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("  AND f.contract_type_id IN (:contractTypes) ");
+        }
+
+        // Conditional client filter
+        if (clientId != null && !clientId.isBlank()) {
+            sql.append("  AND f.client_id = :clientId ");
+        }
+
+        sql.append("GROUP BY f.year, f.month_number, f.month_key ")
+           .append("ORDER BY f.year ASC, f.month_number ASC");
+
+        // Execute query with bound parameters
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+
+        if (clientId != null && !clientId.isBlank()) {
+            query.setParameter("clientId", clientId);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> results = query.getResultList();
+
+        log.debugf("Query returned %d rows", results.size());
+
+        // Map results to DTOs, computing margin percentage
+        List<MonthlyRevenueMarginDTO> dtos = new ArrayList<>();
+        for (Tuple row : results) {
+            String monthKey = (String) row.get("month_key");
+            int year = ((Number) row.get("year")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double revenue = ((Number) row.get("revenue")).doubleValue();
+            double cost = ((Number) row.get("cost")).doubleValue();
+
+            // Calculate margin percentage: (revenue - cost) / revenue * 100
+            // Null if revenue is zero (avoid division by zero)
+            Double marginPercent = null;
+            if (revenue > 0) {
+                marginPercent = ((revenue - cost) / revenue) * 100.0;
+            }
+
+            String monthLabel = formatMonthLabel(year, monthNumber);
+
+            MonthlyRevenueMarginDTO dto = new MonthlyRevenueMarginDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    monthLabel,
+                    revenue,
+                    cost,
+                    marginPercent
+            );
+
+            dtos.add(dto);
+            log.debugf("Month %s: revenue=%.2f, cost=%.2f, margin=%.2f%%", monthKey, revenue, cost, marginPercent != null ? marginPercent : 0);
+        }
+
+        return dtos;
+    }
+
+    /**
+     * Formats year and month into a user-friendly label (e.g., "Jan 2025").
+     */
+    private String formatMonthLabel(int year, int monthNumber) {
+        String[] monthNames = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        return monthNames[monthNumber - 1] + " " + year;
+    }
+}

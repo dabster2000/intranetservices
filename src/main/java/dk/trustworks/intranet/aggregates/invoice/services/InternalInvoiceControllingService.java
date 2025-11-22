@@ -800,7 +800,7 @@ public class InternalInvoiceControllingService {
      * @param todate   End date (exclusive)
      * @return List of pairs (client + internal) with header data and line-level crossCompany flags
      */
-    public java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO>
+    public List<CrossCompanyInvoicePairDTO>
     findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(java.time.LocalDate fromdate, java.time.LocalDate todate) {
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
@@ -811,7 +811,7 @@ public class InternalInvoiceControllingService {
                 FROM invoices
                 WHERE invoicedate >= :from
                   AND invoicedate <  :to
-                  AND status = 'CREDIT_NOTE'
+                  # TODO: Find a way to sort invoices that have a credit note away
                   AND type   = 'INVOICE'
             ),
             status_pick AS (

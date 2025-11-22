@@ -100,9 +100,7 @@ public class InvoiceGenerator {
                 for (Invoice invoice : invoices) {
                     if(invoice.projectuuid.equals(work.getProjectuuid()) &&
                             invoice.getContractuuid().equals(work.getContractuuid()) && (
-                            invoice.status.equals(CREATED)
-                                    || invoice.status.equals(InvoiceStatus.SUBMITTED)
-                                    || invoice.status.equals(InvoiceStatus.CREDIT_NOTE))) {
+                            invoice.status.equals(CREATED))) {
                         numberOfInvoicesRelatedToProject++;
                         relatedInvoices.add(invoice);
                         for (InvoiceItem invoiceitem : invoice.invoiceitems) {

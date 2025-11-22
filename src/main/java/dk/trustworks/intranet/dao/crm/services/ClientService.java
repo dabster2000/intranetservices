@@ -36,11 +36,13 @@ public class ClientService {
                         "contactname = ?2, " +
                         "name = ?3, " +
                         "accountmanager = ?4, " +
-                        "crmid = ?5 " +
-                        "WHERE uuid like ?6 ",
+                        "crmid = ?5, " +
+                        "segment = ?6 " +
+                        "WHERE uuid like ?7 ",
                 client.isActive(), client.getContactname(),
                 client.getName(), client.getAccountmanager(),
-                client.getCrmid(), client.getUuid());
+                client.getCrmid(), client.getSegment(),
+                client.getUuid());
     }
 
     public List<Clientdata> listAllClientData(String clientuuid) {

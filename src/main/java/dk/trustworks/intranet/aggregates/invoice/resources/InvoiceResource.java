@@ -140,7 +140,7 @@ public class InvoiceResource {
     @GET
     @Path("/months/{month}")
     public List<Invoice> findByYearAndMonth(@PathParam("month") String month) {
-        return invoiceService.findInvoicesForSingleMonth(dateIt(month), "CREATED", "CREDIT_NOTE", "DRAFT", "QUEUED");
+        return invoiceService.findInvoicesForSingleMonth(dateIt(month));
     }
 
     @GET

@@ -27,6 +27,8 @@ import java.util.stream.Collectors;
 
 import dk.trustworks.intranet.utils.DateUtils;
 
+import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.CREDIT_NOTE;
+
 @ApplicationScoped
 public class InvoiceBonusService {
 
@@ -302,7 +304,7 @@ public class InvoiceBonusService {
             amount = baseSelected * (1.0 - discountPct/100.0);
         }
 
-        if (inv.getType() == InvoiceType.CREDIT_NOTE) amount = -amount;
+        if (inv.getType() == CREDIT_NOTE) amount = -amount;
         return round2(amount);
     }
 
@@ -312,7 +314,7 @@ public class InvoiceBonusService {
         if (inv != null) {
             if (inv.getSumAfterDiscounts() != null) base = inv.getSumAfterDiscounts();
             else base = inv.getSumNoTax(); // adjust if your entity differs
-            if (inv.getType() == InvoiceType.CREDIT_NOTE) base = -base;
+            if (inv.getType() == CREDIT_NOTE) base = -base;
         }
         double computed = switch (ib.getShareType()) {
             case PERCENT -> base * (ib.getShareValue() / 100.0);
@@ -564,7 +566,7 @@ public class InvoiceBonusService {
                     } else {
                         lineFinal = baseC * (1.0 - discountPct / 100.0);
                     }
-                    if (inv.getType() == dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.CREDIT_NOTE) {
+                    if (inv.getType() == CREDIT_NOTE) {
                         lineFinal = -lineFinal;
                     }
 
