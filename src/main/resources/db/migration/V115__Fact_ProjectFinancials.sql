@@ -89,10 +89,6 @@ WITH project_months AS (
      ),
 
      work_cost_aggregation AS (
-         -- Step 3: Aggregate direct delivery costs
-         -- Calculation: SUM(work_hours × (annual_salary / 160 hours per month))
-         -- Uses most recent salary record per consultant
-         -- CRITICAL: Handle both old path (work.projectuuid) and new path (work→task→project)
          SELECT
              COALESCE(w.projectuuid, t.projectuuid) as project_uuid,
              YEAR(w.registered) as year_val,
