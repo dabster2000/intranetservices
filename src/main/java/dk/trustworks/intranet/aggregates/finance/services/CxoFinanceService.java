@@ -57,77 +57,119 @@ public class CxoFinanceService {
         log.debugf("getRevenueMarginTrend: fromDate=%s (%s), toDate=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
-        // Build SQL query with conditional filters
-        StringBuilder sql = new StringBuilder(
-                "SELECT " +
-                "    f.month_key, " +
-                "    f.year, " +
-                "    f.month_number, " +
-                "    SUM(f.recognized_revenue_dkk) AS revenue, " +
-                "    SUM(f.direct_delivery_cost_dkk) AS cost " +
-                "FROM fact_project_financials f " +
-                "WHERE 1=1 "
-        );
+        // Helper to build SQL with optional company filter (for DBs where fact view lacks companyuuid)
+        java.util.function.Function<Boolean, String> sqlBuilder = includeCompanyFilter -> {
+            StringBuilder sql = new StringBuilder(
+                    "SELECT " +
+                            "    f.month_key, " +
+                            "    f.year, " +
+                            "    f.month_number, " +
+                            "    SUM(f.recognized_revenue_dkk) AS revenue, " +
+                            "    SUM(f.direct_delivery_cost_dkk) AS cost " +
+                            "FROM fact_project_financials f " +
+                            "WHERE 1=1 "
+            );
 
-        // Time range filter
-        sql.append("  AND f.month_key >= :fromMonthKey ")
-           .append("  AND f.month_key <= :toMonthKey ");
+            // Time range filter
+            sql.append("  AND f.month_key >= :fromMonthKey ")
+                    .append("  AND f.month_key <= :toMonthKey ");
 
-        // Conditional sector filter
-        if (sectors != null && !sectors.isEmpty()) {
-            sql.append("  AND f.sector_id IN (:sectors) ");
+            // Conditional sector filter
+            if (sectors != null && !sectors.isEmpty()) {
+                sql.append("  AND f.sector_id IN (:sectors) ");
+            }
+
+            // Conditional service line filter
+            if (serviceLines != null && !serviceLines.isEmpty()) {
+                sql.append("  AND f.service_line_id IN (:serviceLines) ");
+            }
+
+            // Conditional contract type filter
+            if (contractTypes != null && !contractTypes.isEmpty()) {
+                sql.append("  AND f.contract_type_id IN (:contractTypes) ");
+            }
+
+            // Conditional client filter
+            if (clientId != null && !clientId.isBlank()) {
+                sql.append("  AND f.client_id = :clientId ");
+            }
+
+            // Conditional company filter (only when requested and supported)
+            if (includeCompanyFilter && companyIds != null && !companyIds.isEmpty()) {
+                sql.append("  AND f.companyuuid IN (:companyIds) ");
+            }
+
+            sql.append("GROUP BY f.year, f.month_number, f.month_key ")
+                    .append("ORDER BY f.year ASC, f.month_number ASC");
+
+            return sql.toString();
+        };
+
+        // Try with company filter first (if provided). If DB doesn't have the column yet, fall back without it
+        boolean wantCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String sql = sqlBuilder.apply(wantCompanyFilter);
+
+        List<Tuple> results;
+        try {
+            var query = em.createNativeQuery(sql, Tuple.class);
+            query.setParameter("fromMonthKey", fromMonthKey);
+            query.setParameter("toMonthKey", toMonthKey);
+
+            if (sectors != null && !sectors.isEmpty()) {
+                query.setParameter("sectors", sectors);
+            }
+            if (serviceLines != null && !serviceLines.isEmpty()) {
+                query.setParameter("serviceLines", serviceLines);
+            }
+            if (contractTypes != null && !contractTypes.isEmpty()) {
+                query.setParameter("contractTypes", contractTypes);
+            }
+            if (clientId != null && !clientId.isBlank()) {
+                query.setParameter("clientId", clientId);
+            }
+            if (wantCompanyFilter) {
+                query.setParameter("companyIds", companyIds);
+            }
+
+            @SuppressWarnings("unchecked")
+            List<Tuple> tmp = query.getResultList();
+            results = tmp;
+        } catch (RuntimeException ex) {
+            // Detect missing column error and retry without company filter
+            Throwable cause = ex;
+            String errorMessage = ex.getMessage();
+            while (cause.getCause() != null) {
+                cause = cause.getCause();
+                if (cause.getMessage() != null) {
+                    errorMessage = cause.getMessage();
+                }
+            }
+            boolean missingCompanyColumn = errorMessage != null && errorMessage.toLowerCase().contains("unknown column 'f.companyuuid'");
+            if (wantCompanyFilter && missingCompanyColumn) {
+                log.warnf("fact_project_financials missing column companyuuid; retrying without company filter. Error: %s", errorMessage);
+                // Retry without company filter
+                var retryQuery = em.createNativeQuery(sqlBuilder.apply(false), Tuple.class);
+                retryQuery.setParameter("fromMonthKey", fromMonthKey);
+                retryQuery.setParameter("toMonthKey", toMonthKey);
+                if (sectors != null && !sectors.isEmpty()) {
+                    retryQuery.setParameter("sectors", sectors);
+                }
+                if (serviceLines != null && !serviceLines.isEmpty()) {
+                    retryQuery.setParameter("serviceLines", serviceLines);
+                }
+                if (contractTypes != null && !contractTypes.isEmpty()) {
+                    retryQuery.setParameter("contractTypes", contractTypes);
+                }
+                if (clientId != null && !clientId.isBlank()) {
+                    retryQuery.setParameter("clientId", clientId);
+                }
+                @SuppressWarnings("unchecked")
+                List<Tuple> tmp = retryQuery.getResultList();
+                results = tmp;
+            } else {
+                throw ex; // rethrow other errors
+            }
         }
-
-        // Conditional service line filter
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("  AND f.service_line_id IN (:serviceLines) ");
-        }
-
-        // Conditional contract type filter
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("  AND f.contract_type_id IN (:contractTypes) ");
-        }
-
-        // Conditional client filter
-        if (clientId != null && !clientId.isBlank()) {
-            sql.append("  AND f.client_id = :clientId ");
-        }
-
-        // Conditional company filter
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND f.companyuuid IN (:companyIds) ");
-        }
-
-        sql.append("GROUP BY f.year, f.month_number, f.month_key ")
-           .append("ORDER BY f.year ASC, f.month_number ASC");
-
-        // Execute query with bound parameters
-        var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromMonthKey", fromMonthKey);
-        query.setParameter("toMonthKey", toMonthKey);
-
-        if (sectors != null && !sectors.isEmpty()) {
-            query.setParameter("sectors", sectors);
-        }
-
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            query.setParameter("serviceLines", serviceLines);
-        }
-
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            query.setParameter("contractTypes", contractTypes);
-        }
-
-        if (clientId != null && !clientId.isBlank()) {
-            query.setParameter("clientId", clientId);
-        }
-
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Tuple> results = query.getResultList();
 
         log.debugf("Query returned %d rows", results.size());
 
