@@ -43,6 +43,7 @@ public class CxoFinanceResource {
      * @param serviceLines Comma-separated service line IDs (optional)
      * @param contractTypes Comma-separated contract type IDs (optional)
      * @param clientId Client UUID filter (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
      * @return List of monthly revenue and margin data points
      */
     @GET
@@ -53,15 +54,17 @@ public class CxoFinanceResource {
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
-            @QueryParam("clientId") String clientId) {
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
 
-        log.debugf("GET /finance/cxo/revenue-margin-trend: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s",
-                fromDate, toDate, sectors, serviceLines, contractTypes, clientId);
+        log.debugf("GET /finance/cxo/revenue-margin-trend: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDate, toDate, sectors, serviceLines, contractTypes, clientId, companyIds);
 
         // Parse multi-value filters
         Set<String> sectorSet = parseCommaSeparated(sectors);
         Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
         Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         // Call service layer
         List<MonthlyRevenueMarginDTO> result = cxoFinanceService.getRevenueMarginTrend(
@@ -70,7 +73,8 @@ public class CxoFinanceResource {
                 sectorSet,
                 serviceLineSet,
                 contractTypeSet,
-                clientId
+                clientId,
+                companyIdSet
         );
 
         log.debugf("Returning %d data points", result.size());

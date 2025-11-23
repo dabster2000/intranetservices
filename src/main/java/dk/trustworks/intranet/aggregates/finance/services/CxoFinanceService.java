@@ -34,6 +34,7 @@ public class CxoFinanceService {
      * @param serviceLines Multi-select service line filter (e.g., "PM", "DEV")
      * @param contractTypes Multi-select contract type filter (e.g., "T&M", "FIXED")
      * @param clientId Single-select client filter (optional)
+     * @param companyIds Multi-select company filter (UUIDs)
      * @return List of monthly data points sorted chronologically
      */
     public List<MonthlyRevenueMarginDTO> getRevenueMarginTrend(
@@ -42,7 +43,8 @@ public class CxoFinanceService {
             Set<String> sectors,
             Set<String> serviceLines,
             Set<String> contractTypes,
-            String clientId) {
+            String clientId,
+            Set<String> companyIds) {
 
         // Normalize dates: clamp to first/last of month
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
@@ -52,8 +54,8 @@ public class CxoFinanceService {
         String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
         String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
 
-        log.debugf("getRevenueMarginTrend: fromDate=%s (%s), toDate=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s",
-                normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId);
+        log.debugf("getRevenueMarginTrend: fromDate=%s (%s), toDate=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
         // Build SQL query with conditional filters
         StringBuilder sql = new StringBuilder(
@@ -91,6 +93,11 @@ public class CxoFinanceService {
             sql.append("  AND f.client_id = :clientId ");
         }
 
+        // Conditional company filter
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND f.companyuuid IN (:companyIds) ");
+        }
+
         sql.append("GROUP BY f.year, f.month_number, f.month_key ")
            .append("ORDER BY f.year ASC, f.month_number ASC");
 
@@ -113,6 +120,10 @@ public class CxoFinanceService {
 
         if (clientId != null && !clientId.isBlank()) {
             query.setParameter("clientId", clientId);
+        }
+
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
         }
 
         @SuppressWarnings("unchecked")
