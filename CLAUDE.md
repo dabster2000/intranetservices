@@ -364,6 +364,100 @@ ERROR OpenAI validation failed for uuid=abc-123
 - API usage logging and monitoring
 - Danløn (payroll) number history tracking with temporal queries
 
+## fact_revenue_budget View - Fiscal Year Support (Added 2025-11-26)
+
+The `fact_revenue_budget` database view now includes fiscal year columns for seamless fiscal year queries without complex date logic.
+
+**Fiscal Year Columns**:
+- **fiscal_year** (INT): Fiscal year (e.g., 2024 for Jul 2024 - Jun 2025)
+- **fiscal_month_number** (INT): Month within FY (1-12 where 1=July, 12=June)
+- **fiscal_month_key** (VARCHAR): Formatted key "FY2024-01" for sorting
+
+**Fiscal Year Logic** (Trustworks):
+- Fiscal year starts July 1st (month 7)
+- FY2024 = July 1, 2024 through June 30, 2025
+- Aligned with `DateUtils.getCurrentFiscalStartDate()`
+
+**Calendar vs Fiscal Year**:
+```sql
+-- Calendar year query (Jan-Dec 2024)
+SELECT SUM(budget_revenue_dkk)
+FROM fact_revenue_budget
+WHERE company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+  AND year = 2024;
+-- Returns: 93.8M DKK
+
+-- Fiscal year query (Jul 2024 - Jun 2025)
+SELECT SUM(budget_revenue_dkk)
+FROM fact_revenue_budget
+WHERE company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+  AND fiscal_year = 2024;
+-- Returns: 97.6M DKK (3.7M difference!)
+```
+
+**Example Queries**:
+
+*1. Fiscal Year Budget by Month*:
+```sql
+SELECT
+    fiscal_year,
+    fiscal_month_number,
+    fiscal_month_key,
+    SUM(budget_revenue_dkk) AS monthly_budget
+FROM fact_revenue_budget
+WHERE fiscal_year = 2024
+  AND company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+GROUP BY fiscal_year, fiscal_month_number, fiscal_month_key
+ORDER BY fiscal_month_number;
+```
+
+*2. Fiscal Year Budget by Service Line*:
+```sql
+SELECT
+    fiscal_year,
+    service_line_id,
+    SUM(budget_revenue_dkk) AS total_budget,
+    SUM(budget_hours) AS total_hours
+FROM fact_revenue_budget
+WHERE fiscal_year = 2024
+  AND company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+GROUP BY fiscal_year, service_line_id
+ORDER BY total_budget DESC;
+```
+
+*3. Multi-Year Fiscal Comparison*:
+```sql
+SELECT
+    fiscal_year,
+    SUM(budget_revenue_dkk) AS annual_budget,
+    COUNT(DISTINCT fiscal_month_number) AS months_with_budget
+FROM fact_revenue_budget
+WHERE fiscal_year IN (2023, 2024, 2025)
+  AND company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+GROUP BY fiscal_year
+ORDER BY fiscal_year;
+```
+
+*4. Fiscal Quarter Aggregation*:
+```sql
+SELECT
+    fiscal_year,
+    CEIL(fiscal_month_number / 3.0) AS fiscal_quarter,
+    SUM(budget_revenue_dkk) AS quarterly_budget
+FROM fact_revenue_budget
+WHERE fiscal_year = 2024
+  AND company_id = 'd8894494-2fb4-4f72-9e05-e6032e6dd691'
+GROUP BY fiscal_year, fiscal_quarter
+ORDER BY fiscal_quarter;
+```
+
+**Backward Compatibility**:
+- Existing queries using `year` and `month_number` continue to work unchanged
+- Calendar year columns remain for calendar-based reporting
+- No breaking changes to view schema
+
+**Migration**: V120__Add_fiscal_year_to_fact_revenue_budget.sql
+
 ## Development Notes
 
 - Uses Lombok for boilerplate reduction

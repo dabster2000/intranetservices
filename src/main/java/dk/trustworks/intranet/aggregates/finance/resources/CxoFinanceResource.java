@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -116,6 +117,58 @@ public class CxoFinanceResource {
         );
 
         log.debugf("Returning %d utilization data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets Revenue YTD vs Budget data for the CXO Dashboard KPI.
+     * Compares fiscal year-to-date actual revenue against budget with prior year comparison.
+     *
+     * @param asOfDateStr Current date for YTD calculation (ISO-8601 format, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional, applies only to actual revenue)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return Revenue YTD data with actual, budget, attainment %, variance, YoY comparison, and sparkline
+     */
+    @GET
+    @Path("/revenue-ytd-vs-budget")
+    public RevenueYTDDataDTO getRevenueYTDvsBudget(
+            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/revenue-ytd-vs-budget: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse asOfDate (default to today if not provided)
+        LocalDate asOfDate = asOfDateStr != null && !asOfDateStr.trim().isEmpty()
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        RevenueYTDDataDTO result = cxoFinanceService.getRevenueYTDvsBudget(
+                asOfDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning Revenue YTD data: Actual=%.2f, Budget=%.2f, Attainment=%.2f%%",
+                result.getActualYTD(), result.getBudgetYTD(), result.getAttainmentPercent());
+
         return result;
     }
 
