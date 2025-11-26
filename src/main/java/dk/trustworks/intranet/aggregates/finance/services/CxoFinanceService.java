@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -214,5 +215,167 @@ public class CxoFinanceService {
     private String formatMonthLabel(int year, int monthNumber) {
         String[] monthNames = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
         return monthNames[monthNumber - 1] + " " + year;
+    }
+
+    /**
+     * Retrieves monthly utilization and capacity data for Chart B.
+     * Queries the fact_user_utilization view aggregated by month.
+     *
+     * @param fromDate Start date (inclusive, clamped to first of month)
+     * @param toDate End date (inclusive, clamped to last of month)
+     * @param practices Multi-select practice/service line filter (e.g., "PM", "DEV")
+     * @param companyIds Multi-select company filter (UUIDs)
+     * @return List of monthly utilization data points sorted chronologically
+     */
+    public List<MonthlyUtilizationDTO> getUtilizationTrend(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        // Normalize dates: clamp to first/last of month
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1).plusMonths(1).minusDays(1) : LocalDate.now();
+
+        // Convert to YYYYMM month keys for efficient filtering
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("getUtilizationTrend: fromDate=%s (%s), toDate=%s (%s), practices=%s, companyIds=%s",
+                normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, practices, companyIds);
+
+        // Helper to build SQL with optional company filter
+        java.util.function.Function<Boolean, String> sqlBuilder = includeCompanyFilter -> {
+            StringBuilder sql = new StringBuilder(
+                    "SELECT " +
+                            "    f.month_key, " +
+                            "    f.year, " +
+                            "    f.month_number, " +
+                            "    SUM(f.billable_hours) AS billable_hours, " +
+                            "    SUM(f.vacation_hours + f.sick_hours + f.maternity_leave_hours + " +
+                            "        f.non_payd_leave_hours + f.paid_leave_hours) AS absence_hours, " +
+                            "    SUM(f.net_available_hours) AS net_available_hours, " +
+                            "    SUM(f.gross_available_hours) AS gross_available_hours " +
+                            "FROM fact_user_utilization f " +
+                            "WHERE 1=1 "
+            );
+
+            // Time range filter
+            sql.append("  AND f.month_key >= :fromMonthKey ")
+                    .append("  AND f.month_key <= :toMonthKey ");
+
+            // Conditional practice filter
+            if (practices != null && !practices.isEmpty()) {
+                sql.append("  AND f.practice_id IN (:practices) ");
+            }
+
+            // Conditional company filter (only when requested and supported)
+            if (includeCompanyFilter && companyIds != null && !companyIds.isEmpty()) {
+                sql.append("  AND f.companyuuid IN (:companyIds) ");
+            }
+
+            sql.append("GROUP BY f.year, f.month_number, f.month_key ")
+                    .append("ORDER BY f.year ASC, f.month_number ASC");
+
+            return sql.toString();
+        };
+
+        // Try with company filter first (if provided). Fall back if DB doesn't have the column
+        boolean wantCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String sql = sqlBuilder.apply(wantCompanyFilter);
+
+        List<Tuple> results;
+        try {
+            var query = em.createNativeQuery(sql, Tuple.class);
+            query.setParameter("fromMonthKey", fromMonthKey);
+            query.setParameter("toMonthKey", toMonthKey);
+
+            if (practices != null && !practices.isEmpty()) {
+                query.setParameter("practices", practices);
+            }
+            if (wantCompanyFilter) {
+                query.setParameter("companyIds", companyIds);
+            }
+
+            @SuppressWarnings("unchecked")
+            List<Tuple> tmp = query.getResultList();
+            results = tmp;
+        } catch (RuntimeException ex) {
+            // Detect missing column error and retry without company filter
+            Throwable cause = ex;
+            String errorMessage = ex.getMessage();
+            while (cause.getCause() != null) {
+                cause = cause.getCause();
+                if (cause.getMessage() != null) {
+                    errorMessage = cause.getMessage();
+                }
+            }
+            boolean missingCompanyColumn = errorMessage != null && errorMessage.toLowerCase().contains("unknown column 'f.companyuuid'");
+            if (wantCompanyFilter && missingCompanyColumn) {
+                log.warnf("fact_user_utilization missing column companyuuid; retrying without company filter. Error: %s", errorMessage);
+                // Retry without company filter
+                var retryQuery = em.createNativeQuery(sqlBuilder.apply(false), Tuple.class);
+                retryQuery.setParameter("fromMonthKey", fromMonthKey);
+                retryQuery.setParameter("toMonthKey", toMonthKey);
+                if (practices != null && !practices.isEmpty()) {
+                    retryQuery.setParameter("practices", practices);
+                }
+                @SuppressWarnings("unchecked")
+                List<Tuple> tmp = retryQuery.getResultList();
+                results = tmp;
+            } else {
+                throw ex; // rethrow other errors
+            }
+        }
+
+        log.debugf("Utilization query returned %d rows", results.size());
+
+        // Map results to DTOs, computing non-billable hours and utilization percentage
+        List<MonthlyUtilizationDTO> dtos = new ArrayList<>();
+        for (Tuple row : results) {
+            String monthKey = (String) row.get("month_key");
+            int year = ((Number) row.get("year")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double billableHours = ((Number) row.get("billable_hours")).doubleValue();
+            double absenceHours = ((Number) row.get("absence_hours")).doubleValue();
+            double netAvailableHours = ((Number) row.get("net_available_hours")).doubleValue();
+            double grossAvailableHours = ((Number) row.get("gross_available_hours")).doubleValue();
+
+            // Calculate non-billable hours: net_available - billable - absence
+            // This represents time worked but not billed (internal projects, admin, etc.)
+            double nonBillableHours = Math.max(0, netAvailableHours - billableHours - absenceHours);
+
+            // Calculate utilization percentage: billable / (net_available - absence) * 100
+            // This measures utilization against actual working hours
+            // net_available already excludes unavailable_hours (holidays, half-day Fridays)
+            // Then subtract absence (vacation, sick, maternity, non-paid leave, paid leave)
+            // Null if working hours is zero (avoid division by zero)
+            double workingHours = netAvailableHours - absenceHours;
+            Double utilizationPercent = null;
+            if (workingHours > 0) {
+                utilizationPercent = (billableHours / workingHours) * 100.0;
+            }
+
+            String monthLabel = formatMonthLabel(year, monthNumber);
+
+            MonthlyUtilizationDTO dto = new MonthlyUtilizationDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    monthLabel,
+                    billableHours,
+                    nonBillableHours,
+                    absenceHours,
+                    netAvailableHours,
+                    grossAvailableHours,
+                    utilizationPercent
+            );
+
+            dtos.add(dto);
+            log.debugf("Month %s: billable=%.1f, nonBillable=%.1f, absence=%.1f, utilization=%.1f%%",
+                    monthKey, billableHours, nonBillableHours, absenceHours, utilizationPercent != null ? utilizationPercent : 0);
+        }
+
+        return dtos;
     }
 }

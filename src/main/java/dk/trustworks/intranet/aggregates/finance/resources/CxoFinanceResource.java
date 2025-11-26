@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -78,6 +79,43 @@ public class CxoFinanceResource {
         );
 
         log.debugf("Returning %d data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets monthly utilization and capacity trend data for Chart B.
+     * Note: Utilization is user-centric, so only practice and company filters apply.
+     *
+     * @param fromDate Start date (ISO-8601 format, optional)
+     * @param toDate End date (ISO-8601 format, optional)
+     * @param practices Comma-separated practice/service line IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of monthly utilization data points
+     */
+    @GET
+    @Path("/utilization-trend")
+    public List<MonthlyUtilizationDTO> getUtilizationTrend(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/utilization-trend: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
+                fromDate, toDate, practices, companyIds);
+
+        // Parse multi-value filters
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        List<MonthlyUtilizationDTO> result = cxoFinanceService.getUtilizationTrend(
+                fromDate,
+                toDate,
+                practiceSet,
+                companyIdSet
+        );
+
+        log.debugf("Returning %d utilization data points", result.size());
         return result;
     }
 
