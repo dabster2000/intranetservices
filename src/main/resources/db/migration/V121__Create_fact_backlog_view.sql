@@ -6,8 +6,15 @@
 -- - Provides monthly expected revenue from active contracts
 -- - Enables backlog coverage analysis for revenue forecasting
 --
--- Grain: Project-DeliveryMonth-Company
--- Source: contracts + contract_consultants + contract_project + project
+-- Grain: Contract-DeliveryMonth-Company
+-- Source: bi_budget_per_day (pre-calculated with availability adjustments)
+--
+-- CHANGE LOG:
+-- 2025-11-26: Refactored to use bi_budget_per_day as data source
+--   - FIXED: Double-counting bug from contract_project JOIN (5x inflation)
+--   - FIXED: Now excludes weekends (only Mon-Fri counted)
+--   - FIXED: Now includes availability adjustment (~28% reduction for vacation, parental leave, etc.)
+--   - CHANGED: Grain from Project-Month to Contract-Month (no project-level double-counting)
 -- =============================================================================
 
 CREATE ALGORITHM=UNDEFINED
@@ -15,165 +22,101 @@ CREATE ALGORITHM=UNDEFINED
     VIEW `fact_backlog` AS
 
 WITH
-    -- 1) Generate a calendar of months from now to 24 months ahead
-    month_calendar AS (
+    -- 1) Aggregate bi_budget_per_day to contract-month level
+    -- bi_budget_per_day already has:
+    --   - Weekend exclusion (only Mon-Fri)
+    --   - Availability adjustment (vacation, parental leave, sick leave)
+    --   - Daily granularity with pre-calculated hours and rates
+    backlog_by_contract_month AS (
         SELECT
-            DATE_ADD(DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01')),
-                     INTERVAL n MONTH) AS delivery_month
-        FROM (
-                 SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
-                 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
-                 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11
-                 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15
-                 UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19
-                 UNION ALL SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23
-             ) months
+            b.contractuuid AS contract_uuid,
+            b.clientuuid AS client_uuid,
+            COALESCE(b.companyuuid, 'd8894494-2fb4-4f72-9e05-e6032e6dd691') AS company_uuid,
+            b.year AS year_val,
+            b.month AS month_val,
+            -- Backlog revenue = SUM(adjusted hours × rate) for all days in month
+            SUM(b.budgetHours * b.rate) AS backlog_revenue_dkk,
+            -- Also track raw hours for transparency
+            SUM(b.budgetHours) AS adjusted_hours,
+            SUM(b.budgetHoursWithNoAvailabilityAdjustment) AS raw_hours,
+            COUNT(DISTINCT b.useruuid) AS consultant_count
+        FROM bi_budget_per_day b
+        WHERE b.budgetHours > 0
+          -- Only include future months (current month and beyond)
+          AND b.document_date >= DATE(CONCAT(YEAR(CURDATE()), '-', MONTH(CURDATE()), '-01'))
+        GROUP BY b.contractuuid, b.clientuuid, b.companyuuid, b.year, b.month
     ),
 
-    -- 2) Get active contracts with consultant allocations
-    contract_consultants_active AS (
+    -- 2) Get contract metadata (contract type, status)
+    contract_metadata AS (
         SELECT
             c.uuid AS contract_uuid,
-            c.clientuuid AS client_uuid,
-            c.companyuuid AS company_uuid,
             c.contracttype AS contract_type,
-            c.status AS contract_status,
-            cp.projectuuid AS project_uuid,
-            cc.useruuid AS consultant_uuid,
-            cc.activefrom,
-            cc.activeto,
-            cc.rate,
-            cc.hours AS allocated_hours_per_period,
-            -- Calculate monthly hours (hours field is typically per-month or total)
-            -- Using standard 160.33 hours/month as baseline
-            CASE
-                WHEN cc.hours = 0 THEN 160.33  -- Unlimited allocation = full month
-                WHEN cc.hours <= 50 THEN cc.hours * 4.33  -- Weekly hours → monthly
-                ELSE cc.hours  -- Already monthly
-                END AS monthly_hours
+            c.status AS contract_status
         FROM contracts c
-                 INNER JOIN contract_consultants cc ON cc.contractuuid = c.uuid
-                 INNER JOIN contract_project cp ON cp.contractuuid = c.uuid
         WHERE c.status IN ('SIGNED', 'TIME', 'BUDGET')
-          AND cc.activeto >= CURDATE()  -- Only future/current periods
-          AND cc.rate > 0
     ),
 
-    -- 3) Cross-join with calendar to get monthly backlog
-    backlog_by_month AS (
+    -- 3) Get dominant service line per contract (from assigned consultants)
+    contract_service_line AS (
         SELECT
-            cca.contract_uuid,
-            cca.client_uuid,
-            cca.company_uuid,
-            cca.contract_type,
-            cca.contract_status,
-            cca.project_uuid,
-            cca.consultant_uuid,
-            mc.delivery_month,
-            YEAR(mc.delivery_month) AS year_val,
-            MONTH(mc.delivery_month) AS month_val,
-            cca.rate,
-            cca.monthly_hours,
-            -- Calculate backlog revenue for this month
-            -- Pro-rate for partial months at start/end
-            CASE
-                -- Full month within period
-                WHEN cca.activefrom <= mc.delivery_month
-                    AND cca.activeto >= LAST_DAY(mc.delivery_month)
-                    THEN cca.rate * cca.monthly_hours
-                -- Partial start month
-                WHEN YEAR(cca.activefrom) = YEAR(mc.delivery_month)
-                    AND MONTH(cca.activefrom) = MONTH(mc.delivery_month)
-                    THEN cca.rate * cca.monthly_hours *
-                         (DATEDIFF(LAST_DAY(mc.delivery_month), cca.activefrom) + 1) /
-                         DAY(LAST_DAY(mc.delivery_month))
-                -- Partial end month
-                WHEN YEAR(cca.activeto) = YEAR(mc.delivery_month)
-                    AND MONTH(cca.activeto) = MONTH(mc.delivery_month)
-                    THEN cca.rate * cca.monthly_hours *
-                         DAY(cca.activeto) / DAY(LAST_DAY(mc.delivery_month))
-                ELSE 0
-                END AS backlog_revenue_dkk
-        FROM contract_consultants_active cca
-                 CROSS JOIN month_calendar mc
-        WHERE mc.delivery_month >= DATE(CONCAT(YEAR(cca.activefrom), '-', MONTH(cca.activefrom), '-01'))
-          AND mc.delivery_month <= LAST_DAY(cca.activeto)
-    ),
-
-    -- 4) Aggregate to project-month-company grain
-    backlog_aggregated AS (
-        SELECT
-            bm.project_uuid,
-            bm.client_uuid,
-            COALESCE(bm.company_uuid, 'd8894494-2fb4-4f72-9e05-e6032e6dd691') AS company_uuid,
-            bm.contract_type,
-            bm.year_val,
-            bm.month_val,
-            SUM(bm.backlog_revenue_dkk) AS backlog_revenue_dkk,
-            COUNT(DISTINCT bm.consultant_uuid) AS consultant_count,
-            COUNT(DISTINCT bm.contract_uuid) AS contract_count
-        FROM backlog_by_month bm
-        WHERE bm.backlog_revenue_dkk > 0
-        GROUP BY bm.project_uuid, bm.client_uuid, bm.company_uuid, bm.contract_type,
-                 bm.year_val, bm.month_val
-    ),
-
-    -- 5) Get dominant service line per project (from historical work or consultants)
-    project_service_line AS (
-        SELECT
-            p.uuid AS project_uuid,
+            cc.contractuuid AS contract_uuid,
             COALESCE(
-                    (SELECT u.primaryskilltype
-                     FROM contract_project cp2
-                              JOIN contract_consultants cc2 ON cp2.contractuuid = cc2.contractuuid
-                              JOIN user u ON cc2.useruuid = u.uuid
-                     WHERE cp2.projectuuid = p.uuid
-                       AND u.primaryskilltype IS NOT NULL
-                     GROUP BY u.primaryskilltype
-                     ORDER BY COUNT(*) DESC, SUM(cc2.hours) DESC
-                     LIMIT 1),
-                    'UD'
+                (SELECT u.primaryskilltype
+                 FROM contract_consultants cc2
+                 JOIN user u ON cc2.useruuid = u.uuid
+                 WHERE cc2.contractuuid = cc.contractuuid
+                   AND u.primaryskilltype IS NOT NULL
+                 GROUP BY u.primaryskilltype
+                 ORDER BY COUNT(*) DESC, SUM(cc2.hours) DESC
+                 LIMIT 1),
+                'UD'
             ) AS service_line_id
-        FROM project p
+        FROM contract_consultants cc
+        GROUP BY cc.contractuuid
     )
 
 SELECT
-    -- Surrogate key
+    -- Surrogate key (contract-company-month)
     CONCAT(
-            ba.project_uuid, '-',
-            ba.company_uuid, '-',
-            LPAD(ba.year_val, 4, '0'),
-            LPAD(ba.month_val, 2, '0')
+        bcm.contract_uuid, '-',
+        bcm.company_uuid, '-',
+        LPAD(bcm.year_val, 4, '0'),
+        LPAD(bcm.month_val, 2, '0')
     ) AS backlog_id,
 
     -- Dimension keys
-    ba.project_uuid AS project_id,
-    ba.client_uuid AS client_id,
-    ba.company_uuid AS company_id,
-    COALESCE(psl.service_line_id, 'UD') AS service_line_id,
-    COALESCE(c.segment, 'OTHER') AS sector_id,
-    COALESCE(ba.contract_type, 'PERIOD') AS contract_type_id,
+    -- Note: Using contract_uuid as project_id for backward compatibility
+    -- The downstream code aggregates by month anyway, so the entity type doesn't matter
+    bcm.contract_uuid AS project_id,
+    bcm.client_uuid AS client_id,
+    bcm.company_uuid AS company_id,
+    COALESCE(csl.service_line_id, 'UD') AS service_line_id,
+    COALESCE(cl.segment, 'OTHER') AS sector_id,
+    COALESCE(cm.contract_type, 'PERIOD') AS contract_type_id,
 
     -- Time dimensions
-    CONCAT(LPAD(ba.year_val, 4, '0'), LPAD(ba.month_val, 2, '0')) AS delivery_month_key,
-    ba.year_val AS year,
-    ba.month_val AS month_number,
+    CONCAT(LPAD(bcm.year_val, 4, '0'), LPAD(bcm.month_val, 2, '0')) AS delivery_month_key,
+    bcm.year_val AS year,
+    bcm.month_val AS month_number,
 
     -- Metrics
-    ba.backlog_revenue_dkk,
-    ba.consultant_count,
-    ba.contract_count,
+    bcm.backlog_revenue_dkk,
+    bcm.consultant_count,
+    1 AS contract_count,  -- Each row is one contract
 
     -- Status (all backlog from active contracts)
     'ACTIVE' AS project_status,
 
-    -- Data source
-    'CONTRACTS' AS data_source
+    -- Data source (changed from CONTRACTS to BI_BUDGET to indicate new source)
+    'BI_BUDGET' AS data_source
 
-FROM backlog_aggregated ba
-         LEFT JOIN client c ON ba.client_uuid = c.uuid
-         LEFT JOIN project_service_line psl ON ba.project_uuid = psl.project_uuid
-ORDER BY ba.year_val, ba.month_val, ba.project_uuid;
+FROM backlog_by_contract_month bcm
+    LEFT JOIN contract_metadata cm ON bcm.contract_uuid = cm.contract_uuid
+    LEFT JOIN client cl ON bcm.client_uuid = cl.uuid
+    LEFT JOIN contract_service_line csl ON bcm.contract_uuid = csl.contract_uuid
+WHERE bcm.backlog_revenue_dkk > 0
+ORDER BY bcm.year_val, bcm.month_val, bcm.contract_uuid;
 
 -- =============================================================================
 --

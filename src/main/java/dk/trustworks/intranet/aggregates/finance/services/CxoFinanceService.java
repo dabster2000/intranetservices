@@ -1,8 +1,10 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -466,6 +468,79 @@ public class CxoFinanceService {
     }
 
     /**
+     * Calculate TTM Revenue Growth %
+     * Compares current trailing twelve months revenue vs prior 12-month period for year-over-year growth.
+     *
+     * @param fromDate Start of time filter range (not used for TTM calculation, but needed for filter consistency)
+     * @param toDate End of time filter range (determines anchor date for TTM calculation)
+     * @param sectors Sector filter (nullable)
+     * @param serviceLines Service line filter (nullable)
+     * @param contractTypes Contract type filter (nullable)
+     * @param clientId Client filter (nullable)
+     * @param companyIds Company filter (nullable)
+     * @return TTMRevenueGrowthDTO with current TTM, prior TTM, growth %, and sparkline
+     */
+    public TTMRevenueGrowthDTO getTTMRevenueGrowth(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        LocalDate normalizedToDate = (toDate != null) ? toDate : LocalDate.now();
+
+        // 1. Calculate anchor date (end of month containing toDate)
+        LocalDate anchorDate = normalizedToDate.withDayOfMonth(normalizedToDate.lengthOfMonth());
+
+        // 2. Current TTM window: 12 months ending on anchor date
+        LocalDate currentTTMStart = anchorDate.minusMonths(11).withDayOfMonth(1);
+        LocalDate currentTTMEnd = anchorDate;
+
+        // 3. Prior TTM window: 12 months ending one year before anchor date
+        LocalDate priorTTMStart = currentTTMStart.minusYears(1);
+        LocalDate priorTTMEnd = currentTTMEnd.minusYears(1);
+
+        log.debugf("TTM Revenue Growth calculation: Current TTM (%s to %s), Prior TTM (%s to %s)",
+                currentTTMStart, currentTTMEnd, priorTTMStart, priorTTMEnd);
+
+        // 4. Query current TTM revenue
+        double currentTTM = queryActualRevenue(
+                currentTTMStart, currentTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+
+        // 5. Query prior TTM revenue
+        double priorTTM = queryActualRevenue(
+                priorTTMStart, priorTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+
+        // 6. Calculate growth percentage (handle division by zero)
+        double growthPercent = (priorTTM > 0)
+                ? ((currentTTM - priorTTM) / priorTTM) * 100.0
+                : 0.0;
+
+        // 7. Query sparkline data (last 12 calendar months from anchor date)
+        double[] sparklineData = querySparklineRevenue(
+                currentTTMStart, currentTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+
+        log.debugf("TTM Revenue Growth results: Current=%.2f, Prior=%.2f, Growth=%.2f%%",
+                currentTTM, priorTTM, growthPercent);
+
+        // 8. Return DTO
+        return new TTMRevenueGrowthDTO(
+                currentTTM,
+                priorTTM,
+                growthPercent,
+                sparklineData
+        );
+    }
+
+    /**
      * Helper method: Query actual revenue from fact_project_financials for a date range.
      * Supports optional filters for sectors, service lines, contract types, client, and companies.
      */
@@ -646,5 +721,319 @@ public class CxoFinanceService {
         }
 
         return sparklineData;
+    }
+
+    /**
+     * Retrieves monthly pipeline, backlog, and target trend data for Chart C.
+     * Queries three views and merges results by month_key:
+     * - fact_pipeline: weighted pipeline (excludes WON, LOST stages)
+     * - fact_backlog: signed backlog from active contracts
+     * - fact_revenue_budget: revenue targets (no client filter supported)
+     *
+     * @param fromDate Start date (inclusive, first of month for horizon)
+     * @param toDate End date (inclusive, typically 6 months forward)
+     * @param sectors Multi-select sector filter
+     * @param serviceLines Multi-select service line filter
+     * @param contractTypes Multi-select contract type filter
+     * @param clientId Single-select client filter (budget excluded when set)
+     * @param companyIds Multi-select company filter (UUIDs)
+     * @return List of monthly data points sorted chronologically
+     */
+    public List<MonthlyPipelineBacklogDTO> getPipelineBacklogTrend(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        // Normalize dates to month boundaries
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1).plusMonths(1).minusDays(1)
+                : LocalDate.now().plusMonths(6).withDayOfMonth(1).minusDays(1);
+
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("getPipelineBacklogTrend: from=%s (%s), to=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 1. Query pipeline data (weighted_pipeline_dkk from fact_pipeline)
+        java.util.Map<String, Double> pipelineByMonth = queryPipelineData(
+                fromMonthKey, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 2. Query backlog data (backlog_revenue_dkk from fact_backlog)
+        java.util.Map<String, Double> backlogByMonth = queryBacklogData(
+                fromMonthKey, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 3. Query budget/target data (no client filter - budget has no client granularity)
+        // Only query if no client filter is active
+        java.util.Map<String, Double> targetByMonth;
+        if (clientId == null || clientId.isBlank()) {
+            targetByMonth = queryTargetData(fromMonthKey, toMonthKey, sectors, serviceLines, contractTypes, companyIds);
+        } else {
+            targetByMonth = new java.util.HashMap<>(); // Empty - hide target when client filter active
+        }
+
+        // 4. Merge results by month_key
+        java.util.Set<String> allMonthKeys = new java.util.TreeSet<>();
+        allMonthKeys.addAll(pipelineByMonth.keySet());
+        allMonthKeys.addAll(backlogByMonth.keySet());
+        allMonthKeys.addAll(targetByMonth.keySet());
+
+        List<MonthlyPipelineBacklogDTO> results = new ArrayList<>();
+        for (String monthKey : allMonthKeys) {
+            int year = Integer.parseInt(monthKey.substring(0, 4));
+            int monthNumber = Integer.parseInt(monthKey.substring(4, 6));
+            String monthLabel = formatMonthLabel(year, monthNumber);
+
+            double pipeline = pipelineByMonth.getOrDefault(monthKey, 0.0);
+            double backlog = backlogByMonth.getOrDefault(monthKey, 0.0);
+            double target = targetByMonth.getOrDefault(monthKey, 0.0);
+
+            // Calculate coverage percentages (null if target is zero)
+            Double bookedCoveragePct = null;
+            Double totalCoveragePct = null;
+            if (target > 0) {
+                bookedCoveragePct = (backlog / target) * 100.0;
+                totalCoveragePct = ((backlog + pipeline) / target) * 100.0;
+            }
+
+            MonthlyPipelineBacklogDTO dto = new MonthlyPipelineBacklogDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    monthLabel,
+                    pipeline,
+                    backlog,
+                    target,
+                    bookedCoveragePct,
+                    totalCoveragePct
+            );
+            results.add(dto);
+
+            log.debugf("Month %s: pipeline=%.2f, backlog=%.2f, target=%.2f, bookedCov=%.1f%%, totalCov=%.1f%%",
+                    monthKey, pipeline, backlog, target,
+                    bookedCoveragePct != null ? bookedCoveragePct : 0,
+                    totalCoveragePct != null ? totalCoveragePct : 0);
+        }
+
+        return results;
+    }
+
+    /**
+     * Query weighted pipeline from fact_pipeline view.
+     * Excludes WON and LOST stages (uses NOT IN to avoid collation issues).
+     */
+    private java.util.Map<String, Double> queryPipelineData(
+            String fromMonthKey, String toMonthKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT expected_revenue_month_key AS month_key, " +
+                        "       SUM(weighted_pipeline_dkk) AS pipeline " +
+                        "FROM fact_pipeline " +
+                        "WHERE year >= :fromYear AND year <= :toYear " +
+                        "  AND stage_category COLLATE utf8mb4_uca1400_ai_ci NOT IN ('WON', 'LOST') "
+        );
+
+        // Add optional filters
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("  AND sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("  AND service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("  AND contract_type_id IN (:contractTypes) ");
+        }
+        if (clientId != null && !clientId.isBlank()) {
+            sql.append("  AND client_id = :clientId ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND company_id IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY expected_revenue_month_key ORDER BY expected_revenue_month_key");
+
+        // Extract year values from month keys (YYYYMM format)
+        int fromYear = Integer.parseInt(fromMonthKey.substring(0, 4));
+        int toYear = Integer.parseInt(toMonthKey.substring(0, 4));
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromYear", fromYear);
+        query.setParameter("toYear", toYear);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (clientId != null && !clientId.isBlank()) {
+            query.setParameter("clientId", clientId);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> results = query.getResultList();
+
+        java.util.Map<String, Double> dataByMonth = new java.util.HashMap<>();
+        for (Tuple row : results) {
+            String monthKey = (String) row.get("month_key");
+            double pipeline = ((Number) row.get("pipeline")).doubleValue();
+            dataByMonth.put(monthKey, pipeline);
+        }
+
+        log.debugf("Pipeline query returned %d months", dataByMonth.size());
+        return dataByMonth;
+    }
+
+    /**
+     * Query backlog from fact_backlog view.
+     * Only includes ACTIVE project status.
+     */
+    private java.util.Map<String, Double> queryBacklogData(
+            String fromMonthKey, String toMonthKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT delivery_month_key AS month_key, " +
+                        "       SUM(backlog_revenue_dkk) AS backlog " +
+                        "FROM fact_backlog " +
+                        "WHERE year >= :fromYear AND year <= :toYear " +
+                        "  AND project_status COLLATE utf8mb4_uca1400_ai_ci = 'ACTIVE' "
+        );
+
+        // Add optional filters
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("  AND sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("  AND service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("  AND contract_type_id IN (:contractTypes) ");
+        }
+        if (clientId != null && !clientId.isBlank()) {
+            sql.append("  AND client_id = :clientId ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND company_id IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY delivery_month_key ORDER BY delivery_month_key");
+
+        // Extract year values from month keys (YYYYMM format)
+        int fromYear = Integer.parseInt(fromMonthKey.substring(0, 4));
+        int toYear = Integer.parseInt(toMonthKey.substring(0, 4));
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromYear", fromYear);
+        query.setParameter("toYear", toYear);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (clientId != null && !clientId.isBlank()) {
+            query.setParameter("clientId", clientId);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> results = query.getResultList();
+
+        java.util.Map<String, Double> dataByMonth = new java.util.HashMap<>();
+        for (Tuple row : results) {
+            String monthKey = (String) row.get("month_key");
+            double backlog = ((Number) row.get("backlog")).doubleValue();
+            dataByMonth.put(monthKey, backlog);
+        }
+
+        log.debugf("Backlog query returned %d months", dataByMonth.size());
+        return dataByMonth;
+    }
+
+    /**
+     * Query revenue target from fact_revenue_budget view.
+     * Note: Budget has no client-level granularity.
+     */
+    private java.util.Map<String, Double> queryTargetData(
+            String fromMonthKey, String toMonthKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT month_key, " +
+                        "       SUM(budget_revenue_dkk) AS target " +
+                        "FROM fact_revenue_budget " +
+                        "WHERE year >= :fromYear AND year <= :toYear "
+        );
+
+        // Add optional filters (no client filter - budget has no client dimension)
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("  AND sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("  AND service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("  AND contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND company_id IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY month_key ORDER BY month_key");
+
+        // Extract year values from month keys (YYYYMM format)
+        int fromYear = Integer.parseInt(fromMonthKey.substring(0, 4));
+        int toYear = Integer.parseInt(toMonthKey.substring(0, 4));
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromYear", fromYear);
+        query.setParameter("toYear", toYear);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> results = query.getResultList();
+
+        java.util.Map<String, Double> dataByMonth = new java.util.HashMap<>();
+        for (Tuple row : results) {
+            String monthKey = (String) row.get("month_key");
+            double target = ((Number) row.get("target")).doubleValue();
+            dataByMonth.put(monthKey, target);
+        }
+
+        log.debugf("Target/budget query returned %d months", dataByMonth.size());
+        return dataByMonth;
     }
 }

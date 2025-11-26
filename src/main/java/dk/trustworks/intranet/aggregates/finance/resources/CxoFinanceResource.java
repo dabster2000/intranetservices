@@ -1,8 +1,10 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -169,6 +171,112 @@ public class CxoFinanceResource {
         log.debugf("Returning Revenue YTD data: Actual=%.2f, Budget=%.2f, Attainment=%.2f%%",
                 result.getActualYTD(), result.getBudgetYTD(), result.getAttainmentPercent());
 
+        return result;
+    }
+
+    /**
+     * Gets TTM Revenue Growth % KPI data.
+     * Calculates year-over-year revenue growth comparing current 12-month period vs prior 12-month period.
+     *
+     * @param fromDateStr Start date (ISO-8601 format, optional - not used for TTM but needed for consistency)
+     * @param toDateStr End date (ISO-8601 format, optional - determines anchor date, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return TTMRevenueGrowthDTO with current TTM, prior TTM, growth %, and 12-month sparkline
+     */
+    @GET
+    @Path("/ttm-revenue-growth")
+    public TTMRevenueGrowthDTO getTTMRevenueGrowth(
+            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
+            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/ttm-revenue-growth: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDateStr, toDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse dates (toDate determines anchor, default to today)
+        LocalDate fromDate = fromDateStr != null && !fromDateStr.trim().isEmpty()
+                ? LocalDate.parse(fromDateStr)
+                : null;
+        LocalDate toDate = toDateStr != null && !toDateStr.trim().isEmpty()
+                ? LocalDate.parse(toDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        TTMRevenueGrowthDTO result = cxoFinanceService.getTTMRevenueGrowth(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning TTM Revenue Growth data: Current=%.2f, Prior=%.2f, Growth=%.2f%%",
+                result.getCurrentTTMRevenue(), result.getPriorTTMRevenue(), result.getGrowthPercent());
+
+        return result;
+    }
+
+    /**
+     * Gets monthly pipeline, backlog, and target trend data for Chart C.
+     * Forward-looking chart showing coverage horizon (typically 6 months).
+     *
+     * @param fromDate Start date (ISO-8601 format, typically current month)
+     * @param toDate End date (ISO-8601 format, typically current month + 6)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional - target series hidden when set)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of monthly pipeline, backlog, and target data with coverage metrics
+     */
+    @GET
+    @Path("/pipeline-backlog-trend")
+    public List<MonthlyPipelineBacklogDTO> getPipelineBacklogTrend(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/pipeline-backlog-trend: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDate, toDate, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        List<MonthlyPipelineBacklogDTO> result = cxoFinanceService.getPipelineBacklogTrend(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning %d pipeline/backlog data points", result.size());
         return result;
     }
 
