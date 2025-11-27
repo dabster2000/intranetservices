@@ -3,15 +3,18 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 import dk.trustworks.intranet.aggregates.finance.dto.BacklogCoverageDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4WeeksDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RepeatBusinessShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.Top5ClientsShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenuePerBillableFTETTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -301,6 +304,72 @@ public class CxoFinanceResource {
     }
 
     /**
+     * Gets Realization Rate % KPI data (TTM).
+     * Measures how much of the expected billable value (at contracted rates) is actually invoiced.
+     *
+     * Formula: Realization Rate = (Actual Billed Revenue / Expected Revenue at Contract Rate) × 100
+     * Expected Revenue = Σ(workduration × rate) from work_full entries
+     *
+     * A rate below 100% indicates value leakage through discounts, write-offs, or unbilled time.
+     *
+     * @param fromDateStr Start date (not used for TTM but needed for consistency)
+     * @param toDateStr End date (ISO-8601 format, determines anchor for TTM calculation, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return RealizationRateDTO with current/prior realization %, change, and 12-month sparkline
+     */
+    @GET
+    @Path("/realization-rate")
+    public RealizationRateDTO getRealizationRate(
+            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
+            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/realization-rate: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDateStr, toDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse dates (toDate determines anchor, default to today)
+        LocalDate fromDate = fromDateStr != null && !fromDateStr.trim().isEmpty()
+                ? LocalDate.parse(fromDateStr)
+                : null;
+        LocalDate toDate = toDateStr != null && !toDateStr.trim().isEmpty()
+                ? LocalDate.parse(toDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        RealizationRateDTO result = cxoFinanceService.getRealizationRate(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning Realization Rate data: Current Expected=%.2f, Current Billed=%.2f, " +
+                        "Current Rate=%.2f%%, Prior Rate=%.2f%%, Change=%.2f pp",
+                result.getCurrentExpectedRevenue(), result.getCurrentBilledRevenue(),
+                result.getCurrentRealizationPercent(), result.getPriorRealizationPercent(),
+                result.getRealizationChangePct());
+
+        return result;
+    }
+
+    /**
      * Gets Backlog Coverage (Months) KPI data.
      * Calculates how many months of revenue are covered by signed backlog.
      * Formula: Coverage (Months) = Total Backlog Revenue / Average Monthly Revenue
@@ -462,6 +531,109 @@ public class CxoFinanceResource {
                 result.getCurrentUtilizationPercent(), result.getCurrentBillableHours(), result.getCurrentAvailableHours(),
                 result.getPriorUtilizationPercent(), result.getPriorBillableHours(), result.getPriorAvailableHours(),
                 result.getUtilizationChangePct());
+
+        return result;
+    }
+
+    /**
+     * Gets Forecast Utilization (Next 8 Weeks) KPI data.
+     * Forward-looking measure of consultant utilization based on scheduled work
+     * in the backlog for the next 8 weeks. Indicates pipeline health and capacity planning needs.
+     *
+     * Formula: Forecast Utilization % = (Forecast Billable Hours / Total Capacity Hours) × 100
+     *
+     * Note: This is a user-centric metric, so only practice (service line) and company
+     * filters apply. Sector, contract type, and client filters are NOT applicable.
+     *
+     * @param asOfDateStr Anchor date (ISO-8601 format, defaults to today)
+     * @param serviceLines Comma-separated practice IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ForecastUtilizationDTO with current/prior utilization %, change, and hour totals
+     */
+    @GET
+    @Path("/forecast-utilization-8w")
+    public ForecastUtilizationDTO getForecastUtilization(
+            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/forecast-utilization-8w: asOfDate=%s, serviceLines=%s, companyIds=%s",
+                asOfDateStr, serviceLines, companyIds);
+
+        // Parse asOfDate (default to today if not provided)
+        LocalDate asOfDate = asOfDateStr != null && !asOfDateStr.trim().isEmpty()
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ForecastUtilizationDTO result = cxoFinanceService.getForecastUtilization(
+                asOfDate,
+                serviceLineSet,
+                companyIdSet
+        );
+
+        log.debugf("Returning Forecast Utilization (8w) data: Current=%.1f%% (%.0f / %.0f hours), " +
+                        "Prior=%.1f%%, Change=%+.1fpp",
+                result.getForecastUtilizationPercent(), result.getTotalForecastBillableHours(), result.getTotalCapacityHours(),
+                result.getPriorForecastUtilizationPercent(),
+                result.getUtilizationChangePct());
+
+        return result;
+    }
+
+    /**
+     * Gets Voluntary Attrition (12-Month Rolling) KPI data.
+     * Measures the 12-month rolling rate of employees who voluntarily left the organization.
+     * Key indicator of employee satisfaction and organizational health.
+     *
+     * Formula: Voluntary Attrition % = (Voluntary Leavers / Average Headcount) × 100
+     *
+     * Note: This is a user-centric metric, so only practice (service line) and company
+     * filters apply. Sector, contract type, and client filters are NOT applicable.
+     *
+     * Known limitation: Currently all leavers are counted as "voluntary" since
+     * the userstatus table lacks a termination_reason field.
+     *
+     * @param asOfDateStr Anchor date (ISO-8601 format, defaults to today)
+     * @param serviceLines Comma-separated practice IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return VoluntaryAttritionDTO with current/prior attrition %, change, leaver counts, and sparkline
+     */
+    @GET
+    @Path("/voluntary-attrition-12m")
+    public VoluntaryAttritionDTO getVoluntaryAttrition(
+            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/voluntary-attrition-12m: asOfDate=%s, serviceLines=%s, companyIds=%s",
+                asOfDateStr, serviceLines, companyIds);
+
+        // Parse asOfDate (default to today if not provided)
+        LocalDate asOfDate = asOfDateStr != null && !asOfDateStr.trim().isEmpty()
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        VoluntaryAttritionDTO result = cxoFinanceService.getVoluntaryAttrition(
+                asOfDate,
+                serviceLineSet,
+                companyIdSet
+        );
+
+        log.debugf("Returning Voluntary Attrition (12m) data: Current=%.1f%% (%d leavers / %.1f avg headcount), " +
+                        "Prior=%.1f%%, Change=%+.1fpp",
+                result.getCurrentAttritionPercent(), result.getTotalVoluntaryLeavers12m(), result.getAverageHeadcount12m(),
+                result.getPriorAttritionPercent(),
+                result.getAttritionChangePct());
 
         return result;
     }

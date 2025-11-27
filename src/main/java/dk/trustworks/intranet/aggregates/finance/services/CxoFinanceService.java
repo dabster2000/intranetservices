@@ -3,15 +3,18 @@ package dk.trustworks.intranet.aggregates.finance.services;
 import dk.trustworks.intranet.aggregates.finance.dto.BacklogCoverageDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4WeeksDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RepeatBusinessShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenuePerBillableFTETTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.Top5ClientsShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -883,6 +886,104 @@ public class CxoFinanceService {
     }
 
     /**
+     * Calculate Realization Rate % (Firm-wide) for trailing 12 months.
+     * Measures how much of the expected billable value (at contracted rates) is actually invoiced.
+     *
+     * Formula: Realization Rate = (Actual Billed Revenue / Expected Revenue at Contract Rate) × 100
+     *
+     * Expected Revenue = Σ(workduration × rate) from work_full entries
+     * Actual Revenue = Σ(recognized_revenue_dkk) from fact_project_financials
+     *
+     * A rate below 100% indicates value leakage through discounts, write-offs, or unbilled time.
+     *
+     * @param fromDate Start date (not used for TTM but needed for consistency)
+     * @param toDate End date (determines anchor date for TTM calculation, defaults to today)
+     * @param sectors Multi-select sector filter (e.g., "PUBLIC", "HEALTH")
+     * @param serviceLines Multi-select service line filter (e.g., "PM", "DEV")
+     * @param contractTypes Multi-select contract type filter (e.g., "T&M", "FIXED")
+     * @param clientId Single-select client filter
+     * @param companyIds Multi-select company filter (UUIDs)
+     * @return RealizationRateDTO with current/prior realization %, change, and 12-month sparkline
+     */
+    public RealizationRateDTO getRealizationRate(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        LocalDate normalizedToDate = (toDate != null) ? toDate : LocalDate.now();
+
+        log.debugf("Realization Rate (TTM) calculation: toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                normalizedToDate, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 1. Calculate TTM windows (current and prior)
+        LocalDate anchorDate = normalizedToDate.withDayOfMonth(normalizedToDate.lengthOfMonth());
+        LocalDate currentTTMStart = anchorDate.minusMonths(11).withDayOfMonth(1);
+        LocalDate currentTTMEnd = anchorDate;
+        LocalDate priorTTMStart = currentTTMStart.minusYears(1);
+        LocalDate priorTTMEnd = currentTTMEnd.minusYears(1);
+
+        log.debugf("TTM windows: Current [%s → %s], Prior [%s → %s]",
+                currentTTMStart, currentTTMEnd, priorTTMStart, priorTTMEnd);
+
+        // 2. Query expected revenue at contract rates from work_full
+        double currentExpectedRevenue = queryExpectedRevenueAtContractRate(
+                currentTTMStart, currentTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+        double priorExpectedRevenue = queryExpectedRevenueAtContractRate(
+                priorTTMStart, priorTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+
+        // 3. Query actual billed revenue from fact_project_financials
+        double currentBilledRevenue = queryActualRevenue(
+                currentTTMStart, currentTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+        double priorBilledRevenue = queryActualRevenue(
+                priorTTMStart, priorTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+
+        log.debugf("Data queried: Current Expected=%.2f, Current Billed=%.2f, Prior Expected=%.2f, Prior Billed=%.2f",
+                currentExpectedRevenue, currentBilledRevenue, priorExpectedRevenue, priorBilledRevenue);
+
+        // 4. Calculate realization rates
+        double currentRealizationPercent = (currentExpectedRevenue > 0)
+                ? (currentBilledRevenue / currentExpectedRevenue) * 100.0
+                : 0.0;
+        double priorRealizationPercent = (priorExpectedRevenue > 0)
+                ? (priorBilledRevenue / priorExpectedRevenue) * 100.0
+                : 0.0;
+
+        // 5. Calculate percentage point change
+        double realizationChangePct = currentRealizationPercent - priorRealizationPercent;
+
+        log.debugf("Calculated: Current Realization=%.1f%%, Prior Realization=%.1f%%, Change=%.1f pp",
+                currentRealizationPercent, priorRealizationPercent, realizationChangePct);
+
+        // 6. Get 12-month sparkline (monthly realization % values)
+        double[] sparklineData = queryMonthlyRealizationRate(
+                currentTTMStart, currentTTMEnd,
+                sectors, serviceLines, contractTypes, clientId, companyIds
+        );
+
+        // 7. Return DTO
+        return new RealizationRateDTO(
+                currentBilledRevenue,
+                currentExpectedRevenue,
+                currentRealizationPercent,
+                priorRealizationPercent,
+                realizationChangePct,
+                sparklineData
+        );
+    }
+
+    /**
      * Calculate Billable Utilization for the last 4 weeks (rolling window).
      * Measures operational efficiency by comparing billable hours to total available hours.
      *
@@ -974,39 +1075,68 @@ public class CxoFinanceService {
             LocalDate fromDate, LocalDate toDate,
             Set<String> serviceLines, Set<String> companyIds) {
 
-        // Build dynamic SQL query
-        StringBuilder sql = new StringBuilder(
-                "SELECT " +
-                        "  COALESCE(SUM(u.billable_hours), 0.0) AS total_billable_hours, " +
-                        "  COALESCE(SUM(u.available_hours), 0.0) AS total_available_hours " +
-                        "FROM fact_user_utilization u " +
-                        "WHERE u.week_start_date >= :fromDate " +
-                        "  AND u.week_start_date <= :toDate "
+        // Query 1: Get billable hours from work_full (accurate source for billable work)
+        StringBuilder billableSql = new StringBuilder(
+                "SELECT COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END), 0.0) AS total_billable_hours " +
+                "FROM work_full w " +
+                "WHERE w.registered >= :fromDate " +
+                "  AND w.registered <= :toDate " +
+                "  AND w.type = 'CONSULTANT' "
         );
 
-        // Add optional filters
+        // Add optional filters for billable hours query
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND u.service_line_id IN (:serviceLines) ");
+            // Join to user table to get practice/service line
+            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND u.company_id IN (:companyIds) ");
+            billableSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
         }
 
-        // Execute query
-        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromDate", fromDate);
-        query.setParameter("toDate", toDate);
+        Query billableQuery = em.createNativeQuery(billableSql.toString());
+        billableQuery.setParameter("fromDate", fromDate);
+        billableQuery.setParameter("toDate", toDate);
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            query.setParameter("serviceLines", serviceLines);
+            billableQuery.setParameter("serviceLines", serviceLines);
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
+            billableQuery.setParameter("companyIds", companyIds);
         }
 
-        Tuple result = (Tuple) query.getSingleResult();
-        double billableHours = ((Number) result.get("total_billable_hours")).doubleValue();
-        double availableHours = ((Number) result.get("total_available_hours")).doubleValue();
+        double billableHours = ((Number) billableQuery.getSingleResult()).doubleValue();
+
+        // Query 2: Get available hours from bi_data_per_day (daily availability data)
+        StringBuilder availableSql = new StringBuilder(
+                "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
+                "FROM bi_data_per_day b " +
+                "WHERE b.document_date >= :fromDate " +
+                "  AND b.document_date <= :toDate " +
+                "  AND b.consultant_type = 'CONSULTANT' " +
+                "  AND b.status_type = 'ACTIVE' "
+        );
+
+        // Add optional filters for available hours query
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            // Join to user table to get practice/service line
+            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            availableSql.append("AND b.companyuuid IN (:companyIds) ");
+        }
+
+        Query availableQuery = em.createNativeQuery(availableSql.toString());
+        availableQuery.setParameter("fromDate", fromDate);
+        availableQuery.setParameter("toDate", toDate);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            availableQuery.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            availableQuery.setParameter("companyIds", companyIds);
+        }
+
+        double availableHours = ((Number) availableQuery.getSingleResult()).doubleValue();
 
         log.debugf("Utilization query (%s to %s): billable=%.0f, available=%.0f",
                 fromDate, toDate, billableHours, availableHours);
@@ -2005,26 +2135,35 @@ public class CxoFinanceService {
             Set<String> serviceLines,
             Set<String> companyIds) {
 
-        String fromKey = String.format("%04d%02d", fromDate.getYear(), fromDate.getMonthValue());
-        String toKey = String.format("%04d%02d", toDate.getYear(), toDate.getMonthValue());
-
+        // Query work_full to calculate monthly billable FTE, then average across months
+        // FTE = billable_hours / 160.33 (standard monthly hours)
         StringBuilder sql = new StringBuilder(
-                "SELECT AVG(u.billable_fte_count) AS avg_billable_fte " +
-                "FROM fact_user_utilization u " +
-                "WHERE u.month_key BETWEEN :fromKey AND :toKey "
+                "SELECT AVG(monthly_fte) AS avg_billable_fte FROM ( " +
+                "  SELECT " +
+                "    YEAR(w.registered) AS year_val, " +
+                "    MONTH(w.registered) AS month_val, " +
+                "    SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END) / 160.33 AS monthly_fte " +
+                "  FROM work_full w " +
+                "  WHERE w.registered >= :fromDate " +
+                "    AND w.registered <= :toDate " +
+                "    AND w.type = 'CONSULTANT' " +
+                "    AND w.rate > 0 AND w.workduration > 0 "
         );
 
         // Add optional filters
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND u.service_line_id IN (:serviceLines) ");
+            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND u.company_id IN (:companyIds) ");
+            sql.append("AND w.consultant_company_uuid IN (:companyIds) ");
         }
 
+        sql.append("  GROUP BY YEAR(w.registered), MONTH(w.registered) " +
+                   ") AS monthly_data");
+
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
             query.setParameter("serviceLines", serviceLines);
@@ -2082,7 +2221,7 @@ public class CxoFinanceService {
             revenueSql.append("AND f.client_id = :clientId ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            revenueSql.append("AND f.company_id IN (:companyIds) ");
+            revenueSql.append("AND f.companyuuid IN (:companyIds) ");
         }
 
         revenueSql.append("GROUP BY f.month_key ORDER BY f.month_key");
@@ -2110,25 +2249,31 @@ public class CxoFinanceService {
         @SuppressWarnings("unchecked")
         List<Tuple> revenueResults = revenueQuery.getResultList();
 
-        // Query 2: Monthly billable FTE from fact_user_utilization
+        // Query 2: Monthly billable FTE from work_full (accurate source for billable work)
+        // FTE = billable_hours / 160.33 per month
         StringBuilder fteSql = new StringBuilder(
-                "SELECT u.month_key, u.billable_fte_count " +
-                "FROM fact_user_utilization u " +
-                "WHERE u.month_key BETWEEN :fromKey AND :toKey "
+                "SELECT " +
+                "  CONCAT(YEAR(w.registered), LPAD(MONTH(w.registered), 2, '0')) AS month_key, " +
+                "  SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END) / 160.33 AS monthly_fte " +
+                "FROM work_full w " +
+                "WHERE w.registered >= :fromDate " +
+                "  AND w.registered <= :toDate " +
+                "  AND w.type = 'CONSULTANT' " +
+                "  AND w.rate > 0 AND w.workduration > 0 "
         );
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            fteSql.append("AND u.service_line_id IN (:serviceLines) ");
+            fteSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            fteSql.append("AND u.company_id IN (:companyIds) ");
+            fteSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
         }
 
-        fteSql.append("ORDER BY u.month_key");
+        fteSql.append("GROUP BY YEAR(w.registered), MONTH(w.registered) ORDER BY month_key");
 
         Query fteQuery = em.createNativeQuery(fteSql.toString(), Tuple.class);
-        fteQuery.setParameter("fromKey", fromKey);
-        fteQuery.setParameter("toKey", toKey);
+        fteQuery.setParameter("fromDate", fromDate);
+        fteQuery.setParameter("toDate", toDate);
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
             fteQuery.setParameter("serviceLines", serviceLines);
@@ -2165,6 +2310,236 @@ public class CxoFinanceService {
             double monthFTE = fteByMonth.getOrDefault(monthKey, 0.0);
 
             sparklineData[i] = (monthFTE > 0) ? monthRevenue / monthFTE : 0.0;
+            currentMonth = currentMonth.plusMonths(1);
+        }
+
+        return sparklineData;
+    }
+
+    /**
+     * Helper method: Query expected revenue at contract rates from work_full.
+     * Expected Revenue = Σ(workduration × rate) for billable work entries.
+     *
+     * This measures the full contracted value of work performed, before any
+     * discounts, write-offs, or unbilled time adjustments.
+     *
+     * @param fromDate Start date (inclusive)
+     * @param toDate End date (inclusive)
+     * @param sectors Multi-select sector filter (optional)
+     * @param serviceLines Multi-select service line filter (optional)
+     * @param contractTypes Multi-select contract type filter (optional)
+     * @param clientId Single-select client filter (optional)
+     * @param companyIds Multi-select company filter (optional)
+     * @return Total expected revenue at contract rates for the period
+     */
+    private double queryExpectedRevenueAtContractRate(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        // Build dynamic SQL querying work_full for expected revenue
+        // Expected revenue = Σ(workduration × rate) where rate > 0 and workduration > 0
+        StringBuilder sql = new StringBuilder(
+                "SELECT COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration * w.rate ELSE 0 END), 0.0) AS expected_revenue " +
+                "FROM work_full w " +
+                "WHERE w.registered >= :fromDate " +
+                "  AND w.registered <= :toDate " +
+                "  AND w.type = 'CONSULTANT' "
+        );
+
+        // Add optional filters
+        // Note: work_full doesn't have sector_id or contract_type_id directly,
+        // so we filter by service line (consultant's primaryskilltype) and company
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND w.consultant_company_uuid IN (:companyIds) ");
+        }
+        // For project-level filters (sectors, contractTypes, clientId), we need to join with projects
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("AND EXISTS (SELECT 1 FROM projects p JOIN clients c ON p.clientuuid = c.uuid WHERE p.uuid = w.projectuuid AND c.segment IN (:sectors)) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("AND EXISTS (SELECT 1 FROM projects p JOIN contracts con ON p.uuid = con.projectuuid WHERE p.uuid = w.projectuuid AND con.contract_type IN (:contractTypes)) ");
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            sql.append("AND EXISTS (SELECT 1 FROM projects p WHERE p.uuid = w.projectuuid AND p.clientuuid = :clientId) ");
+        }
+
+        // Execute query
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            query.setParameter("clientId", clientId);
+        }
+
+        return ((Number) query.getSingleResult()).doubleValue();
+    }
+
+    /**
+     * Helper method: Query monthly realization rate for sparkline visualization.
+     * Returns array of 12 monthly realization percentages.
+     *
+     * Realization Rate = (Actual Billed Revenue / Expected Revenue at Contract Rate) × 100
+     *
+     * @param fromDate Start date (inclusive)
+     * @param toDate End date (inclusive)
+     * @param sectors Multi-select sector filter (optional)
+     * @param serviceLines Multi-select service line filter (optional)
+     * @param contractTypes Multi-select contract type filter (optional)
+     * @param clientId Single-select client filter (optional)
+     * @param companyIds Multi-select company filter (optional)
+     * @return Array of 12 monthly realization rate percentages
+     */
+    private double[] queryMonthlyRealizationRate(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        String fromKey = String.format("%04d%02d", fromDate.getYear(), fromDate.getMonthValue());
+        String toKey = String.format("%04d%02d", toDate.getYear(), toDate.getMonthValue());
+
+        // Query 1: Monthly expected revenue from work_full
+        StringBuilder expectedSql = new StringBuilder(
+                "SELECT " +
+                "  CONCAT(YEAR(w.registered), LPAD(MONTH(w.registered), 2, '0')) AS month_key, " +
+                "  COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration * w.rate ELSE 0 END), 0.0) AS expected_revenue " +
+                "FROM work_full w " +
+                "WHERE w.registered >= :fromDate " +
+                "  AND w.registered <= :toDate " +
+                "  AND w.type = 'CONSULTANT' "
+        );
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            expectedSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            expectedSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
+        }
+        if (sectors != null && !sectors.isEmpty()) {
+            expectedSql.append("AND EXISTS (SELECT 1 FROM projects p JOIN clients c ON p.clientuuid = c.uuid WHERE p.uuid = w.projectuuid AND c.segment IN (:sectors)) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            expectedSql.append("AND EXISTS (SELECT 1 FROM projects p JOIN contracts con ON p.uuid = con.projectuuid WHERE p.uuid = w.projectuuid AND con.contract_type IN (:contractTypes)) ");
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            expectedSql.append("AND EXISTS (SELECT 1 FROM projects p WHERE p.uuid = w.projectuuid AND p.clientuuid = :clientId) ");
+        }
+
+        expectedSql.append("GROUP BY YEAR(w.registered), MONTH(w.registered) ORDER BY month_key");
+
+        Query expectedQuery = em.createNativeQuery(expectedSql.toString(), Tuple.class);
+        expectedQuery.setParameter("fromDate", fromDate);
+        expectedQuery.setParameter("toDate", toDate);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            expectedQuery.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            expectedQuery.setParameter("companyIds", companyIds);
+        }
+        if (sectors != null && !sectors.isEmpty()) {
+            expectedQuery.setParameter("sectors", sectors);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            expectedQuery.setParameter("contractTypes", contractTypes);
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            expectedQuery.setParameter("clientId", clientId);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> expectedResults = expectedQuery.getResultList();
+
+        // Query 2: Monthly actual revenue from fact_project_financials
+        StringBuilder actualSql = new StringBuilder(
+                "SELECT f.month_key, SUM(f.recognized_revenue_dkk) AS actual_revenue " +
+                "FROM fact_project_financials f " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+
+        if (sectors != null && !sectors.isEmpty()) {
+            actualSql.append("AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            actualSql.append("AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            actualSql.append("AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            actualSql.append("AND f.client_id = :clientId ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            actualSql.append("AND f.companyuuid IN (:companyIds) ");
+        }
+
+        actualSql.append("GROUP BY f.month_key ORDER BY f.month_key");
+
+        Query actualQuery = em.createNativeQuery(actualSql.toString(), Tuple.class);
+        actualQuery.setParameter("fromKey", fromKey);
+        actualQuery.setParameter("toKey", toKey);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            actualQuery.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            actualQuery.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            actualQuery.setParameter("contractTypes", contractTypes);
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            actualQuery.setParameter("clientId", clientId);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            actualQuery.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> actualResults = actualQuery.getResultList();
+
+        // Build maps for easy lookup
+        java.util.Map<String, Double> expectedByMonth = new java.util.HashMap<>();
+        for (Tuple row : expectedResults) {
+            String monthKey = (String) row.get(0);
+            double expected = ((Number) row.get(1)).doubleValue();
+            expectedByMonth.put(monthKey, expected);
+        }
+
+        java.util.Map<String, Double> actualByMonth = new java.util.HashMap<>();
+        for (Tuple row : actualResults) {
+            String monthKey = (String) row.get(0);
+            double actual = ((Number) row.get(1)).doubleValue();
+            actualByMonth.put(monthKey, actual);
+        }
+
+        // Calculate realization rate for each month
+        double[] sparklineData = new double[12];
+        YearMonth currentMonth = YearMonth.from(fromDate);
+
+        for (int i = 0; i < 12; i++) {
+            String monthKey = currentMonth.format(DateTimeFormatter.ofPattern("yyyyMM"));
+            double monthExpected = expectedByMonth.getOrDefault(monthKey, 0.0);
+            double monthActual = actualByMonth.getOrDefault(monthKey, 0.0);
+
+            // Realization Rate = (Actual / Expected) × 100
+            sparklineData[i] = (monthExpected > 0) ? (monthActual / monthExpected) * 100.0 : 0.0;
             currentMonth = currentMonth.plusMonths(1);
         }
 
@@ -2330,5 +2705,442 @@ public class CxoFinanceService {
                 totalRevenue > 0 ? (top5Revenue / totalRevenue * 100.0) : 0.0);
 
         return Map.of("totalRevenue", totalRevenue, "top5Revenue", top5Revenue);
+    }
+
+    // ============================================================================
+    // Forecast Utilization - Next 8 Weeks
+    // ============================================================================
+
+    /**
+     * Gets Forecast Utilization KPI data for the next 8 weeks.
+     * Measures forward-looking utilization based on scheduled work in the backlog.
+     *
+     * Formula: Forecast Utilization % = (Forecast Billable Hours / Total Capacity Hours) × 100
+     *
+     * Note: This is a user-centric metric, so only practice (service line) and company
+     * filters apply. Sector, contract type, and client filters are NOT applicable.
+     *
+     * @param asOfDate Anchor date for calculation (typically today, defaults to now if null)
+     * @param serviceLines Practice/service line filter (optional)
+     * @param companyIds Company UUID filter (optional)
+     * @return ForecastUtilizationDTO with current utilization, prior period comparison, and weekly sparkline
+     */
+    public ForecastUtilizationDTO getForecastUtilization(
+            LocalDate asOfDate,
+            Set<String> serviceLines,
+            Set<String> companyIds) {
+
+        // Default asOfDate to today if not provided
+        LocalDate effectiveDate = asOfDate != null ? asOfDate : LocalDate.now();
+
+        log.debugf("Calculating forecast utilization (next 8 weeks): asOfDate=%s, serviceLines=%s, companies=%s",
+                effectiveDate, serviceLines, companyIds);
+
+        // 1. Calculate date ranges for current and prior periods
+        // Current: next 8 weeks from asOfDate
+        LocalDate currentPeriodStart = effectiveDate;
+        LocalDate currentPeriodEnd = effectiveDate.plusWeeks(8).minusDays(1);
+
+        // Prior: 8 weeks before current period (for comparison - historical actuals from fact_user_utilization)
+        LocalDate priorPeriodEnd = effectiveDate.minusDays(1);
+        LocalDate priorPeriodStart = priorPeriodEnd.minusWeeks(8).plusDays(1);
+
+        log.debugf("Current period: %s to %s (8 weeks forecast)", currentPeriodStart, currentPeriodEnd);
+        log.debugf("Prior period: %s to %s (8 weeks actual)", priorPeriodStart, priorPeriodEnd);
+
+        // 2. Query forecast data for current period (next 8 weeks)
+        // Use fact_staffing_forecast_week view
+        // IMPORTANT: Aggregate at user-week level first to avoid capacity double-counting
+        Map<String, Double> currentPeriodData = queryForecastUtilizationData(
+                currentPeriodStart, currentPeriodEnd, serviceLines, companyIds);
+
+        double currentBillable = currentPeriodData.getOrDefault("billableHours", 0.0);
+        double currentCapacity = currentPeriodData.getOrDefault("capacityHours", 0.0);
+        double currentUtilization = currentCapacity > 0
+                ? (currentBillable / currentCapacity) * 100.0
+                : 0.0;
+
+        // 3. Query prior period data (8 weeks historical actuals from fact_user_utilization)
+        Map<String, Double> priorPeriodData = queryPriorUtilizationData(
+                priorPeriodStart, priorPeriodEnd, serviceLines, companyIds);
+
+        double priorBillable = priorPeriodData.getOrDefault("billableHours", 0.0);
+        double priorCapacity = priorPeriodData.getOrDefault("capacityHours", 0.0);
+        double priorUtilization = priorCapacity > 0
+                ? (priorBillable / priorCapacity) * 100.0
+                : 0.0;
+
+        // 4. Calculate percentage point change
+        double utilizationChange = currentUtilization - priorUtilization;
+
+        // 5. Build weekly sparkline (8 data points for next 8 weeks)
+        double[] weeklySparkline = buildForecastWeeklySparkline(
+                currentPeriodStart, serviceLines, companyIds);
+
+        log.infof("Forecast utilization result: current=%.1f%% (%.0f/%.0f hrs), prior=%.1f%%, change=%+.1f pp",
+                currentUtilization, currentBillable, currentCapacity, priorUtilization, utilizationChange);
+
+        return new ForecastUtilizationDTO(
+                currentBillable,
+                currentCapacity,
+                currentUtilization,
+                priorUtilization,
+                utilizationChange,
+                weeklySparkline
+        );
+    }
+
+    /**
+     * Query forecast utilization data from fact_staffing_forecast_week.
+     * Aggregates at user-company-week level first to prevent capacity double-counting.
+     */
+    private Map<String, Double> queryForecastUtilizationData(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> serviceLines, Set<String> companyIds) {
+
+        // Build SQL with subquery to aggregate at user-company-week level first
+        StringBuilder sql = new StringBuilder();
+        sql.append(
+                "SELECT " +
+                "    SUM(user_week_billable) AS total_billable, " +
+                "    SUM(user_week_capacity) AS total_capacity " +
+                "FROM ( " +
+                "    SELECT " +
+                "        user_id, " +
+                "        company_id, " +
+                "        week_key, " +
+                "        SUM(forecast_billable_hours) AS user_week_billable, " +
+                "        MAX(capacity_hours) AS user_week_capacity " +  // MAX to avoid project-level duplication
+                "    FROM fact_staffing_forecast_week " +
+                "    WHERE week_start_date >= :fromDate " +
+                "      AND week_start_date <= :toDate "
+        );
+
+        // Add optional filters
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append(" AND practice_id IN (:serviceLines) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append(" AND company_id IN (:companyIds) ");
+        }
+
+        sql.append(
+                "    GROUP BY user_id, company_id, week_key " +
+                ") AS user_week_aggregation"
+        );
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        Object[] result = (Object[]) query.getSingleResult();
+        double billableHours = result[0] != null ? ((Number) result[0]).doubleValue() : 0.0;
+        double capacityHours = result[1] != null ? ((Number) result[1]).doubleValue() : 0.0;
+
+        log.debugf("Forecast data: fromDate=%s, toDate=%s, billable=%.0f, capacity=%.0f",
+                fromDate, toDate, billableHours, capacityHours);
+
+        return Map.of("billableHours", billableHours, "capacityHours", capacityHours);
+    }
+
+    /**
+     * Query prior period utilization data from source tables (historical actuals).
+     * Uses work_full for billable hours and bi_data_per_day for available hours.
+     */
+    private Map<String, Double> queryPriorUtilizationData(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> serviceLines, Set<String> companyIds) {
+
+        // Query 1: Get billable hours from work_full (accurate source for billable work)
+        StringBuilder billableSql = new StringBuilder(
+                "SELECT COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END), 0.0) AS total_billable_hours " +
+                "FROM work_full w " +
+                "WHERE w.registered >= :fromDate " +
+                "  AND w.registered <= :toDate " +
+                "  AND w.type = 'CONSULTANT' "
+        );
+
+        // Add optional filters
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            billableSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
+        }
+
+        Query billableQuery = em.createNativeQuery(billableSql.toString());
+        billableQuery.setParameter("fromDate", fromDate);
+        billableQuery.setParameter("toDate", toDate);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            billableQuery.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            billableQuery.setParameter("companyIds", companyIds);
+        }
+
+        double billableHours = ((Number) billableQuery.getSingleResult()).doubleValue();
+
+        // Query 2: Get available hours from bi_data_per_day (daily availability data)
+        StringBuilder availableSql = new StringBuilder(
+                "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
+                "FROM bi_data_per_day b " +
+                "WHERE b.document_date >= :fromDate " +
+                "  AND b.document_date <= :toDate " +
+                "  AND b.consultant_type = 'CONSULTANT' " +
+                "  AND b.status_type = 'ACTIVE' "
+        );
+
+        // Add optional filters
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            availableSql.append("AND b.companyuuid IN (:companyIds) ");
+        }
+
+        Query availableQuery = em.createNativeQuery(availableSql.toString());
+        availableQuery.setParameter("fromDate", fromDate);
+        availableQuery.setParameter("toDate", toDate);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            availableQuery.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            availableQuery.setParameter("companyIds", companyIds);
+        }
+
+        double capacityHours = ((Number) availableQuery.getSingleResult()).doubleValue();
+
+        log.debugf("Prior utilization data: fromDate=%s, toDate=%s, billable=%.0f, capacity=%.0f",
+                fromDate, toDate, billableHours, capacityHours);
+
+        return Map.of("billableHours", billableHours, "capacityHours", capacityHours);
+    }
+
+    /**
+     * Build weekly sparkline data (8 data points) for forecast utilization.
+     */
+    private double[] buildForecastWeeklySparkline(
+            LocalDate startDate, Set<String> serviceLines, Set<String> companyIds) {
+
+        double[] sparkline = new double[8];
+
+        StringBuilder sql = new StringBuilder();
+        sql.append(
+                "SELECT " +
+                "    week_key, " +
+                "    SUM(user_week_billable) AS week_billable, " +
+                "    SUM(user_week_capacity) AS week_capacity " +
+                "FROM ( " +
+                "    SELECT " +
+                "        user_id, " +
+                "        company_id, " +
+                "        week_key, " +
+                "        SUM(forecast_billable_hours) AS user_week_billable, " +
+                "        MAX(capacity_hours) AS user_week_capacity " +
+                "    FROM fact_staffing_forecast_week " +
+                "    WHERE week_start_date >= :fromDate " +
+                "      AND week_start_date < :toDate "
+        );
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append(" AND practice_id IN (:serviceLines) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append(" AND company_id IN (:companyIds) ");
+        }
+
+        sql.append(
+                "    GROUP BY user_id, company_id, week_key " +
+                ") AS user_week_aggregation " +
+                "GROUP BY week_key " +
+                "ORDER BY week_key "
+        );
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromDate", startDate);
+        query.setParameter("toDate", startDate.plusWeeks(8));
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Map results to sparkline array (index by week position)
+        for (int i = 0; i < results.size() && i < 8; i++) {
+            Object[] row = results.get(i);
+            double billable = row[1] != null ? ((Number) row[1]).doubleValue() : 0.0;
+            double capacity = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
+            sparkline[i] = capacity > 0 ? (billable / capacity) * 100.0 : 0.0;
+        }
+
+        return sparkline;
+    }
+
+    // ============================================================================
+    // Voluntary Attrition - 12-Month Rolling
+    // ============================================================================
+
+    /**
+     * Gets Voluntary Attrition KPI data for the last 12 months.
+     * Measures the 12-month rolling rate of employees who voluntarily left the organization.
+     *
+     * Formula: Voluntary Attrition % = (Voluntary Leavers / Average Headcount) × 100
+     *
+     * Note: This is a user-centric metric, so only practice (service line) and company
+     * filters apply. Sector, contract type, and client filters are NOT applicable.
+     *
+     * Known limitation: Currently all leavers are counted as "voluntary" since
+     * the userstatus table lacks a termination_reason field.
+     *
+     * @param asOfDate Anchor date for calculation (typically today, defaults to now if null)
+     * @param serviceLines Practice/service line filter (optional)
+     * @param companyIds Company UUID filter (optional)
+     * @return VoluntaryAttritionDTO with current attrition, prior period comparison, and monthly sparkline
+     */
+    public VoluntaryAttritionDTO getVoluntaryAttrition(
+            LocalDate asOfDate,
+            Set<String> serviceLines,
+            Set<String> companyIds) {
+
+        // Default asOfDate to today if not provided
+        LocalDate effectiveDate = asOfDate != null ? asOfDate : LocalDate.now();
+
+        log.debugf("Calculating voluntary attrition (12-month rolling): asOfDate=%s, serviceLines=%s, companies=%s",
+                effectiveDate, serviceLines, companyIds);
+
+        // 1. Calculate date ranges for current and prior 12-month periods
+        // Current: last 12 months ending in current month
+        String currentToMonthKey = effectiveDate.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+        String currentFromMonthKey = effectiveDate.minusMonths(11).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+
+        // Prior: 12 months before current period (months -24 to -13)
+        String priorToMonthKey = effectiveDate.minusMonths(12).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+        String priorFromMonthKey = effectiveDate.minusMonths(23).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+
+        log.debugf("Current period: %s to %s (12 months)", currentFromMonthKey, currentToMonthKey);
+        log.debugf("Prior period: %s to %s (12 months)", priorFromMonthKey, priorToMonthKey);
+
+        // 2. Query current 12-month attrition data
+        Map<String, Object> currentData = queryAttritionData(
+                currentFromMonthKey, currentToMonthKey, serviceLines, companyIds);
+
+        int currentLeavers = ((Number) currentData.get("totalLeavers")).intValue();
+        double currentAvgHeadcount = ((Number) currentData.get("avgHeadcount")).doubleValue();
+        double currentAttrition = currentAvgHeadcount > 0
+                ? (currentLeavers / currentAvgHeadcount) * 100.0
+                : 0.0;
+
+        // 3. Query prior 12-month attrition data
+        Map<String, Object> priorData = queryAttritionData(
+                priorFromMonthKey, priorToMonthKey, serviceLines, companyIds);
+
+        int priorLeavers = ((Number) priorData.get("totalLeavers")).intValue();
+        double priorAvgHeadcount = ((Number) priorData.get("avgHeadcount")).doubleValue();
+        double priorAttrition = priorAvgHeadcount > 0
+                ? (priorLeavers / priorAvgHeadcount) * 100.0
+                : 0.0;
+
+        // 4. Calculate percentage point change
+        double attritionChange = currentAttrition - priorAttrition;
+
+        // 5. Build monthly sparkline (12 data points showing rolling 12m attrition as of each month)
+        double[] monthlySparkline = buildAttritionMonthlySparkline(
+                effectiveDate, serviceLines, companyIds);
+
+        log.infof("Voluntary attrition result: current=%.1f%% (%d leavers / %.1f avg HC), prior=%.1f%%, change=%+.1f pp",
+                currentAttrition, currentLeavers, currentAvgHeadcount, priorAttrition, attritionChange);
+
+        return new VoluntaryAttritionDTO(
+                currentLeavers,
+                currentAvgHeadcount,
+                currentAttrition,
+                priorAttrition,
+                attritionChange,
+                monthlySparkline
+        );
+    }
+
+    /**
+     * Query attrition data from fact_employee_monthly for a 12-month period.
+     */
+    private Map<String, Object> queryAttritionData(
+            String fromMonthKey, String toMonthKey,
+            Set<String> serviceLines, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder();
+        sql.append(
+                "SELECT " +
+                "    SUM(voluntary_leavers_count) AS total_leavers, " +
+                "    AVG(average_headcount) AS avg_headcount " +
+                "FROM fact_employee_monthly " +
+                "WHERE month_key >= :fromMonthKey " +
+                "  AND month_key <= :toMonthKey "
+        );
+
+        // Add optional filters
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append(" AND practice_id IN (:serviceLines) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append(" AND company_id IN (:companyIds) ");
+        }
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        Object[] result = (Object[]) query.getSingleResult();
+        int totalLeavers = result[0] != null ? ((Number) result[0]).intValue() : 0;
+        double avgHeadcount = result[1] != null ? ((Number) result[1]).doubleValue() : 0.0;
+
+        log.debugf("Attrition data: fromKey=%s, toKey=%s, leavers=%d, avgHC=%.1f",
+                fromMonthKey, toMonthKey, totalLeavers, avgHeadcount);
+
+        return Map.of("totalLeavers", totalLeavers, "avgHeadcount", avgHeadcount);
+    }
+
+    /**
+     * Build monthly sparkline data (12 data points) showing rolling 12-month attrition as of each month end.
+     */
+    private double[] buildAttritionMonthlySparkline(
+            LocalDate endDate, Set<String> serviceLines, Set<String> companyIds) {
+
+        double[] sparkline = new double[12];
+
+        // For each of the last 12 months, calculate the rolling 12-month attrition as of that month
+        for (int i = 0; i < 12; i++) {
+            LocalDate monthEnd = endDate.minusMonths(11 - i);
+            String toMonthKey = monthEnd.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+            String fromMonthKey = monthEnd.minusMonths(11).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+
+            Map<String, Object> data = queryAttritionData(fromMonthKey, toMonthKey, serviceLines, companyIds);
+            int leavers = ((Number) data.get("totalLeavers")).intValue();
+            double avgHeadcount = ((Number) data.get("avgHeadcount")).doubleValue();
+
+            sparkline[i] = avgHeadcount > 0 ? (leavers / avgHeadcount) * 100.0 : 0.0;
+        }
+
+        return sparkline;
     }
 }
