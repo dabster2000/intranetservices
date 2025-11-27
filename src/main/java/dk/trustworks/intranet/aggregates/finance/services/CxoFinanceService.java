@@ -78,6 +78,7 @@ public class CxoFinanceService {
 
         // Helper to build SQL with optional company filter (for DBs where fact view lacks companyuuid)
         java.util.function.Function<Boolean, String> sqlBuilder = includeCompanyFilter -> {
+            // NOTE: Added COLLATE to fix collation mismatch between month_key column and String.format() output
             StringBuilder sql = new StringBuilder(
                     "SELECT " +
                             "    f.month_key, " +
@@ -90,8 +91,8 @@ public class CxoFinanceService {
             );
 
             // Time range filter
-            sql.append("  AND f.month_key >= :fromMonthKey ")
-                    .append("  AND f.month_key <= :toMonthKey ");
+            sql.append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
+                    .append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
 
             // Conditional sector filter
             if (sectors != null && !sectors.isEmpty()) {
@@ -279,8 +280,9 @@ public class CxoFinanceService {
             );
 
             // Time range filter
-            sql.append("  AND f.month_key >= :fromMonthKey ")
-                    .append("  AND f.month_key <= :toMonthKey ");
+            // NOTE: Added COLLATE to fix collation mismatch between month_key column and String.format() output
+            sql.append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
+                    .append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
 
             // Conditional practice filter
             if (practices != null && !practices.isEmpty()) {
@@ -1006,27 +1008,42 @@ public class CxoFinanceService {
                 asOfDate, serviceLines, companyIds);
 
         // 1. Calculate date ranges
-        // Current period: Last 4 weeks (28 days) ending on asOfDate
-        LocalDate currentPeriodEnd = asOfDate;
-        LocalDate currentPeriodStart = asOfDate.minusDays(27);  // 28 days total (inclusive)
+        // Current period available hours: Last 4 weeks (28 days) ending on asOfDate
+        LocalDate currentAvailableEnd = asOfDate;
+        LocalDate currentAvailableStart = asOfDate.minusDays(27);  // 28 days total (inclusive)
 
-        // Prior period: 4 weeks before current period (days -55 to -28)
-        LocalDate priorPeriodEnd = currentPeriodStart.minusDays(1);
-        LocalDate priorPeriodStart = priorPeriodEnd.minusDays(27);  // 28 days total
+        // Current period billable hours: 35 days (includes 7-day grace period for late registration)
+        // Grace period accommodates consultants who register time late
+        LocalDate currentBillableStart = asOfDate.minusDays(34);  // 35 days total (7-day grace period)
+        LocalDate currentBillableEnd = asOfDate;
 
-        log.debugf("Current period: %s to %s (28 days)", currentPeriodStart, currentPeriodEnd);
-        log.debugf("Prior period: %s to %s (28 days)", priorPeriodStart, priorPeriodEnd);
+        // Prior period available hours: 4 weeks before current period (days -55 to -28)
+        LocalDate priorAvailableEnd = currentAvailableStart.minusDays(1);
+        LocalDate priorAvailableStart = priorAvailableEnd.minusDays(27);  // 28 days total
 
-        // 2. Query current period utilization
+        // Prior period billable hours: 35 days ending at priorAvailableEnd (with grace period)
+        LocalDate priorBillableStart = priorAvailableEnd.minusDays(34);  // 35 days total
+        LocalDate priorBillableEnd = priorAvailableEnd;
+
+        log.debugf("Current period: billable=%s to %s (35d w/ grace), available=%s to %s (28d)",
+                currentBillableStart, currentBillableEnd, currentAvailableStart, currentAvailableEnd);
+        log.debugf("Prior period: billable=%s to %s (35d w/ grace), available=%s to %s (28d)",
+                priorBillableStart, priorBillableEnd, priorAvailableStart, priorAvailableEnd);
+
+        // 2. Query current period utilization (with grace period for billable hours)
         double[] currentPeriodData = queryUtilizationFor4Weeks(
-                currentPeriodStart, currentPeriodEnd, serviceLines, companyIds
+                currentBillableStart, currentBillableEnd,  // Billable: 35 days
+                currentAvailableStart, currentAvailableEnd,  // Available: 28 days
+                serviceLines, companyIds
         );
         double currentBillableHours = currentPeriodData[0];
         double currentAvailableHours = currentPeriodData[1];
 
-        // 3. Query prior period utilization
+        // 3. Query prior period utilization (with grace period for billable hours)
         double[] priorPeriodData = queryUtilizationFor4Weeks(
-                priorPeriodStart, priorPeriodEnd, serviceLines, companyIds
+                priorBillableStart, priorBillableEnd,  // Billable: 35 days
+                priorAvailableStart, priorAvailableEnd,  // Available: 28 days
+                serviceLines, companyIds
         );
         double priorBillableHours = priorPeriodData[0];
         double priorAvailableHours = priorPeriodData[1];
@@ -1062,25 +1079,38 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper method: Query billable and available hours from fact_user_utilization
-     * for a specific 4-week period (28 days).
+     * Helper method: Query billable and available hours for utilization calculation.
      *
-     * @param fromDate Start date (inclusive)
-     * @param toDate End date (inclusive)
+     * IMPORTANT: Billable hours include a 7-day grace period to account for late time registration.
+     * This prevents artificially low utilization when consultants register time after the fact.
+     *
+     * Example: For "last 4 weeks" ending Nov 27:
+     * - Billable hours: Oct 24 - Nov 27 (35 days, includes 7-day grace period)
+     * - Available hours: Oct 31 - Nov 27 (28 days, actual work period)
+     *
+     * Grace period rationale: If a consultant works Nov 10-17 but registers it on Nov 20,
+     * it will still be counted in the "last 4 weeks" metric even if today is Nov 27.
+     *
+     * @param billableFromDate Start date for billable hours query (inclusive, with grace period)
+     * @param billableToDate End date for billable hours query (inclusive)
+     * @param availableFromDate Start date for available hours query (inclusive, actual period)
+     * @param availableToDate End date for available hours query (inclusive)
      * @param serviceLines Optional service line filter
      * @param companyIds Optional company filter
      * @return Array [billableHours, availableHours]
      */
     private double[] queryUtilizationFor4Weeks(
-            LocalDate fromDate, LocalDate toDate,
+            LocalDate billableFromDate, LocalDate billableToDate,
+            LocalDate availableFromDate, LocalDate availableToDate,
             Set<String> serviceLines, Set<String> companyIds) {
 
         // Query 1: Get billable hours from work_full (accurate source for billable work)
+        // Uses w.registered (registration date) with grace period to catch late registrations
         StringBuilder billableSql = new StringBuilder(
                 "SELECT COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END), 0.0) AS total_billable_hours " +
                 "FROM work_full w " +
-                "WHERE w.registered >= :fromDate " +
-                "  AND w.registered <= :toDate " +
+                "WHERE w.registered >= :billableFromDate " +
+                "  AND w.registered <= :billableToDate " +
                 "  AND w.type = 'CONSULTANT' "
         );
 
@@ -1094,8 +1124,8 @@ public class CxoFinanceService {
         }
 
         Query billableQuery = em.createNativeQuery(billableSql.toString());
-        billableQuery.setParameter("fromDate", fromDate);
-        billableQuery.setParameter("toDate", toDate);
+        billableQuery.setParameter("billableFromDate", billableFromDate);
+        billableQuery.setParameter("billableToDate", billableToDate);
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
             billableQuery.setParameter("serviceLines", serviceLines);
@@ -1107,11 +1137,12 @@ public class CxoFinanceService {
         double billableHours = ((Number) billableQuery.getSingleResult()).doubleValue();
 
         // Query 2: Get available hours from bi_data_per_day (daily availability data)
+        // Uses b.document_date (actual work date) for the true 4-week period
         StringBuilder availableSql = new StringBuilder(
                 "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
                 "FROM bi_data_per_day b " +
-                "WHERE b.document_date >= :fromDate " +
-                "  AND b.document_date <= :toDate " +
+                "WHERE b.document_date >= :availableFromDate " +
+                "  AND b.document_date <= :availableToDate " +
                 "  AND b.consultant_type = 'CONSULTANT' " +
                 "  AND b.status_type = 'ACTIVE' "
         );
@@ -1126,8 +1157,8 @@ public class CxoFinanceService {
         }
 
         Query availableQuery = em.createNativeQuery(availableSql.toString());
-        availableQuery.setParameter("fromDate", fromDate);
-        availableQuery.setParameter("toDate", toDate);
+        availableQuery.setParameter("availableFromDate", availableFromDate);
+        availableQuery.setParameter("availableToDate", availableToDate);
 
         if (serviceLines != null && !serviceLines.isEmpty()) {
             availableQuery.setParameter("serviceLines", serviceLines);
@@ -1138,8 +1169,8 @@ public class CxoFinanceService {
 
         double availableHours = ((Number) availableQuery.getSingleResult()).doubleValue();
 
-        log.debugf("Utilization query (%s to %s): billable=%.0f, available=%.0f",
-                fromDate, toDate, billableHours, availableHours);
+        log.debugf("Utilization query: billable=%.0f (%s to %s), available=%.0f (%s to %s)",
+                billableHours, billableFromDate, billableToDate, availableHours, availableFromDate, availableToDate);
 
         return new double[]{billableHours, availableHours};
     }
@@ -1153,29 +1184,40 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        // Build dynamic SQL (following Chart A pattern)
+        // Build dynamic SQL with deduplication to fix V118 double-counting issue
+        // NOTE: V118 migration added companyuuid column, creating multiple rows per project-month
+        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
+        // Strategy: GROUP BY project_id + month_key, then MAX(revenue) to get single revenue value per project-month
         StringBuilder sql = new StringBuilder(
-                "SELECT COALESCE(SUM(f.recognized_revenue_dkk), 0.0) AS total_revenue " +
-                        "FROM fact_project_financials f " +
-                        "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+                "SELECT COALESCE(SUM(max_revenue), 0.0) AS total_revenue " +
+                        "FROM ( " +
+                        "    SELECT " +
+                        "        f.project_id, " +
+                        "        f.month_key, " +
+                        "        MAX(f.recognized_revenue_dkk) AS max_revenue " +
+                        "    FROM fact_project_financials f " +
+                        "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey "
         );
 
         // Add optional filters (following Chart A pattern exactly)
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND f.companyuuid IN (:companyIds) ");
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
         }
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("AND f.sector_id IN (:sectors) ");
+            sql.append("    AND f.sector_id IN (:sectors) ");
         }
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND f.service_line_id IN (:serviceLines) ");
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("AND f.contract_type_id IN (:contractTypes) ");
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
         }
         if (clientId != null && !clientId.trim().isEmpty()) {
-            sql.append("AND f.client_id = :clientId ");
+            sql.append("    AND f.client_id = :clientId ");
         }
+
+        sql.append("    GROUP BY f.project_id, f.month_key " +
+                        ") AS deduplicated");
 
         // Execute query
         Query query = em.createNativeQuery(sql.toString());
@@ -1214,29 +1256,40 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        // Build dynamic SQL (same pattern as queryActualRevenue)
+        // Build dynamic SQL with deduplication (same pattern as queryActualRevenue)
+        // NOTE: V118 migration added companyuuid column, creating multiple rows per project-month
+        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
+        // Strategy: GROUP BY project_id + month_key, then MAX(cost) to get single cost value per project-month
         StringBuilder sql = new StringBuilder(
-                "SELECT COALESCE(SUM(f.direct_delivery_cost_dkk), 0.0) AS total_cost " +
-                        "FROM fact_project_financials f " +
-                        "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+                "SELECT COALESCE(SUM(max_cost), 0.0) AS total_cost " +
+                        "FROM ( " +
+                        "    SELECT " +
+                        "        f.project_id, " +
+                        "        f.month_key, " +
+                        "        MAX(f.direct_delivery_cost_dkk) AS max_cost " +
+                        "    FROM fact_project_financials f " +
+                        "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey "
         );
 
         // Add optional filters (same as revenue query)
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND f.companyuuid IN (:companyIds) ");
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
         }
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("AND f.sector_id IN (:sectors) ");
+            sql.append("    AND f.sector_id IN (:sectors) ");
         }
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND f.service_line_id IN (:serviceLines) ");
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("AND f.contract_type_id IN (:contractTypes) ");
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
         }
         if (clientId != null && !clientId.trim().isEmpty()) {
-            sql.append("AND f.client_id = :clientId ");
+            sql.append("    AND f.client_id = :clientId ");
         }
+
+        sql.append("    GROUP BY f.project_id, f.month_key " +
+                        ") AS deduplicated");
 
         // Execute query
         Query query = em.createNativeQuery(sql.toString());
@@ -1446,6 +1499,7 @@ public class CxoFinanceService {
             Set<String> companyIds) {
 
         // Build SQL to calculate total revenue and repeat client revenue in one query
+        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
         StringBuilder sql = new StringBuilder(
                 "WITH client_project_revenue AS ( " +
                         "    SELECT " +
@@ -1453,7 +1507,7 @@ public class CxoFinanceService {
                         "        COUNT(DISTINCT f.project_id) AS project_count, " +
                         "        SUM(f.recognized_revenue_dkk) AS client_revenue " +
                         "    FROM fact_project_financials f " +
-                        "    WHERE f.month_key BETWEEN :fromKey AND :toKey " +
+                        "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey " +
                         "      AND f.client_id IS NOT NULL " +
                         "      AND f.recognized_revenue_dkk > 0 "
         );
@@ -1563,10 +1617,11 @@ public class CxoFinanceService {
             Set<String> companyIds) {
 
         // Build dynamic SQL for distinct client_id query
+        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
         StringBuilder sql = new StringBuilder(
                 "SELECT DISTINCT f.client_id " +
                         "FROM fact_project_financials f " +
-                        "WHERE f.month_key BETWEEN :fromKey AND :toKey " +
+                        "WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey " +
                         "AND f.client_id IS NOT NULL " +
                         "AND f.recognized_revenue_dkk > 0 "
         );
@@ -1620,12 +1675,13 @@ public class CxoFinanceService {
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
         // Query monthly revenue and costs for last 12 months
+        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
         StringBuilder sql = new StringBuilder(
                 "SELECT f.month_key, " +
                         "       COALESCE(SUM(f.recognized_revenue_dkk), 0.0) AS monthly_revenue, " +
                         "       COALESCE(SUM(f.direct_delivery_cost_dkk), 0.0) AS monthly_cost " +
                         "FROM fact_project_financials f " +
-                        "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+                        "WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey "
         );
 
         // Add optional filters (same as actual revenue query)
