@@ -1,8 +1,15 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
+import dk.trustworks.intranet.aggregates.finance.dto.BacklogCoverageDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4WeeksDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RepeatBusinessShareDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.Top5ClientsShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RevenuePerBillableFTETTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
@@ -233,6 +240,233 @@ public class CxoFinanceResource {
     }
 
     /**
+     * Gets Gross Margin % (TTM) KPI data.
+     * Calculates year-over-year gross margin comparing current 12-month period vs prior 12-month period.
+     * Gross Margin % = ((Revenue - Direct Delivery Costs) / Revenue) × 100
+     *
+     * @param fromDateStr Start date (ISO-8601 format, optional - not used for TTM but needed for consistency)
+     * @param toDateStr End date (ISO-8601 format, optional - determines anchor date, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return GrossMarginTTMDTO with current/prior revenue, cost, margin %, change, and 12-month sparkline
+     */
+    @GET
+    @Path("/gross-margin-ttm")
+    public GrossMarginTTMDTO getGrossMarginTTM(
+            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
+            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/gross-margin-ttm: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDateStr, toDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse dates (toDate determines anchor, default to today)
+        LocalDate fromDate = fromDateStr != null && !fromDateStr.trim().isEmpty()
+                ? LocalDate.parse(fromDateStr)
+                : null;
+        LocalDate toDate = toDateStr != null && !toDateStr.trim().isEmpty()
+                ? LocalDate.parse(toDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        GrossMarginTTMDTO result = cxoFinanceService.getGrossMarginTTM(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning Gross Margin TTM data: Current Revenue=%.2f, Current Cost=%.2f, Current Margin=%.2f%%, " +
+                        "Prior Margin=%.2f%%, Change=%.2f pp",
+                result.getCurrentTTMRevenue(), result.getCurrentTTMCost(), result.getCurrentMarginPercent(),
+                result.getPriorMarginPercent(), result.getMarginChangePct());
+
+        return result;
+    }
+
+    /**
+     * Gets Backlog Coverage (Months) KPI data.
+     * Calculates how many months of revenue are covered by signed backlog.
+     * Formula: Coverage (Months) = Total Backlog Revenue / Average Monthly Revenue
+     *
+     * @param asOfDateStr Current date for backlog calculation (ISO-8601 format, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return BacklogCoverageDTO with current backlog, avg monthly revenue, coverage months, prior coverage, and change %
+     */
+    @GET
+    @Path("/backlog-coverage")
+    public BacklogCoverageDTO getBacklogCoverage(
+            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/backlog-coverage: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse asOfDate (default to today if not provided)
+        LocalDate asOfDate = asOfDateStr != null && !asOfDateStr.trim().isEmpty()
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        BacklogCoverageDTO result = cxoFinanceService.getBacklogCoverage(
+                asOfDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning Backlog Coverage data: Backlog=%.2f, Avg Monthly Revenue=%.2f, Coverage=%.2f months, " +
+                        "Prior Coverage=%.2f months, Change=%.2f%%",
+                result.getTotalBacklogRevenue(), result.getAverageMonthlyRevenue(), result.getCoverageMonths(),
+                result.getPriorCoverageMonths(), result.getCoverageChangePct());
+
+        return result;
+    }
+
+    /**
+     * Gets Revenue per Billable FTE (TTM) KPI data.
+     * Calculates revenue efficiency by dividing TTM revenue by average billable FTE count.
+     * Formula: Revenue per FTE = Total TTM Revenue / Average Billable FTE Count
+     *
+     * @param fromDateStr Start date (ISO-8601 format, optional - not used for TTM but needed for consistency)
+     * @param toDateStr End date (ISO-8601 format, optional - determines anchor date, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return RevenuePerBillableFTETTMDTO with current/prior revenue per FTE, change %, and 12-month sparkline
+     */
+    @GET
+    @Path("/revenue-per-fte")
+    public RevenuePerBillableFTETTMDTO getRevenuePerBillableFTETTM(
+            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
+            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/revenue-per-fte: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDateStr, toDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse dates (toDate determines anchor, default to today)
+        LocalDate fromDate = fromDateStr != null && !fromDateStr.trim().isEmpty()
+                ? LocalDate.parse(fromDateStr)
+                : null;
+        LocalDate toDate = toDateStr != null && !toDateStr.trim().isEmpty()
+                ? LocalDate.parse(toDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        RevenuePerBillableFTETTMDTO result = cxoFinanceService.getRevenuePerBillableFTETTM(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Returning Revenue per FTE data: Current Revenue=%.2f, Current FTE=%.2f, Current Rev/FTE=%.2f, " +
+                        "Prior Rev/FTE=%.2f, Change=%.2f%%",
+                result.getCurrentTTMRevenue(), result.getCurrentAvgBillableFTE(), result.getCurrentRevenuePerFTE(),
+                result.getPriorRevenuePerFTE(), result.getRevenuePerFTEChangePct());
+
+        return result;
+    }
+
+    /**
+     * Gets Billable Utilization (Last 4 Weeks) KPI data.
+     * Measures operational efficiency by comparing billable hours to total available hours
+     * over a rolling 4-week window.
+     *
+     * Formula: Utilization % = (Billable Hours / Total Available Hours) × 100
+     *
+     * Note: This is a user-centric metric, so only practice (service line) and company
+     * filters apply. Sector, contract type, and client filters are NOT applicable.
+     *
+     * @param asOfDateStr Anchor date (ISO-8601 format, defaults to today)
+     * @param serviceLines Comma-separated practice IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return BillableUtilizationLast4WeeksDTO with current/prior utilization %, change, and hour totals
+     */
+    @GET
+    @Path("/billable-utilization-4w")
+    public BillableUtilizationLast4WeeksDTO getBillableUtilizationLast4Weeks(
+            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/billable-utilization-4w: asOfDate=%s, serviceLines=%s, companyIds=%s",
+                asOfDateStr, serviceLines, companyIds);
+
+        // Parse asOfDate (default to today if not provided)
+        LocalDate asOfDate = asOfDateStr != null && !asOfDateStr.trim().isEmpty()
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        // Parse multi-value filters
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        BillableUtilizationLast4WeeksDTO result = cxoFinanceService.getBillableUtilizationLast4Weeks(
+                asOfDate,
+                serviceLineSet,
+                companyIdSet
+        );
+
+        log.debugf("Returning Billable Utilization (4w) data: Current=%.1f%% (%.0f / %.0f hours), " +
+                        "Prior=%.1f%% (%.0f / %.0f hours), Change=%+.1fpp",
+                result.getCurrentUtilizationPercent(), result.getCurrentBillableHours(), result.getCurrentAvailableHours(),
+                result.getPriorUtilizationPercent(), result.getPriorBillableHours(), result.getPriorAvailableHours(),
+                result.getUtilizationChangePct());
+
+        return result;
+    }
+
+    /**
      * Gets monthly pipeline, backlog, and target trend data for Chart C.
      * Forward-looking chart showing coverage horizon (typically 6 months).
      *
@@ -277,6 +511,177 @@ public class CxoFinanceResource {
         );
 
         log.debugf("Returning %d pipeline/backlog data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets Client Retention Rate data for 12-month periods.
+     * Measures percentage of clients with revenue in current 12-month window
+     * who also had revenue in previous 12-month window.
+     *
+     * @param fromDate Start date (ISO-8601 format, optional - used for dashboard context)
+     * @param toDate End date (ISO-8601 format, determines current 12m window anchor)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional - if provided, returns empty DTO as this is portfolio-level)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ClientRetentionDTO with retention percentages and client counts
+     */
+    @GET
+    @Path("/client-retention")
+    public ClientRetentionDTO getClientRetention(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/client-retention: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDate, toDate, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ClientRetentionDTO result = cxoFinanceService.getClientRetention(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Client retention result: current=%d clients, retained=%d (%.2f%%), trend=%.2f pp",
+                result.getCurrentWindowClientCount(),
+                result.getRetainedClientCount(),
+                result.getCurrentRetentionPercent(),
+                result.getRetentionChangePct());
+
+        return result;
+    }
+
+    /**
+     * Gets Repeat Business Share KPI data.
+     * Measures the percentage of revenue from clients with ≥2 projects in the last 24 months,
+     * indicating business diversification and client stickiness.
+     *
+     * Formula: Repeat Business Share % = (Repeat Client Revenue / Total Revenue) × 100
+     * Repeat Client Definition: Client with ≥2 distinct projects in the 24-month window
+     *
+     * Note: This is a portfolio-level metric requiring multiple clients. If clientId is provided,
+     * returns empty DTO. Uses FIXED 24-month rolling window (not dashboard-driven).
+     *
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional - if provided, returns empty DTO as this is portfolio-level)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return RepeatBusinessShareDTO with current/prior percentages, revenues, and 12-month sparkline
+     */
+    @GET
+    @Path("/repeat-business-share")
+    public RepeatBusinessShareDTO getRepeatBusinessShare(
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/repeat-business-share: sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer (uses fixed 24-month rolling window from today)
+        RepeatBusinessShareDTO result = cxoFinanceService.getRepeatBusinessShare(
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Repeat business share result: total=%.2f DKK, repeat=%.2f DKK (%.2f%%), trend=%.2f pp, sparkline length=%d",
+                result.getTotalRevenue(),
+                result.getRepeatClientRevenue(),
+                result.getCurrentRepeatSharePercent(),
+                result.getRepeatShareChangePct(),
+                result.getSparklineData() != null ? result.getSparklineData().length : 0);
+
+        return result;
+    }
+
+    /**
+     * Gets Top 5 Clients' Revenue Share KPI data.
+     * Measures revenue concentration risk by calculating what percentage of TTM revenue
+     * comes from the 5 largest clients. Lower concentration indicates better diversification.
+     *
+     * Formula: Top 5 Share % = (Top 5 Clients Revenue / Total Revenue) × 100
+     * Top 5 Definition: The 5 clients with the highest revenue in the TTM window
+     *
+     * Status Logic: INVERTED - Lower concentration is better (lower risk, better diversification)
+     *
+     * Note: This is a portfolio-level metric requiring multiple clients. If clientId is provided,
+     * returns empty DTO. Uses dashboard-driven TTM window (fromDate/toDate parameters).
+     *
+     * @param fromDate Start date (ISO-8601 format, required)
+     * @param toDate End date (ISO-8601 format, required)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional - if provided, returns empty DTO as this is portfolio-level)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return Top5ClientsShareDTO with current/prior percentages, revenues, and change (percentage points)
+     */
+    @GET
+    @Path("/top-5-clients-share")
+    public Top5ClientsShareDTO getTop5ClientsShare(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/top-5-clients-share: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fromDate, toDate, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer (dashboard-driven TTM window)
+        Top5ClientsShareDTO result = cxoFinanceService.getTop5ClientsShare(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Top 5 clients share result: total=%.2f DKK, top5=%.2f DKK (%.2f%%), trend=%+.2f pp",
+                result.getTotalRevenue(),
+                result.getTop5ClientsRevenue(),
+                result.getCurrentTop5SharePercent(),
+                result.getTop5ShareChangePct());
+
         return result;
     }
 
