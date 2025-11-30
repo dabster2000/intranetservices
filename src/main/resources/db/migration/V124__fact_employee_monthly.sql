@@ -1,6 +1,7 @@
-CREATE ALGORITHM=UNDEFINED
+CREATE OR REPLACE ALGORITHM=UNDEFINED
     SQL SECURITY DEFINER
     VIEW `fact_employee_monthly` AS
+
 WITH daily_employee_data AS (
     -- Step 1: Get daily employee data with practice and role classification
     SELECT

@@ -5,7 +5,13 @@ import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4Wee
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyCostCenterMixDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyExpenseMixDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyOverheadPerFTEDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPayrollHeadcountDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.OpexBridgeDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.OpexDetailRowDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RepeatBusinessShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.Top5ClientsShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
@@ -854,6 +860,196 @@ public class CxoFinanceResource {
                 result.getCurrentTop5SharePercent(),
                 result.getTop5ShareChangePct());
 
+        return result;
+    }
+
+    /**
+     * Gets OPEX Bridge (Waterfall) data comparing prior vs current fiscal year.
+     * Shows category-level changes driving YoY OPEX variance.
+     *
+     * @param asOfDateStr Anchor date (defaults to today) - determines current fiscal year
+     * @param costCenters Comma-separated cost center IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return OpexBridgeDTO with prior FY, category changes, current FY totals
+     */
+    @GET
+    @Path("/opex-bridge")
+    public OpexBridgeDTO getOpexBridge(
+            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("costCenters") String costCenters,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/opex-bridge: asOfDate=%s, costCenters=%s, companyIds=%s",
+                asOfDateStr, costCenters, companyIds);
+
+        LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        Set<String> costCenterSet = parseCommaSeparated(costCenters);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        OpexBridgeDTO result = cxoFinanceService.getOpexBridge(asOfDate, costCenterSet, companyIdSet);
+
+        log.debugf("OPEX Bridge result: priorFY=%.2f DKK, currentFY=%.2f DKK, yoyChange=%+.2f%%",
+                result.getPriorFYOpex(), result.getCurrentFYOpex(), result.getYoyChangePercent());
+
+        return result;
+    }
+
+    /**
+     * Gets monthly expense mix data by category (100% stacked column chart).
+     *
+     * @param fromDate Start date (ISO-8601 format, optional)
+     * @param toDate End date (ISO-8601 format, optional)
+     * @param costCenters Comma-separated cost center IDs (optional)
+     * @param expenseCategories Comma-separated expense category IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of monthly expense mix data points
+     */
+    @GET
+    @Path("/expense-mix-by-category")
+    public List<MonthlyExpenseMixDTO> getExpenseMixByCategory(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("costCenters") String costCenters,
+            @QueryParam("expenseCategories") String expenseCategories,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/expense-mix-by-category: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s",
+                fromDate, toDate, costCenters, expenseCategories, companyIds);
+
+        Set<String> costCenterSet = parseCommaSeparated(costCenters);
+        Set<String> expenseCategorySet = parseCommaSeparated(expenseCategories);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<MonthlyExpenseMixDTO> result = cxoFinanceService.getExpenseMixByCategory(
+                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet);
+
+        log.debugf("Returning %d monthly expense mix data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets monthly expense mix data by cost center (100% stacked column chart).
+     *
+     * @param fromDate Start date (ISO-8601 format, optional)
+     * @param toDate End date (ISO-8601 format, optional)
+     * @param costCenters Comma-separated cost center IDs (optional)
+     * @param expenseCategories Comma-separated expense category IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of monthly cost center mix data points
+     */
+    @GET
+    @Path("/expense-mix-by-cost-center")
+    public List<MonthlyCostCenterMixDTO> getExpenseMixByCostCenter(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("costCenters") String costCenters,
+            @QueryParam("expenseCategories") String expenseCategories,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/expense-mix-by-cost-center: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s",
+                fromDate, toDate, costCenters, expenseCategories, companyIds);
+
+        Set<String> costCenterSet = parseCommaSeparated(costCenters);
+        Set<String> expenseCategorySet = parseCommaSeparated(expenseCategories);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<MonthlyCostCenterMixDTO> result = cxoFinanceService.getExpenseMixByCostCenter(
+                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet);
+
+        log.debugf("Returning %d monthly cost center mix data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets monthly payroll and headcount structure data (combo chart).
+     *
+     * @param fromDate Start date (ISO-8601 format, optional)
+     * @param toDate End date (ISO-8601 format, optional)
+     * @param practices Comma-separated practice IDs (for FTE filtering, optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of monthly payroll/headcount data points
+     */
+    @GET
+    @Path("/payroll-headcount-structure")
+    public List<MonthlyPayrollHeadcountDTO> getPayrollHeadcountStructure(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/payroll-headcount-structure: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
+                fromDate, toDate, practices, companyIds);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<MonthlyPayrollHeadcountDTO> result = cxoFinanceService.getPayrollHeadcountStructure(
+                fromDate, toDate, practiceSet, companyIdSet);
+
+        log.debugf("Returning %d monthly payroll/headcount data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets monthly overhead per FTE trend (TTM calculations, dual-line chart).
+     *
+     * @param fromDate Start date (ISO-8601 format, optional)
+     * @param toDate End date (ISO-8601 format, optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of monthly overhead per FTE data points (TTM rolling)
+     */
+    @GET
+    @Path("/overhead-per-fte")
+    public List<MonthlyOverheadPerFTEDTO> getOverheadPerFTE(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/overhead-per-fte: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<MonthlyOverheadPerFTEDTO> result = cxoFinanceService.getOverheadPerFTE(
+                fromDate, toDate, companyIdSet);
+
+        log.debugf("Returning %d monthly overhead per FTE data points", result.size());
+        return result;
+    }
+
+    /**
+     * Gets detailed expense drill-down data (account-level granularity).
+     *
+     * @param fromDate Start date (ISO-8601 format, optional)
+     * @param toDate End date (ISO-8601 format, optional)
+     * @param costCenters Comma-separated cost center IDs (optional)
+     * @param expenseCategories Comma-separated expense category IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of detailed expense rows
+     */
+    @GET
+    @Path("/expense-detail")
+    public List<OpexDetailRowDTO> getExpenseDetail(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("costCenters") String costCenters,
+            @QueryParam("expenseCategories") String expenseCategories,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/expense-detail: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s",
+                fromDate, toDate, costCenters, expenseCategories, companyIds);
+
+        Set<String> costCenterSet = parseCommaSeparated(costCenters);
+        Set<String> expenseCategorySet = parseCommaSeparated(expenseCategories);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<OpexDetailRowDTO> result = cxoFinanceService.getExpenseDetail(
+                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet);
+
+        log.debugf("Returning %d expense detail rows", result.size());
         return result;
     }
 

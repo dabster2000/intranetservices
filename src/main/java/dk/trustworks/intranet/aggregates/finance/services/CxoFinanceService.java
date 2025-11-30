@@ -5,9 +5,15 @@ import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4Wee
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyCostCenterMixDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyExpenseMixDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyOverheadPerFTEDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPayrollHeadcountDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyPipelineBacklogDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.OpexBridgeDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.OpexDetailRowDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RepeatBusinessShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenuePerBillableFTETTMDTO;
@@ -3128,6 +3134,627 @@ public class CxoFinanceService {
                 attritionChange,
                 monthlySparkline
         );
+    }
+
+    /**
+     * Gets OPEX Bridge comparing current fiscal year vs prior fiscal year.
+     * Shows YoY changes broken down by expense category.
+     *
+     * @param asOfDate Anchor date determining current fiscal year (defaults to today)
+     * @param costCenters Cost center filter (nullable)
+     * @param companyIds Company UUID filter (nullable)
+     * @return OpexBridgeDTO with FY totals and category-level changes
+     */
+    public OpexBridgeDTO getOpexBridge(
+            LocalDate asOfDate,
+            Set<String> costCenters,
+            Set<String> companyIds) {
+
+        LocalDate normalizedAsOfDate = (asOfDate != null) ? asOfDate : LocalDate.now();
+
+        // Calculate fiscal year boundaries (July 1 - June 30)
+        int currentFiscalYear = normalizedAsOfDate.getMonthValue() >= 7
+                ? normalizedAsOfDate.getYear()
+                : normalizedAsOfDate.getYear() - 1;
+        LocalDate currentFYStart = LocalDate.of(currentFiscalYear, 7, 1);
+        LocalDate currentFYEnd = LocalDate.of(currentFiscalYear + 1, 6, 30);
+
+        int priorFiscalYear = currentFiscalYear - 1;
+        LocalDate priorFYStart = LocalDate.of(priorFiscalYear, 7, 1);
+        LocalDate priorFYEnd = LocalDate.of(priorFiscalYear + 1, 6, 30);
+
+        String currentFromMonthKey = String.format("%04d%02d", currentFYStart.getYear(), currentFYStart.getMonthValue());
+        String currentToMonthKey = String.format("%04d%02d", currentFYEnd.getYear(), currentFYEnd.getMonthValue());
+        String priorFromMonthKey = String.format("%04d%02d", priorFYStart.getYear(), priorFYStart.getMonthValue());
+        String priorToMonthKey = String.format("%04d%02d", priorFYEnd.getYear(), priorFYEnd.getMonthValue());
+
+        log.debugf("OPEX Bridge: Current FY%d/%d (%s to %s), Prior FY%d/%d (%s to %s)",
+                currentFiscalYear, currentFiscalYear + 1, currentFromMonthKey, currentToMonthKey,
+                priorFiscalYear, priorFiscalYear + 1, priorFromMonthKey, priorToMonthKey);
+
+        // Query both fiscal years with category breakdown
+        String sql = buildOpexByFYQuery(costCenters, companyIds);
+        Query query = em.createNativeQuery(sql);
+        query.setParameter("currentFromKey", currentFromMonthKey);
+        query.setParameter("currentToKey", currentToMonthKey);
+        query.setParameter("priorFromKey", priorFromMonthKey);
+        query.setParameter("priorToKey", priorToMonthKey);
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            query.setParameter("costCenters", costCenters);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Parse results into category changes
+        double priorFYOpex = 0.0;
+        double currentFYOpex = 0.0;
+        double peopleNonBillableChange = 0.0;
+        double toolsSoftwareChange = 0.0;
+        double officeFacilitiesChange = 0.0;
+        double salesMarketingChange = 0.0;
+        double otherOpexChange = 0.0;
+
+        java.util.Map<String, Double> priorByCategory = new java.util.HashMap<>();
+        java.util.Map<String, Double> currentByCategory = new java.util.HashMap<>();
+
+        for (Object[] row : results) {
+            String fiscalYearLabel = (String) row[0];
+            String categoryId = (String) row[1];
+            double amount = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
+
+            if ("PRIOR".equals(fiscalYearLabel)) {
+                priorFYOpex += amount;
+                priorByCategory.put(categoryId, amount);
+            } else if ("CURRENT".equals(fiscalYearLabel)) {
+                currentFYOpex += amount;
+                currentByCategory.put(categoryId, amount);
+            }
+        }
+
+        // Calculate category-level changes
+        peopleNonBillableChange = currentByCategory.getOrDefault("PEOPLE_NON_BILLABLE", 0.0)
+                - priorByCategory.getOrDefault("PEOPLE_NON_BILLABLE", 0.0);
+        toolsSoftwareChange = currentByCategory.getOrDefault("TOOLS_SOFTWARE", 0.0)
+                - priorByCategory.getOrDefault("TOOLS_SOFTWARE", 0.0);
+        officeFacilitiesChange = currentByCategory.getOrDefault("OFFICE_FACILITIES", 0.0)
+                - priorByCategory.getOrDefault("OFFICE_FACILITIES", 0.0);
+        salesMarketingChange = currentByCategory.getOrDefault("SALES_MARKETING", 0.0)
+                - priorByCategory.getOrDefault("SALES_MARKETING", 0.0);
+        otherOpexChange = currentByCategory.getOrDefault("OTHER_OPEX", 0.0)
+                - priorByCategory.getOrDefault("OTHER_OPEX", 0.0);
+
+        double yoyChangePercent = priorFYOpex > 0
+                ? ((currentFYOpex - priorFYOpex) / priorFYOpex) * 100.0
+                : 0.0;
+
+        log.infof("OPEX Bridge results: Prior=%.2f, Current=%.2f, YoY=%+.2f%%",
+                priorFYOpex, currentFYOpex, yoyChangePercent);
+
+        return new OpexBridgeDTO(
+                priorFYOpex,
+                peopleNonBillableChange,
+                toolsSoftwareChange,
+                officeFacilitiesChange,
+                salesMarketingChange,
+                otherOpexChange,
+                currentFYOpex,
+                priorFiscalYear,
+                currentFiscalYear,
+                yoyChangePercent
+        );
+    }
+
+    /**
+     * Gets monthly expense mix by category for stacked column chart.
+     */
+    public List<MonthlyExpenseMixDTO> getExpenseMixByCategory(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> costCenters,
+            Set<String> expenseCategories,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
+
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("Expense Mix by Category: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
+                fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT month_key, expense_category_id, SUM(opex_amount_dkk) AS amount " +
+                "FROM fact_opex WHERE 1=1 "
+        );
+
+        sql.append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
+                .append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("  AND cost_center_id IN (:costCenters) ");
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            sql.append("  AND expense_category_id IN (:expenseCategories) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND company_uuid IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY month_key, expense_category_id ORDER BY month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            query.setParameter("costCenters", costCenters);
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            query.setParameter("expenseCategories", expenseCategories);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Group by month and calculate percentages
+        java.util.Map<String, java.util.Map<String, Double>> monthlyData = new java.util.LinkedHashMap<>();
+        for (Object[] row : results) {
+            String monthKey = (String) row[0];
+            String categoryId = (String) row[1];
+            double amount = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
+
+            monthlyData.putIfAbsent(monthKey, new java.util.HashMap<>());
+            monthlyData.get(monthKey).put(categoryId, amount);
+        }
+
+        List<MonthlyExpenseMixDTO> resultList = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, java.util.Map<String, Double>> entry : monthlyData.entrySet()) {
+            String monthKey = entry.getKey();
+            java.util.Map<String, Double> categories = entry.getValue();
+
+            double peopleNonBillable = categories.getOrDefault("PEOPLE_NON_BILLABLE", 0.0);
+            double toolsSoftware = categories.getOrDefault("TOOLS_SOFTWARE", 0.0);
+            double officeFacilities = categories.getOrDefault("OFFICE_FACILITIES", 0.0);
+            double salesMarketing = categories.getOrDefault("SALES_MARKETING", 0.0);
+            double otherOpex = categories.getOrDefault("OTHER_OPEX", 0.0);
+            double totalOpex = peopleNonBillable + toolsSoftware + officeFacilities + salesMarketing + otherOpex;
+
+            double peopleNonBillablePercent = totalOpex > 0 ? (peopleNonBillable / totalOpex) * 100.0 : 0.0;
+            double toolsSoftwarePercent = totalOpex > 0 ? (toolsSoftware / totalOpex) * 100.0 : 0.0;
+            double officeFacilitiesPercent = totalOpex > 0 ? (officeFacilities / totalOpex) * 100.0 : 0.0;
+            double salesMarketingPercent = totalOpex > 0 ? (salesMarketing / totalOpex) * 100.0 : 0.0;
+            double otherOpexPercent = totalOpex > 0 ? (otherOpex / totalOpex) * 100.0 : 0.0;
+
+            String monthLabel = formatMonthLabel(Integer.parseInt(monthKey.substring(0, 4)), Integer.parseInt(monthKey.substring(4)));
+
+            resultList.add(new MonthlyExpenseMixDTO(
+                    monthLabel, monthKey,
+                    peopleNonBillable, toolsSoftware, officeFacilities, salesMarketing, otherOpex, totalOpex,
+                    peopleNonBillablePercent, toolsSoftwarePercent, officeFacilitiesPercent, salesMarketingPercent, otherOpexPercent
+            ));
+        }
+
+        return resultList;
+    }
+
+    /**
+     * Gets monthly expense mix by cost center for stacked column chart.
+     */
+    public List<MonthlyCostCenterMixDTO> getExpenseMixByCostCenter(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> costCenters,
+            Set<String> expenseCategories,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
+
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("Expense Mix by Cost Center: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
+                fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT month_key, cost_center_id, SUM(opex_amount_dkk) AS amount " +
+                "FROM fact_opex WHERE 1=1 "
+        );
+
+        sql.append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
+                .append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("  AND cost_center_id IN (:costCenters) ");
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            sql.append("  AND expense_category_id IN (:expenseCategories) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND company_uuid IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY month_key, cost_center_id ORDER BY month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            query.setParameter("costCenters", costCenters);
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            query.setParameter("expenseCategories", expenseCategories);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Group by month
+        java.util.Map<String, java.util.Map<String, Double>> monthlyData = new java.util.LinkedHashMap<>();
+        for (Object[] row : results) {
+            String monthKey = (String) row[0];
+            String costCenterId = (String) row[1];
+            double amount = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
+
+            monthlyData.putIfAbsent(monthKey, new java.util.HashMap<>());
+            monthlyData.get(monthKey).put(costCenterId, amount);
+        }
+
+        List<MonthlyCostCenterMixDTO> resultList = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, java.util.Map<String, Double>> entry : monthlyData.entrySet()) {
+            String monthKey = entry.getKey();
+            java.util.Map<String, Double> centers = entry.getValue();
+
+            double hrAdmin = centers.getOrDefault("HR_ADMIN", 0.0);
+            double sales = centers.getOrDefault("SALES", 0.0);
+            double internalIT = centers.getOrDefault("INTERNAL_IT", 0.0);
+            double facilities = centers.getOrDefault("FACILITIES", 0.0);
+            double admin = centers.getOrDefault("ADMIN", 0.0);
+            double general = centers.getOrDefault("GENERAL", 0.0);
+            double totalOpex = hrAdmin + sales + internalIT + facilities + admin + general;
+
+            double hrAdminPercent = totalOpex > 0 ? (hrAdmin / totalOpex) * 100.0 : 0.0;
+            double salesPercent = totalOpex > 0 ? (sales / totalOpex) * 100.0 : 0.0;
+            double internalITPercent = totalOpex > 0 ? (internalIT / totalOpex) * 100.0 : 0.0;
+            double facilitiesPercent = totalOpex > 0 ? (facilities / totalOpex) * 100.0 : 0.0;
+            double adminPercent = totalOpex > 0 ? (admin / totalOpex) * 100.0 : 0.0;
+            double generalPercent = totalOpex > 0 ? (general / totalOpex) * 100.0 : 0.0;
+
+            String monthLabel = formatMonthLabel(Integer.parseInt(monthKey.substring(0, 4)), Integer.parseInt(monthKey.substring(4)));
+
+            resultList.add(new MonthlyCostCenterMixDTO(
+                    monthLabel, monthKey,
+                    hrAdmin, sales, internalIT, facilities, admin, general, totalOpex,
+                    hrAdminPercent, salesPercent, internalITPercent, facilitiesPercent, adminPercent, generalPercent
+            ));
+        }
+
+        return resultList;
+    }
+
+    /**
+     * Gets monthly payroll and headcount structure (combo chart).
+     * Joins fact_opex (payroll), fact_employee_monthly (FTE), and revenue data.
+     */
+    public List<MonthlyPayrollHeadcountDTO> getPayrollHeadcountStructure(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
+
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("Payroll Headcount Structure: from=%s, to=%s, practices=%s, companies=%s",
+                fromMonthKey, toMonthKey, practices, companyIds);
+
+        // Build SQL joining payroll data, FTE data, and revenue
+        StringBuilder sql = new StringBuilder(
+                "SELECT e.month_key, " +
+                "  SUM(e.fte_billable) AS billable_fte, " +
+                "  SUM(e.fte_non_billable) AS non_billable_fte, " +
+                "  COALESCE((SELECT SUM(o.opex_amount_dkk) FROM fact_opex o " +
+                "    WHERE o.month_key = e.month_key AND o.is_payroll_flag = 1), 0) AS total_payroll, " +
+                "  COALESCE((SELECT SUM(f.recognized_revenue_dkk) FROM fact_project_financials f " +
+                "    WHERE f.month_key = e.month_key), 0) AS total_revenue " +
+                "FROM fact_employee_monthly e " +
+                "WHERE 1=1 "
+        );
+
+        sql.append("  AND e.month_key >= :fromMonthKey ")
+                .append("  AND e.month_key <= :toMonthKey ");
+
+        if (practices != null && !practices.isEmpty()) {
+            sql.append("  AND e.practice_id IN (:practices) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND e.company_id IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY e.month_key ORDER BY e.month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+
+        if (practices != null && !practices.isEmpty()) {
+            query.setParameter("practices", practices);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        List<MonthlyPayrollHeadcountDTO> resultList = new java.util.ArrayList<>();
+        for (Object[] row : results) {
+            String monthKey = (String) row[0];
+            double billableFTE = row[1] != null ? ((Number) row[1]).doubleValue() : 0.0;
+            double nonBillableFTE = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
+            double totalPayroll = row[3] != null ? ((Number) row[3]).doubleValue() : 0.0;
+            double totalRevenue = row[4] != null ? ((Number) row[4]).doubleValue() : 0.0;
+
+            double payrollAsPercentOfRevenue = totalRevenue > 0 ? (totalPayroll / totalRevenue) * 100.0 : 0.0;
+            double totalFTE = billableFTE + nonBillableFTE;
+
+            String monthLabel = formatMonthLabel(Integer.parseInt(monthKey.substring(0, 4)), Integer.parseInt(monthKey.substring(4)));
+
+            resultList.add(new MonthlyPayrollHeadcountDTO(
+                    monthLabel, monthKey,
+                    billableFTE, nonBillableFTE,
+                    totalPayroll, totalRevenue, payrollAsPercentOfRevenue, totalFTE
+            ));
+        }
+
+        log.debugf("Returning %d payroll/headcount data points", resultList.size());
+        return resultList;
+    }
+
+    /**
+     * Gets monthly overhead per FTE with TTM calculations.
+     */
+    public List<MonthlyOverheadPerFTEDTO> getOverheadPerFTE(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
+
+        log.debugf("Overhead per FTE (TTM): from=%s, to=%s, companies=%s",
+                normalizedFromDate, normalizedToDate, companyIds);
+
+        List<MonthlyOverheadPerFTEDTO> resultList = new java.util.ArrayList<>();
+
+        // For each month in range, calculate TTM metrics
+        YearMonth start = YearMonth.from(normalizedFromDate);
+        YearMonth end = YearMonth.from(normalizedToDate);
+        YearMonth current = start;
+
+        while (!current.isAfter(end)) {
+            LocalDate monthEnd = current.atEndOfMonth();
+            LocalDate ttmStart = monthEnd.minusMonths(11).withDayOfMonth(1);
+
+            String ttmStartKey = String.format("%04d%02d", ttmStart.getYear(), ttmStart.getMonthValue());
+            String ttmEndKey = String.format("%04d%02d", monthEnd.getYear(), monthEnd.getMonthValue());
+
+            // Query TTM non-payroll OPEX
+            StringBuilder opexSql = new StringBuilder(
+                    "SELECT SUM(opex_amount_dkk) FROM fact_opex " +
+                    "WHERE is_payroll_flag = 0 " +
+                    "  AND month_key >= :fromKey AND month_key <= :toKey "
+            );
+            if (companyIds != null && !companyIds.isEmpty()) {
+                opexSql.append("  AND company_uuid IN (:companyIds) ");
+            }
+
+            Query opexQuery = em.createNativeQuery(opexSql.toString());
+            opexQuery.setParameter("fromKey", ttmStartKey);
+            opexQuery.setParameter("toKey", ttmEndKey);
+            if (companyIds != null && !companyIds.isEmpty()) {
+                opexQuery.setParameter("companyIds", companyIds);
+            }
+            double ttmNonPayrollOpex = ((Number) opexQuery.getSingleResult()).doubleValue();
+
+            // Query TTM average FTE
+            StringBuilder fteSql = new StringBuilder(
+                    "SELECT AVG(fte_billable + fte_non_billable) AS avg_total_fte, " +
+                    "  AVG(fte_billable) AS avg_billable_fte " +
+                    "FROM fact_employee_monthly " +
+                    "WHERE month_key >= :fromKey AND month_key <= :toKey "
+            );
+            if (companyIds != null && !companyIds.isEmpty()) {
+                fteSql.append("  AND company_id IN (:companyIds) ");
+            }
+
+            Query fteQuery = em.createNativeQuery(fteSql.toString());
+            fteQuery.setParameter("fromKey", ttmStartKey);
+            fteQuery.setParameter("toKey", ttmEndKey);
+            if (companyIds != null && !companyIds.isEmpty()) {
+                fteQuery.setParameter("companyIds", companyIds);
+            }
+
+            Object[] fteResult = (Object[]) fteQuery.getSingleResult();
+            double ttmAvgTotalFTE = fteResult[0] != null ? ((Number) fteResult[0]).doubleValue() : 0.0;
+            double ttmAvgBillableFTE = fteResult[1] != null ? ((Number) fteResult[1]).doubleValue() : 0.0;
+
+            double overheadPerFTE = ttmAvgTotalFTE > 0 ? ttmNonPayrollOpex / ttmAvgTotalFTE : 0.0;
+            double overheadPerBillableFTE = ttmAvgBillableFTE > 0 ? ttmNonPayrollOpex / ttmAvgBillableFTE : 0.0;
+
+            String monthKey = String.format("%04d%02d", current.getYear(), current.getMonthValue());
+            String monthLabel = formatMonthLabel(current.getYear(), current.getMonthValue());
+
+            resultList.add(new MonthlyOverheadPerFTEDTO(
+                    monthLabel, monthKey,
+                    ttmNonPayrollOpex, ttmAvgTotalFTE, ttmAvgBillableFTE,
+                    overheadPerFTE, overheadPerBillableFTE
+            ));
+
+            current = current.plusMonths(1);
+        }
+
+        log.debugf("Returning %d overhead per FTE data points", resultList.size());
+        return resultList;
+    }
+
+    /**
+     * Gets detailed expense drill-down with budget variance.
+     */
+    public List<OpexDetailRowDTO> getExpenseDetail(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> costCenters,
+            Set<String> expenseCategories,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
+
+        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+
+        log.debugf("Expense Detail: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
+                fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT a.month_key, c.name AS company_name, a.cost_center_id, a.expense_category_id, " +
+                "  '' AS account_code, '' AS account_name, " +
+                "  SUM(a.opex_amount_dkk) AS opex_amount, " +
+                "  SUM(COALESCE(b.budget_opex_dkk, 0)) AS budget_amount, " +
+                "  COUNT(*) AS invoice_count, " +
+                "  MAX(a.is_payroll_flag) AS is_payroll " +
+                "FROM fact_opex a " +
+                "LEFT JOIN fact_opex_budget b ON a.company_id = b.company_id " +
+                "  AND a.month_key = b.month_key " +
+                "  AND a.cost_center_id = b.cost_center_id " +
+                "  AND a.expense_category_id = b.expense_category_id " +
+                "JOIN companies c ON a.company_id = c.uuid " +
+                "WHERE 1=1 "
+        );
+
+        sql.append("  AND CAST(a.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
+                .append("  AND CAST(a.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("  AND a.cost_center_id IN (:costCenters) ");
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            sql.append("  AND a.expense_category_id IN (:expenseCategories) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND a.company_uuid IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY a.month_key, c.name, a.cost_center_id, a.expense_category_id ")
+                .append("ORDER BY a.month_key DESC, c.name, a.cost_center_id, a.expense_category_id");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            query.setParameter("costCenters", costCenters);
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            query.setParameter("expenseCategories", expenseCategories);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        List<OpexDetailRowDTO> resultList = new java.util.ArrayList<>();
+        for (Object[] row : results) {
+            String monthKey = (String) row[0];
+            String companyName = (String) row[1];
+            String costCenterId = (String) row[2];
+            String expenseCategoryId = (String) row[3];
+            String accountCode = (String) row[4];
+            String accountName = (String) row[5];
+            double opexAmount = row[6] != null ? ((Number) row[6]).doubleValue() : 0.0;
+            double budgetAmount = row[7] != null ? ((Number) row[7]).doubleValue() : 0.0;
+            int invoiceCount = row[8] != null ? ((Number) row[8]).intValue() : 0;
+            boolean isPayroll = row[9] != null && ((Number) row[9]).intValue() == 1;
+
+            double varianceAmount = opexAmount - budgetAmount;
+            Double variancePercent = budgetAmount > 0 ? (varianceAmount / budgetAmount) * 100.0 : null;
+
+            int year = Integer.parseInt(monthKey.substring(0, 4));
+            int month = Integer.parseInt(monthKey.substring(4));
+            int fiscalYear = month >= 7 ? year : year - 1;
+            int fiscalMonthNumber = month >= 7 ? month - 6 : month + 6;
+
+            String monthLabel = formatMonthLabel(year, month);
+
+            resultList.add(new OpexDetailRowDTO(
+                    companyName, costCenterId, expenseCategoryId, accountCode, accountName,
+                    monthKey, monthLabel,
+                    opexAmount, budgetAmount, varianceAmount, variancePercent,
+                    invoiceCount, isPayroll,
+                    fiscalYear, fiscalMonthNumber
+            ));
+        }
+
+        log.debugf("Returning %d expense detail rows", resultList.size());
+        return resultList;
+    }
+
+    // ========== PRIVATE HELPER METHODS ==========
+
+    private String buildOpexByFYQuery(Set<String> costCenters, Set<String> companyIds) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT fy_label, expense_category_id, SUM(opex_amount_dkk) AS amount " +
+                "FROM ( " +
+                "  SELECT 'CURRENT' AS fy_label, expense_category_id, opex_amount_dkk " +
+                "  FROM fact_opex " +
+                "  WHERE CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :currentFromKey " +
+                "    AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :currentToKey "
+        );
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("    AND cost_center_id IN (:costCenters) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND company_uuid IN (:companyIds) ");
+        }
+
+        sql.append("  UNION ALL " +
+                "  SELECT 'PRIOR' AS fy_label, expense_category_id, opex_amount_dkk " +
+                "  FROM fact_opex " +
+                "  WHERE CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :priorFromKey " +
+                "    AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :priorToKey "
+        );
+
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("    AND cost_center_id IN (:costCenters) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND company_uuid IN (:companyIds) ");
+        }
+
+        sql.append(") combined " +
+                "GROUP BY fy_label, expense_category_id");
+
+        return sql.toString();
     }
 
     /**
