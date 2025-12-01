@@ -101,7 +101,7 @@ public class  EconomicsService {
                     ObjectMapper objectMapper = new ObjectMapper();
                     String responseAsString = voucherResponse.readEntity(String.class);
                     JsonNode root = objectMapper.readValue(responseAsString, JsonNode.class);
-                    JsonNode first = root.isArray() ? (root.size() > 0 ? root.get(0) : null) : root;
+                    JsonNode first = root.isArray() ? (!root.isEmpty() ? root.get(0) : null) : root;
                     if (first == null || first.get("voucherNumber") == null) {
                         log.error("Unexpected voucher POST response: " + responseAsString);
                         throw new ExpenseUploadException("Unexpected voucher response from e-conomics", null, 502, responseAsString);

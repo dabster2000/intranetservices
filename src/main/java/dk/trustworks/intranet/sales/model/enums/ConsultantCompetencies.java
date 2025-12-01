@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.sales.model.enums;
 
+import lombok.Getter;
+
+@Getter
 public enum ConsultantCompetencies {
-    BA("Business Analyst"), LA("Solution Architect"), PM("Project Manager"), SA("Tech - Software Architect"), DEV("Tech - Developer"), OPS("Tech - DevOps");
+    BA("Business Analyst"), LA("Solution Architect"), PM("Project Manager"), SA("Tech - Software Architect"), CYB("Cyber Security Specialist"), DEV("Tech - Developer"), OPS("Tech - DevOps");
 
     private final String description;
 
@@ -9,7 +12,4 @@ public enum ConsultantCompetencies {
         this.description = description;
     }
 
-    public String getDescription() {
-        return description;
-    }
 }

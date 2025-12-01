@@ -48,7 +48,7 @@ public class FinanceLoadJob {
         economicsService.clean();
         log.debug("Clean done!");
         for (Company company : companies) {
-            int year = Math.max(company.getCreated().getYear(), DateUtils.getCurrentFiscalStartDate().getYear()-1);
+            int year = Math.max(company.getCreated().getYear(), DateUtils.getCurrentFiscalStartDate().getYear()-2);
             for (int i = year; i <= DateUtils.getCurrentFiscalStartDate().getYear(); i++) {
                 String economicsUrlYear = toEconomicsUrlYear(getFiscalYearName(LocalDate.of(i, 6, 1), company.getUuid()));
                 log.info("Load data from periode: "+economicsUrlYear+" for company "+company.getUuid());
