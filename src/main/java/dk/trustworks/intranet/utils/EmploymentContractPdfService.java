@@ -149,21 +149,28 @@ public class EmploymentContractPdfService {
 
     /**
      * Converts rendered HTML to PDF using OpenHTMLToPDF.
-     * <p>
-     * <b>Important:</b> OpenHTMLToPDF uses an XML parser that doesn't recognize HTML entities
-     * like {@code &nbsp;} without DTD declarations. We replace common HTML entities with their
-     * numeric character references (e.g., {@code &#160;}) which are always valid in XML.
-     * <p>
-     * Configuration: Fast mode enabled, no base URI (assuming no external resources).
      *
-     * @param html The HTML string to convert (from Thymeleaf template)
+     * <p><strong>HTML-to-XML Sanitization:</strong> OpenHTMLToPDF uses a strict XML parser that requires:
+     * <ul>
+     *   <li>All ampersands (&amp;) must be part of valid entities or escaped as &amp;amp;</li>
+     *   <li>HTML entities like &amp;nbsp; must be converted to numeric references (e.g., &amp;#160;)</li>
+     *   <li>Less-than and greater-than symbols must be properly escaped in text content</li>
+     * </ul>
+     *
+     * <p>This method performs a two-step sanitization:
+     * <ol>
+     *   <li>Replace HTML entities with numeric character references</li>
+     *   <li>Escape any remaining standalone ampersands</li>
+     * </ol>
+     *
+     * @param html The HTML string from Thymeleaf template
      * @return PDF binary data as byte array
      * @throws IOException If PDF conversion fails
      */
     private byte[] convertHtmlToPdf(String html) throws IOException {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            // Replace common HTML entities with numeric character references
-            // OpenHTMLToPDF requires numeric entities or actual Unicode characters
+            // Step 1: Replace common HTML entities with numeric character references
+            // This must happen BEFORE escaping standalone ampersands
             String sanitizedHtml = html
                 .replace("&nbsp;", "&#160;")     // Non-breaking space
                 .replace("&copy;", "&#169;")     // Copyright symbol
@@ -179,11 +186,24 @@ public class EmploymentContractPdfService {
                 .replace("&laquo;", "&#171;")    // Left-pointing double angle quotation mark
                 .replace("&raquo;", "&#187;")    // Right-pointing double angle quotation mark
                 .replace("&bull;", "&#8226;")    // Bullet
-                .replace("&hellip;", "&#8230;"); // Horizontal ellipsis
+                .replace("&hellip;", "&#8230;")  // Horizontal ellipsis
+                .replace("&lt;", "&#60;")        // Less-than
+                .replace("&gt;", "&#62;")        // Greater-than
+                .replace("&quot;", "&#34;")      // Quotation mark
+                .replace("&apos;", "&#39;");     // Apostrophe
 
+            // Step 2: Escape any remaining standalone ampersands
+            // This regex finds & characters that are NOT followed by:
+            // - #\d+ (numeric entity like &#160;)
+            // - #x[0-9A-Fa-f]+ (hex entity like &#xA0;)
+            // - [a-zA-Z]+ (named entity like &amp;)
+            // We replace those with &amp; for XML compliance
+            sanitizedHtml = sanitizedHtml.replaceAll("&(?![#a-zA-Z])", "&amp;");
+
+            // Build and execute PDF conversion
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
-            builder.withHtmlContent(sanitizedHtml, null); // Use sanitized HTML, baseUri = null
+            builder.withHtmlContent(sanitizedHtml, null);
             builder.toStream(baos);
             builder.run();
 
