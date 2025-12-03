@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="da">
+<head>
+    <meta charset="UTF-8" />
+    <title>Ansættelseskontrakt - Thymeleaf skabelon</title>
+    <style>
+        body { font-family: sans-serif; font-size: 11pt; line-height: 1.5; }
+        h1 { font-size: 16pt; margin-bottom: 0.5em; }
+        h2 { font-size: 12pt; margin-top: 1.5em; }
+        .header { font-size: 9pt; margin-bottom: 1.5em; }
+        .signature-block { margin-top: 3em; }
+        .signature-line { margin-top: 2em; }
+    </style>
+</head>
+<body>
+<!--
+    Thymeleaf placeholders anvendt i denne skabelon:
+
+    ${employeeName}        - Medarbejderens fulde navn
+    ${employeeAddress}     - Medarbejderens adresse (linje)
+    ${companyLegalName}    - Juridisk navn på selskabet (fx "Trustworks A/S")
+    ${companyCvr}          - Selskabets CVR-nummer
+    ${companyAddress}      - Selskabets adresse (fx "Pustervig 3, 4. sal, 1126 København K")
+    ${employmentStartDate} - Dato for ansættelse (tekst-format)
+    ${jobTitle}            - Stillingsbetegnelse (fx "senior konsulent")
+    ${weeklyHours}         - Ugentlig arbejdstid i timer (fx 37)
+    ${monthlySalary}       - Månedsløn (kun taldelen, fx 60000 eller "60.000")
+    ${contractCity}        - By for underskrift (fx "København")
+    ${contractDate}        - Dato for underskrift (tekst-format, fx "14. november 2025")
+-->
+
+<div class="header">
+    <p>hello@trustworks.dk · www.trustworks.dk · Pustervig 3, 4. sal · 1126 København K · Denmark</p>
+</div>
+
+<h1>Ansættelseskontrakt</h1>
+
+<p>
+    Mellem
+    <span th:text="${employeeName}">Christian Ingemann Olsen</span>
+    og
+    <span th:text="${companyLegalName}">Trustworks A/S</span>,
+    CVR:
+    <span th:text="${companyCvr}">35648941</span>,
+    <span th:text="${companyAddress}">Pustervig 3, 4. sal, 1126 København K</span>
+    (herefter kaldet Trustworks), er der dags dato indgået følgende aftale:
+</p>
+
+<h2>1.1. Dato for ansættelse</h2>
+<p>
+    Du er med virkning fra den
+    <span th:text="${employmentStartDate}">1. april 2026</span>
+    ansat i Trustworks.
+</p>
+
+<h2>1.2. Stillingsbetegnelse</h2>
+<p>
+    Du er ansat som
+    <span th:text="${jobTitle}">senior konsulent</span>.
+</p>
+<p>
+    Som konsulent løser du opgaver for og rådgiver Trustworks' kunder inden for, men ikke
+    begrænset til, emner som IT- og forretningsarkitektur, program- og projektledelse mv.
+    Dine opgaver vil blive afstemt i forhold til kompetenceområder og erfaring, men det er en
+    integreret del af arbejdet som konsulent at oparbejde kompetencer inden for nye områder
+    og styrke eksisterende kompetencer, hvilket vil ske både som del af kundeprojekter og
+    videreuddannelse.
+</p>
+
+<h2>1.3. Arbejdssted</h2>
+<p>
+    Arbejdsstedet er Trustworks' adresse, p.t. beliggende på Pustervig 3, 4. sal, 1126 København K,
+    men også hos Trustworks' kunder rundt omkring i Danmark. Eventuelle opgaver i udlandet vil
+    kræve tilsagn fra ansattes side.
+</p>
+
+<h2>1.4. Arbejdstid</h2>
+<p>
+    Din normale ugentlige arbejdstid er
+    <span th:text="${weeklyHours}">37</span>
+    timer excl. frokost. Overarbejde må påregnes og honoreres ikke særskilt, da der er taget højde
+    herfor ved lønfastsættelsen.
+</p>
+<p>
+    Du forpligter dig til at anvende din fulde arbejdskraft i Trustworks.
+</p>
+
+<h2>1.5. Løn</h2>
+<p>
+    Lønnen er aftalt til kr.
+    <span th:text="${monthlySalary}">60.000</span>
+    pr. måned plus pension.
+</p>
+<p>
+    Lønnen udbetales månedsvis bagud og er til disposition den sidste hverdag i hver måned.
+</p>
+<p>
+    Som kompensation for forhøjet arbejdstid på baggrund af afskaffelsen af St. Bededag som
+    helligdag modtager du et løntillæg på 0,45% af årslønnen opgjort som den sædvanlige og fast
+    påregnelige løn.
+</p>
+
+<h2>1.6. Pension</h2>
+<p>
+    Du er omfattet af Trustworks' generelle pensionsordning med Danica Pension. På nuværende
+    tidspunkt udgør Trustworks' pensionsbidrag 2% af den faste løn og dit eget obligatoriske
+    bidrag er 3%.
+</p>
+
+<h2>1.7. Fravær af familiemæssige hensyn</h2>
+<p>
+    Dit barns første sygedag betales af Trustworks. Har du på grund af nærtstående
+    familiemedlemmers sygdom eller begravelse eller nærtstående vens begravelse brug for
+    midlertidigt fravær, aftales dette mellem dig og din Teamleder i Trustworks, under
+    hensyntagen til hvordan dit fravær kan håndteres i forhold til kundemøder og leverancer.
+    Fravær af ovenstående årsager, og som er aftalt mellem dig og din Teamleder, vil være med løn.
+</p>
+
+<h2>1.8. Deltid</h2>
+<p>
+    Såfremt du ønsker det, kan det ved særlig aftale drøftes at ændre ansættelse til
+    deltidsbeskæftigelse.
+</p>
+
+<h2>1.9. Arbejdsredskaber</h2>
+<p>
+    Trustworks stiller de nødvendige arbejdsredskaber til din rådighed. Bredbåndsforbindelse i
+    hjemmet betales efter regning. Anskaffelse og vedligehold af computer, telefon, printer og
+    andet nødvendigt it-udstyr står den ansatte selv for, der vil være den nødvendige support.
+    Trustworks stiller et årligt beløb til rådighed til indkøb af disse arbejdsredskaber. Budgettet
+    kan kun bruges til indkøb af udstyr relevant for udførelse af arbejdet.
+</p>
+<p>
+    De skattemæssige konsekvenser af den private rådighed over disse faciliteter er Trustworks
+    uvedkommende.
+</p>
+
+<h2>1.10. Brug af billeder og videooptagelser</h2>
+<p>
+    I Trustworks anvender vi dit portrætbillede til brug for forretningsmæssige formål, herunder
+    for at vores samarbejdspartnere kan identificere vores medarbejdere.
+</p>
+<p>
+    Med henblik på videndeling og branding af vores organisation anvender vi herudover i visse
+    situationer billeder og videooptagelser, hvor du kan indgå.
+</p>
+<p>
+    Vores brug af billeder og videooptagelser af dig som medarbejder sker under hensyntagen til
+    billedernes/optagelsernes karakter, således at du som medarbejder ikke føler dig udstillet,
+    udnyttet eller krænket. Billederne/optagelserne vil således være harmløse, men vi vil
+    alligevel altid bede om din accept først, inden vi eventuelt anvender billederne/optagelserne
+    til videndeling og branding.
+</p>
+<p>
+    Bemærk dog, at internt brug af dit portrætbillede, herunder i fx præsentationer,
+    kommunikationsfora eller på intranettet, ikke kræver dit samtykke. Det samme gør sig
+    gældende generelt i forhold til vores brug af harmløse situationsbilleder, der således kan
+    anvendes internt.
+</p>
+
+<h2>1.11. Ferie og feriefridage</h2>
+<p>
+    Du har ret til ferie samt ferietillæg i henhold til den til enhver tid gældende ferielov.
+</p>
+<p>
+    I tillæg til de 25 feriedage fastsat i henhold til ferieloven har du ved ansættelse ret til 6.
+    ferieuge, altså i alt 6 ferieuger.
+</p>
+
+<h2>1.12. Barsel i Trustworks</h2>
+<p>
+    Graviditetsorlov er defineret som den kvindelige medarbejders orlov 4 uger før forventet
+    fødselsdato/termin.
+</p>
+<p>
+    Øremærket pligtorlov er defineret som den kvindelige medarbejders (mor) orlov 2 uger i
+    forlængelse af fødslen. Husk 4 uger inden forventet fødsel at give Teamleder oplysninger om
+    overført barselsorlov for at genoptage arbejdet på fuld tid eller om du påbegynder
+    forældreorlov inden for de første 10 uger efter fødslen.
+</p>
+<p>
+    Øremærket fædre-/medmor-orlov er defineret som den mandlige/kvindelige medarbejders
+    orlov 2 uger i forlængelse af fødslen eller efter barnets hjemkomst fra hospitalet. Husk 4
+    uger før forventet fødsel at oplyse om afholdelse af fædre-/medmor-orlov og om afholdelse af
+    overført barselsorlov fra mor, hvis den afholdes inden for de første 10 uger efter fødslen.
+</p>
+<p>
+    Desuden skal du også oplyse om afholdelse af forældreorlov, hvis den også afholdes inden
+    for de første 10 uger efter fødslen.
+</p>
+<p>
+    Barselsorlov er for den kvindelige eller mandlige medarbejder den orlov, der ligger i
+    forlængelse af øremærket pligtorlov/fædre-/medmor-orlov i 8 uger. Denne orlov kan
+    overføres mellem forældrene. Som mor skal du informere din Teamleder senest 6 uger efter
+    fødslen omkring afholdelse af barselsorlov. Som far/medmor skal du ligeledes senest 6 uger
+    efter fødslen informere om afholdelse af overført barselsorlov fra mor, hvis den skal
+    afholdes efter 10. uge efter fødslen. Begge forældre skal desuden informere om afholdelse af
+    forældreorlov efter 10. uge efter fødslen.
+</p>
+<p>
+    Forældreorlov er for den kvindelige eller mandlige medarbejder og ligger i forlængelse af
+    øremærket forældreorlov. Denne kan ligeledes overføres mellem forældrene.
+</p>
+<p>
+    8 uger efter fødslen skal begge forældre oplyse om udskydelse af orlov.
+</p>
+<p>
+    Det er vigtigt at bemærke, at alt øremærket orlov og orlov, der kan overføres udover 10. uge,
+    skal være afholdt inden for barnets første leveår.
+</p>
+<p>
+    Den kvindelige medarbejder (mor), der har været ansat mindre end 18 måneder i Trustworks,
+    er berettiget til almindelig løn under graviditetsorlov, øremærket pligtorlov og
+    forældreorlov i op til 22 uger.
+</p>
+<p>
+    Den kvindelige medarbejder (mor), der har været ansat mere end 18 måneder i Trustworks,
+    er berettiget til almindelig løn under graviditetsorlov, øremærket pligtorlov og
+    forældreorlov i op til 30 uger.
+</p>
+<p>
+    Den mandlige/kvindelige medarbejder (far/medmor), der har været ansat mindre end 18
+    måneder i Trustworks, er berettiget til almindelig løn under øremærket fædre-/medmor-orlov
+    og forældreorlov i op til 18 uger.
+</p>
+<p>
+    Den mandlige/kvindelige medarbejder (far/medmor), der har været ansat mere end 18
+    måneder i Trustworks, er berettiget til almindelig løn under øremærket fædre-/medmor-orlov
+    og forældreorlov i op til 26 uger.
+</p>
+<p>
+    For at sikre lige vilkår for både kvindelige og mandlige kollegaer beregnes din anciennitet
+    fra ansættelsesdato og frem til barnets fastsatte terminsdato.
+</p>
+<p>
+    En forudsætning for at opnå fuld løn under barselsorlov, foruden din anciennitet i
+    Trustworks, er at du er berettiget til dagpenge under barsel, og at Trustworks derfor kan
+    søge refusion.
+</p>
+<p>
+    Bemærk, at forældreorloven altid tilrettelægges efter aftale med Trustworks, idet virksomheden
+    for at kunne betale fuld løn under forældreorloven kan stille som betingelse, at orloven
+    afholdes i én sammenhængende periode.
+</p>
+<p>
+    Når du afholder barsels- og forældreorlov med fuld løn eller er berettiget til
+    barselsdagpenge, optjener du bonus på lige fod med dine øvrige kollegaer i Trustworks.
+</p>
+
+<h2>1.13. Sygdom</h2>
+<p>
+    Ved sygdom skal du meddele fravær til din Teamleder i Trustworks hurtigst muligt og senest
+    kl. 09 på første fraværsdag.
+</p>
+<p>
+    På Trustworks' anmodning og regning skal du sende en erklæring fra din læge (friattest) som
+    dokumentation for lovligheden af dit fravær.
+</p>
+<p>
+    Du har pligt til at deltage i kommunens opfølgning ved længerevarende sygdom. Manglende
+    deltagelse i kommunens opfølgningsarbejde kan medføre, at Trustworks modregner den
+    mistede refusion i din løn, idet manglende deltagelse i kommunens opfølgningsarbejde
+    anses som en misligholdelse af ansættelsesforholdet.
+</p>
+
+<h2>1.14. Frokostordning</h2>
+<p>
+    Du er med i Trustworks' frokostordning, hvortil der p.t. betales et beløb på 375 kr. om
+    måneden, der trækkes fra din nettoløn.
+</p>
+
+<h2>1.15. Efteruddannelse</h2>
+<p>
+    Du er berettiget og efter Trustworks' ønske forpligtet til at deltage i kurser eller lignende i
+    ind- og udland med henblik på ajourføring af din viden og videreuddannelse. Arten og
+    omfanget af sådanne kurser aftaler du med din Teamleder. Du er berettiget til løn på kursus-
+    og videreuddannelsesdage.
+</p>
+
+<h2>1.16. Rejser og repræsentation</h2>
+<p>
+    Dine udgifter i forbindelse med rejser og repræsentation i Trustworks' interesse refunderes
+    af Trustworks efter regning eller efter statens takster, hvor sådanne findes.
+</p>
+
+<h2>1.17. Tavshedspligt</h2>
+<p>
+    Medarbejderen har både under ansættelsen og efter ansættelsesforholdets ophør tavshedspligt
+    om alle fortrolige oplysninger, som medarbejderen får kendskab til i forbindelse med sit
+    arbejde for Trustworks. Fortrolige oplysninger omfatter, men er ikke begrænset til, alle
+    ikke-offentlige oplysninger vedrørende Trustworks eller Trustworks' kunder. Dette
+    inkluderer eksempelvis forretningshemmeligheder, kundedata, tekniske oplysninger,
+    drifts- og udviklingsdokumentation, økonomiske forhold, interne procedurer,
+    personalerelaterede oplysninger samt enhver anden oplysning af følsom eller
+    konkurrencemæssig karakter, uanset i hvilken form oplysningerne foreligger.
+</p>
+<p>
+    Medarbejderen må alene anvende fortrolige oplysninger, når det er nødvendigt som led i
+    udførelsen af medarbejderens arbejdsopgaver for Trustworks, og kun i overensstemmelse
+    med de formål, hvortil oplysningerne er udleveret. Medarbejderen må ikke på noget
+    tidspunkt anvende fortrolige oplysninger til eget formål eller videregive sådanne
+    oplysninger til uvedkommende tredjeparter, hverken direkte eller indirekte, medmindre
+    dette sker med forudgående skriftligt samtykke fra Trustworks eller det er påkrævet ved lov.
+</p>
+<p>
+    Medarbejderen har desuden et ansvar for at beskytte fortrolige oplysninger og forhindre
+    uautoriseret adgang eller videregivelse. Medarbejderen skal træffe alle rimelige
+    foranstaltninger for at sikre, at fortrolige oplysninger ikke utilsigtet eller uretmæssigt
+    tilgår uvedkommende. Hvis medarbejderen bliver bekendt med eller får mistanke om, at der
+    er sket uautoriseret videregivelse af fortrolige oplysninger, skal medarbejderen straks
+    underrette Trustworks herom gennem de etablerede processer og procedurer.
+</p>
+<p>
+    Overtrædelse af denne fortrolighedsforpligtelse betragtes som en væsentlig misligholdelse
+    af ansættelsesforholdet. En sådan misligholdelse kan medføre ansættelsesretlige
+    konsekvenser, herunder disciplinære sanktioner eller ophør af ansættelsen. Ved
+    ansættelsesforholdets ophør skal medarbejderen desuden returnere alt fortroligt materiale
+    og destruere eventuelle kopier heraf, medmindre andet skriftligt aftales med Trustworks.
+</p>
+<p>
+    Den indeværende fortrolighedsaftale kan kun opsiges med skriftligt samtykke fra
+    Trustworks.
+</p>
+
+<h2>1.18. Bibeskæftigelse</h2>
+<p>
+    Du har som udgangspunkt ret til at tage bibeskæftigelse i din fritid sideløbende med din
+    ansættelse, så længe den er forenelig med din hovedbeskæftigelse i Trustworks.
+</p>
+<p>
+    Det betyder, at du ikke må påtage dig bibeskæftigelse, hvor du ikke kan overholde din
+    arbejdsforpligtelse hos Trustworks, herunder være i stand til at møde frisk på arbejde.
+</p>
+<p>
+    Herudover må din bibeskæftigelse ikke anses at være uforenelig med din ansættelse i
+    Trustworks, under hensyn til interessekonflikter, beskyttelse af forretningshemmeligheder
+    og i øvrigt din pligt til at udvise loyalitet i ansættelsesforholdet.
+</p>
+<p>
+    Du er forpligtet til at orientere din Teamleder ved påtagelse af bibeskæftigelse.
+</p>
+<p>
+    Er du i tvivl om, hvorvidt bibeskæftigelsen er forenelig med din ansættelse i Trustworks, jf.
+    ovenfor, er du forpligtet til at afklare det hos din Teamleder forud for indgåelse af aftalen
+    om bibeskæftigelse.
+</p>
+<p>
+    Bibeskæftigelse hos en konkurrerende virksomhed, virksomhedens kunder, leverandører og
+    øvrige samarbejdspartnere ses i udgangspunktet som uforenelig med din ansættelse i
+    Trustworks og forudsætter under alle omstændigheder et forudgående skriftligt samtykke.
+</p>
+
+<h2>1.19. Internet og anvendelse af e-mail</h2>
+<p>
+    Du får i forbindelse med arbejdet adgang til e-mail og internet på Trustworks' computer. Du
+    kan i begrænset omfang benytte disse faciliteter til privat brug.
+</p>
+<p>
+    Trustworks kontrollerer ikke løbende din anvendelse af e-mails og internet. I særlige
+    situationer, eksempelvis i tilfælde af mistanke om misbrug, af sikkerhedsmæssige årsager
+    eller i forbindelse med din fratræden, kan Trustworks dog gennemføre en sådan kontrol.
+</p>
+
+<h2>1.20. Knowhow, ophavsret og opfindelser</h2>
+<p>
+    Trustworks har ejendomsret til al knowhow og lignende, som du udvikler under og som et led
+    i ansættelsesforholdet, uanset hvilket medium dette måtte foreligge på.
+</p>
+<p>
+    Ophavsretten til it-programmer, du har frembragt under udførelsen af dit arbejde eller efter
+    Trustworks' anvisninger, overgår til Trustworks. Hvis du frembringer værker som et led i dit
+    ansættelsesforhold, anses ophavsretten til disse for fuldt ud overdraget til Trustworks, dog
+    med respekt af dine rettigheder i henhold til § 3 i ophavsretsloven.
+</p>
+<p>
+    Opfindelser, der er resultat af opgaver, der påhviler dig som led i ansættelsen hos
+    Trustworks, skal stilles til rådighed for Trustworks.
+</p>
+<p>
+    Lønnen er fastsat under hensyn til de opgaver, der påhviler dig, og indbefatter derfor enhver
+    godtgørelse for din indsats ved udviklingen af knowhow, ophavsrettigheder og
+    opfindelser. For så vidt angår de her i landet patenterbare opfindelser gælder dette dog med
+    de ufravigelige modifikationer i henhold til den til enhver tid gældende lov om
+    arbejdstageres opfindelser. Du har pligt til at underrette Trustworks om enhver opfindelse,
+    du frembringer, med angivelse af sådanne oplysninger, at Trustworks sættes i stand til at
+    bedømme opfindelsens betydning.
+</p>
+
+<h2>1.21. Opsigelse og fratræden</h2>
+<p>
+    De første tre måneder af ansættelsesforholdet betegnes som prøvetid. Trustworks kan
+    opsige dig med 14 dages varsel, og du kan opsige ansættelsesforholdet med dags varsel.
+</p>
+<p>
+    Efter prøvetidens udløb kan ansættelsesforholdet af begge parter opsiges med det gældende
+    varsel i henhold til funktionærlovens § 2.
+</p>
+<p>
+    Såfremt du inden for et tidsrum af 12 på hinanden følgende måneder har oppebåret løn
+    under sygdom i 120 dage, kan Trustworks opsige dig med en måneds varsel, såfremt
+    opsigelsen finder sted i umiddelbar tilknytning til udløbet af de 120 sygedage, og mens du
+    endnu er syg, jf. funktionærloven § 5, stk. 2.
+</p>
+
+<h2>1.22. Misligholdelse</h2>
+<p>
+    Hvis en af parterne groft misligholder sine forpligtelser efter denne kontrakt, kan den anden
+    part ophæve kontrakten uden varsel.
+</p>
+<p>
+    Du har, hvis ophævelsen eller opsigelsen skyldes din misligholdelse, kun krav på vederlag
+    indtil fratrædelsestidspunktet.
+</p>
+<p>
+    Den, der har misligholdt sine forpligtelser, er forpligtet til at erstatte det tab, som den anden
+    part måtte lide ved misligholdelsen.
+</p>
+
+<h2>1.23. Socialsikringsinstitutioner</h2>
+<p>
+    Trustworks indbetaler bidrag til ATP, Arbejdsmarkedets Erhvervssikring og
+    arbejdsskadeforsikring hos Topdanmark.
+</p>
+<p>
+    Du er derudover omfattet af Trustworks' virksomhedsbetalte sundhedsforsikring i Danica
+    Pension.
+</p>
+
+<h2>1.24. Øvrige bestemmelser</h2>
+<p>
+    Funktionærloven og ferieloven er gældende for ansættelsesforholdet.
+</p>
+<p>
+    Du er forpligtet til at gøre dig bekendt med og følge de retningslinjer, der udarbejdes af
+    Trustworks, herunder Trustworks' FAQ (personalehåndbog på intranettet).
+</p>
+<p>
+    Denne kontrakt underskrives i to originale eksemplarer, hvoraf hver part modtager et.
+</p>
+
+<div class="signature-block">
+    <p>
+        <span th:text="${contractCity}">København</span>, den
+        <span th:text="${contractDate}">14. november 2025</span>
+    </p>
+
+    <p>For <span th:text="${companyLegalName}">Trustworks A/S</span></p>
+    <p class="signature-line">
+        _______________________________&nbsp;&nbsp;&nbsp;&nbsp;_____________________________
+    </p>
+    <p>
+        Thomas Gammelvind – CEO &amp; Partner&nbsp;&nbsp;&nbsp;&nbsp;Hans Ernst Lassen – COO &amp; Partner
+    </p>
+
+    <p>For ansatte</p>
+    <p class="signature-line">______________________________</p>
+    <p><span th:text="${employeeName}">Christian Ingemann Olsen</span></p>
+    <p>Adresse: <span th:text="${employeeAddress}"></span></p>
+</div>
+
+</body>
+</html>
