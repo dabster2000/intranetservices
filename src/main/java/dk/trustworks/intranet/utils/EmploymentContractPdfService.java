@@ -148,15 +148,42 @@ public class EmploymentContractPdfService {
     }
 
     /**
-     * Converts HTML content to PDF using OpenHTMLToPDF.
+     * Converts rendered HTML to PDF using OpenHTMLToPDF.
+     * <p>
+     * <b>Important:</b> OpenHTMLToPDF uses an XML parser that doesn't recognize HTML entities
+     * like {@code &nbsp;} without DTD declarations. We replace common HTML entities with their
+     * numeric character references (e.g., {@code &#160;}) which are always valid in XML.
      * <p>
      * Configuration: Fast mode enabled, no base URI (assuming no external resources).
+     *
+     * @param html The HTML string to convert (from Thymeleaf template)
+     * @return PDF binary data as byte array
+     * @throws IOException If PDF conversion fails
      */
     private byte[] convertHtmlToPdf(String html) throws IOException {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            // Replace common HTML entities with numeric character references
+            // OpenHTMLToPDF requires numeric entities or actual Unicode characters
+            String sanitizedHtml = html
+                .replace("&nbsp;", "&#160;")     // Non-breaking space
+                .replace("&copy;", "&#169;")     // Copyright symbol
+                .replace("&reg;", "&#174;")      // Registered trademark
+                .replace("&trade;", "&#8482;")   // Trademark symbol
+                .replace("&euro;", "&#8364;")    // Euro sign
+                .replace("&pound;", "&#163;")    // Pound sign
+                .replace("&yen;", "&#165;")      // Yen sign
+                .replace("&sect;", "&#167;")     // Section sign
+                .replace("&para;", "&#182;")     // Pilcrow (paragraph sign)
+                .replace("&mdash;", "&#8212;")   // Em dash
+                .replace("&ndash;", "&#8211;")   // En dash
+                .replace("&laquo;", "&#171;")    // Left-pointing double angle quotation mark
+                .replace("&raquo;", "&#187;")    // Right-pointing double angle quotation mark
+                .replace("&bull;", "&#8226;")    // Bullet
+                .replace("&hellip;", "&#8230;"); // Horizontal ellipsis
+
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
-            builder.withHtmlContent(html, null); // baseUri = null (no external resources)
+            builder.withHtmlContent(sanitizedHtml, null); // Use sanitized HTML, baseUri = null
             builder.toStream(baos);
             builder.run();
 
