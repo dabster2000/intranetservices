@@ -2,7 +2,12 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.ActiveClientsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.AvgRevenuePerClientDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientDetailTableDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientPortfolioBubbleDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionTrendDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientRevenueParetoDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConcentrationIndexDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -182,6 +187,150 @@ public class CxoClientResource {
     }
 
     /**
+     * Gets Client Revenue Pareto chart data (Chart A).
+     * Returns top 20 clients by TTM revenue with cumulative percentage distribution.
+     * Used for horizontal bar chart with Pareto line overlay.
+     *
+     * @param fromDate Start date (ISO-8601 format, optional, defaults to 12 months before toDate)
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ClientRevenueParetoDTO with top 20 clients and cumulative distribution
+     */
+    @GET
+    @Path("/revenue-pareto")
+    public Response getClientRevenuePareto(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/revenue-pareto: fromDate=%s, toDate=%s", fromDate, toDate);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ClientRevenueParetoDTO result = cxoClientService.getClientRevenuePareto(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                companyIdSet
+        );
+
+        log.debugf("Revenue Pareto fetched: %d clients", result.getClients().size());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Client Portfolio Bubble chart data (Chart B).
+     * Returns clients positioned by revenue (X) and margin (Y), grouped by sector.
+     * Used for bubble chart visualization of portfolio health.
+     *
+     * @param fromDate Start date (ISO-8601 format, optional, defaults to 12 months before toDate)
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ClientPortfolioBubbleDTO with clients grouped by sector
+     */
+    @GET
+    @Path("/portfolio-bubble")
+    public Response getClientPortfolioBubble(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/portfolio-bubble: fromDate=%s, toDate=%s", fromDate, toDate);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ClientPortfolioBubbleDTO result = cxoClientService.getClientPortfolioBubble(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                companyIdSet
+        );
+
+        log.debugf("Portfolio Bubble fetched: %d sectors", result.getSectorData().size());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Client Detail Table data for Table E.
+     * Returns all clients with comprehensive TTM metrics including revenue, margin,
+     * growth, active projects, service line count, and last invoice date.
+     *
+     * Used for:
+     * - Populating the interactive Client Portfolio Details grid
+     * - CSV export functionality
+     * - Client-level analysis and filtering
+     *
+     * @param fromDate Start date (ISO-8601 format, optional, defaults to 12 months before toDate)
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ClientDetailTableDTO with list of all clients and metrics
+     */
+    @GET
+    @Path("/client-detail-table")
+    public Response getClientDetailTable(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/client-detail-table: fromDate=%s, toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, companyIds=%s",
+                fromDate, toDate, sectors, serviceLines, contractTypes, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ClientDetailTableDTO result = cxoClientService.getClientDetailTable(
+                fromDate,
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                companyIdSet
+        );
+
+        log.debugf("Client Detail Table: %d clients returned", result.getTotalCount());
+
+        return Response.ok(result).build();
+    }
+
+    /**
      * Parse comma-separated string into Set of trimmed values.
      * Returns null if input is null or blank.
      *
@@ -200,5 +349,95 @@ public class CxoClientResource {
             }
         }
         return result.isEmpty() ? null : result;
+    }
+
+    /**
+     * Gets Client Retention & Growth Trend (Chart C).
+     * Returns quarterly retention metrics for the past 8 fiscal quarters.
+     *
+     * Fiscal quarters: Q1=Jul-Sep, Q2=Oct-Dec, Q3=Jan-Mar, Q4=Apr-Jun
+     *
+     * @param asOfDate Anchor date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ClientRetentionTrendDTO with 8 quarters of retention data
+     */
+    @GET
+    @Path("/retention-trend")
+    public Response getClientRetentionTrend(
+            @QueryParam("asOfDate") LocalDate asOfDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/retention-trend: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, companyIds=%s",
+                asOfDate, sectors, serviceLines, contractTypes, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ClientRetentionTrendDTO result = cxoClientService.getClientRetentionTrend(
+                asOfDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                companyIdSet
+        );
+
+        log.debugf("Client Retention Trend: %d quarters returned", result.getQuarters().size());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Service Line Penetration heatmap data (Chart D).
+     * Returns revenue matrix showing which service lines are used by top clients.
+     *
+     * Matrix dimensions: Top 15 clients × All service lines
+     *
+     * @param fromDate Start date (ISO-8601 format, optional, defaults to 12 months before toDate)
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional, serviceLines excluded intentionally)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ServiceLinePenetrationDTO with client × service line revenue matrix
+     */
+    @GET
+    @Path("/service-line-penetration")
+    public Response getServiceLinePenetration(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/service-line-penetration: fromDate=%s, toDate=%s, sectors=%s, contractTypes=%s, companyIds=%s",
+                fromDate, toDate, sectors, contractTypes, companyIds);
+
+        // Parse multi-value filters (serviceLines intentionally excluded per design)
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        ServiceLinePenetrationDTO result = cxoClientService.getServiceLinePenetration(
+                fromDate,
+                toDate,
+                sectorSet,
+                contractTypeSet,
+                companyIdSet
+        );
+
+        log.debugf("Service Line Penetration: %d clients × %d service lines",
+                result.getClientNames().size(), result.getServiceLines().size());
+
+        return Response.ok(result).build();
     }
 }

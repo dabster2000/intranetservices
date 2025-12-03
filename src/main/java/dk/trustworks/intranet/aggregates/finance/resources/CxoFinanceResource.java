@@ -802,6 +802,61 @@ public class CxoFinanceResource {
     }
 
     /**
+     * Gets Repeat Business Share KPI data by counting distinct ACTIVE CONSULTANTs per client.
+     * Measures portfolio stickiness using consultant-based definition of repeat clients.
+     *
+     * Fixed 24-month rolling window (not dashboard-driven).
+     * Repeat Client = Client with ≥2 distinct active consultants in window.
+     * Formula: Repeat Business Share % = (Repeat Client Revenue / Total Revenue) × 100
+     *
+     * Expected result: Higher % than project-based metric (~44 repeat clients vs ~24).
+     * Many clients have single projects but multiple consultants working together.
+     *
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId Client UUID filter (optional - if provided, returns empty DTO as this is portfolio-level)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return RepeatBusinessShareDTO with current/prior percentages, revenues, and 12-month sparkline
+     */
+    @GET
+    @Path("/repeat-business-share/by-consultants")
+    public RepeatBusinessShareDTO getRepeatBusinessShareByConsultants(
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/repeat-business-share/by-consultants: sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer (uses fixed 24-month rolling window from today)
+        RepeatBusinessShareDTO result = cxoFinanceService.getRepeatBusinessShareByConsultants(
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                clientId,
+                companyIdSet
+        );
+
+        log.debugf("Repeat business share by consultants result: total=%.2f DKK, repeat=%.2f DKK (%.2f%%), trend=%.2f pp, sparkline length=%d",
+                result.getTotalRevenue(),
+                result.getRepeatClientRevenue(),
+                result.getCurrentRepeatSharePercent(),
+                result.getRepeatShareChangePct(),
+                result.getSparklineData() != null ? result.getSparklineData().length : 0);
+
+        return result;
+    }
+
+    /**
      * Gets Top 5 Clients' Revenue Share KPI data.
      * Measures revenue concentration risk by calculating what percentage of TTM revenue
      * comes from the 5 largest clients. Lower concentration indicates better diversification.

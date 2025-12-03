@@ -23,6 +23,7 @@ import dk.trustworks.intranet.newsservice.model.News;
 import dk.trustworks.intranet.newsservice.resources.NewsService;
 import dk.trustworks.intranet.sales.model.SalesCoffeeDate;
 import dk.trustworks.intranet.userservice.model.Employee;
+import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -92,7 +93,10 @@ public class PublicResource {
     @GET
     @Path("/users")
     public List<PublicUser> findAllUsers() {
-        Stream<Employee> stream = Employee.stream("status not in (?1, ?2)", StatusType.TERMINATED, StatusType.PREBOARDING);
+        Stream<Employee> stream = Employee.stream(
+                "status not in (?1, ?2) and (consultanttype is null or consultanttype <> ?3)",
+                StatusType.TERMINATED, StatusType.PREBOARDING, ConsultantType.EXTERNAL
+        );
         return stream.map(PublicUser::new).toList();
     }
 

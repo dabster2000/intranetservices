@@ -21,6 +21,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.Top5ClientsShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.utils.TwConstants;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -1515,6 +1516,7 @@ public class CxoFinanceService {
                         "    FROM fact_project_financials f " +
                         "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey " +
                         "      AND f.client_id IS NOT NULL " +
+                        "      AND f.client_id NOT IN (:excludedClientIds) " +
                         "      AND f.recognized_revenue_dkk > 0 "
         );
 
@@ -1545,6 +1547,7 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
         query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
@@ -1588,6 +1591,266 @@ public class CxoFinanceService {
             LocalDate monthStart = monthEnd.minusMonths(23).withDayOfMonth(1);  // 24 months back
 
             Map<String, Object> metrics = queryRepeatBusinessMetrics(
+                    monthStart, monthEnd,
+                    sectors, serviceLines, contractTypes, companyIds);
+
+            double totalRevenue = (double) metrics.get("totalRevenue");
+            double repeatRevenue = (double) metrics.get("repeatRevenue");
+
+            sparkline[i] = totalRevenue > 0
+                    ? Math.round(repeatRevenue / totalRevenue * 100.0 * 100.0) / 100.0  // Round to 2 decimals
+                    : 0.0;
+        }
+
+        return sparkline;
+    }
+
+    /**
+     * Calculate Repeat Business Share by ACTIVE CONSULTANTS for fixed 24-month rolling window.
+     * Measures percentage of revenue from clients with ≥2 distinct active consultants in 24-month window.
+     *
+     * Formula: Repeat Business Share % = (Repeat Client Revenue / Total Revenue) × 100
+     *
+     * @param sectors Sector filter (nullable)
+     * @param serviceLines Service line filter (nullable)
+     * @param contractTypes Contract type filter (nullable)
+     * @param clientId Client filter (nullable - if provided, method returns empty DTO as portfolio-level metric)
+     * @param companyIds Company filter (nullable)
+     * @return RepeatBusinessShareDTO with share percentages, revenue breakdowns, and 12-month sparkline
+     */
+    public RepeatBusinessShareDTO getRepeatBusinessShareByConsultants(
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        // Portfolio-level metric: return empty DTO if specific client is selected
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            return new RepeatBusinessShareDTO(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, new double[12]);
+        }
+
+        // Fixed 24-month window from today (not dashboard-driven)
+        LocalDate today = LocalDate.now();
+        LocalDate currentWindowStart = today.minusMonths(23).withDayOfMonth(1);  // 24 months including current
+        LocalDate currentWindowEnd = today.withDayOfMonth(1);
+
+        // Calculate current period repeat business metrics
+        Map<String, Object> currentMetrics = queryRepeatBusinessMetricsByConsultants(
+                currentWindowStart, currentWindowEnd,
+                sectors, serviceLines, contractTypes, companyIds);
+
+        double currentTotalRevenue = (double) currentMetrics.get("totalRevenue");
+        double currentRepeatRevenue = (double) currentMetrics.get("repeatRevenue");
+        double currentSharePercent = currentTotalRevenue > 0
+                ? (currentRepeatRevenue / currentTotalRevenue * 100.0)
+                : 0.0;
+
+        // Calculate prior 24-month window for trend comparison
+        LocalDate priorWindowStart = currentWindowStart.minusMonths(24);
+        LocalDate priorWindowEnd = currentWindowStart.minusDays(1).withDayOfMonth(1);
+
+        Map<String, Object> priorMetrics = queryRepeatBusinessMetricsByConsultants(
+                priorWindowStart, priorWindowEnd,
+                sectors, serviceLines, contractTypes, companyIds);
+
+        double priorTotalRevenue = (double) priorMetrics.get("totalRevenue");
+        double priorRepeatRevenue = (double) priorMetrics.get("repeatRevenue");
+        double priorSharePercent = priorTotalRevenue > 0
+                ? (priorRepeatRevenue / priorTotalRevenue * 100.0)
+                : 0.0;
+
+        // Calculate percentage point change
+        double shareChangePct = currentSharePercent - priorSharePercent;
+
+        // Generate 12-month sparkline (monthly repeat business share percentages)
+        double[] sparklineData = queryRepeatBusinessSparklineByConsultants(
+                sectors, serviceLines, contractTypes, companyIds);
+
+        return new RepeatBusinessShareDTO(
+                Math.round(currentTotalRevenue * 100.0) / 100.0,
+                Math.round(currentRepeatRevenue * 100.0) / 100.0,
+                Math.round(currentSharePercent * 100.0) / 100.0,
+                Math.round(priorTotalRevenue * 100.0) / 100.0,
+                Math.round(priorRepeatRevenue * 100.0) / 100.0,
+                Math.round(priorSharePercent * 100.0) / 100.0,
+                Math.round(shareChangePct * 100.0) / 100.0,
+                sparklineData
+        );
+    }
+
+    /**
+     * Helper method: Query repeat business metrics counting distinct ACTIVE CONSULTANTs per client.
+     * Returns map with totalRevenue and repeatRevenue (from clients with ≥2 consultants).
+     *
+     * Logic:
+     * 1. Join work → task → project → user → userstatus (temporal)
+     * 2. Apply point-in-time status: latest status ≤ work.registered
+     * 3. Filter: ConsultantType = CONSULTANT AND StatusType = ACTIVE
+     * 4. Window function: COUNT(DISTINCT useruuid) OVER (PARTITION BY clientuuid)
+     * 5. Count clients with ≥2 consultants as repeat clients
+     * 6. Apply filters: sectors, serviceLines, contractTypes, companyIds
+     *
+     * @return Map with keys "totalRevenue" and "repeatRevenue"
+     */
+    private Map<String, Object> queryRepeatBusinessMetricsByConsultants(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // Build SQL with 3 CTEs: client_consultant_work, client_revenue, client_combined
+        StringBuilder sql = new StringBuilder(
+                "WITH client_consultant_work AS ( " +
+                "    SELECT " +
+                "        p.clientuuid AS client_id, " +
+                "        w.useruuid AS user_id, " +
+                "        COUNT(DISTINCT w.useruuid) OVER (PARTITION BY p.clientuuid) AS consultant_count " +
+                "    FROM work w " +
+                "    LEFT JOIN task t ON w.taskuuid = t.uuid " +
+                "    LEFT JOIN project p ON COALESCE(w.projectuuid, t.projectuuid) = p.uuid " +
+                "    JOIN user u ON w.useruuid = u.uuid " +
+                "    JOIN userstatus us ON u.uuid = us.useruuid " +
+                "    WHERE p.clientuuid IS NOT NULL " +
+                "      AND w.registered BETWEEN :fromDate AND :toDate " +
+                "      AND w.workduration > 0 " +
+                "      AND p.clientuuid NOT IN (:excludedClientIds) " +
+                "      AND us.statusdate = ( " +
+                "          SELECT MAX(us2.statusdate) " +
+                "          FROM userstatus us2 " +
+                "          WHERE us2.useruuid = u.uuid " +
+                "            AND us2.statusdate <= w.registered " +
+                "      ) " +
+                "      AND us.type = 'CONSULTANT' " +
+                "      AND us.status = 'ACTIVE' "
+        );
+
+        // Add filters to consultant CTE via fact_project_financials join
+        if ((sectors != null && !sectors.isEmpty()) ||
+            (serviceLines != null && !serviceLines.isEmpty()) ||
+            (contractTypes != null && !contractTypes.isEmpty()) ||
+            (companyIds != null && !companyIds.isEmpty())) {
+
+            sql.append("      AND p.uuid IN ( " +
+                      "          SELECT DISTINCT f.project_id " +
+                      "          FROM fact_project_financials f " +
+                      "          WHERE 1=1 ");
+
+            if (companyIds != null && !companyIds.isEmpty()) {
+                sql.append("AND f.companyuuid IN (:companyIds) ");
+            }
+            if (sectors != null && !sectors.isEmpty()) {
+                sql.append("AND f.sector_id IN (:sectors) ");
+            }
+            if (serviceLines != null && !serviceLines.isEmpty()) {
+                sql.append("AND f.service_line_id IN (:serviceLines) ");
+            }
+            if (contractTypes != null && !contractTypes.isEmpty()) {
+                sql.append("AND f.contract_type_id IN (:contractTypes) ");
+            }
+
+            sql.append("      ) ");
+        }
+
+        sql.append(
+                "    GROUP BY p.clientuuid, w.useruuid " +
+                "), " +
+                "client_revenue AS ( " +
+                "    SELECT " +
+                "        f.client_id, " +
+                "        SUM(f.recognized_revenue_dkk) AS client_revenue " +
+                "    FROM fact_project_financials f " +
+                "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) " +
+                "          BETWEEN :fromKey AND :toKey " +
+                "      AND f.client_id IS NOT NULL " +
+                "      AND f.client_id NOT IN (:excludedClientIds) " +
+                "      AND f.recognized_revenue_dkk > 0 "
+        );
+
+        // Add same filters to revenue CTE
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND f.companyuuid IN (:companyIds) ");
+        }
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("AND f.contract_type_id IN (:contractTypes) ");
+        }
+
+        sql.append(
+                "    GROUP BY f.client_id " +
+                "), " +
+                "client_combined AS ( " +
+                "    SELECT " +
+                "        r.client_id, " +
+                "        COALESCE(MAX(w.consultant_count), 0) AS consultant_count, " +
+                "        r.client_revenue " +
+                "    FROM client_revenue r " +
+                "    LEFT JOIN client_consultant_work w ON r.client_id = w.client_id " +
+                "    GROUP BY r.client_id, r.client_revenue " +
+                ") " +
+                "SELECT " +
+                "    COALESCE(SUM(client_revenue), 0.0) AS total_revenue, " +
+                "    COALESCE(SUM(CASE WHEN consultant_count >= 2 THEN client_revenue ELSE 0 END), 0.0) AS repeat_revenue " +
+                "FROM client_combined"
+        );
+
+        // Execute query
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+
+        Object[] result = (Object[]) query.getSingleResult();
+        double totalRevenue = ((Number) result[0]).doubleValue();
+        double repeatRevenue = ((Number) result[1]).doubleValue();
+
+        return Map.of("totalRevenue", totalRevenue, "repeatRevenue", repeatRevenue);
+    }
+
+    /**
+     * Helper method: Generate 12-month sparkline for repeat business share by consultants.
+     * Returns array of 12 monthly repeat business share % values (oldest to newest).
+     *
+     * Each month uses a trailing 24-month window for consistency with the main metric.
+     */
+    private double[] queryRepeatBusinessSparklineByConsultants(
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        double[] sparkline = new double[12];
+        LocalDate today = LocalDate.now();
+
+        // Calculate repeat business share for each of the last 12 months
+        for (int i = 0; i < 12; i++) {
+            // Each month uses trailing 24-month window ending at that month
+            LocalDate monthEnd = today.minusMonths(11 - i).withDayOfMonth(1);  // Month i (0=oldest, 11=newest)
+            LocalDate monthStart = monthEnd.minusMonths(23).withDayOfMonth(1);  // 24 months back
+
+            Map<String, Object> metrics = queryRepeatBusinessMetricsByConsultants(
                     monthStart, monthEnd,
                     sectors, serviceLines, contractTypes, companyIds);
 
@@ -2705,6 +2968,7 @@ public class CxoFinanceService {
                         "    FROM fact_project_financials f " +
                         "    WHERE f.month_key BETWEEN :fromKey AND :toKey " +
                         "      AND f.client_id IS NOT NULL " +
+                        "      AND f.client_id NOT IN (:excludedClientIds) " +
                         "      AND f.recognized_revenue_dkk > 0 "
         );
 
@@ -2744,6 +3008,7 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         if (sectors != null && !sectors.isEmpty()) {
             query.setParameter("sectors", sectors);

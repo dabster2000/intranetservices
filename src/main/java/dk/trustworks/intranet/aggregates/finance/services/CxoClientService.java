@@ -1,8 +1,8 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
-import dk.trustworks.intranet.aggregates.finance.dto.ActiveClientsDTO;
-import dk.trustworks.intranet.aggregates.finance.dto.AvgRevenuePerClientDTO;
-import dk.trustworks.intranet.aggregates.finance.dto.ConcentrationIndexDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.*;
+import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.utils.TwConstants;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -10,7 +10,9 @@ import jakarta.persistence.Query;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
-import java.util.Set;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Service for CxO dashboard client metrics.
@@ -140,6 +142,7 @@ public class CxoClientService {
         sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
         sql.append("    AND f.recognized_revenue_dkk > 0 ");
 
         // Optional filters (null-safe)
@@ -164,6 +167,7 @@ public class CxoClientService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromKey", fromMonthKey);
         query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         // Bind optional filter parameters
         if (sectors != null && !sectors.isEmpty()) {
@@ -364,6 +368,7 @@ public class CxoClientService {
         sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
         sql.append("    AND f.recognized_revenue_dkk > 0 ");
 
         // Optional filters
@@ -412,6 +417,7 @@ public class CxoClientService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromKey", fromMonthKey);
         query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         // Bind optional filter parameters
         if (sectors != null && !sectors.isEmpty()) {
@@ -614,6 +620,8 @@ public class CxoClientService {
         sql.append("  FROM fact_project_financials f ");
         sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
 
         // Optional filters (null-safe)
         if (sectors != null && !sectors.isEmpty()) {
@@ -637,6 +645,7 @@ public class CxoClientService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromKey", fromMonthKey);
         query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         // Bind optional filter parameters
         if (sectors != null && !sectors.isEmpty()) {
@@ -709,5 +718,957 @@ public class CxoClientService {
         }
 
         return sparkline;
+    }
+
+    /**
+     * Gets Client Revenue Pareto chart data (Chart A).
+     * Returns top 20 clients by TTM revenue with cumulative percentage and margin classification.
+     *
+     * Business Logic:
+     * - Identifies top 20 clients by total TTM revenue
+     * - Calculates gross margin percentage for each client
+     * - Computes cumulative percentage (Pareto curve)
+     * - Classifies margin into bands (High/Medium/Low) for color-coding
+     * - Uses V118 deduplication pattern to prevent double-counting
+     *
+     * Margin Band Thresholds:
+     * - High: > 30% (green bar)
+     * - Medium: 15-30% (orange bar)
+     * - Low: < 15% (red bar)
+     *
+     * @param fromDate Start date (typically 12 months ago)
+     * @param toDate End date (typically today)
+     * @param sectors Multi-select sector filter
+     * @param serviceLines Multi-select service line filter
+     * @param contractTypes Multi-select contract type filter
+     * @param companyIds Multi-select company filter
+     * @return ClientRevenueParetoDTO with top 20 clients and total revenue
+     */
+    public ClientRevenueParetoDTO getClientRevenuePareto(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // 1. Normalize dates to TTM window
+        LocalDate toDateNormalized = (toDate != null)
+                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
+                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        LocalDate fromDateNormalized = toDateNormalized.minusMonths(11).withDayOfMonth(1);
+
+        String fromMonthKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
+        String toMonthKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
+
+        log.debugf("Client Revenue Pareto: TTM window [%s to %s]", fromMonthKey, toMonthKey);
+
+        // 2. Build SQL with V118 deduplication
+        StringBuilder sql = new StringBuilder();
+        sql.append("WITH deduplicated AS ( ");
+        sql.append("  SELECT f.client_id, f.project_id, f.month_key, ");
+        sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
+        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("    BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+
+        // Optional filters
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        // CRITICAL: V118 deduplication
+        sql.append("  GROUP BY f.client_id, f.project_id, f.month_key ");
+        sql.append("), ");
+
+        sql.append("client_metrics AS ( ");
+        sql.append("  SELECT d.client_id, ");
+        sql.append("         SUM(d.revenue) as total_revenue, ");
+        sql.append("         SUM(d.cost) as total_cost ");
+        sql.append("  FROM deduplicated d ");
+        sql.append("  GROUP BY d.client_id ");
+        sql.append("), ");
+
+        sql.append("with_margin AS ( ");
+        sql.append("  SELECT cm.client_id, cm.total_revenue, cm.total_cost, ");
+        sql.append("         CASE WHEN cm.total_revenue > 0 ");
+        sql.append("              THEN ((cm.total_revenue - cm.total_cost) / cm.total_revenue) * 100.0 ");
+        sql.append("              ELSE 0.0 END as margin_pct ");
+        sql.append("  FROM client_metrics cm ");
+        sql.append("), ");
+
+        sql.append("ranked AS ( ");
+        sql.append("  SELECT wm.client_id, wm.total_revenue, wm.margin_pct, ");
+        sql.append("         ROW_NUMBER() OVER (ORDER BY wm.total_revenue DESC) as rank ");
+        sql.append("  FROM with_margin wm ");
+        sql.append("), ");
+
+        sql.append("total_calc AS ( ");
+        sql.append("  SELECT SUM(total_revenue) as grand_total FROM ranked WHERE rank <= 20 ");
+        sql.append(") ");
+
+        sql.append("SELECT r.client_id, r.total_revenue, r.margin_pct, ");
+        sql.append("       SUM(r.total_revenue) OVER (ORDER BY r.rank) / tc.grand_total * 100.0 as cumulative_pct ");
+        sql.append("FROM ranked r, total_calc tc ");
+        sql.append("WHERE r.rank <= 20 ");
+        sql.append("ORDER BY r.rank");
+
+        // 3. Execute query
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // 4. Map results to DTOs
+        List<ParetoClientDTO> clients = new ArrayList<>();
+        double totalRevenue = 0.0;
+
+        for (Object[] row : results) {
+            String clientId = (String) row[0];
+            double revenue = ((Number) row[1]).doubleValue();
+            double marginPct = ((Number) row[2]).doubleValue();
+            double cumulativePct = ((Number) row[3]).doubleValue();
+
+            // Get client name
+            Client client = em.find(Client.class, clientId);
+            String clientName = (client != null) ? client.getName() : "Unknown Client";
+
+            // Convert revenue to millions
+            double revenueM = revenue / 1_000_000.0;
+
+            // Determine margin band
+            String marginBand;
+            if (marginPct > 30.0) {
+                marginBand = "High";
+            } else if (marginPct >= 15.0) {
+                marginBand = "Medium";
+            } else {
+                marginBand = "Low";
+            }
+
+            clients.add(new ParetoClientDTO(
+                    clientId,
+                    clientName,
+                    revenueM,
+                    marginPct,
+                    cumulativePct,
+                    marginBand
+            ));
+
+            totalRevenue += revenue;
+        }
+
+        double totalRevenueM = totalRevenue / 1_000_000.0;
+
+        log.debugf("Client Revenue Pareto: %d clients, total %.2f M kr", Integer.valueOf(clients.size()), Double.valueOf(totalRevenueM));
+
+        return new ClientRevenueParetoDTO(clients, totalRevenueM);
+    }
+
+    /**
+     * Gets Client Portfolio Bubble chart data (Chart B).
+     * Returns clients positioned by revenue (X-axis) and margin (Y-axis), grouped by sector.
+     *
+     * Business Logic:
+     * - Calculates TTM revenue and gross margin for all active clients
+     * - Normalizes bubble size relative to max revenue
+     * - Groups clients by sector for color-coded series
+     * - Uses V118 deduplication pattern
+     *
+     * Chart Quadrants:
+     * - Top-Right: High revenue + High margin (strategic accounts)
+     * - Top-Left: Low revenue + High margin (growth opportunities)
+     * - Bottom-Right: High revenue + Low margin (at-risk accounts)
+     * - Bottom-Left: Low revenue + Low margin (consider exit)
+     *
+     * @param fromDate Start date (typically 12 months ago)
+     * @param toDate End date (typically today)
+     * @param sectors Multi-select sector filter
+     * @param serviceLines Multi-select service line filter
+     * @param contractTypes Multi-select contract type filter
+     * @param companyIds Multi-select company filter
+     * @return ClientPortfolioBubbleDTO with clients grouped by sector
+     */
+    public ClientPortfolioBubbleDTO getClientPortfolioBubble(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // 1. Normalize dates to TTM window
+        LocalDate toDateNormalized = (toDate != null)
+                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
+                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        LocalDate fromDateNormalized = toDateNormalized.minusMonths(11).withDayOfMonth(1);
+
+        String fromMonthKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
+        String toMonthKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
+
+        log.debugf("Client Portfolio Bubble: TTM window [%s to %s]", fromMonthKey, toMonthKey);
+
+        // 2. Build SQL with V118 deduplication
+        StringBuilder sql = new StringBuilder();
+        sql.append("WITH deduplicated AS ( ");
+        sql.append("  SELECT f.client_id, f.sector_id, f.project_id, f.month_key, ");
+        sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
+        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("    BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+
+        // Optional filters
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        // CRITICAL: V118 deduplication
+        sql.append("  GROUP BY f.client_id, f.sector_id, f.project_id, f.month_key ");
+        sql.append(") ");
+
+        sql.append("SELECT d.client_id, d.sector_id, ");
+        sql.append("       SUM(d.revenue) as total_revenue, ");
+        sql.append("       SUM(d.cost) as total_cost, ");
+        sql.append("       CASE WHEN SUM(d.revenue) > 0 ");
+        sql.append("            THEN ((SUM(d.revenue) - SUM(d.cost)) / SUM(d.revenue)) * 100.0 ");
+        sql.append("            ELSE 0.0 END as margin_pct ");
+        sql.append("FROM deduplicated d ");
+        sql.append("GROUP BY d.client_id, d.sector_id ");
+        sql.append("HAVING SUM(d.revenue) > 0 ");
+        sql.append("ORDER BY total_revenue DESC");
+
+        // 3. Execute query
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // 4. Find max revenue for bubble size normalization
+        double maxRevenue = 0.0;
+        double maxMargin = 0.0;
+        for (Object[] row : results) {
+            double revenue = ((Number) row[2]).doubleValue();
+            double marginPct = ((Number) row[4]).doubleValue();
+            if (revenue > maxRevenue) maxRevenue = revenue;
+            if (marginPct > maxMargin) maxMargin = marginPct;
+        }
+
+        // 5. Map results to DTOs grouped by sector
+        Map<String, List<ClientBubbleDTO>> sectorData = new LinkedHashMap<>();
+
+        for (Object[] row : results) {
+            String clientId = (String) row[0];
+            String sectorId = (String) row[1];
+            double revenue = ((Number) row[2]).doubleValue();
+            double marginPct = ((Number) row[4]).doubleValue();
+
+            // Get client name
+            Client client = em.find(Client.class, clientId);
+            String clientName = (client != null) ? client.getName() : "Unknown Client";
+
+            // Convert revenue to millions
+            double revenueM = revenue / 1_000_000.0;
+
+            // Calculate normalized bubble size
+            double bubbleSize = (maxRevenue > 0) ? (revenue / maxRevenue) * 100.0 : 50.0;
+
+            // Use sector ID as sector name (or map to friendly name if needed)
+            String sectorName = (sectorId != null) ? sectorId : "Other";
+
+            ClientBubbleDTO bubble = new ClientBubbleDTO(
+                    clientId,
+                    clientName,
+                    revenueM,
+                    marginPct,
+                    bubbleSize,
+                    sectorName
+            );
+
+            sectorData.computeIfAbsent(sectorName, k -> new ArrayList<>()).add(bubble);
+        }
+
+        double maxRevenueM = maxRevenue / 1_000_000.0;
+
+        log.debugf("Client Portfolio Bubble: %d sectors, max revenue %.2f M kr",
+                Integer.valueOf(sectorData.size()), Double.valueOf(maxRevenueM));
+
+        return new ClientPortfolioBubbleDTO(sectorData, maxRevenueM, maxMargin);
+    }
+
+    /**
+     * Retrieves the Client Detail Table data for Table E.
+     * Returns all clients with comprehensive TTM metrics including:
+     * - TTM revenue and gross margin
+     * - Year-over-year growth
+     * - Active project count
+     * - Service line penetration count
+     * - Last invoice date
+     *
+     * Business Logic:
+     * - Normalizes dates to TTM window (12 months ending at toDate)
+     * - Uses V118 deduplication to prevent double-counting
+     * - Calculates YoY growth by comparing current TTM to prior year TTM
+     * - Orders clients by TTM revenue descending
+     *
+     * @param fromDate Start date (optional, auto-calculated if null)
+     * @param toDate End date (optional, defaults to today)
+     * @param sectors Multi-select sector filter
+     * @param serviceLines Multi-select service line filter
+     * @param contractTypes Multi-select contract type filter
+     * @param companyIds Multi-select company filter
+     * @return ClientDetailTableDTO with list of all clients and total count
+     */
+    public ClientDetailTableDTO getClientDetailTable(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // 1. Normalize dates to TTM window (12 months ending on toDate)
+        LocalDate toDateNormalized = (toDate != null)
+                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
+                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+
+        LocalDate fromDateNormalized = toDateNormalized.minusMonths(11).withDayOfMonth(1);
+
+        // 2. Calculate prior year TTM window for YoY comparison
+        LocalDate priorFromDate = fromDateNormalized.minusYears(1);
+        LocalDate priorToDate = toDateNormalized.minusYears(1);
+
+        log.debugf("Client Detail Table: Current TTM [%s to %s], Prior TTM [%s to %s]",
+                fromDateNormalized, toDateNormalized, priorFromDate, priorToDate);
+
+        // Convert dates to YYYYMM month key format
+        String fromMonthKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
+        String toMonthKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
+        String priorFromKey = String.format("%d%02d", priorFromDate.getYear(), priorFromDate.getMonthValue());
+        String priorToKey = String.format("%d%02d", priorToDate.getYear(), priorToDate.getMonthValue());
+
+        // 3. Build SQL with V118 deduplication and comprehensive metrics
+        StringBuilder sql = new StringBuilder();
+
+        // CTE 1: Deduplicated current TTM data
+        sql.append("WITH dedupe_current AS ( ");
+        sql.append("  SELECT f.client_id, f.client_name, f.sector_id, ");
+        sql.append("         f.project_id, f.service_line_id, f.month_key, ");
+        sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
+        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost, ");
+        sql.append("         MAX(f.invoice_date) as last_invoice ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("    BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+
+        // Optional filters
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        // CRITICAL: V118 deduplication
+        sql.append("  GROUP BY f.client_id, f.project_id, f.month_key ");
+        sql.append("), ");
+
+        // CTE 2: Deduplicated prior year TTM data (for YoY calculation)
+        sql.append("dedupe_prior AS ( ");
+        sql.append("  SELECT f.client_id, ");
+        sql.append("         MAX(f.recognized_revenue_dkk) as revenue ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("    BETWEEN :priorFromKey AND :priorToKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+
+        // Same filters for prior period
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        sql.append("  GROUP BY f.client_id, f.project_id, f.month_key ");
+        sql.append("), ");
+
+        // CTE 3: Current period metrics by client
+        sql.append("current_metrics AS ( ");
+        sql.append("  SELECT client_id, client_name, sector_id, ");
+        sql.append("         SUM(revenue) as ttm_revenue, ");
+        sql.append("         SUM(cost) as ttm_cost, ");
+        sql.append("         COUNT(DISTINCT project_id) as active_projects, ");
+        sql.append("         COUNT(DISTINCT service_line_id) as service_line_count, ");
+        sql.append("         MAX(last_invoice) as last_invoice_date ");
+        sql.append("  FROM dedupe_current ");
+        sql.append("  GROUP BY client_id, client_name, sector_id ");
+        sql.append("), ");
+
+        // CTE 4: Prior period revenue by client (for YoY)
+        sql.append("prior_revenue AS ( ");
+        sql.append("  SELECT client_id, ");
+        sql.append("         SUM(revenue) as prior_ttm_revenue ");
+        sql.append("  FROM dedupe_prior ");
+        sql.append("  GROUP BY client_id ");
+        sql.append(") ");
+
+        // Final SELECT: Join current and prior metrics
+        sql.append("SELECT cm.client_id, cm.client_name, cm.sector_id, ");
+        sql.append("       cm.ttm_revenue, cm.ttm_cost, ");
+        sql.append("       cm.active_projects, cm.service_line_count, ");
+        sql.append("       cm.last_invoice_date, ");
+        sql.append("       COALESCE(pr.prior_ttm_revenue, 0) as prior_revenue ");
+        sql.append("FROM current_metrics cm ");
+        sql.append("LEFT JOIN prior_revenue pr ON cm.client_id = pr.client_id ");
+        sql.append("ORDER BY cm.ttm_revenue DESC");
+
+        // Execute query
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        query.setParameter("priorFromKey", priorFromKey);
+        query.setParameter("priorToKey", priorToKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+
+        // Bind optional filter parameters (for both current and prior CTEs)
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Map results to DTOs
+        List<ClientDetailDTO> clients = new ArrayList<>();
+        DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+        for (Object[] row : results) {
+            String clientId = (String) row[0];
+            String clientName = (String) row[1];
+            String sector = (String) row[2];
+            double ttmRevenue = ((Number) row[3]).doubleValue();
+            double ttmCost = ((Number) row[4]).doubleValue();
+            int activeProjects = ((Number) row[5]).intValue();
+            int serviceLineCount = ((Number) row[6]).intValue();
+            Object lastInvoiceObj = row[7];
+            double priorRevenue = ((Number) row[8]).doubleValue();
+
+            // Calculate metrics
+            double ttmRevenueM = ttmRevenue / 1_000_000.0;
+            double grossMarginPct = (ttmRevenue > 0)
+                    ? ((ttmRevenue - ttmCost) / ttmRevenue) * 100.0
+                    : 0.0;
+            double yoyGrowthPct = (priorRevenue > 0)
+                    ? ((ttmRevenue - priorRevenue) / priorRevenue) * 100.0
+                    : 0.0;
+
+            // Format last invoice date
+            String lastInvoiceDate = "";
+            if (lastInvoiceObj != null) {
+                if (lastInvoiceObj instanceof java.sql.Date) {
+                    lastInvoiceDate = ((java.sql.Date) lastInvoiceObj).toLocalDate().format(dateFormatter);
+                } else if (lastInvoiceObj instanceof LocalDate) {
+                    lastInvoiceDate = ((LocalDate) lastInvoiceObj).format(dateFormatter);
+                } else {
+                    lastInvoiceDate = lastInvoiceObj.toString();
+                }
+            }
+
+            ClientDetailDTO dto = new ClientDetailDTO(
+                    clientId,
+                    clientName,
+                    sector != null ? sector : "Unknown",
+                    Math.round(ttmRevenueM * 10.0) / 10.0,  // Round to 1 decimal
+                    Math.round(grossMarginPct * 10.0) / 10.0,  // Round to 1 decimal
+                    Math.round(yoyGrowthPct * 10.0) / 10.0,  // Round to 1 decimal
+                    activeProjects,
+                    lastInvoiceDate,
+                    serviceLineCount
+            );
+
+            clients.add(dto);
+        }
+
+        log.debugf("Client Detail Table: %d clients retrieved", clients.size());
+
+        return new ClientDetailTableDTO(clients, clients.size());
+    }
+
+    /**
+     * Calculates Client Retention & Growth Trend (Chart C).
+     * Returns quarterly retention metrics for the past 8 fiscal quarters.
+     *
+     * Business Logic:
+     * - Fiscal quarters: Q1=Jul-Sep, Q2=Oct-Dec, Q3=Jan-Mar, Q4=Apr-Jun
+     * - Retention rate = (retained clients / previous quarter clients) * 100
+     * - New clients = clients in current quarter but not in previous quarter
+     * - Churned clients = clients in previous quarter but not in current quarter
+     * - Retained clients = clients in both previous and current quarter
+     *
+     * @param asOfDate Anchor date (typically today)
+     * @param sectors Multi-select sector filter
+     * @param serviceLines Multi-select service line filter
+     * @param contractTypes Multi-select contract type filter
+     * @param companyIds Multi-select company filter
+     * @return ClientRetentionTrendDTO with 8 quarters of retention data
+     */
+    public ClientRetentionTrendDTO getClientRetentionTrend(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // Normalize to end of current fiscal quarter
+        LocalDate normalizedDate = (asOfDate != null) ? asOfDate : LocalDate.now();
+
+        log.debugf("Client Retention Trend: calculating 8 quarters from %s", normalizedDate);
+
+        // Calculate 8 fiscal quarters ending at normalized date
+        List<QuarterlyRetentionDTO> quarters = new ArrayList<>();
+
+        for (int i = 7; i >= 0; i--) {
+            // Calculate quarter start/end (fiscal quarters)
+            LocalDate currentQuarterEnd = normalizedDate.minusMonths(i * 3);
+            currentQuarterEnd = getFiscalQuarterEnd(currentQuarterEnd);
+            LocalDate currentQuarterStart = currentQuarterEnd.minusMonths(2).withDayOfMonth(1);
+
+            LocalDate previousQuarterEnd = currentQuarterStart.minusDays(1);
+            LocalDate previousQuarterStart = previousQuarterEnd.minusMonths(2).withDayOfMonth(1);
+
+            // Get client sets for both quarters
+            Set<String> currentClients = getActiveClientIds(
+                    currentQuarterStart, currentQuarterEnd,
+                    sectors, serviceLines, contractTypes, companyIds);
+            Set<String> previousClients = getActiveClientIds(
+                    previousQuarterStart, previousQuarterEnd,
+                    sectors, serviceLines, contractTypes, companyIds);
+
+            // Calculate metrics
+            Set<String> retainedClientsSet = new HashSet<>(previousClients);
+            retainedClientsSet.retainAll(currentClients);
+
+            Set<String> newClientsSet = new HashSet<>(currentClients);
+            newClientsSet.removeAll(previousClients);
+
+            Set<String> churnedClientsSet = new HashSet<>(previousClients);
+            churnedClientsSet.removeAll(currentClients);
+
+            int retainedCount = retainedClientsSet.size();
+            int newCount = newClientsSet.size();
+            int churnedCount = churnedClientsSet.size();
+
+            double retentionRate = (previousClients.size() > 0)
+                    ? (retainedCount / (double) previousClients.size()) * 100.0
+                    : 0.0;
+
+            // Format quarter label
+            String quarterLabel = getFiscalQuarterLabel(currentQuarterEnd);
+
+            // Fetch client names for new and churned clients
+            List<String> newClientNames = getClientNames(newClientsSet);
+            List<String> churnedClientNames = getClientNames(churnedClientsSet);
+
+            quarters.add(new QuarterlyRetentionDTO(
+                    quarterLabel, retentionRate, newCount, churnedCount, retainedCount,
+                    newClientNames, churnedClientNames));
+
+            log.tracef("Quarter %s: retention=%.1f%%, new=%d, churned=%d, retained=%d",
+                    quarterLabel, retentionRate, newCount, churnedCount, retainedCount);
+        }
+
+        return new ClientRetentionTrendDTO(quarters);
+    }
+
+    /**
+     * Helper: Fetch client names for a set of client IDs.
+     * Uses EntityManager for efficient name lookup.
+     *
+     * @param clientIds Set of client UUIDs
+     * @return List of client names, sorted alphabetically, empty list if no clients
+     */
+    private List<String> getClientNames(Set<String> clientIds) {
+        if (clientIds == null || clientIds.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        return clientIds.stream()
+                .map(id -> {
+                    Client client = em.find(Client.class, id);
+                    return (client != null && client.getName() != null && !client.getName().isBlank())
+                            ? client.getName()
+                            : null;
+                })
+                .filter(name -> name != null)
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Gets set of active client IDs in a date range.
+     * Used by retention calculation to compare client cohorts across quarters.
+     *
+     * @param fromDate Start date
+     * @param toDate End date
+     * @param sectors Optional sector filter
+     * @param serviceLines Optional service line filter
+     * @param contractTypes Optional contract type filter
+     * @param companyIds Optional company filter
+     * @return Set of distinct client UUIDs
+     */
+    private Set<String> getActiveClientIds(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        String fromMonthKey = String.format("%d%02d", fromDate.getYear(), fromDate.getMonthValue());
+        String toMonthKey = String.format("%d%02d", toDate.getYear(), toDate.getMonthValue());
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT DISTINCT dedupe.client_id ");
+        sql.append("FROM ( ");
+        sql.append("  SELECT f.client_id, f.project_id, f.month_key ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("    BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+        sql.append("    AND f.recognized_revenue_dkk > 0 ");
+
+        // Optional filters
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        // V118 deduplication
+        sql.append("  GROUP BY f.project_id, f.month_key ");
+        sql.append(") AS dedupe");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            query.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<String> results = query.getResultList();
+        return new HashSet<>(results);
+    }
+
+    /**
+     * Gets fiscal quarter end date for a given date.
+     * Fiscal quarters: Q1=Jul-Sep (Sep 30), Q2=Oct-Dec (Dec 31), Q3=Jan-Mar (Mar 31), Q4=Apr-Jun (Jun 30)
+     *
+     * @param date Any date in the quarter
+     * @return Last day of the fiscal quarter
+     */
+    private LocalDate getFiscalQuarterEnd(LocalDate date) {
+        int month = date.getMonthValue();
+        int year = date.getYear();
+
+        if (month >= 7 && month <= 9) {
+            // Q1 FY: Jul-Sep -> Sep 30
+            return LocalDate.of(year, 9, 30);
+        } else if (month >= 10 && month <= 12) {
+            // Q2 FY: Oct-Dec -> Dec 31
+            return LocalDate.of(year, 12, 31);
+        } else if (month >= 1 && month <= 3) {
+            // Q3 FY: Jan-Mar -> Mar 31
+            return LocalDate.of(year, 3, 31);
+        } else {
+            // Q4 FY: Apr-Jun -> Jun 30
+            return LocalDate.of(year, 6, 30);
+        }
+    }
+
+    /**
+     * Gets fiscal quarter label for a given date.
+     * Format: "Q1 FY25" for fiscal year quarters
+     *
+     * @param date Date in the quarter
+     * @return Quarter label
+     */
+    private String getFiscalQuarterLabel(LocalDate date) {
+        int month = date.getMonthValue();
+        int year = date.getYear();
+
+        String quarter;
+        int fiscalYear;
+
+        if (month >= 7 && month <= 9) {
+            quarter = "Q1";
+            fiscalYear = year + 1; // Q1 of FY that starts July 1
+        } else if (month >= 10 && month <= 12) {
+            quarter = "Q2";
+            fiscalYear = year + 1;
+        } else if (month >= 1 && month <= 3) {
+            quarter = "Q3";
+            fiscalYear = year;
+        } else {
+            quarter = "Q4";
+            fiscalYear = year;
+        }
+
+        return String.format("%s FY%02d", quarter, fiscalYear % 100);
+    }
+
+    /**
+     * Calculates Service Line Penetration heatmap data (Chart D).
+     * Returns revenue matrix showing which service lines are used by top clients.
+     *
+     * Business Logic:
+     * - Matrix: Top 15 clients (rows) × All service lines (columns)
+     * - Cell value: TTM revenue in DKK for that client × service line combination
+     * - Uses V118 deduplication: GROUP BY client_id, service_line_id, project_id, month_key
+     * - Clients ordered by total TTM revenue descending
+     *
+     * @param fromDate Start date (typically 12 months ago)
+     * @param toDate End date (typically today)
+     * @param sectors Multi-select sector filter
+     * @param contractTypes Multi-select contract type filter (serviceLines excluded intentionally)
+     * @param companyIds Multi-select company filter
+     * @return ServiceLinePenetrationDTO with client × service line revenue matrix
+     */
+    public ServiceLinePenetrationDTO getServiceLinePenetration(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // Normalize to TTM window
+        LocalDate toNormalized = (toDate != null)
+                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
+                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        LocalDate fromNormalized = toNormalized.minusMonths(11).withDayOfMonth(1);
+
+        String fromKey = String.format("%d%02d", fromNormalized.getYear(), fromNormalized.getMonthValue());
+        String toKey = String.format("%d%02d", toNormalized.getYear(), toNormalized.getMonthValue());
+
+        log.debugf("Service Line Penetration: TTM window [%s to %s]", fromNormalized, toNormalized);
+
+        // Build SQL with V118 deduplication
+        StringBuilder sql = new StringBuilder();
+        sql.append("WITH dedupe AS ( ");
+        sql.append("  SELECT f.client_id, f.service_line_id, f.project_id, f.month_key, ");
+        sql.append("         MAX(f.recognized_revenue_dkk) as revenue ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("    BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND f.client_id IS NOT NULL ");
+        sql.append("    AND f.service_line_id IS NOT NULL ");
+
+        // Optional filters (serviceLines intentionally excluded per design)
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND f.sector_id IN (:sectors) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        }
+
+        // CRITICAL: V118 deduplication for Chart D
+        sql.append("  GROUP BY f.client_id, f.service_line_id, f.project_id, f.month_key ");
+        sql.append(") ");
+        sql.append("SELECT dedupe.client_id, dedupe.service_line_id, SUM(dedupe.revenue) as total_revenue ");
+        sql.append("FROM dedupe ");
+        sql.append("GROUP BY dedupe.client_id, dedupe.service_line_id ");
+        sql.append("ORDER BY dedupe.client_id, dedupe.service_line_id");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            query.setParameter("contractTypes", contractTypes);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Build client revenue map and service line set
+        Map<String, Map<String, Double>> clientServiceRevenue = new HashMap<>();
+        Map<String, Double> clientTotalRevenue = new HashMap<>();
+        Set<String> allServiceLines = new TreeSet<>();
+
+        for (Object[] row : results) {
+            String clientId = (String) row[0];
+            String serviceLineId = (String) row[1];
+            double revenue = ((Number) row[2]).doubleValue();
+
+            clientServiceRevenue
+                    .computeIfAbsent(clientId, k -> new HashMap<>())
+                    .put(serviceLineId, revenue);
+
+            clientTotalRevenue.merge(clientId, revenue, Double::sum);
+            allServiceLines.add(serviceLineId);
+        }
+
+        // Get top 15 clients by total revenue
+        List<String> top15ClientIds = clientTotalRevenue.entrySet().stream()
+                .sorted((e1, e2) -> Double.compare(e2.getValue(), e1.getValue()))
+                .limit(15)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+
+        // Get client names
+        List<String> clientNames = new ArrayList<>();
+        for (String clientId : top15ClientIds) {
+            String clientName = getClientName(clientId);
+            clientNames.add(clientName);
+        }
+
+        // Build matrix
+        List<String> serviceLineList = new ArrayList<>(allServiceLines);
+        double[][] matrix = new double[top15ClientIds.size()][serviceLineList.size()];
+        double maxRevenue = 0.0;
+
+        for (int i = 0; i < top15ClientIds.size(); i++) {
+            String clientId = top15ClientIds.get(i);
+            Map<String, Double> clientServices = clientServiceRevenue.getOrDefault(clientId, Map.of());
+
+            for (int j = 0; j < serviceLineList.size(); j++) {
+                String serviceLineId = serviceLineList.get(j);
+                double revenue = clientServices.getOrDefault(serviceLineId, 0.0);
+                matrix[i][j] = revenue;
+                maxRevenue = Math.max(maxRevenue, revenue);
+            }
+        }
+
+        log.debugf("Service Line Penetration: %d clients × %d service lines, max revenue=%.2f DKK",
+                Integer.valueOf(clientNames.size()), Integer.valueOf(serviceLineList.size()), Double.valueOf(maxRevenue));
+
+        return new ServiceLinePenetrationDTO(clientNames, serviceLineList, matrix, maxRevenue);
+    }
+
+    /**
+     * Gets client name by UUID.
+     * Uses direct SQL query to client table.
+     *
+     * @param clientId Client UUID
+     * @return Client name or UUID if not found
+     */
+    private String getClientName(String clientId) {
+        try {
+            Query query = em.createNativeQuery("SELECT name FROM client WHERE uuid = :clientId");
+            query.setParameter("clientId", clientId);
+            Object result = query.getSingleResult();
+            return result != null ? result.toString() : clientId;
+        } catch (Exception e) {
+            log.warnf("Failed to get client name for %s, using ID", clientId);
+            return clientId;
+        }
     }
 }
