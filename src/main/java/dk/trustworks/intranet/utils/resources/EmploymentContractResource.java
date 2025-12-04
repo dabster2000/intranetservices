@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.utils.resources;
 
+import dk.trustworks.intranet.utils.AddoSigningService;
 import dk.trustworks.intranet.utils.EmploymentContractPdfService;
 import dk.trustworks.intranet.utils.dto.EmploymentContractData;
 import jakarta.annotation.security.RolesAllowed;
@@ -34,6 +35,9 @@ public class EmploymentContractResource {
     @Inject
     EmploymentContractPdfService pdfService;
 
+    @Inject
+    AddoSigningService addoSigningService;
+
     /**
      * Generates an employment contract PDF from the provided contract data.
      * Returns a binary PDF with timestamped filename for download.
@@ -59,15 +63,30 @@ public class EmploymentContractResource {
                 );
             }
 
+            // Generate timestamped filename (before PDF generation for ADDO signing)
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
+            String filename = String.format("employment-contract-%s.pdf", timestamp);
+
             // Generate PDF
             byte[] pdfBytes = pdfService.generatePdf(data);
 
             log.infof("Successfully generated employment contract PDF (%d bytes) for: %s",
                     pdfBytes.length, data.employeeName());
 
-            // Generate timestamped filename
-            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
-            String filename = String.format("employment-contract-%s.pdf", timestamp);
+            // Initiate ADDO digital signing workflow (non-blocking - don't fail PDF generation)
+            try {
+                String signingToken = addoSigningService.initiateEmploymentContractSigning(pdfBytes, filename);
+                log.infof("Successfully initiated ADDO signing for %s. Signing token: %s",
+                        data.employeeName(), signingToken);
+            } catch (AddoSigningService.AddoSigningException e) {
+                log.errorf(e, "ADDO signing failed for %s, but PDF generation succeeded. Error: %s",
+                        data.employeeName(), e.getMessage());
+                // Continue - don't fail the PDF generation due to signing failure
+            } catch (Exception e) {
+                log.errorf(e, "Unexpected error during ADDO signing for %s, but PDF generation succeeded",
+                        data.employeeName());
+                // Continue - don't fail the PDF generation due to signing failure
+            }
 
             // Return PDF with proper headers
             return Response.ok(pdfBytes)

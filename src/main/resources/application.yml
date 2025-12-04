@@ -58,7 +58,9 @@ quarkus:
     economics-journals-api:
       url: https://apis.e-conomic.com/journalsapi/v13.0.1
       scope: jakarta.inject.Singleton
-  thread-pool:
+    addo:
+      url: https://addosign.net/WebService/v2.0/RestSigningService.svc
+      scope: jakarta.inject.Singleton
     core-threads: 10
     max-threads: 30
   log:
@@ -323,3 +325,10 @@ dk:
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
 pricingEngine:
   enabled: true
+addo:
+  email: ${ADDO_EMAIL:hans.lassen@trustworks.dk}
+  password: ${ADDO_PASSWORD:xojkev-hydram-6worKy}
+  template-id: 290420
+  callback-base-url: ${ADDO_CALLBACK_BASE_URL:https://intra.trustworks.dk/api/addo/callback}
+nextsign:
+  apikey: ${NEXTSIGN_APIKEY:key_z5TGFFHtbIzmHgZfChogJkibyuTOsEJC0PM6kAHP36TFcbrckrAnrLbQewBLZu7D}

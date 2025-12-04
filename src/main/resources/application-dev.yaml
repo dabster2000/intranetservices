@@ -76,6 +76,9 @@ quarkus:
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
+    addo:
+      url: https://addosign.net/WebService/v2.0/RestSigningService.svc
+      scope: jakarta.inject.Singleton
       #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
   #otel:
   #  exporter:
@@ -283,3 +286,8 @@ event-topics:
   CREATE_BANK_INFO: user.status.updates
 pricingEngine:
   enabled: true
+addo:
+  email: ${ADDO_EMAIL:hans.lassen@trustworks.dk}
+  password: ${ADDO_PASSWORD:xojkev-hydram-6worKy}
+  template-id: 290420
+  callback-base-url: ${ADDO_CALLBACK_BASE_URL:https://intra.trustworks.dk/api/addo/callback}
