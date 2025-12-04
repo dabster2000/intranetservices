@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.utils.resources;
 
-import dk.trustworks.intranet.utils.AddoSigningService;
+import dk.trustworks.intranet.utils.NextsignSigningService;
 import dk.trustworks.intranet.utils.EmploymentContractPdfService;
 import dk.trustworks.intranet.utils.dto.EmploymentContractData;
 import jakarta.annotation.security.RolesAllowed;
@@ -36,7 +36,7 @@ public class EmploymentContractResource {
     EmploymentContractPdfService pdfService;
 
     @Inject
-    AddoSigningService addoSigningService;
+    NextsignSigningService nextsignService;
 
     /**
      * Generates an employment contract PDF from the provided contract data.
@@ -63,7 +63,7 @@ public class EmploymentContractResource {
                 );
             }
 
-            // Generate timestamped filename (before PDF generation for ADDO signing)
+            // Generate timestamped filename (before PDF generation for Nextsign signing)
             String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMATTER);
             String filename = String.format("employment-contract-%s.pdf", timestamp);
 
@@ -73,17 +73,17 @@ public class EmploymentContractResource {
             log.infof("Successfully generated employment contract PDF (%d bytes) for: %s",
                     pdfBytes.length, data.employeeName());
 
-            // Initiate ADDO digital signing workflow (non-blocking - don't fail PDF generation)
+            // Initiate Nextsign digital signing workflow (non-blocking - don't fail PDF generation)
             try {
-                String signingToken = addoSigningService.initiateEmploymentContractSigning(pdfBytes, filename);
-                log.infof("Successfully initiated ADDO signing for %s. Signing token: %s",
-                        data.employeeName(), signingToken);
-            } catch (AddoSigningService.AddoSigningException e) {
-                log.errorf(e, "ADDO signing failed for %s, but PDF generation succeeded. Error: %s",
+                String caseKey = nextsignService.initiateEmploymentContractSigning(pdfBytes, filename);
+                log.infof("Successfully initiated Nextsign signing for %s. Case key: %s",
+                        data.employeeName(), caseKey);
+            } catch (NextsignSigningService.NextsignException e) {
+                log.errorf(e, "Nextsign signing failed for %s, but PDF generation succeeded. Error: %s",
                         data.employeeName(), e.getMessage());
                 // Continue - don't fail the PDF generation due to signing failure
             } catch (Exception e) {
-                log.errorf(e, "Unexpected error during ADDO signing for %s, but PDF generation succeeded",
+                log.errorf(e, "Unexpected error during Nextsign signing for %s, but PDF generation succeeded",
                         data.employeeName());
                 // Continue - don't fail the PDF generation due to signing failure
             }
