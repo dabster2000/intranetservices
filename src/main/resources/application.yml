@@ -61,6 +61,9 @@ quarkus:
     nextsign:
       url: https://www.nextsign.dk
       scope: jakarta.inject.Singleton
+    nextsign-document:
+      url: https://api.nextsign.dk
+      scope: jakarta.inject.Singleton
     core-threads: 10
     max-threads: 30
   log:

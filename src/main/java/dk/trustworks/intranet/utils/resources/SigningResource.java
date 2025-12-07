@@ -9,9 +9,15 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.SecurityContext;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.jwt.JsonWebToken;
+
+import java.util.List;
+import java.util.Map;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
@@ -70,7 +76,7 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response createCase(CreateSigningCaseRequest request) {
+    public Response createCase(CreateSigningCaseRequest request, @Context SecurityContext securityContext) {
         log.infof("POST /utils/signing/cases - Creating signing case for document: %s",
             request != null ? request.documentName() : "null");
 
@@ -83,6 +89,18 @@ public class SigningResource {
             SigningCaseResponse response = signingService.createCase(request);
 
             log.infof("Signing case created successfully. CaseKey: %s", response.caseKey());
+
+            // Persist case to database for tracking
+            try {
+                String userUuid = getUserUuidFromToken(securityContext);
+                SigningCaseStatus status = signingService.getStatus(response.caseKey());
+                signingService.saveOrUpdateCase(response.caseKey(), userUuid, status);
+                log.debugf("Persisted case %s to database", response.caseKey());
+            } catch (Exception e) {
+                // Log but don't fail the request if persistence fails
+                log.warnf(e, "Failed to persist case %s to database: %s",
+                         response.caseKey(), e.getMessage());
+            }
 
             return Response.status(Response.Status.CREATED)
                 .entity(response)
@@ -136,7 +154,7 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response createCaseFromTemplate(CreateTemplateSigningRequest request) {
+    public Response createCaseFromTemplate(CreateTemplateSigningRequest request, @Context SecurityContext securityContext) {
         log.infof("POST /utils/signing/cases/from-template - Creating signing case from template for document: %s",
             request != null ? request.documentName() : "null");
 
@@ -149,6 +167,18 @@ public class SigningResource {
             SigningCaseResponse response = signingService.createCaseFromTemplate(request);
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
+
+            // Persist case to database for tracking
+            try {
+                String userUuid = getUserUuidFromToken(securityContext);
+                SigningCaseStatus status = signingService.getStatus(response.caseKey());
+                signingService.saveOrUpdateCase(response.caseKey(), userUuid, status);
+                log.debugf("Persisted case %s to database", response.caseKey());
+            } catch (Exception e) {
+                // Log but don't fail the request if persistence fails
+                log.warnf(e, "Failed to persist case %s to database: %s",
+                         response.caseKey(), e.getMessage());
+            }
 
             return Response.status(Response.Status.CREATED)
                 .entity(response)
@@ -239,7 +269,209 @@ public class SigningResource {
         }
     }
 
+    /**
+     * Downloads a signed document from a completed signing case.
+     *
+     * @param caseKey The NextSign case key
+     * @param documentIndex Index in signedDocuments array (default: 0 for first document)
+     * @return Binary PDF response with Content-Disposition header
+     */
+    @GET
+    @Path("/cases/{caseKey}/documents/{documentIndex}")
+    @Produces("application/pdf")
+    @Operation(
+        summary = "Download signed document",
+        description = "Downloads a signed document from a completed signing case. " +
+                      "The document index specifies which document to download (0 for first document). " +
+                      "Returns 409 Conflict if signing is not yet complete."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Document downloaded successfully",
+            content = @Content(mediaType = "application/pdf")
+        ),
+        @APIResponse(
+            responseCode = "400",
+            description = "Invalid parameters",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        ),
+        @APIResponse(
+            responseCode = "404",
+            description = "Case not found",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        ),
+        @APIResponse(
+            responseCode = "409",
+            description = "Signing not yet complete",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Server error",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response downloadSignedDocument(
+        @Parameter(description = "The NextSign case key", required = true)
+        @PathParam("caseKey") String caseKey,
+        @Parameter(description = "Document index (0 for first document)", required = false)
+        @PathParam("documentIndex") @DefaultValue("0") int documentIndex
+    ) {
+        log.infof("GET /utils/signing/cases/%s/documents/%d - Download request",
+            caseKey, documentIndex);
+
+        try {
+            byte[] pdfBytes = signingService.downloadSignedDocument(caseKey, documentIndex);
+
+            // Generate filename: "signed_{caseKey}_{timestamp}.pdf"
+            String filename = String.format("signed_%s_%d.pdf",
+                caseKey, System.currentTimeMillis());
+
+            log.infof("Document download successful. Size: %d bytes, Filename: %s",
+                pdfBytes.length, filename);
+
+            return Response.ok(pdfBytes)
+                .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
+                .header("Content-Type", "application/pdf")
+                .build();
+
+        } catch (IllegalArgumentException e) {
+            log.warnf("Invalid download request: %s", e.getMessage());
+            return badRequest("INVALID_REQUEST", e.getMessage());
+
+        } catch (SigningService.SigningException e) {
+            log.errorf(e, "Download failed: %s", e.getMessage());
+
+            // Determine appropriate HTTP status based on error message
+            String errorMessage = e.getMessage();
+            if (errorMessage != null) {
+                if (errorMessage.contains("not found")) {
+                    return notFound("CASE_NOT_FOUND", "Signing case not found");
+                }
+                if (errorMessage.contains("No signed documents")) {
+                    return Response.status(Response.Status.CONFLICT)
+                        .entity(new ErrorResponse("SIGNING_INCOMPLETE", "Signing not yet complete"))
+                        .build();
+                }
+            }
+
+            return serverError("DOWNLOAD_FAILED", "Failed to download document: " + errorMessage);
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error downloading document: %s", e.getMessage());
+            return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Lists all signing cases for the authenticated user.
+     * Returns cases from local database; full details available via getCaseStatus.
+     *
+     * GET /utils/signing/cases
+     *
+     * @param securityContext Security context containing authenticated user info
+     * @return List of signing case statuses
+     */
+    @GET
+    @Path("/cases")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
+    @Operation(
+        summary = "List user's signing cases",
+        description = "Retrieves all signing cases created by the authenticated user from local database. " +
+                      "Returns minimal case metadata; use getCaseStatus for full details including signers."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Cases retrieved successfully",
+            content = @Content(schema = @Schema(implementation = SigningCaseStatus[].class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Server error",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response listCases(@Context SecurityContext securityContext) {
+        log.info("GET /utils/signing/cases - Listing user's signing cases");
+
+        try {
+            // Extract user UUID from JWT token
+            String userUuid = getUserUuidFromToken(securityContext);
+
+            List<SigningCaseStatus> cases = signingService.listUserCases(userUuid);
+
+            log.infof("Found %d cases for user %s", cases.size(), userUuid);
+
+            return Response.ok(cases).build();
+
+        } catch (Exception e) {
+            log.errorf(e, "Failed to list cases");
+            return serverError("LIST_FAILED", "Failed to list cases: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Syncs local database with NextSign's case list.
+     * Discovers cases created externally via NextSign dashboard.
+     *
+     * POST /utils/signing/cases/sync
+     *
+     * @param securityContext Security context containing authenticated user info
+     * @return Sync status response
+     */
+    @POST
+    @Path("/cases/sync")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
+    @Operation(
+        summary = "Sync cases with NextSign",
+        description = "Synchronizes local database with NextSign's case list. " +
+                      "Discovers and imports cases created externally (via NextSign dashboard or direct API)."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Sync completed successfully",
+            content = @Content(schema = @Schema(implementation = Map.class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Sync failed",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response syncCases(@Context SecurityContext securityContext) {
+        log.info("POST /utils/signing/cases/sync - Syncing with NextSign");
+
+        try {
+            String userUuid = getUserUuidFromToken(securityContext);
+
+            signingService.syncCasesFromNextSign(userUuid);
+
+            return Response.ok(Map.of("status", "synced")).build();
+
+        } catch (Exception e) {
+            log.errorf(e, "Sync failed");
+            return serverError("SYNC_FAILED", "Sync failed: " + e.getMessage());
+        }
+    }
+
     // --- Helper methods for error responses ---
+
+    /**
+     * Extracts the user UUID from the JWT token in the security context.
+     *
+     * @param securityContext Security context containing JWT principal
+     * @return User UUID from token
+     */
+    private String getUserUuidFromToken(SecurityContext securityContext) {
+        JsonWebToken jwt = (JsonWebToken) securityContext.getUserPrincipal();
+        // Use the "sub" claim which typically contains the user UUID
+        return jwt.getClaim("sub");
+    }
 
     private Response badRequest(String error, String message) {
         return Response.status(Response.Status.BAD_REQUEST)

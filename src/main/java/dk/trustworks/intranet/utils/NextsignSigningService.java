@@ -4,10 +4,13 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import dk.trustworks.intranet.utils.client.NextsignClient;
+import dk.trustworks.intranet.utils.client.NextsignDocumentClient;
 import dk.trustworks.intranet.utils.client.NextsignResponseExceptionMapper;
 import dk.trustworks.intranet.utils.dto.nextsign.CreateCaseRequest;
 import dk.trustworks.intranet.utils.dto.nextsign.CreateCaseResponse;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
+import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlRequest;
+import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlResponse;
 import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -16,6 +19,9 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
 import java.util.Base64;
 import java.util.List;
 
@@ -41,6 +47,10 @@ public class NextsignSigningService {
     @Inject
     @RestClient
     NextsignClient nextsignClient;
+
+    @Inject
+    @RestClient
+    NextsignDocumentClient documentClient;
 
     @ConfigProperty(name = "nextsign.company")
     String company;
@@ -248,6 +258,89 @@ public class NextsignSigningService {
             log.errorf(e, "Unexpected error fetching case status for: %s - %s: %s",
                 caseKey, e.getClass().getSimpleName(), e.getMessage());
             throw new NextsignException("Failed to fetch case status: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Downloads a signed document from NextSign.
+     *
+     * <p>This is a two-step process:
+     * <ol>
+     *   <li>Call NextSign v3 API to get a presigned URL for the document</li>
+     *   <li>Download the PDF bytes from the presigned URL</li>
+     * </ol>
+     *
+     * @param documentUrl Document URL from signedDocuments[].document_id in case status response
+     * @return PDF bytes of the signed document
+     * @throws NextsignException if retrieval fails
+     */
+    public byte[] downloadSignedDocument(String documentUrl) throws NextsignException {
+        log.infof("Downloading signed document from URL: %s", documentUrl);
+
+        if (documentUrl == null || documentUrl.isBlank()) {
+            throw new IllegalArgumentException("Document URL is required");
+        }
+
+        try {
+            // Step 1: Get presigned URL from NextSign v3 API
+            GetPresignedUrlRequest request = new GetPresignedUrlRequest(documentUrl);
+            String authHeader = "Bearer " + bearerToken;
+
+            log.debugf("Calling NextSign v3 API to get presigned URL for: %s", documentUrl);
+
+            GetPresignedUrlResponse response = documentClient.getPresignedUrl(
+                company,
+                authHeader,
+                request
+            );
+
+            if (response == null || response.signedUrl() == null || response.signedUrl().isBlank()) {
+                throw new NextsignException("Failed to get presigned URL: empty response");
+            }
+
+            log.infof("Got presigned URL (expires in 1 hour): %s...",
+                response.signedUrl().substring(0, Math.min(60, response.signedUrl().length())));
+
+            // Step 2: Download PDF from presigned URL
+            byte[] pdfBytes = downloadFromUrl(response.signedUrl());
+
+            log.infof("Successfully downloaded signed document: %d bytes (type: %s)",
+                pdfBytes.length, response.type());
+
+            return pdfBytes;
+
+        } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
+            log.errorf("NextSign API error downloading document: status=%d, body=%s",
+                e.getStatusCode(), e.getResponseBody());
+            throw new NextsignException("Failed to download document: " + e.getMessage(), e);
+
+        } catch (IOException e) {
+            log.errorf(e, "IO error downloading document from presigned URL");
+            throw new NextsignException("Failed to download document: " + e.getMessage(), e);
+
+        } catch (NextsignException e) {
+            throw e;
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error downloading document: %s", e.getMessage());
+            throw new NextsignException("Failed to download document: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Downloads a file from a URL using standard HTTP client.
+     *
+     * @param url Pre-signed URL from NextSign
+     * @return File bytes
+     * @throws IOException if download fails
+     */
+    private byte[] downloadFromUrl(String url) throws IOException {
+        log.debugf("Downloading from URL: %s...", url.substring(0, Math.min(60, url.length())));
+
+        try (InputStream in = new URL(url).openStream()) {
+            byte[] bytes = in.readAllBytes();
+            log.debugf("Downloaded %d bytes from URL", bytes.length);
+            return bytes;
         }
     }
 

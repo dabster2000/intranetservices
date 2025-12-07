@@ -35,7 +35,8 @@ public record GetCaseStatusResponse(
         @JsonProperty("created_at") String createdAt,
         @JsonProperty("updated_at") String updatedAt,
         List<RecipientStatus> recipients,
-        List<DocumentInfo> documents
+        List<DocumentInfo> documents,
+        @JsonProperty("signedDocuments") List<SignedDocumentInfo> signedDocuments
     ) {}
 
     /**
@@ -66,7 +67,18 @@ public record GetCaseStatusResponse(
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record DocumentInfo(
         String name,
-        @JsonProperty("sign_obligated") boolean signObligated
+        @JsonProperty("sign_obligated") boolean signObligated,
+        @JsonProperty("document_id") String documentId
+    ) {}
+
+    /**
+     * Signed document information returned after signing is complete.
+     * Contains the document_id needed for retrieval via presigned URL API.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SignedDocumentInfo(
+        String name,
+        @JsonProperty("document_id") String documentId
     ) {}
 
     /**

@@ -1,10 +1,12 @@
 package dk.trustworks.intranet.utils.services;
 
+import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.utils.NextsignSigningService;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
 import dk.trustworks.intranet.utils.dto.signing.*;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.Map;
@@ -33,6 +35,9 @@ public class SigningService {
 
     @Inject
     DocumentPdfService documentPdfService;
+
+    @Inject
+    dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     /**
      * Creates a new signing case with the provided document and signers.
@@ -176,6 +181,77 @@ public class SigningService {
     }
 
     /**
+     * Downloads a signed document from a completed signing case.
+     *
+     * @param caseKey The NextSign case key
+     * @param documentIndex Index in signedDocuments array (0 for first/only document)
+     * @return PDF bytes of the signed document
+     * @throws SigningException if case not found, not completed, or download fails
+     */
+    public byte[] downloadSignedDocument(String caseKey, int documentIndex) {
+        log.infof("Downloading signed document from case: %s (document index: %d)",
+            caseKey, documentIndex);
+
+        if (caseKey == null || caseKey.isBlank()) {
+            throw new IllegalArgumentException("Case key is required");
+        }
+
+        if (documentIndex < 0) {
+            throw new IllegalArgumentException("Document index must be >= 0");
+        }
+
+        try {
+            // 1) Get case status to retrieve signed document URL
+            GetCaseStatusResponse statusResponse = nextsignService.getCaseStatus(caseKey);
+
+            GetCaseStatusResponse.CaseDetails caseDetails = statusResponse.contract();
+            if (caseDetails == null) {
+                throw new SigningException("Case not found: " + caseKey);
+            }
+
+            // 2) Validate that signing is complete
+            List<GetCaseStatusResponse.SignedDocumentInfo> signedDocs =
+                caseDetails.signedDocuments();
+
+            if (signedDocs == null || signedDocs.isEmpty()) {
+                throw new SigningException(
+                    "No signed documents available. Case status: " + caseDetails.caseStatus());
+            }
+
+            // 3) Get document URL
+            if (documentIndex >= signedDocs.size()) {
+                throw new SigningException(String.format(
+                    "Document index %d out of bounds (total signed documents: %d)",
+                    documentIndex, signedDocs.size()));
+            }
+
+            GetCaseStatusResponse.SignedDocumentInfo signedDoc = signedDocs.get(documentIndex);
+            String documentUrl = signedDoc.documentId();
+
+            if (documentUrl == null || documentUrl.isBlank()) {
+                throw new SigningException("Signed document has no document_id");
+            }
+
+            log.infof("Downloading document: %s (URL: %s)", signedDoc.name(), documentUrl);
+
+            // 4) Download via NextSign service
+            byte[] pdfBytes = nextsignService.downloadSignedDocument(documentUrl);
+
+            log.infof("Successfully downloaded signed document: %d bytes", pdfBytes.length);
+
+            return pdfBytes;
+
+        } catch (NextsignSigningService.NextsignException e) {
+            log.errorf(e, "NextSign error downloading document: %s", e.getMessage());
+            throw new SigningException("Failed to download document: " + e.getMessage(), e);
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error downloading document: %s", e.getMessage());
+            throw new SigningException("Failed to download document: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Decodes a base64 encoded document.
      *
      * @param base64Content Base64 encoded document content
@@ -287,6 +363,116 @@ public class SigningService {
                 return null;
             }
         }
+    }
+
+    /**
+     * Lists all signing cases for a user from the database.
+     * Returns minimal case metadata; full details fetched on-demand via getStatus().
+     *
+     * @param userUuid User UUID to filter cases
+     * @return List of signing case statuses from database
+     */
+    public List<SigningCaseStatus> listUserCases(String userUuid) {
+        log.infof("Listing signing cases for user: %s", userUuid);
+
+        List<SigningCase> cases = signingCaseRepository.findByUserUuid(userUuid);
+
+        log.infof("Found %d signing cases for user %s", cases.size(), userUuid);
+
+        return cases.stream()
+            .map(this::mapToSigningCaseStatus)
+            .toList();
+    }
+
+    /**
+     * Saves or updates a signing case in the database.
+     * Called after creating a case or refreshing its status.
+     *
+     * @param caseKey NextSign case key
+     * @param userUuid User UUID who owns the case
+     * @param status Current case status from NextSign
+     */
+    @Transactional
+    public void saveOrUpdateCase(String caseKey, String userUuid, SigningCaseStatus status) {
+        log.debugf("Saving/updating signing case: %s for user: %s", caseKey, userUuid);
+
+        SigningCase entity = signingCaseRepository.findByCaseKey(caseKey)
+            .orElseGet(() -> {
+                SigningCase newCase = new SigningCase();
+                newCase.setCaseKey(caseKey);
+                newCase.setUserUuid(userUuid);
+                return newCase;
+            });
+
+        // Update fields from status
+        entity.setDocumentName(status.documentName());
+        entity.setStatus(status.status());
+        entity.setTotalSigners(status.totalSigners());
+        entity.setCompletedSigners(status.completedSigners());
+
+        // Set created_at if this is a new entity and status has a creation time
+        if (entity.getId() == null && status.createdAt() != null) {
+            entity.setCreatedAt(status.createdAt());
+        }
+
+        signingCaseRepository.persist(entity);
+
+        log.debugf("Saved/updated signing case: %s", caseKey);
+    }
+
+    /**
+     * Syncs local database with NextSign's case list.
+     * Discovers cases created externally (via NextSign dashboard or direct API).
+     *
+     * Note: This method is not yet fully implemented as it requires
+     * NextSign list API integration via NextsignSigningService.
+     *
+     * @param userUuid User UUID to sync cases for
+     */
+    @Transactional
+    public void syncCasesFromNextSign(String userUuid) {
+        log.infof("Syncing cases from NextSign for user: %s", userUuid);
+
+        // NOTE: This is a placeholder. The actual implementation requires
+        // NextsignSigningService to expose a listCases() method that calls
+        // the NextSign client's listCases() endpoint.
+        //
+        // Once that's available, the implementation would be:
+        // 1. Call nextsignService.listCases(userUuid) or similar
+        // 2. For each case summary returned:
+        //    a. Check if it exists in our database
+        //    b. If not, fetch full status via getStatus()
+        //    c. Save to database via saveOrUpdateCase()
+        //
+        // For now, log a warning that this feature is not yet implemented.
+
+        log.warn("syncCasesFromNextSign() is not yet fully implemented. " +
+                 "Requires NextsignSigningService.listCases() integration.");
+
+        throw new SigningException("Sync functionality not yet implemented. " +
+                                  "Requires NextSign list API integration.");
+    }
+
+    /**
+     * Maps a SigningCase entity to a SigningCaseStatus DTO.
+     * Used when returning cases from database queries.
+     *
+     * Note: Signer details are not included (empty list) as they require
+     * a separate API call to NextSign. Use getStatus() for full details.
+     *
+     * @param entity SigningCase entity from database
+     * @return SigningCaseStatus DTO for API responses
+     */
+    private SigningCaseStatus mapToSigningCaseStatus(SigningCase entity) {
+        return new SigningCaseStatus(
+            entity.getCaseKey(),
+            entity.getStatus() != null ? entity.getStatus() : "pending",
+            entity.getDocumentName(),
+            entity.getCreatedAt(),
+            List.of(), // Signers loaded on-demand when needed via getStatus()
+            entity.getTotalSigners() != null ? entity.getTotalSigners() : 0,
+            entity.getCompletedSigners() != null ? entity.getCompletedSigners() : 0
+        );
     }
 
     /**

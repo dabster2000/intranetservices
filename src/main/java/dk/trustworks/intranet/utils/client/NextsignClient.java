@@ -3,6 +3,7 @@ package dk.trustworks.intranet.utils.client;
 import dk.trustworks.intranet.utils.dto.nextsign.CreateCaseRequest;
 import dk.trustworks.intranet.utils.dto.nextsign.CreateCaseResponse;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
+import dk.trustworks.intranet.utils.dto.nextsign.ListCasesResponse;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
@@ -55,5 +56,29 @@ public interface NextsignClient {
         @PathParam("company") String company,
         @HeaderParam("Authorization") String bearerToken,
         @PathParam("caseKey") String caseKey
+    );
+
+    /**
+     * Lists signing cases with optional filtering.
+     * Supports pagination and filtering by status, folder, etc.
+     *
+     * @param company Company identifier from Nextsign dashboard
+     * @param bearerToken Authorization token (format: "Bearer {token}")
+     * @param status Filter by status (optional, e.g., "open", "completed")
+     * @param folder Filter by folder (optional)
+     * @param limit Page size (default: 50, max: 100)
+     * @param index Page offset (default: 0)
+     * @return Response containing list of case summaries with pagination info
+     */
+    @GET
+    @Path("/{company}/cases/get")
+    @Produces(MediaType.APPLICATION_JSON)
+    ListCasesResponse listCases(
+        @PathParam("company") String company,
+        @HeaderParam("Authorization") String bearerToken,
+        @QueryParam("status") String status,
+        @QueryParam("folder") String folder,
+        @QueryParam("limit") @DefaultValue("50") int limit,
+        @QueryParam("index") @DefaultValue("0") int index
     );
 }
