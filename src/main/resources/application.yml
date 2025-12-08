@@ -28,6 +28,17 @@ quarkus:
   swagger-ui:
     enable: true
     always-include: true
+    oidc-client:
+      graph:
+        auth-server-url: https://login.microsoftonline.com/${AZURE_TENANT_ID:xx}/v2.0
+        client-id: ${AZURE_CLIENT_ID:xx}
+        credentials:
+          client-secret:
+            value: ${AZURE_CLIENT_SECRET:xx}
+            method: post
+        grant:
+          type: client
+        scopes: https://graph.microsoft.com/.default
   mailer:
     auth-methods: LOGIN
     from: no-reply@trustworks.dk
@@ -331,3 +342,5 @@ pricingEngine:
 nextsign:
   company: ${NEXTSIGN_COMPANY:69313a4a3abed8e75359da3f}
   bearer-token: ${NEXTSIGN_BEARER_TOKEN:key_z5TGFFHtbIzmHgZfChogJkibyuTOsEJC0PM6kAHP36TFcbrckrAnrLbQewBLZu7D}
+sharepoint:
+  hostname: tenant.sharepoint.com

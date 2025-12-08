@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html xmlns:th="http://www.thymeleaf.org" lang="da">
 <head>
-    <meta charset="UTF-8" name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="UTF-8" name="viewport" content="width=device-width, initial-scale=1.0"></meta>
     <title>Ansættelseskontrakt</title>
     <style>
         @page {
@@ -175,7 +175,7 @@
 
     <!-- Preamble -->
     <p>
-        Mellem <span class="variable" th:text="${employeeName}">Christian Ingemann Olsen</span> og
+        Mellem <span class="variable" th:text="${EMPLOYEE_NAME}"></span> og
         <span class="variable" th:text="${companyLegalName}">Trustworks A/S</span>,
         CVR: <span class="variable" th:text="${companyCvr}">35648941</span>,
         <span class="variable" th:text="${companyAddress}">Pustervig 3, 4. sal, 1126 København K</span>
@@ -185,13 +185,13 @@
     <!-- 1.1 -->
     <h2>1.1. Dato for ansættelse</h2>
     <p>
-        Du er med virkning fra den <span class="variable" th:text="${employmentStartDate}">1. april 2026</span> ansat i Trustworks.
+        Du er med virkning fra den <span class="variable" th:text="${EMPLOYMENT_STARTDATE}">1. april 2026</span> ansat i Trustworks.
     </p>
 
     <!-- 1.2 -->
     <h2>1.2. Stillingsbetegnelse</h2>
     <p>
-        Du er ansat som <span class="variable" th:text="${jobTitle}">senior konsulent</span>.
+        Du er ansat som <span class="variable" th:text="${JOB_TITLE}">senior konsulent</span>.
     </p>
     <p>
         Som konsulent løser du opgaver for og rådgiver Trustworks´ kunder inden for, men ikke begrænset til, emner som IT- og Forretningsarkitektur, Program- og Projektledelse mv. Dine opgaver vil blive afstemt ift. kompetenceområder og erfaring, men det er en integreret del af arbejdet som konsulent at oparbejde kompetencer inden for nye områder og styrke eksisterende kompetencer, hvilket vil ske både som del af kundeprojekter og videreuddannelse.
@@ -206,7 +206,7 @@
     <!-- 1.4 -->
     <h2>1.4. Arbejdstid</h2>
     <p>
-        Din normale ugentlige arbejdstid er <span class="variable" th:text="${weeklyHours}">37</span> timer excl. frokost. Overarbejde må påregnes og honoreres ikke særskilt, da der er taget højde herfor ved lønfastsættelsen.
+        Din normale ugentlige arbejdstid er <span class="variable" th:text="${WEEKLY_HOURS}">37</span> timer excl. frokost. Overarbejde må påregnes og honoreres ikke særskilt, da der er taget højde herfor ved lønfastsættelsen.
     </p>
     <p>
         Du forpligter dig til at anvende din fulde arbejdskraft i Trustworks.
@@ -215,7 +215,7 @@
     <!-- 1.5 -->
     <h2>1.5. Løn</h2>
     <p>
-        Lønnen er aftalt til kr. <span class="variable" th:text="${monthlySalary}">60.000</span> pr. måned plus pension.
+        Lønnen er aftalt til kr. <span class="variable" th:text="${MONTH_SALARY}">60.000</span> pr. måned plus pension.
     </p>
     <p>
         Lønnen udbetales månedsvis bagud og er til disposition den sidste hverdag i hver måned.
@@ -463,43 +463,9 @@
     <p>
         Du er forpligtet til at gøre dig bekendt med og følge de retningslinjer, der udarbejdes af Trustworks, herunder Trustworks’ FAQ (personalehåndbog på intranettet).
     </p>
-    <p>
-        Denne kontrakt underskrives i to originale eksemplarer, hvoraf hver part modtager et.
-    </p>
+
 
     <br /><br />
-
-    <!-- Signatures -->
-    <p>
-        <span class="variable" th:text="${contractCity}">København</span>, den <span class="variable" th:text="${contractDate}">14. november 2025</span>
-    </p>
-
-    <div class="signatures">
-        <!-- Company Signature -->
-        <div class="signature-block">
-            <p>For Trustworks A/S</p>
-            <div class="signature-line"></div>
-            <div class="signature-name">Thomas Gammelvind</div>
-            <div class="signature-title">CEO &nts Partner</div>
-        </div>
-
-        <div class="signature-block">
-            <p>&nbsp;</p> <!-- Spacer for alignment -->
-            <div class="signature-line"></div>
-            <div class="signature-name">Hans Ernst Lassen</div>
-            <div class="signature-title">COO & Partner</div>
-        </div>
-
-        <!-- Employee Signature -->
-        <div class="signature-block">
-            <p>For ansatte</p>
-            <div class="signature-line"></div>
-            <div class="signature-name" th:text="${employeeName}">Christian Ingemann Olsen</div>
-            <div style="margin-top: 10px;">
-                Adresse: <span th:text="${employeeAddress}"></span>
-            </div>
-        </div>
-    </div>
 
     <!-- Footer -->
     <div class="footer">

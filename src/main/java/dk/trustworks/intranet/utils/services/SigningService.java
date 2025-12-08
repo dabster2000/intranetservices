@@ -420,6 +420,106 @@ public class SigningService {
         log.debugf("Saved/updated signing case: %s", caseKey);
     }
 
+    // ========================================================================
+    // ASYNC STATUS FETCHING METHODS
+    // ========================================================================
+
+    /**
+     * Save minimal case record immediately after creation (async pattern).
+     * Status will be fetched later by background batch job.
+     *
+     * This method handles the NextSign race condition where newly created cases
+     * return 404 when fetched immediately. Instead of blocking, we save a minimal
+     * record and let the batch job fetch the full status asynchronously.
+     *
+     * @param caseKey NextSign case key
+     * @param userUuid User UUID who owns the case
+     * @param documentName Document name/title
+     */
+    @Transactional
+    public void saveMinimalCase(String caseKey, String userUuid, String documentName) {
+        saveMinimalCase(caseKey, userUuid, documentName, 0);
+    }
+
+    /**
+     * Save minimal case record immediately after creation (async pattern).
+     * Status will be fetched later by background batch job.
+     *
+     * This method handles the NextSign race condition where newly created cases
+     * return 404 when fetched immediately. Instead of blocking, we save a minimal
+     * record and let the batch job fetch the full status asynchronously.
+     *
+     * @param caseKey NextSign case key
+     * @param userUuid User UUID who owns the case
+     * @param documentName Document name/title
+     * @param totalSigners Total number of signers (known from request)
+     */
+    @Transactional
+    public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners) {
+        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d)", caseKey, totalSigners);
+
+        SigningCase entity = new SigningCase();
+        entity.setCaseKey(caseKey);
+        entity.setUserUuid(userUuid);
+        entity.setDocumentName(documentName);
+        entity.setProcessingStatus("PENDING_FETCH");
+        entity.setStatus("PENDING"); // Default until fetched
+        entity.setCreatedAt(LocalDateTime.now());
+        entity.setTotalSigners(totalSigners);
+        entity.setCompletedSigners(0); // No one has signed yet
+
+        signingCaseRepository.persist(entity);
+
+        log.infof("Saved minimal case record for async processing: %s (totalSigners: %d)", caseKey, totalSigners);
+    }
+
+    /**
+     * Update case with fetched status (called by batch job).
+     * Marks the case as COMPLETED in processing_status.
+     *
+     * @param entity The SigningCase entity to update
+     * @param status Fetched status from NextSign
+     */
+    @Transactional
+    public void updateCaseWithFetchedStatus(SigningCase entity, SigningCaseStatus status) {
+        log.debugf("Updating case %s with fetched status", entity.getCaseKey());
+
+        entity.setDocumentName(status.documentName());
+        entity.setStatus(status.status());
+        entity.setTotalSigners(status.totalSigners());
+        entity.setCompletedSigners(status.completedSigners());
+        entity.setProcessingStatus("COMPLETED");
+        entity.setLastStatusFetch(LocalDateTime.now());
+        entity.setStatusFetchError(null); // Clear previous error
+        entity.setRetryCount(0); // Reset retry count on success
+
+        signingCaseRepository.persist(entity);
+
+        log.infof("Updated case %s with fetched status", entity.getCaseKey());
+    }
+
+    /**
+     * Mark case fetch as failed (for retry later).
+     * Increments retry count and stores error message.
+     *
+     * @param entity The SigningCase entity that failed
+     * @param error Error message from the fetch attempt
+     */
+    @Transactional
+    public void markCaseFetchFailed(SigningCase entity, String error) {
+        log.debugf("Marking case %s as FAILED", entity.getCaseKey());
+
+        entity.setProcessingStatus("FAILED");
+        entity.setLastStatusFetch(LocalDateTime.now());
+        entity.setStatusFetchError(error);
+        entity.setRetryCount(entity.getRetryCount() + 1);
+
+        signingCaseRepository.persist(entity);
+
+        log.warnf("Marked case %s as FAILED (retry %d): %s",
+            entity.getCaseKey(), entity.getRetryCount(), error);
+    }
+
     /**
      * Syncs local database with NextSign's case list.
      * Discovers cases created externally (via NextSign dashboard or direct API).
@@ -462,33 +562,36 @@ public class SigningService {
                 // Process each case
                 for (var caseSummary : cases) {
                     try {
-                        String caseKey = caseSummary.nextSignKey();
+                        // Use MongoDB _id for API calls (caseId)
+                        String caseId = caseSummary.id();
+                        // Use nextSignKey for display and database tracking
+                        String nextSignKey = caseSummary.nextSignKey();
 
-                        if (caseKey == null || caseKey.isBlank()) {
-                            log.warnf("Case %s has no nextSignKey, skipping", caseSummary.id());
+                        if (caseId == null || caseId.isBlank()) {
+                            log.warnf("Case has no _id, skipping (nextSignKey: %s)", nextSignKey);
                             continue;
                         }
 
-                        // Check if case already exists in database
-                        boolean exists = signingCaseRepository.findByCaseKey(caseKey).isPresent();
+                        // Check if case already exists in database (by MongoDB _id)
+                        boolean exists = signingCaseRepository.findByCaseKey(caseId).isPresent();
 
                         if (!exists) {
-                            log.infof("Found new case from NextSign: %s (title: %s)",
-                                caseKey, caseSummary.title());
+                            log.infof("Found new case from NextSign: %s (nextSignKey: %s, title: %s)",
+                                caseId, nextSignKey, caseSummary.title());
                         } else {
-                            log.debugf("Updating existing case: %s", caseKey);
+                            log.debugf("Updating existing case: %s", caseId);
                         }
 
-                        // Fetch full status from NextSign and save/update in database
-                        GetCaseStatusResponse fullStatus = nextsignService.getCaseStatus(caseKey);
-                        SigningCaseStatus status = mapToSigningCaseStatus(caseKey, fullStatus);
-                        saveOrUpdateCase(caseKey, userUuid, status);
+                        // Fetch full status from NextSign using MongoDB _id and save/update in database
+                        GetCaseStatusResponse fullStatus = nextsignService.getCaseStatus(caseId);
+                        SigningCaseStatus status = mapToSigningCaseStatus(caseId, fullStatus);
+                        saveOrUpdateCase(caseId, userUuid, status);
 
                         syncedCount++;
 
                     } catch (Exception e) {
                         log.errorf(e, "Failed to sync case %s: %s",
-                            caseSummary.nextSignKey(), e.getMessage());
+                            caseSummary.id(), e.getMessage());
                         // Continue with next case even if one fails
                     }
                 }

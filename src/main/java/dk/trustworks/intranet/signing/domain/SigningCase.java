@@ -39,8 +39,9 @@ public class SigningCase {
     private Long id;
 
     /**
-     * NextSign case key (_id from API).
-     * This is the unique identifier used for all NextSign API calls.
+     * NextSign case id (MongoDB _id from API).
+     * This is the unique identifier used for all NextSign API calls (e.g., getCaseStatus).
+     * Format: 24-character hex string like "693729174b7454ef1809e086".
      */
     @Column(name = "case_key", nullable = false, unique = true, length = 255)
     private String caseKey;
@@ -66,6 +67,40 @@ public class SigningCase {
     private String status;
 
     /**
+     * Async processing status for batch job tracking.
+     * Values: PENDING_FETCH, FETCHING, COMPLETED, FAILED.
+     *
+     * Handles race condition where NextSign needs time before cases are queryable.
+     * Cases start as PENDING_FETCH and are processed by background batch job.
+     */
+    @Column(name = "processing_status", length = 50)
+    @Builder.Default
+    private String processingStatus = "PENDING_FETCH";
+
+    /**
+     * Timestamp when status was last fetched from NextSign.
+     * Used for retry logic and monitoring.
+     */
+    @Column(name = "last_status_fetch")
+    private LocalDateTime lastStatusFetch;
+
+    /**
+     * Last error message if status fetch failed.
+     * Helps diagnose NextSign API issues.
+     */
+    @Column(name = "status_fetch_error", columnDefinition = "TEXT")
+    private String statusFetchError;
+
+    /**
+     * Number of failed fetch attempts.
+     * Incremented on each failure, reset on success.
+     * Used to prevent infinite retries.
+     */
+    @Column(name = "retry_count")
+    @Builder.Default
+    private Integer retryCount = 0;
+
+    /**
      * Optional internal reference ID.
      * Often set to user UUID for tracking.
      */
@@ -87,8 +122,9 @@ public class SigningCase {
     private LocalDateTime updatedAt;
 
     /**
-     * NextSign internal key (nextSignKey from API).
-     * For debugging and advanced queries.
+     * NextSign human-readable key (nextSignKey from API).
+     * Format: "xxxx-xxxx-xxxx-xxxx-xxxxx" style, e.g., "8af3x-KMRpr-wJs9f-G29KI-jKAR0".
+     * Used for display purposes and signing links; NOT for API calls.
      */
     @Column(name = "nextsign_key", length = 255)
     private String nextsignKey;
@@ -127,6 +163,12 @@ public class SigningCase {
         }
         if (folder == null) {
             folder = "Default";
+        }
+        if (processingStatus == null) {
+            processingStatus = "PENDING_FETCH";
+        }
+        if (retryCount == null) {
+            retryCount = 0;
         }
     }
 

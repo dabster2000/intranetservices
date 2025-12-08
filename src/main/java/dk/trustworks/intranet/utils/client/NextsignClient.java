@@ -46,16 +46,16 @@ public interface NextsignClient {
      *
      * @param company Company identifier from Nextsign dashboard
      * @param bearerToken Authorization token (format: "Bearer {token}")
-     * @param caseKey The NextSign case key returned from createCase
+     * @param caseId The NextSign MongoDB _id returned from createCase (NOT nextSignKey)
      * @return Response containing the case status and signer information
      */
     @GET
-    @Path("/{company}/case/{caseKey}")
+    @Path("/{company}/case/{caseId}/get")
     @Produces(MediaType.APPLICATION_JSON)
     GetCaseStatusResponse getCaseStatus(
         @PathParam("company") String company,
         @HeaderParam("Authorization") String bearerToken,
-        @PathParam("caseKey") String caseKey
+        @PathParam("caseId") String caseId
     );
 
     /**

@@ -7,20 +7,22 @@ import java.util.List;
 
 /**
  * NextSign API response for case status query.
- * Returned by GET /api/v2/{company}/case/{caseKey}
+ * Returned by GET /api/v2/{company}/case/{caseId}/get
  *
- * On success: {"data": {nextSignKey, title, recipients, ...}}
+ * On success: {"status": "case_found", "case": {_id, nextSignKey, title, recipients, ...}}
  * On error: {"status": "error", "message": "..."}
  *
- * @param status Response status (null on success, "error" on failure)
+ * Note: The API returns the case data in a field named "case", not "data".
+ *
+ * @param status Response status ("case_found" on success, "error" on failure)
  * @param message Error message (null on success)
- * @param data Case details including signer statuses (maps to API "data" field)
+ * @param caseDetails Case details including signer statuses (maps to API "case" field)
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record GetCaseStatusResponse(
     String status,
     String message,
-    CaseDetails data
+    @JsonProperty("case") CaseDetails caseDetails
 ) {
 
     /**
@@ -86,26 +88,29 @@ public record GetCaseStatusResponse(
      * Success is indicated by having valid case data.
      * Error responses have status="error".
      *
-     * @return true if data is present with a valid nextSignKey, or status is explicitly "OK"
+     * @return true if caseDetails is present with a valid nextSignKey, or status is "case_found"
      */
     public boolean isSuccess() {
         // Error responses have status="error"
         if ("error".equalsIgnoreCase(status)) {
             return false;
         }
-        // Success responses have data with nextSignKey
-        if (data != null && data.nextSignKey() != null && !data.nextSignKey().isBlank()) {
+        // Success responses have caseDetails with nextSignKey
+        if (caseDetails != null && caseDetails.nextSignKey() != null && !caseDetails.nextSignKey().isBlank()) {
             return true;
         }
-        // Fallback for explicit "OK" or "success" status
-        return "OK".equalsIgnoreCase(status) || "success".equalsIgnoreCase(status);
+        // Fallback for explicit success statuses
+        return "case_found".equalsIgnoreCase(status)
+            || "OK".equalsIgnoreCase(status)
+            || "success".equalsIgnoreCase(status);
     }
 
     /**
-     * Gets the case details (alias for contract() for backward compatibility).
+     * Gets the case details.
+     * Alias for caseDetails() for backward compatibility with code using contract().
      * @return the case details
      */
     public CaseDetails contract() {
-        return data;
+        return caseDetails;
     }
 }

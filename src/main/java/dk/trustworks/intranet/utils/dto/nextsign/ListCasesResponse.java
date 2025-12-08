@@ -61,11 +61,24 @@ public record ListCasesResponse(
 
     /**
      * Checks if the response indicates success.
+     * Success is indicated by having valid data or a non-error status.
+     * Error responses have status="error".
      *
-     * @return true if status is "OK" or data is present
+     * @return true if data is present or status indicates success
      */
     public boolean isSuccess() {
-        return "OK".equalsIgnoreCase(status) || data != null;
+        // Error responses have status="error"
+        if ("error".equalsIgnoreCase(status)) {
+            return false;
+        }
+        // Success responses have data (status may be "company_found", "OK", etc.)
+        if (data != null) {
+            return true;
+        }
+        // Fallback for explicit success statuses without data
+        return "OK".equalsIgnoreCase(status)
+            || "success".equalsIgnoreCase(status)
+            || "company_found".equalsIgnoreCase(status);
     }
 
     /**

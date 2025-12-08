@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="nextsign-status-sync" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    NextSign Status Sync Batch Job
+
+    Purpose:
+    Fetches pending case statuses from NextSign asynchronously to handle race condition
+    where newly created cases return 404 when fetched immediately.
+
+    Processing Flow:
+    1. Find cases with processing_status = PENDING_FETCH or FAILED (with retry logic)
+    2. Fetch status from NextSign for each case
+    3. Update database with fetched status
+    4. Mark cases as COMPLETED or FAILED based on result
+
+    Schedule:
+    Runs every 5 minutes via BatchScheduler
+
+    Similar to:
+    economics-invoice-status-sync.xml (proven pattern for external API status polling)
+    -->
+
+    <listeners>
+        <!-- Monitors job start/end, records execution metadata -->
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="fetch-pending-statuses">
+        <listeners>
+            <!-- Tracks step-level progress -->
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <!-- Simple batchlet for synchronous status fetching -->
+        <batchlet ref="nextSignStatusSyncBatchlet"/>
+    </step>
+</job>

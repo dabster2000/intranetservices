@@ -102,7 +102,9 @@ public class DocumentPdfService {
             return pdf;
 
         } catch (Exception e) {
-            LOG.errorf(e, "Failed to generate PDF from template");
+            LOG.errorf(e, "Failed to generate PDF from template. Template size: %d chars, Form values: %d",
+                       templateContent.length(),
+                       formValues != null ? formValues.size() : 0);
             throw new DocumentPdfException("Failed to generate PDF from template", e);
         }
     }
@@ -134,15 +136,57 @@ public class DocumentPdfService {
     }
 
     /**
+     * Normalizes HTML5 DOCTYPE declarations to XHTML format for OpenHTMLToPDF compatibility.
+     * <p>
+     * OpenHTMLToPDF requires strict XHTML, so we convert lowercase HTML5 DOCTYPE
+     * to uppercase format. This helps avoid SAXParseException errors.
+     * </p>
+     *
+     * @param html The HTML content with potential HTML5 DOCTYPE
+     * @return HTML with normalized DOCTYPE declaration
+     */
+    private String normalizeDoctype(String html) {
+        // Replace case-insensitive <!doctype html> with uppercase version
+        // OpenHTMLToPDF is more lenient with uppercase DOCTYPE
+        String doctypePattern = "(?i)<!doctype\\s+html>";
+        return html.replaceFirst(doctypePattern, "<!DOCTYPE html>");
+    }
+
+    /**
+     * Fixes self-closing tags to ensure proper XML format for OpenHTMLToPDF.
+     * <p>
+     * Adds space before /&gt; in self-closing tags: &lt;br/&gt; becomes &lt;br /&gt;
+     * This is required for XHTML compliance and prevents XML parsing errors.
+     * </p>
+     *
+     * @param html The HTML content with potential malformed self-closing tags
+     * @return HTML with properly formatted self-closing tags
+     */
+    private String fixSelfClosingTags(String html) {
+        // Fix self-closing tags to have space before />
+        html = html.replaceAll("<br/>", "<br />");
+        html = html.replaceAll("<hr/>", "<hr />");
+        html = html.replaceAll("<img([^>]*)/>", "<img$1 />");
+        html = html.replaceAll("<input([^>]*)/>", "<input$1 />");
+        html = html.replaceAll("<meta([^>]*)/>", "<meta$1 />");
+        html = html.replaceAll("<link([^>]*)/>", "<link$1 />");
+
+        return html;
+    }
+
+    /**
      * Converts rendered HTML to PDF using OpenHTMLToPDF.
      *
      * <p><strong>HTML-to-XML Sanitization (Reverse Strategy):</strong>
      * OpenHTMLToPDF uses a strict XML parser that requires proper entity encoding.
      * This method uses a robust reverse sanitization approach:
      * <ol>
+     *   <li>Remove BOM and trim whitespace</li>
+     *   <li>Normalize DOCTYPE to XHTML-compliant format</li>
+     *   <li>Fix self-closing tags to include space before /&gt;</li>
      *   <li>Escape ALL ampersands: & to &amp;amp; (catches everything including incomplete entity refs)</li>
+     *   <li>Replace named entities with numeric equivalents for compatibility</li>
      *   <li>Un-escape numeric entities we specifically want: &amp;amp;#160; to &amp;#160;</li>
-     *   <li>Replace named entities with their numeric equivalents for compatibility</li>
      * </ol>
      *
      * @param html The HTML string from Thymeleaf template
@@ -151,11 +195,24 @@ public class DocumentPdfService {
      */
     private byte[] convertHtmlToPdf(String html) throws IOException {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            // Step 1: Escape ALL ampersands (catches everything including incomplete entities)
+            // Step 1: Remove BOM (Byte Order Mark) and trim whitespace
+            html = html.trim();
+            if (html.startsWith("\uFEFF")) {
+                html = html.substring(1);
+                LOG.debugf("Removed BOM from HTML content");
+            }
+
+            // Step 2: Normalize DOCTYPE to XHTML-compliant format
+            html = normalizeDoctype(html);
+
+            // Step 3: Fix self-closing tags (br/, img/, etc. → br /, img /, etc.)
+            html = fixSelfClosingTags(html);
+
+            // Step 4: Escape ALL ampersands (catches everything including incomplete entities)
             String sanitizedHtml = html.replace("&", "&amp;");
 
-            // Step 2: Replace HTML named entities with numeric references
-            // These will become &amp;nbsp; after step 1, so we need to un-escape them
+            // Step 5: Replace HTML named entities with numeric references
+            // These will become &amp;nbsp; after step 4, so we need to un-escape them
             sanitizedHtml = sanitizedHtml
                 .replace("&amp;nbsp;", "&#160;")           // Non-breaking space
                 .replace("&amp;copy;", "&#169;")           // Copyright symbol
@@ -177,12 +234,12 @@ public class DocumentPdfService {
                 .replace("&amp;quot;", "&#34;")            // Quotation mark
                 .replace("&amp;apos;", "&#39;");           // Apostrophe
 
-            // Step 3: Un-escape numeric entities (they came from Thymeleaf as &#160;, not &amp;#160;)
+            // Step 6: Un-escape numeric entities (they came from Thymeleaf as &#160;, not &amp;#160;)
             // This ensures numeric entities already in template stay valid
             // Pattern: &amp;#(number); to &#(number);
             sanitizedHtml = sanitizedHtml.replaceAll("&amp;(#\\d+;)", "$1");
 
-            // Build and execute PDF conversion
+            // Step 7: Build and execute PDF conversion
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
             builder.withHtmlContent(sanitizedHtml, null);
@@ -191,6 +248,13 @@ public class DocumentPdfService {
 
             return baos.toByteArray();
         } catch (Exception e) {
+            // Enhanced error logging with HTML preview
+            String preview = html.length() > 1000
+                ? html.substring(0, 1000) + "\n...[truncated at 1000 chars]"
+                : html;
+            LOG.errorf("PDF conversion failed.\n=== HTML Preview (first 1000 chars) ===\n%s\n=== Error ===\n%s",
+                       preview, e.getMessage());
+
             throw new IOException("Failed to convert HTML to PDF using OpenHTMLToPDF", e);
         }
     }

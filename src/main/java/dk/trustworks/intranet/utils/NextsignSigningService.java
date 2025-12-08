@@ -105,15 +105,17 @@ public class NextsignSigningService {
                 );
             }
 
-            if (response.contract() == null || response.contract().nextSignKey() == null) {
-                log.error("Nextsign API returned success but no case key in response");
-                throw new NextsignException("Nextsign API returned no case key");
+            if (response.contract() == null || response.contract().id() == null) {
+                log.error("Nextsign API returned success but no case id in response");
+                throw new NextsignException("Nextsign API returned no case id");
             }
 
-            String caseKey = response.contract().nextSignKey();
-            log.infof("Successfully initiated Nextsign signing. Case key: %s, Title: %s",
-                caseKey, response.contract().title());
-            return caseKey;
+            // Use MongoDB _id for API calls, not nextSignKey
+            String caseId = response.contract().id();
+            String nextSignKey = response.contract().nextSignKey();
+            log.infof("Successfully initiated Nextsign signing. CaseId: %s, NextSignKey: %s, Title: %s",
+                caseId, nextSignKey, response.contract().title());
+            return caseId;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
             // API returned an error response - we have the details
@@ -191,15 +193,17 @@ public class NextsignSigningService {
                 );
             }
 
-            if (response.contract() == null || response.contract().nextSignKey() == null) {
-                log.error("Nextsign API returned success but no case key in response");
-                throw new NextsignException("Nextsign API returned no case key");
+            if (response.contract() == null || response.contract().id() == null) {
+                log.error("Nextsign API returned success but no case id in response");
+                throw new NextsignException("Nextsign API returned no case id");
             }
 
-            String caseKey = response.contract().nextSignKey();
-            log.infof("Successfully created signing case. Case key: %s, Title: %s",
-                caseKey, response.contract().title());
-            return caseKey;
+            // Use MongoDB _id for API calls, not nextSignKey
+            String caseId = response.contract().id();
+            String nextSignKey = response.contract().nextSignKey();
+            log.infof("Successfully created signing case. CaseId: %s, NextSignKey: %s, Title: %s",
+                caseId, nextSignKey, response.contract().title());
+            return caseId;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
             log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
@@ -220,18 +224,18 @@ public class NextsignSigningService {
     /**
      * Retrieves the current status of a signing case from NextSign API.
      *
-     * @param caseKey The NextSign case key returned when the case was created
+     * @param caseId The NextSign MongoDB _id returned when the case was created
      * @return Case status response from NextSign
      * @throws NextsignException if the status request fails
      */
-    public GetCaseStatusResponse getCaseStatus(String caseKey) {
-        log.infof("Fetching case status for caseKey: %s", caseKey);
+    public GetCaseStatusResponse getCaseStatus(String caseId) {
+        log.infof("Fetching case status for caseId: %s", caseId);
 
         try {
             String authHeader = "Bearer " + bearerToken;
-            log.debugf("Calling Nextsign API - URL: https://www.nextsign.dk/api/v2/%s/case/%s", company, caseKey);
+            log.debugf("Calling Nextsign API - URL: https://www.nextsign.dk/api/v2/%s/case/%s/get", company, caseId);
 
-            GetCaseStatusResponse response = nextsignClient.getCaseStatus(company, authHeader, caseKey);
+            GetCaseStatusResponse response = nextsignClient.getCaseStatus(company, authHeader, caseId);
 
             log.infof("Nextsign case status response - Status: %s, CaseStatus: %s",
                 response.status(),
@@ -257,7 +261,7 @@ public class NextsignSigningService {
 
         } catch (Exception e) {
             log.errorf(e, "Unexpected error fetching case status for: %s - %s: %s",
-                caseKey, e.getClass().getSimpleName(), e.getMessage());
+                caseId, e.getClass().getSimpleName(), e.getMessage());
             throw new NextsignException("Failed to fetch case status: " + e.getMessage(), e);
         }
     }

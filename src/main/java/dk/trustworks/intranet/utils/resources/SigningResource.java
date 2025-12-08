@@ -18,6 +18,7 @@ import org.eclipse.microprofile.jwt.JsonWebToken;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
@@ -43,6 +44,9 @@ public class SigningResource {
 
     @Inject
     SigningService signingService;
+
+    @Inject
+    dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     /**
      * Creates a new document signing case.
@@ -76,7 +80,10 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response createCase(CreateSigningCaseRequest request, @Context SecurityContext securityContext) {
+    public Response createCase(
+            CreateSigningCaseRequest request,
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
         log.infof("POST /utils/signing/cases - Creating signing case for document: %s",
             request != null ? request.documentName() : "null");
 
@@ -90,15 +97,21 @@ public class SigningResource {
 
             log.infof("Signing case created successfully. CaseKey: %s", response.caseKey());
 
-            // Persist case to database for tracking
+            // Save minimal record for async processing (NEW ASYNC PATTERN)
+            // Status will be fetched by background batch job to avoid NextSign race condition
             try {
-                String userUuid = getUserUuidFromToken(securityContext);
-                SigningCaseStatus status = signingService.getStatus(response.caseKey());
-                signingService.saveOrUpdateCase(response.caseKey(), userUuid, status);
-                log.debugf("Persisted case %s to database", response.caseKey());
+                String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
+                String documentName = request.documentName() != null ?
+                    request.documentName() : "Untitled Document";
+                int totalSigners = request.signers() != null ? request.signers().size() : 0;
+
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
+                    response.caseKey(), totalSigners);
+
             } catch (Exception e) {
-                // Log but don't fail the request if persistence fails
-                log.warnf(e, "Failed to persist case %s to database: %s",
+                // Log but don't fail - batch job will retry if needed
+                log.warnf(e, "Failed to save minimal case record for %s: %s",
                          response.caseKey(), e.getMessage());
             }
 
@@ -154,7 +167,10 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response createCaseFromTemplate(CreateTemplateSigningRequest request, @Context SecurityContext securityContext) {
+    public Response createCaseFromTemplate(
+            CreateTemplateSigningRequest request,
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
         log.infof("POST /utils/signing/cases/from-template - Creating signing case from template for document: %s",
             request != null ? request.documentName() : "null");
 
@@ -168,15 +184,21 @@ public class SigningResource {
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
 
-            // Persist case to database for tracking
+            // Save minimal record for async processing (NEW ASYNC PATTERN)
+            // Status will be fetched by background batch job to avoid NextSign race condition
             try {
-                String userUuid = getUserUuidFromToken(securityContext);
-                SigningCaseStatus status = signingService.getStatus(response.caseKey());
-                signingService.saveOrUpdateCase(response.caseKey(), userUuid, status);
-                log.debugf("Persisted case %s to database", response.caseKey());
+                String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
+                String documentName = request.documentName() != null ?
+                    request.documentName() : "Untitled Document";
+                int totalSigners = request.signers() != null ? request.signers().size() : 0;
+
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
+                    response.caseKey(), totalSigners);
+
             } catch (Exception e) {
-                // Log but don't fail the request if persistence fails
-                log.warnf(e, "Failed to persist case %s to database: %s",
+                // Log but don't fail - batch job will retry if needed
+                log.warnf(e, "Failed to save minimal case record for %s: %s",
                          response.caseKey(), e.getMessage());
             }
 
@@ -394,16 +416,18 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response listCases(@Context SecurityContext securityContext) {
+    public Response listCases(
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
         log.info("GET /utils/signing/cases - Listing user's signing cases");
 
         try {
-            // Extract user UUID from JWT token
-            String userUuid = getUserUuidFromToken(securityContext);
+            // Resolve target user UUID from query param or JWT token
+            String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
 
-            List<SigningCaseStatus> cases = signingService.listUserCases(userUuid);
+            List<SigningCaseStatus> cases = signingService.listUserCases(targetUserUuid);
 
-            log.infof("Found %d cases for user %s", cases.size(), userUuid);
+            log.infof("Found %d cases for user %s", cases.size(), targetUserUuid);
 
             return Response.ok(cases).build();
 
@@ -443,13 +467,15 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response syncCases(@Context SecurityContext securityContext) {
+    public Response syncCases(
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
         log.info("POST /utils/signing/cases/sync - Syncing with NextSign");
 
         try {
-            String userUuid = getUserUuidFromToken(securityContext);
+            String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
 
-            int syncedCount = signingService.syncCasesFromNextSign(userUuid);
+            int syncedCount = signingService.syncCasesFromNextSign(targetUserUuid);
 
             return Response.ok(Map.of(
                 "status", "synced",
@@ -463,18 +489,109 @@ public class SigningResource {
         }
     }
 
+    /**
+     * Get async processing statistics (monitoring endpoint).
+     *
+     * Returns counts of signing cases grouped by processing_status:
+     * - PENDING_FETCH: Cases awaiting first status fetch
+     * - FETCHING: Cases currently being processed by batch job
+     * - COMPLETED: Cases with status successfully fetched
+     * - FAILED: Cases that failed to fetch (will retry)
+     *
+     * Useful for monitoring async processing health and detecting issues.
+     *
+     * GET /utils/signing/processing-stats
+     *
+     * @return Map of processing status counts
+     */
+    @GET
+    @Path("/processing-stats")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"SYSTEM", "ADMIN", "MANAGER"})
+    @Operation(
+        summary = "Get async processing statistics",
+        description = "Returns counts of signing cases by async processing status. " +
+                      "Useful for monitoring batch job health and detecting stuck cases."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Statistics retrieved successfully",
+            content = @Content(schema = @Schema(implementation = Map.class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Failed to retrieve statistics",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response getProcessingStats() {
+        log.debug("GET /utils/signing/processing-stats - Getting async processing statistics");
+
+        try {
+            Map<String, Long> stats = signingCaseRepository.countByProcessingStatus();
+
+            log.debugf("Processing stats: %s", stats);
+
+            return Response.ok(stats).build();
+
+        } catch (Exception e) {
+            log.errorf(e, "Failed to retrieve processing stats");
+            return serverError("STATS_FAILED", "Failed to retrieve stats: " + e.getMessage());
+        }
+    }
+
     // --- Helper methods for error responses ---
 
     /**
+     * Resolves the target user UUID from query parameter or authenticated user.
+     *
+     * @param queryParamUuid Optional UUID from @QueryParam("userUuid")
+     * @param securityContext Security context containing JWT claims
+     * @return Validated user UUID string
+     * @throws BadRequestException if queryParamUuid has invalid format or is required but not provided
+     */
+    private String resolveTargetUserUuid(String queryParamUuid, SecurityContext securityContext) {
+        if (queryParamUuid != null && !queryParamUuid.isBlank()) {
+            validateUuidFormat(queryParamUuid);
+            return queryParamUuid;
+        }
+        return extractUserUuidFromJwt(securityContext);
+    }
+
+    /**
+     * Validates UUID format.
+     *
+     * @param uuid UUID string to validate
+     * @throws BadRequestException if UUID format is invalid
+     */
+    private void validateUuidFormat(String uuid) {
+        try {
+            UUID.fromString(uuid);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Invalid userUuid format: " + uuid);
+        }
+    }
+
+    /**
      * Extracts the user UUID from the JWT token in the security context.
+     * If the token is a system token (no 'sub' claim), throws BadRequestException
+     * indicating that userUuid query parameter is required.
      *
      * @param securityContext Security context containing JWT principal
      * @return User UUID from token
+     * @throws BadRequestException if JWT missing 'sub' claim (system token requires userUuid param)
      */
-    private String getUserUuidFromToken(SecurityContext securityContext) {
+    private String extractUserUuidFromJwt(SecurityContext securityContext) {
         JsonWebToken jwt = (JsonWebToken) securityContext.getUserPrincipal();
-        // Use the "sub" claim which typically contains the user UUID
-        return jwt.getClaim("sub");
+        String userUuid = jwt.getClaim("sub");
+        if (userUuid == null) {
+            // System tokens don't have 'sub' claim - require explicit userUuid parameter
+            throw new BadRequestException(
+                "userUuid query parameter is required when using system token (JWT has no 'sub' claim)"
+            );
+        }
+        return userUuid;
     }
 
     private Response badRequest(String error, String message) {

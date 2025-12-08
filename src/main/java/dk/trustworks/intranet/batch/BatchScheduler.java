@@ -210,4 +210,41 @@ public class BatchScheduler {
         }
     }
 
+    /**
+     * Fetch pending NextSign case statuses.
+     *
+     * Handles race condition where NextSign needs time before newly created cases
+     * are queryable. Instead of blocking REST endpoints, cases are saved with
+     * PENDING_FETCH status and this job fetches the full status asynchronously.
+     *
+     * Schedule: Every 5 minutes (responsive UX while avoiding excessive API calls)
+     * Pattern: Simple batchlet with retry logic and max retry limit
+     *
+     * Processing:
+     * - Finds cases with processing_status = PENDING_FETCH or FAILED
+     * - Fetches status from NextSign for each case
+     * - Updates database with fetched status (marks as COMPLETED)
+     * - On failure: marks as FAILED and retries after delay
+     * - After max retries: logs error (manual intervention needed)
+     */
+    @Scheduled(every = "5m")  // Every 5 minutes
+    void scheduleNextSignStatusSync() {
+        try {
+            // Safety check: prevent duplicate executions
+            if (jobOperator.getJobNames().contains("nextsign-status-sync")) {
+                if (!jobOperator.getRunningExecutions("nextsign-status-sync").isEmpty()) {
+                    log.debug("nextsign-status-sync already running, skipping");
+                    return;
+                }
+            }
+
+            log.debug("Starting nextsign-status-sync batch job");
+            jobOperator.start("nextsign-status-sync", new Properties());
+
+        } catch (Exception e) {
+            // Log at debug level since this runs frequently
+            log.debug("Could not schedule nextsign-status-sync: " + e.getMessage());
+        }
+    }
+
 }
