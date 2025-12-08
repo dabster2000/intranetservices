@@ -424,33 +424,99 @@ public class SigningService {
      * Syncs local database with NextSign's case list.
      * Discovers cases created externally (via NextSign dashboard or direct API).
      *
-     * Note: This method is not yet fully implemented as it requires
-     * NextSign list API integration via NextsignSigningService.
+     * This method fetches all cases from NextSign and ensures they exist in the local database.
+     * Cases already in the database are updated with fresh status from NextSign.
      *
      * @param userUuid User UUID to sync cases for
+     * @return Number of cases synced
      */
     @Transactional
-    public void syncCasesFromNextSign(String userUuid) {
+    public int syncCasesFromNextSign(String userUuid) {
         log.infof("Syncing cases from NextSign for user: %s", userUuid);
 
-        // NOTE: This is a placeholder. The actual implementation requires
-        // NextsignSigningService to expose a listCases() method that calls
-        // the NextSign client's listCases() endpoint.
-        //
-        // Once that's available, the implementation would be:
-        // 1. Call nextsignService.listCases(userUuid) or similar
-        // 2. For each case summary returned:
-        //    a. Check if it exists in our database
-        //    b. If not, fetch full status via getStatus()
-        //    c. Save to database via saveOrUpdateCase()
-        //
-        // For now, log a warning that this feature is not yet implemented.
+        try {
+            int syncedCount = 0;
+            int pageIndex = 0;
+            int pageSize = 50; // Use reasonable page size
+            boolean hasMore = true;
 
-        log.warn("syncCasesFromNextSign() is not yet fully implemented. " +
-                 "Requires NextsignSigningService.listCases() integration.");
+            // Paginate through all cases from NextSign
+            while (hasMore) {
+                log.debugf("Fetching page %d (size: %d) from NextSign", pageIndex, pageSize);
 
-        throw new SigningException("Sync functionality not yet implemented. " +
-                                  "Requires NextSign list API integration.");
+                // Fetch cases from NextSign (no filtering - get all cases)
+                dk.trustworks.intranet.utils.dto.nextsign.ListCasesResponse response =
+                    nextsignService.listCases(null, null, pageSize, pageIndex);
+
+                List<dk.trustworks.intranet.utils.dto.nextsign.ListCasesResponse.CaseSummary> cases =
+                    response.getCases();
+
+                if (cases.isEmpty()) {
+                    log.debugf("No more cases found at page %d", pageIndex);
+                    hasMore = false;
+                    break;
+                }
+
+                log.infof("Processing %d cases from NextSign (page %d)", cases.size(), pageIndex);
+
+                // Process each case
+                for (var caseSummary : cases) {
+                    try {
+                        String caseKey = caseSummary.nextSignKey();
+
+                        if (caseKey == null || caseKey.isBlank()) {
+                            log.warnf("Case %s has no nextSignKey, skipping", caseSummary.id());
+                            continue;
+                        }
+
+                        // Check if case already exists in database
+                        boolean exists = signingCaseRepository.findByCaseKey(caseKey).isPresent();
+
+                        if (!exists) {
+                            log.infof("Found new case from NextSign: %s (title: %s)",
+                                caseKey, caseSummary.title());
+                        } else {
+                            log.debugf("Updating existing case: %s", caseKey);
+                        }
+
+                        // Fetch full status from NextSign and save/update in database
+                        GetCaseStatusResponse fullStatus = nextsignService.getCaseStatus(caseKey);
+                        SigningCaseStatus status = mapToSigningCaseStatus(caseKey, fullStatus);
+                        saveOrUpdateCase(caseKey, userUuid, status);
+
+                        syncedCount++;
+
+                    } catch (Exception e) {
+                        log.errorf(e, "Failed to sync case %s: %s",
+                            caseSummary.nextSignKey(), e.getMessage());
+                        // Continue with next case even if one fails
+                    }
+                }
+
+                // Check if there are more pages
+                if (response.data() != null) {
+                    int total = response.data().total();
+                    int currentEnd = (pageIndex + 1) * pageSize;
+                    hasMore = currentEnd < total;
+                    log.debugf("Pagination: processed %d of %d total cases", currentEnd, total);
+                } else {
+                    hasMore = false;
+                }
+
+                pageIndex++;
+            }
+
+            log.infof("Sync completed successfully. Synced %d cases for user %s", syncedCount, userUuid);
+            return syncedCount;
+
+        } catch (NextsignSigningService.NextsignException e) {
+            log.errorf(e, "NextSign API error during sync: %s", e.getMessage());
+            throw new SigningException("Failed to sync cases from NextSign: " + e.getMessage(), e);
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error during sync: %s", e.getMessage());
+            throw new SigningException("Failed to sync cases: " + e.getMessage(), e);
+        }
     }
 
     /**

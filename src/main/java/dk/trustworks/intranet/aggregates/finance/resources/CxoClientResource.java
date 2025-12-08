@@ -1,12 +1,15 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.ActiveClientsDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.AvgEngagementLengthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.AvgRevenuePerClientDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientDetailTableDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientPortfolioBubbleDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRevenueParetoDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConcentrationIndexDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
 import jakarta.annotation.security.RolesAllowed;
@@ -437,6 +440,137 @@ public class CxoClientResource {
 
         log.debugf("Service Line Penetration: %d clients × %d service lines",
                 result.getClientNames().size(), result.getServiceLines().size());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Average Engagement Length KPI data.
+     * Returns the portfolio-wide average customer relationship duration in months,
+     * with YoY comparison and monthly sparkline trend.
+     *
+     * Definition: Engagement length is calculated from the work table as the duration
+     * between MIN(registered) and MAX(registered) for each client.
+     *
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return AvgEngagementLengthDTO with average, prior average, change %, and sparkline
+     */
+    @GET
+    @Path("/avg-engagement-length")
+    public Response getAvgEngagementLength(
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/avg-engagement-length: toDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, companyIds=%s",
+                toDate, sectors, serviceLines, contractTypes, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        AvgEngagementLengthDTO result = cxoClientService.getAvgEngagementLength(
+                toDate,
+                sectorSet,
+                serviceLineSet,
+                contractTypeSet,
+                companyIdSet
+        );
+
+        log.debugf("Avg Engagement Length: %.2f months, Prior: %.2f months, Change: %+.2f%%",
+                result.getAvgEngagementMonths(), result.getPriorYearAvgMonths(), result.getChangePercent());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Engagement by Company chart data.
+     * Returns top clients by engagement duration with their relationship metrics.
+     *
+     * Includes first/last engagement dates, total hours, and unique consultants
+     * for each client. Sorted by engagement duration descending.
+     *
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param sectors Comma-separated sector IDs (optional)
+     * @param limit Maximum number of clients to return (default 20)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return EngagementByCompanyDTO with client list and portfolio average
+     */
+    @GET
+    @Path("/engagement-by-company")
+    public Response getEngagementByCompany(
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("limit") Integer limit,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/engagement-by-company: toDate=%s, sectors=%s, limit=%d, companyIds=%s",
+                toDate, sectors, limit, companyIds);
+
+        // Parse multi-value filters
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Default limit to 20 if not provided
+        int effectiveLimit = (limit != null && limit > 0) ? limit : 20;
+
+        // Call service layer
+        EngagementByCompanyDTO result = cxoClientService.getEngagementByCompany(
+                toDate,
+                sectorSet,
+                effectiveLimit,
+                companyIdSet
+        );
+
+        log.debugf("Engagement by Company: %d clients, portfolio avg %.2f months",
+                Integer.valueOf(result.getClients().size()), Double.valueOf(result.getPortfolioAvgMonths()));
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Industry Distribution chart data.
+     * Returns client portfolio distribution by industry segment including
+     * client counts and revenue amounts per segment.
+     *
+     * Segments include: PUBLIC, HEALTH, FINANCIAL, ENERGY, EDUCATION, OTHER
+     *
+     * @param fromDate Start date (ISO-8601 format, optional, defaults to 12 months before toDate)
+     * @param toDate End date (ISO-8601 format, optional, defaults to today)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return IndustryDistributionDTO with segments and totals
+     */
+    @GET
+    @Path("/industry-distribution")
+    public Response getIndustryDistribution(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/industry-distribution: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+
+        // Parse multi-value filters
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        // Call service layer
+        IndustryDistributionDTO result = cxoClientService.getIndustryDistribution(
+                fromDate,
+                toDate,
+                companyIdSet
+        );
+
+        log.debugf("Industry Distribution: %d segments, %d total clients, %.2f M total revenue",
+                Integer.valueOf(result.getSegments().size()), Integer.valueOf(result.getTotalClients()), Double.valueOf(result.getTotalRevenueM()));
 
         return Response.ok(result).build();
     }

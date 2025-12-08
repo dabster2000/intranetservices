@@ -1111,52 +1111,58 @@ public class CxoFinanceService {
             LocalDate availableFromDate, LocalDate availableToDate,
             Set<String> serviceLines, Set<String> companyIds) {
 
-        // Query 1: Get billable hours from work_full (accurate source for billable work)
-        // Uses w.registered (registration date) with grace period to catch late registrations
+        // Billable hours from base work table (avoids work_full view)
         StringBuilder billableSql = new StringBuilder(
-                "SELECT COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END), 0.0) AS total_billable_hours " +
-                "FROM work_full w " +
-                "WHERE w.registered >= :billableFromDate " +
-                "  AND w.registered <= :billableToDate " +
-                "  AND w.type = 'CONSULTANT' "
+                "SELECT COALESCE(SUM(w.workduration), 0.0) AS total_billable_hours " +
+                        "FROM work w " +
+                        "WHERE w.registered >= :billableFromDate " +
+                        "  AND w.registered <= :billableToDate " +
+                        "  AND w.workduration > 0 " +
+                        "  AND w.rate > 0 " +
+                        "  AND EXISTS ( " +
+                        "    SELECT 1 " +
+                        "    FROM userstatus us " +
+                        "    WHERE us.useruuid = w.useruuid " +
+                        "      AND us.statusdate = ( " +
+                        "        SELECT MAX(us2.statusdate) " +
+                        "        FROM userstatus us2 " +
+                        "        WHERE us2.useruuid = w.useruuid " +
+                        "          AND us2.statusdate <= w.registered " +
+                        "      ) " +
+                        "      AND us.type = 'CONSULTANT' " +
+                        "      AND us.status = 'ACTIVE' "
         );
 
-        // Add optional filters for billable hours query
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            // Join to user table to get practice/service line
-            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
-        }
         if (companyIds != null && !companyIds.isEmpty()) {
-            billableSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
+            billableSql.append("      AND us.companyuuid IN (:companyIds) ");
+        }
+
+        billableSql.append("  ) ");
+
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
         }
 
         Query billableQuery = em.createNativeQuery(billableSql.toString());
         billableQuery.setParameter("billableFromDate", billableFromDate);
         billableQuery.setParameter("billableToDate", billableToDate);
 
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            billableQuery.setParameter("serviceLines", serviceLines);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            billableQuery.setParameter("companyIds", companyIds);
-        }
+        if (serviceLines != null && !serviceLines.isEmpty()) billableQuery.setParameter("serviceLines", serviceLines);
+        if (companyIds != null && !companyIds.isEmpty()) billableQuery.setParameter("companyIds", companyIds);
 
         double billableHours = ((Number) billableQuery.getSingleResult()).doubleValue();
 
-        // Query 2: Get available hours from bi_data_per_day (daily availability data)
-        // Uses b.document_date (actual work date) for the true 4-week period
+        // Available hours (unchanged)
         StringBuilder availableSql = new StringBuilder(
                 "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
-                "FROM bi_data_per_day b " +
-                "WHERE b.document_date >= :availableFromDate " +
-                "  AND b.document_date <= :availableToDate " +
-                "  AND b.consultant_type = 'CONSULTANT' " +
-                "  AND b.status_type = 'ACTIVE' "
+                        "FROM bi_data_per_day b " +
+                        "WHERE b.document_date >= :availableFromDate " +
+                        "  AND b.document_date <= :availableToDate " +
+                        "  AND b.consultant_type = 'CONSULTANT' " +
+                        "  AND b.status_type = 'ACTIVE' "
         );
 
-        // Add optional filters for available hours query
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            // Join to user table to get practice/service line
             availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -1167,12 +1173,8 @@ public class CxoFinanceService {
         availableQuery.setParameter("availableFromDate", availableFromDate);
         availableQuery.setParameter("availableToDate", availableToDate);
 
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            availableQuery.setParameter("serviceLines", serviceLines);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            availableQuery.setParameter("companyIds", companyIds);
-        }
+        if (serviceLines != null && !serviceLines.isEmpty()) availableQuery.setParameter("serviceLines", serviceLines);
+        if (companyIds != null && !companyIds.isEmpty()) availableQuery.setParameter("companyIds", companyIds);
 
         double availableHours = ((Number) availableQuery.getSingleResult()).doubleValue();
 
@@ -1181,6 +1183,7 @@ public class CxoFinanceService {
 
         return new double[]{billableHours, availableHours};
     }
+
 
     /**
      * Helper method: Query actual revenue from fact_project_financials for a date range.
@@ -1701,107 +1704,100 @@ public class CxoFinanceService {
             Set<String> contractTypes,
             Set<String> companyIds) {
 
-        // Build SQL with 3 CTEs: client_consultant_work, client_revenue, client_combined
         StringBuilder sql = new StringBuilder(
-                "WITH client_consultant_work AS ( " +
-                "    SELECT " +
-                "        p.clientuuid AS client_id, " +
-                "        w.useruuid AS user_id, " +
-                "        COUNT(DISTINCT w.useruuid) OVER (PARTITION BY p.clientuuid) AS consultant_count " +
-                "    FROM work w " +
-                "    LEFT JOIN task t ON w.taskuuid = t.uuid " +
-                "    LEFT JOIN project p ON COALESCE(w.projectuuid, t.projectuuid) = p.uuid " +
-                "    JOIN user u ON w.useruuid = u.uuid " +
-                "    JOIN userstatus us ON u.uuid = us.useruuid " +
-                "    WHERE p.clientuuid IS NOT NULL " +
-                "      AND w.registered BETWEEN :fromDate AND :toDate " +
-                "      AND w.workduration > 0 " +
-                "      AND p.clientuuid NOT IN (:excludedClientIds) " +
-                "      AND us.statusdate = ( " +
-                "          SELECT MAX(us2.statusdate) " +
-                "          FROM userstatus us2 " +
-                "          WHERE us2.useruuid = u.uuid " +
-                "            AND us2.statusdate <= w.registered " +
-                "      ) " +
-                "      AND us.type = 'CONSULTANT' " +
-                "      AND us.status = 'ACTIVE' "
+                "WITH client_consultants AS ( " +
+                        "  SELECT " +
+                        "    p.clientuuid AS client_id, " +
+                        "    COUNT(DISTINCT w.useruuid) AS consultant_count " +   // <-- no window function
+                        "  FROM work w " +
+                        "  LEFT JOIN task t ON w.taskuuid = t.uuid " +
+                        "  LEFT JOIN project p ON COALESCE(w.projectuuid, t.projectuuid) = p.uuid " +
+                        "  WHERE p.clientuuid IS NOT NULL " +
+                        "    AND w.registered BETWEEN :fromDate AND :toDate " +
+                        "    AND w.workduration > 0 " +
+                        "    AND p.clientuuid NOT IN (:excludedClientIds) " +
+                        "    AND EXISTS ( " +
+                        "      SELECT 1 " +
+                        "      FROM userstatus us " +
+                        "      WHERE us.useruuid = w.useruuid " +
+                        "        AND us.statusdate = ( " +
+                        "          SELECT MAX(us2.statusdate) " +
+                        "          FROM userstatus us2 " +
+                        "          WHERE us2.useruuid = w.useruuid " +
+                        "            AND us2.statusdate <= w.registered " +
+                        "        ) " +
+                        "        AND us.type = 'CONSULTANT' " +
+                        "        AND us.status = 'ACTIVE' " +
+                        "    ) "
         );
 
-        // Add filters to consultant CTE via fact_project_financials join
+        // Optional: restrict the "consultant participation" side to projects matching the same filters
         if ((sectors != null && !sectors.isEmpty()) ||
-            (serviceLines != null && !serviceLines.isEmpty()) ||
-            (contractTypes != null && !contractTypes.isEmpty()) ||
-            (companyIds != null && !companyIds.isEmpty())) {
+                (serviceLines != null && !serviceLines.isEmpty()) ||
+                (contractTypes != null && !contractTypes.isEmpty()) ||
+                (companyIds != null && !companyIds.isEmpty())) {
 
-            sql.append("      AND p.uuid IN ( " +
-                      "          SELECT DISTINCT f.project_id " +
-                      "          FROM fact_project_financials f " +
-                      "          WHERE 1=1 ");
+            sql.append(
+                    "    AND p.uuid IN ( " +
+                            "      SELECT DISTINCT f.project_id " +
+                            "      FROM fact_project_financials f " +
+                            "      WHERE 1=1 "
+            );
 
             if (companyIds != null && !companyIds.isEmpty()) {
-                sql.append("AND f.companyuuid IN (:companyIds) ");
+                sql.append(" AND f.companyuuid IN (:companyIds) ");
             }
             if (sectors != null && !sectors.isEmpty()) {
-                sql.append("AND f.sector_id IN (:sectors) ");
+                sql.append(" AND f.sector_id IN (:sectors) ");
             }
             if (serviceLines != null && !serviceLines.isEmpty()) {
-                sql.append("AND f.service_line_id IN (:serviceLines) ");
+                sql.append(" AND f.service_line_id IN (:serviceLines) ");
             }
             if (contractTypes != null && !contractTypes.isEmpty()) {
-                sql.append("AND f.contract_type_id IN (:contractTypes) ");
+                sql.append(" AND f.contract_type_id IN (:contractTypes) ");
             }
 
-            sql.append("      ) ");
+            sql.append("    ) ");
         }
 
         sql.append(
-                "    GROUP BY p.clientuuid, w.useruuid " +
-                "), " +
-                "client_revenue AS ( " +
-                "    SELECT " +
-                "        f.client_id, " +
-                "        SUM(f.recognized_revenue_dkk) AS client_revenue " +
-                "    FROM fact_project_financials f " +
-                "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) " +
-                "          BETWEEN :fromKey AND :toKey " +
-                "      AND f.client_id IS NOT NULL " +
-                "      AND f.client_id NOT IN (:excludedClientIds) " +
-                "      AND f.recognized_revenue_dkk > 0 "
+                "  GROUP BY p.clientuuid " +
+                        "), " +
+                        "client_revenue AS ( " +
+                        "  SELECT " +
+                        "    f.client_id, " +
+                        "    SUM(f.recognized_revenue_dkk) AS client_revenue " +
+                        "  FROM fact_project_financials f " +
+                        "  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) " +
+                        "        BETWEEN :fromKey AND :toKey " +
+                        "    AND f.client_id IS NOT NULL " +
+                        "    AND f.client_id NOT IN (:excludedClientIds) " +
+                        "    AND f.recognized_revenue_dkk > 0 "
         );
 
-        // Add same filters to revenue CTE
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND f.companyuuid IN (:companyIds) ");
+            sql.append(" AND f.companyuuid IN (:companyIds) ");
         }
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("AND f.sector_id IN (:sectors) ");
+            sql.append(" AND f.sector_id IN (:sectors) ");
         }
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND f.service_line_id IN (:serviceLines) ");
+            sql.append(" AND f.service_line_id IN (:serviceLines) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("AND f.contract_type_id IN (:contractTypes) ");
+            sql.append(" AND f.contract_type_id IN (:contractTypes) ");
         }
 
         sql.append(
-                "    GROUP BY f.client_id " +
-                "), " +
-                "client_combined AS ( " +
-                "    SELECT " +
-                "        r.client_id, " +
-                "        COALESCE(MAX(w.consultant_count), 0) AS consultant_count, " +
-                "        r.client_revenue " +
-                "    FROM client_revenue r " +
-                "    LEFT JOIN client_consultant_work w ON r.client_id = w.client_id " +
-                "    GROUP BY r.client_id, r.client_revenue " +
-                ") " +
-                "SELECT " +
-                "    COALESCE(SUM(client_revenue), 0.0) AS total_revenue, " +
-                "    COALESCE(SUM(CASE WHEN consultant_count >= 2 THEN client_revenue ELSE 0 END), 0.0) AS repeat_revenue " +
-                "FROM client_combined"
+                "  GROUP BY f.client_id " +
+                        ") " +
+                        "SELECT " +
+                        "  COALESCE(SUM(cr.client_revenue), 0.0) AS total_revenue, " +
+                        "  COALESCE(SUM(CASE WHEN COALESCE(cc.consultant_count, 0) >= 2 THEN cr.client_revenue ELSE 0 END), 0.0) AS repeat_revenue " +
+                        "FROM client_revenue cr " +
+                        "LEFT JOIN client_consultants cc ON cr.client_id = cc.client_id"
         );
 
-        // Execute query
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", toDate);
@@ -1809,18 +1805,10 @@ public class CxoFinanceService {
         query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
         query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-        if (sectors != null && !sectors.isEmpty()) {
-            query.setParameter("sectors", sectors);
-        }
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            query.setParameter("serviceLines", serviceLines);
-        }
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            query.setParameter("contractTypes", contractTypes);
-        }
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty()) query.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty()) query.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
 
         Object[] result = (Object[]) query.getSingleResult();
         double totalRevenue = ((Number) result[0]).doubleValue();
@@ -1828,6 +1816,7 @@ public class CxoFinanceService {
 
         return Map.of("totalRevenue", totalRevenue, "repeatRevenue", repeatRevenue);
     }
+
 
     /**
      * Helper method: Generate 12-month sparkline for repeat business share by consultants.
@@ -3185,47 +3174,56 @@ public class CxoFinanceService {
             LocalDate fromDate, LocalDate toDate,
             Set<String> serviceLines, Set<String> companyIds) {
 
-        // Query 1: Get billable hours from work_full (accurate source for billable work)
         StringBuilder billableSql = new StringBuilder(
-                "SELECT COALESCE(SUM(CASE WHEN w.rate > 0 AND w.workduration > 0 THEN w.workduration ELSE 0 END), 0.0) AS total_billable_hours " +
-                "FROM work_full w " +
-                "WHERE w.registered >= :fromDate " +
-                "  AND w.registered <= :toDate " +
-                "  AND w.type = 'CONSULTANT' "
+                "SELECT COALESCE(SUM(w.workduration), 0.0) AS total_billable_hours " +
+                        "FROM work w " +
+                        "WHERE w.registered >= :fromDate " +
+                        "  AND w.registered <= :toDate " +
+                        "  AND w.workduration > 0 " +
+                        "  AND w.rate > 0 " +
+                        "  AND EXISTS ( " +
+                        "    SELECT 1 " +
+                        "    FROM userstatus us " +
+                        "    WHERE us.useruuid = w.useruuid " +
+                        "      AND us.statusdate = ( " +
+                        "        SELECT MAX(us2.statusdate) " +
+                        "        FROM userstatus us2 " +
+                        "        WHERE us2.useruuid = w.useruuid " +
+                        "          AND us2.statusdate <= w.registered " +
+                        "      ) " +
+                        "      AND us.type = 'CONSULTANT' " +
+                        "      AND us.status = 'ACTIVE' "
         );
 
-        // Add optional filters
+        if (companyIds != null && !companyIds.isEmpty()) {
+            billableSql.append("      AND us.companyuuid IN (:companyIds) ");
+        }
+
+        billableSql.append("  ) ");
+
         if (serviceLines != null && !serviceLines.isEmpty()) {
             billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            billableSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
         }
 
         Query billableQuery = em.createNativeQuery(billableSql.toString());
         billableQuery.setParameter("fromDate", fromDate);
         billableQuery.setParameter("toDate", toDate);
 
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            billableQuery.setParameter("serviceLines", serviceLines);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            billableQuery.setParameter("companyIds", companyIds);
-        }
+        if (serviceLines != null && !serviceLines.isEmpty()) billableQuery.setParameter("serviceLines", serviceLines);
+        if (companyIds != null && !companyIds.isEmpty()) billableQuery.setParameter("companyIds", companyIds);
 
         double billableHours = ((Number) billableQuery.getSingleResult()).doubleValue();
 
-        // Query 2: Get available hours from bi_data_per_day (daily availability data)
+        // Available hours unchanged
         StringBuilder availableSql = new StringBuilder(
                 "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
-                "FROM bi_data_per_day b " +
-                "WHERE b.document_date >= :fromDate " +
-                "  AND b.document_date <= :toDate " +
-                "  AND b.consultant_type = 'CONSULTANT' " +
-                "  AND b.status_type = 'ACTIVE' "
+                        "FROM bi_data_per_day b " +
+                        "WHERE b.document_date >= :fromDate " +
+                        "  AND b.document_date <= :toDate " +
+                        "  AND b.consultant_type = 'CONSULTANT' " +
+                        "  AND b.status_type = 'ACTIVE' "
         );
 
-        // Add optional filters
         if (serviceLines != null && !serviceLines.isEmpty()) {
             availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
         }
@@ -3237,20 +3235,14 @@ public class CxoFinanceService {
         availableQuery.setParameter("fromDate", fromDate);
         availableQuery.setParameter("toDate", toDate);
 
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            availableQuery.setParameter("serviceLines", serviceLines);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            availableQuery.setParameter("companyIds", companyIds);
-        }
+        if (serviceLines != null && !serviceLines.isEmpty()) availableQuery.setParameter("serviceLines", serviceLines);
+        if (companyIds != null && !companyIds.isEmpty()) availableQuery.setParameter("companyIds", companyIds);
 
         double capacityHours = ((Number) availableQuery.getSingleResult()).doubleValue();
 
-        log.debugf("Prior utilization data: fromDate=%s, toDate=%s, billable=%.0f, capacity=%.0f",
-                fromDate, toDate, billableHours, capacityHours);
-
         return Map.of("billableHours", billableHours, "capacityHours", capacityHours);
     }
+
 
     /**
      * Build weekly sparkline data (8 data points) for forecast utilization.

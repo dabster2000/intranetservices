@@ -25,6 +25,36 @@ public class CxoClientService {
     @Inject
     EntityManager em;
 
+    // -------------------------------------------------------------------------
+    // Generic helpers for safe DB value conversion (BIT, Boolean, Number, etc.)
+    // -------------------------------------------------------------------------
+
+    private static long toLong(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number n) return n.longValue();
+        if (v instanceof Boolean b) return b ? 1L : 0L;
+        if (v instanceof byte[] bytes) {
+            return (bytes.length > 0 && bytes[0] != 0) ? 1L : 0L;
+        }
+        if (v instanceof java.util.BitSet bs) {
+            return bs.isEmpty() ? 0L : 1L;
+        }
+        return Long.parseLong(v.toString());
+    }
+
+    private static double toDouble(Object v) {
+        if (v == null) return 0d;
+        if (v instanceof Number n) return n.doubleValue();
+        if (v instanceof Boolean b) return b ? 1d : 0d;
+        if (v instanceof byte[] bytes) {
+            return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
+        }
+        if (v instanceof java.util.BitSet bs) {
+            return bs.isEmpty() ? 0d : 1d;
+        }
+        return Double.parseDouble(v.toString());
+    }
+
     /**
      * Calculates Active Clients (TTM) KPI.
      * Returns the count of distinct clients with revenue in a trailing 12-month window.
@@ -1106,13 +1136,16 @@ public class CxoClientService {
         StringBuilder sql = new StringBuilder();
 
         // CTE 1: Deduplicated current TTM data
+        // NOTE: fact_project_financials does not have client_name or invoice_date, so we:
+        // - join to client table for client_name
+        // - use month_key to derive last_activity_month (last day of most recent month with revenue)
         sql.append("WITH dedupe_current AS ( ");
-        sql.append("  SELECT f.client_id, f.client_name, f.sector_id, ");
+        sql.append("  SELECT f.client_id, c.name AS client_name, f.sector_id, ");
         sql.append("         f.project_id, f.service_line_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
-        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost, ");
-        sql.append("         MAX(f.invoice_date) as last_invoice ");
+        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
         sql.append("  FROM fact_project_financials f ");
+        sql.append("  LEFT JOIN client c ON f.client_id = c.uuid ");
         sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
@@ -1132,8 +1165,8 @@ public class CxoClientService {
             sql.append("    AND f.companyuuid IN (:companyIds) ");
         }
 
-        // CRITICAL: V118 deduplication
-        sql.append("  GROUP BY f.client_id, f.project_id, f.month_key ");
+        // CRITICAL: V118 deduplication - include client_name in GROUP BY since we select it
+        sql.append("  GROUP BY f.client_id, c.name, f.sector_id, f.project_id, f.service_line_id, f.month_key ");
         sql.append("), ");
 
         // CTE 2: Deduplicated prior year TTM data (for YoY calculation)
@@ -1164,13 +1197,14 @@ public class CxoClientService {
         sql.append("), ");
 
         // CTE 3: Current period metrics by client
+        // NOTE: Use MAX(month_key) to derive last activity date (last day of most recent month)
         sql.append("current_metrics AS ( ");
         sql.append("  SELECT client_id, client_name, sector_id, ");
         sql.append("         SUM(revenue) as ttm_revenue, ");
         sql.append("         SUM(cost) as ttm_cost, ");
         sql.append("         COUNT(DISTINCT project_id) as active_projects, ");
         sql.append("         COUNT(DISTINCT service_line_id) as service_line_count, ");
-        sql.append("         MAX(last_invoice) as last_invoice_date ");
+        sql.append("         LAST_DAY(STR_TO_DATE(CONCAT(MAX(month_key), '01'), '%Y%m%d')) as last_activity_date ");
         sql.append("  FROM dedupe_current ");
         sql.append("  GROUP BY client_id, client_name, sector_id ");
         sql.append("), ");
@@ -1187,7 +1221,7 @@ public class CxoClientService {
         sql.append("SELECT cm.client_id, cm.client_name, cm.sector_id, ");
         sql.append("       cm.ttm_revenue, cm.ttm_cost, ");
         sql.append("       cm.active_projects, cm.service_line_count, ");
-        sql.append("       cm.last_invoice_date, ");
+        sql.append("       cm.last_activity_date, ");
         sql.append("       COALESCE(pr.prior_ttm_revenue, 0) as prior_revenue ");
         sql.append("FROM current_metrics cm ");
         sql.append("LEFT JOIN prior_revenue pr ON cm.client_id = pr.client_id ");
@@ -1670,5 +1704,460 @@ public class CxoClientService {
             log.warnf("Failed to get client name for %s, using ID", clientId);
             return clientId;
         }
+    }
+
+    // ============================================================================
+    // Customer Engagement Metrics Methods
+    // ============================================================================
+
+    /**
+     * Internal client UUID to exclude from engagement metrics.
+     * This is the internal Trustworks client used for non-client work.
+     */
+    private static final String INTERNAL_CLIENT_UUID = "d58bb00b-4474-4250-84eb-d8f77548ddac";
+
+    /**
+     * Mapping from segment codes to display names.
+     */
+    private static final Map<String, String> SEGMENT_DISPLAY_NAMES = Map.of(
+            "PUBLIC", "Public Sector",
+            "HEALTH", "Healthcare",
+            "FINANCIAL", "Financial Services",
+            "ENERGY", "Energy",
+            "EDUCATION", "Education",
+            "OTHER", "Other"
+    );
+
+    /**
+     * Calculates Average Engagement Length KPI.
+     * Returns the portfolio-wide average customer relationship duration in months.
+     *
+     * Business Logic:
+     * - Engagement = duration between first and last work record per client
+     * - Excludes internal client (INTERNAL_CLIENT_UUID)
+     * - Calculates prior year average for YoY comparison
+     * - Builds 12-month sparkline showing rolling average trend
+     *
+     * @param toDate End date (optional, defaults to today)
+     * @param sectors Multi-select sector filter
+     * @param serviceLines Multi-select service line filter
+     * @param contractTypes Multi-select contract type filter
+     * @param companyIds Multi-select company filter
+     * @return AvgEngagementLengthDTO with average, prior average, change %, and sparkline
+     */
+    public AvgEngagementLengthDTO getAvgEngagementLength(
+            LocalDate toDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            Set<String> companyIds) {
+
+        // Normalize toDate
+        LocalDate toDateNormalized = (toDate != null) ? toDate : LocalDate.now();
+
+        // Calculate prior year date for comparison
+        LocalDate priorYearDate = toDateNormalized.minusYears(1);
+
+        log.debugf("Avg Engagement Length: toDate=%s, priorYear=%s", toDateNormalized, priorYearDate);
+
+        // Query current engagement metrics
+        EngagementMetrics currentMetrics = queryEngagementMetrics(toDateNormalized, sectors, companyIds);
+
+        // Query prior year engagement metrics
+        EngagementMetrics priorMetrics = queryEngagementMetrics(priorYearDate, sectors, companyIds);
+
+        // Calculate change percentage
+        double changePercent = (priorMetrics.avgMonths > 0)
+                ? ((currentMetrics.avgMonths - priorMetrics.avgMonths) / priorMetrics.avgMonths) * 100.0
+                : 0.0;
+
+        // Build sparkline (12 monthly rolling averages)
+        double[] sparklineData = buildEngagementSparkline(toDateNormalized, sectors, companyIds);
+
+        log.debugf("Avg Engagement: current=%.2f months (%d clients), prior=%.2f months, change=%.2f%%",
+                currentMetrics.avgMonths, currentMetrics.clientCount, priorMetrics.avgMonths, changePercent);
+
+        return new AvgEngagementLengthDTO(
+                Math.round(currentMetrics.avgMonths * 100.0) / 100.0,
+                Math.round(priorMetrics.avgMonths * 100.0) / 100.0,
+                Math.round(changePercent * 100.0) / 100.0,
+                currentMetrics.clientCount,
+                sparklineData
+        );
+    }
+
+    /**
+     * Internal record for engagement metrics calculation results.
+     */
+    private record EngagementMetrics(double avgMonths, int clientCount) {}
+
+    /**
+     * Queries engagement metrics from the work table.
+     * Calculates average engagement duration across all clients with work records.
+     *
+     * <p><b>Exclusion Rule:</b> New active clients (first engagement within 6 months
+     * of asOfDate AND still active) are excluded from the calculation. This prevents
+     * new client acquisitions from artificially lowering the portfolio-wide average.</p>
+     *
+     * @param asOfDate Calculate engagement up to this date
+     * @param sectors Optional sector filter
+     * @param companyIds Optional company filter
+     * @return EngagementMetrics with average months and client count
+     */
+    private EngagementMetrics queryEngagementMetrics(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  AVG(DATEDIFF(ce.last_engagement, ce.first_engagement) / 30.44) AS avg_months, ");
+        sql.append("  COUNT(*) AS client_count ");
+        sql.append("FROM ( ");
+        sql.append("  SELECT ");
+        sql.append("    w.clientuuid AS client_id, ");
+        sql.append("    MIN(w.registered) AS first_engagement, ");
+        sql.append("    MAX(w.registered) AS last_engagement ");
+        sql.append("  FROM work w ");
+        sql.append("  INNER JOIN client c ON w.clientuuid = c.uuid ");
+        sql.append("  WHERE w.clientuuid <> :internalClientId ");
+        sql.append("    AND w.registered <= :asOfDate ");
+        sql.append("    AND w.workduration > 0 ");
+
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("    AND c.segment IN (:sectors) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            // NOTE: company filter – assumes work has a company dimension; adjust if needed.
+            sql.append("    AND c.uuid IN (");
+            sql.append("      SELECT DISTINCT w2.clientuuid ");
+            sql.append("      FROM work w2 ");
+            sql.append("      WHERE w2.companyuuid IN (:companyIds)");
+            sql.append("    ) ");
+        }
+
+        sql.append("  GROUP BY w.clientuuid ");
+        sql.append("  HAVING DATEDIFF(MAX(w.registered), MIN(w.registered)) > 0 ");
+        // Exclude new active clients (< 6 months engagement and still active)
+        // These artificially lower the average when there's many new acquisitions
+        sql.append("    AND NOT (MAX(c.active) = 1 AND DATEDIFF(:asOfDate, MIN(w.registered)) < 180) ");
+        sql.append(") AS ce");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("internalClientId", INTERNAL_CLIENT_UUID);
+        query.setParameter("asOfDate", asOfDate);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        try {
+            Object[] result = (Object[]) query.getSingleResult();
+            double avgMonths = toDouble(result[0]);
+            int clientCount = (int) toLong(result[1]);
+            return new EngagementMetrics(avgMonths, clientCount);
+        } catch (Exception e) {
+            log.warnf("Failed to query engagement metrics: %s", e.getMessage());
+            return new EngagementMetrics(0.0, 0);
+        }
+    }
+
+    /**
+     * Builds sparkline data for engagement length trend.
+     * Returns 12 monthly rolling average values.
+     *
+     * @param anchorDate End date for the sparkline
+     * @param sectors Optional sector filter
+     * @param companyIds Optional company filter
+     * @return Array of 12 monthly average engagement values
+     */
+    private double[] buildEngagementSparkline(
+            LocalDate anchorDate,
+            Set<String> sectors,
+            Set<String> companyIds) {
+
+        double[] sparkline = new double[12];
+
+        for (int i = 0; i < 12; i++) {
+            LocalDate monthEnd = anchorDate.minusMonths(11 - i);
+            EngagementMetrics metrics = queryEngagementMetrics(monthEnd, sectors, companyIds);
+            sparkline[i] = Math.round(metrics.avgMonths * 100.0) / 100.0;
+        }
+
+        return sparkline;
+    }
+
+    /**
+     * Gets Engagement by Company chart data.
+     * Returns top clients by engagement duration with relationship metrics.
+     *
+     * Business Logic:
+     * - Queries work table for engagement duration per client
+     * - Includes first/last engagement dates, total hours, unique consultants
+     * - Sorted by engagement duration descending
+     * - Limited to top N clients as specified
+     *
+     * @param toDate End date (optional, defaults to today)
+     * @param sectors Multi-select sector filter
+     * @param limit Maximum clients to return
+     * @param companyIds Multi-select company filter
+     * @return EngagementByCompanyDTO with client list and portfolio average
+     */
+    public EngagementByCompanyDTO getEngagementByCompany(
+            LocalDate toDate,
+            Set<String> sectors,
+            int limit,
+            Set<String> companyIds) {
+
+        LocalDate toDateNormalized = (toDate != null) ? toDate : LocalDate.now();
+
+        log.debugf("Engagement by Company: toDate=%s, limit=%d", toDateNormalized, limit);
+
+        // Build SQL query for client engagement metrics
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  c.uuid AS client_id, ");
+        sql.append("  c.name AS client_name, ");
+        sql.append("  c.segment, ");
+        sql.append("  c.active, ");
+        sql.append("  MIN(w.registered) AS first_engagement, ");
+        sql.append("  MAX(w.registered) AS last_engagement, ");
+        sql.append("  DATEDIFF(MAX(w.registered), MIN(w.registered)) AS engagement_days, ");
+        sql.append("  SUM(w.workduration) AS total_hours, ");
+        sql.append("  COUNT(DISTINCT w.useruuid) AS unique_consultants ");
+        sql.append("FROM client c ");
+        sql.append("INNER JOIN work w ON c.uuid = w.clientuuid ");
+        sql.append("WHERE c.uuid != :internalClientId ");
+        sql.append("  AND w.registered <= :toDate ");
+        sql.append("  AND w.workduration > 0 ");
+
+        if (sectors != null && !sectors.isEmpty()) {
+            sql.append("  AND c.segment IN (:sectors) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            // NOTE: adjust column name to match your schema if needed
+            sql.append("  AND w.companyuuid IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY c.uuid, c.name, c.segment, c.active ");
+        sql.append("HAVING engagement_days > 0 ");
+        sql.append("ORDER BY engagement_days DESC ");
+        sql.append("LIMIT :limit");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("internalClientId", INTERNAL_CLIENT_UUID);
+        query.setParameter("toDate", toDateNormalized);
+        query.setParameter("limit", limit);
+
+        if (sectors != null && !sectors.isEmpty()) {
+            query.setParameter("sectors", sectors);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Map results to DTOs
+        List<ClientEngagementDTO> clients = new ArrayList<>();
+        double totalMonths = 0.0;
+
+        for (Object[] row : results) {
+            String clientId = (String) row[0];
+            String clientName = (String) row[1];
+            String segment = (String) row[2];
+
+            // c.active is BIT(1) – can come back as Boolean, byte[], Number, BitSet, etc.
+            boolean active = toLong(row[3]) != 0L;
+
+            LocalDate firstEngagement = (LocalDate) row[4];
+            LocalDate lastEngagement = (LocalDate) row[5];
+            int engagementDays = (int) toLong(row[6]);
+            double totalHours = toDouble(row[7]);
+            int uniqueConsultants = (int) toLong(row[8]);
+
+            double engagementMonths = engagementDays / 30.44;
+            totalMonths += engagementMonths;
+
+            ClientEngagementDTO dto = new ClientEngagementDTO(
+                    clientId,
+                    clientName,
+                    segment != null ? segment : "OTHER",
+                    active,
+                    firstEngagement,
+                    lastEngagement,
+                    Math.round(engagementMonths * 100.0) / 100.0,
+                    Math.round(totalHours * 100.0) / 100.0,
+                    uniqueConsultants
+            );
+
+            clients.add(dto);
+        }
+
+        // Calculate portfolio average
+        double portfolioAvgMonths = clients.isEmpty() ? 0.0 : totalMonths / clients.size();
+
+        log.debugf("Engagement by Company: %d clients returned, avg=%.2f months",
+                Integer.valueOf(clients.size()), Double.valueOf(portfolioAvgMonths));
+
+        return new EngagementByCompanyDTO(
+                clients,
+                Math.round(portfolioAvgMonths * 100.0) / 100.0
+        );
+    }
+
+
+    /**
+     * Gets Industry Distribution chart data.
+     * Returns client portfolio distribution by industry segment.
+     *
+     * Business Logic:
+     * - Groups clients by segment (client.segment column)
+     * - Calculates client count and revenue per segment
+     * - Uses fact_project_financials with V118 deduplication for revenue
+     * - Maps segment codes to display names
+     *
+     * @param fromDate Start date (optional, defaults to 12 months before toDate)
+     * @param toDate End date (optional, defaults to today)
+     * @param companyIds Multi-select company filter
+     * @return IndustryDistributionDTO with segments and totals
+     */
+    public IndustryDistributionDTO getIndustryDistribution(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> companyIds) {
+
+        // Normalize dates to TTM window
+        LocalDate toDateNormalized = (toDate != null)
+                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
+                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        LocalDate fromDateNormalized = (fromDate != null)
+                ? fromDate.withDayOfMonth(1)
+                : toDateNormalized.minusMonths(11).withDayOfMonth(1);
+
+        String fromKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
+        String toKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
+
+        log.debugf("Industry Distribution: fromKey=%s, toKey=%s", fromKey, toKey);
+
+        // Build SQL with V118 deduplication for revenue
+        StringBuilder sql = new StringBuilder();
+        sql.append("WITH client_revenue AS ( ");
+        sql.append("  SELECT ");
+        sql.append("    c.uuid AS client_id, ");
+        sql.append("    c.segment, ");
+        sql.append("    c.active, ");
+        sql.append("    COALESCE(SUM(dedupe.revenue), 0) AS revenue ");
+        sql.append("  FROM client c ");
+        sql.append("  LEFT JOIN ( ");
+        sql.append("    SELECT client_id, SUM(max_revenue) AS revenue ");
+        sql.append("    FROM ( ");
+        sql.append("      SELECT client_id, project_id, month_key, MAX(recognized_revenue_dkk) AS max_revenue ");
+        sql.append("      FROM fact_project_financials ");
+        sql.append("      WHERE CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("        BETWEEN :fromKey AND :toKey ");
+
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("        AND companyuuid IN (:companyIds) ");
+        }
+
+        sql.append("      GROUP BY client_id, project_id, month_key ");
+        sql.append("    ) AS project_dedupe ");
+        sql.append("    GROUP BY client_id ");
+        sql.append("  ) dedupe ON c.uuid = dedupe.client_id ");
+        sql.append("  WHERE c.uuid != :internalClientId ");
+        sql.append("    AND (c.active = 1 OR dedupe.revenue > 0) ");
+        sql.append("  GROUP BY c.uuid, c.segment, c.active ");
+        sql.append("), ");
+
+        // Calculate engagement for each client
+        sql.append("client_engagement AS ( ");
+        sql.append("  SELECT ");
+        sql.append("    clientuuid AS client_id, ");
+        sql.append("    DATEDIFF(MAX(registered), MIN(registered)) / 30.44 AS engagement_months ");
+        sql.append("  FROM work ");
+        sql.append("  WHERE clientuuid != :internalClientId ");
+        sql.append("    AND workduration > 0 ");
+        sql.append("  GROUP BY clientuuid ");
+        sql.append("  HAVING DATEDIFF(MAX(registered), MIN(registered)) > 0 ");
+        sql.append(") ");
+
+        // Final aggregation by segment
+        sql.append("SELECT ");
+        sql.append("  COALESCE(cr.segment, 'OTHER') AS segment, ");
+        sql.append("  COUNT(*) AS client_count, ");
+        sql.append("  SUM(cr.revenue) / 1000000 AS revenue_m, ");
+        sql.append("  AVG(COALESCE(ce.engagement_months, 0)) AS avg_engagement_months ");
+        sql.append("FROM client_revenue cr ");
+        sql.append("LEFT JOIN client_engagement ce ON cr.client_id = ce.client_id ");
+        sql.append("GROUP BY COALESCE(cr.segment, 'OTHER') ");
+        sql.append("ORDER BY client_count DESC");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        query.setParameter("internalClientId", INTERNAL_CLIENT_UUID);
+
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> results = query.getResultList();
+
+        // Calculate totals first
+        int totalClients = 0;
+        double totalRevenueM = 0.0;
+
+        for (Object[] row : results) {
+            totalClients += ((Number) row[1]).intValue();
+            totalRevenueM += ((Number) row[2]).doubleValue();
+        }
+
+        // Map results to DTOs with percentages
+        List<IndustrySegmentDTO> segments = new ArrayList<>();
+
+        for (Object[] row : results) {
+            String segmentCode = (String) row[0];
+            int clientCount = ((Number) row[1]).intValue();
+            double revenueM = ((Number) row[2]).doubleValue();
+            double avgEngagementMonths = ((Number) row[3]).doubleValue();
+
+            // Map segment code to display name
+            String displayName = SEGMENT_DISPLAY_NAMES.getOrDefault(segmentCode, segmentCode);
+
+            // Calculate percentages
+            double clientCountPercent = (totalClients > 0)
+                    ? (clientCount / (double) totalClients) * 100.0
+                    : 0.0;
+            double revenuePercent = (totalRevenueM > 0)
+                    ? (revenueM / totalRevenueM) * 100.0
+                    : 0.0;
+
+            IndustrySegmentDTO dto = new IndustrySegmentDTO(
+                    segmentCode,
+                    displayName,
+                    clientCount,
+                    Math.round(clientCountPercent * 100.0) / 100.0,
+                    Math.round(revenueM * 100.0) / 100.0,
+                    Math.round(revenuePercent * 100.0) / 100.0,
+                    Math.round(avgEngagementMonths * 100.0) / 100.0
+            );
+
+            segments.add(dto);
+        }
+
+        log.debugf("Industry Distribution: %d segments, %d clients, %.2f M revenue",
+                Integer.valueOf(segments.size()), Integer.valueOf(totalClients), Double.valueOf(totalRevenueM));
+
+        return new IndustryDistributionDTO(
+                segments,
+                totalClients,
+                Math.round(totalRevenueM * 100.0) / 100.0
+        );
     }
 }

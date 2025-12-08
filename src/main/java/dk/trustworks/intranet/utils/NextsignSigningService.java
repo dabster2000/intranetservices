@@ -11,6 +11,7 @@ import dk.trustworks.intranet.utils.dto.nextsign.CreateCaseResponse;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
 import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlRequest;
 import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlResponse;
+import dk.trustworks.intranet.utils.dto.nextsign.ListCasesResponse;
 import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -324,6 +325,64 @@ public class NextsignSigningService {
         } catch (Exception e) {
             log.errorf(e, "Unexpected error downloading document: %s", e.getMessage());
             throw new NextsignException("Failed to download document: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Lists signing cases from NextSign with optional filtering.
+     * Supports pagination and filtering by status, folder, etc.
+     *
+     * @param status Filter by status (optional, e.g., "signed", "pending", "denied")
+     * @param folder Filter by folder name (optional)
+     * @param limit Page size (default: 50, max: 100)
+     * @param index Page offset (default: 0)
+     * @return Response containing list of case summaries with pagination info
+     * @throws NextsignException if the list request fails
+     */
+    public ListCasesResponse listCases(String status, String folder, int limit, int index) {
+        log.infof("Listing cases - status: %s, folder: %s, limit: %d, index: %d",
+            status, folder, limit, index);
+
+        try {
+            String authHeader = "Bearer " + bearerToken;
+            log.debugf("Calling Nextsign API - URL: https://www.nextsign.dk/api/v2/%s/cases/get", company);
+
+            ListCasesResponse response = nextsignClient.listCases(
+                company,
+                authHeader,
+                status,
+                folder,
+                limit,
+                index
+            );
+
+            log.infof("Nextsign list cases response - Status: %s, Total: %d, Returned: %d",
+                response.status(),
+                response.data() != null ? response.data().total() : 0,
+                response.getCases().size());
+
+            if (!response.isSuccess()) {
+                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
+                throw new NextsignException(
+                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
+                );
+            }
+
+            return response;
+
+        } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
+            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
+                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
+            throw new NextsignException(String.format(
+                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+
+        } catch (NextsignException e) {
+            throw e;
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error listing cases: %s: %s",
+                e.getClass().getSimpleName(), e.getMessage());
+            throw new NextsignException("Failed to list cases: " + e.getMessage(), e);
         }
     }
 

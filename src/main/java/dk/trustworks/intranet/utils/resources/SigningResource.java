@@ -449,9 +449,13 @@ public class SigningResource {
         try {
             String userUuid = getUserUuidFromToken(securityContext);
 
-            signingService.syncCasesFromNextSign(userUuid);
+            int syncedCount = signingService.syncCasesFromNextSign(userUuid);
 
-            return Response.ok(Map.of("status", "synced")).build();
+            return Response.ok(Map.of(
+                "status", "synced",
+                "count", syncedCount,
+                "message", String.format("Successfully synced %d cases from NextSign", syncedCount)
+            )).build();
 
         } catch (Exception e) {
             log.errorf(e, "Sync failed");
