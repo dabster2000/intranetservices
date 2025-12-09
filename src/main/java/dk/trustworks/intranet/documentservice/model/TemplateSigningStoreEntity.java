@@ -52,6 +52,9 @@ public class TemplateSigningStoreEntity extends PanacheEntityBase {
     @Column(name = "display_order", nullable = false)
     private Integer displayOrder = 1;
 
+    @Column(name = "user_directory", nullable = false)
+    private Boolean userDirectory = false;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

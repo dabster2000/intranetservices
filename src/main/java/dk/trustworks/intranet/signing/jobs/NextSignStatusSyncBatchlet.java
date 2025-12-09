@@ -2,6 +2,7 @@ package dk.trustworks.intranet.signing.jobs;
 
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.sharepoint.dto.DriveItem;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
@@ -17,6 +18,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Batch job to fetch pending NextSign case statuses asynchronously.
@@ -259,19 +261,38 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             String timestamp = LocalDateTime.now().format(FILENAME_DATE_FORMATTER);
             String filename = String.format("%s_signed_%s.pdf", baseFilename, timestamp);
 
-            // 4. Upload to SharePoint
+            // 4. Construct folder path with user subdirectory if enabled
+            String uploadFolderPath = buildUploadFolderPath(store, signingCase);
+
+            // 5. Ensure folder exists (create if necessary)
+            if (uploadFolderPath != null && !uploadFolderPath.isBlank()) {
+                log.debugf("Ensuring folder exists before upload: %s", uploadFolderPath);
+                try {
+                    sharePointService.ensureFolderExists(
+                        store.getSiteUrl(),
+                        store.getDriveName(),
+                        uploadFolderPath
+                    );
+                    log.debugf("Folder verified/created successfully");
+                } catch (Exception e) {
+                    log.warnf(e, "Could not ensure folder exists: %s - will attempt upload anyway", uploadFolderPath);
+                    // Continue with upload - Graph API may auto-create on PUT
+                }
+            }
+
+            // 6. Upload to SharePoint
             log.infof("Uploading to SharePoint: site=%s, drive=%s, path=%s, file=%s",
-                store.getSiteUrl(), store.getDriveName(), store.getFolderPath(), filename);
+                store.getSiteUrl(), store.getDriveName(), uploadFolderPath, filename);
 
             DriveItem result = sharePointService.uploadFile(
                 store.getSiteUrl(),
                 store.getDriveName(),
-                store.getFolderPath(),
+                uploadFolderPath,
                 filename,
                 pdfBytes
             );
 
-            // 5. Update case with success status
+            // 7. Update case with success status
             signingCase.setSharepointUploadStatus("UPLOADED");
             signingCase.setSharepointFileUrl(result.webUrl());
             signingCase.setSharepointUploadError(null);
@@ -296,6 +317,114 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
         signingCase.setSharepointUploadStatus("FAILED");
         signingCase.setSharepointUploadError(error);
         signingCaseRepository.persist(signingCase);
+    }
+
+    /**
+     * Builds the upload folder path, optionally appending username subdirectory.
+     *
+     * Logic:
+     * - If store.userDirectory = false: return original folder path
+     * - If store.userDirectory = true: append "/{username}" to folder path
+     * - Handles null/empty folder paths gracefully
+     * - Sanitizes username to prevent path injection
+     *
+     * Examples:
+     * - basePath="Contracts/2025", userDirectory=false → "Contracts/2025"
+     * - basePath="Contracts/2025", userDirectory=true, username="hans.lassen" → "Contracts/2025/hans.lassen"
+     * - basePath=null, userDirectory=true, username="hans.lassen" → "hans.lassen"
+     *
+     * @param store The signing store entity
+     * @param signingCase The signing case entity
+     * @return The constructed folder path
+     */
+    private String buildUploadFolderPath(TemplateSigningStoreEntity store, SigningCase signingCase) {
+        String basePath = store.getFolderPath();
+
+        // If user directory not enabled, return original path
+        if (!Boolean.TRUE.equals(store.getUserDirectory())) {
+            return basePath;
+        }
+
+        // User directory enabled - need to append username
+        String userUuid = signingCase.getUserUuid();
+        if (userUuid == null || userUuid.isBlank()) {
+            log.warnf("User directory enabled but signingCase.userUuid is null for case %s - using base path",
+                signingCase.getCaseKey());
+            return basePath;
+        }
+
+        // Lookup user entity to get username
+        Optional<User> userOpt = User.findByIdOptional(userUuid);
+        if (userOpt.isEmpty()) {
+            log.warnf("User directory enabled but user %s not found for case %s - using base path",
+                userUuid, signingCase.getCaseKey());
+            return basePath;
+        }
+
+        User user = userOpt.get();
+        String username = user.getUsername();
+
+        if (username == null || username.isBlank()) {
+            log.warnf("User directory enabled but username is null for user %s, case %s - using base path",
+                userUuid, signingCase.getCaseKey());
+            return basePath;
+        }
+
+        // Sanitize username to prevent path injection attacks
+        String sanitizedUsername = sanitizePathSegment(username);
+
+        // Build combined path
+        if (basePath == null || basePath.isBlank()) {
+            log.debugf("Empty base path, using username subdirectory only: %s", sanitizedUsername);
+            return sanitizedUsername;
+        }
+
+        // Normalize path separators and combine
+        String normalizedBase = basePath.trim().replaceAll("[\\\\/]+$", ""); // Remove trailing slashes
+        String finalPath = normalizedBase + "/" + sanitizedUsername;
+
+        log.infof("User directory enabled: base=%s + username=%s → final=%s",
+            basePath, sanitizedUsername, finalPath);
+
+        return finalPath;
+    }
+
+    /**
+     * Sanitizes a path segment to prevent directory traversal attacks.
+     * Removes or replaces dangerous characters while preserving readable usernames.
+     *
+     * Examples:
+     * - "hans.lassen" → "hans.lassen" (safe, preserved)
+     * - "../admin" → "admin" (path traversal removed)
+     * - "user/../../etc" → "user_etc" (slashes replaced)
+     *
+     * @param segment The path segment to sanitize
+     * @return Sanitized path segment safe for use in file paths
+     */
+    private String sanitizePathSegment(String segment) {
+        if (segment == null || segment.isBlank()) {
+            return "unknown_user";
+        }
+
+        // Remove path traversal attempts
+        String cleaned = segment
+            .replaceAll("\\.\\.", "")  // Remove ".."
+            .replaceAll("^[\\\\/]+", "")  // Remove leading slashes
+            .replaceAll("[\\\\/]+$", ""); // Remove trailing slashes
+
+        // Replace potentially problematic characters with underscore
+        cleaned = cleaned.replaceAll("[\\\\/:*?\"<>|@#$%^&]", "_");
+
+        // Collapse multiple underscores
+        cleaned = cleaned.replaceAll("_+", "_");
+
+        // Trim and ensure not empty
+        cleaned = cleaned.trim();
+        if (cleaned.isEmpty()) {
+            return "unknown_user";
+        }
+
+        return cleaned;
     }
 
     /**

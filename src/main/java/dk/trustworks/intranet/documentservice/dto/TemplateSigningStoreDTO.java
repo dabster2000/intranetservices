@@ -24,6 +24,7 @@ public class TemplateSigningStoreDTO {
     private String displayName;
     private boolean isActive;
     private int displayOrder;
+    private boolean userDirectory;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

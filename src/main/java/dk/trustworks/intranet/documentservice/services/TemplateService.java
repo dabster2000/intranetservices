@@ -442,6 +442,7 @@ public class TemplateService {
                 .displayName(entity.getDisplayName())
                 .isActive(entity.getIsActive() != null ? entity.getIsActive() : true)
                 .displayOrder(entity.getDisplayOrder() != null ? entity.getDisplayOrder() : 1)
+                .userDirectory(entity.getUserDirectory() != null ? entity.getUserDirectory() : false)
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -461,6 +462,7 @@ public class TemplateService {
         entity.setDisplayName(dto.getDisplayName());
         entity.setIsActive(dto.isActive());
         entity.setDisplayOrder(dto.getDisplayOrder());
+        entity.setUserDirectory(dto.isUserDirectory());
         return entity;
     }
 }

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.sharepoint.client;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.sharepoint.dto.Drive;
 import dk.trustworks.intranet.sharepoint.dto.DriveCollectionResponse;
 import dk.trustworks.intranet.sharepoint.dto.DriveItem;
@@ -9,6 +10,7 @@ import io.quarkus.oidc.client.filter.OidcClientFilter;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.Encoded;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -134,6 +136,26 @@ public interface GraphApiClient {
     );
 
     /**
+     * Creates a folder at the specified path.
+     * If the folder already exists, this is not an error - the existing folder is returned.
+     *
+     * @param driveId the unique drive identifier
+     * @param folderPathEncoded the URL-encoded folder path including the new folder name
+     * @param request the folder creation request containing name and metadata
+     * @return the created or existing folder DriveItem
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/driveitem-post-children">Create Folder</a>
+     */
+    @POST
+    @Path("/drives/{driveId}/root:/{folderPath}:/children")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    DriveItem createFolder(
+        @PathParam("driveId") String driveId,
+        @PathParam("folderPath") @Encoded String folderPathEncoded,
+        CreateFolderRequest request
+    );
+
+    /**
      * Downloads file content by item ID.
      * Returns the raw file content as a response.
      *
@@ -160,4 +182,17 @@ public interface GraphApiClient {
     @Path("/drives/{driveId}/root/children")
     @Produces(MediaType.APPLICATION_JSON)
     DriveItemCollectionResponse listRootChildren(@PathParam("driveId") String driveId);
+
+    /**
+     * Request body for folder creation.
+     */
+    record CreateFolderRequest(
+        String name,
+        DriveItem.Folder folder,
+        @JsonProperty("@microsoft.graph.conflictBehavior") String conflictBehavior
+    ) {
+        public static CreateFolderRequest forName(String folderName) {
+            return new CreateFolderRequest(folderName, new DriveItem.Folder(null), "replace");
+        }
+    }
 }

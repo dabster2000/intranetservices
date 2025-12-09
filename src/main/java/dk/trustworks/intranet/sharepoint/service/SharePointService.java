@@ -261,4 +261,84 @@ public class SharePointService {
 
         return graphClient.getDriveItemByPath(driveId, filePathEncoded);
     }
+
+    /**
+     * Ensures a folder exists at the specified path, creating it if necessary.
+     * Handles nested paths by creating parent folders recursively.
+     *
+     * @param siteUrl the SharePoint site URL
+     * @param driveName the document library name
+     * @param folderPath the folder path to ensure exists (e.g., "Contracts/2025/hans.lassen")
+     * @return the folder DriveItem (created or existing)
+     * @throws SharePointException if folder creation fails
+     */
+    public DriveItem ensureFolderExists(
+            String siteUrl, String driveName, String folderPath) {
+
+        if (folderPath == null || folderPath.isBlank()) {
+            // Root always exists
+            String siteId = resolveSiteId(siteUrl);
+            String driveId = resolveDriveId(siteId, driveName);
+            return graphClient.getDriveRoot(driveId);
+        }
+
+        log.debugf("Ensuring folder exists: site=%s, drive=%s, path=%s",
+            siteUrl, driveName, folderPath);
+
+        String siteId = resolveSiteId(siteUrl);
+        String driveId = resolveDriveId(siteId, driveName);
+
+        // Try to get the folder - if it exists, return it
+        try {
+            String encoded = GraphPath.encodePath(folderPath);
+            DriveItem existing = graphClient.getDriveItemByPath(driveId, encoded);
+            if (existing.isFolder()) {
+                log.debugf("Folder already exists: id=%s", existing.id());
+                return existing;
+            } else {
+                throw new SharePointException(
+                    "Path exists but is not a folder: " + folderPath, 400);
+            }
+        } catch (SharePointException e) {
+            if (e.getStatusCode() != 404) {
+                throw e;  // Re-throw non-404 errors
+            }
+            // 404 means folder doesn't exist - need to create it
+            log.debugf("Folder not found, will create: %s", folderPath);
+        }
+
+        // Split path and create folders recursively
+        String[] segments = folderPath.split("/");
+        String currentPath = "";
+        DriveItem lastCreated = null;
+
+        for (String segment : segments) {
+            if (segment.isBlank()) continue;
+
+            String parentPath = currentPath.isEmpty() ? null : currentPath;
+            currentPath = currentPath.isEmpty() ? segment : currentPath + "/" + segment;
+
+            try {
+                // Check if this segment already exists
+                String encoded = GraphPath.encodePath(currentPath);
+                lastCreated = graphClient.getDriveItemByPath(driveId, encoded);
+                log.debugf("Folder segment exists: %s", currentPath);
+            } catch (SharePointException e) {
+                if (e.getStatusCode() == 404) {
+                    // Create this folder segment
+                    log.infof("Creating folder segment: parent=%s, name=%s", parentPath, segment);
+                    String parentEncoded = parentPath == null ? "" : GraphPath.encodePath(parentPath);
+
+                    GraphApiClient.CreateFolderRequest request = GraphApiClient.CreateFolderRequest.forName(segment);
+                    lastCreated = graphClient.createFolder(driveId, parentEncoded, request);
+                    log.infof("Folder created: name=%s, id=%s", segment, lastCreated.id());
+                } else {
+                    throw e;  // Re-throw other errors
+                }
+            }
+        }
+
+        log.infof("Folder path ensured: %s", folderPath);
+        return lastCreated;
+    }
 }
