@@ -70,72 +70,6 @@ public class NextsignSigningService {
     }
 
     /**
-     * Initiates digital signing workflow for an employment contract PDF.
-     * Uses hardcoded signers: Hans Lassen (order 0), Hans Godfather (order 1).
-     *
-     * @param pdfBytes Binary PDF content
-     * @param documentName PDF filename
-     * @return Case key (nextSignKey) for tracking workflow
-     * @throws NextsignException if signing initiation fails
-     */
-    public String initiateEmploymentContractSigning(byte[] pdfBytes, String documentName) {
-        log.infof("Initiating Nextsign signing for document: %s (%d bytes)", documentName, pdfBytes.length);
-
-        try {
-            // Build signing request
-            CreateCaseRequest request = buildSigningRequest(pdfBytes, documentName);
-
-            // Log request details (without the base64 document content)
-            logRequestDetails(request);
-
-            // Call Nextsign API with Bearer token
-            String authHeader = "Bearer " + bearerToken;
-            log.debugf("Calling Nextsign API - URL: https://www.nextsign.dk/api/v2/%s/case/create", company);
-
-            CreateCaseResponse response = nextsignClient.createCase(company, authHeader, request);
-
-            // Log response
-            log.infof("Nextsign API response - Status: %s, Message: %s",
-                response.status(), response.message());
-
-            // Check for errors
-            if (!response.isSuccess()) {
-                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
-                throw new NextsignException(
-                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
-                );
-            }
-
-            if (response.contract() == null || response.contract().id() == null) {
-                log.error("Nextsign API returned success but no case id in response");
-                throw new NextsignException("Nextsign API returned no case id");
-            }
-
-            // Use MongoDB _id for API calls, not nextSignKey
-            String caseId = response.contract().id();
-            String nextSignKey = response.contract().nextSignKey();
-            log.infof("Successfully initiated Nextsign signing. CaseId: %s, NextSignKey: %s, Title: %s",
-                caseId, nextSignKey, response.contract().title());
-            return caseId;
-
-        } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            // API returned an error response - we have the details
-            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
-                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
-
-        } catch (NextsignException e) {
-            throw e;
-
-        } catch (Exception e) {
-            log.errorf(e, "Unexpected error initiating Nextsign signing for: %s - %s: %s",
-                documentName, e.getClass().getSimpleName(), e.getMessage());
-            throw new NextsignException("Failed to initiate signing: " + e.getMessage(), e);
-        }
-    }
-
-    /**
      * Creates a signing case with dynamic signers (not hardcoded).
      * Group determines signing order: same group = parallel signers, different groups = sequential.
      *
@@ -525,54 +459,6 @@ public class NextsignSigningService {
         } catch (JsonProcessingException e) {
             log.warnf("Failed to serialize request for logging: %s", e.getMessage());
         }
-    }
-
-    /**
-     * Builds signing request with hardcoded signers for employment contracts.
-     * Signers: 1) Hans Lassen (order 0), 2) Hans Godfather (order 1)
-     *
-     * @param pdfBytes PDF content
-     * @param documentName PDF filename
-     * @return Complete signing request
-     */
-    private CreateCaseRequest buildSigningRequest(byte[] pdfBytes, String documentName) {
-        // Base64 encode document
-        String encodedDocument = Base64.getEncoder().encodeToString(pdfBytes);
-        log.debugf("Base64 encoded document - Original: %d bytes, Encoded: %d chars",
-            pdfBytes.length, encodedDocument.length());
-
-        // Create document data
-        CreateCaseRequest.Document document = new CreateCaseRequest.Document(
-            documentName,
-            encodedDocument,
-            true,  // fileIsBlob = true for Base64
-            true   // signObligated = true (signature required)
-        );
-
-        // Hardcoded signers (sequential: order 0 signs first, then order 1)
-        List<CreateCaseRequest.Recipient> recipients = List.of(
-            new CreateCaseRequest.Recipient("Hans Lassen", "hans.lassen@trustworks.dk", true, 0),
-            new CreateCaseRequest.Recipient("Hans Godfather", "hans@godfather.dk", true, 1)
-        );
-
-        // Allowed signing methods: MitID only (substantial = CPR validated)
-        List<String> signingSchemas = List.of(
-                "urn:grn:authn:dk:mitid:substantial",
-                "urn:grn:authn:dk:mitid:low"
-                //"urn:grn:authn:dk:mitid:business"// MitID with CPR validation
-        );
-
-        return new CreateCaseRequest(
-            "Employment Contract - " + documentName,  // title
-            "contract-" + System.currentTimeMillis(), // referenceId
-            "Employment Contracts",                    // folder
-            true,                                      // autoSend
-            "hans.lassen@trustworks.dk",              // user_email (creator)
-            CreateCaseRequest.CaseSettings.defaults(), // settings
-            signingSchemas,
-            recipients,
-            List.of(document)
-        );
     }
 
     /**
