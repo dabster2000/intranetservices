@@ -40,10 +40,6 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     @NotNull(message = "Category is required")
     private TemplateCategory category;
 
-    @Column(name = "template_content", nullable = false, columnDefinition = "LONGTEXT")
-    @NotBlank(message = "Template content is required")
-    private String templateContent;
-
     @Column(nullable = false)
     private boolean active = true;
 

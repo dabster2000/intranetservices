@@ -12,6 +12,7 @@ import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
 import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlRequest;
 import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlResponse;
 import dk.trustworks.intranet.utils.dto.nextsign.ListCasesResponse;
+import dk.trustworks.intranet.utils.dto.signing.DocumentInfo;
 import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -218,6 +219,80 @@ public class NextsignSigningService {
             log.errorf(e, "Unexpected error creating signing case for: %s - %s: %s",
                 documentName, e.getClass().getSimpleName(), e.getMessage());
             throw new NextsignException("Failed to create signing case: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Creates a signing case with multiple documents and configurable signing schemas.
+     * All documents are bundled into a single case and signers sign all documents.
+     *
+     * @param documents      List of documents with name and PDF bytes
+     * @param signers        List of signers with their group/order, name, email, and role
+     * @param referenceId    Optional internal tracking ID (can be null)
+     * @param signingSchemas List of signing schema URNs, or null/empty to use defaults
+     * @return Case key (caseId) for tracking workflow
+     * @throws NextsignException if signing initiation fails
+     */
+    public String createMultiDocumentSigningCase(List<DocumentInfo> documents, List<SignerInfo> signers,
+                                                  String referenceId, List<String> signingSchemas) {
+        if (documents == null || documents.isEmpty()) {
+            throw new IllegalArgumentException("At least one document is required");
+        }
+
+        log.infof("Creating multi-document signing case with %d documents and %d signers, schemas: %s",
+            documents.size(), signers.size(),
+            signingSchemas != null && !signingSchemas.isEmpty() ? signingSchemas : "defaults");
+
+        try {
+            // Build signing request with multiple documents
+            CreateCaseRequest request = buildMultiDocumentSigningRequest(documents, signers, referenceId, signingSchemas);
+
+            // Log request details
+            logMultiDocumentRequestDetails(request);
+
+            // Call Nextsign API with Bearer token
+            String authHeader = "Bearer " + bearerToken;
+            log.debugf("Calling Nextsign API - URL: https://www.nextsign.dk/api/v2/%s/case/create", company);
+
+            CreateCaseResponse response = nextsignClient.createCase(company, authHeader, request);
+
+            // Log response
+            log.infof("Nextsign API response - Status: %s, Message: %s",
+                response.status(), response.message());
+
+            // Check for errors
+            if (!response.isSuccess()) {
+                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
+                throw new NextsignException(
+                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
+                );
+            }
+
+            if (response.contract() == null || response.contract().id() == null) {
+                log.error("Nextsign API returned success but no case id in response");
+                throw new NextsignException("Nextsign API returned no case id");
+            }
+
+            // Use MongoDB _id for API calls
+            String caseId = response.contract().id();
+            String nextSignKey = response.contract().nextSignKey();
+            log.infof("Successfully created multi-document signing case. CaseId: %s, NextSignKey: %s, Title: %s",
+                caseId, nextSignKey, response.contract().title());
+            return caseId;
+
+        } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
+            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
+                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
+            throw new NextsignException(String.format(
+                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+
+        } catch (NextsignException e) {
+            throw e;
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error creating multi-document signing case - %s: %s",
+                e.getClass().getSimpleName(), e.getMessage());
+            throw new NextsignException("Failed to create multi-document signing case: " + e.getMessage(), e);
         }
     }
 
@@ -569,6 +644,96 @@ public class NextsignSigningService {
             recipients,
             List.of(document)
         );
+    }
+
+    /**
+     * Builds signing request with multiple documents and dynamic signers.
+     *
+     * @param documents      List of documents with name and PDF bytes
+     * @param signers        List of signers from the request
+     * @param referenceId    Optional tracking ID (uses timestamp if null)
+     * @param signingSchemas List of signing schema URNs, or null/empty to use defaults
+     * @return Complete signing request with multiple documents
+     */
+    private CreateCaseRequest buildMultiDocumentSigningRequest(List<DocumentInfo> documents, List<SignerInfo> signers,
+                                                                String referenceId, List<String> signingSchemas) {
+        // Build document list
+        List<CreateCaseRequest.Document> docList = documents.stream()
+            .map(doc -> {
+                String encodedDocument = Base64.getEncoder().encodeToString(doc.pdfBytes());
+                log.debugf("Base64 encoded document '%s' - Original: %d bytes, Encoded: %d chars",
+                    doc.name(), doc.pdfBytes().length, encodedDocument.length());
+                return new CreateCaseRequest.Document(
+                    doc.name(),
+                    encodedDocument,
+                    true,  // fileIsBlob = true for Base64
+                    true   // signObligated = true (signature required)
+                );
+            })
+            .toList();
+
+        // Convert SignerInfo to Nextsign Recipients
+        // Group is 1-based in our API, but Nextsign uses 0-based order
+        List<CreateCaseRequest.Recipient> recipients = signers.stream()
+            .map(signer -> new CreateCaseRequest.Recipient(
+                signer.name(),
+                signer.email(),
+                true,  // signing = true (all recipients are signers)
+                signer.group() - 1  // Convert 1-based group to 0-based order
+            ))
+            .toList();
+
+        // Use provided signing schemas or fall back to defaults
+        List<String> effectiveSchemas = (signingSchemas != null && !signingSchemas.isEmpty())
+            ? signingSchemas
+            : DEFAULT_SIGNING_SCHEMAS;
+        log.debugf("Using signing schemas: %s", effectiveSchemas);
+
+        // Use provided referenceId or generate one
+        String effectiveReferenceId = (referenceId != null && !referenceId.isBlank())
+            ? referenceId
+            : "multi-doc-" + System.currentTimeMillis();
+
+        // Build title from document names
+        String title = documents.size() == 1
+            ? "Document Signing - " + documents.get(0).name()
+            : "Multi-Document Signing (" + documents.size() + " docs)";
+
+        return new CreateCaseRequest(
+            title,
+            effectiveReferenceId,
+            "Documents",                               // folder
+            true,                                      // autoSend
+            "hans.lassen@trustworks.dk",              // user_email (creator - could be configurable)
+            CreateCaseRequest.CaseSettings.defaults(), // settings
+            effectiveSchemas,
+            recipients,
+            docList
+        );
+    }
+
+    /**
+     * Logs multi-document request details for debugging (masks document content).
+     */
+    private void logMultiDocumentRequestDetails(CreateCaseRequest request) {
+        try {
+            // Log document summary without base64 content
+            StringBuilder docSummary = new StringBuilder();
+            for (int i = 0; i < request.documents().size(); i++) {
+                CreateCaseRequest.Document doc = request.documents().get(i);
+                if (i > 0) docSummary.append(", ");
+                docSummary.append(String.format("%s (%d chars base64)", doc.name(), doc.file().length()));
+            }
+
+            log.infof("Nextsign multi-doc request - Title: %s, ReferenceId: %s, Folder: %s",
+                request.title(), request.referenceId(), request.folder());
+            log.infof("Nextsign multi-doc request - Documents: [%s]", docSummary.toString());
+            log.infof("Nextsign multi-doc request - Recipients: %s", request.recipients());
+            log.infof("Nextsign multi-doc request - SigningSchemas: %s", request.signingSchemas());
+
+        } catch (Exception e) {
+            log.warnf("Failed to log multi-document request details: %s", e.getMessage());
+        }
     }
 
     /**

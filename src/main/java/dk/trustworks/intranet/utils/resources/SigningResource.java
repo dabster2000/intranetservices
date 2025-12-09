@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.utils.resources;
 
+import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseResponse;
@@ -187,7 +188,17 @@ public class SigningResource {
                 return badRequest("REQUEST_NULL", "Request body is required");
             }
 
-            SigningCaseResponse response = signingService.createCaseFromTemplate(request);
+            // Always use multi-document method (multi-document pattern is the only supported pattern)
+            log.infof("Creating signing case from template with %d documents",
+                request.documents() != null ? request.documents().size() : 0);
+            SigningCaseResponse response = signingService.createMultiDocumentCaseFromTemplate(
+                request.documents(),
+                request.formValues(),
+                request.documentName(),
+                request.signers(),
+                request.referenceId(),
+                request.signingSchemas()
+            );
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
 
@@ -224,6 +235,97 @@ public class SigningResource {
 
         } catch (Exception e) {
             log.errorf(e, "Unexpected error creating signing case from template: %s", e.getMessage());
+            return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Creates a new document signing case with multiple documents.
+     * All documents are bundled into a single signing case where all signers sign all documents.
+     *
+     * @param request The multi-document signing case creation request
+     * @return Created signing case with case key for tracking
+     */
+    @POST
+    @Path("/cases/multi-document")
+    @Operation(
+        summary = "Create a multi-document signing case",
+        description = "Creates a new signing case with multiple documents. All documents are bundled " +
+                      "into a single case and all signers will sign all documents. Documents must be " +
+                      "base64 encoded. Signers in the same group sign in parallel, different groups " +
+                      "sign sequentially (group 1 first, then group 2, etc.)."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "201",
+            description = "Signing case created successfully",
+            content = @Content(schema = @Schema(implementation = SigningCaseResponse.class))
+        ),
+        @APIResponse(
+            responseCode = "400",
+            description = "Invalid request (missing required fields, invalid base64, etc.)",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Server error (NextSign API failure, etc.)",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response createMultiDocumentCase(
+            CreateMultiDocumentSigningRequest request,
+            @QueryParam("userUuid") String userUuid,
+            @Context SecurityContext securityContext) {
+        log.infof("POST /utils/signing/cases/multi-document - Creating multi-document signing case with %d documents",
+            request != null && request.documents() != null ? request.documents().size() : 0);
+
+        try {
+            // Validate request
+            if (request == null) {
+                return badRequest("REQUEST_NULL", "Request body is required");
+            }
+
+            SigningCaseResponse response = signingService.createMultiDocumentCase(request);
+
+            log.infof("Multi-document signing case created successfully. CaseKey: %s", response.caseKey());
+
+            // Save minimal record for async processing
+            try {
+                String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
+                String documentName = request.getDisplayName();
+                int totalSigners = request.signers() != null ? request.signers().size() : 0;
+                String signingStoreUuid = request.signingStoreUuid();
+
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, signingStoreUuid);
+
+                if (signingStoreUuid != null && !signingStoreUuid.isBlank()) {
+                    log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, signingStoreUuid: %s)",
+                        response.caseKey(), totalSigners, signingStoreUuid);
+                } else {
+                    log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
+                        response.caseKey(), totalSigners);
+                }
+
+            } catch (Exception e) {
+                // Log but don't fail - batch job will retry if needed
+                log.warnf(e, "Failed to save minimal case record for %s: %s",
+                         response.caseKey(), e.getMessage());
+            }
+
+            return Response.status(Response.Status.CREATED)
+                .entity(response)
+                .build();
+
+        } catch (IllegalArgumentException e) {
+            log.warnf("Invalid request: %s", e.getMessage());
+            return badRequest("INVALID_REQUEST", e.getMessage());
+
+        } catch (SigningService.SigningException e) {
+            log.errorf(e, "Signing service error: %s", e.getMessage());
+            return serverError("SIGNING_FAILED", e.getMessage());
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error creating multi-document signing case: %s", e.getMessage());
             return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
         }
     }

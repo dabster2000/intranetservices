@@ -3,7 +3,15 @@ package dk.trustworks.intranet.utils.services;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.utils.NextsignSigningService;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
-import dk.trustworks.intranet.utils.dto.signing.*;
+import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
+import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
+import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
+import dk.trustworks.intranet.utils.dto.signing.DocumentInfo;
+import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
+import dk.trustworks.intranet.utils.dto.signing.SignerStatus;
+import dk.trustworks.intranet.utils.dto.signing.SigningCaseResponse;
+import dk.trustworks.intranet.utils.dto.signing.SigningCaseStatus;
+import dk.trustworks.intranet.utils.dto.signing.UploadedDocument;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -87,64 +95,131 @@ public class SigningService {
     }
 
     /**
-     * Creates a new signing case by generating a PDF from a template with form values.
-     * <p>
-     * This method:
-     * <ol>
-     *   <li>Renders the HTML/Thymeleaf template with the provided form values</li>
-     *   <li>Converts the rendered HTML to a PDF document</li>
-     *   <li>Creates a signing case with the generated PDF</li>
-     * </ol>
+     * Creates a new signing case with multiple documents.
+     * All documents are bundled into a single case and all signers sign all documents.
      *
-     * @param request The template-based signing case creation request
+     * @param request The multi-document signing case creation request
      * @return Response containing the case key and initial status
      * @throws IllegalArgumentException if the request is invalid
-     * @throws SigningException if PDF generation or case creation fails
+     * @throws SigningException if case creation fails
      */
-    public SigningCaseResponse createCaseFromTemplate(CreateTemplateSigningRequest request) {
-        log.infof("Creating signing case from template for document: %s with %d signers, schemas: %s",
-            request.documentName(),
-            request.signers() != null ? request.signers().size() : 0,
-            request.signingSchemas() != null && !request.signingSchemas().isEmpty()
-                ? request.signingSchemas() : "defaults");
+    public SigningCaseResponse createMultiDocumentCase(CreateMultiDocumentSigningRequest request) {
+        log.infof("Creating multi-document signing case with %d documents and %d signers",
+            request.documents() != null ? request.documents().size() : 0,
+            request.signers() != null ? request.signers().size() : 0);
 
         // Validate request
         request.validate();
 
         try {
-            // 1) Generate PDF from template
-            Map<String, String> formValues = request.formValues() != null
-                ? request.formValues()
-                : Map.of();
-            byte[] pdfBytes = documentPdfService.generatePdfFromTemplate(
-                request.templateContent(),
-                formValues
-            );
-            log.debugf("Generated PDF from template: %d bytes", pdfBytes.length);
+            // Decode base64 documents to DocumentInfo list
+            List<DocumentInfo> documents = request.documents().stream()
+                .map(doc -> new DocumentInfo(
+                    doc.documentName(),
+                    decodeBase64Document(doc.documentBase64())
+                ))
+                .toList();
 
-            // 2) Create signing case via NextSign with signing schemas
-            String caseKey = nextsignService.createSigningCase(
-                pdfBytes,
-                request.documentName(),
+            log.debugf("Decoded %d documents for multi-document signing case", documents.size());
+
+            // Create case via NextSign with multiple documents
+            String caseKey = nextsignService.createMultiDocumentSigningCase(
+                documents,
                 request.signers(),
                 request.referenceId(),
-                request.signingSchemas()  // Pass schemas from request (null = use defaults)
+                request.signingSchemas()
             );
 
-            log.infof("Successfully created signing case from template. CaseKey: %s", caseKey);
+            log.infof("Successfully created multi-document signing case. CaseKey: %s", caseKey);
 
-            return SigningCaseResponse.created(caseKey, request.documentName());
+            return SigningCaseResponse.created(caseKey, request.getDisplayName());
+
+        } catch (IllegalArgumentException e) {
+            log.errorf("Invalid document encoding: %s", e.getMessage());
+            throw new SigningException("Invalid document encoding: " + e.getMessage(), e);
+
+        } catch (NextsignSigningService.NextsignException e) {
+            log.errorf(e, "NextSign API error creating multi-document case: %s", e.getMessage());
+            throw new SigningException("Failed to create multi-document signing case: " + e.getMessage(), e);
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error creating multi-document signing case: %s", e.getMessage());
+            throw new SigningException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Creates a signing case from a template with multiple documents.
+     * Each document in the template is rendered to PDF and bundled into a single signing case.
+     *
+     * @param templateDocuments  List of template documents to render (REQUIRED)
+     * @param formValues         Key-value pairs for template placeholders
+     * @param documentName       Display name for the signing case
+     * @param signers            List of signers
+     * @param referenceId        Optional external reference ID
+     * @param signingSchemas     Optional signing schema URNs
+     * @return Response containing the case key and initial status
+     * @throws SigningException if PDF generation or case creation fails
+     */
+    public SigningCaseResponse createMultiDocumentCaseFromTemplate(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues,
+            String documentName,
+            List<SignerInfo> signers,
+            String referenceId,
+            List<String> signingSchemas) {
+
+        log.infof("Creating multi-document signing case from template. Documents: %d, Signers: %d",
+            templateDocuments != null ? templateDocuments.size() : 0,
+            signers != null ? signers.size() : 0);
+
+        try {
+            // Require documents (multi-document pattern is the only supported pattern)
+            if (templateDocuments == null || templateDocuments.isEmpty()) {
+                throw new IllegalArgumentException("At least one document is required");
+            }
+
+            List<DocumentInfo> documents = new java.util.ArrayList<>();
+            Map<String, String> effectiveFormValues = formValues != null ? formValues : Map.of();
+
+            // Generate PDF for each template document
+            for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
+                byte[] pdfBytes = documentPdfService.generatePdfFromTemplate(
+                    templateDoc.getDocumentContent(),
+                    effectiveFormValues
+                );
+                String docName = templateDoc.getDocumentName();
+                if (!docName.toLowerCase().endsWith(".pdf")) {
+                    docName = docName + ".pdf";
+                }
+                documents.add(new DocumentInfo(docName, pdfBytes));
+                log.debugf("Generated PDF for document '%s': %d bytes", docName, pdfBytes.length);
+            }
+
+            log.infof("Generated %d PDFs from template(s), creating multi-document signing case", documents.size());
+
+            // Create signing case with all documents
+            String caseKey = nextsignService.createMultiDocumentSigningCase(
+                documents,
+                signers,
+                referenceId,
+                signingSchemas
+            );
+
+            log.infof("Successfully created multi-document signing case from template. CaseKey: %s", caseKey);
+
+            return SigningCaseResponse.created(caseKey, documentName);
 
         } catch (DocumentPdfService.DocumentPdfException e) {
             log.errorf(e, "PDF generation error: %s", e.getMessage());
             throw new SigningException("Failed to generate PDF from template: " + e.getMessage(), e);
 
         } catch (NextsignSigningService.NextsignException e) {
-            log.errorf(e, "NextSign API error creating case: %s", e.getMessage());
-            throw new SigningException("Failed to create signing case: " + e.getMessage(), e);
+            log.errorf(e, "NextSign API error creating multi-document case: %s", e.getMessage());
+            throw new SigningException("Failed to create multi-document signing case: " + e.getMessage(), e);
 
         } catch (Exception e) {
-            log.errorf(e, "Unexpected error creating signing case from template: %s", e.getMessage());
+            log.errorf(e, "Unexpected error creating multi-document signing case from template: %s", e.getMessage());
             throw new SigningException("Unexpected error: " + e.getMessage(), e);
         }
     }

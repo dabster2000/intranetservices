@@ -1,17 +1,20 @@
 package dk.trustworks.intranet.utils.dto.signing;
 
+import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
+
 import java.util.List;
 import java.util.Map;
 
 /**
  * Request to generate PDF from template and send for signing.
  * <p>
- * This DTO allows clients to submit an HTML/Thymeleaf template with placeholder values,
- * which will be rendered into a PDF document and sent for digital signing.
+ * This DTO allows clients to submit template documents with placeholder values,
+ * which will be rendered into PDF documents and sent for digital signing.
+ * Multi-document support is the only supported pattern.
  * </p>
  *
  * @param documentName    Name of the document (used in signing case metadata)
- * @param templateContent HTML/Thymeleaf template content with placeholders (e.g., [[${fieldName}]])
+ * @param documents       List of template documents with their content (REQUIRED)
  * @param formValues      Key-value pairs for template placeholders
  * @param signers         List of signers with group/order, name, email, and role
  * @param referenceId     Optional external reference ID for tracking
@@ -22,7 +25,7 @@ import java.util.Map;
  */
 public record CreateTemplateSigningRequest(
     String documentName,
-    String templateContent,
+    List<TemplateDocumentDTO> documents,
     Map<String, String> formValues,
     List<SignerInfo> signers,
     String referenceId,
@@ -38,8 +41,9 @@ public record CreateTemplateSigningRequest(
         if (documentName == null || documentName.isBlank()) {
             throw new IllegalArgumentException("Document name is required");
         }
-        if (templateContent == null || templateContent.isBlank()) {
-            throw new IllegalArgumentException("Template content is required");
+        // Documents must be provided (multi-document pattern is the only supported pattern)
+        if (documents == null || documents.isEmpty()) {
+            throw new IllegalArgumentException("At least one document is required");
         }
         if (signers == null || signers.isEmpty()) {
             throw new IllegalArgumentException("At least one signer is required");

@@ -2,11 +2,13 @@ package dk.trustworks.intranet.documentservice.services;
 
 import dk.trustworks.intranet.documentservice.dto.DocumentTemplateDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateDefaultSignerDTO;
+import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplatePlaceholderDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateSigningSchemaDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateSigningStoreDTO;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
+import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningSchemaEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
@@ -84,7 +86,6 @@ public class TemplateService {
         entity.setName(dto.getName());
         entity.setDescription(dto.getDescription());
         entity.setCategory(dto.getCategory());
-        entity.setTemplateContent(dto.getTemplateContent());
         entity.setActive(dto.isActive());
         entity.setCreatedBy(currentUserUuid);
         entity.setModifiedBy(currentUserUuid);
@@ -122,6 +123,16 @@ public class TemplateService {
         }
 
         entity.persist();
+
+        // Add documents (after persist so entity has UUID)
+        if (dto.getDocuments() != null) {
+            for (TemplateDocumentDTO docDTO : dto.getDocuments()) {
+                TemplateDocumentEntity document = toDocumentEntity(docDTO);
+                document.setTemplate(entity);
+                document.persist();
+            }
+        }
+
         log.infof("Template created with uuid: %s", entity.getUuid());
 
         return toDTOWithPlaceholders(entity);
@@ -149,7 +160,6 @@ public class TemplateService {
         entity.setName(dto.getName());
         entity.setDescription(dto.getDescription());
         entity.setCategory(dto.getCategory());
-        entity.setTemplateContent(dto.getTemplateContent());
         entity.setActive(dto.isActive());
         entity.setModifiedBy(currentUserUuid);
 
@@ -221,6 +231,22 @@ public class TemplateService {
             log.infof("No signing stores to add for template %s", uuid);
         }
 
+        // Delete old documents from database first
+        long deletedDocCount = TemplateDocumentEntity.deleteByTemplateUuid(uuid);
+        log.infof("Deleted %d existing documents for template %s", deletedDocCount, uuid);
+
+        // Rebuild documents from DTO - explicitly persist each new document
+        if (dto.getDocuments() != null && !dto.getDocuments().isEmpty()) {
+            log.infof("Adding %d documents to template %s", dto.getDocuments().size(), uuid);
+            for (TemplateDocumentDTO docDTO : dto.getDocuments()) {
+                TemplateDocumentEntity document = toDocumentEntity(docDTO);
+                document.setTemplate(entity);
+                document.persist();  // Explicitly persist each new document
+            }
+        } else {
+            log.infof("No documents to add for template %s", uuid);
+        }
+
         log.infof("Template updated: %s", uuid);
 
         return toDTOWithPlaceholders(entity);
@@ -271,8 +297,8 @@ public class TemplateService {
         if (dto.getCategory() == null) {
             throw new WebApplicationException("Template category is required", 400);
         }
-        if (dto.getTemplateContent() == null || dto.getTemplateContent().trim().isEmpty()) {
-            throw new WebApplicationException("Template content is required", 400);
+        if (dto.getDocuments() == null || dto.getDocuments().isEmpty()) {
+            throw new WebApplicationException("At least one document is required", 400);
         }
 
         // Validate placeholders
@@ -305,7 +331,6 @@ public class TemplateService {
                 .name(entity.getName())
                 .description(entity.getDescription())
                 .category(entity.getCategory())
-                .templateContent(entity.getTemplateContent())
                 .active(entity.isActive())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
@@ -339,6 +364,12 @@ public class TemplateService {
                 .map(this::toSigningStoreDTO)
                 .collect(Collectors.toList());
         dto.setSigningStores(signingStoreDTOs);
+
+        // Load documents separately (not cascade-managed)
+        List<TemplateDocumentDTO> documentDTOs = TemplateDocumentEntity.findByTemplateUuid(entity.getUuid()).stream()
+                .map(this::toDocumentDTO)
+                .collect(Collectors.toList());
+        dto.setDocuments(documentDTOs);
 
         return dto;
     }
@@ -477,6 +508,36 @@ public class TemplateService {
         entity.setIsActive(dto.isActive());
         entity.setDisplayOrder(dto.getDisplayOrder());
         entity.setUserDirectory(dto.isUserDirectory());
+        return entity;
+    }
+
+    /**
+     * Convert document entity to DTO.
+     */
+    private TemplateDocumentDTO toDocumentDTO(TemplateDocumentEntity entity) {
+        return TemplateDocumentDTO.builder()
+                .uuid(entity.getUuid())
+                .documentName(entity.getDocumentName())
+                .documentContent(entity.getDocumentContent())
+                .displayOrder(entity.getDisplayOrder())
+                .contentType(entity.getContentType())
+                .createdAt(entity.getCreatedAt())
+                .updatedAt(entity.getUpdatedAt())
+                .build();
+    }
+
+    /**
+     * Convert document DTO to entity.
+     */
+    private TemplateDocumentEntity toDocumentEntity(TemplateDocumentDTO dto) {
+        TemplateDocumentEntity entity = new TemplateDocumentEntity();
+        if (dto.getUuid() != null) {
+            entity.setUuid(dto.getUuid());
+        }
+        entity.setDocumentName(dto.getDocumentName());
+        entity.setDocumentContent(dto.getDocumentContent());
+        entity.setDisplayOrder(dto.getDisplayOrder() != null ? dto.getDisplayOrder() : 1);
+        entity.setContentType(dto.getContentType() != null ? dto.getContentType() : "application/pdf");
         return entity;
     }
 }

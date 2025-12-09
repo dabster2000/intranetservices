@@ -24,7 +24,6 @@ public class DocumentTemplateDTO {
     private String name;
     private String description;
     private TemplateCategory category;
-    private String templateContent;
     private boolean active;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -42,4 +41,7 @@ public class DocumentTemplateDTO {
 
     @Builder.Default
     private List<TemplateSigningStoreDTO> signingStores = new ArrayList<>();
+
+    @Builder.Default
+    private List<TemplateDocumentDTO> documents = new ArrayList<>();
 }
