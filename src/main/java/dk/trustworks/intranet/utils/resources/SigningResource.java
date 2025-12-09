@@ -191,10 +191,11 @@ public class SigningResource {
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
+                String signingStoreUuid = request.signingStoreUuid();
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners);
-                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
-                    response.caseKey(), totalSigners);
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, signingStoreUuid);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, signingStoreUuid: %s)",
+                    response.caseKey(), totalSigners, signingStoreUuid);
 
             } catch (Exception e) {
                 // Log but don't fail - batch job will retry if needed

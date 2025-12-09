@@ -456,7 +456,27 @@ public class SigningService {
      */
     @Transactional
     public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners) {
-        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d)", caseKey, totalSigners);
+        saveMinimalCase(caseKey, userUuid, documentName, totalSigners, null);
+    }
+
+    /**
+     * Save minimal case record immediately after creation (async pattern).
+     * Status will be fetched later by background batch job.
+     *
+     * This method handles the NextSign race condition where newly created cases
+     * return 404 when fetched immediately. Instead of blocking, we save a minimal
+     * record and let the batch job fetch the full status asynchronously.
+     *
+     * @param caseKey NextSign case key
+     * @param userUuid User UUID who owns the case
+     * @param documentName Document name/title
+     * @param totalSigners Total number of signers (known from request)
+     * @param signingStoreUuid UUID of template_signing_stores for SharePoint auto-upload (optional)
+     */
+    @Transactional
+    public void saveMinimalCase(String caseKey, String userUuid, String documentName, int totalSigners, String signingStoreUuid) {
+        log.debugf("Saving minimal case record for async processing: %s (totalSigners: %d, signingStoreUuid: %s)",
+            caseKey, totalSigners, signingStoreUuid);
 
         SigningCase entity = new SigningCase();
         entity.setCaseKey(caseKey);
@@ -467,6 +487,13 @@ public class SigningService {
         entity.setCreatedAt(LocalDateTime.now());
         entity.setTotalSigners(totalSigners);
         entity.setCompletedSigners(0); // No one has signed yet
+
+        // Set signing store UUID for SharePoint auto-upload
+        if (signingStoreUuid != null && !signingStoreUuid.isBlank()) {
+            entity.setSigningStoreUuid(signingStoreUuid);
+            entity.setSharepointUploadStatus("PENDING");
+            log.infof("Signing store configured for case %s: %s", caseKey, signingStoreUuid);
+        }
 
         signingCaseRepository.persist(entity);
 

@@ -87,9 +87,11 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
     /**
      * Find cases that need status fetching (for batch job).
      * Includes:
-     * - Cases with processing_status = PENDING_FETCH
+     * - Cases with processing_status = PENDING_FETCH (new cases)
      * - Cases with processing_status = FAILED that haven't exceeded max retries
      *   and enough time has passed since last attempt (retry delay)
+     * - Cases with processing_status = COMPLETED that have pending SharePoint upload
+     *   (signing may have completed after initial status fetch)
      *
      * Used by NextSignStatusSyncBatchlet to find cases to process.
      *
@@ -101,8 +103,15 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
         LocalDateTime retryThreshold = LocalDateTime.now().minusMinutes(retryDelayMinutes);
 
         return find(
+            // Case 1: New cases awaiting first fetch
             "processingStatus = 'PENDING_FETCH' OR " +
+            // Case 2: Failed cases eligible for retry
             "(processingStatus = 'FAILED' AND retryCount < ?1 AND " +
+            "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) OR " +
+            // Case 3: Completed cases needing SharePoint upload (signing may have completed after fetch)
+            // Includes both PENDING (not yet attempted) and FAILED (retry after delay)
+            "(processingStatus = 'COMPLETED' AND signingStoreUuid IS NOT NULL AND " +
+            "sharepointUploadStatus IN ('PENDING', 'FAILED') AND " +
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) " +
             "ORDER BY createdAt ASC",
             maxRetries, retryThreshold

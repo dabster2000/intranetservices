@@ -43,6 +43,9 @@ public record GetCaseStatusResponse(
 
     /**
      * Status of an individual recipient/signer.
+     *
+     * Note: The NextSign API returns the signing status in a field named "signed"
+     * with values "pending" or "signed". We map this to our "status" field.
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record RecipientStatus(
@@ -50,8 +53,8 @@ public record GetCaseStatusResponse(
         String email,
         int order,
         boolean signing,
-        String status,
-        @JsonProperty("signed_at") String signedAt,
+        @JsonProperty("signed") String status,
+        @JsonProperty("signedDateAndTime") String signedAt,
         @JsonProperty("rejected_at") String rejectedAt,
         String role
     ) {
@@ -75,12 +78,13 @@ public record GetCaseStatusResponse(
 
     /**
      * Signed document information returned after signing is complete.
-     * Contains the document_id needed for retrieval via presigned URL API.
+     * Contains the download URL for the signed PDF in the "file" field.
+     * The documentId field holds this URL despite its name (for code compatibility).
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record SignedDocumentInfo(
         String name,
-        @JsonProperty("document_id") String documentId
+        @JsonProperty("file") String documentId
     ) {}
 
     /**

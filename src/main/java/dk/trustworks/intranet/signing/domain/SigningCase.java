@@ -147,6 +147,35 @@ public class SigningCase {
     @Column(name = "folder", length = 255)
     private String folder;
 
+    // --- SharePoint Auto-Upload Fields ---
+
+    /**
+     * Reference to template_signing_stores.uuid for auto-upload configuration.
+     * If set, signed documents will be automatically uploaded to SharePoint.
+     */
+    @Column(name = "signing_store_uuid", length = 36)
+    private String signingStoreUuid;
+
+    /**
+     * SharePoint upload status: PENDING, UPLOADED, FAILED.
+     * Tracks whether the signed document has been uploaded to SharePoint.
+     */
+    @Column(name = "sharepoint_upload_status", length = 50)
+    private String sharepointUploadStatus;
+
+    /**
+     * Error message if SharePoint upload failed.
+     */
+    @Column(name = "sharepoint_upload_error", columnDefinition = "TEXT")
+    private String sharepointUploadError;
+
+    /**
+     * URL of the uploaded file in SharePoint.
+     * Set after successful upload for easy access.
+     */
+    @Column(name = "sharepoint_file_url", length = 1000)
+    private String sharepointFileUrl;
+
     /**
      * JPA lifecycle callback to set created_at on first persist.
      */

@@ -39,4 +39,7 @@ public class DocumentTemplateDTO {
 
     @Builder.Default
     private List<TemplateSigningSchemaDTO> signingSchemas = new ArrayList<>();
+
+    @Builder.Default
+    private List<TemplateSigningStoreDTO> signingStores = new ArrayList<>();
 }

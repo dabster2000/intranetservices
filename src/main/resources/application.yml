@@ -28,17 +28,20 @@ quarkus:
   swagger-ui:
     enable: true
     always-include: true
-    oidc-client:
-      graph:
-        auth-server-url: https://login.microsoftonline.com/${AZURE_TENANT_ID:xx}/v2.0
-        client-id: ${AZURE_CLIENT_ID:xx}
-        credentials:
-          client-secret:
-            value: ${AZURE_CLIENT_SECRET:xx}
-            method: post
-        grant:
-          type: client
-        scopes: https://graph.microsoft.com/.default
+  keycloak:
+    devservices:
+      enabled: false
+  oidc-client:
+    graph:
+      auth-server-url: https://login.microsoftonline.com/${AZURE_TENANT_ID:xx}/v2.0
+      client-id: ${AZURE_CLIENT_ID:xx}
+      credentials:
+        client-secret:
+          value: ${AZURE_CLIENT_SECRET:xx}
+          method: post
+      grant:
+        type: client
+      scopes: https://graph.microsoft.com/.default
   mailer:
     auth-methods: LOGIN
     from: no-reply@trustworks.dk
@@ -61,6 +64,11 @@ quarkus:
   otel:
     enabled: false
   rest-client:
+    graph-api:
+      url: https://graph.microsoft.com
+      scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 60000
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
@@ -95,7 +103,6 @@ quarkus:
       format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
       #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
-
 # Event type to Kafka topic mapping (used by ConfigTopicMapper)
 event-topics:
   CREATE_CLIENT: client.updates

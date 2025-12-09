@@ -17,6 +17,8 @@ import java.util.Map;
  * @param referenceId     Optional external reference ID for tracking
  * @param signingSchemas  List of signing schema URNs (e.g., "urn:grn:authn:dk:mitid:substantial").
  *                        If null or empty, backend will use default schemas.
+ * @param signingStoreUuid UUID of template_signing_stores for SharePoint auto-upload after signing completes.
+ *                         Optional - if null, no auto-upload will occur.
  */
 public record CreateTemplateSigningRequest(
     String documentName,
@@ -24,7 +26,8 @@ public record CreateTemplateSigningRequest(
     Map<String, String> formValues,
     List<SignerInfo> signers,
     String referenceId,
-    List<String> signingSchemas
+    List<String> signingSchemas,
+    String signingStoreUuid
 ) {
     /**
      * Validates that required fields are present and valid.

@@ -68,6 +68,9 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     @OneToMany(mappedBy = "template", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private List<TemplateSigningSchemaEntity> signingSchemas = new ArrayList<>();
 
+    @OneToMany(mappedBy = "template", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private List<TemplateSigningStoreEntity> signingStores = new ArrayList<>();
+
     @PrePersist
     protected void onCreate() {
         if (uuid == null) {
@@ -85,10 +88,10 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     // --- Panache finder methods ---
 
     /**
-     * Find all templates by category (active only) with placeholders, defaultSigners, and signingSchemas eagerly loaded.
+     * Find all templates by category (active only) with placeholders, defaultSigners, signingSchemas, and signingStores eagerly loaded.
      *
      * @param category The template category
-     * @return List of active templates for the category with placeholders, defaultSigners, and signingSchemas
+     * @return List of active templates for the category with placeholders, defaultSigners, signingSchemas, and signingStores
      */
     public static List<DocumentTemplateEntity> findByCategory(TemplateCategory category) {
         // First fetch with placeholders
@@ -114,15 +117,22 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
                 "WHERE t IN ?1",
                 templates
             ).list();
+            // Then fetch signingStores in a separate query to avoid cartesian product
+            find(
+                "SELECT DISTINCT t FROM DocumentTemplateEntity t " +
+                "LEFT JOIN FETCH t.signingStores " +
+                "WHERE t IN ?1",
+                templates
+            ).list();
         }
         return templates;
     }
 
     /**
-     * Find all templates (including inactive) with placeholders, defaultSigners, and signingSchemas eagerly loaded.
+     * Find all templates (including inactive) with placeholders, defaultSigners, signingSchemas, and signingStores eagerly loaded.
      *
      * @param includeInactive Whether to include inactive templates
-     * @return List of all templates with placeholders, defaultSigners, and signingSchemas, sorted by active status and name
+     * @return List of all templates with placeholders, defaultSigners, signingSchemas, and signingStores, sorted by active status and name
      */
     public static List<DocumentTemplateEntity> findAllIncludingInactive(boolean includeInactive) {
         List<DocumentTemplateEntity> templates;
@@ -155,15 +165,22 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
                 "WHERE t IN ?1",
                 templates
             ).list();
+            // Then fetch signingStores in a separate query to avoid cartesian product
+            find(
+                "SELECT DISTINCT t FROM DocumentTemplateEntity t " +
+                "LEFT JOIN FETCH t.signingStores " +
+                "WHERE t IN ?1",
+                templates
+            ).list();
         }
         return templates;
     }
 
     /**
-     * Find a template by UUID with placeholders, defaultSigners, and signingSchemas eagerly loaded.
+     * Find a template by UUID with placeholders, defaultSigners, signingSchemas, and signingStores eagerly loaded.
      *
      * @param uuid The template UUID
-     * @return The template with placeholders, defaultSigners, and signingSchemas, or null if not found
+     * @return The template with placeholders, defaultSigners, signingSchemas, and signingStores, or null if not found
      */
     public static DocumentTemplateEntity findByUuidWithPlaceholders(String uuid) {
         // First fetch with placeholders
@@ -186,6 +203,13 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
             find(
                 "SELECT DISTINCT t FROM DocumentTemplateEntity t " +
                 "LEFT JOIN FETCH t.signingSchemas " +
+                "WHERE t.uuid = ?1",
+                uuid
+            ).firstResult();
+            // Then fetch signingStores in a separate query to avoid cartesian product
+            find(
+                "SELECT DISTINCT t FROM DocumentTemplateEntity t " +
+                "LEFT JOIN FETCH t.signingStores " +
                 "WHERE t.uuid = ?1",
                 uuid
             ).firstResult();
@@ -263,5 +287,23 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
      */
     public void clearSigningSchemas() {
         signingSchemas.clear();
+    }
+
+    /**
+     * Add a signing store to this template.
+     *
+     * @param signingStore The signing store to add
+     */
+    public void addSigningStore(TemplateSigningStoreEntity signingStore) {
+        signingStores.add(signingStore);
+        signingStore.setTemplate(this);
+    }
+
+    /**
+     * Clear all signing stores from this template.
+     * Used when syncing signing stores during updates.
+     */
+    public void clearSigningStores() {
+        signingStores.clear();
     }
 }

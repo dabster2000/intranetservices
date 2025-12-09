@@ -41,11 +41,11 @@ public class NextsignLoggingFilter implements ClientRequestFilter, ClientRespons
             String responseBody = new String(bytes, StandardCharsets.UTF_8);
 
             // Log response body (truncate if too long)
-            if (responseBody.length() > 2000) {
-                log.infof("[NEXTSIGN-RESPONSE] Body (truncated): %s...", responseBody.substring(0, 2000));
-            } else {
+            //if (responseBody.length() > 2000) {
+            //    log.infof("[NEXTSIGN-RESPONSE] Body (truncated): %s...", responseBody.substring(0, 2000));
+            //} else {
                 log.infof("[NEXTSIGN-RESPONSE] Body: %s", responseBody);
-            }
+            //}
 
             // Reset stream so it can be read again for deserialization
             responseContext.setEntityStream(new ByteArrayInputStream(bytes));

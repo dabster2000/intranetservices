@@ -1,6 +1,9 @@
 package dk.trustworks.intranet.signing.jobs;
 
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
+import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
+import dk.trustworks.intranet.sharepoint.dto.DriveItem;
+import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseStatus;
@@ -11,6 +14,8 @@ import jakarta.inject.Named;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -49,6 +54,12 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
     @Inject
     SigningService signingService;
+
+    @Inject
+    SharePointService sharePointService;
+
+    private static final DateTimeFormatter FILENAME_DATE_FORMATTER =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
 
     /**
      * Maximum retry attempts before giving up.
@@ -111,6 +122,11 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 log.infof("Successfully fetched and updated status for case: %s", caseKey);
                 successful++;
 
+                // Check if signing is complete and needs SharePoint upload
+                if (isSigningComplete(status) && shouldUploadToSharePoint(signingCase)) {
+                    uploadSignedDocumentToSharePoint(signingCase);
+                }
+
             } catch (Exception e) {
                 String errorMsg = e.getMessage();
 
@@ -157,5 +173,150 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     protected void onFinally(long executionId, String jobName) {
         log.debugf("Cleanup after job %s (execution %d)", jobName, executionId);
         // No cleanup needed - all database operations are transactional
+    }
+
+    // ========================================================================
+    // SHAREPOINT AUTO-UPLOAD METHODS
+    // ========================================================================
+
+    /**
+     * Checks if all signers have completed signing.
+     *
+     * @param status The signing case status from NextSign
+     * @return true if all signers have signed
+     */
+    private boolean isSigningComplete(SigningCaseStatus status) {
+        if (status == null) {
+            return false;
+        }
+        // Check if status is "completed" or all signers have signed
+        if ("completed".equalsIgnoreCase(status.status())) {
+            return true;
+        }
+        return status.totalSigners() > 0 && status.completedSigners() >= status.totalSigners();
+    }
+
+    /**
+     * Checks if the case should be uploaded to SharePoint.
+     *
+     * @param signingCase The signing case entity
+     * @return true if upload is needed
+     */
+    private boolean shouldUploadToSharePoint(SigningCase signingCase) {
+        // Must have a signing store configured
+        if (signingCase.getSigningStoreUuid() == null || signingCase.getSigningStoreUuid().isBlank()) {
+            return false;
+        }
+        // Must not already be uploaded
+        if ("UPLOADED".equals(signingCase.getSharepointUploadStatus())) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Downloads the signed document from NextSign and uploads it to SharePoint.
+     *
+     * @param signingCase The signing case entity
+     */
+    private void uploadSignedDocumentToSharePoint(SigningCase signingCase) {
+        String caseKey = signingCase.getCaseKey();
+        String signingStoreUuid = signingCase.getSigningStoreUuid();
+
+        log.infof("Starting SharePoint upload for case: %s (store: %s)", caseKey, signingStoreUuid);
+
+        try {
+            // 1. Get signing store configuration
+            TemplateSigningStoreEntity store = TemplateSigningStoreEntity.findById(signingStoreUuid);
+            if (store == null) {
+                String error = "Signing store not found: " + signingStoreUuid;
+                log.errorf(error);
+                markSharePointUploadFailed(signingCase, error);
+                return;
+            }
+
+            if (!Boolean.TRUE.equals(store.getIsActive())) {
+                log.warnf("Signing store %s is inactive, skipping upload for case %s",
+                    signingStoreUuid, caseKey);
+                return;
+            }
+
+            // 2. Download signed document from NextSign
+            log.debugf("Downloading signed document for case: %s", caseKey);
+            byte[] pdfBytes = signingService.downloadSignedDocument(caseKey, 0);
+
+            if (pdfBytes == null || pdfBytes.length == 0) {
+                String error = "Downloaded empty document for case: " + caseKey;
+                log.errorf(error);
+                markSharePointUploadFailed(signingCase, error);
+                return;
+            }
+
+            log.debugf("Downloaded signed document: %d bytes", pdfBytes.length);
+
+            // 3. Build filename with timestamp to avoid collisions
+            String baseFilename = sanitizeFilename(signingCase.getDocumentName());
+            String timestamp = LocalDateTime.now().format(FILENAME_DATE_FORMATTER);
+            String filename = String.format("%s_signed_%s.pdf", baseFilename, timestamp);
+
+            // 4. Upload to SharePoint
+            log.infof("Uploading to SharePoint: site=%s, drive=%s, path=%s, file=%s",
+                store.getSiteUrl(), store.getDriveName(), store.getFolderPath(), filename);
+
+            DriveItem result = sharePointService.uploadFile(
+                store.getSiteUrl(),
+                store.getDriveName(),
+                store.getFolderPath(),
+                filename,
+                pdfBytes
+            );
+
+            // 5. Update case with success status
+            signingCase.setSharepointUploadStatus("UPLOADED");
+            signingCase.setSharepointFileUrl(result.webUrl());
+            signingCase.setSharepointUploadError(null);
+            signingCaseRepository.persist(signingCase);
+
+            log.infof("Successfully uploaded signed document for case %s to SharePoint: %s",
+                caseKey, result.webUrl());
+
+        } catch (Exception e) {
+            log.errorf(e, "Failed to upload signed document to SharePoint for case: %s", caseKey);
+            markSharePointUploadFailed(signingCase, e.getMessage());
+        }
+    }
+
+    /**
+     * Marks a case as having failed SharePoint upload.
+     *
+     * @param signingCase The signing case entity
+     * @param error The error message
+     */
+    private void markSharePointUploadFailed(SigningCase signingCase, String error) {
+        signingCase.setSharepointUploadStatus("FAILED");
+        signingCase.setSharepointUploadError(error);
+        signingCaseRepository.persist(signingCase);
+    }
+
+    /**
+     * Sanitizes a filename by removing/replacing invalid characters.
+     *
+     * @param filename The original filename
+     * @return Sanitized filename safe for filesystem
+     */
+    private String sanitizeFilename(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "document";
+        }
+        // Remove file extension if present
+        String name = filename;
+        int lastDot = name.lastIndexOf('.');
+        if (lastDot > 0) {
+            name = name.substring(0, lastDot);
+        }
+        // Replace invalid characters with underscores
+        return name.replaceAll("[^a-zA-Z0-9æøåÆØÅ._-]", "_")
+                   .replaceAll("_+", "_")
+                   .replaceAll("^_|_$", "");
     }
 }
