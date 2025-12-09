@@ -12,8 +12,13 @@ import org.thymeleaf.templateresolver.StringTemplateResolver;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Generic service for generating PDFs from dynamic HTML/Thymeleaf templates.
@@ -35,6 +40,33 @@ public class DocumentPdfService {
 
     private static final Logger LOG = Logger.getLogger(DocumentPdfService.class);
     private static final Locale DANISH_LOCALE = Locale.forLanguageTag("da-DK");
+
+    // Date format patterns
+    /** Pattern to detect ISO date format: yyyy-MM-dd */
+    private static final Pattern ISO_DATE_PATTERN = Pattern.compile("^\\d{4}-\\d{2}-\\d{2}$");
+    /** Parser for ISO dates */
+    private static final DateTimeFormatter ISO_DATE_PARSER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    /** Danish long date format: "4. december 2025" */
+    private static final DateTimeFormatter DANISH_DATE_FORMAT =
+            DateTimeFormatter.ofPattern("d. MMMM yyyy", DANISH_LOCALE);
+
+    /**
+     * CSS override block injected into templates to fix common PDF rendering issues.
+     * Uses high specificity to override problematic styles without breaking valid CSS.
+     */
+    private static final String PDF_CSS_OVERRIDES = """
+        <style type="text/css">
+        /* PDF CSS Overrides - Injected by DocumentPdfService */
+        /* Fix text clipping: disable justify (causes character spacing overflow in PDF) */
+        p, div, span, td, th, li { text-align: left !important; }
+        /* Ensure text wraps instead of overflowing */
+        p, div, span, td, th { word-wrap: break-word; overflow-wrap: break-word; }
+        /* Fix max-width conflicts: 170mm = A4 (210mm) minus safe margins */
+        .page-container, .document-container, .content { max-width: 170mm !important; }
+        /* Prevent fixed widths from causing overflow */
+        body { padding: 0 !important; margin: 0 !important; }
+        </style>
+        """;
 
     private TemplateEngine templateEngine;
 
@@ -111,13 +143,53 @@ public class DocumentPdfService {
 
     /**
      * Creates a Thymeleaf context populated with all form values.
+     * <p>
+     * Automatically converts ISO date strings (yyyy-MM-dd) to Danish long format (d. MMMM yyyy).
+     * </p>
      */
     private Context createTemplateContext(Map<String, String> formValues) {
         Context ctx = new Context(DANISH_LOCALE);
         if (formValues != null) {
-            formValues.forEach(ctx::setVariable);
+            Map<String, String> convertedValues = convertDatesToDisplayFormat(formValues);
+            convertedValues.forEach(ctx::setVariable);
         }
         return ctx;
+    }
+
+    /**
+     * Converts ISO date values (yyyy-MM-dd) to Danish display format (d. MMMM yyyy).
+     * <p>
+     * Scans all form values and converts any that match the ISO date pattern.
+     * Non-date values are passed through unchanged.
+     * </p>
+     *
+     * @param formValues The original form values
+     * @return A new map with date values converted to Danish format
+     */
+    private Map<String, String> convertDatesToDisplayFormat(Map<String, String> formValues) {
+        Map<String, String> result = new HashMap<>(formValues.size());
+
+        for (Map.Entry<String, String> entry : formValues.entrySet()) {
+            String key = entry.getKey();
+            String value = entry.getValue();
+
+            if (value != null && ISO_DATE_PATTERN.matcher(value).matches()) {
+                try {
+                    LocalDate date = LocalDate.parse(value, ISO_DATE_PARSER);
+                    String formatted = date.format(DANISH_DATE_FORMAT);
+                    result.put(key, formatted);
+                    LOG.debugf("Converted date '%s' from ISO (%s) to Danish format (%s)", key, value, formatted);
+                } catch (DateTimeParseException e) {
+                    // If parsing fails, keep original value
+                    LOG.warnf("Failed to parse date '%s' value '%s': %s", key, value, e.getMessage());
+                    result.put(key, value);
+                }
+            } else {
+                result.put(key, value);
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -175,6 +247,49 @@ public class DocumentPdfService {
     }
 
     /**
+     * Injects CSS override block into HTML to fix common PDF rendering issues.
+     * <p>
+     * Instead of using fragile regex replacements on existing CSS, this method injects
+     * a CSS override block with high-specificity rules that override problematic styles.
+     * The block is injected just before &lt;/head&gt; to ensure it takes precedence.
+     * </p>
+     * <p>
+     * This approach is more robust because:
+     * <ul>
+     *   <li>Uses CSS cascade instead of text manipulation</li>
+     *   <li>Doesn't risk breaking valid CSS patterns</li>
+     *   <li>Works regardless of original CSS formatting/whitespace</li>
+     *   <li>High-specificity selectors ensure overrides apply</li>
+     * </ul>
+     *
+     * @param html The HTML content to inject CSS overrides into
+     * @return HTML with CSS override block injected before &lt;/head&gt;
+     */
+    private String injectPdfCssOverrides(String html) {
+        // Find </head> and inject our CSS overrides just before it
+        int headEndIndex = html.toLowerCase().indexOf("</head>");
+        if (headEndIndex > 0) {
+            html = html.substring(0, headEndIndex) + PDF_CSS_OVERRIDES + html.substring(headEndIndex);
+            LOG.debugf("Injected PDF CSS overrides before </head>");
+        } else {
+            // No </head> found - inject at start of <body> instead
+            int bodyIndex = html.toLowerCase().indexOf("<body");
+            if (bodyIndex > 0) {
+                int bodyTagEnd = html.indexOf(">", bodyIndex);
+                if (bodyTagEnd > 0) {
+                    html = html.substring(0, bodyTagEnd + 1) + PDF_CSS_OVERRIDES + html.substring(bodyTagEnd + 1);
+                    LOG.debugf("Injected PDF CSS overrides after <body>");
+                }
+            } else {
+                // Last resort: prepend to document
+                html = PDF_CSS_OVERRIDES + html;
+                LOG.warnf("No <head> or <body> found - prepended CSS overrides to document");
+            }
+        }
+        return html;
+    }
+
+    /**
      * Converts rendered HTML to PDF using OpenHTMLToPDF.
      *
      * <p><strong>HTML-to-XML Sanitization (Reverse Strategy):</strong>
@@ -184,6 +299,7 @@ public class DocumentPdfService {
      *   <li>Remove BOM and trim whitespace</li>
      *   <li>Normalize DOCTYPE to XHTML-compliant format</li>
      *   <li>Fix self-closing tags to include space before /&gt;</li>
+     *   <li>Inject CSS overrides to prevent text clipping and overflow</li>
      *   <li>Escape ALL ampersands: & to &amp;amp; (catches everything including incomplete entity refs)</li>
      *   <li>Replace named entities with numeric equivalents for compatibility</li>
      *   <li>Un-escape numeric entities we specifically want: &amp;amp;#160; to &amp;#160;</li>
@@ -208,11 +324,14 @@ public class DocumentPdfService {
             // Step 3: Fix self-closing tags (br/, img/, etc. → br /, img /, etc.)
             html = fixSelfClosingTags(html);
 
-            // Step 4: Escape ALL ampersands (catches everything including incomplete entities)
+            // Step 4: Inject CSS overrides to fix text clipping in PDFs
+            html = injectPdfCssOverrides(html);
+
+            // Step 5: Escape ALL ampersands (catches everything including incomplete entities)
             String sanitizedHtml = html.replace("&", "&amp;");
 
-            // Step 5: Replace HTML named entities with numeric references
-            // These will become &amp;nbsp; after step 4, so we need to un-escape them
+            // Step 6: Replace HTML named entities with numeric references
+            // These will become &amp;nbsp; after step 5, so we need to un-escape them
             sanitizedHtml = sanitizedHtml
                 .replace("&amp;nbsp;", "&#160;")           // Non-breaking space
                 .replace("&amp;copy;", "&#169;")           // Copyright symbol
@@ -234,12 +353,12 @@ public class DocumentPdfService {
                 .replace("&amp;quot;", "&#34;")            // Quotation mark
                 .replace("&amp;apos;", "&#39;");           // Apostrophe
 
-            // Step 6: Un-escape numeric entities (they came from Thymeleaf as &#160;, not &amp;#160;)
+            // Step 7: Un-escape numeric entities (they came from Thymeleaf as &#160;, not &amp;#160;)
             // This ensures numeric entities already in template stay valid
             // Pattern: &amp;#(number); to &#(number);
             sanitizedHtml = sanitizedHtml.replaceAll("&amp;(#\\d+;)", "$1");
 
-            // Step 7: Build and execute PDF conversion
+            // Step 8: Build and execute PDF conversion
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
             builder.withHtmlContent(sanitizedHtml, null);
