@@ -106,4 +106,14 @@ public class TemplateSigningStoreEntity extends PanacheEntityBase {
     public static long deleteByTemplateUuid(String templateUuid) {
         return delete("template.uuid = ?1", templateUuid);
     }
+
+    /**
+     * Find all active signing stores across all templates.
+     * Useful for upload document UI to select a destination.
+     *
+     * @return List of all active signing stores, sorted by displayOrder then displayName
+     */
+    public static List<TemplateSigningStoreEntity> findAllActive() {
+        return find("isActive = true ORDER BY displayOrder, displayName").list();
+    }
 }

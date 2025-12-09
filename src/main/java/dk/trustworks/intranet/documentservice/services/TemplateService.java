@@ -245,6 +245,20 @@ public class TemplateService {
     }
 
     /**
+     * Find all active signing stores across all templates.
+     * Used by Upload Document UI to select a SharePoint destination.
+     *
+     * @return List of all active signing store DTOs, sorted by displayOrder then displayName
+     */
+    public List<TemplateSigningStoreDTO> findAllActiveSigningStores() {
+        log.debug("Fetching all active signing stores");
+        List<TemplateSigningStoreEntity> entities = TemplateSigningStoreEntity.findAllActive();
+        return entities.stream()
+                .map(this::toSigningStoreDTO)
+                .collect(Collectors.toList());
+    }
+
+    /**
      * Validate a template DTO.
      *
      * @param dto Template DTO to validate

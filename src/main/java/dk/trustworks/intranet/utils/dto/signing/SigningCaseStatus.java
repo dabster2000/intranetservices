@@ -13,6 +13,10 @@ import java.util.List;
  * @param signers Status of each individual signer
  * @param totalSigners Total number of signers
  * @param completedSigners Number of signers who have completed signing
+ * @param signingStoreUuid Reference to signing store for SharePoint auto-upload (nullable)
+ * @param sharepointUploadStatus SharePoint upload status: PENDING, UPLOADED, FAILED (nullable)
+ * @param sharepointUploadError Error message if SharePoint upload failed (nullable)
+ * @param sharepointFileUrl URL of the uploaded file in SharePoint (nullable)
  */
 public record SigningCaseStatus(
     String caseKey,
@@ -21,7 +25,11 @@ public record SigningCaseStatus(
     LocalDateTime createdAt,
     List<SignerStatus> signers,
     int totalSigners,
-    int completedSigners
+    int completedSigners,
+    String signingStoreUuid,
+    String sharepointUploadStatus,
+    String sharepointUploadError,
+    String sharepointFileUrl
 ) {
     /**
      * Checks if all signers have completed signing.

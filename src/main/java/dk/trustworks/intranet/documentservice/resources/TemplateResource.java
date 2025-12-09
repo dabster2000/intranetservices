@@ -73,6 +73,19 @@ public class TemplateResource {
     }
 
     /**
+     * Get all active signing stores across all templates.
+     * Used by Upload Document UI to select a SharePoint destination.
+     *
+     * @return List of all active signing stores
+     */
+    @GET
+    @Path("/signing-stores/active")
+    public List<dk.trustworks.intranet.documentservice.dto.TemplateSigningStoreDTO> getAllActiveSigningStores() {
+        log.info("GET /templates/signing-stores/active");
+        return templateService.findAllActiveSigningStores();
+    }
+
+    /**
      * Create a new template.
      *
      * @param dto Template DTO

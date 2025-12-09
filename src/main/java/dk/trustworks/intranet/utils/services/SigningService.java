@@ -292,7 +292,11 @@ public class SigningService {
                 LocalDateTime.now(),
                 Collections.emptyList(),
                 0,
-                0
+                0,
+                null, // signingStoreUuid
+                null, // sharepointUploadStatus
+                null, // sharepointUploadError
+                null  // sharepointFileUrl
             );
         }
 
@@ -320,7 +324,11 @@ public class SigningService {
             createdAt,
             signers,
             totalSigners,
-            completedSigners
+            completedSigners,
+            null, // signingStoreUuid - not returned by NextSign API
+            null, // sharepointUploadStatus - not returned by NextSign API
+            null, // sharepointUploadError - not returned by NextSign API
+            null  // sharepointFileUrl - not returned by NextSign API
         );
     }
 
@@ -667,7 +675,11 @@ public class SigningService {
             entity.getCreatedAt(),
             List.of(), // Signers loaded on-demand when needed via getStatus()
             entity.getTotalSigners() != null ? entity.getTotalSigners() : 0,
-            entity.getCompletedSigners() != null ? entity.getCompletedSigners() : 0
+            entity.getCompletedSigners() != null ? entity.getCompletedSigners() : 0,
+            entity.getSigningStoreUuid(),
+            entity.getSharepointUploadStatus(),
+            entity.getSharepointUploadError(),
+            entity.getSharepointFileUrl()
         );
     }
 

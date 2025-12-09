@@ -10,13 +10,15 @@ import java.util.List;
  * @param contentType MIME type of the document (typically "application/pdf")
  * @param signers List of signers with their order and role
  * @param referenceId Optional internal tracking ID (can be null)
+ * @param signingStoreUuid Optional UUID of template_signing_stores for SharePoint auto-upload (can be null)
  */
 public record CreateSigningCaseRequest(
     String documentName,
     String documentBase64,
     String contentType,
     List<SignerInfo> signers,
-    String referenceId
+    String referenceId,
+    String signingStoreUuid
 ) {
     /**
      * Validates that required fields are present and signers list is not empty.
