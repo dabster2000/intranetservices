@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.sharepoint.dto;
 
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
@@ -49,6 +50,13 @@ public final class GraphPath {
     /**
      * Encodes a single path segment (file or folder name).
      * Handles special characters that need encoding in URLs.
+     * <p>
+     * This method is idempotent: it decodes first, then encodes.
+     * This prevents double-encoding when input already contains encoded characters.
+     * <ul>
+     *   <li>"TWT Kontrakter" → "TWT%20Kontrakter"</li>
+     *   <li>"TWT%20Kontrakter" → "TWT%20Kontrakter" (not %2520)</li>
+     * </ul>
      *
      * @param segment the segment to encode
      * @return the URL-encoded segment
@@ -58,8 +66,13 @@ public final class GraphPath {
             return "";
         }
 
+        // Decode first to prevent double-encoding (makes operation idempotent)
+        // If input is already encoded (%20), decode it first, then re-encode
+        // If input is raw (space), decode is no-op, then encode normally
+        String decoded = URLDecoder.decode(segment, StandardCharsets.UTF_8);
+
         // URLEncoder encodes space as '+', but we need %20 for paths
-        return URLEncoder.encode(segment, StandardCharsets.UTF_8)
+        return URLEncoder.encode(decoded, StandardCharsets.UTF_8)
             .replace("+", "%20");
     }
 

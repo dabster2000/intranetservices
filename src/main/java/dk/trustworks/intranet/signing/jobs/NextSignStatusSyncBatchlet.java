@@ -210,10 +210,7 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             return false;
         }
         // Must not already be uploaded
-        if ("UPLOADED".equals(signingCase.getSharepointUploadStatus())) {
-            return false;
-        }
-        return true;
+        return !"UPLOADED".equals(signingCase.getSharepointUploadStatus());
     }
 
     /**
