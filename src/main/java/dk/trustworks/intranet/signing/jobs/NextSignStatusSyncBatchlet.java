@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.signing.jobs;
 
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.sharepoint.dto.DriveItem;
@@ -59,6 +60,9 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
     @Inject
     SharePointService sharePointService;
+
+    @Inject
+    SlackService slackService;
 
     private static final DateTimeFormatter FILENAME_DATE_FORMATTER =
         DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
@@ -298,6 +302,9 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             log.infof("Successfully uploaded signed document for case %s to SharePoint: %s",
                 caseKey, result.webUrl());
 
+            // 8. Send Slack notification to user
+            notifyUserOfSignedDocumentUpload(signingCase);
+
         } catch (Exception e) {
             log.errorf(e, "Failed to upload signed document to SharePoint for case: %s", caseKey);
             markSharePointUploadFailed(signingCase, e.getMessage());
@@ -444,5 +451,61 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
         return name.replaceAll("[^a-zA-Z0-9æøåÆØÅ._-]", "_")
                    .replaceAll("_+", "_")
                    .replaceAll("^_|_$", "");
+    }
+
+    // ========================================================================
+    // SLACK NOTIFICATION METHODS
+    // ========================================================================
+
+    /**
+     * Sends a Slack notification to the case owner that their document
+     * has been signed and uploaded to SharePoint.
+     *
+     * Graceful degradation: notification failures are logged but do not
+     * fail the overall upload process.
+     *
+     * @param signingCase The signing case that was uploaded
+     */
+    private void notifyUserOfSignedDocumentUpload(SigningCase signingCase) {
+        try {
+            // Lookup user
+            String userUuid = signingCase.getUserUuid();
+            if (userUuid == null || userUuid.isBlank()) {
+                log.warnf("Cannot send notification: no userUuid for case %s",
+                    signingCase.getCaseKey());
+                return;
+            }
+
+            Optional<User> userOpt = User.findByIdOptional(userUuid);
+            if (userOpt.isEmpty()) {
+                log.warnf("Cannot send notification: user %s not found for case %s",
+                    userUuid, signingCase.getCaseKey());
+                return;
+            }
+
+            User user = userOpt.get();
+
+            // Check if user has Slack configured
+            if (user.getSlackusername() == null || user.getSlackusername().isBlank()) {
+                log.debugf("User %s has no Slack username, skipping notification",
+                    user.getUsername());
+                return;
+            }
+
+            // Send notification
+            slackService.sendSignedDocumentNotification(
+                user,
+                signingCase.getDocumentName(),
+                signingCase.getUpdatedAt()
+            );
+
+            log.infof("Sent Slack notification to %s for signed document: %s",
+                user.getUsername(), signingCase.getDocumentName());
+
+        } catch (Exception e) {
+            // Graceful degradation - log but don't fail the upload
+            log.warnf(e, "Failed to send Slack notification for case %s: %s",
+                signingCase.getCaseKey(), e.getMessage());
+        }
     }
 }

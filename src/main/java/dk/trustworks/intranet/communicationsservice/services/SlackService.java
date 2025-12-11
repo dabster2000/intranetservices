@@ -275,4 +275,87 @@ public class SlackService {
         return date.format(DateTimeFormatter.ofPattern("MMM dd, yyyy"));
     }
 
+    /**
+     * Sends a notification to a user when their signed document has been
+     * uploaded to SharePoint. Uses Block Kit for a clean, professional layout.
+     *
+     * @param user The user to notify (must have slackusername set)
+     * @param documentName The name of the signed document
+     * @param completedAt When the document was completed/uploaded
+     * @throws IOException If there's an I/O error communicating with Slack
+     * @throws SlackApiException If Slack API returns an error
+     */
+    public void sendSignedDocumentNotification(User user, String documentName, LocalDateTime completedAt)
+            throws IOException, SlackApiException {
+        Slack slack = Slack.getInstance();
+
+        log.infof("Sending signed document notification to %s for document: %s",
+            user.getUsername(), documentName);
+
+        // Construct the profile view URL
+        String profileUrl = constructProfileUrl();
+
+        // Build Block Kit message
+        java.util.List<com.slack.api.model.block.LayoutBlock> blocks = new java.util.ArrayList<>();
+
+        // Section with main message
+        blocks.add(section(s -> s.text(markdownText(
+            ":white_check_mark: *Document Signed & Uploaded*\n" +
+            "Your document *" + documentName + "* has been signed by all parties and uploaded to SharePoint."
+        ))));
+
+        // Divider
+        blocks.add(divider());
+
+        // Context footer with timestamp and link
+        String timestamp = completedAt != null
+            ? completedAt.format(DateTimeFormatter.ofPattern("MMM dd, yyyy 'at' HH:mm"))
+            : LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMM dd, yyyy 'at' HH:mm"));
+
+        if (profileUrl != null) {
+            blocks.add(context(c -> c.elements(asContextElements(
+                markdownText("Completed: " + timestamp + " | <" + profileUrl + "|View Documents>")
+            ))));
+        } else {
+            blocks.add(context(c -> c.elements(asContextElements(
+                markdownText("Completed: " + timestamp)
+            ))));
+        }
+
+        // Send the message as DM to user
+        ChatPostMessageResponse response = slack.methods(motherSlackBotToken).chatPostMessage(req -> req
+            .channel(user.getSlackusername())
+            .text("Your document \"" + documentName + "\" has been signed and uploaded to SharePoint.")
+            .blocks(blocks)
+        );
+
+        if (!response.isOk()) {
+            log.errorf("Failed to send signed document notification to %s: %s",
+                user.getUsername(), response.getError());
+            throw new RuntimeException("Slack API error: " + response.getError());
+        }
+
+        log.infof("Signed document notification sent successfully to %s. Message ts: %s",
+            user.getUsername(), response.getTs());
+    }
+
+    /**
+     * Constructs the profile view URL for the current application.
+     *
+     * @return Full URL to the profile view, or null if base URL not configured
+     */
+    private String constructProfileUrl() {
+        if (applicationBaseUrl == null || applicationBaseUrl.trim().isEmpty()) {
+            log.warn("Application base URL not configured, cannot construct profile link");
+            return null;
+        }
+
+        String baseUrl = applicationBaseUrl.trim();
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+
+        return baseUrl + "/profile-view";
+    }
+
 }
