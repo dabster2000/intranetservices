@@ -247,6 +247,12 @@
       <version>1.27</version>
     </dependency>
     <dependency>
+      <groupId>com.deepoove</groupId>
+      <artifactId>poi-tl</artifactId>
+      <version>1.12.2</version>
+    </dependency>
+
+    <dependency>
       <groupId>com.amazonaws</groupId>
       <artifactId>aws-java-sdk-ses</artifactId>
       <version>1.11.858</version>

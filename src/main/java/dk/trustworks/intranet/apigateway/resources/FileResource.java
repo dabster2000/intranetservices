@@ -3,6 +3,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.resources.UserDocumentResource;
+import dk.trustworks.intranet.fileservice.resources.UserSharePointDocumentResource;
 import dk.trustworks.intranet.fileservice.services.S3FileService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -33,6 +34,9 @@ public class FileResource {
 
     @Inject
     S3FileService s3FileService;
+
+    @Inject
+    UserSharePointDocumentResource sharePointDocumentAPI;
 
     @GET
     @Path("/photos/{relateduuid}")
@@ -122,6 +126,17 @@ public class FileResource {
     @Path("/documents/{uuid}")
     public void deleteDocument(@PathParam("uuid") String uuid) {
         documentAPI.delete(uuid);
+    }
+
+    @GET
+    @Path("/sharepoint-documents/{signingCaseId}/download")
+    @Produces("application/octet-stream")
+    public Response downloadSharePointDocument(@PathParam("signingCaseId") Long signingCaseId) {
+        log.debugf("Downloading SharePoint document for signing case: %d", signingCaseId);
+        byte[] content = sharePointDocumentAPI.downloadDocument(signingCaseId);
+        return Response.ok(content)
+                .header("Content-Disposition", "attachment")
+                .build();
     }
 
     @GET
