@@ -3,10 +3,15 @@ package dk.trustworks.intranet.utils.services;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.services.S3FileService;
 import dk.trustworks.intranet.utils.client.NextsignConvertClient;
+import dk.trustworks.intranet.utils.converter.NextsignWordToPdfConverter;
+import dk.trustworks.intranet.utils.converter.WordConverterConfig;
+import dk.trustworks.intranet.utils.converter.WordConversionException;
+import dk.trustworks.intranet.utils.converter.WordToPdfConverter;
 import dk.trustworks.intranet.utils.dto.nextsign.DocumentConvertRequest;
 import dk.trustworks.intranet.utils.dto.nextsign.DocumentConvertRequest.ConvertTag;
 import dk.trustworks.intranet.utils.dto.nextsign.DocumentConvertResponse;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
@@ -62,6 +67,15 @@ public class WordDocumentService {
     @RestClient
     NextsignConvertClient nextsignConvertClient;
 
+    @Inject
+    Instance<WordToPdfConverter> wordToPdfConverterInstance;
+
+    @Inject
+    WordConverterConfig converterConfig;
+
+    @Inject
+    Instance<NextsignWordToPdfConverter> nextsignConverterInstance;
+
     @ConfigProperty(name = "nextsign.bearer-token")
     String nextsignBearerToken;
 
@@ -89,8 +103,8 @@ public class WordDocumentService {
     /**
      * Saves a Word template file to S3.
      *
-     * @param fileBytes The Word document bytes (.docx)
-     * @param filename Original filename (preserved for display)
+     * @param fileBytes   The Word document bytes (.docx)
+     * @param filename    Original filename (preserved for display)
      * @param relatedUuid UUID of the related entity (e.g., template document)
      * @return UUID of the saved file in S3
      */
@@ -176,31 +190,81 @@ public class WordDocumentService {
     }
 
     /**
-     * Generates a PDF from a Word template using NextSign's convert API.
+     * Generates a PDF from a Word template with placeholder replacement.
      *
-     * <p>Flow:
+     * <p>Uses the configured converter (local or NextSign) based on word-converter.backend setting.
+     * If local conversion fails and fallback is enabled, falls back to NextSign API.
+     *
+     * <p>Flow (local):
+     * <ol>
+     *   <li>Fetch Word template from S3</li>
+     *   <li>Use poi-tl to replace {{PLACEHOLDER}} tags</li>
+     *   <li>Convert to PDF using LibreOffice headless</li>
+     *   <li>Return PDF bytes</li>
+     * </ol>
+     *
+     * <p>Flow (NextSign fallback):
      * <ol>
      *   <li>Generate presigned URL for the Word template in S3</li>
-     *   <li>Build tag list from placeholder values</li>
-     *   <li>Call NextSign /document/convert API</li>
+     *   <li>Call NextSign /document/convert API with tags</li>
      *   <li>Download and return the converted PDF</li>
      * </ol>
      *
-     * @param fileUuid UUID of the Word template in S3
+     * @param fileUuid          UUID of the Word template in S3
      * @param placeholderValues Map of placeholder keys to values
-     * @param documentName Display name for the document
+     * @param documentName      Display name for the document
      * @return PDF bytes
      * @throws WordDocumentException if conversion fails
      */
     public byte[] generatePdfFromWordTemplate(String fileUuid, Map<String, String> placeholderValues, String documentName) {
-        log.infof("Generating PDF from Word template: %s with %d placeholders",
-                fileUuid, placeholderValues != null ? placeholderValues.size() : 0);
+        log.infof("Generating PDF from Word template: %s with %d placeholders (backend: %s)",
+                fileUuid, placeholderValues != null ? placeholderValues.size() : 0, converterConfig.backend());
+
+        // Convert Map<String, String> to Map<String, Object> for converter interface
+        Map<String, Object> placeholders = placeholderValues != null
+                ? new HashMap<>(placeholderValues)
+                : Map.of();
+
+        // Try local conversion first (if configured)
+        if ("local".equals(converterConfig.backend()) && wordToPdfConverterInstance.isResolvable()) {
+            try {
+                // Fetch DOCX from S3
+                byte[] docxBytes = getWordTemplate(fileUuid);
+
+                // Use local converter
+                WordToPdfConverter converter = wordToPdfConverterInstance.get();
+                log.infof("Using converter: %s", converter.getName());
+
+                return converter.convert(docxBytes, placeholders, documentName);
+
+            } catch (WordConversionException e) {
+                if (converterConfig.fallbackEnabled()) {
+                    log.warnf("Local conversion failed, falling back to NextSign: %s", e.getMessage());
+                } else {
+                    throw new WordDocumentException("Local conversion failed: " + e.getMessage(), e);
+                }
+            }
+        }
+
+        // Fallback to NextSign API (or primary if configured)
+        return generatePdfViaNextSign(fileUuid, placeholders, documentName);
+    }
+
+    /**
+     * Generates PDF via NextSign API (fallback or when explicitly configured).
+     */
+    private byte[] generatePdfViaNextSign(String fileUuid, Map<String, Object> placeholderValues, String documentName) {
+        log.infof("Generating PDF via NextSign API for: %s", fileUuid);
 
         // 1. Generate presigned URL for S3 file
         String presignedUrl = generatePresignedUrl(fileUuid);
 
         // 2. Build tags from placeholder values
-        List<ConvertTag> tags = buildConvertTags(placeholderValues);
+        Map<String, String> stringValues = new HashMap<>();
+        if (placeholderValues != null) {
+            placeholderValues.forEach((k, v) -> stringValues.put(k, v != null ? v.toString() : ""));
+        }
+        List<ConvertTag> tags = buildConvertTags(stringValues);
 
         // 3. Build convert request
         DocumentConvertRequest request = DocumentConvertRequest.single(
@@ -226,13 +290,15 @@ public class WordDocumentService {
             }
 
             byte[] pdfBytes = downloadFile(convertedDoc.fileUrl());
-            log.infof("Successfully converted Word template to PDF: %d bytes", pdfBytes.length);
+            log.infof("Successfully converted Word template to PDF via NextSign: %d bytes", pdfBytes.length);
 
             return pdfBytes;
 
         } catch (WebApplicationException e) {
             log.errorf(e, "NextSign API error during conversion");
             throw new WordDocumentException("NextSign API error: " + e.getMessage(), e);
+        } catch (WordDocumentException e) {
+            throw e;
         } catch (Exception e) {
             log.errorf(e, "Unexpected error during Word to PDF conversion");
             throw new WordDocumentException("Conversion failed: " + e.getMessage(), e);

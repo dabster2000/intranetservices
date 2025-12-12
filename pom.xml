@@ -251,6 +251,18 @@
       <artifactId>poi-tl</artifactId>
       <version>1.12.2</version>
     </dependency>
+    <!-- Xalan XML transformer - required by Apache POI for Word document processing -->
+    <dependency>
+      <groupId>xalan</groupId>
+      <artifactId>xalan</artifactId>
+      <version>2.7.3</version>
+    </dependency>
+    <!-- Xalan serializer - contains OutputPropertiesFactory required by POI/Xalan XML transformation -->
+    <dependency>
+      <groupId>xalan</groupId>
+      <artifactId>serializer</artifactId>
+      <version>2.7.3</version>
+    </dependency>
     <dependency>
       <groupId>com.fasterxml.woodstox</groupId>
       <artifactId>woodstox-core</artifactId>
@@ -323,6 +335,13 @@
     <dependency>
       <groupId>com.fasterxml.jackson.datatype</groupId>
       <artifactId>jackson-datatype-jsr310</artifactId>
+    </dependency>
+
+    <!-- PDF Merging for document preview -->
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.4</version>
     </dependency>
   </dependencies>
 

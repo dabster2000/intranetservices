@@ -1,8 +1,10 @@
 package dk.trustworks.intranet.utils.resources;
 
+import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
+import dk.trustworks.intranet.utils.dto.signing.PreviewTemplateRequest;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseResponse;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseStatus;
 import dk.trustworks.intranet.utils.services.SigningService;
@@ -235,6 +237,86 @@ public class SigningResource {
 
         } catch (Exception e) {
             log.errorf(e, "Unexpected error creating signing case from template: %s", e.getMessage());
+            return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Generates a preview PDF from template documents.
+     * <p>
+     * This endpoint renders template documents to PDF with placeholder values replaced,
+     * without creating a signing case. Use this to preview documents BEFORE sending
+     * them for signing.
+     * </p>
+     * <p>
+     * Documents are passed directly in the request (already loaded from the template on frontend),
+     * eliminating the need for an additional lookup by templateUuid.
+     * </p>
+     *
+     * @param request The preview request containing documents list and formValues
+     * @return PDF binary response that opens in browser (Content-Disposition: inline)
+     */
+    @POST
+    @Path("/preview/template")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces("application/pdf")
+    @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
+    @Operation(
+        summary = "Preview document from template",
+        description = "Generates a preview PDF from template documents with placeholder values replaced. " +
+                      "The PDF is returned inline (opens in browser, not download). " +
+                      "If multiple documents are provided, they are merged into a single PDF. " +
+                      "This does NOT create a signing case - use for preview only."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Preview PDF generated successfully",
+            content = @Content(mediaType = "application/pdf")
+        ),
+        @APIResponse(
+            responseCode = "400",
+            description = "Invalid request (missing documents, documents without fileUuid, etc.)",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Server error (PDF generation failure, etc.)",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response previewTemplateDocument(PreviewTemplateRequest request) {
+        log.infof("POST /utils/signing/preview/template - Generating preview for %d document(s)",
+            request != null && request.documents() != null ? request.documents().size() : 0);
+
+        try {
+            // Validate request
+            if (request == null) {
+                return badRequest("REQUEST_NULL", "Request body is required");
+            }
+            request.validate();
+
+            // Generate preview PDF directly from the documents in the request
+            byte[] pdfBytes = signingService.generatePreviewPdf(request.documents(), request.formValues());
+
+            log.infof("Preview PDF generated successfully. Size: %d bytes", pdfBytes.length);
+
+            // Return PDF with inline disposition (opens in browser)
+            return Response.ok(pdfBytes)
+                .header("Content-Type", "application/pdf")
+                .header("Content-Disposition", "inline; filename=\"preview.pdf\"")
+                .build();
+
+        } catch (IllegalArgumentException e) {
+            log.warnf("Invalid preview request: %s", e.getMessage());
+            return badRequest("INVALID_REQUEST", e.getMessage());
+
+        } catch (SigningService.SigningException e) {
+            log.errorf(e, "Preview generation error: %s", e.getMessage());
+            return serverError("PREVIEW_FAILED", e.getMessage());
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error generating preview: %s", e.getMessage());
             return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
         }
     }

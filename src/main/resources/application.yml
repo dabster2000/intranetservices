@@ -354,5 +354,17 @@ pricingEngine:
 nextsign:
   company: ${NEXTSIGN_COMPANY:69313a4a3abed8e75359da3f}
   bearer-token: ${NEXTSIGN_BEARER_TOKEN:key_z5TGFFHtbIzmHgZfChogJkibyuTOsEJC0PM6kAHP36TFcbrckrAnrLbQewBLZu7D}
+
+# Word-to-PDF Converter Configuration
+# Uses poi-tl for placeholder replacement + LibreOffice for PDF conversion
+word-converter:
+  backend: ${WORD_CONVERTER_BACKEND:local}
+  libreoffice:
+    path: ${LIBREOFFICE_PATH:/usr/bin/libreoffice}
+    timeout-seconds: ${LIBREOFFICE_TIMEOUT:60}
+  temp-dir: ${WORD_CONVERTER_TEMP_DIR:/tmp/word-converter}
+  fallback-enabled: ${WORD_CONVERTER_FALLBACK:true}
+  max-concurrent: ${WORD_CONVERTER_MAX_CONCURRENT:3}
+
 sharepoint:
   hostname: tenant.sharepoint.com

@@ -19,6 +19,9 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.util.Map;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -229,6 +232,125 @@ public class SigningService {
         } catch (Exception e) {
             log.errorf(e, "Unexpected error creating multi-document signing case from template: %s", e.getMessage());
             throw new SigningException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Generates a preview PDF from template documents without creating a signing case.
+     * <p>
+     * This method renders template documents to PDF using the same Word-to-PDF conversion
+     * as the signing flow, but does not send to NextSign. If multiple documents are
+     * provided, they are merged into a single PDF.
+     * </p>
+     *
+     * @param templateDocuments List of template documents to render (REQUIRED)
+     * @param formValues        Key-value pairs for template placeholders
+     * @return PDF bytes (single or merged PDF)
+     * @throws SigningException if PDF generation fails
+     */
+    public byte[] generatePreviewPdf(
+            List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
+            Map<String, String> formValues) {
+
+        log.infof("Generating preview PDF from %d template documents",
+            templateDocuments != null ? templateDocuments.size() : 0);
+
+        try {
+            // Require documents
+            if (templateDocuments == null || templateDocuments.isEmpty()) {
+                throw new IllegalArgumentException("At least one document is required for preview");
+            }
+
+            Map<String, String> effectiveFormValues = formValues != null ? formValues : Map.of();
+            List<byte[]> pdfDocuments = new java.util.ArrayList<>();
+
+            // Generate PDF for each template document
+            for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
+                String fileUuid = templateDoc.getFileUuid();
+                if (fileUuid == null || fileUuid.isBlank()) {
+                    throw new IllegalArgumentException(
+                        "Template document '" + templateDoc.getDocumentName() + "' has no Word template file uploaded");
+                }
+
+                String docName = templateDoc.getDocumentName();
+                if (!docName.toLowerCase().endsWith(".pdf")) {
+                    docName = docName + ".pdf";
+                }
+
+                byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                    fileUuid,
+                    effectiveFormValues,
+                    docName
+                );
+                pdfDocuments.add(pdfBytes);
+                log.debugf("Generated preview PDF for document '%s': %d bytes", docName, pdfBytes.length);
+            }
+
+            // If single document, return directly
+            if (pdfDocuments.size() == 1) {
+                log.infof("Single document preview generated: %d bytes", pdfDocuments.get(0).length);
+                return pdfDocuments.get(0);
+            }
+
+            // Merge multiple PDFs using PDFBox
+            byte[] mergedPdf = mergePdfDocuments(pdfDocuments);
+            log.infof("Merged %d documents into preview PDF: %d bytes", pdfDocuments.size(), mergedPdf.length);
+
+            return mergedPdf;
+
+        } catch (WordDocumentService.WordDocumentException e) {
+            log.errorf(e, "Word to PDF conversion error: %s", e.getMessage());
+            throw new SigningException("Failed to convert Word template to PDF: " + e.getMessage(), e);
+
+        } catch (IllegalArgumentException e) {
+            throw e; // Rethrow validation errors as-is
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error generating preview PDF: %s", e.getMessage());
+            throw new SigningException("Unexpected error generating preview: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Merges multiple PDF documents into a single PDF.
+     * Uses Apache PDFBox 3.x for efficient in-memory merging.
+     *
+     * @param pdfDocuments List of PDF byte arrays to merge
+     * @return Merged PDF bytes
+     * @throws SigningException if merging fails
+     */
+    private byte[] mergePdfDocuments(List<byte[]> pdfDocuments) {
+        if (pdfDocuments == null || pdfDocuments.isEmpty()) {
+            throw new IllegalArgumentException("No PDF documents to merge");
+        }
+
+        if (pdfDocuments.size() == 1) {
+            return pdfDocuments.get(0);
+        }
+
+        // PDFBox 3.x requires loading PDDocument objects and merging them
+        // We use a try-with-resources pattern to ensure proper resource cleanup
+        try (org.apache.pdfbox.pdmodel.PDDocument mergedDoc = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            org.apache.pdfbox.multipdf.PDFMergerUtility merger = new org.apache.pdfbox.multipdf.PDFMergerUtility();
+
+            // Load each PDF and append pages to merged document
+            for (byte[] pdfBytes : pdfDocuments) {
+                try (org.apache.pdfbox.pdmodel.PDDocument sourceDoc =
+                         org.apache.pdfbox.Loader.loadPDF(pdfBytes)) {
+                    for (org.apache.pdfbox.pdmodel.PDPage page : sourceDoc.getPages()) {
+                        mergedDoc.addPage(mergedDoc.importPage(page));
+                    }
+                }
+            }
+
+            // Write merged document to byte array
+            ByteArrayOutputStream mergedOutput = new ByteArrayOutputStream();
+            mergedDoc.save(mergedOutput);
+            return mergedOutput.toByteArray();
+
+        } catch (IOException e) {
+            log.errorf(e, "Failed to merge PDF documents: %s", e.getMessage());
+            throw new SigningException("Failed to merge PDF documents: " + e.getMessage(), e);
         }
     }
 
