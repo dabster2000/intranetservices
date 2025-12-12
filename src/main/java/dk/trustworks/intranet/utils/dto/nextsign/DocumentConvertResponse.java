@@ -13,58 +13,102 @@ import java.util.List;
  * <p>Example response:
  * <pre>
  * {
- *   "status": "OK",
- *   "convertedDocuments": [
+ *   "status": {
+ *     "code": 200,
+ *     "message": "OK"
+ *   },
+ *   "documents": [
  *     {
- *       "documentId": "converted-doc-xyz123",
- *       "fileName": "Employment Contract.pdf",
- *       "fileUrl": "https://nextsign.storage.com/converted/xyz123.pdf"
+ *       "file": "https://nextsign.storage.com/converted/xyz123.pdf",
+ *       "name": "Employment Contract.pdf"
  *     }
  *   ]
  * }
  * </pre>
  *
- * @param status Response status (e.g., "OK" or error message)
- * @param message Optional message with details
- * @param convertedDocuments List of converted documents
+ * @param status Response status object containing code and message
+ * @param message Optional top-level message with details (may be null)
+ * @param documents List of converted documents (API field name is "documents")
  *
  * @see <a href="https://www.nextsign.dk/api/v1/document/convert">NextSign Document Convert API</a>
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record DocumentConvertResponse(
-    String status,
+    Status status,
     String message,
-    @JsonProperty("convertedDocuments") List<ConvertedDocument> convertedDocuments
+    @JsonProperty("documents") List<ConvertedDocument> documents
 ) {
+
+    /**
+     * Status object returned by the NextSign convert API.
+     *
+     * @param code HTTP-like status code (e.g., 200 for success)
+     * @param message Status message (e.g., "OK" or error description)
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Status(
+        Integer code,
+        String message
+    ) {
+        /**
+         * Checks if this status indicates success.
+         */
+        public boolean isOk() {
+            return (code != null && code >= 200 && code < 300)
+                || "OK".equalsIgnoreCase(message);
+        }
+    }
 
     /**
      * Checks if the conversion was successful.
      */
     public boolean isSuccess() {
-        return "OK".equalsIgnoreCase(status) && convertedDocuments != null && !convertedDocuments.isEmpty();
+        return status != null && status.isOk()
+            && documents != null && !documents.isEmpty();
+    }
+
+    /**
+     * Gets the error message from the response.
+     * Checks both the status message and top-level message.
+     *
+     * @return Error message or null if none
+     */
+    public String getErrorMessage() {
+        if (message != null) {
+            return message;
+        }
+        if (status != null && status.message() != null) {
+            return status.message();
+        }
+        return null;
     }
 
     /**
      * Gets the first converted document (for single-document conversions).
      */
     public ConvertedDocument getFirstDocument() {
-        return convertedDocuments != null && !convertedDocuments.isEmpty()
-            ? convertedDocuments.get(0)
+        return documents != null && !documents.isEmpty()
+            ? documents.get(0)
             : null;
     }
 
     /**
      * A converted document result.
      *
-     * @param documentId Unique identifier for the converted document
-     * @param fileName Filename of the converted document (with .pdf extension)
-     * @param fileUrl URL to download the converted PDF
+     * @param file URL to download the converted PDF (API field name is "file")
+     * @param name Filename of the converted document (with .pdf extension)
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ConvertedDocument(
-        String documentId,
-        String fileName,
-        String fileUrl
-    ) {}
+        @JsonProperty("file") String file,
+        @JsonProperty("name") String name
+    ) {
+        /**
+         * Gets the file URL (alias for file() to maintain API compatibility).
+         */
+        public String fileUrl() {
+            return file;
+        }
+    }
 }

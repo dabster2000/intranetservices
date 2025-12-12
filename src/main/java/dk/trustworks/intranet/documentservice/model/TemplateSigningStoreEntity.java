@@ -2,7 +2,6 @@ package dk.trustworks.intranet.documentservice.model;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -32,19 +31,13 @@ public class TemplateSigningStoreEntity extends PanacheEntityBase {
     @NotNull(message = "Template is required")
     private DocumentTemplateEntity template;
 
-    @Column(name = "site_url", nullable = false, length = 500)
-    @NotBlank(message = "Site URL is required")
-    private String siteUrl;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "location_uuid", nullable = false)
+    @NotNull(message = "SharePoint location is required")
+    private SharePointLocationEntity location;
 
-    @Column(name = "drive_name", nullable = false, length = 255)
-    @NotBlank(message = "Drive name is required")
-    private String driveName;
-
-    @Column(name = "folder_path", length = 500)
-    private String folderPath;
-
-    @Column(name = "display_name", length = 255)
-    private String displayName;
+    @Column(name = "display_name_override", length = 255)
+    private String displayNameOverride;
 
     @Column(name = "is_active", nullable = false)
     private Boolean isActive = true;
@@ -111,9 +104,48 @@ public class TemplateSigningStoreEntity extends PanacheEntityBase {
      * Find all active signing stores across all templates.
      * Useful for upload document UI to select a destination.
      *
-     * @return List of all active signing stores, sorted by displayOrder then displayName
+     * @return List of all active signing stores, sorted by displayOrder then location name
      */
     public static List<TemplateSigningStoreEntity> findAllActive() {
-        return find("isActive = true ORDER BY displayOrder, displayName").list();
+        return find("isActive = true ORDER BY displayOrder, location.name").list();
+    }
+
+    /**
+     * Get the effective display name (override if set, otherwise location's display name).
+     *
+     * @return The display name to show to users
+     */
+    public String getEffectiveDisplayName() {
+        if (displayNameOverride != null && !displayNameOverride.trim().isEmpty()) {
+            return displayNameOverride;
+        }
+        return location != null ? location.getName() : null;
+    }
+
+    /**
+     * Get the site URL from the referenced location.
+     *
+     * @return The SharePoint site URL
+     */
+    public String getSiteUrl() {
+        return location != null ? location.getSiteUrl() : null;
+    }
+
+    /**
+     * Get the drive name from the referenced location.
+     *
+     * @return The SharePoint drive name
+     */
+    public String getDriveName() {
+        return location != null ? location.getDriveName() : null;
+    }
+
+    /**
+     * Get the folder path from the referenced location.
+     *
+     * @return The SharePoint folder path
+     */
+    public String getFolderPath() {
+        return location != null ? location.getFolderPath() : null;
     }
 }

@@ -216,7 +216,7 @@ public class WordDocumentService {
 
             if (!response.isSuccess()) {
                 throw new WordDocumentException("NextSign conversion failed: " +
-                        (response.message() != null ? response.message() : "Unknown error"));
+                        (response.getErrorMessage() != null ? response.getErrorMessage() : "Unknown error"));
             }
 
             // 5. Download the converted PDF

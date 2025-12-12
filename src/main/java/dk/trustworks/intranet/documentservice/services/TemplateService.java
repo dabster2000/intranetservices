@@ -1,12 +1,14 @@
 package dk.trustworks.intranet.documentservice.services;
 
 import dk.trustworks.intranet.documentservice.dto.DocumentTemplateDTO;
+import dk.trustworks.intranet.documentservice.dto.SharePointLocationDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateDefaultSignerDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplatePlaceholderDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateSigningSchemaDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateSigningStoreDTO;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
@@ -477,14 +479,30 @@ public class TemplateService {
 
     /**
      * Convert signing store entity to DTO.
+     * Includes the full SharePoint location object.
      */
     private TemplateSigningStoreDTO toSigningStoreDTO(TemplateSigningStoreEntity entity) {
+        SharePointLocationDTO locationDTO = null;
+        if (entity.getLocation() != null) {
+            SharePointLocationEntity loc = entity.getLocation();
+            locationDTO = SharePointLocationDTO.builder()
+                    .uuid(loc.getUuid())
+                    .name(loc.getName())
+                    .siteUrl(loc.getSiteUrl())
+                    .driveName(loc.getDriveName())
+                    .folderPath(loc.getFolderPath())
+                    .isActive(loc.getIsActive() != null ? loc.getIsActive() : true)
+                    .displayOrder(loc.getDisplayOrder() != null ? loc.getDisplayOrder() : 1)
+                    .createdAt(loc.getCreatedAt())
+                    .updatedAt(loc.getUpdatedAt())
+                    .build();
+        }
+
         return TemplateSigningStoreDTO.builder()
                 .uuid(entity.getUuid())
-                .siteUrl(entity.getSiteUrl())
-                .driveName(entity.getDriveName())
-                .folderPath(entity.getFolderPath())
-                .displayName(entity.getDisplayName())
+                .locationUuid(entity.getLocation() != null ? entity.getLocation().getUuid() : null)
+                .location(locationDTO)
+                .displayNameOverride(entity.getDisplayNameOverride())
                 .isActive(entity.getIsActive() != null ? entity.getIsActive() : true)
                 .displayOrder(entity.getDisplayOrder() != null ? entity.getDisplayOrder() : 1)
                 .userDirectory(entity.getUserDirectory() != null ? entity.getUserDirectory() : false)
@@ -495,16 +513,28 @@ public class TemplateService {
 
     /**
      * Convert signing store DTO to entity.
+     * Looks up the SharePoint location by UUID.
      */
     private TemplateSigningStoreEntity toSigningStoreEntity(TemplateSigningStoreDTO dto) {
         TemplateSigningStoreEntity entity = new TemplateSigningStoreEntity();
         if (dto.getUuid() != null) {
             entity.setUuid(dto.getUuid());
         }
-        entity.setSiteUrl(dto.getSiteUrl());
-        entity.setDriveName(dto.getDriveName());
-        entity.setFolderPath(dto.getFolderPath());
-        entity.setDisplayName(dto.getDisplayName());
+
+        // Lookup and set the SharePoint location
+        String locationUuid = dto.getLocationUuid();
+        if (locationUuid == null && dto.getLocation() != null) {
+            locationUuid = dto.getLocation().getUuid();
+        }
+        if (locationUuid != null) {
+            SharePointLocationEntity location = SharePointLocationEntity.findByUuid(locationUuid);
+            if (location == null) {
+                throw new WebApplicationException("SharePoint location not found: " + locationUuid, 400);
+            }
+            entity.setLocation(location);
+        }
+
+        entity.setDisplayNameOverride(dto.getDisplayNameOverride());
         entity.setIsActive(dto.isActive());
         entity.setDisplayOrder(dto.getDisplayOrder());
         entity.setUserDirectory(dto.isUserDirectory());
