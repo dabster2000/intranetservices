@@ -79,6 +79,11 @@ quarkus:
     nextsign:
       url: https://www.nextsign.dk
       scope: jakarta.inject.Singleton
+    nextsign-convert:
+      url: https://www.nextsign.dk
+      scope: jakarta.inject.Singleton
+      connect-timeout: 5000       # 5 seconds for connection
+      read-timeout: 90000         # 90 seconds for PDF conversion
       #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
   #otel:
   #  exporter:

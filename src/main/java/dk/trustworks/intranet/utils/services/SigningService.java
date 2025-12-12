@@ -42,7 +42,7 @@ public class SigningService {
     NextsignSigningService nextsignService;
 
     @Inject
-    DocumentPdfService documentPdfService;
+    WordDocumentService wordDocumentService;
 
     @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
@@ -182,16 +182,24 @@ public class SigningService {
             List<DocumentInfo> documents = new java.util.ArrayList<>();
             Map<String, String> effectiveFormValues = formValues != null ? formValues : Map.of();
 
-            // Generate PDF for each template document
+            // Generate PDF for each template document via NextSign convert API
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
-                byte[] pdfBytes = documentPdfService.generatePdfFromTemplate(
-                    templateDoc.getDocumentContent(),
-                    effectiveFormValues
-                );
+                String fileUuid = templateDoc.getFileUuid();
+                if (fileUuid == null || fileUuid.isBlank()) {
+                    throw new IllegalArgumentException(
+                        "Template document '" + templateDoc.getDocumentName() + "' has no Word template file uploaded");
+                }
+
                 String docName = templateDoc.getDocumentName();
                 if (!docName.toLowerCase().endsWith(".pdf")) {
                     docName = docName + ".pdf";
                 }
+
+                byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
+                    fileUuid,
+                    effectiveFormValues,
+                    docName
+                );
                 documents.add(new DocumentInfo(docName, pdfBytes));
                 log.debugf("Generated PDF for document '%s': %d bytes", docName, pdfBytes.length);
             }
@@ -210,9 +218,9 @@ public class SigningService {
 
             return SigningCaseResponse.created(caseKey, documentName);
 
-        } catch (DocumentPdfService.DocumentPdfException e) {
-            log.errorf(e, "PDF generation error: %s", e.getMessage());
-            throw new SigningException("Failed to generate PDF from template: " + e.getMessage(), e);
+        } catch (WordDocumentService.WordDocumentException e) {
+            log.errorf(e, "Word to PDF conversion error: %s", e.getMessage());
+            throw new SigningException("Failed to convert Word template to PDF: " + e.getMessage(), e);
 
         } catch (NextsignSigningService.NextsignException e) {
             log.errorf(e, "NextSign API error creating multi-document case: %s", e.getMessage());

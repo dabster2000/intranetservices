@@ -518,9 +518,9 @@ public class TemplateService {
         return TemplateDocumentDTO.builder()
                 .uuid(entity.getUuid())
                 .documentName(entity.getDocumentName())
-                .documentContent(entity.getDocumentContent())
+                .fileUuid(entity.getFileUuid())
+                .originalFilename(entity.getOriginalFilename())
                 .displayOrder(entity.getDisplayOrder())
-                .contentType(entity.getContentType())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
                 .build();
@@ -535,9 +535,9 @@ public class TemplateService {
             entity.setUuid(dto.getUuid());
         }
         entity.setDocumentName(dto.getDocumentName());
-        entity.setDocumentContent(dto.getDocumentContent());
+        entity.setFileUuid(dto.getFileUuid());
+        entity.setOriginalFilename(dto.getOriginalFilename());
         entity.setDisplayOrder(dto.getDisplayOrder() != null ? dto.getDisplayOrder() : 1);
-        entity.setContentType(dto.getContentType() != null ? dto.getContentType() : "application/pdf");
         return entity;
     }
 }

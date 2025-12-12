@@ -13,8 +13,13 @@ import java.util.UUID;
 
 /**
  * JPA Entity for template documents.
- * Represents a single document within a document template for multi-document signing.
+ * Represents a single Word document within a document template for multi-document signing.
  * Each template can have multiple documents that will all be included in a single signing case.
+ *
+ * <p>Word templates are stored in S3 (bucket: trustworksfiles) and referenced via fileUuid.
+ * The actual document content is retrieved from S3 when needed.
+ *
+ * <p>Placeholder syntax in Word documents: {{PLACEHOLDER_KEY}}
  */
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
@@ -36,15 +41,23 @@ public class TemplateDocumentEntity extends PanacheEntityBase {
     @NotBlank(message = "Document name is required")
     private String documentName;
 
-    @Column(name = "document_content", nullable = false, columnDefinition = "LONGTEXT")
-    @NotBlank(message = "Document content is required")
-    private String documentContent;
+    /**
+     * UUID reference to the Word template file stored in S3 (files table).
+     * The actual .docx binary is stored in the S3 bucket 'trustworksfiles'.
+     */
+    @Column(name = "file_uuid", length = 36)
+    @NotBlank(message = "File UUID is required - upload a Word template")
+    private String fileUuid;
+
+    /**
+     * Original filename of the uploaded Word document.
+     * Preserved for user-friendly display and downloads.
+     */
+    @Column(name = "original_filename")
+    private String originalFilename;
 
     @Column(name = "display_order", nullable = false)
     private Integer displayOrder = 1;
-
-    @Column(name = "content_type", nullable = false, length = 50)
-    private String contentType = "application/pdf";
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
