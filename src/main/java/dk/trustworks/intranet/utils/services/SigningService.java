@@ -7,6 +7,7 @@ import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningReques
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.DocumentInfo;
+import dk.trustworks.intranet.utils.dto.signing.PreviewTemplateResponse;
 import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
 import dk.trustworks.intranet.utils.dto.signing.SignerStatus;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseResponse;
@@ -18,10 +19,6 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.Map;
-
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -236,23 +233,23 @@ public class SigningService {
     }
 
     /**
-     * Generates a preview PDF from template documents without creating a signing case.
+     * Generates preview documents from template documents without creating a signing case.
      * <p>
      * This method renders template documents to PDF using the same Word-to-PDF conversion
-     * as the signing flow, but does not send to NextSign. If multiple documents are
-     * provided, they are merged into a single PDF.
+     * as the signing flow, but does not send to NextSign. Each document is returned separately
+     * as a base64-encoded PDF to avoid PDF merging issues (PDFBOX-3931) that cause font corruption.
      * </p>
      *
      * @param templateDocuments List of template documents to render (REQUIRED)
      * @param formValues        Key-value pairs for template placeholders
-     * @return PDF bytes (single or merged PDF)
+     * @return List of preview documents with base64-encoded PDF content
      * @throws SigningException if PDF generation fails
      */
-    public byte[] generatePreviewPdf(
+    public List<PreviewTemplateResponse.PreviewDocumentDTO> generatePreviewDocuments(
             List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
             Map<String, String> formValues) {
 
-        log.infof("Generating preview PDF from %d template documents",
+        log.infof("Generating preview documents from %d template documents",
             templateDocuments != null ? templateDocuments.size() : 0);
 
         try {
@@ -262,9 +259,10 @@ public class SigningService {
             }
 
             Map<String, String> effectiveFormValues = formValues != null ? formValues : Map.of();
-            List<byte[]> pdfDocuments = new java.util.ArrayList<>();
+            List<PreviewTemplateResponse.PreviewDocumentDTO> previewDocuments = new java.util.ArrayList<>();
 
             // Generate PDF for each template document
+            int displayOrder = 0;
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
                 if (fileUuid == null || fileUuid.isBlank()) {
@@ -282,21 +280,22 @@ public class SigningService {
                     effectiveFormValues,
                     docName
                 );
-                pdfDocuments.add(pdfBytes);
+
+                // Encode PDF as base64
+                String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+
+                previewDocuments.add(new PreviewTemplateResponse.PreviewDocumentDTO(
+                    docName,
+                    pdfBase64,
+                    displayOrder++
+                ));
+
                 log.debugf("Generated preview PDF for document '%s': %d bytes", docName, pdfBytes.length);
             }
 
-            // If single document, return directly
-            if (pdfDocuments.size() == 1) {
-                log.infof("Single document preview generated: %d bytes", pdfDocuments.get(0).length);
-                return pdfDocuments.get(0);
-            }
+            log.infof("Generated %d preview documents", previewDocuments.size());
 
-            // Merge multiple PDFs using PDFBox
-            byte[] mergedPdf = mergePdfDocuments(pdfDocuments);
-            log.infof("Merged %d documents into preview PDF: %d bytes", pdfDocuments.size(), mergedPdf.length);
-
-            return mergedPdf;
+            return previewDocuments;
 
         } catch (WordDocumentService.WordDocumentException e) {
             log.errorf(e, "Word to PDF conversion error: %s", e.getMessage());
@@ -306,51 +305,8 @@ public class SigningService {
             throw e; // Rethrow validation errors as-is
 
         } catch (Exception e) {
-            log.errorf(e, "Unexpected error generating preview PDF: %s", e.getMessage());
+            log.errorf(e, "Unexpected error generating preview documents: %s", e.getMessage());
             throw new SigningException("Unexpected error generating preview: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Merges multiple PDF documents into a single PDF.
-     * Uses Apache PDFBox 3.x for efficient in-memory merging.
-     *
-     * @param pdfDocuments List of PDF byte arrays to merge
-     * @return Merged PDF bytes
-     * @throws SigningException if merging fails
-     */
-    private byte[] mergePdfDocuments(List<byte[]> pdfDocuments) {
-        if (pdfDocuments == null || pdfDocuments.isEmpty()) {
-            throw new IllegalArgumentException("No PDF documents to merge");
-        }
-
-        if (pdfDocuments.size() == 1) {
-            return pdfDocuments.get(0);
-        }
-
-        // PDFBox 3.x requires loading PDDocument objects and merging them
-        // We use a try-with-resources pattern to ensure proper resource cleanup
-        try (org.apache.pdfbox.pdmodel.PDDocument mergedDoc = new org.apache.pdfbox.pdmodel.PDDocument()) {
-            org.apache.pdfbox.multipdf.PDFMergerUtility merger = new org.apache.pdfbox.multipdf.PDFMergerUtility();
-
-            // Load each PDF and append pages to merged document
-            for (byte[] pdfBytes : pdfDocuments) {
-                try (org.apache.pdfbox.pdmodel.PDDocument sourceDoc =
-                         org.apache.pdfbox.Loader.loadPDF(pdfBytes)) {
-                    for (org.apache.pdfbox.pdmodel.PDPage page : sourceDoc.getPages()) {
-                        mergedDoc.addPage(mergedDoc.importPage(page));
-                    }
-                }
-            }
-
-            // Write merged document to byte array
-            ByteArrayOutputStream mergedOutput = new ByteArrayOutputStream();
-            mergedDoc.save(mergedOutput);
-            return mergedOutput.toByteArray();
-
-        } catch (IOException e) {
-            log.errorf(e, "Failed to merge PDF documents: %s", e.getMessage());
-            throw new SigningException("Failed to merge PDF documents: " + e.getMessage(), e);
         }
     }
 

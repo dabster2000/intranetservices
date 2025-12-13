@@ -26,6 +26,7 @@ public class TemplateDefaultSignerDTO {
     private String name;
     private String email;
     private String role;
+    private boolean signing = true;
     private int displayOrder;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

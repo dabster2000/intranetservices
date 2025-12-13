@@ -8,17 +8,26 @@ package dk.trustworks.intranet.utils.dto.signing;
  * @param name Full name of the signer
  * @param email Email address for signing invitation
  * @param role Signer role (e.g., "signer", "approver", "witness")
+ * @param signing True if this recipient must sign, false if they just receive a copy (CC)
  */
 public record SignerInfo(
     int group,
     String name,
     String email,
-    String role
+    String role,
+    boolean signing
 ) {
     /**
-     * Creates a default signer with role "signer".
+     * Creates a default signer with role "signer" who must sign.
      */
     public static SignerInfo signer(int group, String name, String email) {
-        return new SignerInfo(group, name, email, "signer");
+        return new SignerInfo(group, name, email, "signer", true);
+    }
+
+    /**
+     * Creates a copy recipient (CC) who receives a copy but doesn't sign.
+     */
+    public static SignerInfo copyRecipient(int group, String name, String email) {
+        return new SignerInfo(group, name, email, "copy", false);
     }
 }

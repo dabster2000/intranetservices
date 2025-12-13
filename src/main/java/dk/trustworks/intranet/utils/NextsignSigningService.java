@@ -503,7 +503,7 @@ public class NextsignSigningService {
             .map(signer -> new CreateCaseRequest.Recipient(
                 signer.name(),
                 signer.email(),
-                true,  // signing = true (all recipients are signers)
+                signer.signing(),  // Use actual signing field (true = must sign, false = CC)
                 signer.group() - 1  // Convert 1-based group to 0-based order
             ))
             .toList();
@@ -564,7 +564,7 @@ public class NextsignSigningService {
             .map(signer -> new CreateCaseRequest.Recipient(
                 signer.name(),
                 signer.email(),
-                true,  // signing = true (all recipients are signers)
+                signer.signing(),  // Use actual signing field (true = must sign, false = CC)
                 signer.group() - 1  // Convert 1-based group to 0-based order
             ))
             .toList();

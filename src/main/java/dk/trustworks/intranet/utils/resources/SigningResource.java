@@ -5,6 +5,7 @@ import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningReques
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.PreviewTemplateRequest;
+import dk.trustworks.intranet.utils.dto.signing.PreviewTemplateResponse;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseResponse;
 import dk.trustworks.intranet.utils.dto.signing.SigningCaseStatus;
 import dk.trustworks.intranet.utils.services.SigningService;
@@ -242,11 +243,15 @@ public class SigningResource {
     }
 
     /**
-     * Generates a preview PDF from template documents.
+     * Generates preview documents from template documents.
      * <p>
      * This endpoint renders template documents to PDF with placeholder values replaced,
      * without creating a signing case. Use this to preview documents BEFORE sending
      * them for signing.
+     * </p>
+     * <p>
+     * Each document is returned separately as base64-encoded PDF to avoid PDF merging issues
+     * (PDFBOX-3931) that cause font corruption in Safari and other PDF viewers.
      * </p>
      * <p>
      * Documents are passed directly in the request (already loaded from the template on frontend),
@@ -254,25 +259,24 @@ public class SigningResource {
      * </p>
      *
      * @param request The preview request containing documents list and formValues
-     * @return PDF binary response that opens in browser (Content-Disposition: inline)
+     * @return JSON response with list of base64-encoded PDF documents
      */
     @POST
     @Path("/preview/template")
     @Consumes(MediaType.APPLICATION_JSON)
-    @Produces("application/pdf")
+    @Produces(MediaType.APPLICATION_JSON)
     @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
     @Operation(
-        summary = "Preview document from template",
-        description = "Generates a preview PDF from template documents with placeholder values replaced. " +
-                      "The PDF is returned inline (opens in browser, not download). " +
-                      "If multiple documents are provided, they are merged into a single PDF. " +
+        summary = "Preview documents from template",
+        description = "Generates preview PDFs from template documents with placeholder values replaced. " +
+                      "Each document is returned as a separate base64-encoded PDF. " +
                       "This does NOT create a signing case - use for preview only."
     )
     @APIResponses({
         @APIResponse(
             responseCode = "200",
-            description = "Preview PDF generated successfully",
-            content = @Content(mediaType = "application/pdf")
+            description = "Preview documents generated successfully",
+            content = @Content(schema = @Schema(implementation = PreviewTemplateResponse.class))
         ),
         @APIResponse(
             responseCode = "400",
@@ -285,40 +289,19 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public Response previewTemplateDocument(PreviewTemplateRequest request) {
+    public PreviewTemplateResponse previewTemplateDocuments(PreviewTemplateRequest request) {
         log.infof("POST /utils/signing/preview/template - Generating preview for %d document(s)",
             request != null && request.documents() != null ? request.documents().size() : 0);
 
-        try {
-            // Validate request
-            if (request == null) {
-                return badRequest("REQUEST_NULL", "Request body is required");
-            }
-            request.validate();
+        // Validate request
+        request.validate();
 
-            // Generate preview PDF directly from the documents in the request
-            byte[] pdfBytes = signingService.generatePreviewPdf(request.documents(), request.formValues());
+        // Generate preview documents directly from the documents in the request
+        var documents = signingService.generatePreviewDocuments(request.documents(), request.formValues());
 
-            log.infof("Preview PDF generated successfully. Size: %d bytes", pdfBytes.length);
+        log.infof("Preview documents generated successfully. Count: %d", documents.size());
 
-            // Return PDF with inline disposition (opens in browser)
-            return Response.ok(pdfBytes)
-                .header("Content-Type", "application/pdf")
-                .header("Content-Disposition", "inline; filename=\"preview.pdf\"")
-                .build();
-
-        } catch (IllegalArgumentException e) {
-            log.warnf("Invalid preview request: %s", e.getMessage());
-            return badRequest("INVALID_REQUEST", e.getMessage());
-
-        } catch (SigningService.SigningException e) {
-            log.errorf(e, "Preview generation error: %s", e.getMessage());
-            return serverError("PREVIEW_FAILED", e.getMessage());
-
-        } catch (Exception e) {
-            log.errorf(e, "Unexpected error generating preview: %s", e.getMessage());
-            return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
-        }
+        return new PreviewTemplateResponse(documents);
     }
 
     /**

@@ -430,6 +430,7 @@ public class TemplateService {
                 .name(entity.getName())
                 .email(entity.getEmail())
                 .role(entity.getRole())
+                .signing(entity.isSigning())
                 .displayOrder(entity.getDisplayOrder())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
@@ -448,6 +449,7 @@ public class TemplateService {
         entity.setName(dto.getName());
         entity.setEmail(dto.getEmail());
         entity.setRole(dto.getRole());
+        entity.setSigning(dto.isSigning());
         entity.setDisplayOrder(dto.getDisplayOrder());
         return entity;
     }
