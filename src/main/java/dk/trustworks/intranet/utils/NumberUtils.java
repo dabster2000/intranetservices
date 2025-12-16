@@ -9,7 +9,7 @@ import java.util.Optional;
 
 public class NumberUtils {
 
-    private static Locale DanishLocale = Locale.of("da", "DK");
+    private static final Locale DanishLocale = Locale.of("da", "DK");
 
     public static double round(double value, int places) {
         if (places < 0) throw new IllegalArgumentException();
