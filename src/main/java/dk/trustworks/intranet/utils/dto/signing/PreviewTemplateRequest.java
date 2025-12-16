@@ -17,12 +17,15 @@ import java.util.Map;
  * eliminating the need for an additional lookup by templateUuid.
  * </p>
  *
- * @param documents  List of template documents to preview (each must have fileUuid referencing S3 Word template)
- * @param formValues Key-value pairs for template placeholder substitution
+ * @param documents    List of template documents to preview (each must have fileUuid referencing S3 Word template)
+ * @param formValues   Key-value pairs for template placeholder substitution
+ * @param templateUuid UUID of the parent document template for placeholder type lookup.
+ *                     Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
  */
 public record PreviewTemplateRequest(
     List<TemplateDocumentDTO> documents,
-    Map<String, String> formValues
+    Map<String, String> formValues,
+    String templateUuid
 ) {
     /**
      * Validates that required fields are present and valid.

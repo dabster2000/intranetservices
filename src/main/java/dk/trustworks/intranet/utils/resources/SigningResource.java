@@ -192,15 +192,17 @@ public class SigningResource {
             }
 
             // Always use multi-document method (multi-document pattern is the only supported pattern)
-            log.infof("Creating signing case from template with %d documents",
-                request.documents() != null ? request.documents().size() : 0);
+            log.infof("Creating signing case from template with %d documents (templateUuid: %s)",
+                request.documents() != null ? request.documents().size() : 0,
+                request.templateUuid());
             SigningCaseResponse response = signingService.createMultiDocumentCaseFromTemplate(
                 request.documents(),
                 request.formValues(),
                 request.documentName(),
                 request.signers(),
                 request.referenceId(),
-                request.signingSchemas()
+                request.signingSchemas(),
+                request.templateUuid()
             );
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
@@ -290,14 +292,20 @@ public class SigningResource {
         )
     })
     public PreviewTemplateResponse previewTemplateDocuments(PreviewTemplateRequest request) {
-        log.infof("POST /utils/signing/preview/template - Generating preview for %d document(s)",
-            request != null && request.documents() != null ? request.documents().size() : 0);
+        log.infof("POST /utils/signing/preview/template - Generating preview for %d document(s) (templateUuid: %s)",
+            request != null && request.documents() != null ? request.documents().size() : 0,
+            request != null ? request.templateUuid() : null);
 
         // Validate request
         request.validate();
 
         // Generate preview documents directly from the documents in the request
-        var documents = signingService.generatePreviewDocuments(request.documents(), request.formValues());
+        // Pass templateUuid for type-aware placeholder formatting (e.g., Danish currency)
+        var documents = signingService.generatePreviewDocuments(
+            request.documents(),
+            request.formValues(),
+            request.templateUuid()
+        );
 
         log.infof("Preview documents generated successfully. Count: %d", documents.size());
 

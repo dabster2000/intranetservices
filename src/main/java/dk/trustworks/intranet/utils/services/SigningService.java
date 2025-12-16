@@ -45,6 +45,9 @@ public class SigningService {
     WordDocumentService wordDocumentService;
 
     @Inject
+    PlaceholderFormattingService placeholderFormattingService;
+
+    @Inject
     dk.trustworks.intranet.signing.repository.SigningCaseRepository signingCaseRepository;
 
     /**
@@ -158,6 +161,7 @@ public class SigningService {
      * @param signers            List of signers
      * @param referenceId        Optional external reference ID
      * @param signingSchemas     Optional signing schema URNs
+     * @param templateUuid       Optional UUID of the parent template for placeholder type lookup
      * @return Response containing the case key and initial status
      * @throws SigningException if PDF generation or case creation fails
      */
@@ -167,11 +171,13 @@ public class SigningService {
             String documentName,
             List<SignerInfo> signers,
             String referenceId,
-            List<String> signingSchemas) {
+            List<String> signingSchemas,
+            String templateUuid) {
 
-        log.infof("Creating multi-document signing case from template. Documents: %d, Signers: %d",
+        log.infof("Creating multi-document signing case from template. Documents: %d, Signers: %d, TemplateUuid: %s",
             templateDocuments != null ? templateDocuments.size() : 0,
-            signers != null ? signers.size() : 0);
+            signers != null ? signers.size() : 0,
+            templateUuid);
 
         try {
             // Require documents (multi-document pattern is the only supported pattern)
@@ -180,7 +186,11 @@ public class SigningService {
             }
 
             List<DocumentInfo> documents = new java.util.ArrayList<>();
-            Map<String, String> effectiveFormValues = formValues != null ? formValues : Map.of();
+
+            // Apply type-aware formatting if templateUuid is provided
+            Map<String, String> rawFormValues = formValues != null ? formValues : Map.of();
+            Map<String, String> effectiveFormValues = placeholderFormattingService
+                .formatPlaceholderValues(templateUuid, rawFormValues);
 
             // Generate PDF for each template document via NextSign convert API
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
@@ -242,15 +252,18 @@ public class SigningService {
      *
      * @param templateDocuments List of template documents to render (REQUIRED)
      * @param formValues        Key-value pairs for template placeholders
+     * @param templateUuid      Optional UUID of the parent template for placeholder type lookup
      * @return List of preview documents with base64-encoded PDF content
      * @throws SigningException if PDF generation fails
      */
     public List<PreviewTemplateResponse.PreviewDocumentDTO> generatePreviewDocuments(
             List<dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO> templateDocuments,
-            Map<String, String> formValues) {
+            Map<String, String> formValues,
+            String templateUuid) {
 
-        log.infof("Generating preview documents from %d template documents",
-            templateDocuments != null ? templateDocuments.size() : 0);
+        log.infof("Generating preview documents from %d template documents (templateUuid: %s)",
+            templateDocuments != null ? templateDocuments.size() : 0,
+            templateUuid);
 
         try {
             // Require documents
@@ -258,7 +271,10 @@ public class SigningService {
                 throw new IllegalArgumentException("At least one document is required for preview");
             }
 
-            Map<String, String> effectiveFormValues = formValues != null ? formValues : Map.of();
+            // Apply type-aware formatting if templateUuid is provided
+            Map<String, String> rawFormValues = formValues != null ? formValues : Map.of();
+            Map<String, String> effectiveFormValues = placeholderFormattingService
+                .formatPlaceholderValues(templateUuid, rawFormValues);
             List<PreviewTemplateResponse.PreviewDocumentDTO> previewDocuments = new java.util.ArrayList<>();
 
             // Generate PDF for each template document

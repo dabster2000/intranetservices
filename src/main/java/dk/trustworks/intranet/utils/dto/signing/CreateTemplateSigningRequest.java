@@ -22,6 +22,8 @@ import java.util.Map;
  *                        If null or empty, backend will use default schemas.
  * @param signingStoreUuid UUID of template_signing_stores for SharePoint auto-upload after signing completes.
  *                         Optional - if null, no auto-upload will occur.
+ * @param templateUuid    UUID of the parent document template for placeholder type lookup.
+ *                        Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
  */
 public record CreateTemplateSigningRequest(
     String documentName,
@@ -30,7 +32,8 @@ public record CreateTemplateSigningRequest(
     List<SignerInfo> signers,
     String referenceId,
     List<String> signingSchemas,
-    String signingStoreUuid
+    String signingStoreUuid,
+    String templateUuid
 ) {
     /**
      * Validates that required fields are present and valid.
