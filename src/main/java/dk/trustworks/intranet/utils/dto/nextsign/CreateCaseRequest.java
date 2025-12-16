@@ -104,13 +104,15 @@ public record CreateCaseRequest(
      * @param email Email address for signing invitation
      * @param signing Whether this recipient needs to sign (vs just receive copy)
      * @param order Signing order (0-based: 0 = first, 1 = second, etc.)
+     * @param needsCpr Whether this signer must verify identity with CPR via MitID
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Recipient(
         String name,
         String email,
         boolean signing,
-        int order
+        int order,
+        boolean needsCpr
     ) {}
 
     /**

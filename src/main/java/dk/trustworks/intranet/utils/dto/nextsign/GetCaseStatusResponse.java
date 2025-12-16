@@ -56,7 +56,9 @@ public record GetCaseStatusResponse(
         @JsonProperty("signed") String status,
         @JsonProperty("signedDateAndTime") String signedAt,
         @JsonProperty("rejected_at") String rejectedAt,
-        String role
+        String role,
+        boolean needsCpr,
+        SignerIdentityWrapper signer
     ) {
         /**
          * Checks if this recipient has signed.
@@ -64,7 +66,38 @@ public record GetCaseStatusResponse(
         public boolean hasSigned() {
             return "signed".equalsIgnoreCase(status);
         }
+
+        /**
+         * Gets CPR match status from signer identity.
+         * @return true if CPR matched, false if mismatch, null if not applicable/not yet verified
+         */
+        public Boolean getCprIsMatch() {
+            if (signer == null || signer.identity() == null) {
+                return null;
+            }
+            return signer.identity().cprIsMatch();
+        }
     }
+
+    /**
+     * Wrapper for signer identity information from NextSign response.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SignerIdentityWrapper(
+        @JsonProperty("signer_type") String signerType,
+        SignerIdentity identity
+    ) {}
+
+    /**
+     * Identity verification details including CPR match status.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SignerIdentity(
+        Boolean cprIsMatch,
+        Boolean confirmed,
+        String lastConfirmation,
+        String session
+    ) {}
 
     /**
      * Document information.

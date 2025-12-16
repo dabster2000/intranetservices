@@ -51,6 +51,9 @@ public class TemplateDefaultSignerEntity extends PanacheEntityBase {
     @Column(nullable = false)
     private boolean signing = true;
 
+    @Column(name = "needs_cpr", nullable = false)
+    private boolean needsCpr = false;
+
     @Column(name = "display_order", nullable = false)
     @Min(value = 1, message = "Display order must be at least 1")
     private int displayOrder = 1;

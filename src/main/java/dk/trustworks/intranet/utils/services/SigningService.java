@@ -508,7 +508,8 @@ public class SigningService {
                 r.email(),
                 r.role() != null ? r.role() : "signer",
                 r.status() != null ? r.status() : "pending",
-                parseDateTime(r.signedAt())
+                parseDateTime(r.signedAt()),
+                r.getCprIsMatch()  // CPR validation result from NextSign
             ))
             .toList();
     }
