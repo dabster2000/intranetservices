@@ -14,6 +14,8 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -202,15 +204,31 @@ public class SharePointService {
             String location = response.getHeaderString("Location");
 
             if (location == null) {
-                // Some Graph API responses return content directly
+                // RESTEasy may have followed the redirect automatically,
+                // or Graph API returned content directly.
+                // The response body can be byte[] or InputStream depending on configuration.
                 if (response.hasEntity()) {
                     Object entity = response.getEntity();
                     if (entity instanceof byte[] bytes) {
+                        log.infof("File downloaded directly as bytes: %d bytes", bytes.length);
                         return bytes;
                     }
+                    if (entity instanceof InputStream inputStream) {
+                        try {
+                            byte[] bytes = inputStream.readAllBytes();
+                            log.infof("File downloaded as stream: %d bytes", bytes.length);
+                            return bytes;
+                        } catch (IOException e) {
+                            log.errorf(e, "Failed to read input stream for file: %s", fileName);
+                            throw new SharePointException("Failed to read file content: " + e.getMessage(), 500);
+                        }
+                    }
+                    log.warnf("Unexpected entity type: %s for file: %s",
+                        entity.getClass().getName(), fileName);
                 }
                 throw new SharePointException(
-                    "Expected redirect or content, got status: " + response.getStatus(), 500);
+                    "Expected redirect or content, got status: " + response.getStatus() +
+                    ", hasEntity: " + response.hasEntity(), 500);
             }
 
             // Follow redirect to download from Azure blob storage
