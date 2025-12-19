@@ -12,18 +12,25 @@ import java.util.Map;
  * which will be rendered into PDF documents and sent for digital signing.
  * Multi-document support is the only supported pattern.
  * </p>
+ * <p>
+ * Additional pre-generated PDF documents can be included via {@code additionalDocuments}.
+ * Each additional document can be marked as requiring signature ({@code signObligated: true})
+ * or as attachment-only ({@code signObligated: false}).
+ * </p>
  *
- * @param documentName    Name of the document (used in signing case metadata)
- * @param documents       List of template documents with their content (REQUIRED)
- * @param formValues      Key-value pairs for template placeholders
- * @param signers         List of signers with group/order, name, email, and role
- * @param referenceId     Optional external reference ID for tracking
- * @param signingSchemas  List of signing schema URNs (e.g., "urn:grn:authn:dk:mitid:substantial").
- *                        If null or empty, backend will use default schemas.
- * @param signingStoreUuid UUID of template_signing_stores for SharePoint auto-upload after signing completes.
- *                         Optional - if null, no auto-upload will occur.
- * @param templateUuid    UUID of the parent document template for placeholder type lookup.
- *                        Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
+ * @param documentName        Name of the document (used in signing case metadata)
+ * @param documents           List of template documents with their content (REQUIRED)
+ * @param formValues          Key-value pairs for template placeholders
+ * @param signers             List of signers with group/order, name, email, and role
+ * @param referenceId         Optional external reference ID for tracking
+ * @param signingSchemas      List of signing schema URNs (e.g., "urn:grn:authn:dk:mitid:substantial").
+ *                            If null or empty, backend will use default schemas.
+ * @param signingStoreUuid    UUID of template_signing_stores for SharePoint auto-upload after signing completes.
+ *                            Optional - if null, no auto-upload will occur.
+ * @param templateUuid        UUID of the parent document template for placeholder type lookup.
+ *                            Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
+ * @param additionalDocuments Optional list of pre-generated PDF documents to include in the signing case.
+ *                            Each document has a signObligated flag: true = requires signature, false = attachment only.
  */
 public record CreateTemplateSigningRequest(
     String documentName,
@@ -33,7 +40,8 @@ public record CreateTemplateSigningRequest(
     String referenceId,
     List<String> signingSchemas,
     String signingStoreUuid,
-    String templateUuid
+    String templateUuid,
+    List<UploadedDocument> additionalDocuments
 ) {
     /**
      * Validates that required fields are present and valid.

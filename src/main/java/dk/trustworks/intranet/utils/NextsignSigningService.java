@@ -548,13 +548,13 @@ public class NextsignSigningService {
         List<CreateCaseRequest.Document> docList = documents.stream()
             .map(doc -> {
                 String encodedDocument = Base64.getEncoder().encodeToString(doc.pdfBytes());
-                log.debugf("Base64 encoded document '%s' - Original: %d bytes, Encoded: %d chars",
-                    doc.name(), doc.pdfBytes().length, encodedDocument.length());
+                log.debugf("Base64 encoded document '%s' - Original: %d bytes, Encoded: %d chars, signObligated: %b",
+                    doc.name(), doc.pdfBytes().length, encodedDocument.length(), doc.signObligated());
                 return new CreateCaseRequest.Document(
                     doc.name(),
                     encodedDocument,
-                    true,  // fileIsBlob = true for Base64
-                    true   // signObligated = true (signature required)
+                    true,                 // fileIsBlob = true for Base64
+                    doc.signObligated()   // Use per-document signing requirement
                 );
             })
             .toList();

@@ -192,8 +192,10 @@ public class SigningResource {
             }
 
             // Always use multi-document method (multi-document pattern is the only supported pattern)
-            log.infof("Creating signing case from template with %d documents (templateUuid: %s)",
+            int additionalCount = request.additionalDocuments() != null ? request.additionalDocuments().size() : 0;
+            log.infof("Creating signing case from template with %d template docs, %d additional docs (templateUuid: %s)",
                 request.documents() != null ? request.documents().size() : 0,
+                additionalCount,
                 request.templateUuid());
             SigningCaseResponse response = signingService.createMultiDocumentCaseFromTemplate(
                 request.documents(),
@@ -202,7 +204,8 @@ public class SigningResource {
                 request.signers(),
                 request.referenceId(),
                 request.signingSchemas(),
-                request.templateUuid()
+                request.templateUuid(),
+                request.additionalDocuments()
             );
 
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());

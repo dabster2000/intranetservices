@@ -115,11 +115,12 @@ public class SigningService {
         request.validate();
 
         try {
-            // Decode base64 documents to DocumentInfo list
+            // Decode base64 documents to DocumentInfo list, preserving signObligated flag
             List<DocumentInfo> documents = request.documents().stream()
                 .map(doc -> new DocumentInfo(
                     doc.documentName(),
-                    decodeBase64Document(doc.documentBase64())
+                    decodeBase64Document(doc.documentBase64()),
+                    doc.signObligated()  // Preserve attachment vs signed document flag
                 ))
                 .toList();
 
@@ -154,14 +155,16 @@ public class SigningService {
     /**
      * Creates a signing case from a template with multiple documents.
      * Each document in the template is rendered to PDF and bundled into a single signing case.
+     * Additional pre-generated PDF documents can be included.
      *
-     * @param templateDocuments  List of template documents to render (REQUIRED)
-     * @param formValues         Key-value pairs for template placeholders
-     * @param documentName       Display name for the signing case
-     * @param signers            List of signers
-     * @param referenceId        Optional external reference ID
-     * @param signingSchemas     Optional signing schema URNs
-     * @param templateUuid       Optional UUID of the parent template for placeholder type lookup
+     * @param templateDocuments   List of template documents to render (REQUIRED)
+     * @param formValues          Key-value pairs for template placeholders
+     * @param documentName        Display name for the signing case
+     * @param signers             List of signers
+     * @param referenceId         Optional external reference ID
+     * @param signingSchemas      Optional signing schema URNs
+     * @param templateUuid        Optional UUID of the parent template for placeholder type lookup
+     * @param additionalDocuments Optional list of pre-generated PDFs to include (each with signObligated flag)
      * @return Response containing the case key and initial status
      * @throws SigningException if PDF generation or case creation fails
      */
@@ -172,10 +175,13 @@ public class SigningService {
             List<SignerInfo> signers,
             String referenceId,
             List<String> signingSchemas,
-            String templateUuid) {
+            String templateUuid,
+            List<UploadedDocument> additionalDocuments) {
 
-        log.infof("Creating multi-document signing case from template. Documents: %d, Signers: %d, TemplateUuid: %s",
+        int additionalCount = additionalDocuments != null ? additionalDocuments.size() : 0;
+        log.infof("Creating multi-document signing case from template. Template docs: %d, Additional docs: %d, Signers: %d, TemplateUuid: %s",
             templateDocuments != null ? templateDocuments.size() : 0,
+            additionalCount,
             signers != null ? signers.size() : 0,
             templateUuid);
 
@@ -193,6 +199,7 @@ public class SigningService {
                 .formatPlaceholderValues(templateUuid, rawFormValues);
 
             // Generate PDF for each template document via NextSign convert API
+            // Template documents always require signature (signObligated: true)
             for (dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO templateDoc : templateDocuments) {
                 String fileUuid = templateDoc.getFileUuid();
                 if (fileUuid == null || fileUuid.isBlank()) {
@@ -210,11 +217,26 @@ public class SigningService {
                     effectiveFormValues,
                     docName
                 );
-                documents.add(new DocumentInfo(docName, pdfBytes));
-                log.debugf("Generated PDF for document '%s': %d bytes", docName, pdfBytes.length);
+                documents.add(new DocumentInfo(docName, pdfBytes, true)); // Template docs always require signature
+                log.debugf("Generated PDF for template document '%s': %d bytes (signObligated: true)", docName, pdfBytes.length);
             }
 
-            log.infof("Generated %d PDFs from template(s), creating multi-document signing case", documents.size());
+            // Add any additional pre-generated PDF documents
+            if (additionalDocuments != null && !additionalDocuments.isEmpty()) {
+                for (UploadedDocument additionalDoc : additionalDocuments) {
+                    byte[] pdfBytes = decodeBase64Document(additionalDoc.documentBase64());
+                    String docName = additionalDoc.documentName();
+                    if (!docName.toLowerCase().endsWith(".pdf")) {
+                        docName = docName + ".pdf";
+                    }
+                    documents.add(new DocumentInfo(docName, pdfBytes, additionalDoc.signObligated()));
+                    log.debugf("Added additional document '%s': %d bytes (signObligated: %b)",
+                        docName, pdfBytes.length, additionalDoc.signObligated());
+                }
+                log.infof("Added %d additional documents to signing case", additionalDocuments.size());
+            }
+
+            log.infof("Total %d documents prepared, creating multi-document signing case", documents.size());
 
             // Create signing case with all documents
             String caseKey = nextsignService.createMultiDocumentSigningCase(

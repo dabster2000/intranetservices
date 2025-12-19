@@ -4,13 +4,25 @@ package dk.trustworks.intranet.utils.dto.signing;
  * Information about a document to be signed.
  * Used internally when preparing multiple documents for a signing case.
  *
- * @param name     Document filename (e.g., "contract.pdf")
- * @param pdfBytes Binary PDF content
+ * @param name          Document filename (e.g., "contract.pdf")
+ * @param pdfBytes      Binary PDF content
+ * @param signObligated Whether this document requires signature (true) or is attachment-only (false)
  */
 public record DocumentInfo(
     String name,
-    byte[] pdfBytes
+    byte[] pdfBytes,
+    boolean signObligated
 ) {
+    /**
+     * Creates a DocumentInfo with validation. Defaults to requiring signature.
+     *
+     * @param name     Document filename
+     * @param pdfBytes Binary PDF content
+     */
+    public DocumentInfo(String name, byte[] pdfBytes) {
+        this(name, pdfBytes, true);
+    }
+
     /**
      * Creates a DocumentInfo with validation.
      *
