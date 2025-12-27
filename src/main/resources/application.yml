@@ -148,6 +148,9 @@ event-topics:
       consultant-allocation:
         expire-after-write: 1H  # Consultant allocation cache (1 hour TTL)
         maximum-size: 1000  # Maximum number of allocation entries
+      migration-registry:
+        expire-after-write: 5M  # Page migration registry cache (5 min TTL for quick updates)
+        maximum-size: 100  # Small table - only ~20-50 pages expected
   s3:
     sync-client:
       type: APACHE
