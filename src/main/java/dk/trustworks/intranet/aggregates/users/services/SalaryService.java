@@ -20,6 +20,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @JBossLog
 @ApplicationScoped
@@ -47,7 +48,11 @@ public class SalaryService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void create(@Valid Salary salary) {
-        if(salary.getUuid().isEmpty()) return;
+        if (salary.getUuid() == null || salary.getUuid().isBlank()) {
+            String generatedUuid = UUID.randomUUID().toString();
+            log.infof("No salary UUID provided for user %s, generating new one: %s", salary.getUseruuid(), generatedUuid);
+            salary.setUuid(generatedUuid);
+        }
         Optional<Salary> existingSalary = Salary.findByIdOptional(salary.getUuid());
         existingSalary.ifPresentOrElse(s -> {
             // UPDATE EXISTING SALARY RECORD

@@ -29,11 +29,13 @@ public class ItExpenseResource {
 
     @POST
     public void saveExpense(@PathParam("useruuid") String userUuid, ItExpenseItem itExpenseItem) {
+        itExpenseItem.setUseruuid(userUuid);
         expenseService.saveExpense(itExpenseItem);
     }
 
     @PUT
     public void updateExpense(@PathParam("useruuid") String userUuid, ItExpenseItem itExpenseItem) {
+        itExpenseItem.setUseruuid(userUuid);
         expenseService.updateExpense(itExpenseItem);
     }
 
