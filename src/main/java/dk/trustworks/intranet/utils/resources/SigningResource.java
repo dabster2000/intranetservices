@@ -294,25 +294,50 @@ public class SigningResource {
             content = @Content(schema = @Schema(implementation = ErrorResponse.class))
         )
     })
-    public PreviewTemplateResponse previewTemplateDocuments(PreviewTemplateRequest request) {
+    public Response previewTemplateDocuments(PreviewTemplateRequest request) {
         log.infof("POST /utils/signing/preview/template - Generating preview for %d document(s) (templateUuid: %s)",
             request != null && request.documents() != null ? request.documents().size() : 0,
             request != null ? request.templateUuid() : null);
 
-        // Validate request
-        request.validate();
+        if (request != null && request.documents() != null) {
+            var docsMeta = request.documents().stream()
+                .map(d -> String.format("{name='%s', fileUuid=%s, displayOrder=%s}",
+                    d.getDocumentName(), d.getFileUuid(), d.getDisplayOrder()))
+                .toList();
+            log.debugf("Preview request docs: %s", docsMeta);
+        }
 
-        // Generate preview documents directly from the documents in the request
-        // Pass templateUuid for type-aware placeholder formatting (e.g., Danish currency)
-        var documents = signingService.generatePreviewDocuments(
-            request.documents(),
-            request.formValues(),
-            request.templateUuid()
-        );
+        if (request != null && request.formValues() != null) {
+            log.debugf("Preview formValues keys: %s", String.join(",", request.formValues().keySet()));
+        }
 
-        log.infof("Preview documents generated successfully. Count: %d", documents.size());
+        try {
+            // Validate request
+            request.validate();
 
-        return new PreviewTemplateResponse(documents);
+            // Generate preview documents directly from the documents in the request
+            // Pass templateUuid for type-aware placeholder formatting (e.g., Danish currency)
+            var documents = signingService.generatePreviewDocuments(
+                request.documents(),
+                request.formValues(),
+                request.templateUuid()
+            );
+
+            log.infof("Preview documents generated successfully. Count: %d", documents.size());
+
+            return Response.ok(new PreviewTemplateResponse(documents)).build();
+
+        } catch (IllegalArgumentException e) {
+            log.warnf("Preview request validation failed (templateUuid=%s, docCount=%d): %s",
+                request != null ? request.templateUuid() : null,
+                request != null && request.documents() != null ? request.documents().size() : 0,
+                e.getMessage());
+            return badRequest("INVALID_REQUEST", e.getMessage());
+
+        } catch (Exception e) {
+            log.errorf(e, "Preview generation failed (templateUuid=%s)", request != null ? request.templateUuid() : null);
+            return serverError("PREVIEW_FAILED", e.getMessage());
+        }
     }
 
     /**

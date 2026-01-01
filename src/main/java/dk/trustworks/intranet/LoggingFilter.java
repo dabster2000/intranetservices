@@ -20,7 +20,10 @@ public class LoggingFilter implements ContainerRequestFilter {
     @Override
     public void filter(ContainerRequestContext requestContext) throws IOException {
 
-        if (requestContext.getMethod().equals(HttpMethod.POST) && requestContext.getMediaType() != null && MediaType.APPLICATION_JSON.equals(requestContext.getMediaType().toString())) {
+        MediaType mediaType = requestContext.getMediaType();
+        boolean isJson = mediaType != null && mediaType.toString().startsWith(MediaType.APPLICATION_JSON);
+
+        if (requestContext.getMethod().equals(HttpMethod.POST) && isJson) {
             logRequestBody(requestContext);
         }
     }
@@ -32,15 +35,12 @@ public class LoggingFilter implements ContainerRequestFilter {
         requestContext.getUriInfo().getPathParameters().forEach((k, v) -> log.info(k + ": " + v));
         requestContext.getUriInfo().getQueryParameters().forEach((k, v) -> log.info(k + ": " + v));
         log.info(requestContext.getUriInfo().getPath());
-        if (requestEntity.length > 0) {
-            // Log the request body
-            String body = new String(requestEntity, StandardCharsets.UTF_8);
-            //log.info("Request body: " + body);
+        // Log the request body (do not truncate; keep for debugging payload issues)
+        String body = new String(requestEntity, StandardCharsets.UTF_8);
+        log.info("Request body: " + body);
 
-            // Restore the original input stream
-            requestContext.setEntityStream(new ByteArrayInputStream(requestEntity));
-        }
-
+        // Restore the original input stream so downstream can read it
+        requestContext.setEntityStream(new ByteArrayInputStream(requestEntity));
     }
 
 

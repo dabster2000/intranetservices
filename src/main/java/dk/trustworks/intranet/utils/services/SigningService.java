@@ -287,6 +287,18 @@ public class SigningService {
             templateDocuments != null ? templateDocuments.size() : 0,
             templateUuid);
 
+        if (templateDocuments != null) {
+            var docsMeta = templateDocuments.stream()
+                .map(d -> String.format("{name='%s', fileUuid=%s, displayOrder=%s}",
+                    d.getDocumentName(), d.getFileUuid(), d.getDisplayOrder()))
+                .toList();
+            log.debugf("Preview generation documents: %s", docsMeta);
+        }
+
+        if (formValues != null) {
+            log.debugf("Preview formValues keys: %s", String.join(",", formValues.keySet()));
+        }
+
         try {
             // Require documents
             if (templateDocuments == null || templateDocuments.isEmpty()) {
@@ -340,6 +352,7 @@ public class SigningService {
             throw new SigningException("Failed to convert Word template to PDF: " + e.getMessage(), e);
 
         } catch (IllegalArgumentException e) {
+            log.warnf("Preview generation validation failed: %s", e.getMessage());
             throw e; // Rethrow validation errors as-is
 
         } catch (Exception e) {

@@ -220,6 +220,10 @@ public class WordDocumentService {
         log.infof("Generating PDF from Word template: %s with %d placeholders (backend: %s)",
                 fileUuid, placeholderValues != null ? placeholderValues.size() : 0, converterConfig.backend());
 
+        if (placeholderValues != null && !placeholderValues.isEmpty()) {
+            log.debugf("Placeholder keys: %s", String.join(",", placeholderValues.keySet()));
+        }
+
         // Convert Map<String, String> to Map<String, Object> for converter interface
         Map<String, Object> placeholders = placeholderValues != null
                 ? new HashMap<>(placeholderValues)
@@ -258,6 +262,7 @@ public class WordDocumentService {
 
         // 1. Generate presigned URL for S3 file
         String presignedUrl = generatePresignedUrl(fileUuid);
+        log.debugf("Presigned URL length: %d", presignedUrl != null ? presignedUrl.length() : 0);
 
         // 2. Build tags from placeholder values
         Map<String, String> stringValues = new HashMap<>();
@@ -265,6 +270,7 @@ public class WordDocumentService {
             placeholderValues.forEach((k, v) -> stringValues.put(k, v != null ? v.toString() : ""));
         }
         List<ConvertTag> tags = buildConvertTags(stringValues);
+        log.debugf("NextSign convert tags count: %d", tags != null ? tags.size() : 0);
 
         // 3. Build convert request
         DocumentConvertRequest request = DocumentConvertRequest.single(
@@ -279,8 +285,9 @@ public class WordDocumentService {
             DocumentConvertResponse response = nextsignConvertClient.convert(bearerToken, request);
 
             if (!response.isSuccess()) {
-                throw new WordDocumentException("NextSign conversion failed: " +
-                        (response.getErrorMessage() != null ? response.getErrorMessage() : "Unknown error"));
+                String errorMessage = response.getErrorMessage() != null ? response.getErrorMessage() : "Unknown error";
+                log.errorf("NextSign conversion failed (fileUuid=%s): %s", fileUuid, errorMessage);
+                throw new WordDocumentException("NextSign conversion failed: " + errorMessage);
             }
 
             // 5. Download the converted PDF
