@@ -963,10 +963,10 @@ public class InvoiceService {
               """ + aggWhere;
 
         var q = em.createQuery(jpql, Long.class)
-                .setParameter("st", invStatuses)
-                .setParameter("P", SalesApprovalStatus.PENDING)
-                .setParameter("R", SalesApprovalStatus.REJECTED)
-                .setParameter("A", SalesApprovalStatus.APPROVED);
+                .setParameter("st", invStatuses);
+
+        // Only set parameters that are actually used in the query
+        setAggregatedStatusParams(q, bonusStatuses);
 
         return q.getSingleResult();
     }
@@ -986,11 +986,11 @@ public class InvoiceService {
 
         var q = em.createQuery(baseJpql, Invoice.class)
                 .setParameter("st", invStatuses)
-                .setParameter("P", SalesApprovalStatus.PENDING)
-                .setParameter("R", SalesApprovalStatus.REJECTED)
-                .setParameter("A", SalesApprovalStatus.APPROVED)
                 .setFirstResult(pageIdx * pageSize)
                 .setMaxResults(pageSize);
+
+        // Only set parameters that are actually used in the query
+        setAggregatedStatusParams(q, bonusStatuses);
 
         List<Invoice> page = q.getResultList();
         if (page.isEmpty()) return List.of();
@@ -1150,6 +1150,34 @@ public class InvoiceService {
             return "AND EXISTS (SELECT 1 FROM dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b WHERE b.invoiceuuid = i.uuid) ";
         }
         return "AND (" + String.join(" OR ", parts) + ") ";
+    }
+
+    /**
+     * Sets query parameters for aggregated bonus status filtering.
+     * Only sets parameters that are actually used in the query built by buildAggregatedStatusWhere().
+     * - :P is used if wantP OR wantR OR wantA (all conditions reference pending check)
+     * - :R is used if wantR OR wantA (both reference rejected check)
+     * - :A is used only if wantA
+     */
+    private void setAggregatedStatusParams(jakarta.persistence.Query q, List<SalesApprovalStatus> agg) {
+        if (agg == null || agg.isEmpty()) return;
+
+        boolean wantP = agg.contains(SalesApprovalStatus.PENDING);
+        boolean wantR = agg.contains(SalesApprovalStatus.REJECTED);
+        boolean wantA = agg.contains(SalesApprovalStatus.APPROVED);
+
+        // :P is referenced in all three conditions (P, R, and A)
+        if (wantP || wantR || wantA) {
+            q.setParameter("P", SalesApprovalStatus.PENDING);
+        }
+        // :R is referenced in R and A conditions
+        if (wantR || wantA) {
+            q.setParameter("R", SalesApprovalStatus.REJECTED);
+        }
+        // :A is only referenced in A condition
+        if (wantA) {
+            q.setParameter("A", SalesApprovalStatus.APPROVED);
+        }
     }
 
     public List<MyBonusRow> findMyBonusPage(String useruuid,
