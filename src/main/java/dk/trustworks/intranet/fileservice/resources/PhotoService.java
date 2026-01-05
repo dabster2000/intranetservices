@@ -140,7 +140,7 @@ public class PhotoService {
         });
     }
 
-    private String detectMimeType(byte[] data) {
+    public String detectMimeType(byte[] data) {
         Tika tika = new Tika();
         try {
             return tika.detect(data);
@@ -148,6 +148,10 @@ public class PhotoService {
             log.error("Error detecting MIME type: " + e.getMessage());
             return "application/octet-stream"; // Default to binary data if detection fails
         }
+    }
+
+    public String extensionFromMimeType(String mimeType) {
+        return MIME_TO_EXTENSION.getOrDefault(mimeType, ".bin");
     }
 
     private long getFileSize(byte[] fileData) {

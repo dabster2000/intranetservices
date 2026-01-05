@@ -8,6 +8,7 @@ import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.Task;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.crm.services.TaskService;
@@ -41,10 +42,15 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 
+import java.io.IOException;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Base64;
 import java.util.stream.Stream;
+
+import jakarta.ws.rs.core.Response;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
@@ -175,7 +181,6 @@ public class PublicResource {
         return coffeeDateList;
     }
 
-
     @POST
     @Path("/work")
     public void save(Work work) {
@@ -211,5 +216,140 @@ public class PublicResource {
     })
     public void sendSlackMessage(KeyValueDTO keyValueDTO) {
         slackService.sendMessage(keyValueDTO.getKey(), keyValueDTO.getValue());
+    }
+
+    @PUT
+    @Path("/client/{clientuuid}")
+    @Consumes(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
+    public Response updateClientLogo(@PathParam("clientuuid") String clientuuid, UpdateClientLogoRequest request) {
+        if (request == null || request.getFile() == null || request.getFile().isBlank()) {
+            throw new WebApplicationException("file is required", Response.Status.BAD_REQUEST);
+        }
+
+        Client client = clientAPI.findByUuid(clientuuid);
+        if (client == null) {
+            throw new WebApplicationException("client not found", Response.Status.NOT_FOUND);
+        }
+
+        byte[] decoded;
+        try {
+            decoded = Base64.getDecoder().decode(request.getFile());
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException("file must be valid base64", Response.Status.BAD_REQUEST);
+        }
+
+        String mimeType = photoAPI.detectMimeType(decoded);
+        String extension = photoAPI.extensionFromMimeType(mimeType);
+        String sanitizedName = sanitizeFilename(client.getName());
+
+        File logo = new File();
+        logo.setUuid("");
+        logo.setRelateduuid(clientuuid);
+        logo.setType("PHOTO");
+        logo.setName(client.getName());
+        logo.setFilename(sanitizedName + extension);
+        logo.setUploaddate(LocalDate.now());
+        logo.setFile(decoded);
+
+        try {
+            photoAPI.updateLogo(logo);
+        } catch (IOException e) {
+            throw new WebApplicationException("Unable to store logo", e, Response.Status.INTERNAL_SERVER_ERROR);
+        }
+
+        return Response.noContent().build();
+    }
+
+    @POST
+    @Path("/client")
+    @Consumes(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
+    @Produces(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
+    public Client createClient(CreateClientRequest request) {
+        if (request == null || request.getName() == null || request.getName().isBlank()) {
+            throw new WebApplicationException("name is required", Response.Status.BAD_REQUEST);
+        }
+
+        Client client = new Client();
+        client.setActive(false);
+        client.setContactname("");
+        client.setCreated(LocalDateTime.now());
+        client.setName(request.getName());
+        client.setAccountmanager(null);
+        client.setCrmid(null);
+        client.setSegment(ClientSegment.OTHER);
+
+        clientAPI.save(client);
+
+        if (request.getFile() != null && !request.getFile().isBlank()) {
+            byte[] decoded;
+            try {
+                decoded = Base64.getDecoder().decode(request.getFile());
+            } catch (IllegalArgumentException e) {
+                throw new WebApplicationException("file must be valid base64", Response.Status.BAD_REQUEST);
+            }
+
+            String mimeType = photoAPI.detectMimeType(decoded);
+            String extension = photoAPI.extensionFromMimeType(mimeType);
+            String sanitizedName = sanitizeFilename(client.getName());
+
+            File logo = new File();
+            logo.setUuid("");
+            logo.setRelateduuid(client.getUuid());
+            logo.setType("PHOTO");
+            logo.setName(client.getName());
+            logo.setFilename(sanitizedName + extension);
+            logo.setUploaddate(LocalDate.now());
+            logo.setFile(decoded);
+
+            try {
+                photoAPI.updateLogo(logo);
+            } catch (IOException e) {
+                throw new WebApplicationException("Unable to store logo", e, Response.Status.INTERNAL_SERVER_ERROR);
+            }
+        }
+
+        return client;
+    }
+
+    static String sanitizeFilename(String name) {
+        String base = (name == null || name.isBlank()) ? "client" : name;
+        String sanitized = base.replaceAll("[^a-zA-Z0-9._-]", "_");
+        if (sanitized.isBlank()) {
+            sanitized = "client";
+        }
+        return sanitized;
+    }
+
+    public static class CreateClientRequest {
+        private String name;
+        private String file;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getFile() {
+            return file;
+        }
+
+        public void setFile(String file) {
+            this.file = file;
+        }
+    }
+
+    public static class UpdateClientLogoRequest {
+        private String file;
+
+        public String getFile() {
+            return file;
+        }
+
+        public void setFile(String file) {
+            this.file = file;
+        }
     }
 }
