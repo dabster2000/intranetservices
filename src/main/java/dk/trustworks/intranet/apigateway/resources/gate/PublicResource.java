@@ -30,6 +30,8 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -321,36 +323,18 @@ public class PublicResource {
         return sanitized;
     }
 
+    @Setter
+    @Getter
     public static class CreateClientRequest {
         private String name;
         private String file;
 
-        public String getName() {
-            return name;
-        }
-
-        public void setName(String name) {
-            this.name = name;
-        }
-
-        public String getFile() {
-            return file;
-        }
-
-        public void setFile(String file) {
-            this.file = file;
-        }
     }
 
+    @Setter
+    @Getter
     public static class UpdateClientLogoRequest {
         private String file;
 
-        public String getFile() {
-            return file;
-        }
-
-        public void setFile(String file) {
-            this.file = file;
-        }
     }
 }
