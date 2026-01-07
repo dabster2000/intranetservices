@@ -277,6 +277,7 @@ public class PublicResource {
         client.setAccountmanager(null);
         client.setCrmid(null);
         client.setSegment(ClientSegment.OTHER);
+        client.setManaged("EXTERNAL");
 
         clientAPI.save(client);
 

@@ -26,6 +26,9 @@ public class Client extends PanacheEntityBase {
     private String crmid;
     private String accountmanager;
 
+    @Column(length = 16)
+    private String managed;
+
     @Column(name = "segment")
     @Enumerated(EnumType.STRING)
     private ClientSegment segment;
@@ -38,6 +41,7 @@ public class Client extends PanacheEntityBase {
         this.clientdata = new ArrayList<>();
         this.created = LocalDateTime.now();
         this.segment = ClientSegment.OTHER;
+        this.managed = "INTRA";
     }
 
     public Client(String contactname, String name) {
@@ -50,6 +54,7 @@ public class Client extends PanacheEntityBase {
         this.segment = ClientSegment.OTHER;
         this.projects = new ArrayList<>();
         this.clientdata = new ArrayList<>();
+        this.managed = "INTRA";
     }
 
     @Override

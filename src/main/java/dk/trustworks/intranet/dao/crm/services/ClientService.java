@@ -27,6 +27,9 @@ public class ClientService {
     @Transactional
     public void save(Client client) {
         client.setUuid(UUID.randomUUID().toString());
+        if(client.getManaged() == null || client.getManaged().isBlank()) {
+            client.setManaged("INTRA");
+        }
         client.persist();
     }
 
@@ -37,11 +40,13 @@ public class ClientService {
                         "name = ?3, " +
                         "accountmanager = ?4, " +
                         "crmid = ?5, " +
-                        "segment = ?6 " +
-                        "WHERE uuid like ?7 ",
+                        "segment = ?6, " +
+                        "managed = ?7 " +
+                        "WHERE uuid like ?8 ",
                 client.isActive(), client.getContactname(),
                 client.getName(), client.getAccountmanager(),
                 client.getCrmid(), client.getSegment(),
+                client.getManaged(),
                 client.getUuid());
     }
 
