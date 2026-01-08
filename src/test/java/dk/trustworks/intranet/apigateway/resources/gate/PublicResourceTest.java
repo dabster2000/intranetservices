@@ -39,6 +39,7 @@ class PublicResourceTest {
         Client client = new Client();
         client.setUuid(clientuuid);
         client.setName("Acme inc!");
+        client.setManaged("EXTERNAL");
 
         Mockito.when(clientService.findByUuid(clientuuid)).thenReturn(client);
 
@@ -71,6 +72,7 @@ class PublicResourceTest {
         Client client = new Client();
         client.setUuid(clientuuid);
         client.setName("Client");
+        client.setManaged("EXTERNAL");
 
         Mockito.when(clientService.findByUuid(clientuuid)).thenReturn(client);
 
@@ -105,5 +107,24 @@ class PublicResourceTest {
                 () -> resource.updateClientLogo("client-uuid", request));
 
         assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), ex.getResponse().getStatus());
+    }
+
+    @Test
+    void updateClientLogoRequiresExternalClient() {
+        String clientuuid = "client-uuid";
+        Client client = new Client();
+        client.setUuid(clientuuid);
+        client.setName("Client");
+        client.setManaged("INTRA");
+
+        Mockito.when(clientService.findByUuid(clientuuid)).thenReturn(client);
+
+        PublicResource.UpdateClientLogoRequest request = new PublicResource.UpdateClientLogoRequest();
+        request.setFile(Base64.getEncoder().encodeToString("hello".getBytes(StandardCharsets.UTF_8)));
+
+        WebApplicationException ex = assertThrows(WebApplicationException.class,
+                () -> resource.updateClientLogo(clientuuid, request));
+
+        assertEquals(Response.Status.FORBIDDEN.getStatusCode(), ex.getResponse().getStatus());
     }
 }

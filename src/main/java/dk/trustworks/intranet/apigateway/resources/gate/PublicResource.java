@@ -233,6 +233,10 @@ public class PublicResource {
             throw new WebApplicationException("client not found", Response.Status.NOT_FOUND);
         }
 
+        if (!"EXTERNAL".equalsIgnoreCase(client.getManaged())) {
+            throw new WebApplicationException("client is not external", Response.Status.FORBIDDEN);
+        }
+
         byte[] decoded;
         try {
             decoded = Base64.getDecoder().decode(request.getFile());
