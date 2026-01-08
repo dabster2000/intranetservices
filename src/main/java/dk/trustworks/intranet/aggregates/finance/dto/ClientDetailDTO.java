@@ -57,6 +57,12 @@ public class ClientDetailDTO {
     private int activeProjectsCount;
 
     /**
+     * Date of the first invoice for this client (YYYY-MM-DD format)
+     * Used to filter out new clients with insufficient history for YoY comparisons
+     */
+    private String firstInvoiceDate;
+
+    /**
      * Date of the most recent invoice (YYYY-MM-DD format)
      * Used to identify dormant clients
      */

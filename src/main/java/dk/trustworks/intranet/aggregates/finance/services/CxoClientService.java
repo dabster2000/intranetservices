@@ -1135,11 +1135,21 @@ public class CxoClientService {
         // 3. Build SQL with V118 deduplication and comprehensive metrics
         StringBuilder sql = new StringBuilder();
 
-        // CTE 1: Deduplicated current TTM data
+        // CTE 1: First activity date for each client (for filtering new clients)
+        sql.append("WITH first_activity AS ( ");
+        sql.append("  SELECT f.client_id, ");
+        sql.append("         MIN(LAST_DAY(STR_TO_DATE(CONCAT(f.month_key, '01'), '%Y%m%d'))) as first_activity_date ");
+        sql.append("  FROM fact_project_financials f ");
+        sql.append("  WHERE f.client_id IS NOT NULL ");
+        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
+        sql.append("  GROUP BY f.client_id ");
+        sql.append("), ");
+
+        // CTE 2: Deduplicated current TTM data
         // NOTE: fact_project_financials does not have client_name or invoice_date, so we:
         // - join to client table for client_name
         // - use month_key to derive last_activity_month (last day of most recent month with revenue)
-        sql.append("WITH dedupe_current AS ( ");
+        sql.append("dedupe_current AS ( ");
         sql.append("  SELECT f.client_id, c.name AS client_name, f.sector_id, ");
         sql.append("         f.project_id, f.service_line_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
@@ -1169,7 +1179,7 @@ public class CxoClientService {
         sql.append("  GROUP BY f.client_id, c.name, f.sector_id, f.project_id, f.service_line_id, f.month_key ");
         sql.append("), ");
 
-        // CTE 2: Deduplicated prior year TTM data (for YoY calculation)
+        // CTE 3: Deduplicated prior year TTM data (for YoY calculation)
         sql.append("dedupe_prior AS ( ");
         sql.append("  SELECT f.client_id, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue ");
@@ -1196,7 +1206,7 @@ public class CxoClientService {
         sql.append("  GROUP BY f.client_id, f.project_id, f.month_key ");
         sql.append("), ");
 
-        // CTE 3: Current period metrics by client
+        // CTE 4: Current period metrics by client
         // NOTE: Use MAX(month_key) to derive last activity date (last day of most recent month)
         sql.append("current_metrics AS ( ");
         sql.append("  SELECT client_id, client_name, sector_id, ");
@@ -1209,7 +1219,7 @@ public class CxoClientService {
         sql.append("  GROUP BY client_id, client_name, sector_id ");
         sql.append("), ");
 
-        // CTE 4: Prior period revenue by client (for YoY)
+        // CTE 5: Prior period revenue by client (for YoY)
         sql.append("prior_revenue AS ( ");
         sql.append("  SELECT client_id, ");
         sql.append("         SUM(revenue) as prior_ttm_revenue ");
@@ -1221,10 +1231,12 @@ public class CxoClientService {
         sql.append("SELECT cm.client_id, cm.client_name, cm.sector_id, ");
         sql.append("       cm.ttm_revenue, cm.ttm_cost, ");
         sql.append("       cm.active_projects, cm.service_line_count, ");
+        sql.append("       fa.first_activity_date, ");
         sql.append("       cm.last_activity_date, ");
         sql.append("       COALESCE(pr.prior_ttm_revenue, 0) as prior_revenue ");
         sql.append("FROM current_metrics cm ");
         sql.append("LEFT JOIN prior_revenue pr ON cm.client_id = pr.client_id ");
+        sql.append("LEFT JOIN first_activity fa ON cm.client_id = fa.client_id ");
         sql.append("ORDER BY cm.ttm_revenue DESC");
 
         // Execute query
@@ -1264,8 +1276,9 @@ public class CxoClientService {
             double ttmCost = ((Number) row[4]).doubleValue();
             int activeProjects = ((Number) row[5]).intValue();
             int serviceLineCount = ((Number) row[6]).intValue();
-            Object lastInvoiceObj = row[7];
-            double priorRevenue = ((Number) row[8]).doubleValue();
+            Object firstInvoiceObj = row[7];
+            Object lastInvoiceObj = row[8];
+            double priorRevenue = ((Number) row[9]).doubleValue();
 
             // Calculate metrics
             double ttmRevenueM = ttmRevenue / 1_000_000.0;
@@ -1275,6 +1288,18 @@ public class CxoClientService {
             double yoyGrowthPct = (priorRevenue > 0)
                     ? ((ttmRevenue - priorRevenue) / priorRevenue) * 100.0
                     : 0.0;
+
+            // Format first invoice date
+            String firstInvoiceDate = "";
+            if (firstInvoiceObj != null) {
+                if (firstInvoiceObj instanceof java.sql.Date) {
+                    firstInvoiceDate = ((java.sql.Date) firstInvoiceObj).toLocalDate().format(dateFormatter);
+                } else if (firstInvoiceObj instanceof LocalDate) {
+                    firstInvoiceDate = ((LocalDate) firstInvoiceObj).format(dateFormatter);
+                } else {
+                    firstInvoiceDate = firstInvoiceObj.toString();
+                }
+            }
 
             // Format last invoice date
             String lastInvoiceDate = "";
@@ -1296,6 +1321,7 @@ public class CxoClientService {
                     Math.round(grossMarginPct * 10.0) / 10.0,  // Round to 1 decimal
                     Math.round(yoyGrowthPct * 10.0) / 10.0,  // Round to 1 decimal
                     activeProjects,
+                    firstInvoiceDate,
                     lastInvoiceDate,
                     serviceLineCount
             );
