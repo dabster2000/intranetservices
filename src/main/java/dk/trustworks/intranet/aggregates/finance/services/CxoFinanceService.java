@@ -3540,7 +3540,7 @@ public class CxoFinanceService {
             sql.append("  AND expense_category_id IN (:expenseCategories) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND company_uuid IN (:companyIds) ");
+            sql.append("  AND company_id IN (:companyIds) ");
         }
 
         sql.append("GROUP BY month_key, expense_category_id ORDER BY month_key ASC");
@@ -3637,7 +3637,7 @@ public class CxoFinanceService {
             sql.append("  AND expense_category_id IN (:expenseCategories) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND company_uuid IN (:companyIds) ");
+            sql.append("  AND company_id IN (:companyIds) ");
         }
 
         sql.append("GROUP BY month_key, cost_center_id ORDER BY month_key ASC");
@@ -3721,13 +3721,20 @@ public class CxoFinanceService {
         log.debugf("Payroll Headcount Structure: from=%s, to=%s, practices=%s, companies=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
 
+        // Build the payroll subquery with conditional company filtering
+        String payrollSubquery = "COALESCE((SELECT SUM(o.opex_amount_dkk) FROM fact_opex o " +
+                "WHERE o.month_key = e.month_key AND o.is_payroll_flag = 1";
+        if (companyIds != null && !companyIds.isEmpty()) {
+            payrollSubquery += " AND o.company_id IN (:companyIdsForPayroll)";
+        }
+        payrollSubquery += "), 0) AS total_payroll";
+
         // Build SQL joining payroll data, FTE data, and revenue
         StringBuilder sql = new StringBuilder(
                 "SELECT e.month_key, " +
                 "  SUM(e.fte_billable) AS billable_fte, " +
                 "  SUM(e.fte_non_billable) AS non_billable_fte, " +
-                "  COALESCE((SELECT SUM(o.opex_amount_dkk) FROM fact_opex o " +
-                "    WHERE o.month_key = e.month_key AND o.is_payroll_flag = 1), 0) AS total_payroll, " +
+                "  " + payrollSubquery + ", " +
                 "  COALESCE((SELECT SUM(f.recognized_revenue_dkk) FROM fact_project_financials f " +
                 "    WHERE f.month_key = e.month_key), 0) AS total_revenue " +
                 "FROM fact_employee_monthly e " +
@@ -3755,6 +3762,7 @@ public class CxoFinanceService {
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
+            query.setParameter("companyIdsForPayroll", companyIds);
         }
 
         @SuppressWarnings("unchecked")
@@ -3819,7 +3827,7 @@ public class CxoFinanceService {
                     "  AND month_key >= :fromKey AND month_key <= :toKey "
             );
             if (companyIds != null && !companyIds.isEmpty()) {
-                opexSql.append("  AND company_uuid IN (:companyIds) ");
+                opexSql.append("  AND company_id IN (:companyIds) ");
             }
 
             Query opexQuery = em.createNativeQuery(opexSql.toString());
@@ -3916,7 +3924,7 @@ public class CxoFinanceService {
             sql.append("  AND a.expense_category_id IN (:expenseCategories) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND a.company_uuid IN (:companyIds) ");
+            sql.append("  AND a.company_id IN (:companyIds) ");
         }
 
         sql.append("GROUP BY a.month_key, c.name, a.cost_center_id, a.expense_category_id ")
@@ -3991,7 +3999,7 @@ public class CxoFinanceService {
             sql.append("    AND cost_center_id IN (:costCenters) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND company_uuid IN (:companyIds) ");
+            sql.append("    AND company_id IN (:companyIds) ");
         }
 
         sql.append("  UNION ALL " +
@@ -4005,7 +4013,7 @@ public class CxoFinanceService {
             sql.append("    AND cost_center_id IN (:costCenters) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND company_uuid IN (:companyIds) ");
+            sql.append("    AND company_id IN (:companyIds) ");
         }
 
         sql.append(") combined " +
