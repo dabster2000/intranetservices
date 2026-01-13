@@ -150,7 +150,7 @@ public class Contract extends PanacheEntityBase {
     public String toString() {
         return "Contract{" +
                 "uuid='" + uuid + '\'' +
-                ", company=" + company.getName() +
+                ", company=" + (company != null ? company.getName() : "null") +
                 ", amount=" + amount +
                 ", contractType=" + contractType +
                 ", refid='" + refid + '\'' +
