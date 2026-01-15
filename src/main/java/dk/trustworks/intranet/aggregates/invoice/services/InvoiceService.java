@@ -261,7 +261,7 @@ public class InvoiceService {
     }
 
     public List<Invoice> findContractInvoices(String contractuuid) {
-        return Invoice.find("contractuuid = ?1 AND status IN ('CREATED','CREDIT_NOTE') ORDER BY year DESC, month DESC", contractuuid).list();
+        return Invoice.find("contractuuid = ?1 AND status = 'CREATED' ORDER BY year DESC, month DESC", contractuuid).list();
     }
 
     /**
@@ -285,7 +285,7 @@ public class InvoiceService {
 
         // Fetch all invoices for all contracts in a single query
         List<Invoice> invoices = Invoice.find(
-                "contractuuid IN ?1 AND status IN ('CREATED','CREDIT_NOTE')",
+                "contractuuid IN ?1 AND status = 'CREATED'",
                 Sort.by("year", Sort.Direction.Descending).and("month", Sort.Direction.Descending),
                 contractUuids
         ).list();
