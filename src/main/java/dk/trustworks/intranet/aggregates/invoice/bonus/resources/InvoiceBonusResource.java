@@ -269,6 +269,7 @@ public class InvoiceBonusResource {
 
     @POST
     @Path("/{bonusuuid}/reject")
+    @Consumes(MediaType.TEXT_PLAIN)
     @Transactional
     public BonusAggregateResponse reject(@PathParam("bonusuuid") String bonusuuid,
                        @HeaderParam("X-Requested-By") String approver,
