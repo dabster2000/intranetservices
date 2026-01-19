@@ -137,7 +137,7 @@ public class PublicResource {
         log.debug("Public photo request " + relateduuid + (width != null ? " width=" + width : ""));
         File photo = photoAPI.findPhotoByRelatedUUID(relateduuid);
         if (width != null) {
-            photo.setFile(photoAPI.getResizedPhoto(relateduuid, width));
+            photo.setFile(photoAPI.findPhotoByRelatedUUID(relateduuid).getFile());
         }
         return photo;
     }
