@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -155,13 +156,26 @@ public class CxoDeliveryService {
         }
 
         // Execute query and extract results
-        Object[] result = (Object[]) query.getSingleResult();
-        BigDecimal totalBillable = (BigDecimal) result[0];
-        BigDecimal totalAvailable = (BigDecimal) result[1];
+        List<Object[]> results = query.getResultList();
 
-        // Handle null results (no data in range)
-        if (totalBillable == null || totalAvailable == null) {
+        // Handle empty result set (no data in range)
+        if (results.isEmpty()) {
             log.tracef("No utilization data found for range [%s to %s]", fromMonthKey, toMonthKey);
+            return 0.0;
+        }
+
+        Object[] result = results.get(0);
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal totalBillable = result[0] != null
+            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
+            : BigDecimal.ZERO;
+        BigDecimal totalAvailable = result[1] != null
+            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
+            : BigDecimal.ZERO;
+
+        // Handle null aggregation results
+        if (totalBillable == null || totalAvailable == null) {
+            log.tracef("Null aggregation results for range [%s to %s]", fromMonthKey, toMonthKey);
             return 0.0;
         }
 
@@ -270,8 +284,13 @@ public class CxoDeliveryService {
 
         // Execute query and extract results
         Object[] result = (Object[]) query.getSingleResult();
-        BigDecimal totalBillable = (BigDecimal) result[0];
-        BigDecimal totalAvailable = (BigDecimal) result[1];
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal totalBillable = result[0] != null
+            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
+            : BigDecimal.ZERO;
+        BigDecimal totalAvailable = result[1] != null
+            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
+            : BigDecimal.ZERO;
 
         // Handle null results
         if (totalBillable == null || totalAvailable == null) {
@@ -404,8 +423,13 @@ public class CxoDeliveryService {
 
         // Execute query and extract results
         Object[] result = (Object[]) query.getSingleResult();
-        BigDecimal totalForecast = (BigDecimal) result[0];
-        BigDecimal totalCapacity = (BigDecimal) result[1];
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal totalForecast = result[0] != null
+            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
+            : BigDecimal.ZERO;
+        BigDecimal totalCapacity = result[1] != null
+            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
+            : BigDecimal.ZERO;
 
         // Handle null results (no forecast data in range)
         if (totalForecast == null || totalCapacity == null) {
@@ -511,8 +535,13 @@ public class CxoDeliveryService {
 
         // Execute query and extract results
         Object[] result = (Object[]) query.getSingleResult();
-        BigDecimal totalForecast = (BigDecimal) result[0];
-        BigDecimal totalCapacity = (BigDecimal) result[1];
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal totalForecast = result[0] != null
+            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
+            : BigDecimal.ZERO;
+        BigDecimal totalCapacity = result[1] != null
+            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
+            : BigDecimal.ZERO;
 
         // Handle null results
         if (totalForecast == null || totalCapacity == null) {
@@ -648,7 +677,11 @@ public class CxoDeliveryService {
         }
 
         // Execute query and extract result
-        BigDecimal result = (BigDecimal) query.getSingleResult();
+        Object resultObj = query.getSingleResult();
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal result = resultObj != null
+            ? BigDecimal.valueOf(((Number) resultObj).doubleValue())
+            : BigDecimal.ZERO;
 
         int count = (result != null) ? result.intValue() : 0;
 
@@ -775,7 +808,11 @@ public class CxoDeliveryService {
         }
 
         // Execute query and extract result
-        BigDecimal result = (BigDecimal) query.getSingleResult();
+        Object resultObj = query.getSingleResult();
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal result = resultObj != null
+            ? BigDecimal.valueOf(((Number) resultObj).doubleValue())
+            : BigDecimal.ZERO;
 
         int count = (result != null) ? result.intValue() : 0;
 
@@ -904,8 +941,13 @@ public class CxoDeliveryService {
 
         // Execute query and extract results
         Object[] result = (Object[]) query.getSingleResult();
-        BigDecimal billedValue = (BigDecimal) result[0];
-        BigDecimal expectedValue = (BigDecimal) result[1];
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal billedValue = result[0] != null
+            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
+            : BigDecimal.ZERO;
+        BigDecimal expectedValue = result[1] != null
+            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
+            : BigDecimal.ZERO;
 
         // Handle null results (no data in range)
         if (billedValue == null || expectedValue == null) {
@@ -1137,8 +1179,13 @@ public class CxoDeliveryService {
 
         // Execute query and extract results
         Object[] result = (Object[]) query.getSingleResult();
-        BigDecimal totalRevenue = (BigDecimal) result[0];
-        BigDecimal totalCost = (BigDecimal) result[1];
+        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
+        BigDecimal totalRevenue = result[0] != null
+            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
+            : BigDecimal.ZERO;
+        BigDecimal totalCost = result[1] != null
+            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
+            : BigDecimal.ZERO;
 
         // Handle null results (no data in range)
         if (totalRevenue == null || totalCost == null) {

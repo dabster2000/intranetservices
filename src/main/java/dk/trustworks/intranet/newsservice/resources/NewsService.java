@@ -29,19 +29,25 @@ public class NewsService {
     }
 
     public List<News> getActiveNews(@QueryParam("category") String newsCategory) {
-        if(newsCategory.equals("banner")) {
+        // Add null/empty check at the start for safety
+        if(newsCategory == null || newsCategory.isBlank()) {
+            return new ArrayList<>();  // Return empty list for safety
+        }
+
+        // Use safe null comparison pattern
+        if("banner".equals(newsCategory)) {
             return News.find("?1 between startDate and endDate AND newsType = ?2", LocalDateTime.now(), NewsType.BANNER).list();
             //5f6fac9d-f52d-462f-ab27-be7eeef1b3f3
-        } else if(newsCategory.equals("events")) {
+        } else if("events".equals(newsCategory)) {
             List<News> newsList = News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('BIRTHDAY', 'INFO', 'NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'HQ_BOOKING', 'CLIENT_EVENT', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
             List<Employee> employees = em.createNativeQuery("select * from consultant where active = 1 and status like 'ACTIVE' and consultanttype not like 'EXTERNAL' and CURDATE() between DATE_SUB(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 1 MONTH ) and DATE_ADD(DATE_FORMAT(DATE_ADD(birthday, INTERVAL (YEAR(CURRENT_DATE()) - YEAR(birthday)) YEAR), '%Y-%m-%d'), INTERVAL 7 DAY)", Employee.class).getResultList();
             for (Employee employee : employees) {
                 newsList.add(new News(employee.getBirthday().withYear(LocalDate.now().getYear()).isBefore(LocalDate.now())? employee.getBirthday().withYear(LocalDate.now().getYear()).plusYears(1).atStartOfDay(): employee.getBirthday().atStartOfDay(), NewsType.BIRTHDAY, employee.uuid, employee.getFirstname() + " " + employee.getLastname() + "'s Birthday"));
             }
             return newsList;
-        } else if (newsCategory.equals("office_display")) {
+        } else if ("office_display".equals(newsCategory)) {
             return News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'CLIENT_EVENT', 'INFO', 'HQ','HQ_BOOKING') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
-        } else if (newsCategory.equals("mobile_app")) {
+        } else if ("mobile_app".equals(newsCategory)) {
             return News.find("eventDate >= ?1 and eventDate <= ?2 and newsType IN ('NEW_EMPLOYEE', 'INTERNAL_EVENT', 'INTERNAL_COURSE', 'EXTERNAL_EVENT', 'CONFERENCE', 'CLIENT_EVENT', 'INFO', 'HQ') ", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusMonths(6)).list();
         }
         return new ArrayList<>();
