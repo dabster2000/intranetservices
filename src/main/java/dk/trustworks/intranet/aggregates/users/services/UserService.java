@@ -124,7 +124,7 @@ public class UserService {
             FROM userstatus us
             WHERE us.statusdate <= :asOfDate
         )
-        SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname,
+        SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
                u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
@@ -159,7 +159,7 @@ public class UserService {
             WHERE us.statusdate <= :asOfDate
               AND us.companyuuid = :companyUuid
         )
-        SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname,
+        SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
                u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
@@ -332,7 +332,7 @@ public class UserService {
               AND o.statusdate < :fyEnd
               AND o.next_date > :fyStart
         )
-        SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname,
+        SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
                u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
@@ -365,7 +365,6 @@ public class UserService {
         if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) return;
         System.out.println("User does not exist");
         log.info("User does not exist");
-        user.setActive(true);
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
         user.setType("USER");
@@ -383,27 +382,25 @@ public class UserService {
     public void updateOne(User user) {
         System.out.println("UserService.updateOne");
         try {
-            User.update("active = ?1, " +
-                            "email = ?2, " +
-                            "firstname = ?3, " +
-                            "lastname = ?4, " +
-                            "username = ?5, " +
-                            "slackusername = ?6, " +
-                            "birthday = ?7, " +
-                            "gender = ?8, " +
-                            "cpr = ?9, " +
-                            "phone = ?10, " +
-                            "pension = ?11, " +
-                            "healthcare = ?12, " +
-                            "pensiondetails = ?13, " +
-                            "birthday = ?14, " +
-                            "defects = ?15, " +
-                            "photoconsent = ?16, " +
-                            "other = ?17, " +
-                            "primaryskilltype = ?18, " +
-                            "primaryskilllevel = ?19 " +
-                            "WHERE uuid like ?20 ",
-                    user.isActive(),
+            User.update("email = ?1, " +
+                            "firstname = ?2, " +
+                            "lastname = ?3, " +
+                            "username = ?4, " +
+                            "slackusername = ?5, " +
+                            "birthday = ?6, " +
+                            "gender = ?7, " +
+                            "cpr = ?8, " +
+                            "phone = ?9, " +
+                            "pension = ?10, " +
+                            "healthcare = ?11, " +
+                            "pensiondetails = ?12, " +
+                            "birthday = ?13, " +
+                            "defects = ?14, " +
+                            "photoconsent = ?15, " +
+                            "other = ?16, " +
+                            "primaryskilltype = ?17, " +
+                            "primaryskilllevel = ?18 " +
+                            "WHERE uuid like ?19 ",
                     user.getEmail(),
                     user.getFirstname(),
                     user.getLastname(),

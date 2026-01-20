@@ -30,7 +30,6 @@ public class Employee extends PanacheEntityBase {
 
     @Id
     public String uuid;
-    private boolean active;
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate created;
