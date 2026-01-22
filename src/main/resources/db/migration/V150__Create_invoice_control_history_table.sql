@@ -18,7 +18,7 @@
 -- Create invoice control history table
 CREATE TABLE invoice_control_history (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary key',
-    invoice_uuid VARCHAR(40) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL COMMENT 'Invoice UUID (foreign key to invoices.uuid)',
+    invoice_uuid VARCHAR(36) NOT NULL COMMENT 'Invoice UUID (foreign key to invoices.uuid)',
     control_status VARCHAR(20) NOT NULL COMMENT 'Control status at this point (NOT_REVIEWED, UNDER_REVIEW, APPROVED, REJECTED)',
     control_note TEXT NULL COMMENT 'Optional reviewer notes for this status change',
     changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Timestamp when status was changed',
@@ -32,7 +32,7 @@ CREATE TABLE invoice_control_history (
     -- Index for efficient queries
     INDEX idx_invoice_control_history_invoice (invoice_uuid),
     INDEX idx_invoice_control_history_changed_at (changed_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
 COMMENT='Audit trail of invoice control status changes';
 
 -- Populate history with current status for existing invoices
