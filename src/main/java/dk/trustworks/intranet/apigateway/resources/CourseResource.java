@@ -73,10 +73,21 @@ public class CourseResource {
     }
 
     @DELETE
-    @Path("/{courseuuid}/participants/{useruuid}")
+    @Path("/{courseuuid}/participants/{participantuuid}")
     @Transactional
-    public void removeParticipants(@PathParam("courseuuid") String courseuuid, @PathParam("useruuid") String useruuid) {
-        service.removeParticipant(useruuid);
+    public void removeParticipants(@PathParam("courseuuid") String courseuuid, @PathParam("participantuuid") String participantuuid) {
+        // Validate participant exists
+        CkoCourseParticipant participant = CkoCourseParticipant.findById(participantuuid);
+        if (participant == null) {
+            throw new WebApplicationException("Participant not found", jakarta.ws.rs.core.Response.Status.NOT_FOUND);
+        }
+
+        // Validate participant belongs to the specified course (security check)
+        if (!participant.getCkoCourse().getUuid().equals(courseuuid)) {
+            throw new WebApplicationException("Participant does not belong to this course", jakarta.ws.rs.core.Response.Status.BAD_REQUEST);
+        }
+
+        service.removeParticipant(participantuuid);
     }
 
 }

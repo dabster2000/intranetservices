@@ -57,7 +57,7 @@ public class CourseService {
     }
 
     @Transactional
-    public void removeParticipant(String useruuid) {
-        CkoCourseParticipant.delete("user.uuid like ?1", useruuid);
+    public void removeParticipant(String participantuuid) {
+        CkoCourseParticipant.deleteById(participantuuid);
     }
 }

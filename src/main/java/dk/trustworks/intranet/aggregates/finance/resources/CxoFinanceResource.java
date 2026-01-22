@@ -153,7 +153,7 @@ public class CxoFinanceResource {
     @GET
     @Path("/revenue-ytd-vs-budget")
     public RevenueYTDDataDTO getRevenueYTDvsBudget(
-            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("asOfDate") String asOfDateStr,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -206,8 +206,8 @@ public class CxoFinanceResource {
     @GET
     @Path("/ttm-revenue-growth")
     public TTMRevenueGrowthDTO getTTMRevenueGrowth(
-            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
-            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -265,8 +265,8 @@ public class CxoFinanceResource {
     @GET
     @Path("/gross-margin-ttm")
     public GrossMarginTTMDTO getGrossMarginTTM(
-            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
-            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -330,8 +330,8 @@ public class CxoFinanceResource {
     @GET
     @Path("/realization-rate")
     public RealizationRateDTO getRealizationRate(
-            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
-            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -391,7 +391,7 @@ public class CxoFinanceResource {
     @GET
     @Path("/backlog-coverage")
     public BacklogCoverageDTO getBacklogCoverage(
-            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("asOfDate") String asOfDateStr,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -447,8 +447,8 @@ public class CxoFinanceResource {
     @GET
     @Path("/revenue-per-fte")
     public RevenuePerBillableFTETTMDTO getRevenuePerBillableFTETTM(
-            @QueryParam("fromDate") @DefaultValue("") String fromDateStr,
-            @QueryParam("toDate") @DefaultValue("") String toDateStr,
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -509,7 +509,7 @@ public class CxoFinanceResource {
     @GET
     @Path("/billable-utilization-4w")
     public BillableUtilizationLast4WeeksDTO getBillableUtilizationLast4Weeks(
-            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("asOfDate") String asOfDateStr,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("companyIds") String companyIds) {
 
@@ -559,7 +559,7 @@ public class CxoFinanceResource {
     @GET
     @Path("/forecast-utilization-8w")
     public ForecastUtilizationDTO getForecastUtilization(
-            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("asOfDate") String asOfDateStr,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("companyIds") String companyIds) {
 
@@ -612,7 +612,7 @@ public class CxoFinanceResource {
     @GET
     @Path("/voluntary-attrition-12m")
     public VoluntaryAttritionDTO getVoluntaryAttrition(
-            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("asOfDate") String asOfDateStr,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("companyIds") String companyIds) {
 
@@ -930,7 +930,7 @@ public class CxoFinanceResource {
     @GET
     @Path("/opex-bridge")
     public OpexBridgeDTO getOpexBridge(
-            @QueryParam("asOfDate") @DefaultValue("") String asOfDateStr,
+            @QueryParam("asOfDate") String asOfDateStr,
             @QueryParam("costCenters") String costCenters,
             @QueryParam("companyIds") String companyIds) {
 
