@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.resources;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
@@ -28,6 +29,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -621,5 +623,109 @@ public class InvoiceResource {
     public Response getEconomicsUploadStats() {
         var stats = uploadService.getUploadStats();
         return Response.ok(stats).build();
+    }
+
+    /**
+     * Update invoice control status for CLIENT invoices.
+     * Requires X-Requested-By header with user UUID for audit trail.
+     *
+     * @param invoiceuuid The invoice UUID
+     * @param userUuid User UUID from X-Requested-By header
+     * @param request The control status update request
+     * @return Response with updated control status and audit details
+     */
+    @PUT
+    @Path("/{invoiceuuid}/control-status")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Transactional
+    public Response updateControlStatus(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @HeaderParam("X-Requested-By") String userUuid,
+            UpdateControlStatusRequest request) {
+
+        // Validate user UUID header
+        if (userUuid == null || userUuid.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(java.util.Map.of("error", "X-Requested-By header is required"))
+                    .build();
+        }
+
+        // Find invoice
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(java.util.Map.of("error", "Invoice not found"))
+                    .build();
+        }
+
+        // Update control status fields
+        invoice.controlStatus = request.controlStatus();
+        invoice.controlNote = request.controlNote();
+        invoice.controlStatusUpdatedAt = LocalDateTime.now();
+        invoice.controlStatusUpdatedBy = userUuid;
+
+        // Persist changes
+        invoice.persist();
+
+        // Create history entry
+        InvoiceControlHistory historyEntry = new InvoiceControlHistory(
+                invoice.uuid,
+                request.controlStatus(),
+                request.controlNote(),
+                userUuid
+        );
+        historyEntry.persist();
+
+        log.infof("Updated control status for invoice %s to %s by user %s",
+                invoiceuuid, request.controlStatus(), userUuid);
+
+        // Build response with audit details
+        UpdateControlStatusResponse response = new UpdateControlStatusResponse(
+                invoice.uuid,
+                invoice.controlStatus,
+                invoice.controlNote,
+                invoice.controlStatusUpdatedAt,
+                invoice.controlStatusUpdatedBy,
+                "Control status updated successfully"
+        );
+
+        return Response.ok(response).build();
+    }
+
+    /**
+     * Get invoice control status history.
+     * Returns all historical status changes for an invoice in reverse chronological order.
+     *
+     * @param invoiceuuid The invoice UUID
+     * @return List of control status history entries
+     */
+    @GET
+    @Path("/{invoiceuuid}/control-history")
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response getControlHistory(@PathParam("invoiceuuid") String invoiceuuid) {
+        // Find invoice to verify it exists
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(java.util.Map.of("error", "Invoice not found"))
+                    .build();
+        }
+
+        // Fetch history entries
+        List<InvoiceControlHistory> historyEntries = InvoiceControlHistory.findByInvoiceUuid(invoiceuuid);
+
+        // Convert to DTOs
+        List<InvoiceControlHistoryEntry> response = historyEntries.stream()
+                .map(entry -> new InvoiceControlHistoryEntry(
+                        entry.id,
+                        entry.controlStatus,
+                        entry.controlNote,
+                        entry.changedAt,
+                        entry.changedBy
+                ))
+                .toList();
+
+        return Response.ok(response).build();
     }
 }

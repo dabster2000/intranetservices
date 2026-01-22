@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceControlStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine;
@@ -22,6 +23,7 @@ import lombok.ToString;
 import org.eclipse.microprofile.config.ConfigProvider;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.UUID;
@@ -116,6 +118,20 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "debtor_companyuuid")
     public String debtorCompanyuuid;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "control_status")
+    public InvoiceControlStatus controlStatus;
+
+    @Column(name = "control_note")
+    @Lob
+    public String controlNote;
+
+    @Column(name = "control_status_updated_at")
+    public LocalDateTime controlStatusUpdatedAt;
+
+    @Column(name = "control_status_updated_by")
+    public String controlStatusUpdatedBy;
+
     @Transient
     public Double sumBeforeDiscounts;
 
@@ -135,6 +151,7 @@ public class Invoice extends PanacheEntityBase {
         this.invoiceitems = new LinkedList<>();
         this.errors = false;
         this.economicsStatus = EconomicsInvoiceStatus.NA;
+        this.controlStatus = InvoiceControlStatus.NOT_REVIEWED;
     }
 
     public Invoice(InvoiceType type, String contractuuid, String projectuuid, String projectname, double discount, int year, int month, String clientname, String clientaddresse, String otheraddressinfo, String zipcity, String ean, String cvr, String attention, LocalDate invoicedate, LocalDate duedate, String projectref, String contractref, String contractType, Company company, String currency, String specificdescription) {

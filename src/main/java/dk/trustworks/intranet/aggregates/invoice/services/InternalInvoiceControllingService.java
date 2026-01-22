@@ -304,7 +304,11 @@ public class InternalInvoiceControllingService {
                     client.getStatus(),
                     client.getEconomicsStatus(),
                     round2(clientTotal),
-                    clientLines
+                    clientLines,
+                    client.getControlStatus(),
+                    client.getControlNote(),
+                    client.getControlStatusUpdatedAt(),
+                    client.getControlStatusUpdatedBy()
             );
 
             SimpleInvoiceDTO internalDto = null;
@@ -323,7 +327,11 @@ public class InternalInvoiceControllingService {
                             internal.getStatus(),
                             internal.getEconomicsStatus(),
                             round2(itotal),
-                            ilines
+                            ilines,
+                            null,
+                            null,
+                            null,
+                            null
                     );
                 }
             }
@@ -570,7 +578,11 @@ public class InternalInvoiceControllingService {
                     client.getStatus(),
                     client.getEconomicsStatus(),
                     round2(clientTotal),
-                    clientLines
+                    clientLines,
+                    client.getControlStatus(),
+                    client.getControlNote(),
+                    client.getControlStatusUpdatedAt(),
+                    client.getControlStatusUpdatedBy()
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -583,7 +595,11 @@ public class InternalInvoiceControllingService {
                     internal.getStatus(),
                     internal.getEconomicsStatus(),
                     round2(internalTotal),
-                    internalLines
+                    internalLines,
+                    null,
+                    null,
+                    null,
+                    null
             );
 
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
@@ -777,7 +793,11 @@ public class InternalInvoiceControllingService {
                     client.getStatus(),
                     client.getEconomicsStatus(),
                     round2(clientTotal),
-                    clientLines
+                    clientLines,
+                    client.getControlStatus(),
+                    client.getControlNote(),
+                    client.getControlStatusUpdatedAt(),
+                    client.getControlStatusUpdatedBy()
             );
             result.add(clientDto);
         }
@@ -988,7 +1008,11 @@ public class InternalInvoiceControllingService {
                     client.getStatus(),
                     client.getEconomicsStatus(),
                     round2(clientTotal),
-                    clientLines
+                    clientLines,
+                    client.getControlStatus(),
+                    client.getControlNote(),
+                    client.getControlStatusUpdatedAt(),
+                    client.getControlStatusUpdatedBy()
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -1001,7 +1025,11 @@ public class InternalInvoiceControllingService {
                     internal.getStatus(),
                     internal.getEconomicsStatus(),
                     round2(internalTotal),
-                    internalLines
+                    internalLines,
+                    null,
+                    null,
+                    null,
+                    null
             );
 
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
@@ -1194,7 +1222,11 @@ public class InternalInvoiceControllingService {
                     client.getStatus(),
                     client.getEconomicsStatus(),
                     round2(clientTotal),
-                    clientLines
+                    clientLines,
+                    client.getControlStatus(),
+                    client.getControlNote(),
+                    client.getControlStatusUpdatedAt(),
+                    client.getControlStatusUpdatedBy()
             );
 
             java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO> internals = new java.util.ArrayList<>();
@@ -1213,7 +1245,11 @@ public class InternalInvoiceControllingService {
                         inv.getStatus(),
                         inv.getEconomicsStatus(),
                         round2(total),
-                        lines
+                        lines,
+                        null,
+                        null,
+                        null,
+                        null
                 ));
             }
 

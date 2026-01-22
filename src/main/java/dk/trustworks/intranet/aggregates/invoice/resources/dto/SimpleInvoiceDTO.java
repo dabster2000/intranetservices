@@ -1,10 +1,12 @@
 package dk.trustworks.intranet.aggregates.invoice.resources.dto;
 
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceControlStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -23,5 +25,9 @@ public record SimpleInvoiceDTO(
         InvoiceStatus status,
         EconomicsInvoiceStatus economicsStatus,
         double totalAmountNoTax,
-        List<InvoiceLineDTO> lines
+        List<InvoiceLineDTO> lines,
+        InvoiceControlStatus controlStatus,
+        String controlNote,
+        LocalDateTime controlStatusUpdatedAt,
+        String controlStatusUpdatedBy
 ) {}
