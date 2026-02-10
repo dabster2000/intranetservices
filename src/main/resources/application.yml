@@ -26,8 +26,9 @@ quarkus:
     baseline-version: 1.0
     baseline-description: initial baseline
   swagger-ui:
-    enable: true
     always-include: true
+  smallrye-openapi:
+    filter: dk.trustworks.intranet.security.PublicOnlyOASFilter
   keycloak:
     devservices:
       enabled: false
