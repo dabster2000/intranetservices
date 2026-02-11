@@ -112,7 +112,7 @@ public class MigrationRegistryResource {
      */
     @PUT
     @Path("/{pageKey}/toggle")
-    @RolesAllowed({"ADMIN"})
+    @RolesAllowed({"ADMIN", "SYSTEM"})
     @Operation(
             summary = "Toggle page migration status",
             description = "Switches a page between migrated (React) and non-migrated (Vaadin) status"
@@ -146,7 +146,7 @@ public class MigrationRegistryResource {
      */
     @PUT
     @Path("/{pageKey}")
-    @RolesAllowed({"ADMIN"})
+    @RolesAllowed({"ADMIN", "SYSTEM"})
     @Operation(
             summary = "Set page migration status",
             description = "Explicitly sets a page as migrated (React) or non-migrated (Vaadin)"
@@ -182,7 +182,7 @@ public class MigrationRegistryResource {
      */
     @PUT
     @Path("/{pageKey}/roles")
-    @RolesAllowed({"ADMIN"})
+    @RolesAllowed({"ADMIN", "SYSTEM"})
     @Operation(
             summary = "Update page required roles",
             description = "Sets the required roles for a page"
