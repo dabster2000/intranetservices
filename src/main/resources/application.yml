@@ -1,11 +1,11 @@
 quarkus:
   application:
     name: trustworks-intranet
-    base-url: ${APPLICATION_BASE_URL:http://localhost:8080}
+    base-url: ${APPLICATION_BASE_URL:http://127.0.0.1:8080}
   datasource:
     db-kind: mariadb
     jdbc:
-      url: ${URL:jdbc:mariadb://localhost:3306/twservices}
+      url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
       max-size: 32
@@ -175,7 +175,7 @@ mp:
     connector:
       smallrye-kafka:
         bootstrap:
-          servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+          servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9094}
     outgoing:
       expenses-created-out:
         connector: smallrye-kafka

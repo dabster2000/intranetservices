@@ -171,6 +171,48 @@ public class MigrationRegistryResource {
     }
 
     /**
+     * Update required roles for a page.
+     *
+     * Accepts a comma-separated role string and updates the page's
+     * required roles. Invalidates the cache.
+     *
+     * @param pageKey the page key
+     * @param roles   comma-separated role string (e.g., "HR,ADMIN")
+     * @return the updated page migration or 404 if not found
+     */
+    @PUT
+    @Path("/{pageKey}/roles")
+    @RolesAllowed({"ADMIN"})
+    @Operation(
+            summary = "Update page required roles",
+            description = "Sets the required roles for a page"
+    )
+    @APIResponse(responseCode = "200", description = "Roles updated successfully")
+    @APIResponse(responseCode = "404", description = "Page not found")
+    public Response setRequiredRoles(
+            @Parameter(description = "The page key", required = true)
+            @PathParam("pageKey") String pageKey,
+            @Parameter(description = "Comma-separated roles (e.g., HR,ADMIN)", required = true)
+            @QueryParam("roles") String roles
+    ) {
+        if (roles == null || roles.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\": \"roles parameter is required\"}")
+                    .build();
+        }
+
+        Optional<PageMigration> updated = repository.setRequiredRoles(pageKey, roles.trim());
+
+        if (updated.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\": \"Page not found: " + pageKey + "\"}")
+                    .build();
+        }
+
+        return Response.ok(PageMigrationDto.fromEntity(updated.get())).build();
+    }
+
+    /**
      * Get only migrated pages (React-enabled).
      *
      * @return list of migrated pages

@@ -150,6 +150,29 @@ public class PageMigrationRepository implements PanacheRepository<PageMigration>
     }
 
     /**
+     * Update required roles for a page.
+     * Invalidates cache to ensure both frontends see the change.
+     *
+     * @param pageKey       the page key
+     * @param requiredRoles comma-separated role string (e.g., "HR,ADMIN")
+     * @return the updated page migration, or empty if not found
+     */
+    @Transactional
+    @CacheInvalidateAll(cacheName = CACHE_NAME)
+    public Optional<PageMigration> setRequiredRoles(String pageKey, String requiredRoles) {
+        Optional<PageMigration> pageOpt = findByPageKey(pageKey);
+
+        if (pageOpt.isPresent()) {
+            PageMigration page = pageOpt.get();
+            page.setRequiredRoles(requiredRoles);
+            persist(page);
+            return Optional.of(page);
+        }
+
+        return Optional.empty();
+    }
+
+    /**
      * Save a page migration and invalidate cache.
      *
      * @param entity the entity to save

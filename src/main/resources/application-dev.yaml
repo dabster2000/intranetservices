@@ -4,7 +4,7 @@ quarkus:
   datasource:
     db-kind: mariadb
     jdbc:
-      url: ${URL:jdbc:mariadb://localhost:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
       max-size: 32
@@ -104,7 +104,7 @@ quarkus:
       employee-revenue:
         expire-after-write: 30M
   s3:
-    endpoint-override: http://localhost:9000   # MinIO API endpoint
+    endpoint-override: http://127.0.0.1:9000   # MinIO API endpoint
     path-style-access: true                    # MinIO expects /bucket/key
     sync-client:
       type: APACHE
@@ -122,7 +122,7 @@ mp:
     connector:
       smallrye-kafka:
         bootstrap:
-          servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+          servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9094}
     incoming:
       user-status-updates:
         connector: smallrye-kafka
