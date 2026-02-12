@@ -13,7 +13,6 @@ import dk.trustworks.intranet.dto.KeyDateValueListDTO;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -99,11 +98,16 @@ public class UtilizationResource {
 
             double availableHours = availabilityService.getSumOfAvailableHoursByUsersAndMonth(localDate, uuids);
 
-            double budgetHours = ((Number) em.createNativeQuery("select sum(e.budgetHours) as value " +
-                    "from bi_budget_per_day e " +
-                    "where e.useruuid in ('" + String.join("','", uuids) + "') " +
-                    "     AND e.year = " + localDate.getYear() + " " +
-                    "     AND e.month = " + localDate.getMonthValue() + "; ").getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
+            double budgetHours = ((Number) em.createNativeQuery(
+                    "SELECT SUM(e.budgetHours) AS value " +
+                    "FROM bi_budget_per_day e " +
+                    "WHERE e.useruuid IN :uuids " +
+                    "  AND e.year = :year " +
+                    "  AND e.month = :month")
+                    .setParameter("uuids", List.of(uuids))
+                    .setParameter("year", localDate.getYear())
+                    .setParameter("month", localDate.getMonthValue())
+                    .getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
 
             utilizationPerMonth.add(new DateValueDTO(localDate, (budgetHours / availableHours)));
         }
@@ -124,7 +128,7 @@ public class UtilizationResource {
         List<User> users = userService.findCurrentlyEmployedUsers(false, ConsultantType.CONSULTANT).stream().filter(u -> u.getUserStatus(toDate).getCompany().getUuid().equals(companyuuid)).toList();
 
         for (User user : users) {
-            List<DateValueDTO> dateValueDTOS = utilizationService.calculateActualUtilizationPerMonthByConsultant("useruuid", fromDate, toDate, budgetService.getBudgetHoursByPeriodAndSingleConsultant(user.getUuid(), fromDate, toDate));
+            List<DateValueDTO> dateValueDTOS = utilizationService.calculateActualUtilizationPerMonthByConsultant(user.getUuid(), fromDate, toDate, budgetService.getBudgetHoursByPeriodAndSingleConsultant(user.getUuid(), fromDate, toDate));
             employeeUtilizationList.add(new KeyDateValueListDTO(user.getUuid(), dateValueDTOS));
         }
 
@@ -179,21 +183,22 @@ public class UtilizationResource {
             LocalDate localDate = currentFiscalStartDate.plusMonths(i);
             String[] uuids = findUseruuidsPerTeam(teamuuid, localDate);
 
-            double billableHours = ((Number) em.createNativeQuery("select sum(wf.workduration) " +
-                    "from work_full wf " +
-                    "where " +
-                    "    wf.registered >= :startDate and " +
-                    "    wf.registered < :endDate and " +
-                    "    wf.useruuid in ('" + String.join("','", uuids) + "') and " +
-                    "    wf.rate > 0 " +
-                    "group by month(registered), year(registered)")
+            double billableHours = ((Number) em.createNativeQuery(
+                    "SELECT SUM(wf.workduration) " +
+                    "FROM work_full wf " +
+                    "WHERE wf.registered >= :startDate " +
+                    "  AND wf.registered < :endDate " +
+                    "  AND wf.useruuid IN :uuids " +
+                    "  AND wf.rate > 0 " +
+                    "GROUP BY MONTH(registered), YEAR(registered)")
                     .setParameter("startDate", localDate)
                     .setParameter("endDate", localDate.plusMonths(1))
+                    .setParameter("uuids", List.of(uuids))
                     .getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
-            System.out.println("billableHours = " + billableHours);
+            log.debugf("billableHours = %f", billableHours);
 
             double availableHours = availabilityService.getSumOfAvailableHoursByUsersAndMonth(localDate, uuids);
-            System.out.println("availableHours = " + availableHours);
+            log.debugf("availableHours = %f", availableHours);
 
             utilizationPerMonth.add(new DateValueDTO(localDate, (billableHours / availableHours)));
         }
@@ -212,33 +217,31 @@ public class UtilizationResource {
 
         // Get all employees (this might come from the UserService or a different service)
         List<User> users = userService.findCurrentlyEmployedUsers(false, ConsultantType.CONSULTANT).stream().filter(u -> u.getUserStatus(toDate).getCompany().getUuid().equals(companyuuid)).toList();
-        System.out.println("users.size() = " + users.size());
-        int i = 0;
+        log.infof("Processing actual utilization for %d users", users.size());
 
         for (User user : users) {
-            System.out.print("["+i+"] Calculating utilization for user " + user.getUsername() + "...");
+            log.debugf("Calculating utilization for user %s", user.getUsername());
             List<DateValueDTO> dateValueDTOS = utilizationService.calculateActualUtilizationPerMonthByConsultant(user.getUuid(), fromDate, toDate, workService.findWorkHoursByUserAndPeriod(user.getUuid(), fromDate, toDate));
             employeeUtilizationList.add(new KeyDateValueListDTO(user.getFullname(), dateValueDTOS));
-            System.out.println("done");
         }
 
         return employeeUtilizationList;
     }
 
 
+    @SuppressWarnings("unchecked")
     private String[] findUseruuidsPerTeam(String teamuuid, LocalDate date) {
-        return ((List<Tuple>) em.createNativeQuery("select " +
-                "    t.useruuid as useruuid " +
-                "from " +
-                "    teamroles as t " +
-                "where " +
-                "    t.teamuuid = '"+teamuuid+"' and " +
-                "    t.membertype = 'MEMBER' and " +
-                "    t.startdate <= '"+ DateUtils.stringIt(date) +"' and " +
-                "    (t.enddate is null or t.enddate > '"+DateUtils.stringIt(date)+"')", Tuple.class).getResultList()).stream()
-                .map(tuple -> new String(
-                        ((String) tuple.get("useruuid"))
-                ))
+        return ((List<Tuple>) em.createNativeQuery(
+                "SELECT t.useruuid AS useruuid " +
+                "FROM teamroles AS t " +
+                "WHERE t.teamuuid = :teamuuid " +
+                "  AND t.membertype = 'MEMBER' " +
+                "  AND t.startdate <= :date " +
+                "  AND (t.enddate IS NULL OR t.enddate > :date)", Tuple.class)
+                .setParameter("teamuuid", teamuuid)
+                .setParameter("date", date)
+                .getResultList()).stream()
+                .map(tuple -> (String) tuple.get("useruuid"))
                 .toArray(String[]::new);
     }
 

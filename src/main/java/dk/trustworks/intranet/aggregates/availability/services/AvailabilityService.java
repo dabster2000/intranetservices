@@ -56,11 +56,19 @@ public class AvailabilityService {
     }
 
     public double getSumOfAvailableHoursByUsersAndMonth(LocalDate localDate, String... uuids) {
-        return ((Number) em.createNativeQuery("select greatest(0.0, sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) as value " +
-                "from bi_data_per_day e " +
-                "where e.status_type = 'ACTIVE' and e.consultant_type = 'CONSULTANT' and e.useruuid in ('" + String.join("','", uuids) + "') " +
-                "     AND e.year = " + localDate.getYear() + " " +
-                "     AND e.month = " + localDate.getMonthValue() + "; ").getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
+        return ((Number) em.createNativeQuery(
+                "SELECT GREATEST(0.0, SUM(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours " +
+                "  - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) AS value " +
+                "FROM bi_data_per_day e " +
+                "WHERE e.status_type = 'ACTIVE' " +
+                "  AND e.consultant_type = 'CONSULTANT' " +
+                "  AND e.useruuid IN :uuids " +
+                "  AND e.year = :year " +
+                "  AND e.month = :month")
+                .setParameter("uuids", List.of(uuids))
+                .setParameter("year", localDate.getYear())
+                .setParameter("month", localDate.getMonthValue())
+                .getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
     }
 
     public List<EmployeeAvailabilityPerMonth> getEmployeeDataPerMonth(String useruuid, LocalDate fromdate, LocalDate todate) {
