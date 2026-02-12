@@ -32,7 +32,7 @@ import java.util.List;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"USER", "SYSTEM"})
+@RolesAllowed({"SYSTEM"})
 public class ExpenseResource {
 
     @Inject
@@ -135,7 +135,6 @@ public class ExpenseResource {
 
     @GET
     @Path("/search/statuses")
-    @RolesAllowed({"SYSTEM"})
     public List<Expense> findByStatuses(@QueryParam("statuses") String statusesParam) {
         if (statusesParam == null || statusesParam.isEmpty()) {
             return List.of();

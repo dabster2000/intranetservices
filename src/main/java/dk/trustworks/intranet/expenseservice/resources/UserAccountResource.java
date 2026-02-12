@@ -23,7 +23,7 @@ import java.time.LocalDate;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"USER", "SYSTEM"})
+@RolesAllowed({"SYSTEM"})
 public class UserAccountResource {
 
     @Inject
