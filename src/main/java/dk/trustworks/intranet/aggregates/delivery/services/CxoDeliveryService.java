@@ -23,7 +23,7 @@ import java.util.Set;
 
 /**
  * Service for CxO dashboard delivery metrics.
- * Queries the fact_user_utilization view for company-wide utilization KPIs.
+ * Queries fact_user_day for company-wide utilization KPIs (consistent with /dashboard).
  */
 @JBossLog
 @ApplicationScoped
@@ -100,12 +100,8 @@ public class CxoDeliveryService {
 
     /**
      * Query utilization percentage for a date range.
-     * Calculates: (SUM(billable_hours) / SUM(net_available_hours)) * 100
-     *
-     * IMPORTANT NOTES:
-     * - fact_user_utilization has unique rows per user × month (NO deduplication needed)
-     * - Filters net_available_hours > 0 to prevent division by zero
-     * - Uses collation fix for month_key comparisons
+     * Calculates: (SUM(registered_billable_hours) / SUM(net_available_hours)) * 100
+     * Uses fact_user_day as the single data source, consistent with /dashboard.
      *
      * @param fromDate Start date (first day of month)
      * @param toDate End date (last day of month)
@@ -119,79 +115,56 @@ public class CxoDeliveryService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        // Convert dates to YYYYMM month key format
-        String fromMonthKey = String.format("%d%02d", fromDate.getYear(), fromDate.getMonthValue());
-        String toMonthKey = String.format("%d%02d", toDate.getYear(), toDate.getMonthValue());
+        log.tracef("queryUtilizationPercent: date range [%s to %s]", fromDate, toDate);
 
-        log.tracef("queryUtilizationPercent: monthKey range [%s to %s]", fromMonthKey, toMonthKey);
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // Build SQL query
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT ");
-        sql.append("  SUM(f.billable_hours) AS total_billable, ");
-        sql.append("  SUM(f.net_available_hours) AS total_available ");
-        sql.append("FROM fact_user_utilization_mat f ");
-        sql.append("WHERE f.month_key ");
-        sql.append("  BETWEEN :fromKey AND :toKey ");
-        sql.append("  AND f.net_available_hours > 0 ");  // Prevent division by zero
-
-        // Optional filters (null-safe)
-        if (practices != null && !practices.isEmpty()) {
-            sql.append("  AND f.practice_id IN (:practices) ");
+        sql.append("  COALESCE(SUM(bdd.registered_billable_hours), 0) AS total_billable, ");
+        sql.append("  COALESCE(SUM(bdd.net_available_hours), 0) AS total_available ");
+        sql.append("FROM fact_user_day bdd ");
+        if (hasPractices) {
+            sql.append("JOIN user u ON u.uuid = bdd.useruuid ");
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND f.companyuuid IN (:companyIds) ");
+        sql.append("WHERE bdd.document_date >= :fromDate ");
+        sql.append("  AND bdd.document_date <= :toDate ");
+        sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND bdd.status_type = 'ACTIVE' ");
+        sql.append("  AND bdd.net_available_hours > 0 ");
+
+        if (hasPractices) {
+            sql.append("  AND u.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
 
-        // Create and bind query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromMonthKey);
-        query.setParameter("toKey", toMonthKey);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
 
-        if (practices != null && !practices.isEmpty()) {
+        if (hasPractices) {
             query.setParameter("practices", practices);
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
         }
 
-        // Execute query and extract results
-        List<Object[]> results = query.getResultList();
-
-        // Handle empty result set (no data in range)
-        if (results.isEmpty()) {
-            log.tracef("No utilization data found for range [%s to %s]", fromMonthKey, toMonthKey);
-            return 0.0;
-        }
-
-        Object[] result = results.get(0);
-        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
-        BigDecimal totalBillable = result[0] != null
-            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
-            : BigDecimal.ZERO;
-        BigDecimal totalAvailable = result[1] != null
-            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
-            : BigDecimal.ZERO;
-
-        // Handle null aggregation results
-        if (totalBillable == null || totalAvailable == null) {
-            log.tracef("Null aggregation results for range [%s to %s]", fromMonthKey, toMonthKey);
-            return 0.0;
-        }
-
-        // Calculate utilization percentage
-        double billableHours = totalBillable.doubleValue();
-        double availableHours = totalAvailable.doubleValue();
+        Object[] result = (Object[]) query.getSingleResult();
+        double billableHours = ((Number) result[0]).doubleValue();
+        double availableHours = ((Number) result[1]).doubleValue();
 
         if (availableHours <= 0) {
-            log.tracef("Zero available hours for range [%s to %s]", fromMonthKey, toMonthKey);
+            log.tracef("Zero available hours for range [%s to %s]", fromDate, toDate);
             return 0.0;
         }
 
         double utilizationPercent = (billableHours / availableHours) * 100.0;
 
         log.tracef("Range [%s to %s]: billable=%.2f, available=%.2f, util=%.2f%%",
-                fromMonthKey, toMonthKey, billableHours, availableHours, utilizationPercent);
+                fromDate, toDate, billableHours, availableHours, utilizationPercent);
 
         return utilizationPercent;
     }
@@ -237,7 +210,7 @@ public class CxoDeliveryService {
 
     /**
      * Query utilization percentage for a single month.
-     * Same logic as queryUtilizationPercent() but optimized for single-month queries.
+     * Delegates to queryUtilizationPercent() since both use the same fact_user_day source.
      *
      * @param monthStart First day of month
      * @param monthEnd Last day of month
@@ -251,61 +224,7 @@ public class CxoDeliveryService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        // For single-month queries, fromKey == toKey
-        String monthKey = String.format("%d%02d", monthStart.getYear(), monthStart.getMonthValue());
-
-        // Build SQL query (same structure as queryUtilizationPercent)
-        StringBuilder sql = new StringBuilder();
-        sql.append("SELECT ");
-        sql.append("  SUM(f.billable_hours) AS total_billable, ");
-        sql.append("  SUM(f.net_available_hours) AS total_available ");
-        sql.append("FROM fact_user_utilization_mat f ");
-        sql.append("WHERE f.month_key = :monthKey ");
-        sql.append("  AND f.net_available_hours > 0 ");
-
-        // Optional filters
-        if (practices != null && !practices.isEmpty()) {
-            sql.append("  AND f.practice_id IN (:practices) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND f.companyuuid IN (:companyIds) ");
-        }
-
-        // Create and bind query
-        Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("monthKey", monthKey);
-
-        if (practices != null && !practices.isEmpty()) {
-            query.setParameter("practices", practices);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        // Execute query and extract results
-        Object[] result = (Object[]) query.getSingleResult();
-        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
-        BigDecimal totalBillable = result[0] != null
-            ? BigDecimal.valueOf(((Number) result[0]).doubleValue())
-            : BigDecimal.ZERO;
-        BigDecimal totalAvailable = result[1] != null
-            ? BigDecimal.valueOf(((Number) result[1]).doubleValue())
-            : BigDecimal.ZERO;
-
-        // Handle null results
-        if (totalBillable == null || totalAvailable == null) {
-            return 0.0;
-        }
-
-        // Calculate utilization percentage
-        double billableHours = totalBillable.doubleValue();
-        double availableHours = totalAvailable.doubleValue();
-
-        if (availableHours <= 0) {
-            return 0.0;
-        }
-
-        return (billableHours / availableHours) * 100.0;
+        return queryUtilizationPercent(monthStart, monthEnd, practices, companyIds);
     }
 
     /**

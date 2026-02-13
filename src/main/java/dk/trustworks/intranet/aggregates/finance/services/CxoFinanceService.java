@@ -245,7 +245,8 @@ public class CxoFinanceService {
 
     /**
      * Retrieves monthly utilization and capacity data for Chart B.
-     * Queries the fact_user_utilization view aggregated by month.
+     * Queries fact_user_day (the business-standard data source) aggregated by month.
+     * Consistent with /dashboard utilization calculations.
      *
      * @param fromDate Start date (inclusive, clamped to first of month)
      * @param toDate End date (inclusive, clamped to last of month)
@@ -263,101 +264,60 @@ public class CxoFinanceService {
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1).plusMonths(1).minusDays(1) : LocalDate.now();
 
-        // Convert to YYYYMM month keys for efficient filtering
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        log.debugf("getUtilizationTrend: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
+                normalizedFromDate, normalizedToDate, practices, companyIds);
 
-        log.debugf("getUtilizationTrend: fromDate=%s (%s), toDate=%s (%s), practices=%s, companyIds=%s",
-                normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, practices, companyIds);
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // Helper to build SQL with optional company filter
-        java.util.function.Function<Boolean, String> sqlBuilder = includeCompanyFilter -> {
-            StringBuilder sql = new StringBuilder(
-                    "SELECT " +
-                            "    f.month_key, " +
-                            "    f.year, " +
-                            "    f.month_number, " +
-                            "    SUM(f.billable_hours) AS billable_hours, " +
-                            "    SUM(f.vacation_hours + f.sick_hours + f.maternity_leave_hours + " +
-                            "        f.non_payd_leave_hours + f.paid_leave_hours) AS absence_hours, " +
-                            "    SUM(f.net_available_hours) AS net_available_hours, " +
-                            "    SUM(f.gross_available_hours) AS gross_available_hours " +
-                            "FROM fact_user_utilization_mat f " +
-                            "WHERE 1=1 "
-            );
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  CONCAT(LPAD(bdd.year, 4, '0'), LPAD(bdd.month, 2, '0')) AS month_key, ");
+        sql.append("  bdd.year, ");
+        sql.append("  bdd.month AS month_number, ");
+        sql.append("  COALESCE(SUM(bdd.registered_billable_hours), 0) AS billable_hours, ");
+        sql.append("  COALESCE(SUM(bdd.vacation_hours + bdd.sick_hours + bdd.maternity_leave_hours ");
+        sql.append("      + bdd.non_payd_leave_hours + bdd.paid_leave_hours), 0) AS absence_hours, ");
+        sql.append("  COALESCE(SUM(bdd.net_available_hours), 0) AS net_available_hours, ");
+        sql.append("  COALESCE(SUM(bdd.gross_available_hours), 0) AS gross_available_hours ");
+        sql.append("FROM fact_user_day bdd ");
 
-            // Time range filter
-            // NOTE: Added COLLATE to fix collation mismatch between month_key column and String.format() output
-            sql.append("  AND f.month_key >= :fromMonthKey ")
-                    .append("  AND f.month_key <= :toMonthKey ");
-
-            // Conditional practice filter
-            if (practices != null && !practices.isEmpty()) {
-                sql.append("  AND f.practice_id IN (:practices) ");
-            }
-
-            // Conditional company filter (only when requested and supported)
-            if (includeCompanyFilter && companyIds != null && !companyIds.isEmpty()) {
-                sql.append("  AND f.companyuuid IN (:companyIds) ");
-            }
-
-            sql.append("GROUP BY f.year, f.month_number, f.month_key ")
-                    .append("ORDER BY f.year ASC, f.month_number ASC");
-
-            return sql.toString();
-        };
-
-        // Try with company filter first (if provided). Fall back if DB doesn't have the column
-        boolean wantCompanyFilter = companyIds != null && !companyIds.isEmpty();
-        String sql = sqlBuilder.apply(wantCompanyFilter);
-
-        List<Tuple> results;
-        try {
-            var query = em.createNativeQuery(sql, Tuple.class);
-            query.setParameter("fromMonthKey", fromMonthKey);
-            query.setParameter("toMonthKey", toMonthKey);
-
-            if (practices != null && !practices.isEmpty()) {
-                query.setParameter("practices", practices);
-            }
-            if (wantCompanyFilter) {
-                query.setParameter("companyIds", companyIds);
-            }
-
-            @SuppressWarnings("unchecked")
-            List<Tuple> tmp = query.getResultList();
-            results = tmp;
-        } catch (RuntimeException ex) {
-            // Detect missing column error and retry without company filter
-            Throwable cause = ex;
-            String errorMessage = ex.getMessage();
-            while (cause.getCause() != null) {
-                cause = cause.getCause();
-                if (cause.getMessage() != null) {
-                    errorMessage = cause.getMessage();
-                }
-            }
-            boolean missingCompanyColumn = errorMessage != null && errorMessage.toLowerCase().contains("unknown column 'f.companyuuid'");
-            if (wantCompanyFilter && missingCompanyColumn) {
-                log.warnf("fact_user_utilization missing column companyuuid; retrying without company filter. Error: %s", errorMessage);
-                // Retry without company filter
-                var retryQuery = em.createNativeQuery(sqlBuilder.apply(false), Tuple.class);
-                retryQuery.setParameter("fromMonthKey", fromMonthKey);
-                retryQuery.setParameter("toMonthKey", toMonthKey);
-                if (practices != null && !practices.isEmpty()) {
-                    retryQuery.setParameter("practices", practices);
-                }
-                @SuppressWarnings("unchecked")
-                List<Tuple> tmp = retryQuery.getResultList();
-                results = tmp;
-            } else {
-                throw ex; // rethrow other errors
-            }
+        if (hasPractices) {
+            sql.append("JOIN user u ON u.uuid = bdd.useruuid ");
         }
+
+        sql.append("WHERE bdd.document_date >= :fromDate ");
+        sql.append("  AND bdd.document_date <= :toDate ");
+        sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND bdd.status_type = 'ACTIVE' ");
+
+        if (hasPractices) {
+            sql.append("  AND u.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("  AND bdd.companyuuid IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY bdd.year, bdd.month ");
+        sql.append("ORDER BY bdd.year ASC, bdd.month ASC");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromDate", normalizedFromDate);
+        query.setParameter("toDate", normalizedToDate);
+
+        if (hasPractices) {
+            query.setParameter("practices", practices);
+        }
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> results = query.getResultList();
 
         log.debugf("Utilization query returned %d rows", results.size());
 
-        // Map results to DTOs, computing non-billable hours and utilization percentage
+        // Map results to DTOs
         List<MonthlyUtilizationDTO> dtos = new ArrayList<>();
         for (Tuple row : results) {
             String monthKey = (String) row.get("month_key");
@@ -368,19 +328,15 @@ public class CxoFinanceService {
             double netAvailableHours = ((Number) row.get("net_available_hours")).doubleValue();
             double grossAvailableHours = ((Number) row.get("gross_available_hours")).doubleValue();
 
-            // Calculate non-billable hours: net_available - billable - absence
-            // This represents time worked but not billed (internal projects, admin, etc.)
-            double nonBillableHours = Math.max(0, netAvailableHours - billableHours - absenceHours);
+            // Non-billable = net_available - billable
+            // net_available_hours already excludes absence, so no need to subtract it again
+            double nonBillableHours = Math.max(0, netAvailableHours - billableHours);
 
-            // Calculate utilization percentage: billable / (net_available - absence) * 100
-            // This measures utilization against actual working hours
-            // net_available already excludes unavailable_hours (holidays, half-day Fridays)
-            // Then subtract absence (vacation, sick, maternity, non-paid leave, paid leave)
-            // Null if working hours is zero (avoid division by zero)
-            double workingHours = netAvailableHours - absenceHours;
+            // Utilization: billable / net_available * 100
+            // Consistent with /dashboard: net_available_hours already deducts all absence
             Double utilizationPercent = null;
-            if (workingHours > 0) {
-                utilizationPercent = (billableHours / workingHours) * 100.0;
+            if (netAvailableHours > 0) {
+                utilizationPercent = (billableHours / netAvailableHours) * 100.0;
             }
 
             String monthLabel = formatMonthLabel(year, monthNumber);
@@ -1087,6 +1043,7 @@ public class CxoFinanceService {
 
     /**
      * Helper method: Query billable and available hours for utilization calculation.
+     * Uses fact_user_day as the single data source, consistent with /dashboard.
      *
      * IMPORTANT: Billable hours include a 7-day grace period to account for late time registration.
      * This prevents artificially low utilization when consultants register time after the fact.
@@ -1094,9 +1051,6 @@ public class CxoFinanceService {
      * Example: For "last 4 weeks" ending Nov 27:
      * - Billable hours: Oct 24 - Nov 27 (35 days, includes 7-day grace period)
      * - Available hours: Oct 31 - Nov 27 (28 days, actual work period)
-     *
-     * Grace period rationale: If a consultant works Nov 10-17 but registers it on Nov 20,
-     * it will still be counted in the "last 4 weeks" metric even if today is Nov 27.
      *
      * @param billableFromDate Start date for billable hours query (inclusive, with grace period)
      * @param billableToDate End date for billable hours query (inclusive)
@@ -1111,70 +1065,59 @@ public class CxoFinanceService {
             LocalDate availableFromDate, LocalDate availableToDate,
             Set<String> serviceLines, Set<String> companyIds) {
 
-        // Billable hours from base work table (avoids work_full view)
-        StringBuilder billableSql = new StringBuilder(
-                "SELECT COALESCE(SUM(w.workduration), 0.0) AS total_billable_hours " +
-                        "FROM work w " +
-                        "WHERE w.registered >= :billableFromDate " +
-                        "  AND w.registered <= :billableToDate " +
-                        "  AND w.workduration > 0 " +
-                        "  AND w.rate > 0 " +
-                        "  AND EXISTS ( " +
-                        "    SELECT 1 " +
-                        "    FROM userstatus us " +
-                        "    WHERE us.useruuid = w.useruuid " +
-                        "      AND us.statusdate = ( " +
-                        "        SELECT MAX(us2.statusdate) " +
-                        "        FROM userstatus us2 " +
-                        "        WHERE us2.useruuid = w.useruuid " +
-                        "          AND us2.statusdate <= w.registered " +
-                        "      ) " +
-                        "      AND us.type = 'CONSULTANT' " +
-                        "      AND us.status = 'ACTIVE' "
-        );
+        boolean hasServiceLines = serviceLines != null && !serviceLines.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        if (companyIds != null && !companyIds.isEmpty()) {
-            billableSql.append("      AND us.companyuuid IN (:companyIds) ");
+        // Billable hours from fact_user_day (35-day window with grace period)
+        StringBuilder billableSql = new StringBuilder();
+        billableSql.append("SELECT COALESCE(SUM(bdd.registered_billable_hours), 0.0) AS total_billable_hours ");
+        billableSql.append("FROM fact_user_day bdd ");
+        if (hasServiceLines) {
+            billableSql.append("JOIN user u ON u.uuid = bdd.useruuid ");
         }
-
-        billableSql.append("  ) ");
-
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            billableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = w.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        billableSql.append("WHERE bdd.document_date >= :billableFromDate ");
+        billableSql.append("  AND bdd.document_date <= :billableToDate ");
+        billableSql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        billableSql.append("  AND bdd.status_type = 'ACTIVE' ");
+        if (hasServiceLines) {
+            billableSql.append("  AND u.primaryskilltype IN (:serviceLines) ");
+        }
+        if (hasCompanies) {
+            billableSql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
 
         Query billableQuery = em.createNativeQuery(billableSql.toString());
         billableQuery.setParameter("billableFromDate", billableFromDate);
         billableQuery.setParameter("billableToDate", billableToDate);
-
-        if (serviceLines != null && !serviceLines.isEmpty()) billableQuery.setParameter("serviceLines", serviceLines);
-        if (companyIds != null && !companyIds.isEmpty()) billableQuery.setParameter("companyIds", companyIds);
+        if (hasServiceLines) billableQuery.setParameter("serviceLines", serviceLines);
+        if (hasCompanies) billableQuery.setParameter("companyIds", companyIds);
 
         double billableHours = ((Number) billableQuery.getSingleResult()).doubleValue();
 
-        // Available hours (unchanged)
-        StringBuilder availableSql = new StringBuilder(
-                "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
-                        "FROM bi_data_per_day b " +
-                        "WHERE b.document_date >= :availableFromDate " +
-                        "  AND b.document_date <= :availableToDate " +
-                        "  AND b.consultant_type = 'CONSULTANT' " +
-                        "  AND b.status_type = 'ACTIVE' "
-        );
-
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            availableSql.append("AND EXISTS (SELECT 1 FROM user u WHERE u.uuid = b.useruuid AND u.primaryskilltype IN (:serviceLines)) ");
+        // Available hours from fact_user_day (28-day window)
+        // Uses net_available_hours which already deducts all absence
+        StringBuilder availableSql = new StringBuilder();
+        availableSql.append("SELECT COALESCE(SUM(bdd.net_available_hours), 0.0) AS total_available_hours ");
+        availableSql.append("FROM fact_user_day bdd ");
+        if (hasServiceLines) {
+            availableSql.append("JOIN user u ON u.uuid = bdd.useruuid ");
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            availableSql.append("AND b.companyuuid IN (:companyIds) ");
+        availableSql.append("WHERE bdd.document_date >= :availableFromDate ");
+        availableSql.append("  AND bdd.document_date <= :availableToDate ");
+        availableSql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        availableSql.append("  AND bdd.status_type = 'ACTIVE' ");
+        if (hasServiceLines) {
+            availableSql.append("  AND u.primaryskilltype IN (:serviceLines) ");
+        }
+        if (hasCompanies) {
+            availableSql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
 
         Query availableQuery = em.createNativeQuery(availableSql.toString());
         availableQuery.setParameter("availableFromDate", availableFromDate);
         availableQuery.setParameter("availableToDate", availableToDate);
-
-        if (serviceLines != null && !serviceLines.isEmpty()) availableQuery.setParameter("serviceLines", serviceLines);
-        if (companyIds != null && !companyIds.isEmpty()) availableQuery.setParameter("companyIds", companyIds);
+        if (hasServiceLines) availableQuery.setParameter("serviceLines", serviceLines);
+        if (hasCompanies) availableQuery.setParameter("companyIds", companyIds);
 
         double availableHours = ((Number) availableQuery.getSingleResult()).doubleValue();
 
