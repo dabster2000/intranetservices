@@ -28,7 +28,6 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -87,32 +86,62 @@ public class UtilizationResource {
 
     @GET
     @Path("/budget/teams/{teamuuid}")
-    public List<DateValueDTO> getBudgetUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("fiscalYear") int fiscalYear) {
-        LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);
-        List<DateValueDTO> utilizationPerMonth = new ArrayList<>();
+    @SuppressWarnings("unchecked")
+    public List<DateValueDTO> getBudgetUtilizationPerMonthByTeam(
+            @PathParam("teamuuid") String teamuuid,
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate) {
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
 
-        for (int i = 0; i < 12; i++) {
-            LocalDate localDate = currentFiscalStartDate.plusMonths(i);
+        String sql = """
+                SELECT
+                    bdd.year,
+                    bdd.month,
+                    COALESCE(SUM(bbpd.budgetHours), 0) AS budget_hours,
+                    GREATEST(0.0, SUM(bdd.gross_available_hours
+                        - COALESCE(bdd.unavailable_hours, 0)
+                        - COALESCE(bdd.vacation_hours, 0)
+                        - COALESCE(bdd.sick_hours, 0)
+                        - COALESCE(bdd.maternity_leave_hours, 0)
+                        - COALESCE(bdd.non_payd_leave_hours, 0)
+                        - COALESCE(bdd.paid_leave_hours, 0))) AS available_hours
+                FROM teamroles tr
+                JOIN bi_data_per_day bdd
+                    ON bdd.useruuid = tr.useruuid
+                    AND bdd.document_date >= :fromDate
+                    AND bdd.document_date < :toDate
+                    AND bdd.status_type = 'ACTIVE'
+                    AND bdd.consultant_type = 'CONSULTANT'
+                LEFT JOIN bi_budget_per_day bbpd
+                    ON bbpd.useruuid = tr.useruuid
+                    AND bbpd.year = bdd.year
+                    AND bbpd.month = bdd.month
+                    AND bbpd.document_date = bdd.document_date
+                WHERE tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= bdd.document_date
+                    AND (tr.enddate IS NULL OR tr.enddate > bdd.document_date)
+                GROUP BY bdd.year, bdd.month
+                ORDER BY bdd.year, bdd.month
+                """;
 
-            String[] uuids = findUseruuidsPerTeam(teamuuid, localDate);
+        List<Tuple> results = em.createNativeQuery(sql, Tuple.class)
+                .setParameter("teamId", teamuuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
 
-            double availableHours = availabilityService.getSumOfAvailableHoursByUsersAndMonth(localDate, uuids);
-
-            double budgetHours = ((Number) em.createNativeQuery(
-                    "SELECT SUM(e.budgetHours) AS value " +
-                    "FROM bi_budget_per_day e " +
-                    "WHERE e.useruuid IN :uuids " +
-                    "  AND e.year = :year " +
-                    "  AND e.month = :month")
-                    .setParameter("uuids", List.of(uuids))
-                    .setParameter("year", localDate.getYear())
-                    .setParameter("month", localDate.getMonthValue())
-                    .getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
-
-            utilizationPerMonth.add(new DateValueDTO(localDate, (budgetHours / availableHours)));
-        }
-
-        return utilizationPerMonth;
+        return results.stream()
+                .map(t -> {
+                    double budget = ((Number) t.get("budget_hours")).doubleValue();
+                    double available = ((Number) t.get("available_hours")).doubleValue();
+                    return new DateValueDTO(
+                            LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
+                            available > 0 ? budget / available : 0.0
+                    );
+                })
+                .toList();
     }
 
     @GET
@@ -175,35 +204,65 @@ public class UtilizationResource {
 
     @GET
     @Path("/actual/teams/{teamuuid}")
-    public List<DateValueDTO> getActualUtilizationPerMonthByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("fiscalYear") int fiscalYear) {
-        LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);
-        List<DateValueDTO> utilizationPerMonth = new ArrayList<>();
+    @SuppressWarnings("unchecked")
+    public List<DateValueDTO> getActualUtilizationPerMonthByTeam(
+            @PathParam("teamuuid") String teamuuid,
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate) {
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
 
-        for (int i = 0; i < 12; i++) {
-            LocalDate localDate = currentFiscalStartDate.plusMonths(i);
-            String[] uuids = findUseruuidsPerTeam(teamuuid, localDate);
+        String sql = """
+                SELECT
+                    bdd.year,
+                    bdd.month,
+                    COALESCE(SUM(CASE WHEN wf.rate > 0 THEN wf.workduration ELSE 0 END), 0) AS billable_hours,
+                    GREATEST(0.0, SUM(DISTINCT_BDD.net_available)) AS available_hours
+                FROM teamroles tr
+                JOIN (
+                    SELECT
+                        useruuid, year, month, document_date,
+                        GREATEST(0.0, gross_available_hours
+                            - COALESCE(unavailable_hours, 0)
+                            - COALESCE(vacation_hours, 0)
+                            - COALESCE(sick_hours, 0)
+                            - COALESCE(maternity_leave_hours, 0)
+                            - COALESCE(non_payd_leave_hours, 0)
+                            - COALESCE(paid_leave_hours, 0)) AS net_available
+                    FROM bi_data_per_day
+                    WHERE document_date >= :fromDate
+                        AND document_date < :toDate
+                        AND status_type = 'ACTIVE'
+                        AND consultant_type = 'CONSULTANT'
+                ) DISTINCT_BDD
+                    ON DISTINCT_BDD.useruuid = tr.useruuid
+                LEFT JOIN work_full wf
+                    ON wf.useruuid = tr.useruuid
+                    AND wf.registered = DISTINCT_BDD.document_date
+                WHERE tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= DISTINCT_BDD.document_date
+                    AND (tr.enddate IS NULL OR tr.enddate > DISTINCT_BDD.document_date)
+                GROUP BY DISTINCT_BDD.year, DISTINCT_BDD.month
+                ORDER BY DISTINCT_BDD.year, DISTINCT_BDD.month
+                """;
 
-            double billableHours = ((Number) em.createNativeQuery(
-                    "SELECT SUM(wf.workduration) " +
-                    "FROM work_full wf " +
-                    "WHERE wf.registered >= :startDate " +
-                    "  AND wf.registered < :endDate " +
-                    "  AND wf.useruuid IN :uuids " +
-                    "  AND wf.rate > 0 " +
-                    "GROUP BY MONTH(registered), YEAR(registered)")
-                    .setParameter("startDate", localDate)
-                    .setParameter("endDate", localDate.plusMonths(1))
-                    .setParameter("uuids", List.of(uuids))
-                    .getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
-            log.debugf("billableHours = %f", billableHours);
+        List<Tuple> results = em.createNativeQuery(sql, Tuple.class)
+                .setParameter("teamId", teamuuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
 
-            double availableHours = availabilityService.getSumOfAvailableHoursByUsersAndMonth(localDate, uuids);
-            log.debugf("availableHours = %f", availableHours);
-
-            utilizationPerMonth.add(new DateValueDTO(localDate, (billableHours / availableHours)));
-        }
-
-        return utilizationPerMonth;
+        return results.stream()
+                .map(t -> {
+                    double billable = ((Number) t.get("billable_hours")).doubleValue();
+                    double available = ((Number) t.get("available_hours")).doubleValue();
+                    return new DateValueDTO(
+                            LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
+                            available > 0 ? billable / available : 0.0
+                    );
+                })
+                .toList();
     }
 
     @GET
@@ -228,22 +287,6 @@ public class UtilizationResource {
         return employeeUtilizationList;
     }
 
-
-    @SuppressWarnings("unchecked")
-    private String[] findUseruuidsPerTeam(String teamuuid, LocalDate date) {
-        return ((List<Tuple>) em.createNativeQuery(
-                "SELECT t.useruuid AS useruuid " +
-                "FROM teamroles AS t " +
-                "WHERE t.teamuuid = :teamuuid " +
-                "  AND t.membertype = 'MEMBER' " +
-                "  AND t.startdate <= :date " +
-                "  AND (t.enddate IS NULL OR t.enddate > :date)", Tuple.class)
-                .setParameter("teamuuid", teamuuid)
-                .setParameter("date", date)
-                .getResultList()).stream()
-                .map(tuple -> (String) tuple.get("useruuid"))
-                .toArray(String[]::new);
-    }
 
     @GET
     @Path("/gross")
