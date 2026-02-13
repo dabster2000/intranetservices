@@ -2,9 +2,13 @@ package dk.trustworks.intranet.aggregates.delivery.services;
 
 import dk.trustworks.intranet.aggregates.delivery.dto.AvgProjectMarginDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.BenchCountDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.CapacityPlanningDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.CapacityWeekDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.OverloadCountDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapCellDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 import io.quarkus.cache.CacheResult;
@@ -17,8 +21,14 @@ import lombok.extern.jbosslog.JBossLog;
 import java.math.BigDecimal;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAdjusters;
+import java.time.temporal.WeekFields;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -483,10 +493,11 @@ public class CxoDeliveryService {
      * Returns count of consultants currently on the bench with low utilization.
      *
      * Business Logic:
-     * - Uses last 4 weeks (1 month) as measurement window
+     * - Uses trailing 28-day sliding window (today - 27 days to today)
+     * - Queries fact_user_day for daily grain data
      * - Calculates user-level utilization: (billable_hours / net_available_hours * 100)
      * - Counts users where utilization < 50%
-     * - Compares to prior 4-week period for trend analysis
+     * - Compares to prior 28-day period for trend analysis
      *
      * @param fromDate Start date (optional, auto-calculated)
      * @param toDate End date (optional, defaults to today)
@@ -501,16 +512,13 @@ public class CxoDeliveryService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        // 1. Normalize dates to 4-week window ending at toDate
-        LocalDate toDateNormalized = (toDate != null)
-                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
-                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        // 1. Use trailing 28-day sliding window
+        LocalDate toDateNormalized = (toDate != null) ? toDate : LocalDate.now();
+        LocalDate fromDateNormalized = toDateNormalized.minusDays(27);
 
-        LocalDate fromDateNormalized = toDateNormalized.minusMonths(1).withDayOfMonth(1);
-
-        // 2. Calculate prior 4-week window
-        LocalDate priorFromDate = fromDateNormalized.minusMonths(1);
-        LocalDate priorToDate = toDateNormalized.minusMonths(1);
+        // 2. Calculate prior 28-day window (the 28 days before the current window)
+        LocalDate priorToDate = fromDateNormalized.minusDays(1);
+        LocalDate priorFromDate = priorToDate.minusDays(27);
 
         log.debugf("Bench Count: Current window [%s to %s], Prior window [%s to %s]",
                 fromDateNormalized, toDateNormalized, priorFromDate, priorToDate);
@@ -537,7 +545,8 @@ public class CxoDeliveryService {
 
     /**
      * Query bench count: users with < 50% utilization.
-     * Uses CTE to calculate user-level utilization, then counts users below threshold.
+     * Uses fact_user_day (daily grain) with CTE to calculate user-level utilization,
+     * then counts users below threshold.
      *
      * @param fromDate Start date
      * @param toDate End date
@@ -551,33 +560,36 @@ public class CxoDeliveryService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        // Convert dates to YYYYMM month key format
-        String fromMonthKey = String.format("%d%02d", fromDate.getYear(), fromDate.getMonthValue());
-        String toMonthKey = String.format("%d%02d", toDate.getYear(), toDate.getMonthValue());
+        log.tracef("queryBenchCount: date range [%s to %s]", fromDate, toDate);
 
-        log.tracef("queryBenchCount: monthKey range [%s to %s]", fromMonthKey, toMonthKey);
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // Build SQL query with CTE
+        // Build SQL query using fact_user_day (daily grain)
         StringBuilder sql = new StringBuilder();
         sql.append("WITH user_util AS ( ");
         sql.append("  SELECT ");
-        sql.append("    f.user_id, ");
-        sql.append("    SUM(f.billable_hours) AS billable, ");
-        sql.append("    SUM(f.net_available_hours) AS available ");
-        sql.append("  FROM fact_user_utilization_mat f");
-        sql.append("  WHERE f.month_key ");
-        sql.append("    BETWEEN :fromKey AND :toKey ");
-        sql.append("    AND f.net_available_hours > 0 ");
-
-        // Optional filters
-        if (practices != null && !practices.isEmpty()) {
-            sql.append("    AND f.practice_id IN (:practices) ");
+        sql.append("    bdd.useruuid, ");
+        sql.append("    SUM(bdd.registered_billable_hours) AS billable, ");
+        sql.append("    SUM(bdd.net_available_hours) AS available ");
+        sql.append("  FROM fact_user_day bdd ");
+        if (hasPractices) {
+            sql.append("  JOIN user u ON u.uuid = bdd.useruuid ");
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        sql.append("  WHERE bdd.document_date >= :fromDate ");
+        sql.append("    AND bdd.document_date <= :toDate ");
+        sql.append("    AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("    AND bdd.status_type = 'ACTIVE' ");
+        sql.append("    AND bdd.net_available_hours > 0 ");
+
+        if (hasPractices) {
+            sql.append("    AND u.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("    AND bdd.companyuuid IN (:companyIds) ");
         }
 
-        sql.append("  GROUP BY f.user_id ");
+        sql.append("  GROUP BY bdd.useruuid ");
         sql.append(") ");
         sql.append("SELECT COUNT(*) AS bench_count ");
         sql.append("FROM user_util ");
@@ -585,26 +597,25 @@ public class CxoDeliveryService {
 
         // Create and bind query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromMonthKey);
-        query.setParameter("toKey", toMonthKey);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
 
-        if (practices != null && !practices.isEmpty()) {
+        if (hasPractices) {
             query.setParameter("practices", practices);
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
         }
 
         // Execute query and extract result
         Object resultObj = query.getSingleResult();
-        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
         BigDecimal result = resultObj != null
             ? BigDecimal.valueOf(((Number) resultObj).doubleValue())
             : BigDecimal.ZERO;
 
         int count = (result != null) ? result.intValue() : 0;
 
-        log.tracef("Range [%s to %s]: bench_count=%d", fromMonthKey, toMonthKey, count);
+        log.tracef("Range [%s to %s]: bench_count=%d", fromDate, toDate, count);
 
         return count;
     }
@@ -614,10 +625,11 @@ public class CxoDeliveryService {
      * Returns count of consultants currently overloaded with high utilization.
      *
      * Business Logic:
-     * - Uses last 4 weeks (1 month) as measurement window
+     * - Uses trailing 28-day sliding window (today - 27 days to today)
+     * - Queries fact_user_day for daily grain data
      * - Calculates user-level utilization: (billable_hours / net_available_hours * 100)
      * - Counts users where utilization > 95%
-     * - Compares to prior 4-week period for trend analysis
+     * - Compares to prior 28-day period for trend analysis
      *
      * @param fromDate Start date (optional, auto-calculated)
      * @param toDate End date (optional, defaults to today)
@@ -632,16 +644,13 @@ public class CxoDeliveryService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        // 1. Normalize dates to 4-week window ending at toDate
-        LocalDate toDateNormalized = (toDate != null)
-                ? toDate.withDayOfMonth(toDate.lengthOfMonth())
-                : LocalDate.now().withDayOfMonth(LocalDate.now().lengthOfMonth());
+        // 1. Use trailing 28-day sliding window
+        LocalDate toDateNormalized = (toDate != null) ? toDate : LocalDate.now();
+        LocalDate fromDateNormalized = toDateNormalized.minusDays(27);
 
-        LocalDate fromDateNormalized = toDateNormalized.minusMonths(1).withDayOfMonth(1);
-
-        // 2. Calculate prior 4-week window
-        LocalDate priorFromDate = fromDateNormalized.minusMonths(1);
-        LocalDate priorToDate = toDateNormalized.minusMonths(1);
+        // 2. Calculate prior 28-day window (the 28 days before the current window)
+        LocalDate priorToDate = fromDateNormalized.minusDays(1);
+        LocalDate priorFromDate = priorToDate.minusDays(27);
 
         log.debugf("Overload Count: Current window [%s to %s], Prior window [%s to %s]",
                 fromDateNormalized, toDateNormalized, priorFromDate, priorToDate);
@@ -668,7 +677,8 @@ public class CxoDeliveryService {
 
     /**
      * Query overload count: users with > 95% utilization.
-     * Uses CTE to calculate user-level utilization, then counts users above threshold.
+     * Uses fact_user_day (daily grain) with CTE to calculate user-level utilization,
+     * then counts users above threshold.
      *
      * @param fromDate Start date
      * @param toDate End date
@@ -682,33 +692,36 @@ public class CxoDeliveryService {
             Set<String> practices,
             Set<String> companyIds) {
 
-        // Convert dates to YYYYMM month key format
-        String fromMonthKey = String.format("%d%02d", fromDate.getYear(), fromDate.getMonthValue());
-        String toMonthKey = String.format("%d%02d", toDate.getYear(), toDate.getMonthValue());
+        log.tracef("queryOverloadCount: date range [%s to %s]", fromDate, toDate);
 
-        log.tracef("queryOverloadCount: monthKey range [%s to %s]", fromMonthKey, toMonthKey);
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // Build SQL query with CTE
+        // Build SQL query using fact_user_day (daily grain)
         StringBuilder sql = new StringBuilder();
         sql.append("WITH user_util AS ( ");
         sql.append("  SELECT ");
-        sql.append("    f.user_id, ");
-        sql.append("    SUM(f.billable_hours) AS billable, ");
-        sql.append("    SUM(f.net_available_hours) AS available ");
-        sql.append("  FROM fact_user_utilization_mat f");
-        sql.append("  WHERE f.month_key ");
-        sql.append("    BETWEEN :fromKey AND :toKey ");
-        sql.append("    AND f.net_available_hours > 0 ");
-
-        // Optional filters
-        if (practices != null && !practices.isEmpty()) {
-            sql.append("    AND f.practice_id IN (:practices) ");
+        sql.append("    bdd.useruuid, ");
+        sql.append("    SUM(bdd.registered_billable_hours) AS billable, ");
+        sql.append("    SUM(bdd.net_available_hours) AS available ");
+        sql.append("  FROM fact_user_day bdd ");
+        if (hasPractices) {
+            sql.append("  JOIN user u ON u.uuid = bdd.useruuid ");
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND f.companyuuid IN (:companyIds) ");
+        sql.append("  WHERE bdd.document_date >= :fromDate ");
+        sql.append("    AND bdd.document_date <= :toDate ");
+        sql.append("    AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("    AND bdd.status_type = 'ACTIVE' ");
+        sql.append("    AND bdd.net_available_hours > 0 ");
+
+        if (hasPractices) {
+            sql.append("    AND u.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("    AND bdd.companyuuid IN (:companyIds) ");
         }
 
-        sql.append("  GROUP BY f.user_id ");
+        sql.append("  GROUP BY bdd.useruuid ");
         sql.append(") ");
         sql.append("SELECT COUNT(*) AS overload_count ");
         sql.append("FROM user_util ");
@@ -716,26 +729,25 @@ public class CxoDeliveryService {
 
         // Create and bind query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromMonthKey);
-        query.setParameter("toKey", toMonthKey);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
 
-        if (practices != null && !practices.isEmpty()) {
+        if (hasPractices) {
             query.setParameter("practices", practices);
         }
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
         }
 
         // Execute query and extract result
         Object resultObj = query.getSingleResult();
-        // Safe conversion: handle Double/BigDecimal/Number types from native SQL
         BigDecimal result = resultObj != null
             ? BigDecimal.valueOf(((Number) resultObj).doubleValue())
             : BigDecimal.ZERO;
 
         int count = (result != null) ? result.intValue() : 0;
 
-        log.tracef("Range [%s to %s]: overload_count=%d", fromMonthKey, toMonthKey, count);
+        log.tracef("Range [%s to %s]: overload_count=%d", fromDate, toDate, count);
 
         return count;
     }
@@ -1169,5 +1181,263 @@ public class CxoDeliveryService {
         }
 
         return sparklineData;
+    }
+
+    // ========================================================================
+    // Capacity Planning (13-week view)
+    // ========================================================================
+
+    /**
+     * Returns a 13-week capacity planning view:
+     * 4 weeks historical + current week + 8 weeks forecast.
+     *
+     * Historical weeks: queries fact_user_day for actual hours
+     * Forecast weeks: queries fact_staffing_forecast_week (if available), else capacity only
+     *
+     * @param practices Optional practice filter
+     * @param companyIds Optional company filter
+     * @return CapacityPlanningDTO with 13 weeks of data
+     */
+    @CacheResult(cacheName = "delivery-capacity-planning")
+    public CapacityPlanningDTO getCapacityPlanning(
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        // Current week Monday
+        LocalDate currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        // Start 4 weeks before current
+        LocalDate startMonday = currentMonday.minusWeeks(4);
+
+        DateTimeFormatter labelFormatter = DateTimeFormatter.ofPattern("MMM d");
+
+        List<CapacityWeekDTO> weeks = new ArrayList<>();
+
+        for (int i = 0; i < 13; i++) {
+            LocalDate weekStart = startMonday.plusWeeks(i);
+            LocalDate weekEnd = weekStart.plusDays(6);
+            boolean isForecast = weekStart.isAfter(currentMonday);
+            boolean isCurrent = weekStart.equals(currentMonday);
+
+            String weekLabel = weekStart.format(labelFormatter);
+            int weekNum = weekStart.get(WeekFields.of(Locale.getDefault()).weekOfWeekBasedYear());
+            String weekKey = String.format("%d-W%02d", weekStart.getYear(), weekNum);
+
+            double availableFTE;
+            double allocatedFTE;
+
+            if (isForecast) {
+                // Use forecast data
+                double[] forecastData = queryWeekForecastCapacity(weekStart, practices, companyIds);
+                availableFTE = forecastData[1] / 37.0; // Convert hours to FTE (37h/week)
+                allocatedFTE = forecastData[0] / 37.0;
+            } else {
+                // Use historical data from fact_user_day
+                double[] historicalData = queryWeekHistoricalCapacity(weekStart, weekEnd, practices, companyIds);
+                availableFTE = historicalData[1] / 37.0;
+                allocatedFTE = historicalData[0] / 37.0;
+            }
+
+            double benchFTE = Math.max(0, availableFTE - allocatedFTE);
+
+            weeks.add(new CapacityWeekDTO(
+                    weekKey,
+                    weekLabel,
+                    Math.round(availableFTE * 10.0) / 10.0,
+                    Math.round(allocatedFTE * 10.0) / 10.0,
+                    Math.round(benchFTE * 10.0) / 10.0,
+                    isForecast
+            ));
+        }
+
+        return new CapacityPlanningDTO(weeks);
+    }
+
+    /**
+     * Query historical capacity for a single week from fact_user_day.
+     * @return [billableHours, availableHours]
+     */
+    private double[] queryWeekHistoricalCapacity(
+            LocalDate weekStart,
+            LocalDate weekEnd,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  COALESCE(SUM(bdd.registered_billable_hours), 0), ");
+        sql.append("  COALESCE(SUM(bdd.net_available_hours), 0) ");
+        sql.append("FROM fact_user_day bdd ");
+        if (hasPractices) {
+            sql.append("JOIN user u ON u.uuid = bdd.useruuid ");
+        }
+        sql.append("WHERE bdd.document_date >= :weekStart ");
+        sql.append("  AND bdd.document_date <= :weekEnd ");
+        sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND bdd.status_type = 'ACTIVE' ");
+        sql.append("  AND bdd.net_available_hours > 0 ");
+
+        if (hasPractices) {
+            sql.append("  AND u.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("  AND bdd.companyuuid IN (:companyIds) ");
+        }
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("weekStart", weekStart);
+        query.setParameter("weekEnd", weekEnd);
+        if (hasPractices) query.setParameter("practices", practices);
+        if (hasCompanies) query.setParameter("companyIds", companyIds);
+
+        Object[] result = (Object[]) query.getSingleResult();
+        double billable = ((Number) result[0]).doubleValue();
+        double available = ((Number) result[1]).doubleValue();
+
+        return new double[]{billable, available};
+    }
+
+    /**
+     * Query forecast capacity for a single week from fact_staffing_forecast_week.
+     * @return [forecastBillableHours, capacityHours]
+     */
+    private double[] queryWeekForecastCapacity(
+            LocalDate weekStart,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  COALESCE(SUM(f.forecast_billable_hours), 0), ");
+        sql.append("  COALESCE(SUM(f.capacity_hours), 0) ");
+        sql.append("FROM fact_staffing_forecast_week f ");
+        sql.append("WHERE f.week_start_date = :weekStart ");
+        sql.append("  AND f.capacity_hours > 0 ");
+
+        if (practices != null && !practices.isEmpty()) {
+            sql.append("  AND f.practice_id IN (:practices) ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND f.company_id IN (:companyIds) ");
+        }
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("weekStart", weekStart);
+        if (practices != null && !practices.isEmpty()) query.setParameter("practices", practices);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+
+        Object[] result = (Object[]) query.getSingleResult();
+        double forecast = ((Number) result[0]).doubleValue();
+        double capacity = ((Number) result[1]).doubleValue();
+
+        return new double[]{forecast, capacity};
+    }
+
+    // ========================================================================
+    // Resource Allocation Heatmap (trailing 8 weeks)
+    // ========================================================================
+
+    /**
+     * Returns team utilization by week for the trailing 8 weeks.
+     * Teams are grouped by user.primaryskilltype (practice/skill).
+     *
+     * @param practices Optional practice filter
+     * @param companyIds Optional company filter
+     * @return ResourceHeatmapDTO with teams, weeks, and utilization cells
+     */
+    @CacheResult(cacheName = "delivery-resource-heatmap")
+    public ResourceHeatmapDTO getResourceHeatmap(
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        LocalDate currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        // Trailing 8 weeks (7 completed + current)
+        LocalDate startMonday = currentMonday.minusWeeks(7);
+
+        DateTimeFormatter labelFormatter = DateTimeFormatter.ofPattern("MMM d");
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        // Query all data in one go: team + week + billable + available
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  u.primaryskilltype AS team, ");
+        sql.append("  YEARWEEK(bdd.document_date, 1) AS yw, ");
+        sql.append("  SUM(bdd.registered_billable_hours) AS billable, ");
+        sql.append("  SUM(bdd.net_available_hours) AS available ");
+        sql.append("FROM fact_user_day bdd ");
+        sql.append("JOIN user u ON u.uuid = bdd.useruuid ");
+        sql.append("WHERE bdd.document_date >= :startDate ");
+        sql.append("  AND bdd.document_date <= :endDate ");
+        sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND bdd.status_type = 'ACTIVE' ");
+        sql.append("  AND bdd.net_available_hours > 0 ");
+        sql.append("  AND u.primaryskilltype IS NOT NULL ");
+        sql.append("  AND u.primaryskilltype != '' ");
+
+        if (hasPractices) {
+            sql.append("  AND u.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("  AND bdd.companyuuid IN (:companyIds) ");
+        }
+
+        sql.append("GROUP BY u.primaryskilltype, YEARWEEK(bdd.document_date, 1) ");
+        sql.append("ORDER BY u.primaryskilltype, yw ");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("startDate", startMonday);
+        query.setParameter("endDate", currentMonday.plusDays(6));
+        if (hasPractices) query.setParameter("practices", practices);
+        if (hasCompanies) query.setParameter("companyIds", companyIds);
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+
+        // Build week labels (8 weeks)
+        List<String> weekLabels = new ArrayList<>();
+        Map<Integer, Integer> yearWeekToIndex = new LinkedHashMap<>();
+        for (int i = 0; i < 8; i++) {
+            LocalDate weekStart = startMonday.plusWeeks(i);
+            weekLabels.add(weekStart.format(labelFormatter));
+            // MariaDB YEARWEEK(date, 1) returns YYYYWW as integer
+            int yw = weekStart.getYear() * 100 + weekStart.get(WeekFields.ISO.weekOfWeekBasedYear());
+            yearWeekToIndex.put(yw, i);
+        }
+
+        // Collect unique teams in order
+        Map<String, Integer> teamToIndex = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            String team = (String) row[0];
+            if (!teamToIndex.containsKey(team)) {
+                teamToIndex.put(team, teamToIndex.size());
+            }
+        }
+
+        List<String> teams = new ArrayList<>(teamToIndex.keySet());
+        List<ResourceHeatmapCellDTO> cells = new ArrayList<>();
+
+        // Process rows
+        for (Object[] row : rows) {
+            String team = (String) row[0];
+            int yw = ((Number) row[1]).intValue();
+            double billable = ((Number) row[2]).doubleValue();
+            double available = ((Number) row[3]).doubleValue();
+
+            Integer weekIdx = yearWeekToIndex.get(yw);
+            Integer teamIdx = teamToIndex.get(team);
+
+            if (weekIdx != null && teamIdx != null && available > 0) {
+                double util = Math.round((billable / available) * 1000.0) / 10.0;
+                cells.add(new ResourceHeatmapCellDTO(teamIdx, weekIdx, util));
+            }
+        }
+
+        return new ResourceHeatmapDTO(teams, weekLabels, cells);
     }
 }

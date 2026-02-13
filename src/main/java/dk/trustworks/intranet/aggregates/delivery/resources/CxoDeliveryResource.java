@@ -2,9 +2,11 @@ package dk.trustworks.intranet.aggregates.delivery.resources;
 
 import dk.trustworks.intranet.aggregates.delivery.dto.AvgProjectMarginDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.BenchCountDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.CapacityPlanningDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.OverloadCountDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
 import dk.trustworks.intranet.aggregates.delivery.services.CxoDeliveryService;
 import jakarta.annotation.security.RolesAllowed;
@@ -195,6 +197,64 @@ public class CxoDeliveryResource {
 
         log.debugf("Overload Count - Current: %d, Prior: %d, Change: %+d",
                 result.getCurrentOverloadCount(), result.getPriorOverloadCount(), result.getChange());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Capacity Planning data (13-week view).
+     * Returns 4 weeks historical + current week + 8 weeks forecast
+     * with allocated, bench, and available FTEs per week.
+     *
+     * @param practices Comma-separated practice IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return CapacityPlanningDTO with weekly FTE data
+     */
+    @GET
+    @Path("/capacity-planning")
+    public Response getCapacityPlanning(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /delivery/cxo/capacity-planning: practices=%s, companyIds=%s",
+                practices, companyIds);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        CapacityPlanningDTO result = cxoDeliveryService.getCapacityPlanning(
+                practiceSet, companyIdSet);
+
+        log.debugf("Capacity Planning: %d weeks returned", result.getWeeks().size());
+
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Resource Allocation Heatmap data (trailing 8 weeks).
+     * Returns team utilization percentages by week, grouped by practice/skill.
+     *
+     * @param practices Comma-separated practice IDs (optional)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return ResourceHeatmapDTO with teams, weeks, and utilization cells
+     */
+    @GET
+    @Path("/resource-heatmap")
+    public Response getResourceHeatmap(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /delivery/cxo/resource-heatmap: practices=%s, companyIds=%s",
+                practices, companyIds);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        ResourceHeatmapDTO result = cxoDeliveryService.getResourceHeatmap(
+                practiceSet, companyIdSet);
+
+        log.debugf("Resource Heatmap: %d teams, %d weeks, %d cells",
+                result.getTeams().size(), result.getWeeks().size(), result.getData().size());
 
         return Response.ok(result).build();
     }
