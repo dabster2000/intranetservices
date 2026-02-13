@@ -93,13 +93,13 @@ public class CxoFinanceService {
                             "    f.month_number, " +
                             "    SUM(f.recognized_revenue_dkk) AS revenue, " +
                             "    SUM(f.direct_delivery_cost_dkk) AS cost " +
-                            "FROM fact_project_financials f " +
+                            "FROM fact_project_financials_mat f " +
                             "WHERE 1=1 "
             );
 
             // Time range filter
-            sql.append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
-                    .append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+            sql.append("  AND f.month_key >= :fromMonthKey ")
+                    .append("  AND f.month_key <= :toMonthKey ");
 
             // Conditional sector filter
             if (sectors != null && !sectors.isEmpty()) {
@@ -282,14 +282,14 @@ public class CxoFinanceService {
                             "        f.non_payd_leave_hours + f.paid_leave_hours) AS absence_hours, " +
                             "    SUM(f.net_available_hours) AS net_available_hours, " +
                             "    SUM(f.gross_available_hours) AS gross_available_hours " +
-                            "FROM fact_user_utilization f " +
+                            "FROM fact_user_utilization_mat f " +
                             "WHERE 1=1 "
             );
 
             // Time range filter
             // NOTE: Added COLLATE to fix collation mismatch between month_key column and String.format() output
-            sql.append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
-                    .append("  AND CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+            sql.append("  AND f.month_key >= :fromMonthKey ")
+                    .append("  AND f.month_key <= :toMonthKey ");
 
             // Conditional practice filter
             if (practices != null && !practices.isEmpty()) {
@@ -755,8 +755,8 @@ public class CxoFinanceService {
         StringBuilder sql = new StringBuilder(
                 "SELECT COALESCE(SUM(backlog_revenue_dkk), 0.0) AS total_backlog " +
                         "FROM fact_backlog " +
-                        "WHERE delivery_month_key >= :currentMonthKey " +
-                        "AND project_status = 'ACTIVE' "
+                        "WHERE delivery_month_key COLLATE utf8mb4_general_ci >= :currentMonthKey " +
+                        "AND project_status COLLATE utf8mb4_general_ci = 'ACTIVE' "
         );
 
         // Add optional filters
@@ -1205,8 +1205,8 @@ public class CxoFinanceService {
                         "        f.project_id, " +
                         "        f.month_key, " +
                         "        MAX(f.recognized_revenue_dkk) AS max_revenue " +
-                        "    FROM fact_project_financials f " +
-                        "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey "
+                        "    FROM fact_project_financials_mat f" +
+                        "    WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
 
         // Add optional filters (following Chart A pattern exactly)
@@ -1277,8 +1277,8 @@ public class CxoFinanceService {
                         "        f.project_id, " +
                         "        f.month_key, " +
                         "        MAX(f.direct_delivery_cost_dkk) AS max_cost " +
-                        "    FROM fact_project_financials f " +
-                        "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey "
+                        "    FROM fact_project_financials_mat f" +
+                        "    WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
 
         // Add optional filters (same as revenue query)
@@ -1516,8 +1516,8 @@ public class CxoFinanceService {
                         "        f.client_id, " +
                         "        COUNT(DISTINCT f.project_id) AS project_count, " +
                         "        SUM(f.recognized_revenue_dkk) AS client_revenue " +
-                        "    FROM fact_project_financials f " +
-                        "    WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey " +
+                        "    FROM fact_project_financials_mat f" +
+                        "    WHERE f.month_key BETWEEN :fromKey AND :toKey " +
                         "      AND f.client_id IS NOT NULL " +
                         "      AND f.client_id NOT IN (:excludedClientIds) " +
                         "      AND f.recognized_revenue_dkk > 0 "
@@ -1740,7 +1740,7 @@ public class CxoFinanceService {
             sql.append(
                     "    AND p.uuid IN ( " +
                             "      SELECT DISTINCT f.project_id " +
-                            "      FROM fact_project_financials f " +
+                            "      FROM fact_project_financials_mat f" +
                             "      WHERE 1=1 "
             );
 
@@ -1767,8 +1767,8 @@ public class CxoFinanceService {
                         "  SELECT " +
                         "    f.client_id, " +
                         "    SUM(f.recognized_revenue_dkk) AS client_revenue " +
-                        "  FROM fact_project_financials f " +
-                        "  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) " +
+                        "  FROM fact_project_financials_mat f" +
+                        "  WHERE f.month_key " +
                         "        BETWEEN :fromKey AND :toKey " +
                         "    AND f.client_id IS NOT NULL " +
                         "    AND f.client_id NOT IN (:excludedClientIds) " +
@@ -1878,8 +1878,8 @@ public class CxoFinanceService {
         // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
         StringBuilder sql = new StringBuilder(
                 "SELECT DISTINCT f.client_id " +
-                        "FROM fact_project_financials f " +
-                        "WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey " +
+                        "FROM fact_project_financials_mat f " +
+                        "WHERE f.month_key BETWEEN :fromKey AND :toKey " +
                         "AND f.client_id IS NOT NULL " +
                         "AND f.recognized_revenue_dkk > 0 "
         );
@@ -1938,8 +1938,8 @@ public class CxoFinanceService {
                 "SELECT f.month_key, " +
                         "       COALESCE(SUM(f.recognized_revenue_dkk), 0.0) AS monthly_revenue, " +
                         "       COALESCE(SUM(f.direct_delivery_cost_dkk), 0.0) AS monthly_cost " +
-                        "FROM fact_project_financials f " +
-                        "WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) BETWEEN :fromKey AND :toKey "
+                        "FROM fact_project_financials_mat f " +
+                        "WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
 
         // Add optional filters (same as actual revenue query)
@@ -2019,7 +2019,7 @@ public class CxoFinanceService {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT COALESCE(SUM(b.budget_revenue_dkk), 0.0) AS total_budget " +
-                        "FROM fact_revenue_budget b " +
+                        "FROM fact_revenue_budget_mat b " +
                         "WHERE b.fiscal_year = :fiscalYear " +
                         "AND b.month_key BETWEEN :fromKey AND :toKey "
         );
@@ -2073,7 +2073,7 @@ public class CxoFinanceService {
         // Query monthly actual revenue for last 12 months
         StringBuilder sql = new StringBuilder(
                 "SELECT f.month_key, COALESCE(SUM(f.recognized_revenue_dkk), 0.0) AS monthly_revenue " +
-                        "FROM fact_project_financials f " +
+                        "FROM fact_project_financials_mat f " +
                         "WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
 
@@ -2242,8 +2242,8 @@ public class CxoFinanceService {
                 "SELECT expected_revenue_month_key AS month_key, " +
                         "       SUM(weighted_pipeline_dkk) AS pipeline " +
                         "FROM fact_pipeline " +
-                        "WHERE expected_revenue_month_key BETWEEN :fromMonthKey AND :toMonthKey " +
-                        "  AND stage_category COLLATE utf8mb4_uca1400_ai_ci NOT IN ('WON', 'LOST') "
+                        "WHERE expected_revenue_month_key COLLATE utf8mb4_general_ci BETWEEN :fromMonthKey AND :toMonthKey " +
+                        "  AND stage_category COLLATE utf8mb4_general_ci NOT IN ('WON', 'LOST') "
         );
 
         // Add optional filters
@@ -2312,8 +2312,8 @@ public class CxoFinanceService {
                 "SELECT delivery_month_key AS month_key, " +
                         "       SUM(backlog_revenue_dkk) AS backlog " +
                         "FROM fact_backlog " +
-                        "WHERE delivery_month_key BETWEEN :fromMonthKey AND :toMonthKey " +
-                        "  AND project_status COLLATE utf8mb4_uca1400_ai_ci = 'ACTIVE' "
+                        "WHERE delivery_month_key COLLATE utf8mb4_general_ci BETWEEN :fromMonthKey AND :toMonthKey " +
+                        "  AND project_status COLLATE utf8mb4_general_ci = 'ACTIVE' "
         );
 
         // Add optional filters
@@ -2381,7 +2381,7 @@ public class CxoFinanceService {
         StringBuilder sql = new StringBuilder(
                 "SELECT month_key, " +
                         "       SUM(budget_revenue_dkk) AS target " +
-                        "FROM fact_revenue_budget " +
+                        "FROM fact_revenue_budget_mat " +
                         "WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey "
         );
 
@@ -2518,7 +2518,7 @@ public class CxoFinanceService {
         // Query 1: Monthly revenue from fact_project_financials
         StringBuilder revenueSql = new StringBuilder(
                 "SELECT f.month_key, SUM(f.recognized_revenue_dkk) AS monthly_revenue " +
-                "FROM fact_project_financials f " +
+                "FROM fact_project_financials_mat f " +
                 "WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
 
@@ -2783,7 +2783,7 @@ public class CxoFinanceService {
         // Query 2: Monthly actual revenue from fact_project_financials
         StringBuilder actualSql = new StringBuilder(
                 "SELECT f.month_key, SUM(f.recognized_revenue_dkk) AS actual_revenue " +
-                "FROM fact_project_financials f " +
+                "FROM fact_project_financials_mat f " +
                 "WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
 
@@ -2954,7 +2954,7 @@ public class CxoFinanceService {
                         "    SELECT " +
                         "        f.client_id, " +
                         "        SUM(f.recognized_revenue_dkk) AS client_revenue " +
-                        "    FROM fact_project_financials f " +
+                        "    FROM fact_project_financials_mat f" +
                         "    WHERE f.month_key BETWEEN :fromKey AND :toKey " +
                         "      AND f.client_id IS NOT NULL " +
                         "      AND f.client_id NOT IN (:excludedClientIds) " +
@@ -3527,11 +3527,11 @@ public class CxoFinanceService {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT month_key, expense_category_id, SUM(opex_amount_dkk) AS amount " +
-                "FROM fact_opex WHERE 1=1 "
+                "FROM fact_opex_mat WHERE 1=1 "
         );
 
-        sql.append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
-                .append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+        sql.append("  AND month_key >= :fromMonthKey ")
+                .append("  AND month_key <= :toMonthKey ");
 
         if (costCenters != null && !costCenters.isEmpty()) {
             sql.append("  AND cost_center_id IN (:costCenters) ");
@@ -3624,11 +3624,11 @@ public class CxoFinanceService {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT month_key, cost_center_id, SUM(opex_amount_dkk) AS amount " +
-                "FROM fact_opex WHERE 1=1 "
+                "FROM fact_opex_mat WHERE 1=1 "
         );
 
-        sql.append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
-                .append("  AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+        sql.append("  AND month_key >= :fromMonthKey ")
+                .append("  AND month_key <= :toMonthKey ");
 
         if (costCenters != null && !costCenters.isEmpty()) {
             sql.append("  AND cost_center_id IN (:costCenters) ");
@@ -3722,7 +3722,7 @@ public class CxoFinanceService {
                 fromMonthKey, toMonthKey, practices, companyIds);
 
         // Build the payroll subquery with conditional company filtering
-        String payrollSubquery = "COALESCE((SELECT SUM(o.opex_amount_dkk) FROM fact_opex o " +
+        String payrollSubquery = "COALESCE((SELECT SUM(o.opex_amount_dkk) FROM fact_opex_mat o " +
                 "WHERE o.month_key = e.month_key AND o.is_payroll_flag = 1";
         if (companyIds != null && !companyIds.isEmpty()) {
             payrollSubquery += " AND o.company_id IN (:companyIdsForPayroll)";
@@ -3735,9 +3735,9 @@ public class CxoFinanceService {
                 "  SUM(e.fte_billable) AS billable_fte, " +
                 "  SUM(e.fte_non_billable) AS non_billable_fte, " +
                 "  " + payrollSubquery + ", " +
-                "  COALESCE((SELECT SUM(f.recognized_revenue_dkk) FROM fact_project_financials f " +
+                "  COALESCE((SELECT SUM(f.recognized_revenue_dkk) FROM fact_project_financials_mat f" +
                 "    WHERE f.month_key = e.month_key), 0) AS total_revenue " +
-                "FROM fact_employee_monthly e " +
+                "FROM fact_employee_monthly_mat e " +
                 "WHERE 1=1 "
         );
 
@@ -3822,7 +3822,7 @@ public class CxoFinanceService {
 
             // Query TTM non-payroll OPEX
             StringBuilder opexSql = new StringBuilder(
-                    "SELECT SUM(opex_amount_dkk) FROM fact_opex " +
+                    "SELECT SUM(opex_amount_dkk) FROM fact_opex_mat " +
                     "WHERE is_payroll_flag = 0 " +
                     "  AND month_key >= :fromKey AND month_key <= :toKey "
             );
@@ -3842,7 +3842,7 @@ public class CxoFinanceService {
             StringBuilder fteSql = new StringBuilder(
                     "SELECT AVG(fte_billable + fte_non_billable) AS avg_total_fte, " +
                     "  AVG(fte_billable) AS avg_billable_fte " +
-                    "FROM fact_employee_monthly " +
+                    "FROM fact_employee_monthly_mat " +
                     "WHERE month_key >= :fromKey AND month_key <= :toKey "
             );
             if (companyIds != null && !companyIds.isEmpty()) {
@@ -3905,7 +3905,7 @@ public class CxoFinanceService {
                 "  SUM(COALESCE(b.budget_opex_dkk, 0)) AS budget_amount, " +
                 "  COUNT(*) AS invoice_count, " +
                 "  MAX(a.is_payroll_flag) AS is_payroll " +
-                "FROM fact_opex a " +
+                "FROM fact_opex_mat a " +
                 "LEFT JOIN fact_opex_budget b ON a.company_id = b.company_id " +
                 "  AND a.month_key = b.month_key " +
                 "  AND a.cost_center_id = b.cost_center_id " +
@@ -3914,8 +3914,8 @@ public class CxoFinanceService {
                 "WHERE 1=1 "
         );
 
-        sql.append("  AND CAST(a.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :fromMonthKey ")
-                .append("  AND CAST(a.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :toMonthKey ");
+        sql.append("  AND a.month_key >= :fromMonthKey ")
+                .append("  AND a.month_key <= :toMonthKey ");
 
         if (costCenters != null && !costCenters.isEmpty()) {
             sql.append("  AND a.cost_center_id IN (:costCenters) ");
@@ -3990,9 +3990,9 @@ public class CxoFinanceService {
                 "SELECT fy_label, expense_category_id, SUM(opex_amount_dkk) AS amount " +
                 "FROM ( " +
                 "  SELECT 'CURRENT' AS fy_label, expense_category_id, opex_amount_dkk " +
-                "  FROM fact_opex " +
-                "  WHERE CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :currentFromKey " +
-                "    AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :currentToKey "
+                "  FROM fact_opex_mat " +
+                "  WHERE month_key >= :currentFromKey " +
+                "    AND month_key <= :currentToKey "
         );
 
         if (costCenters != null && !costCenters.isEmpty()) {
@@ -4004,9 +4004,9 @@ public class CxoFinanceService {
 
         sql.append("  UNION ALL " +
                 "  SELECT 'PRIOR' AS fy_label, expense_category_id, opex_amount_dkk " +
-                "  FROM fact_opex " +
-                "  WHERE CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) >= :priorFromKey " +
-                "    AND CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) <= :priorToKey "
+                "  FROM fact_opex_mat " +
+                "  WHERE month_key >= :priorFromKey " +
+                "    AND month_key <= :priorToKey "
         );
 
         if (costCenters != null && !costCenters.isEmpty()) {
@@ -4034,7 +4034,7 @@ public class CxoFinanceService {
                 "SELECT " +
                 "    SUM(voluntary_leavers_count) AS total_leavers, " +
                 "    AVG(average_headcount) AS avg_headcount " +
-                "FROM fact_employee_monthly " +
+                "FROM fact_employee_monthly_mat " +
                 "WHERE month_key >= :fromMonthKey " +
                 "  AND month_key <= :toMonthKey "
         );

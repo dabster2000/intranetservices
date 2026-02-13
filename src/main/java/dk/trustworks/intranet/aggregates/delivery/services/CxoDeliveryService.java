@@ -130,8 +130,8 @@ public class CxoDeliveryService {
         sql.append("SELECT ");
         sql.append("  SUM(f.billable_hours) AS total_billable, ");
         sql.append("  SUM(f.net_available_hours) AS total_available ");
-        sql.append("FROM fact_user_utilization f ");
-        sql.append("WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("FROM fact_user_utilization_mat f ");
+        sql.append("WHERE f.month_key ");
         sql.append("  BETWEEN :fromKey AND :toKey ");
         sql.append("  AND f.net_available_hours > 0 ");  // Prevent division by zero
 
@@ -259,7 +259,7 @@ public class CxoDeliveryService {
         sql.append("SELECT ");
         sql.append("  SUM(f.billable_hours) AS total_billable, ");
         sql.append("  SUM(f.net_available_hours) AS total_available ");
-        sql.append("FROM fact_user_utilization f ");
+        sql.append("FROM fact_user_utilization_mat f ");
         sql.append("WHERE f.month_key = :monthKey ");
         sql.append("  AND f.net_available_hours > 0 ");
 
@@ -645,8 +645,8 @@ public class CxoDeliveryService {
         sql.append("    f.user_id, ");
         sql.append("    SUM(f.billable_hours) AS billable, ");
         sql.append("    SUM(f.net_available_hours) AS available ");
-        sql.append("  FROM fact_user_utilization f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_user_utilization_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.net_available_hours > 0 ");
 
@@ -776,8 +776,8 @@ public class CxoDeliveryService {
         sql.append("    f.user_id, ");
         sql.append("    SUM(f.billable_hours) AS billable, ");
         sql.append("    SUM(f.net_available_hours) AS available ");
-        sql.append("  FROM fact_user_utilization f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_user_utilization_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.net_available_hours > 0 ");
 
@@ -1123,8 +1123,8 @@ public class CxoDeliveryService {
         sql.append("  SELECT f.project_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) AS revenue, ");
         sql.append("         MAX(f.direct_delivery_cost_dkk) AS cost ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.recognized_revenue_dkk > 0 ");
         sql.append("    AND f.client_id IS NOT NULL ");

@@ -168,8 +168,8 @@ public class CxoClientService {
         sql.append("SELECT COUNT(DISTINCT dedupe.client_id) AS active_clients ");
         sql.append("FROM ( ");
         sql.append("  SELECT f.client_id, f.project_id, f.month_key ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -394,8 +394,8 @@ public class CxoClientService {
         sql.append("WITH dedupe AS ( ");
         sql.append("  SELECT f.client_id, f.project_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as recognized_revenue_dkk ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -647,8 +647,8 @@ public class CxoClientService {
         sql.append("FROM ( ");
         sql.append("  SELECT f.project_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) AS max_revenue ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -799,8 +799,8 @@ public class CxoClientService {
         sql.append("  SELECT f.client_id, f.project_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
         sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -972,8 +972,8 @@ public class CxoClientService {
         sql.append("  SELECT f.client_id, f.sector_id, f.project_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
         sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -1139,7 +1139,7 @@ public class CxoClientService {
         sql.append("WITH first_activity AS ( ");
         sql.append("  SELECT f.client_id, ");
         sql.append("         MIN(LAST_DAY(STR_TO_DATE(CONCAT(f.month_key, '01'), '%Y%m%d'))) as first_activity_date ");
-        sql.append("  FROM fact_project_financials f ");
+        sql.append("  FROM fact_project_financials_mat f");
         sql.append("  WHERE f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
         sql.append("  GROUP BY f.client_id ");
@@ -1154,9 +1154,9 @@ public class CxoClientService {
         sql.append("         f.project_id, f.service_line_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
         sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
-        sql.append("  FROM fact_project_financials f ");
+        sql.append("  FROM fact_project_financials_mat f");
         sql.append("  LEFT JOIN client c ON f.client_id = c.uuid ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -1183,8 +1183,8 @@ public class CxoClientService {
         sql.append("dedupe_prior AS ( ");
         sql.append("  SELECT f.client_id, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :priorFromKey AND :priorToKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -1471,8 +1471,8 @@ public class CxoClientService {
         sql.append("SELECT DISTINCT dedupe.client_id ");
         sql.append("FROM ( ");
         sql.append("  SELECT f.client_id, f.project_id, f.month_key ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
@@ -1616,8 +1616,8 @@ public class CxoClientService {
         sql.append("WITH dedupe AS ( ");
         sql.append("  SELECT f.client_id, f.service_line_id, f.project_id, f.month_key, ");
         sql.append("         MAX(f.recognized_revenue_dkk) as revenue ");
-        sql.append("  FROM fact_project_financials f ");
-        sql.append("  WHERE CAST(f.month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("  FROM fact_project_financials_mat f");
+        sql.append("  WHERE f.month_key ");
         sql.append("    BETWEEN :fromKey AND :toKey ");
         sql.append("    AND f.client_id IS NOT NULL ");
         sql.append("    AND f.service_line_id IS NOT NULL ");
@@ -2083,8 +2083,8 @@ public class CxoClientService {
         sql.append("    SELECT client_id, SUM(max_revenue) AS revenue ");
         sql.append("    FROM ( ");
         sql.append("      SELECT client_id, project_id, month_key, MAX(recognized_revenue_dkk) AS max_revenue ");
-        sql.append("      FROM fact_project_financials ");
-        sql.append("      WHERE CAST(month_key AS CHAR CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci) ");
+        sql.append("      FROM fact_project_financials_mat ");
+        sql.append("      WHERE month_key ");
         sql.append("        BETWEEN :fromKey AND :toKey ");
 
         if (companyIds != null && !companyIds.isEmpty()) {

@@ -4,7 +4,7 @@ quarkus:
   datasource:
     db-kind: mariadb
     jdbc:
-      url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris}
+      url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?noDatetimeStringSync=true&characterEncoding=utf8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=true&serverTimezone=Europe/Paris&collation=utf8mb4_general_ci}
       driver: org.mariadb.jdbc.Driver
       min-size: 5
       max-size: 32

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.config.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.config.model.PageMigration;
 
 import java.time.LocalDateTime;
@@ -23,7 +24,7 @@ public record PageMigrationDto(
         int displayOrder,
         String section,
         String iconName,
-        boolean isExternal,
+        @JsonProperty("isExternal") boolean isExternal,
         String externalUrl,
         LocalDateTime migratedAt
 ) {
