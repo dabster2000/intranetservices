@@ -169,7 +169,7 @@ public class InvoiceService {
         LocalDate finalFromdate = fromdate!=null?fromdate:LocalDate.of(2014,1,1);
         LocalDate finalTodate = todate!=null?todate:LocalDate.now();
 
-        List<Invoice> invoices = Invoice.find("invoicedate >= ?1 AND invoicedate < ?2 AND bookingdate = '1900-01-01'",
+        List<Invoice> invoices = Invoice.find("invoicedate >= ?1 AND invoicedate < ?2 AND bookingdate IS NULL",
                 finalFromdate, finalTodate).list();
 
         invoices.addAll(Invoice.find("bookingdate >= ?1 AND bookingdate < ?2",
@@ -237,7 +237,7 @@ public class InvoiceService {
     public double calculateInvoiceSumByMonth(String companyuuid, LocalDate month) {
         String sql = "select sum(if(type = 0, (ii.rate*ii.hours), -(ii.rate*ii.hours))) sum from invoiceitems ii " +
                 "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = '"+companyuuid+"' AND EXTRACT(YEAR_MONTH FROM if(i.bookingdate != '1900-01-01', i.bookingdate, i.invoicedate)) = "+stringIt(month, "yyyyMM")+"; ";
+                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = '"+companyuuid+"' AND EXTRACT(YEAR_MONTH FROM COALESCE(i.bookingdate, i.invoicedate)) = "+stringIt(month, "yyyyMM")+"; ";
         Object singleResult = em.createNativeQuery(sql).getSingleResult();
         return singleResult!=null?((Number) singleResult).doubleValue():0.0;
     }

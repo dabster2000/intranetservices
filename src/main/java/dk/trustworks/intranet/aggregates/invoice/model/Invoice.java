@@ -161,7 +161,6 @@ public class Invoice extends PanacheEntityBase {
         this.currency = currency;
         if(currency.equals("DKK")) this.vat = 25.0;
         else this.vat = 0.0;
-        this.bookingdate = LocalDate.of(1900,1,1);
         this.contractuuid = contractuuid;
         this.discount = discount;
         this.otheraddressinfo = otheraddressinfo;
