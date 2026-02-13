@@ -84,7 +84,7 @@ public class UtilizationService {
                 SELECT
                     bdd.year,
                     bdd.month,
-                    COALESCE(SUM(bbpd.budgetHours), 0) AS budget_hours,
+                    COALESCE(SUM(b.total_budget), 0) AS budget_hours,
                     GREATEST(0.0, SUM(bdd.net_available_hours)) AS available_hours
                 FROM teamroles tr
                 JOIN fact_user_day bdd
@@ -93,11 +93,12 @@ public class UtilizationService {
                     AND bdd.document_date < :toDate
                     AND bdd.status_type = 'ACTIVE'
                     AND bdd.consultant_type = 'CONSULTANT'
-                LEFT JOIN fact_budget_day bbpd
-                    ON bbpd.useruuid = tr.useruuid
-                    AND bbpd.year = bdd.year
-                    AND bbpd.month = bdd.month
-                    AND bbpd.document_date = bdd.document_date
+                LEFT JOIN (
+                    SELECT useruuid, document_date, SUM(budgetHours) AS total_budget
+                    FROM fact_budget_day
+                    GROUP BY useruuid, document_date
+                ) b ON b.useruuid = tr.useruuid
+                    AND b.document_date = bdd.document_date
                 WHERE tr.teamuuid = :teamId
                     AND tr.membertype = 'MEMBER'
                     AND tr.startdate <= bdd.document_date
@@ -280,6 +281,88 @@ public class UtilizationService {
 
         return userMap.entrySet().stream()
                 .map(e -> new KeyDateValueListDTO(e.getKey(), e.getValue()))
+                .toList();
+    }
+
+    /**
+     * Calculates actual utilization per month across all companies.
+     * Uses fact_user_day with registered_billable_hours / net_available_hours.
+     */
+    @SuppressWarnings("unchecked")
+    public List<DateValueDTO> calculateAllCompaniesActualUtilizationByMonth(LocalDate fromDate, LocalDate toDate) {
+        String sql = """
+                SELECT
+                    bdd.year,
+                    bdd.month,
+                    COALESCE(SUM(bdd.registered_billable_hours), 0) AS billable_hours,
+                    GREATEST(0.0, SUM(bdd.net_available_hours)) AS available_hours
+                FROM fact_user_day bdd
+                WHERE bdd.document_date >= :fromDate
+                    AND bdd.document_date < :toDate
+                    AND bdd.consultant_type = 'CONSULTANT'
+                    AND bdd.status_type = 'ACTIVE'
+                GROUP BY bdd.year, bdd.month
+                ORDER BY bdd.year, bdd.month
+                """;
+
+        List<Tuple> results = em.createNativeQuery(sql, Tuple.class)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
+
+        return results.stream()
+                .map(t -> {
+                    double billable = ((Number) t.get("billable_hours")).doubleValue();
+                    double available = ((Number) t.get("available_hours")).doubleValue();
+                    return new DateValueDTO(
+                            LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
+                            available > 0 ? billable / available : 0.0
+                    );
+                })
+                .toList();
+    }
+
+    /**
+     * Calculates budget utilization per month across all companies.
+     * Uses fact_user_day + fact_budget_day with budgetHours / net_available_hours.
+     */
+    @SuppressWarnings("unchecked")
+    public List<DateValueDTO> calculateAllCompaniesBudgetUtilizationByMonth(LocalDate fromDate, LocalDate toDate) {
+        String sql = """
+                SELECT
+                    bdd.year,
+                    bdd.month,
+                    COALESCE(SUM(b.total_budget), 0) AS budget_hours,
+                    GREATEST(0.0, SUM(bdd.net_available_hours)) AS available_hours
+                FROM fact_user_day bdd
+                LEFT JOIN (
+                    SELECT useruuid, document_date, SUM(budgetHours) AS total_budget
+                    FROM fact_budget_day
+                    GROUP BY useruuid, document_date
+                ) b ON b.useruuid = bdd.useruuid
+                    AND b.document_date = bdd.document_date
+                WHERE bdd.document_date >= :fromDate
+                    AND bdd.document_date < :toDate
+                    AND bdd.consultant_type = 'CONSULTANT'
+                    AND bdd.status_type = 'ACTIVE'
+                GROUP BY bdd.year, bdd.month
+                ORDER BY bdd.year, bdd.month
+                """;
+
+        List<Tuple> results = em.createNativeQuery(sql, Tuple.class)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
+
+        return results.stream()
+                .map(t -> {
+                    double budget = ((Number) t.get("budget_hours")).doubleValue();
+                    double available = ((Number) t.get("available_hours")).doubleValue();
+                    return new DateValueDTO(
+                            LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
+                            available > 0 ? budget / available : 0.0
+                    );
+                })
                 .toList();
     }
 

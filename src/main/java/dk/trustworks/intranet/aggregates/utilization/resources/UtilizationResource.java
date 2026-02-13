@@ -53,6 +53,9 @@ public class UtilizationResource {
     public List<DateValueDTO> getBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
+        if (companyuuid.equals("all")) {
+            return utilizationService.calculateAllCompaniesBudgetUtilizationByMonth(fromDate, toDate);
+        }
         Company company = Company.findById(companyuuid);
         List<CompanyBudgetPerMonth> companyBudgetPerMonthList = budgetService.getCompanyBudgetsByPeriod(company, fromDate, toDate);
 
@@ -89,6 +92,9 @@ public class UtilizationResource {
     public List<DateValueDTO> getActualUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
+        if (companyuuid.equals("all")) {
+            return utilizationService.calculateAllCompaniesActualUtilizationByMonth(fromDate, toDate);
+        }
         Company company = Company.findById(companyuuid);
         List<CompanyWorkPerMonth> workPerMonthList = CompanyWorkPerMonth.list("company = ?1 " +
                 "AND ( " +
