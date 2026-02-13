@@ -214,7 +214,7 @@ public class InvoiceGenerator {
                                 project.getName(),
                                 0.0,
                                 month.getYear(),
-                                month.getMonthValue()-1,
+                                month.getMonthValue(),
                                 clientdata.getClientname(),
                                 clientdata.getStreetnamenumber(),
                                 clientdata.getOtheraddressinfo(),

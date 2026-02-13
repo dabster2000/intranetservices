@@ -113,7 +113,7 @@ public class InvoiceService {
             case CREDIT_NOTE -> -invoice.getSumWithNoTaxInDKK(exchangeRate);
             default -> 0.0;
         };
-        return new DateValueDTO(LocalDate.of(invoice.getYear(), invoice.getMonth() + 1, 1), sum);
+        return new DateValueDTO(LocalDate.of(invoice.getYear(), invoice.getMonth(), 1), sum);
     }
 
     public Invoice findOneByUuid(String invoiceuuid) {
@@ -247,7 +247,7 @@ public class InvoiceService {
         String[] finalStatus = (status!=null && status.length>0)?status:new String[]{CREATED.name(), DRAFT.name(), QUEUED.name()};
         LocalDate date = month.withDayOfMonth(1);
         String sql = "SELECT * FROM invoices i WHERE " +
-                "i.year = " + date.getYear() + " AND i.month = " + (date.getMonthValue() - 1) + " " +
+                "i.year = " + date.getYear() + " AND i.month = " + date.getMonthValue() + " " +
                 " AND i.status IN ('"+String.join("','", finalStatus)+"');";
         List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
         return Collections.unmodifiableList(invoices);
@@ -451,7 +451,7 @@ public class InvoiceService {
         log.infof("Invoice %s queued for e-conomics upload with status PENDING", draftInvoice.getUuid());
         String contractuuid = draftInvoice.getContractuuid();
         String projectuuid = draftInvoice.getProjectuuid();
-        workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth()+1, draftInvoice.getYear());
+        workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth(), draftInvoice.getYear());
 
         return draftInvoice;
     }
