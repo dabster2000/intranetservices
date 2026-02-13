@@ -1,7 +1,5 @@
 package dk.trustworks.intranet.messaging.consumers;
 
-import dk.trustworks.intranet.batch.ContractConsultantRecalcJobLauncher;
-import dk.trustworks.intranet.bi.services.BudgetCalculatingExecutor;
 import dk.trustworks.intranet.messaging.consumers.util.EventDataParser;
 import dk.trustworks.intranet.messaging.dto.EventData;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -17,19 +15,22 @@ import org.eclipse.microprofile.reactive.messaging.Message;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.transaction.Transactional;
 import java.time.LocalDate;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 
+/**
+ * Kafka consumer for contract consultant update events.
+ *
+ * <p>Since Phase 4, BI recalculation is handled by database triggers and the
+ * sp_incremental_bi_refresh stored procedure (runs every 5 minutes via MariaDB event).
+ * This consumer only logs the event for observability.
+ */
 @JBossLog
 @ApplicationScoped
 public class ContractConsultantUpdateConsumer {
 
     private static final String CHANNEL = "contract-consultant-updates";
-
-    @Inject
-    ContractConsultantRecalcJobLauncher contractConsultantRecalcJobLauncher;
 
     @Inject
     MeterRegistry registry;
@@ -41,7 +42,6 @@ public class ContractConsultantUpdateConsumer {
     @Acknowledgment(Acknowledgment.Strategy.MANUAL)
     @WithSpan("consumer.contract-consultant-updates")
     @Blocking
-    @Transactional
     public CompletionStage<Void> onMessage(Message<String> msg) {
         Timer timer = registry.timer("kafka.consumer.process", "channel", CHANNEL);
         var success = registry.counter("kafka.consumer.messages", "result", "success", "channel", CHANNEL);
@@ -72,10 +72,11 @@ public class ContractConsultantUpdateConsumer {
             }
             String useruuid = eventData.getAggregateRootUUID();
             LocalDate date = DateUtils.dateIt(eventData.getAggregateDate());
-            long execId = contractConsultantRecalcJobLauncher.launch(useruuid, date, 4);
-            log.infof("Started contract-consultant forward recalc job execId=%d user=%s from=%s to=%s", execId, useruuid, date, LocalDate.now().plusYears(2));
+
+            // BI recalculation is now handled by DB triggers + sp_incremental_bi_refresh (Phase 4)
             long durMs = (System.nanoTime() - startNs) / 1_000_000;
-            log.infof("Processed contract-consultant update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", topic, partition, offset, key, useruuid, date, durMs);
+            log.infof("Contract consultant update noted (BI recalc via DB triggers) topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d",
+                     topic, partition, offset, key, useruuid, date, durMs);
             success.increment();
             sample.stop(timer);
             return msg.ack();

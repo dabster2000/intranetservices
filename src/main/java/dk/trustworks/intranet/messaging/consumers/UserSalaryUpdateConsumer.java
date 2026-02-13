@@ -1,7 +1,5 @@
 package dk.trustworks.intranet.messaging.consumers;
 
-import dk.trustworks.intranet.batch.SalaryRecalcJobLauncher;
-import dk.trustworks.intranet.bi.services.UserSalaryCalculatorService;
 import dk.trustworks.intranet.messaging.consumers.util.EventDataParser;
 import dk.trustworks.intranet.messaging.dto.EventData;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -21,17 +19,18 @@ import java.time.LocalDate;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 
+/**
+ * Kafka consumer for user salary update events.
+ *
+ * <p>Since Phase 4, BI recalculation is handled by database triggers and the
+ * sp_incremental_bi_refresh stored procedure (runs every 5 minutes via MariaDB event).
+ * This consumer only logs the event for observability.
+ */
 @JBossLog
 @ApplicationScoped
 public class UserSalaryUpdateConsumer {
 
     private static final String CHANNEL = "user-salary-updates";
-
-    @Inject
-    UserSalaryCalculatorService userSalaryCalculatorService;
-
-    @Inject
-    SalaryRecalcJobLauncher salaryRecalcJobLauncher;
 
     @Inject
     MeterRegistry registry;
@@ -73,15 +72,11 @@ public class UserSalaryUpdateConsumer {
             }
             String useruuid = eventData.getAggregateRootUUID();
             LocalDate date = DateUtils.dateIt(eventData.getAggregateDate());
-            //userSalaryCalculatorService.recalculateSalary(useruuid, date);
-            // Launch a bounded, partitioned batch job (non-blocking for the consumer thread)
-            long execId = salaryRecalcJobLauncher.launch(useruuid, date, 4);
 
-            log.infof("Started user-salary forward recalc job execId=%d user=%s from=%s to=%s", execId, useruuid, date, LocalDate.now().plusYears(2));
-
-            // Acknowledge the message immediately; the batch job runs in background
+            // BI recalculation is now handled by DB triggers + sp_incremental_bi_refresh (Phase 4)
             long durMs = (System.nanoTime() - startNs) / 1_000_000;
-            log.infof("Processed user-salary update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", topic, partition, offset, key, useruuid, date, durMs);
+            log.infof("User salary update noted (BI recalc via DB triggers) topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d",
+                     topic, partition, offset, key, useruuid, date, durMs);
             success.increment();
             sample.stop(timer);
             return msg.ack();

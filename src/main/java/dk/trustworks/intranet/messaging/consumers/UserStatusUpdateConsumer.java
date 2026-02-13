@@ -1,6 +1,5 @@
 package dk.trustworks.intranet.messaging.consumers;
 
-import dk.trustworks.intranet.batch.StatusRecalcJobLauncher;
 import dk.trustworks.intranet.messaging.consumers.util.EventDataParser;
 import dk.trustworks.intranet.messaging.dto.EventData;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -20,14 +19,18 @@ import java.time.LocalDate;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
 
+/**
+ * Kafka consumer for user status update events.
+ *
+ * <p>Since Phase 4, BI recalculation is handled by database triggers and the
+ * sp_incremental_bi_refresh stored procedure (runs every 5 minutes via MariaDB event).
+ * This consumer only logs the event for observability.
+ */
 @JBossLog
 @ApplicationScoped
 public class UserStatusUpdateConsumer {
 
     private static final String CHANNEL = "user-status-updates";
-    
-    @Inject
-    StatusRecalcJobLauncher statusRecalcJobLauncher;
 
     @Inject
     MeterRegistry registry;
@@ -69,17 +72,10 @@ public class UserStatusUpdateConsumer {
             }
             String useruuid = eventData.getAggregateRootUUID();
             LocalDate date = DateUtils.dateIt(eventData.getAggregateDate());
-            
-            // Launch a batch job to recalculate all affected future dates
-            // This ensures status changes propagate forward for availability, budgets, and work aggregates
-            long execId = statusRecalcJobLauncher.launch(useruuid, date, 4);
-            
-            log.infof("Started user-status forward recalc job execId=%d user=%s from=%s to=%s", 
-                     execId, useruuid, date, LocalDate.now().plusYears(2));
-            
-            // Acknowledge the message immediately; the batch job runs in background
+
+            // BI recalculation is now handled by DB triggers + sp_incremental_bi_refresh (Phase 4)
             long durMs = (System.nanoTime() - startNs) / 1_000_000;
-            log.infof("Processed user-status update topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d", 
+            log.infof("User status update noted (BI recalc via DB triggers) topic=%s partition=%d offset=%d key=%s user=%s date=%s durationMs=%d",
                      topic, partition, offset, key, useruuid, date, durMs);
             success.increment();
             sample.stop(timer);

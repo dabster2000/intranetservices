@@ -47,34 +47,7 @@ public class JobMonitoringListener implements JobListener {
         try {
             Properties params = jobOperator.getParameters(executionId);
             if (params != null) {
-                if (Objects.equals(jobName, "user-salary-forward-recalc") || Objects.equals(jobName, "contract-consultant-forward-recalc")) {
-                    String start = params.getProperty("start");
-                    String end   = params.getProperty("end");
-                    if (start != null && end != null) {
-                        LocalDate s = LocalDate.parse(start);
-                        LocalDate e = LocalDate.parse(end);
-                        long days = ChronoUnit.DAYS.between(s, e) + 1; // inclusive per job design
-                        if (days > 0 && days < Integer.MAX_VALUE) {
-                            log.infof("[JOB-MONITOR] Setting total subtasks to %d days for %s", days, jobName);
-                            trackingService.setTotalSubtasks(executionId, (int) days);
-                        }
-                    }
-                } else if (Objects.equals(jobName, "bi-date-update")) {
-                    String start = params.getProperty("startDate");
-                    String end   = params.getProperty("endDate");
-                    if (start != null && end != null) {
-                        LocalDate s = LocalDate.parse(start);
-                        LocalDate e = LocalDate.parse(end);
-                        long days = ChronoUnit.DAYS.between(s, e); // exclusive upper bound in mapper
-                        int users = safeUserCount();
-                        long total = Math.max(0, days) * Math.max(users, 0);
-                        if (total > 0 && total < Integer.MAX_VALUE) {
-                            log.infof("[JOB-MONITOR] Setting total subtasks to %d (days=%d, users=%d) for bi-date-update", 
-                                     total, days, users);
-                            trackingService.setTotalSubtasks(executionId, (int) total);
-                        }
-                    }
-                } else if (Objects.equals(jobName, "budget-aggregation")) {
+                if (Objects.equals(jobName, "budget-aggregation")) {
                     String partitions = params.getProperty("partitions");
                     try {
                         if (partitions != null && !partitions.isBlank()) {

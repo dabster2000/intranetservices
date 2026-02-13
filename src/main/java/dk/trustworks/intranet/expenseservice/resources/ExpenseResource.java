@@ -1,14 +1,15 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
+import dk.trustworks.intranet.expenseservice.services.EconomicsService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.model.Company;
-import dk.trustworks.intranet.domain.user.entity.User;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import jakarta.annotation.security.RolesAllowed;
@@ -32,7 +33,7 @@ import java.util.List;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"SYSTEM", "USER"})
 public class ExpenseResource {
 
     @Inject
@@ -48,7 +49,7 @@ public class ExpenseResource {
     EntityManager em;
 
     @Inject
-    dk.trustworks.intranet.expenseservice.services.EconomicsService economicsService;
+    EconomicsService economicsService;
 
     @GET
     @Path("/{uuid}")
