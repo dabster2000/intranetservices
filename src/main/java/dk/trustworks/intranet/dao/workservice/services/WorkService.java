@@ -211,20 +211,23 @@ public class WorkService {
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid = ?3", fromdate, todate, useruuid).list();
     }
 
+    @SuppressWarnings("unchecked")
     public List<DateValueDTO> findWorkHoursByUserAndPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "select " +
+        String sql = "SELECT " +
                 "    MAKEDATE(YEAR(wf.registered), 1) + INTERVAL (MONTH(wf.registered) - 1) MONTH AS date, " +
-                "    SUM(wf.workduration) as value " +
-                "from " +
-                "    work_full wf " +
-                "where " +
-                "    useruuid = '"+useruuid+"' and " +
-                "    wf.workduration > 0 and " +
-                "    wf.rate > 0 " +
-                "    and wf.registered >= '"+DateUtils.stringIt(fromdate)+"' and wf.registered < '"+DateUtils.stringIt(todate)+"' " +
-                "group by " +
-                "    YEAR(wf.registered), MONTH(wf.registered); ";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                "    SUM(wf.workduration) AS value " +
+                "FROM work_full wf " +
+                "WHERE wf.useruuid = :useruuid " +
+                "    AND wf.workduration > 0 " +
+                "    AND wf.rate > 0 " +
+                "    AND wf.registered >= :fromdate " +
+                "    AND wf.registered < :todate " +
+                "GROUP BY YEAR(wf.registered), MONTH(wf.registered)";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("useruuid", useruuid)
+                .setParameter("fromdate", fromdate)
+                .setParameter("todate", todate)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -248,20 +251,23 @@ public class WorkService {
         return new DateValueDTO(day, value != null ? value.doubleValue() : 0d);
     }
 
+    @SuppressWarnings("unchecked")
     public List<DateValueDTO> findWorkRevenueByUserAndPeriod(String useruuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "select " +
+        String sql = "SELECT " +
                 "    MAKEDATE(YEAR(wf.registered), 1) + INTERVAL (MONTH(wf.registered) - 1) MONTH AS date, " +
-                "    SUM(wf.workduration * wf.rate) as value " +
-                "from " +
-                "    work_full wf " +
-                "where " +
-                "    useruuid = '"+useruuid+"' and " +
-                "    wf.workduration > 0 and " +
-                "    wf.rate > 0 " +
-                "    and wf.registered >= '"+DateUtils.stringIt(fromdate)+"' and wf.registered < '"+DateUtils.stringIt(todate)+"' " +
-                "group by " +
-                "    YEAR(wf.registered), MONTH(wf.registered); ";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                "    SUM(wf.workduration * wf.rate) AS value " +
+                "FROM work_full wf " +
+                "WHERE wf.useruuid = :useruuid " +
+                "    AND wf.workduration > 0 " +
+                "    AND wf.rate > 0 " +
+                "    AND wf.registered >= :fromdate " +
+                "    AND wf.registered < :todate " +
+                "GROUP BY YEAR(wf.registered), MONTH(wf.registered)";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("useruuid", useruuid)
+                .setParameter("fromdate", fromdate)
+                .setParameter("todate", todate)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")

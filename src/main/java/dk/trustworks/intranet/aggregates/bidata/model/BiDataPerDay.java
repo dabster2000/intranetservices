@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
-@Table(name = "bi_data_per_day", indexes = {
+@Table(name = "fact_user_day", indexes = {
         @Index(name = "idx_availability_useruuid_month", columnList = "useruuid, document_date"),
         @Index(name = "idx_availability_month", columnList = "document_date"),
         @Index(name = "idx_year", columnList = "year"),
@@ -72,6 +72,9 @@ public class BiDataPerDay extends PanacheEntityBase {
     @Column(name = "paid_leave_hours", precision = 7, scale = 4)
     public BigDecimal paidLeaveHours;
 
+    @Column(name = "net_available_hours", precision = 7, scale = 4)
+    public BigDecimal netAvailableHoursColumn;
+
     @Column(name = "consultant_type", length = 50)
     @Enumerated(EnumType.STRING)
     public ConsultantType consultantType;
@@ -80,17 +83,8 @@ public class BiDataPerDay extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     public StatusType statusType;
 
-    @Column(name = "contract_utilization", precision = 7, scale = 4)
-    public BigDecimal contractUtilization;
-
-    @Column(name = "actual_utilization", precision = 7, scale = 4)
-    public BigDecimal actualUtilization;
-
     @Column(name = "registered_billable_hours", precision = 7, scale = 4)
     public BigDecimal registeredBillableHours;
-
-    @Column(name = "helped_colleague_billable_hours", precision = 7, scale = 4)
-    public BigDecimal helpedColleagueBillableHours;
 
     @Column(name = "registered_amount", precision = 9, scale = 2)
     public BigDecimal registeredAmount;
@@ -115,6 +109,7 @@ public class BiDataPerDay extends PanacheEntityBase {
     @Transient
     @JsonIgnore
     public Double getNetAvailableHours() {
+        if (netAvailableHoursColumn != null) return netAvailableHoursColumn.doubleValue();
         if (grossAvailableHours == null) return 0.0;
 
         return Math.max(

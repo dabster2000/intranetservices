@@ -59,7 +59,7 @@ public class AvailabilityService {
         return ((Number) em.createNativeQuery(
                 "SELECT GREATEST(0.0, SUM(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours " +
                 "  - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours)) AS value " +
-                "FROM bi_data_per_day e " +
+                "FROM fact_user_day e " +
                 "WHERE e.status_type = 'ACTIVE' " +
                 "  AND e.consultant_type = 'CONSULTANT' " +
                 "  AND e.useruuid IN :uuids " +
@@ -163,50 +163,6 @@ public class AvailabilityService {
                 })
                 .collect(Collectors.toList());
     }
-
-
-    /*
-    @NotNull
-    private List<EmployeeAvailabilityPerMonth> getEmployeeAvailabilityPerMonths(List<BiDataPerDay> aggregates) {
-        return aggregates
-                .stream()
-                .collect(Collectors.groupingBy(
-                        e -> new AbstractMap.SimpleEntry<>(new AbstractMap.SimpleEntry<>(e.getYear(), e.getMonth()), e.getUser()),
-                        Collectors.collectingAndThen(Collectors.toList(), list -> {
-                            // In this block, we process each group to create a CompanyBudgetPerMonth object
-
-                            // Assuming year, month, client, company, and contract are the same for all entries in the group
-                            BiDataPerDay example = list.getFirst();
-                            int year = example.getYear();
-                            int month = example.getMonth();
-                            User user = example.getUser();
-                            Company company = example.getCompany();
-                            ConsultantType consultantType = example.getConsultantType();
-                            StatusType status = example.getStatusType();
-
-                            // statusType not in ('TERMINATED','PREBOARDING') or null
-                            if(status == null || status.equals(StatusType.TERMINATED) || status.equals(StatusType.PREBOARDING) || status.equals(StatusType.NON_PAY_LEAVE)) {
-                                return new EmployeeAvailabilityPerMonth(year, month, company, user.getUuid(), consultantType, StatusType.TERMINATED, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, false);
-                            }
-
-                            double grossAvailableHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getGrossAvailableHours().doubleValue()).sum();
-                            double unavavailableHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getUnavailableHours().doubleValue()).sum();
-                            double vacationHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getVacationHours().doubleValue()).sum();
-                            double sickHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getSickHours().doubleValue()).sum();
-                            double maternityLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getMaternityLeaveHours().doubleValue()).sum();
-                            double nonPaydLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getNonPaydLeaveHours().doubleValue()).sum();
-                            double paidLeaveHours = list.stream().mapToDouble(employeeAvailabilityPerDayAggregate -> employeeAvailabilityPerDayAggregate.getPaidLeaveHours().doubleValue()).sum();
-                            double salary = list.stream().mapToDouble(BiDataPerDay::getSalary).average().orElse(0.0);
-                            boolean isTwBonusEligible = list.stream().allMatch(BiDataPerDay::isTwBonusEligible);
-
-
-                            return new EmployeeAvailabilityPerMonth(year, month, company, user.getUuid(), consultantType, status, BigDecimal.valueOf(grossAvailableHours), BigDecimal.valueOf(unavavailableHours), BigDecimal.valueOf(vacationHours), BigDecimal.valueOf(sickHours), BigDecimal.valueOf(maternityLeaveHours), BigDecimal.valueOf(nonPaydLeaveHours), BigDecimal.valueOf(paidLeaveHours), BigDecimal.valueOf(salary), isTwBonusEligible);
-                        })
-                ))
-                .values().stream().toList();
-    }
-
-     */
 
     public double calculateSalarySum(Company company, LocalDate date, List<EmployeeAvailabilityPerMonth> data) {
         AtomicReference<Double> sum = new AtomicReference<>(0.0);

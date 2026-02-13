@@ -19,8 +19,6 @@ import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import static dk.trustworks.intranet.utils.DateUtils.stringIt;
-
 
 @JBossLog
 @ApplicationScoped
@@ -36,15 +34,19 @@ public class BudgetService {
         return getCompanyBudgetPerMonths(company, startDate, endDate, sql);
     }
 
+    @SuppressWarnings("unchecked")
     public List<DateValueDTO> getContractConsultantBudgetAmount(String contractuuid, String useruuid) {
-        String sql = "SELECT ad.document_date AS date,  " +
-                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
-                "FROM bi_budget_per_day ad  " +
-                "WHERE ad.budgetHours > 0  " +
-                "  AND ad.contractuuid = '"+contractuuid+"'  " +
-                "  AND ad.useruuid = '"+useruuid+"'  " +
-                "  GROUP BY ad.year, ad.month;";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+        String sql = "SELECT ad.document_date AS date, " +
+                "       SUM(ad.budgetHours * ad.rate) AS value " +
+                "FROM fact_budget_day ad " +
+                "WHERE ad.budgetHours > 0 " +
+                "  AND ad.contractuuid = :contractuuid " +
+                "  AND ad.useruuid = :useruuid " +
+                "GROUP BY ad.year, ad.month";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("contractuuid", contractuuid)
+                .setParameter("useruuid", useruuid)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -52,17 +54,21 @@ public class BudgetService {
                 .toList();
     }
 
+    @SuppressWarnings("unchecked")
     public List<DateValueDTO> getCompanyBudgetAmountByPeriod(String companyuuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "SELECT ad.document_date AS date,  " +
-                "       SUM(ad.budgetHours * ad.rate) AS value  " +
-                "FROM bi_budget_per_day ad  " +
-                "WHERE ad.budgetHours > 0  " +
-                "  AND ad.companyuuid = '"+companyuuid+"'  " +
-                "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
-                "  AND ad.document_date < '" + stringIt(todate) + "' " +
-                "  GROUP BY ad.companyuuid, ad.year, ad.month;";
-
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+        String sql = "SELECT ad.document_date AS date, " +
+                "       SUM(ad.budgetHours * ad.rate) AS value " +
+                "FROM fact_budget_day ad " +
+                "WHERE ad.budgetHours > 0 " +
+                "  AND ad.companyuuid = :companyuuid " +
+                "  AND ad.document_date >= :fromdate " +
+                "  AND ad.document_date < :todate " +
+                "GROUP BY ad.companyuuid, ad.year, ad.month";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("companyuuid", companyuuid)
+                .setParameter("fromdate", fromdate)
+                .setParameter("todate", todate)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -70,32 +76,42 @@ public class BudgetService {
                 .toList();
     }
 
+    @SuppressWarnings("unchecked")
     public DateValueDTO getCompanyBudgetAmountForSingleMonth(String companyuuid, LocalDate date) {
-        String sql = "SELECT ad.document_date                           AS date,  " +
-                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
-                "FROM bi_budget_per_day ad  " +
-                "WHERE ad.budgetHours > 0  " +
-                "  AND ad.companyuuid = '"+companyuuid+"'  " +
-                "  AND ad.year = " + date.getYear() + " " +
-                "  AND ad.month = " + date.getMonthValue() + " " +
-                "GROUP BY ad.companyuuid, ad.year, ad.month;";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+        String sql = "SELECT ad.document_date AS date, " +
+                "       SUM(ad.budgetHours * ad.rate) AS value " +
+                "FROM fact_budget_day ad " +
+                "WHERE ad.budgetHours > 0 " +
+                "  AND ad.companyuuid = :companyuuid " +
+                "  AND ad.year = :year " +
+                "  AND ad.month = :month " +
+                "GROUP BY ad.companyuuid, ad.year, ad.month";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("companyuuid", companyuuid)
+                .setParameter("year", date.getYear())
+                .setParameter("month", date.getMonthValue())
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).findAny().orElse(new DateValueDTO(date, 0.0));
     }
 
+    @SuppressWarnings("unchecked")
     public List<DateValueDTO> getBudgetAmountByPeriodAndSingleConsultant(String useruuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "SELECT ad.document_date AS date,  " +
-                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
-                "FROM bi_budget_per_day ad  " +
-                "WHERE ad.budgetHours > 0  " +
-                "  AND ad.useruuid = '"+useruuid+"'  " +
-                "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
-                "  AND ad.document_date < '" + stringIt(todate) + "' " +
-                "  GROUP BY ad.year, ad.month;";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+        String sql = "SELECT ad.document_date AS date, " +
+                "       SUM(ad.budgetHours * ad.rate) AS value " +
+                "FROM fact_budget_day ad " +
+                "WHERE ad.budgetHours > 0 " +
+                "  AND ad.useruuid = :useruuid " +
+                "  AND ad.document_date >= :fromdate " +
+                "  AND ad.document_date < :todate " +
+                "GROUP BY ad.year, ad.month";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("useruuid", useruuid)
+                .setParameter("fromdate", fromdate)
+                .setParameter("todate", todate)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -103,32 +119,42 @@ public class BudgetService {
                 .toList();
     }
 
+    @SuppressWarnings("unchecked")
     public DateValueDTO getBudgetAmountForSingleMonthAndSingleConsultant(String useruuid, LocalDate date) {
-        String sql = "SELECT ad.document_date                           AS date,  " +
-                "       SUM(ad.budgetHours * ad.rate)     AS value  " +
-                "FROM bi_budget_per_day ad  " +
-                "WHERE ad.budgetHours > 0  " +
-                "  AND ad.useruuid = '"+useruuid+"'  " +
-                "  AND ad.year = " + date.getYear() + " " +
-                "  AND ad.month = " + date.getMonthValue() + " " +
-                "GROUP BY ad.year, ad.month;";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+        String sql = "SELECT ad.document_date AS date, " +
+                "       SUM(ad.budgetHours * ad.rate) AS value " +
+                "FROM fact_budget_day ad " +
+                "WHERE ad.budgetHours > 0 " +
+                "  AND ad.useruuid = :useruuid " +
+                "  AND ad.year = :year " +
+                "  AND ad.month = :month " +
+                "GROUP BY ad.year, ad.month";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("useruuid", useruuid)
+                .setParameter("year", date.getYear())
+                .setParameter("month", date.getMonthValue())
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).findAny().orElse(new DateValueDTO(date, 0.0));
     }
 
+    @SuppressWarnings("unchecked")
     public List<DateValueDTO> getBudgetHoursByPeriodAndSingleConsultant(String useruuid, LocalDate fromdate, LocalDate todate) {
-        String sql = "SELECT ad.document_date AS date,  " +
-                "       SUM(ad.budgetHours) AS value  " +
-                "FROM bi_budget_per_day ad  " +
-                "WHERE ad.budgetHours > 0  " +
-                "  AND ad.useruuid = '"+useruuid+"'  " +
-                "  AND ad.document_date >= '" + stringIt(fromdate) + "' " +
-                "  AND ad.document_date < '" + stringIt(todate) + "' " +
-                "  GROUP BY ad.year, ad.month;";
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+        String sql = "SELECT ad.document_date AS date, " +
+                "       SUM(ad.budgetHours) AS value " +
+                "FROM fact_budget_day ad " +
+                "WHERE ad.budgetHours > 0 " +
+                "  AND ad.useruuid = :useruuid " +
+                "  AND ad.document_date >= :fromdate " +
+                "  AND ad.document_date < :todate " +
+                "GROUP BY ad.year, ad.month";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("useruuid", useruuid)
+                .setParameter("fromdate", fromdate)
+                .setParameter("todate", todate)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -162,15 +188,6 @@ public class BudgetService {
         String sql = "year = ?1 and month = ?2 and user = ?3";
         return EmployeeBudgetPerDayAggregate.<EmployeeBudgetPerDayAggregate>list(sql, month.getYear(), month.getMonthValue(), User.findById(useruuid)).stream().mapToDouble(EmployeeBudgetPerDayAggregate::getBudgetHours).sum();
     }
-
-    public double getSumOfAvailableHoursByUsersAndMonth(LocalDate localDate, String... uuids) {
-        return ((Number) em.createNativeQuery("select sum(e.gross_available_hours - e.paid_leave_hours - e.non_payd_leave_hours - e.maternity_leave_hours - e.sick_hours - e.vacation_hours - e.unavailable_hours) as value " +
-                "from bi_budget_per_day e " +
-                "where e.status_type = 'ACTIVE' and e.consultant_type = 'CONSULTANT' and e.useruuid in ('" + String.join("','", uuids) + "') " +
-                "     AND e.year = " + localDate.getYear() + " " +
-                "     AND e.month = " + localDate.getMonthValue() + "; ").getResultList().stream().filter(Objects::nonNull).findAny().orElse(0.0)).doubleValue();
-    }
-
 
     @NotNull
     private ArrayList<CompanyBudgetPerMonth> getCompanyBudgetPerMonths(Company company, LocalDate startDate, LocalDate endDate, String sql) {

@@ -418,7 +418,7 @@ Requirements:
                 ctx.append("BiDataPerDay:\n")
                         .append(mapLine("documentDate", String.valueOf(bi.documentDate)))
                         .append(mapLine("registeredBillableHours", bi.registeredBillableHours!=null?bi.registeredBillableHours.toPlainString():null))
-                        .append(mapLine("actualUtilization", bi.actualUtilization!=null?bi.actualUtilization.toPlainString():null))
+                        .append(mapLine("netAvailableHours", bi.netAvailableHoursColumn!=null?bi.netAvailableHoursColumn.toPlainString():null))
                         .append(mapLine("vacationHours", vacationHours))
                         .append(mapLine("sickHours", sickHours))
                         .append(mapLine("paidLeaveHours", paidLeaveHours))
@@ -694,8 +694,8 @@ Requirements:
                     .append(mapLine("documentDate", String.valueOf(bi.documentDate)))
                     .append(mapLine("registeredBillableHours",
                             bi.registeredBillableHours != null ? bi.registeredBillableHours.toPlainString() : null))
-                    .append(mapLine("actualUtilization",
-                            bi.actualUtilization != null ? bi.actualUtilization.toPlainString() : null))
+                    .append(mapLine("netAvailableHours",
+                            bi.netAvailableHoursColumn != null ? bi.netAvailableHoursColumn.toPlainString() : null))
                     .append(mapLine("vacationHours", safeHours(bi.vacationHours)))
                     .append(mapLine("sickHours", safeHours(bi.sickHours)))
                     .append(mapLine("paidLeaveHours", safeHours(bi.paidLeaveHours)))

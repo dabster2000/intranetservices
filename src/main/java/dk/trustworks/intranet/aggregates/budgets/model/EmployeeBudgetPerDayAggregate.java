@@ -20,7 +20,7 @@ import java.time.LocalDate;
 @Getter
 @Setter
 @Entity
-@Table(name = "bi_budget_per_day")
+@Table(name = "fact_budget_day")
 @NoArgsConstructor
 @AllArgsConstructor
 public class EmployeeBudgetPerDayAggregate extends PanacheEntityBase {
