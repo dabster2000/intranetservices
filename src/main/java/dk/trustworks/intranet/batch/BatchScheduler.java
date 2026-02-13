@@ -3,6 +3,7 @@ package dk.trustworks.intranet.batch;
 import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -16,20 +17,29 @@ public class BatchScheduler {
     @Inject
     JobOperator jobOperator;
 
+    @Inject
+    EntityManager em;
+
+    /**
+     * Nightly BI recalculation via stored procedure.
+     * Replaces the previous partitioned Jakarta Batch job (bi-date-update)
+     * with a single stored procedure call that performs set-based operations.
+     *
+     * The MariaDB event ev_bi_nightly_refresh also runs this at 03:00 daily
+     * as a resilient fallback in case the application server is down.
+     * This Java scheduler is kept as the primary trigger for observability.
+     *
+     * Parameters: 3-month lookback, 24-month forward projection.
+     */
     @Scheduled(cron = "0 0 3 ? * 7-1")
-    //@Scheduled(every = "12h")
     void trigger() {
-        LocalDate start = LocalDate.now().withDayOfMonth(1).minusMonths(24);
-        LocalDate end   = LocalDate.now().withDayOfMonth(1).plusMonths(24);
-
-        Properties params = new Properties();
-        params.setProperty("startDate", start.toString());
-        params.setProperty("endDate", end.toString());
-
-        // Let config drive concurrency; or override here if needed:
-        params.setProperty("threads", "12");
-        log.infof("Starting BI date update with start=%s end=%s", start, end);
-        jobOperator.start("bi-date-update", params);
+        log.info("Starting BI nightly refresh via stored procedure (3-month lookback, 24-month forward)");
+        try {
+            em.createNativeQuery("CALL sp_nightly_bi_refresh(3, 24)").executeUpdate();
+            log.info("BI nightly refresh completed successfully");
+        } catch (Exception e) {
+            log.errorf(e, "BI nightly refresh failed");
+        }
     }
 
     // Finance loads
