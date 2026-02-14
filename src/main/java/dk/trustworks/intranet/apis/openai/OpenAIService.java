@@ -36,7 +36,7 @@ public class OpenAIService {
         try {
             ObjectNode req = objectMapper.createObjectNode();
             req.put("model", model);
-            req.put("max_output_tokens", 16.384);
+            req.put("max_output_tokens", 16384);
 
             // JSON mode in Responses: text.format (not response_format)
             ObjectNode text = req.putObject("text");
