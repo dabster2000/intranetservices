@@ -78,6 +78,11 @@ quarkus:
     economics-journals-api:
       url: https://apis.e-conomic.com/journalsapi/v13.0.1
       scope: jakarta.inject.Singleton
+    cvtool:
+      url: https://tw-cvtool-backend.azurewebsites.net
+      scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     nextsign:
       url: https://www.nextsign.dk
       scope: jakarta.inject.Singleton
@@ -356,6 +361,10 @@ dk:
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
 pricingEngine:
   enabled: true
+cvtool:
+  username: ${CVTOOL_USERNAME:}
+  password: ${CVTOOL_PASSWORD:}
+
 nextsign:
   company: ${NEXTSIGN_COMPANY:69313a4a3abed8e75359da3f}
   bearer-token: ${NEXTSIGN_BEARER_TOKEN:key_z5TGFFHtbIzmHgZfChogJkibyuTOsEJC0PM6kAHP36TFcbrckrAnrLbQewBLZu7D}

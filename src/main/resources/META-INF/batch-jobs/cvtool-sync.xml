@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CV Tool Sync Job
+  ================
+  Nightly synchronization of base CVs from the external CV Tool API.
+  Fetches all employees, retrieves their base CV (variant 1), and
+  stores the full CV data as JSON in the cv_tool_employee_cv table.
+
+  Schedule: Daily at 04:00 (via BatchScheduler)
+  Batchlet: cvToolSyncBatchlet
+-->
+<job id="cvtool-sync" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+    <step id="cvtool-sync-step">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+        <batchlet ref="cvToolSyncBatchlet"/>
+    </step>
+</job>

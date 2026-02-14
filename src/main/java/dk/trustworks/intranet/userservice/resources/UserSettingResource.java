@@ -33,6 +33,7 @@ public class UserSettingResource {
      * @return List of all settings for the user
      */
     @GET
+    @Transactional
     public List<UserSetting> getAllSettings(@PathParam("useruuid") String userUuid) {
         log.infof("GET /users/%s/settings", userUuid);
         return userSettingService.findAllByUser(userUuid);
@@ -47,6 +48,7 @@ public class UserSettingResource {
      */
     @GET
     @Path("/{key}")
+    @Transactional
     public Response getSetting(@PathParam("useruuid") String userUuid,
                                @PathParam("key") String key) {
         log.infof("GET /users/%s/settings/%s", userUuid, key);

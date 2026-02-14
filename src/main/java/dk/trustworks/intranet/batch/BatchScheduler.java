@@ -220,6 +220,23 @@ public class BatchScheduler {
         }
     }
 
+    // CV Tool sync - daily at 04:00
+    @Scheduled(cron = "0 0 4 * * ?")
+    void scheduleCvToolSync() {
+        try {
+            if (jobOperator.getJobNames().contains("cvtool-sync")) {
+                if (!jobOperator.getRunningExecutions("cvtool-sync").isEmpty()) {
+                    log.debug("cvtool-sync already running, skipping");
+                    return;
+                }
+            }
+            log.info("Starting cvtool-sync batch job");
+            jobOperator.start("cvtool-sync", new Properties());
+        } catch (Exception e) {
+            log.warn("Could not schedule cvtool-sync: " + e.getMessage());
+        }
+    }
+
     /**
      * Fetch pending NextSign case statuses.
      *
