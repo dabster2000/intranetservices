@@ -324,6 +324,7 @@ currencyapi:
 bucket:
   expenses: expensefiles
   files: trustworksfiles
+  invoices: ${INVOICE_S3:invoicefiles-test}
 claid:
   ai:
     apikey: ${CLAID_APIKEY:xx}

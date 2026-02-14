@@ -98,6 +98,9 @@ public class InvoiceService {
     InvoiceEconomicsUploadService uploadService;
 
     @Inject
+    InvoicePdfS3Service invoicePdfS3Service;
+
+    @Inject
     JPAStreamer jpaStreamer;
     @Inject
     WorkService workService;
@@ -442,7 +445,7 @@ public class InvoiceService {
             }
         }
         draftInvoice.setStatus(CREATED);
-        draftInvoice.pdf = createInvoicePdf(draftInvoice);
+        createInvoicePdf(draftInvoice); // Uploads to S3 and sets pdfStorageKey
         log.debug("Saving invoice...");
         saveInvoice(draftInvoice);
         log.debug("Invoice saved: "+draftInvoice.getUuid());
@@ -485,7 +488,7 @@ public class InvoiceService {
         draftInvoice.setStatus(CREATED);
         draftInvoice.invoicenumber = 0;
         draftInvoice.setType(InvoiceType.PHANTOM);
-        draftInvoice.pdf = createInvoicePdf(draftInvoice);
+        createInvoicePdf(draftInvoice); // Uploads to S3 and sets pdfStorageKey
         saveInvoice(draftInvoice);
         if(!"dev".equals(LaunchMode.current().getProfileKey())) {
             uploadService.queueUploads(draftInvoice);
@@ -501,11 +504,11 @@ public class InvoiceService {
         Invoice.update(
                         "status = ?1, " +
                         "invoicenumber = ?2, " +
-                        "pdf = ?3 " +
+                        "pdfStorageKey = ?3 " +
                         "WHERE uuid like ?4 ",
                 invoice.getStatus(),
                 invoice.getInvoicenumber(),
-                invoice.getPdf(),
+                invoice.getPdfStorageKey(),
                 invoice.getUuid());
     }
 
@@ -725,7 +728,11 @@ public class InvoiceService {
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(new InvoiceDTO(invoice));
         InvoiceAPI invoiceAPI = getInvoiceAPI();
-        return invoiceAPI.createInvoicePDF(json);
+        byte[] pdfBytes = invoiceAPI.createInvoicePDF(json);
+        // Store PDF in S3 and set storage key on invoice
+        String storageKey = invoicePdfS3Service.savePdf(invoice.getUuid(), pdfBytes);
+        invoice.setPdfStorageKey(storageKey);
+        return pdfBytes;
     }
 
     public void regenerateInvoicePdf(String invoiceuuid) throws JsonProcessingException {
@@ -733,8 +740,21 @@ public class InvoiceService {
         ObjectMapper o = new ObjectMapper();
         String json = o.writeValueAsString(new InvoiceDTO(invoice));
         InvoiceAPI invoiceAPI = getInvoiceAPI();
-        invoice.pdf = invoiceAPI.createInvoicePDF(json);
-        invoice.persist();
+        byte[] pdfBytes = invoiceAPI.createInvoicePDF(json);
+        // Store regenerated PDF in S3 and update storage key
+        String storageKey = invoicePdfS3Service.savePdf(invoiceuuid, pdfBytes);
+        Invoice.update("pdfStorageKey = ?1 WHERE uuid = ?2", storageKey, invoiceuuid);
+    }
+
+    public byte[] getInvoicePdfBytes(String invoiceuuid) {
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) return null;
+        // Try S3 first (new storage)
+        if (invoice.getPdfStorageKey() != null) {
+            return invoicePdfS3Service.getPdfByKey(invoice.getPdfStorageKey());
+        }
+        // Fall back to DB LONGBLOB (unmigrated invoices)
+        return invoice.getPdf();
     }
 
     public Integer getMaxInvoiceNumber(Invoice invoice) {
@@ -1443,9 +1463,9 @@ public class InvoiceService {
             recalculateInvoiceItems(queuedInvoice);
         }
 
-        // Create PDF
+        // Create PDF (uploads to S3 and sets pdfStorageKey)
         queuedInvoice.setStatus(CREATED);
-        queuedInvoice.pdf = createInvoicePdf(queuedInvoice);
+        createInvoicePdf(queuedInvoice);
 
         log.debug("Saving queued invoice...");
         saveInvoice(queuedInvoice);

@@ -60,6 +60,21 @@ public class InvoiceResource {
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InvoiceEconomicsUploadService uploadService;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service invoicePdfS3Service;
+
+    @Inject
+    jakarta.batch.operations.JobOperator jobOperator;
+
+    @POST
+    @Path("/admin/migrate-pdfs-to-s3")
+    @Produces(MediaType.TEXT_PLAIN)
+    @jakarta.annotation.security.PermitAll
+    public Response triggerPdfMigration() {
+        long executionId = jobOperator.start("invoice-pdf-migration", new java.util.Properties());
+        return Response.ok("PDF migration job started. Execution ID: " + executionId).build();
+    }
+
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
@@ -80,6 +95,25 @@ public class InvoiceResource {
     @Path("/{invoiceuuid}")
     public Invoice findOne(@PathParam("invoiceuuid") String invoiceuuid) {
         return invoiceService.findOneByUuid(invoiceuuid);
+    }
+
+    @GET
+    @Path("/{invoiceuuid}/pdf")
+    @Produces("application/pdf")
+    public Response downloadPdf(@PathParam("invoiceuuid") String invoiceuuid) {
+        byte[] pdfBytes = invoiceService.getInvoicePdfBytes(invoiceuuid);
+        if (pdfBytes == null || pdfBytes.length == 0) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("No PDF available for invoice: " + invoiceuuid)
+                    .type(MediaType.TEXT_PLAIN)
+                    .build();
+        }
+        Invoice invoice = invoiceService.findOneByUuid(invoiceuuid);
+        String filename = (invoice.invoicenumber > 0 ? invoice.invoicenumber : "draft") + "_" +
+                invoice.getType() + "-" + invoiceuuid + ".pdf";
+        return Response.ok(pdfBytes, "application/pdf")
+                .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
+                .build();
     }
 
     @GET

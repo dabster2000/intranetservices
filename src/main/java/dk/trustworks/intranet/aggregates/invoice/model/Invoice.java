@@ -103,7 +103,11 @@ public class Invoice extends PanacheEntityBase {
     public Company company;
     @Lob
     @ToString.Exclude
+    @JsonIgnore
     public byte[] pdf;
+
+    @Column(name = "pdf_storage_key")
+    public String pdfStorageKey;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "economics_status")
@@ -197,6 +201,11 @@ public class Invoice extends PanacheEntityBase {
         this.vat = vat;
         this.bonusConsultant = bonusConsultant;
         this.bonusConsultantApprovedStatus = bonusConsultantApprovedStatus;
+    }
+
+    @JsonGetter
+    public boolean isHasPdf() {
+        return pdfStorageKey != null || pdf != null;
     }
 
     @JsonGetter

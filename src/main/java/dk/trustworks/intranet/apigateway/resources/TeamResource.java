@@ -133,4 +133,11 @@ public class TeamResource {
     public void deleteTeamRole(@PathParam("teamuuid") String teamuuid, @QueryParam("teamroleuuid") String teamroleuuid) {
         teamService.removeUserFromTeam(teamroleuuid);
     }
+
+    @POST
+    @Path("/regenerate-descriptions")
+    @RolesAllowed({"ADMIN"})
+    public void regenerateDescriptions() {
+        teamService.updateTeamDescription();
+    }
 }

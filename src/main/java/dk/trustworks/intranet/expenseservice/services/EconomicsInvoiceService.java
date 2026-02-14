@@ -13,7 +13,9 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
+import dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.io.ByteArrayInputStream;
@@ -27,6 +29,9 @@ import java.util.List;
 @JBossLog
 @ApplicationScoped
 public class EconomicsInvoiceService {
+
+    @Inject
+    InvoicePdfS3Service invoicePdfS3Service;
 
     private IntegrationKey.IntegrationKeyValue integrationKeyValue;
 
@@ -83,10 +88,20 @@ public class EconomicsInvoiceService {
         String[] arrOfStr = year.split("/", 2);
         String urlYear = arrOfStr[0]+ "_6_" +arrOfStr[1];
 
+        // Load PDF bytes: S3 first, then fall back to DB LONGBLOB (unmigrated invoices)
+        byte[] pdfBytes;
+        if (invoice.getPdfStorageKey() != null) {
+            pdfBytes = invoicePdfS3Service.getPdfByKey(invoice.getPdfStorageKey());
+        } else if (invoice.getPdf() != null) {
+            pdfBytes = invoice.getPdf();
+        } else {
+            throw new IOException("No PDF available for invoice: " + invoice.getUuid());
+        }
+
         // format file to outputstream as MultipartFormDataOutput
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
 
-        outputStream.write(invoice.getPdf());
+        outputStream.write(pdfBytes);
 
         byte [] finalByteArray = outputStream.toByteArray();
 
