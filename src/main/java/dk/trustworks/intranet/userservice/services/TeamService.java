@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.userservice.services;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
+import dk.trustworks.intranet.cvtool.entity.CvToolEmployeeCv;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -19,6 +22,8 @@ import java.util.*;
 @JBossLog
 @ApplicationScoped
 public class TeamService {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Inject
     UserService userService;
@@ -171,8 +176,9 @@ public class TeamService {
     }
 
     /**
-     * Updates the description of all teams using the UserResumes for the employees in the team.
-     * Updates the 10th of each month.
+     * Updates the description of all teams using CV data from cv_tool_employee_cv.
+     * For each team member, extracts the employee profile and key competencies
+     * and sends them to OpenAI to generate a concise team description.
      */
     //@Scheduled(cron = "0 0 10 10 * ?") // Disabled: replaced by JBeret job 'team-description' via BatchScheduler
     public void updateTeamDescription() {
@@ -185,19 +191,20 @@ public class TeamService {
             teamResume.append("--- Team:\n\n");
             List<User> users = getUsersByTeam(team.getUuid(), LocalDate.now());
             for (User user : users) {
-                String resumeENG = userService.findUserResume(user.getUuid()).getResumeENG();
-                teamResume.append(resumeENG).append("\n\n end of team ---\n\n\n\n\n");
+                String memberSummary = buildMemberSummary(user.getUuid());
+                if (memberSummary == null) continue;
+                teamResume.append(memberSummary).append("\n\n");
             }
+            teamResume.append("end of team ---\n\n");
         }
-        //log.info(teamResumes.toString());
         for (Team team : teams) {
             String teamDescription = openAIService.askQuestion(
-                            "I have a teams of employees. " +
-                            "I have listed a short resume for each consultant in the team. " +
+                            "I have a team of employees. " +
+                            "I have listed a profile summary and key competencies for each consultant in the team. " +
                             "Write a very short description (maximum of 120 characters) " +
                             "about the Team and what its collective offering are. " +
-                            "Use the team members respective resume descriptions and the most dominant competencies along with Trustworks offerings as inspiration. " +
-                                    "Focus on the competencies that make this team unique using one of the six Trustworks main offerings as part of the description. " +
+                            "Use the team members respective profiles and the most dominant competencies along with Trustworks offerings as inspiration. " +
+                            "Focus on the competencies that make this team unique using one of the six Trustworks main offerings as part of the description. " +
                             "Do not use the word 'Team'. Do not mention specific consultants or their names. \n\n" + teamResumes.get(team) + "\n\n"+
                                     trustworksDescription);
 
@@ -207,6 +214,46 @@ public class TeamService {
             Team.update("description = ?1 where uuid like ?2", team.getDescription(), team.getUuid());
             QuarkusTransaction.commit();
         }
+    }
+
+    /**
+     * Builds a concise summary string for a team member from their CV Tool data.
+     * Returns the employee profile + list of competency titles, or null if no CV data exists.
+     */
+    private String buildMemberSummary(String useruuid) {
+        CvToolEmployeeCv cv = CvToolEmployeeCv.find("useruuid", useruuid).firstResult();
+        if (cv == null) return null;
+
+        StringBuilder summary = new StringBuilder();
+
+        String profile = cv.getEmployeeProfile();
+        if (profile != null && !profile.isBlank()) {
+            summary.append("Profile: ").append(profile.trim()).append("\n");
+        }
+
+        String cvDataJson = cv.getCvDataJson();
+        if (cvDataJson == null || cvDataJson.isEmpty()) return summary.isEmpty() ? null : summary.toString();
+
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(cvDataJson);
+            JsonNode competencies = root.get("competencies");
+            if (competencies != null && competencies.isArray() && !competencies.isEmpty()) {
+                List<String> titles = new ArrayList<>();
+                for (JsonNode comp : competencies) {
+                    JsonNode title = comp.get("title");
+                    if (title != null && !title.asText().isBlank()) {
+                        titles.add(title.asText().trim());
+                    }
+                }
+                if (!titles.isEmpty()) {
+                    summary.append("Key Competencies: ").append(String.join(", ", titles));
+                }
+            }
+        } catch (Exception e) {
+            log.debugf("Failed to parse CV JSON for user %s: %s", useruuid, e.getMessage());
+        }
+
+        return summary.isEmpty() ? null : summary.toString();
     }
 
     private static final String trustworksDescription = """
