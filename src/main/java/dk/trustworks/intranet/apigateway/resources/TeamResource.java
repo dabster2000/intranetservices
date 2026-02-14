@@ -136,7 +136,6 @@ public class TeamResource {
 
     @POST
     @Path("/regenerate-descriptions")
-    @RolesAllowed({"ADMIN"})
     public void regenerateDescriptions() {
         teamService.updateTeamDescription();
     }

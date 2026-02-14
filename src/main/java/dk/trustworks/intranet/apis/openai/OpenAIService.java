@@ -23,7 +23,7 @@ public class OpenAIService {
     String apiKey;
 
     // Use a vision-capable model here if you're sending images (e.g., gpt-4o / gpt-4o-mini / gpt-5 models with vision).
-    @ConfigProperty(name = "openai.model", defaultValue = "gpt-4o-mini")
+    @ConfigProperty(name = "openai.model", defaultValue = "gpt-5-nano")
     String model;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -36,7 +36,7 @@ public class OpenAIService {
         try {
             ObjectNode req = objectMapper.createObjectNode();
             req.put("model", model);
-            req.put("max_output_tokens", 4096);
+            req.put("max_output_tokens", 16.384);
 
             // JSON mode in Responses: text.format (not response_format)
             ObjectNode text = req.putObject("text");
