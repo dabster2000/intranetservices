@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.userservice.model.TeamRole;
+import dk.trustworks.intranet.userservice.model.enums.CareerLevel;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
@@ -92,6 +93,9 @@ public class User extends PanacheEntityBase {
     @Transient
     private UserAccount userAccount;
 
+    @Transient
+    private List<UserCareerLevel> careerLevels = new ArrayList<>();
+
     public User() {
         uuid = UUID.randomUUID().toString();
         created = LocalDate.now();
@@ -107,6 +111,10 @@ public class User extends PanacheEntityBase {
 
     public Salary getSalary(LocalDate date) {
         return getSalaries().stream().filter(value -> value.getActivefrom().isBefore(date) || value.getActivefrom().isEqual(date)).max(Comparator.comparing(Salary::getActivefrom)).orElse(new Salary(date, 0, UUID.randomUUID().toString()));
+    }
+
+    public UserCareerLevel getCareerLevel(LocalDate date) {
+        return getCareerLevels().stream().filter(value -> value.getActiveFrom().isBefore(date) || value.getActiveFrom().isEqual(date)).max(Comparator.comparing(UserCareerLevel::getActiveFrom)).orElse(new UserCareerLevel(uuid, date, null, CareerLevel.JUNIOR_CONSULTANT));
     }
 
     public UserBankInfo getUserBankInfo(LocalDate date) {

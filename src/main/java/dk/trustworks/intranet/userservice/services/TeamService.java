@@ -209,7 +209,13 @@ public class TeamService {
                                     trustworksDescription);
 
             log.info(teamDescription);
-            team.setDescription(teamDescription);
+            // askQuestion returns JSON like {"description":"..."} — extract the plain text
+            String plainDescription = extractDescriptionFromJson(teamDescription);
+            if (plainDescription == null || plainDescription.isEmpty()) {
+                log.warnf("Skipping description update for team %s — empty OpenAI response", team.getName());
+                continue;
+            }
+            team.setDescription(plainDescription);
             QuarkusTransaction.begin();
             Team.update("description = ?1 where uuid like ?2", team.getDescription(), team.getUuid());
             QuarkusTransaction.commit();
@@ -254,6 +260,39 @@ public class TeamService {
         }
 
         return summary.isEmpty() ? null : summary.toString();
+    }
+
+    /**
+     * Extracts the plain-text description from the JSON response returned by askQuestion.
+     * Handles formats like {"description":"..."} and falls back to raw text if not JSON.
+     */
+    private String extractDescriptionFromJson(String jsonResponse) {
+        if (jsonResponse == null || jsonResponse.isBlank() || "{}".equals(jsonResponse.trim())) {
+            return null;
+        }
+        String trimmed = jsonResponse.trim();
+        if (trimmed.startsWith("{")) {
+            try {
+                JsonNode node = OBJECT_MAPPER.readTree(trimmed);
+                // Try common field names the model might use
+                for (String field : List.of("description", "text", "summary", "result")) {
+                    if (node.hasNonNull(field)) {
+                        String value = node.get(field).asText("").trim();
+                        if (!value.isEmpty()) return value;
+                    }
+                }
+                // If single-field object, use the first text value
+                var fields = node.fields();
+                if (fields.hasNext()) {
+                    String value = fields.next().getValue().asText("").trim();
+                    if (!value.isEmpty()) return value;
+                }
+            } catch (Exception e) {
+                log.debugf("Team description response is not valid JSON, using raw text: %s", e.getMessage());
+            }
+        }
+        // Not JSON or parsing failed — use as plain text
+        return trimmed;
     }
 
     private static final String trustworksDescription = """

@@ -190,6 +190,7 @@ public class UserService {
         user.getStatuses().addAll(UserStatus.findByUseruuid(user.getUuid()));
         user.getSalaries().addAll(Salary.findByUseruuid(user.getUuid()));
         user.getUserBankInfos().addAll(UserBankInfo.findByUseruuid(user.getUuid()));
+        user.getCareerLevels().addAll(UserCareerLevel.findByUseruuid(user.getUuid()));
         user.setUserAccount(UserAccount.findById(user.getUuid()));
         return user;
     }
@@ -223,6 +224,10 @@ public class UserService {
         Map<String, List<UserBankInfo>> bankByUser = UserBankInfo.<UserBankInfo>list("useruuid in ?1 order by activeDate", ids)
                 .stream().collect(groupingBy(UserBankInfo::getUseruuid));
 
+        // Career levels
+        Map<String, List<UserCareerLevel>> careerByUser = UserCareerLevel.<UserCareerLevel>list("useruuid in ?1 order by activeFrom", ids)
+                .stream().collect(groupingBy(UserCareerLevel::getUseruuid));
+
         // External accounts (UserAccount)
         Map<String, UserAccount> accountByUser = UserAccount.<UserAccount>list("useruuid in ?1", ids)
                 .stream().collect(toMap(UserAccount::getUseruuid, ua -> ua, (a,b) -> a));
@@ -235,6 +240,7 @@ public class UserService {
             u.setStatuses(new ArrayList<>(statusesByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
             u.setSalaries(new ArrayList<>(salariesByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
             u.setUserBankInfos(new ArrayList<>(bankByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
+            u.setCareerLevels(new ArrayList<>(careerByUser.getOrDefault(u.getUuid(), Collections.emptyList())));
             u.setUserAccount(accountByUser.get(u.getUuid()));
         });
     }
