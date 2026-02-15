@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.sales.model;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.sales.model.enums.ConsultantCompetencies;
+import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -47,8 +47,8 @@ public class SalesLead extends PanacheEntityBase {
     private int period;
     private int allocation;
     @Enumerated(EnumType.STRING)
-    @Column(name = "competencies")
-    private ConsultantCompetencies competencies;
+    @Column(name = "practice")
+    private PrimarySkillType practice;
     private boolean extension;
     @Enumerated(EnumType.STRING)
     @Column(name = "lost_reason")
@@ -89,7 +89,7 @@ public class SalesLead extends PanacheEntityBase {
                 ", closeDate=" + closeDate +
                 ", period=" + period +
                 ", allocation=" + allocation +
-                ", competencies=" + competencies +
+                ", practice=" + practice +
                 ", extension=" + extension +
                 ", lostReason=" + lostReason +
                 '}';
@@ -105,7 +105,7 @@ CREATE TABLE `sales_lead` (
   `closedate` date DEFAULT NULL,
   `period` int(11) DEFAULT NULL,
   `allocation` int(11) DEFAULT NULL,
-  `competencies` varchar(36) DEFAULT NULL,
+  `practice` varchar(36) DEFAULT NULL,
   `extension` tinyint(1) DEFAULT NULL,
   PRIMARY KEY (`uuid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4

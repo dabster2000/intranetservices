@@ -156,7 +156,7 @@ public class SalesService {
         SalesLead.update("client = ?1, " +
                         "allocation = ?2, " +
                         "closeDate = ?3, " +
-                        "competencies = ?4, " +
+                        "practice = ?4, " +
                         "leadManager = ?5, " +
                         "extension = ?6, " +
                         "rate = ?7, " +
@@ -169,7 +169,7 @@ public class SalesService {
                 salesLead.getClient(),
                 salesLead.getAllocation(),
                 salesLead.getCloseDate(),
-                salesLead.getCompetencies(),
+                salesLead.getPractice(),
                 salesLead.getLeadManager(),
                 //salesLead.getConsultantLevel(),
                 salesLead.isExtension(),
