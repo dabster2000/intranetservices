@@ -5,5 +5,6 @@ public enum CareerTrack {
     ADVISORY,
     LEADERSHIP,
     CLIENT_ENGAGEMENT,
-    PARTNER
+    PARTNER,
+    C_LEVEL
 }

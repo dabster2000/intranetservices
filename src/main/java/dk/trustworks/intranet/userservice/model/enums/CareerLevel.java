@@ -30,7 +30,11 @@ public enum CareerLevel {
     PARTNER(CareerTrack.PARTNER),
     THOUGHT_LEADER_PARTNER(CareerTrack.PARTNER),
     PRACTICE_LEADER(CareerTrack.PARTNER),
-    DIRECTOR(CareerTrack.PARTNER);
+    DIRECTOR(CareerTrack.PARTNER),
+
+    // C-Level
+    MANAGING_DIRECTOR(CareerTrack.C_LEVEL),
+    MANAGING_PARTNER(CareerTrack.C_LEVEL);
 
     private final CareerTrack track;
 
