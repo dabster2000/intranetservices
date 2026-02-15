@@ -186,6 +186,31 @@ public class InvoiceResource {
     }
 
     @GET
+    @Path("/search/number/{invoicenumber}")
+    public Response findByInvoiceNumber(@PathParam("invoicenumber") int invoicenumber) {
+        Optional<Invoice> invoice = Invoice.find("invoicenumber", invoicenumber).firstResultOptional();
+        if (invoice.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(java.util.Map.of("error", "Invoice not found"))
+                    .build();
+        }
+        Invoice inv = invoice.get();
+        // Look up the client UUID via the contract
+        String clientuuid = null;
+        if (inv.contractuuid != null) {
+            dk.trustworks.intranet.contracts.model.Contract contract =
+                    dk.trustworks.intranet.contracts.model.Contract.findById(inv.contractuuid);
+            if (contract != null) {
+                clientuuid = contract.getClientuuid();
+            }
+        }
+        return Response.ok(java.util.Map.of(
+                "invoice", inv,
+                "clientuuid", clientuuid != null ? clientuuid : ""
+        )).build();
+    }
+
+    @GET
     @Path("/count")
     public long countInvoices() {
         log.debug("countInvoices");
@@ -761,5 +786,28 @@ public class InvoiceResource {
                 .toList();
 
         return Response.ok(response).build();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Temporary: Invoice item recovery endpoints (data-loss fix)
+    // ──────────────────────────────────────────────────────────────
+
+    @GET
+    @Path("/admin/recovery/affected")
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response listAffectedInvoices() {
+        var rows = invoiceService.findInternalInvoicesWithMissingBaseItems();
+        return Response.ok(rows).build();
+    }
+
+    @POST
+    @Path("/admin/recovery/{invoiceuuid}")
+    @Transactional
+    public Response recoverInvoiceItems(@PathParam("invoiceuuid") String invoiceuuid) {
+        int inserted = invoiceService.recoverBaseItemsForInvoice(invoiceuuid);
+        return Response.ok(java.util.Map.of(
+                "invoiceuuid", invoiceuuid,
+                "insertedCount", inserted
+        )).build();
     }
 }

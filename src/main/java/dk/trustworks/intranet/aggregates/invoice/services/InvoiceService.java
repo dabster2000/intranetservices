@@ -35,6 +35,8 @@ import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
+import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
@@ -1603,6 +1605,168 @@ public class InvoiceService {
         );
     }
 
+    // ──────────────────────────────────────────────────────────────────
+    // Temporary: Recovery of lost BASE invoice items (data-loss fix)
+    // ──────────────────────────────────────────────────────────────────
 
+    /**
+     * Finds CREATED INTERNAL invoices that have fewer BASE items than expected
+     * based on their parent invoice, filtered by consultant company.
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> findInternalInvoicesWithMissingBaseItems() {
+        String sql = """
+            WITH consultant_company AS (
+              SELECT us1.useruuid, us1.companyuuid
+              FROM userstatus us1
+              INNER JOIN (
+                SELECT useruuid, MAX(statusdate) AS max_date
+                FROM userstatus
+                WHERE status IN ('ACTIVE','PREBOARDING')
+                GROUP BY useruuid
+              ) us2 ON us1.useruuid = us2.useruuid AND us1.statusdate = us2.max_date
+            ),
+            internal_invoices AS (
+              SELECT i.uuid, i.invoicenumber, i.year, i.month, i.projectname,
+                     i.invoice_ref_uuid, i.companyuuid
+              FROM invoices i
+              WHERE i.type = 'INTERNAL' AND i.status = 'CREATED' AND i.invoice_ref_uuid IS NOT NULL
+            ),
+            actual_base AS (
+              SELECT ii.invoiceuuid, COUNT(*) AS cnt
+              FROM invoiceitems ii WHERE ii.origin = 'BASE'
+              GROUP BY ii.invoiceuuid
+            ),
+            expected_items AS (
+              SELECT inv.uuid AS internal_uuid, pii.uuid AS parent_item_uuid
+              FROM internal_invoices inv
+              JOIN invoiceitems pii ON pii.invoiceuuid = inv.invoice_ref_uuid AND pii.origin = 'BASE'
+              LEFT JOIN consultant_company cc ON cc.useruuid = pii.consultantuuid
+              WHERE cc.companyuuid = inv.companyuuid
+            )
+            SELECT inv.uuid, inv.invoicenumber, inv.year, inv.month, inv.projectname,
+              inv.invoice_ref_uuid AS parentUuid,
+              (SELECT invoicenumber FROM invoices WHERE uuid = inv.invoice_ref_uuid) AS parentInvoiceNumber,
+              COALESCE(ab.cnt, 0) AS actualBaseCount,
+              (SELECT COUNT(*) FROM expected_items ei WHERE ei.internal_uuid = inv.uuid) AS expectedBaseCount
+            FROM internal_invoices inv
+            LEFT JOIN actual_base ab ON ab.invoiceuuid = inv.uuid
+            WHERE COALESCE(ab.cnt, 0) < (SELECT COUNT(*) FROM expected_items ei WHERE ei.internal_uuid = inv.uuid)
+            ORDER BY inv.year, inv.month, inv.invoicenumber
+            """;
+
+        List<Object[]> rows = em.createNativeQuery(sql).getResultList();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object[] row : rows) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("uuid", row[0]);
+            map.put("invoicenumber", ((Number) row[1]).intValue());
+            map.put("year", ((Number) row[2]).intValue());
+            map.put("month", ((Number) row[3]).intValue());
+            map.put("projectname", row[4]);
+            map.put("parentUuid", row[5]);
+            map.put("parentInvoiceNumber", ((Number) row[6]).intValue());
+            map.put("actualBaseCount", ((Number) row[7]).intValue());
+            map.put("expectedBaseCount", ((Number) row[8]).intValue());
+
+            List<Map<String, Object>> recoveryItems = getRecoveryItemsForInvoice((String) row[0]);
+            map.put("recoveryItems", recoveryItems);
+            result.add(map);
+        }
+        return result;
+    }
+
+    private List<Map<String, Object>> getRecoveryItemsForInvoice(String internalInvoiceUuid) {
+        Invoice internalInvoice = Invoice.findById(internalInvoiceUuid);
+        if (internalInvoice == null) return List.of();
+
+        Invoice parentInvoice = Invoice.findById(internalInvoice.getInvoiceRefUuid());
+        if (parentInvoice == null) return List.of();
+
+        String internalCompanyUuid = internalInvoice.getCompany().getUuid();
+
+        Set<String> existingConsultants = internalInvoice.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.BASE && ii.getConsultantuuid() != null)
+                .map(InvoiceItem::getConsultantuuid)
+                .collect(Collectors.toSet());
+
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (InvoiceItem parentItem : parentInvoice.getInvoiceitems()) {
+            if (parentItem.getOrigin() != InvoiceItemOrigin.BASE) continue;
+            if (parentItem.getConsultantuuid() == null) continue;
+            if (existingConsultants.contains(parentItem.getConsultantuuid())) continue;
+
+            String consultantCompany = resolveConsultantCompany(parentItem.getConsultantuuid());
+            if (internalCompanyUuid.equals(consultantCompany)) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("itemname", parentItem.getItemname());
+                m.put("consultantuuid", parentItem.getConsultantuuid());
+                m.put("description", parentItem.getDescription());
+                m.put("rate", parentItem.getRate());
+                m.put("hours", parentItem.getHours());
+                m.put("position", parentItem.getPosition());
+                items.add(m);
+            }
+        }
+        return items;
+    }
+
+    private String resolveConsultantCompany(String useruuid) {
+        List<UserStatus> statuses = UserStatus.find(
+                "useruuid = ?1 AND status IN ?2 ORDER BY statusdate DESC",
+                useruuid, List.of(StatusType.ACTIVE, StatusType.PREBOARDING)
+        ).list();
+        if (statuses.isEmpty()) return null;
+        return statuses.get(0).getCompany() != null ? statuses.get(0).getCompany().getUuid() : null;
+    }
+
+    @Transactional
+    public int recoverBaseItemsForInvoice(String internalInvoiceUuid) {
+        Invoice internalInvoice = Invoice.findById(internalInvoiceUuid);
+        if (internalInvoice == null)
+            throw new WebApplicationException("Invoice not found: " + internalInvoiceUuid, Response.Status.NOT_FOUND);
+        if (internalInvoice.getType() != InvoiceType.INTERNAL)
+            throw new WebApplicationException("Not an INTERNAL invoice", Response.Status.BAD_REQUEST);
+        if (internalInvoice.getStatus() != CREATED)
+            throw new WebApplicationException("Invoice is not CREATED", Response.Status.BAD_REQUEST);
+
+        Invoice parentInvoice = Invoice.findById(internalInvoice.getInvoiceRefUuid());
+        if (parentInvoice == null)
+            throw new WebApplicationException("Parent invoice not found", Response.Status.NOT_FOUND);
+
+        String internalCompanyUuid = internalInvoice.getCompany().getUuid();
+
+        Set<String> existingConsultants = internalInvoice.getInvoiceitems().stream()
+                .filter(ii -> ii.getOrigin() == InvoiceItemOrigin.BASE && ii.getConsultantuuid() != null)
+                .map(InvoiceItem::getConsultantuuid)
+                .collect(Collectors.toSet());
+
+        int inserted = 0;
+        for (InvoiceItem parentItem : parentInvoice.getInvoiceitems()) {
+            if (parentItem.getOrigin() != InvoiceItemOrigin.BASE) continue;
+            if (parentItem.getConsultantuuid() == null) continue;
+            if (existingConsultants.contains(parentItem.getConsultantuuid())) continue;
+
+            String consultantCompany = resolveConsultantCompany(parentItem.getConsultantuuid());
+            if (!internalCompanyUuid.equals(consultantCompany)) continue;
+
+            InvoiceItem newItem = new InvoiceItem(
+                    parentItem.getConsultantuuid(),
+                    parentItem.getItemname(),
+                    parentItem.getDescription(),
+                    parentItem.getRate(),
+                    parentItem.getHours(),
+                    parentItem.getPosition(),
+                    internalInvoiceUuid,
+                    InvoiceItemOrigin.BASE
+            );
+            newItem.persist();
+            inserted++;
+        }
+
+        log.infof("Recovered %d BASE items for internal invoice %s (%d)",
+                inserted, internalInvoiceUuid, internalInvoice.getInvoicenumber());
+        return inserted;
+    }
 
 }
