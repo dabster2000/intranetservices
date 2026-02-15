@@ -369,7 +369,7 @@ public class InvoiceService {
     }
 
     private void recalculateInvoiceItems(Invoice invoice) {
-        var baseItems = invoice.getInvoiceitems().stream()
+        var baseItemData = invoice.getInvoiceitems().stream()
                 .filter(ii -> {
                     // Explicitly exclude CALCULATED items
                     if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) return false;
@@ -381,13 +381,23 @@ public class InvoiceService {
                     // Keep only true BASE items
                     return true;
                 })
+                // Clone each item as a new entity to avoid Hibernate managed-entity issues.
+                // A JPQL bulk delete only removes rows from the DB, not from the persistence
+                // context, so calling persist() on the original (still-managed) instances is
+                // silently ignored. Creating fresh instances guarantees an INSERT.
+                .map(ii -> new InvoiceItem(
+                        ii.getConsultantuuid(),
+                        ii.getItemname(),
+                        ii.getDescription(),
+                        ii.getRate(),
+                        ii.getHours(),
+                        ii.getPosition(),
+                        invoice.getUuid(),
+                        BASE))
                 .toList();
-        System.out.print("PRE: ");
-        baseItems.forEach(System.out::println);
 
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
-        baseItems.forEach(ii -> { ii.setInvoiceuuid(invoice.getUuid()); ii.setOrigin(BASE); });
-        InvoiceItem.persist(baseItems);
+        InvoiceItem.persist(baseItemData);
 
         Map<String, String> cti = new HashMap<>();
         ContractTypeItem.<ContractTypeItem>find("contractuuid", invoice.getContractuuid())
@@ -399,15 +409,13 @@ public class InvoiceService {
         InvoiceItem.persist(pr.syntheticItems);
 
         invoice.invoiceitems.clear();
-        invoice.invoiceitems.addAll(baseItems);
+        invoice.invoiceitems.addAll(baseItemData);
         invoice.invoiceitems.addAll(pr.syntheticItems);
         invoice.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
         invoice.sumAfterDiscounts  = pr.sumAfterDiscounts.doubleValue();
         invoice.vatAmount          = pr.vatAmount.doubleValue();
         invoice.grandTotal         = pr.grandTotal.doubleValue();
         invoice.calculationBreakdown = pr.breakdown;
-        System.out.print("DONE: ");
-        invoice.getInvoiceitems().forEach(System.out::println);
     }
 
     @Transactional
