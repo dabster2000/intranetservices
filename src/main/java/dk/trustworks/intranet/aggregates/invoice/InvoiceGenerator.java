@@ -184,6 +184,16 @@ public class InvoiceGenerator {
                         throw new WebApplicationException(response);
                         //throw new BadRequestException("No client contact information on the contract");
                     }
+                    if (contract.getCompany() == null) {
+                        log.error("Contract '" + contract.getUuid() + "' has no company assigned");
+                        Response response = Response
+                                .status(Response.Status.BAD_REQUEST)
+                                .entity("Contract has no company assigned. Please update the contract with a company before creating an invoice.")
+                                .type(MediaType.TEXT_PLAIN)
+                                .build();
+                        throw new WebApplicationException(response);
+                    }
+
                     Clientdata clientdata = clientdataAPI.findByUuid(contract.getClientdatauuid());
                     if (clientdata == null) {
                         log.error("Client data UUID '" + contract.getClientdatauuid() + "' not found in database for contract '" + contract.getUuid() + "'");

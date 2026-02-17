@@ -102,6 +102,7 @@ public class Contract extends PanacheEntityBase {
         this.clientuuid = contract.getClientuuid();
         this.clientdatauuid = contract.getClientdatauuid();
         this.name = contract.getName();
+        this.company = contract.getCompany();
     }
 
     public LocalDate getActiveFrom() {

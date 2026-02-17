@@ -164,14 +164,14 @@ public class SalesService {
                         "contactInformation = ?9, " +
                         "description = ?10, " +
                         "detailedDescription = ?11, " +
-                        "status = ?12 " +
-                        "WHERE uuid like ?13 ",
+                        "status = ?12, " +
+                        "modified = ?13 " +
+                        "WHERE uuid like ?14 ",
                 salesLead.getClient(),
                 salesLead.getAllocation(),
                 salesLead.getCloseDate(),
                 salesLead.getPractice(),
                 salesLead.getLeadManager(),
-                //salesLead.getConsultantLevel(),
                 salesLead.isExtension(),
                 salesLead.getRate(),
                 salesLead.getPeriod(),
@@ -179,6 +179,7 @@ public class SalesService {
                 salesLead.getDescription(),
                 salesLead.getDetailedDescription(),
                 salesLead.getStatus(),
+                LocalDateTime.now(),
                 salesLead.getUuid());
     }
 

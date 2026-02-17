@@ -213,6 +213,10 @@ public class ContractService {
         log.info("ContractService.save");
         log.info("contract = " + contract);
 
+        if (contract.getCompany() == null) {
+            throw new jakarta.ws.rs.BadRequestException("Company is required when creating a contract");
+        }
+
         // Validate contract type against creation date
         if (contract.getContractType() != null) {
             LocalDate createdDate = contract.getCreated() != null
@@ -261,6 +265,10 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
+        if (contract.getCompany() == null) {
+            throw new jakarta.ws.rs.BadRequestException("Company is required when updating a contract");
+        }
+
         // Validate contract type against the ORIGINAL contract creation date (grandfathered)
         if (contract.getContractType() != null) {
             // Get the original contract to check its creation date
@@ -395,13 +403,31 @@ public class ContractService {
 
     @Transactional
     public void addContractTypeItem(String contractuuid, ContractTypeItem contractTypeItem) {
+        validateContractTypeItemValue(contractTypeItem);
         contractTypeItem.setContractuuid(contractuuid);
         contractTypeItem.persist();
     }
 
     @Transactional
     public void updateContractTypeItem(ContractTypeItem contractTypeItem) {
+        validateContractTypeItemValue(contractTypeItem);
         ContractTypeItem.update("key = ?1, value = ?2 where id = ?3", contractTypeItem.getKey(), contractTypeItem.getValue(), contractTypeItem.getId());
+    }
+
+    private void validateContractTypeItemValue(ContractTypeItem item) {
+        // Normalize empty strings to null
+        if (item.getValue() != null && item.getValue().isBlank()) {
+            item.setValue(null);
+        }
+        // Validate that value is numeric (used in CAST operations by BI stored procedures and views)
+        if (item.getValue() != null) {
+            try {
+                Double.parseDouble(item.getValue());
+            } catch (NumberFormatException e) {
+                throw new jakarta.ws.rs.BadRequestException(
+                        "ContractTypeItem value must be a valid number, got: '" + item.getValue() + "'");
+            }
+        }
     }
 
     /**
