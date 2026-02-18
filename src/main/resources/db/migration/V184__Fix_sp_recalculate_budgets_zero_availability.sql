@@ -1,17 +1,19 @@
 -- =============================================================================
--- V182: Fix sp_recalculate_budgets — NULL contract dates + wrong status filter
+-- V184: Fix sp_recalculate_budgets — zero out budget on zero-availability days
 --
--- Two bugs discovered during investigation of zero budget utilization:
+-- Bug: The normalization step (Step 3) only scales down budget when
+-- net_available > 0. On days where net_available = 0 (vacation, sick leave,
+-- company shutdown), budget hours are left at their raw value. This inflates
+-- company-level budget utilization because:
+--   numerator = SUM(budgetHours) includes budget on absence days
+--   denominator = SUM(net_available_hours) gets 0 from those same days
 --
--- 1. NULL contract dates: 219 of 662 contracts have NULL activefrom/activeto.
---    These contracts use contract_consultants dates instead. The JOIN on
---    contracts.activefrom/activeto excluded them because NULL comparisons
---    yield UNKNOWN. Fix: COALESCE to sentinel dates.
+-- Impact: July 2025 showed 107.5% budget utilization instead of ~66%.
+-- Every month is affected proportional to vacation/leave volume.
 --
--- 2. Wrong status filter: V181 added c.status IN ('BUDGET',
---    'TIME_AND_MATERIAL', 'FIXED_PRICE') but actual statuses are SIGNED,
---    TIME, CLOSED, BUDGET. Fix: Use correct statuses ('SIGNED', 'TIME',
---    'CLOSED') matching the actual contract lifecycle values.
+-- Fix: Add Step 3b to zero out budgetHours on days with no availability.
+-- Per business rules: "Budget rows are still generated but will be
+-- normalized down to 0 if net_available = 0."
 -- =============================================================================
 
 DROP PROCEDURE IF EXISTS sp_recalculate_budgets;
@@ -30,7 +32,8 @@ BEGIN
       AND (p_user_uuid IS NULL OR useruuid = p_user_uuid);
 
     -- Step 2: Insert raw budget data (before availability normalization).
-    -- COALESCE handles NULL dates on contracts table (219/662 contracts have NULL dates).
+    -- Contract date range is derived from MIN/MAX of contract_consultants dates
+    -- instead of the deprecated contracts.activefrom/activeto columns (dropped in V183).
     -- Status filter: SIGNED (active), TIME (time-based), CLOSED (completed but within date range).
     -- Excludes BUDGET status (6 legacy contracts from 2018-2023, not real allocations).
     INSERT IGNORE INTO fact_budget_day (
@@ -46,10 +49,17 @@ BEGIN
         cc.rate * (1 - COALESCE(CAST(NULLIF(cti.value, '') AS DECIMAL(10,4)), 0)) AS rate
     FROM contracts c
     JOIN contract_consultants cc ON cc.contractuuid = c.uuid
+    JOIN (
+        SELECT contractuuid,
+               MIN(activefrom) AS min_activefrom,
+               MAX(activeto)   AS max_activeto
+        FROM contract_consultants
+        GROUP BY contractuuid
+    ) cp ON cp.contractuuid = c.uuid
     JOIN dim_date dd ON dd.date_key >= cc.activefrom
         AND dd.date_key < COALESCE(cc.activeto, '2035-01-01')
-        AND dd.date_key >= COALESCE(c.activefrom, '2014-01-01')
-        AND dd.date_key < COALESCE(c.activeto, '2035-01-01')
+        AND dd.date_key >= COALESCE(cp.min_activefrom, '2014-01-01')
+        AND dd.date_key < COALESCE(cp.max_activeto, '2035-01-01')
         AND dd.is_weekend = 0
     LEFT JOIN contract_type_items cti
         ON cti.contractuuid = c.uuid
@@ -78,6 +88,19 @@ BEGIN
     ) overalloc ON fbd.useruuid = overalloc.useruuid AND fbd.document_date = overalloc.document_date
     SET fbd.budgetHours = fbd.budgetHours * (overalloc.net_available / overalloc.total_budget)
     WHERE fbd.document_date >= p_start_date AND fbd.document_date < p_end_date;
+
+    -- Step 3b: Zero out budget on days with no availability.
+    -- When a consultant is on vacation, sick leave, or company shutdown,
+    -- net_available_hours = 0 and no billable work can be performed.
+    -- Budget must be zeroed to prevent inflating budget utilization ratios.
+    UPDATE fact_budget_day fbd
+    JOIN fact_user_day fud
+        ON fud.useruuid = fbd.useruuid AND fud.document_date = fbd.document_date
+    SET fbd.budgetHours = 0
+    WHERE fud.net_available_hours = 0
+      AND fbd.document_date >= p_start_date
+      AND fbd.document_date < p_end_date
+      AND (p_user_uuid IS NULL OR fbd.useruuid = p_user_uuid);
 
     -- Step 4: Update the company UUID on budget rows from fact_user_day
     UPDATE fact_budget_day fbd

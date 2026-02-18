@@ -1,19 +1,18 @@
 -- =============================================================================
--- V182: Fix sp_recalculate_budgets — NULL contract dates + wrong status filter
+-- V183: Remove deprecated activefrom/activeto from contracts table
 --
--- Two bugs discovered during investigation of zero budget utilization:
+-- The contracts table has deprecated activefrom/activeto columns that should
+-- be derived from contract_consultants (MIN/MAX of consultant date ranges).
+-- The Contract.java entity already computes these via getActiveFrom()/getActiveTo()
+-- from the contractConsultants collection.
 --
--- 1. NULL contract dates: 219 of 662 contracts have NULL activefrom/activeto.
---    These contracts use contract_consultants dates instead. The JOIN on
---    contracts.activefrom/activeto excluded them because NULL comparisons
---    yield UNKNOWN. Fix: COALESCE to sentinel dates.
---
--- 2. Wrong status filter: V181 added c.status IN ('BUDGET',
---    'TIME_AND_MATERIAL', 'FIXED_PRICE') but actual statuses are SIGNED,
---    TIME, CLOSED, BUDGET. Fix: Use correct statuses ('SIGNED', 'TIME',
---    'CLOSED') matching the actual contract lifecycle values.
+-- Changes:
+-- 1. Recreate sp_recalculate_budgets: replace c.activefrom/c.activeto with a
+--    subquery deriving MIN/MAX from contract_consultants.
+-- 2. Drop the deprecated activefrom and activeto columns from contracts table.
 -- =============================================================================
 
+-- Step 1: Recreate sp_recalculate_budgets without contracts.activefrom/activeto
 DROP PROCEDURE IF EXISTS sp_recalculate_budgets;
 
 DELIMITER //
@@ -30,7 +29,8 @@ BEGIN
       AND (p_user_uuid IS NULL OR useruuid = p_user_uuid);
 
     -- Step 2: Insert raw budget data (before availability normalization).
-    -- COALESCE handles NULL dates on contracts table (219/662 contracts have NULL dates).
+    -- Contract date range is derived from MIN/MAX of contract_consultants dates
+    -- instead of the deprecated contracts.activefrom/activeto columns.
     -- Status filter: SIGNED (active), TIME (time-based), CLOSED (completed but within date range).
     -- Excludes BUDGET status (6 legacy contracts from 2018-2023, not real allocations).
     INSERT IGNORE INTO fact_budget_day (
@@ -46,10 +46,17 @@ BEGIN
         cc.rate * (1 - COALESCE(CAST(NULLIF(cti.value, '') AS DECIMAL(10,4)), 0)) AS rate
     FROM contracts c
     JOIN contract_consultants cc ON cc.contractuuid = c.uuid
+    JOIN (
+        SELECT contractuuid,
+               MIN(activefrom) AS min_activefrom,
+               MAX(activeto)   AS max_activeto
+        FROM contract_consultants
+        GROUP BY contractuuid
+    ) cp ON cp.contractuuid = c.uuid
     JOIN dim_date dd ON dd.date_key >= cc.activefrom
         AND dd.date_key < COALESCE(cc.activeto, '2035-01-01')
-        AND dd.date_key >= COALESCE(c.activefrom, '2014-01-01')
-        AND dd.date_key < COALESCE(c.activeto, '2035-01-01')
+        AND dd.date_key >= COALESCE(cp.min_activefrom, '2014-01-01')
+        AND dd.date_key < COALESCE(cp.max_activeto, '2035-01-01')
         AND dd.is_weekend = 0
     LEFT JOIN contract_type_items cti
         ON cti.contractuuid = c.uuid
@@ -87,3 +94,7 @@ BEGIN
       AND (p_user_uuid IS NULL OR fbd.useruuid = p_user_uuid);
 END //
 DELIMITER ;
+
+-- Step 2: Drop deprecated columns from contracts table
+ALTER TABLE contracts DROP COLUMN activefrom;
+ALTER TABLE contracts DROP COLUMN activeto;
