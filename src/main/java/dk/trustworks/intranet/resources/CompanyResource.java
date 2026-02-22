@@ -8,6 +8,7 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
 import java.util.List;
 
 @JBossLog
@@ -20,5 +21,11 @@ public class CompanyResource {
     @GET
     public List<Company> findAllCompanies() {
         return Company.listAll();
+    }
+
+    @GET
+    @Path("/{uuid}")
+    public Company findByUuid(@PathParam("uuid") String uuid) {
+        return Company.findById(uuid);
     }
 }

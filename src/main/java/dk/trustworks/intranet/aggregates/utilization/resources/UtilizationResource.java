@@ -53,6 +53,11 @@ public class UtilizationResource {
     public List<DateValueDTO> getBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
+        // Bug fix: Adjust toDate to the first day of next month to properly include the current month
+        // The SQL uses < operator, so to include month M, we need to pass M+1's first day
+        if (toDate != null) {
+            toDate = toDate.withDayOfMonth(1).plusMonths(1);
+        }
         if (companyuuid.equals("all")) {
             return utilizationService.calculateAllCompaniesBudgetUtilizationByMonth(fromDate, toDate);
         }
@@ -78,13 +83,25 @@ public class UtilizationResource {
             @PathParam("teamuuid") String teamuuid,
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate) {
-        return utilizationService.calculateTeamBudgetUtilization(teamuuid, dateIt(fromdate), dateIt(todate));
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+        // Bug fix: Adjust toDate to the first day of next month to properly include the current month
+        if (toDate != null) {
+            toDate = toDate.withDayOfMonth(1).plusMonths(1);
+        }
+        return utilizationService.calculateTeamBudgetUtilization(teamuuid, fromDate, toDate);
     }
 
     @GET
     @Path("/budget/employees")
     public List<KeyDateValueListDTO> getEmployeeBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return utilizationService.calculateEmployeeBudgetUtilization(companyuuid, dateIt(fromdate), dateIt(todate));
+        LocalDate fromDate = dateIt(fromdate);
+        LocalDate toDate = dateIt(todate);
+        // Bug fix: Adjust toDate to the first day of next month to properly include the current month
+        if (toDate != null) {
+            toDate = toDate.withDayOfMonth(1).plusMonths(1);
+        }
+        return utilizationService.calculateEmployeeBudgetUtilization(companyuuid, fromDate, toDate);
     }
 
     @GET

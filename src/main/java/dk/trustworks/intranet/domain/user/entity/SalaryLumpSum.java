@@ -48,6 +48,9 @@ public class SalaryLumpSum extends PanacheEntityBase {
     @Column(name = "description")
     private String description;
 
+    @Column(name = "source_reference", length = 100)
+    private String sourceReference;
+
     public static List<SalaryLumpSum> findByUser(String useruuid) {
         return SalaryLumpSum.find("useruuid", useruuid).list();
     }

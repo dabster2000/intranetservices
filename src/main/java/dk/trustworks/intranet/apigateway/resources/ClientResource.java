@@ -123,7 +123,7 @@ public class ClientResource {
     @Path("/budgets/{fiscalyear}")
     public List<GraphKeyValue> getClientBudgetSum(@PathParam("fiscalyear") int fiscalYear) {
         LocalDate startDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
-        LocalDate endDate = startDate.plusYears(1).minusMonths(1);
+        LocalDate endDate = startDate.plusYears(1);
         List<EmployeeBudgetPerMonth> employeeBudgetPerMonthList = budgetService.getBudgetDataByPeriod(startDate, endDate);
         Map<String, GraphKeyValue> clientBudgets = new HashMap<>();
         for (EmployeeBudgetPerMonth employeeBudgetPerMonth : employeeBudgetPerMonthList) {

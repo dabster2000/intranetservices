@@ -8,6 +8,9 @@ import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import jakarta.ws.rs.*;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
@@ -32,6 +35,9 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @RolesAllowed({"SYSTEM"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class YourPartOfTrustworksResource {
+
+    @Inject
+    EntityManager em;
 
     // --------- OLD ENDPOINT (kept for backward compatibility) ----------
     // Now computed from day-based data: month boolean = (eligibleShare > 0)
@@ -97,87 +103,103 @@ public class YourPartOfTrustworksResource {
                 && s != StatusType.NON_PAY_LEAVE;
     }
 
-    // --------- NEW ENDPOINT: day-based monthly eligibility & salary basis ----------
+    // --------- NEW ENDPOINT: view-based monthly eligibility & salary basis ----------
     @GET
     @Path("/basis")
     public List<EmployeeBonusBasisDTO> findMonthlyBasis(@QueryParam("fiscalstartyear") int year,
                                                         @QueryParam("companyuuid") String companyUuid) {
-        LocalDate startDate = LocalDate.of(year, 7, 1);
-        LocalDate endExclusive = startDate.plusYears(1);
+        String sql = """
+            SELECT m.useruuid, m.companyuuid, m.year, m.month,
+                   m.eligible_share, m.avg_salary, m.weighted_avg_salary
+            FROM fact_tw_bonus_monthly m
+            WHERE m.fiscal_year = :fiscalYear
+            """;
 
+        if (companyUuid != null && !companyUuid.isBlank()) {
+            sql += " AND m.companyuuid = :companyUuid";
+        }
 
-        List<BiDataPerDay> days = (companyUuid == null || companyUuid.isBlank())
-                ? BiDataPerDay.<BiDataPerDay>list(
-                "documentDate >= ?1 and documentDate < ?2 " +
-                        "and consultantType in (?3, ?4, ?5) " +
-                        "and exists (" +
-                        "  select 1 from BiDataPerDay d2 " +
-                        "  where d2.user = user " +
-                        "    and d2.documentDate >= ?1 and d2.documentDate < ?2 " +
-                        "    and d2.consultantType in (?3, ?4, ?5) " +
-                        "    and d2.statusType <> ?6" +
-                        ")",
-                startDate, endExclusive,
-                ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT,
-                StatusType.TERMINATED
-        )
-                : BiDataPerDay.<BiDataPerDay>list(
-                "documentDate >= ?1 and documentDate < ?2 " +
-                        "and company.uuid = ?3 " +
-                        "and consultantType in (?4, ?5, ?6) " +
-                        "and exists (" +
-                        "  select 1 from BiDataPerDay d2 " +
-                        "  where d2.user = user " +
-                        "    and d2.documentDate >= ?1 and d2.documentDate < ?2 " +
-                        "    and d2.consultantType in (?4, ?5, ?6) " +
-                        "    and d2.statusType <> ?7 " +
-                        "    and d2.company.uuid = ?3" +
-                        ")",
-                startDate, endExclusive, companyUuid,
-                ConsultantType.CONSULTANT, ConsultantType.STAFF, ConsultantType.STUDENT,
-                StatusType.TERMINATED
-        );
+        // Exclude employees terminated for entire fiscal year
+        sql += """
+             AND EXISTS (
+                SELECT 1 FROM fact_tw_bonus_monthly m2
+                WHERE m2.useruuid = m.useruuid
+                  AND m2.fiscal_year = :fiscalYear
+                  AND m2.eligible_days > 0
+             )
+            """;
 
-        // group by user -> (year,month) -> list
-        Map<String, Map<String, List<BiDataPerDay>>> byUserYearMonth = days.stream()
-                .collect(Collectors.groupingBy(d -> d.user.getUuid(),
-                        Collectors.groupingBy(d -> key(d.getYear(), d.getMonth()))));
+        sql += " ORDER BY m.useruuid, m.year, m.month";
 
+        Query query = em.createNativeQuery(sql)
+                .setParameter("fiscalYear", year);
+
+        if (companyUuid != null && !companyUuid.isBlank()) {
+            query.setParameter("companyUuid", companyUuid);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+
+        // Group by user
+        Map<String, List<Object[]>> byUser = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            String uuid = (String) row[0];
+            byUser.computeIfAbsent(uuid, k -> new ArrayList<>()).add(row);
+        }
+
+        // Get user details
+        Set<String> userUuids = byUser.keySet();
+        Map<String, User> userMap = new HashMap<>();
+        if (!userUuids.isEmpty()) {
+            List<User> users = User.list("uuid in ?1", new ArrayList<>(userUuids));
+            for (User u : users) {
+                userMap.put(u.getUuid(), u);
+            }
+        }
+
+        // Build DTOs
         List<EmployeeBonusBasisDTO> out = new ArrayList<>();
-        for (Map.Entry<String, Map<String, List<BiDataPerDay>>> e : byUserYearMonth.entrySet()) {
-            String userUuid = e.getKey();
-            User u = days.stream().filter(d -> d.user.getUuid().equals(userUuid)).findFirst().get().user;
 
-            List<EmployeeBonusBasisDTO.MonthBasis> months = new ArrayList<>(12);
+        // Define fiscal year month order: Jul(7)..Dec(12) of 'year', then Jan(1)..Jun(6) of 'year+1'
+        int[][] fyMonths = {
+            {year, 7}, {year, 8}, {year, 9}, {year, 10}, {year, 11}, {year, 12},
+            {year+1, 1}, {year+1, 2}, {year+1, 3}, {year+1, 4}, {year+1, 5}, {year+1, 6}
+        };
 
-            // build Jul..Dec of fiscalStartYear, then Jan..Jun of next year
-            int[] orderYears = new int[] { year, year, year, year, year, year, year+1, year+1, year+1, year+1, year+1, year+1 };
-            int[] orderMonths = new int[] { 7,8,9,10,11,12, 1,2,3,4,5,6 };
+        for (Map.Entry<String, List<Object[]>> entry : byUser.entrySet()) {
+            String userUuid = entry.getKey();
+            User user = userMap.get(userUuid);
+            if (user == null) continue;
 
-            for (int i = 0; i < 12; i++) {
-                int y = orderYears[i];
-                int m = orderMonths[i];
-                YearMonth ym = YearMonth.of(y, m);
-                int dim = ym.lengthOfMonth();
+            // Index view rows by (year, month) key — aggregate across companies if no company filter
+            Map<String, double[]> monthData = new HashMap<>();
+            for (Object[] row : entry.getValue()) {
+                int calYear = ((Number) row[2]).intValue();
+                int calMonth = ((Number) row[3]).intValue();
+                String key = calYear + "-" + calMonth;
 
-                List<BiDataPerDay> monthDays = e.getValue().getOrDefault(key(y, m), List.of());
+                double eligShare = ((Number) row[4]).doubleValue();
+                double avgSal = ((Number) row[5]).doubleValue();
+                double weightedAvg = ((Number) row[6]).doubleValue();
 
-                long eligibleDays = monthDays.stream().filter(YourPartOfTrustworksResource::isEligibleDay).count();
-                double eligibleShare = dim == 0 ? 0.0 : (eligibleDays / (double) dim);
-
-                double sumSalaryAll = monthDays.stream().mapToDouble(BiDataPerDay::getSalary).sum(); // getSalary returns 0 if null
-                double avgSalary = dim == 0 ? 0.0 : (sumSalaryAll / dim);
-
-                double sumSalaryEligible = monthDays.stream()
-                        .filter(YourPartOfTrustworksResource::isEligibleDay)
-                        .mapToDouble(BiDataPerDay::getSalary)
-                        .sum();
-                double weightedAvgSalary = dim == 0 ? 0.0 : (sumSalaryEligible / dim);
-
-                months.add(new EmployeeBonusBasisDTO.MonthBasis(y, m, eligibleShare, avgSalary, weightedAvgSalary));
+                // When viewing all companies, aggregate monthly values
+                monthData.merge(key, new double[]{eligShare, avgSal, weightedAvg},
+                    (a, b) -> new double[]{
+                        Math.max(a[0], b[0]), // eligibleShare: take max (for display)
+                        a[1] + b[1],           // avgSalary: sum across companies
+                        a[2] + b[2]            // weightedAvgSalary: sum across companies
+                    });
             }
 
-            out.add(new EmployeeBonusBasisDTO(u, year, months));
+            List<EmployeeBonusBasisDTO.MonthBasis> months = new ArrayList<>(12);
+            for (int[] ym : fyMonths) {
+                String key = ym[0] + "-" + ym[1];
+                double[] vals = monthData.getOrDefault(key, new double[]{0, 0, 0});
+                months.add(new EmployeeBonusBasisDTO.MonthBasis(ym[0], ym[1], vals[0], vals[1], vals[2]));
+            }
+
+            out.add(new EmployeeBonusBasisDTO(user, year, months));
         }
 
         return out;

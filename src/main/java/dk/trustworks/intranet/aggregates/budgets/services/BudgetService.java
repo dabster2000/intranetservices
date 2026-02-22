@@ -47,6 +47,7 @@ public class BudgetService {
                 .setParameter("contractuuid", contractuuid)
                 .setParameter("useruuid", useruuid)
                 .getResultList()).stream()
+                .filter(tuple -> tuple.get("date", LocalDate.class) != null)
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -69,6 +70,7 @@ public class BudgetService {
                 .setParameter("fromdate", fromdate)
                 .setParameter("todate", todate)
                 .getResultList()).stream()
+                .filter(tuple -> tuple.get("date", LocalDate.class) != null)
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -91,6 +93,7 @@ public class BudgetService {
                 .setParameter("year", date.getYear())
                 .setParameter("month", date.getMonthValue())
                 .getResultList()).stream()
+                .filter(tuple -> tuple.get("date", LocalDate.class) != null)
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -112,6 +115,7 @@ public class BudgetService {
                 .setParameter("fromdate", fromdate)
                 .setParameter("todate", todate)
                 .getResultList()).stream()
+                .filter(tuple -> tuple.get("date", LocalDate.class) != null)
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -134,6 +138,7 @@ public class BudgetService {
                 .setParameter("year", date.getYear())
                 .setParameter("month", date.getMonthValue())
                 .getResultList()).stream()
+                .filter(tuple -> tuple.get("date", LocalDate.class) != null)
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
@@ -155,6 +160,7 @@ public class BudgetService {
                 .setParameter("fromdate", fromdate)
                 .setParameter("todate", todate)
                 .getResultList()).stream()
+                .filter(tuple -> tuple.get("date", LocalDate.class) != null)
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
