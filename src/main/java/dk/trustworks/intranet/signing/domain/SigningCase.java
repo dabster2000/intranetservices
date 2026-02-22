@@ -170,10 +170,11 @@ public class SigningCase {
     private String sharepointUploadError;
 
     /**
-     * URL of the uploaded file in SharePoint.
-     * Set after successful upload for easy access.
+     * Pipe-separated URLs of the uploaded files in SharePoint.
+     * For single-document cases, contains one URL.
+     * For multi-document cases, contains URLs separated by " | ".
      */
-    @Column(name = "sharepoint_file_url", length = 1000)
+    @Column(name = "sharepoint_file_url", columnDefinition = "TEXT")
     private String sharepointFileUrl;
 
     /**

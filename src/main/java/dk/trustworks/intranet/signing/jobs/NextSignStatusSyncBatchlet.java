@@ -18,6 +18,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -213,12 +214,15 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
         if (signingCase.getSigningStoreUuid() == null || signingCase.getSigningStoreUuid().isBlank()) {
             return false;
         }
-        // Must not already be uploaded
-        return !"UPLOADED".equals(signingCase.getSharepointUploadStatus());
+        // Must not already be uploaded or partially uploaded
+        String uploadStatus = signingCase.getSharepointUploadStatus();
+        return !"UPLOADED".equals(uploadStatus) && !"PARTIAL_FAILURE".equals(uploadStatus);
     }
 
     /**
-     * Downloads the signed document from NextSign and uploads it to SharePoint.
+     * Downloads ALL signed documents from NextSign and uploads them to SharePoint.
+     * Handles multi-document cases by iterating over every signed document.
+     * Uses partial failure handling: continues uploading remaining documents if one fails.
      *
      * @param signingCase The signing case entity
      */
@@ -244,28 +248,24 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 return;
             }
 
-            // 2. Download signed document from NextSign
-            log.debugf("Downloading signed document for case: %s", caseKey);
-            byte[] pdfBytes = signingService.downloadSignedDocument(caseKey, 0);
+            // 2. Download ALL signed documents from NextSign (single status call)
+            log.debugf("Downloading all signed documents for case: %s", caseKey);
+            List<SigningService.SignedDocumentDownload> documents =
+                signingService.downloadAllSignedDocuments(caseKey);
 
-            if (pdfBytes == null || pdfBytes.length == 0) {
-                String error = "Downloaded empty document for case: " + caseKey;
+            if (documents.isEmpty()) {
+                String error = "No signed documents downloaded for case: " + caseKey;
                 log.errorf(error);
                 markSharePointUploadFailed(signingCase, error);
                 return;
             }
 
-            log.debugf("Downloaded signed document: %d bytes", pdfBytes.length);
+            log.infof("Downloaded %d signed documents for case %s", documents.size(), caseKey);
 
-            // 3. Build filename with timestamp to avoid collisions
-            String baseFilename = sanitizeFilename(signingCase.getDocumentName());
-            String timestamp = LocalDateTime.now().format(FILENAME_DATE_FORMATTER);
-            String filename = String.format("%s_signed_%s.pdf", baseFilename, timestamp);
-
-            // 4. Construct folder path with user subdirectory if enabled
+            // 3. Construct folder path with user subdirectory if enabled
             String uploadFolderPath = buildUploadFolderPath(store, signingCase);
 
-            // 5. Ensure folder exists (create if necessary)
+            // 4. Ensure folder exists (create if necessary)
             if (uploadFolderPath != null && !uploadFolderPath.isBlank()) {
                 log.debugf("Ensuring folder exists before upload: %s", uploadFolderPath);
                 try {
@@ -277,36 +277,76 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                     log.debugf("Folder verified/created successfully");
                 } catch (Exception e) {
                     log.warnf(e, "Could not ensure folder exists: %s - will attempt upload anyway", uploadFolderPath);
-                    // Continue with upload - Graph API may auto-create on PUT
                 }
             }
 
-            // 6. Upload to SharePoint
-            log.infof("Uploading to SharePoint: site=%s, drive=%s, path=%s, file=%s",
-                store.getSiteUrl(), store.getDriveName(), uploadFolderPath, filename);
+            // 5. Upload each document, tracking successes and failures
+            String timestamp = LocalDateTime.now().format(FILENAME_DATE_FORMATTER);
+            List<String> uploadedUrls = new ArrayList<>();
+            List<String> failedDocNames = new ArrayList<>();
 
-            DriveItem result = sharePointService.uploadFile(
-                store.getSiteUrl(),
-                store.getDriveName(),
-                uploadFolderPath,
-                filename,
-                pdfBytes
-            );
+            int uploadIdx = 0;
+            for (SigningService.SignedDocumentDownload doc : documents) {
+                uploadIdx++;
+                String docDisplayName = doc.name() != null ? doc.name() : "document_" + doc.index();
+                try {
+                    // Use original document name from NextSign
+                    String baseFilename = sanitizeFilename(doc.name());
+                    String filename = String.format("%s_signed_%s.pdf", baseFilename, timestamp);
 
-            // 7. Update case with success status
-            signingCase.setSharepointUploadStatus("UPLOADED");
-            signingCase.setSharepointFileUrl(result.webUrl());
-            signingCase.setSharepointUploadError(null);
-            signingCaseRepository.persist(signingCase);
+                    log.infof("Uploading document %d/%d to SharePoint: %s",
+                        uploadIdx, documents.size(), filename);
 
-            log.infof("Successfully uploaded signed document for case %s to SharePoint: %s",
-                caseKey, result.webUrl());
+                    DriveItem result = sharePointService.uploadFile(
+                        store.getSiteUrl(),
+                        store.getDriveName(),
+                        uploadFolderPath,
+                        filename,
+                        doc.pdfBytes()
+                    );
 
-            // 8. Send Slack notification to user
-            notifyUserOfSignedDocumentUpload(signingCase);
+                    uploadedUrls.add(result.webUrl());
+                    log.infof("Successfully uploaded document '%s' to SharePoint: %s",
+                        docDisplayName, result.webUrl());
+
+                } catch (Exception e) {
+                    log.errorf(e, "Failed to upload document '%s' (index %d) for case %s: %s",
+                        docDisplayName, doc.index(), caseKey, e.getMessage());
+                    failedDocNames.add(docDisplayName);
+                }
+            }
+
+            // 6. Update case status based on results
+            if (uploadedUrls.isEmpty()) {
+                // All documents failed
+                String error = String.format("All %d documents failed to upload", documents.size());
+                markSharePointUploadFailed(signingCase, error);
+            } else if (!failedDocNames.isEmpty()) {
+                // Partial success
+                signingCase.setSharepointUploadStatus("PARTIAL_FAILURE");
+                signingCase.setSharepointFileUrl(String.join(" | ", uploadedUrls));
+                signingCase.setSharepointUploadError(
+                    "Failed documents: " + String.join(", ", failedDocNames));
+                signingCaseRepository.persist(signingCase);
+                log.warnf("Partial upload for case %s: %d/%d documents uploaded",
+                    caseKey, uploadedUrls.size(), documents.size());
+            } else {
+                // All documents uploaded successfully
+                signingCase.setSharepointUploadStatus("UPLOADED");
+                signingCase.setSharepointFileUrl(String.join(" | ", uploadedUrls));
+                signingCase.setSharepointUploadError(null);
+                signingCaseRepository.persist(signingCase);
+                log.infof("Successfully uploaded all %d signed documents for case %s to SharePoint",
+                    uploadedUrls.size(), caseKey);
+            }
+
+            // 7. Send Slack notification (only if at least some documents uploaded)
+            if (!uploadedUrls.isEmpty()) {
+                notifyUserOfSignedDocumentUpload(signingCase);
+            }
 
         } catch (Exception e) {
-            log.errorf(e, "Failed to upload signed document to SharePoint for case: %s", caseKey);
+            log.errorf(e, "Failed to upload signed documents to SharePoint for case: %s", caseKey);
             markSharePointUploadFailed(signingCase, e.getMessage());
         }
     }

@@ -20,6 +20,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @JBossLog
 @ApplicationScoped
@@ -57,7 +58,9 @@ public class StatusService {
     @CacheInvalidateAll(cacheName = "user-status-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
     public void create(@Valid UserStatus status) {
-        if(status.getUuid().isEmpty()) return;
+        if(status.getUuid() == null || status.getUuid().isEmpty()) {
+            status.uuid = UUID.randomUUID().toString();
+        }
         Optional<UserStatus> existingStatus = UserStatus.findByIdOptional(status.getUuid());
         existingStatus.ifPresentOrElse(s -> {
             log.info("StatusService.create -> updating status");

@@ -18,6 +18,7 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.ArrayList;
 import java.util.Map;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -389,6 +390,87 @@ public class SigningService {
         } catch (Exception e) {
             log.errorf(e, "Unexpected error fetching case status: %s", e.getMessage());
             throw new SigningException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Result of downloading a single signed document.
+     *
+     * @param name Original document name from NextSign
+     * @param pdfBytes The signed PDF content
+     * @param index 0-based index of the document in the case
+     */
+    public record SignedDocumentDownload(String name, byte[] pdfBytes, int index) {}
+
+    /**
+     * Downloads ALL signed documents from a completed signing case in a single operation.
+     * Makes one NextSign status call, then downloads each document.
+     *
+     * @param caseKey The NextSign case key
+     * @return List of downloaded documents with their names and content
+     * @throws SigningException if case not found, not completed, or download fails
+     */
+    public List<SignedDocumentDownload> downloadAllSignedDocuments(String caseKey) {
+        log.infof("Downloading all signed documents from case: %s", caseKey);
+
+        if (caseKey == null || caseKey.isBlank()) {
+            throw new IllegalArgumentException("Case key is required");
+        }
+
+        try {
+            // 1) Get case status (single API call)
+            GetCaseStatusResponse statusResponse = nextsignService.getCaseStatus(caseKey);
+
+            GetCaseStatusResponse.CaseDetails caseDetails = statusResponse.contract();
+            if (caseDetails == null) {
+                throw new SigningException("Case not found: " + caseKey);
+            }
+
+            List<GetCaseStatusResponse.SignedDocumentInfo> signedDocs = caseDetails.signedDocuments();
+            if (signedDocs == null || signedDocs.isEmpty()) {
+                throw new SigningException(
+                    "No signed documents available. Case status: " + caseDetails.caseStatus());
+            }
+
+            log.infof("Case %s has %d signed documents to download", caseKey, signedDocs.size());
+
+            // 2) Download each document
+            List<SignedDocumentDownload> results = new ArrayList<>(signedDocs.size());
+            for (int i = 0; i < signedDocs.size(); i++) {
+                GetCaseStatusResponse.SignedDocumentInfo signedDoc = signedDocs.get(i);
+                String documentUrl = signedDoc.documentId();
+
+                if (documentUrl == null || documentUrl.isBlank()) {
+                    log.warnf("Signed document %d has no URL, skipping", i);
+                    continue;
+                }
+
+                log.infof("Downloading document %d/%d: %s", i + 1, signedDocs.size(), signedDoc.name());
+                byte[] pdfBytes = nextsignService.downloadSignedDocument(documentUrl);
+
+                if (pdfBytes == null || pdfBytes.length == 0) {
+                    log.warnf("Downloaded empty document %d for case %s, skipping", i, caseKey);
+                    continue;
+                }
+
+                results.add(new SignedDocumentDownload(signedDoc.name(), pdfBytes, i));
+            }
+
+            log.infof("Successfully downloaded %d/%d signed documents for case %s",
+                results.size(), signedDocs.size(), caseKey);
+
+            return results;
+
+        } catch (NextsignSigningService.NextsignException e) {
+            log.errorf(e, "NextSign error downloading documents: %s", e.getMessage());
+            throw new SigningException("Failed to download documents: " + e.getMessage(), e);
+
+        } catch (SigningException e) {
+            throw e;
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error downloading documents: %s", e.getMessage());
+            throw new SigningException("Failed to download documents: " + e.getMessage(), e);
         }
     }
 

@@ -5,6 +5,7 @@ import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.sales.model.enums.LostReason;
 import dk.trustworks.intranet.domain.user.entity.User;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Data;
@@ -59,6 +60,9 @@ public class SalesLead extends PanacheEntityBase {
     private LocalDateTime created;
     @Column(name = "last_updated")
     private LocalDateTime modified;
+    @Column(name = "won_date")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime wonDate;
 
     @Override
     public boolean equals(Object o) {

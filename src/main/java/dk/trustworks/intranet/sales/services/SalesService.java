@@ -117,7 +117,7 @@ public class SalesService {
     public List<SalesLead> findWon(LocalDate sinceDate) {
         LocalDateTime since = sinceDate.atStartOfDay();
         log.infof("since = %s", since);
-        return SalesLead.list("status = ?1 and modified >= ?2", LeadStatus.WON, since);
+        return SalesLead.list("status = ?1 and wonDate >= ?2", LeadStatus.WON, since);
     }
 
     public List<SalesLead> findByStatus(SalesStatus... status) {
@@ -129,10 +129,19 @@ public class SalesService {
         if(salesLead.getUuid()==null || salesLead.getUuid().isBlank()) {
             salesLead.setUuid(UUID.randomUUID().toString());
             salesLead.setCreated(LocalDateTime.now());
+            if (salesLead.getStatus() == LeadStatus.WON) {
+                salesLead.setWonDate(LocalDateTime.now());
+            }
             salesLead.persist();
             log.info("Created new SalesLead with UUID: " + salesLead.getUuid());
-        } else if(SalesLead.findById(salesLead.getUuid())==null) salesLead.persist();
-        else update(salesLead);
+        } else if(SalesLead.findById(salesLead.getUuid())==null) {
+            if (salesLead.getStatus() == LeadStatus.WON) {
+                salesLead.setWonDate(LocalDateTime.now());
+            }
+            salesLead.persist();
+        } else {
+            update(salesLead);
+        }
 
         return salesLead;
     }
@@ -153,6 +162,21 @@ public class SalesService {
     public void update(SalesLead salesLead) {
         log.info("SalesService.update");
         log.info("salesLead = " + salesLead);
+
+        // Determine won_date based on status transition
+        SalesLead existing = SalesLead.findById(salesLead.getUuid());
+        LocalDateTime wonDate;
+        if (salesLead.getStatus() == LeadStatus.WON && (existing == null || existing.getStatus() != LeadStatus.WON)) {
+            // Transitioning TO WON — set won_date to now
+            wonDate = LocalDateTime.now();
+        } else if (salesLead.getStatus() != LeadStatus.WON) {
+            // Not WON — clear won_date
+            wonDate = null;
+        } else {
+            // Already WON and staying WON — preserve existing won_date
+            wonDate = existing != null ? existing.getWonDate() : null;
+        }
+
         SalesLead.update("client = ?1, " +
                         "allocation = ?2, " +
                         "closeDate = ?3, " +
@@ -165,8 +189,9 @@ public class SalesService {
                         "description = ?10, " +
                         "detailedDescription = ?11, " +
                         "status = ?12, " +
-                        "modified = ?13 " +
-                        "WHERE uuid like ?14 ",
+                        "modified = ?13, " +
+                        "wonDate = ?14 " +
+                        "WHERE uuid like ?15 ",
                 salesLead.getClient(),
                 salesLead.getAllocation(),
                 salesLead.getCloseDate(),
@@ -180,6 +205,7 @@ public class SalesService {
                 salesLead.getDetailedDescription(),
                 salesLead.getStatus(),
                 LocalDateTime.now(),
+                wonDate,
                 salesLead.getUuid());
     }
 
