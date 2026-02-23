@@ -2,8 +2,11 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.sales.model.SalesLead;
+import dk.trustworks.intranet.sales.model.dto.ConsultantRecommendation;
+import dk.trustworks.intranet.sales.model.dto.ConsultantRecommendationRequest;
 import dk.trustworks.intranet.sales.model.dto.DescriptionSuggestionRequest;
 import dk.trustworks.intranet.sales.services.SalesService;
+import dk.trustworks.intranet.sales.usecases.ConsultantRecommendationUseCase;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
@@ -33,6 +36,9 @@ public class SalesResource {
 
     @Inject
     OpenAIService openAIService;
+
+    @Inject
+    ConsultantRecommendationUseCase consultantRecommendationUseCase;
 
     @GET
     @Transactional
@@ -124,6 +130,51 @@ public class SalesResource {
         if (salesLead.getCloseDate().isBefore(LocalDate.now().withDayOfMonth(1))) {
             salesLead.setCloseDate(LocalDate.now().withDayOfMonth(1));
             salesLead.persistAndFlush();
+        }
+    }
+
+    /**
+     * AI-powered consultant recommendation endpoint.
+     * Returns the top 5 consultant matches for a sales lead based on skills,
+     * rate, and availability. Business logic lives in ConsultantRecommendationUseCase.
+     *
+     * @param leadUuid UUID of the sales lead
+     * @param request  Optional context hint from the account manager
+     * @return 200 with ranked recommendations, 400 if lead is WON/LOST, 404 if lead not found
+     */
+    @POST
+    @Path("/{uuid}/consultant-recommendations")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response getConsultantRecommendations(
+            @PathParam("uuid") String leadUuid,
+            ConsultantRecommendationRequest request) {
+
+        log.infof("[getConsultantRecommendations] leadUuid=%s", leadUuid);
+
+        try {
+            String contextHint = request != null ? request.contextHint() : null;
+            List<ConsultantRecommendation> recommendations =
+                    consultantRecommendationUseCase.recommendForLead(leadUuid, contextHint);
+            return Response.ok(recommendations).build();
+
+        } catch (ConsultantRecommendationUseCase.LeadNotFoundException e) {
+            log.warnf("[getConsultantRecommendations] Lead not found: %s", leadUuid);
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("Sales lead not found: " + leadUuid)
+                    .build();
+
+        } catch (ConsultantRecommendationUseCase.LeadNotEligibleException e) {
+            log.warnf("[getConsultantRecommendations] Lead not eligible: %s status=%s", leadUuid, e.status);
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("Cannot recommend consultants for a lead with status: " + e.status)
+                    .build();
+
+        } catch (Exception e) {
+            log.errorf(e, "[getConsultantRecommendations] Unexpected error for leadUuid=%s", leadUuid);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Failed to generate consultant recommendations")
+                    .build();
         }
     }
 
