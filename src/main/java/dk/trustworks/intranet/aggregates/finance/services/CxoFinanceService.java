@@ -5,6 +5,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4Wee
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAccumulatedEbitdaDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAccumulatedRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyCostCenterMixDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyExpenseMixDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyOverheadPerFTEDTO;
@@ -14,12 +16,20 @@ import dk.trustworks.intranet.aggregates.finance.dto.MonthlyRevenueMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexBridgeDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexDetailRowDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
 import dk.trustworks.intranet.aggregates.finance.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RepeatBusinessShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenuePerBillableFTETTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.Top5ClientsShareDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.DirectCostRowDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.EbitdaSourceDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.InternalInvoiceRowDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.InvoiceExportDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.InvoiceItemExportDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.OpexRowExportDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -35,6 +45,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,7 +53,27 @@ import java.util.stream.Collectors;
 
 /**
  * Service for CxO dashboard finance aggregation.
- * Queries the fact_project_financials view for revenue and margin trends.
+ *
+ * <h2>Revenue data source</h2>
+ * All revenue KPIs ({@code getRevenueYTDvsBudget}, {@code getTTMRevenueGrowth},
+ * {@code getGrossMarginTTM}, {@code getRevenuePerBillableFTETTM},
+ * {@code getRevenueMarginTrend}, {@code getAccumulatedRevenue},
+ * {@code getExpectedAccumulatedEBITDA}) read from {@code fact_company_revenue_mat}
+ * (grain: company × month).  This view implements the canonical revenue algorithm
+ * from {@code docs/finalized/invoicing/revenue-calculation-nov-2025.md}:
+ * INVOICE + PHANTOM as positive revenue, INTERNAL as positive revenue for the
+ * issuing company, CREDIT_NOTE subtracted, and proportional discount allocation.
+ *
+ * <h2>Filter handling for revenue</h2>
+ * Revenue KPIs always show <strong>company-total</strong> figures regardless of
+ * dimension filters (sector, service line, contract type, client).  Only the
+ * {@code companyIds} filter applies to revenue queries.  Dimension filters
+ * (sector, service line, contract type, client) apply exclusively to cost-based
+ * metrics that still read from {@code fact_project_financials_mat}.
+ *
+ * <h2>Cost data source</h2>
+ * All direct-delivery cost metrics continue to read from
+ * {@code fact_project_financials_mat} with the full set of dimension filters.
  */
 @JBossLog
 @ApplicationScoped
@@ -50,6 +81,9 @@ public class CxoFinanceService {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    DistributionAwareOpexProvider opexProvider;
 
     /**
      * Retrieves monthly revenue and margin data for the specified period and filters.
@@ -83,153 +117,113 @@ public class CxoFinanceService {
         log.debugf("getRevenueMarginTrend: fromDate=%s (%s), toDate=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
-        // Helper to build SQL with optional company filter (for DBs where fact view lacks companyuuid)
-        java.util.function.Function<Boolean, String> sqlBuilder = includeCompanyFilter -> {
-            // NOTE: Added COLLATE to fix collation mismatch between month_key column and String.format() output
-            StringBuilder sql = new StringBuilder(
-                    "SELECT " +
-                            "    f.month_key, " +
-                            "    f.year, " +
-                            "    f.month_number, " +
-                            "    SUM(f.recognized_revenue_dkk) AS revenue, " +
-                            "    SUM(f.direct_delivery_cost_dkk) AS cost " +
-                            "FROM fact_project_financials_mat f " +
-                            "WHERE 1=1 "
-            );
+        // Revenue: fact_company_revenue_mat (company-total, companyIds filter only).
+        // Revenue KPIs always show company-total — sector/serviceLine/contractType/client filters
+        // do not apply to revenue.  Only companyIds scoping is honored.
+        java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(
+                fromMonthKey, toMonthKey, companyIds);
 
-            // Time range filter
-            sql.append("  AND f.month_key >= :fromMonthKey ")
-                    .append("  AND f.month_key <= :toMonthKey ");
+        // Cost: fact_project_financials_mat with deduplication + all dimension filters.
+        // V118 migration added companyuuid column, creating multiple rows per project-month.
+        // Strategy: GROUP BY project_id + month_key with MAX(cost) before aggregating by calendar month.
+        StringBuilder costInner = new StringBuilder(
+                "SELECT " +
+                "    f.project_id, " +
+                "    f.month_key, " +
+                "    f.year, " +
+                "    f.month_number, " +
+                "    MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "FROM fact_project_financials_mat f " +
+                "WHERE f.month_key >= :fromMonthKey " +
+                "  AND f.month_key <= :toMonthKey "
+        );
+        if (sectors != null && !sectors.isEmpty()) {
+            costInner.append("  AND f.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            costInner.append("  AND f.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            costInner.append("  AND f.contract_type_id IN (:contractTypes) ");
+        }
+        if (clientId != null && !clientId.isBlank()) {
+            costInner.append("  AND f.client_id = :clientId ");
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            costInner.append("  AND f.companyuuid IN (:companyIds) ");
+        }
+        costInner.append("GROUP BY f.project_id, f.month_key, f.year, f.month_number");
 
-            // Conditional sector filter
-            if (sectors != null && !sectors.isEmpty()) {
-                sql.append("  AND f.sector_id IN (:sectors) ");
-            }
+        String costSql = "SELECT d.month_key, d.year, d.month_number, SUM(d.cost) AS cost " +
+                         "FROM (" + costInner + ") AS d " +
+                         "GROUP BY d.year, d.month_number, d.month_key " +
+                         "ORDER BY d.year ASC, d.month_number ASC";
 
-            // Conditional service line filter
-            if (serviceLines != null && !serviceLines.isEmpty()) {
-                sql.append("  AND f.service_line_id IN (:serviceLines) ");
-            }
-
-            // Conditional contract type filter
-            if (contractTypes != null && !contractTypes.isEmpty()) {
-                sql.append("  AND f.contract_type_id IN (:contractTypes) ");
-            }
-
-            // Conditional client filter
-            if (clientId != null && !clientId.isBlank()) {
-                sql.append("  AND f.client_id = :clientId ");
-            }
-
-            // Conditional company filter (only when requested and supported)
-            if (includeCompanyFilter && companyIds != null && !companyIds.isEmpty()) {
-                sql.append("  AND f.companyuuid IN (:companyIds) ");
-            }
-
-            sql.append("GROUP BY f.year, f.month_number, f.month_key ")
-                    .append("ORDER BY f.year ASC, f.month_number ASC");
-
-            return sql.toString();
-        };
-
-        // Try with company filter first (if provided). If DB doesn't have the column yet, fall back without it
-        boolean wantCompanyFilter = companyIds != null && !companyIds.isEmpty();
-        String sql = sqlBuilder.apply(wantCompanyFilter);
-
-        List<Tuple> results;
-        try {
-            var query = em.createNativeQuery(sql, Tuple.class);
-            query.setParameter("fromMonthKey", fromMonthKey);
-            query.setParameter("toMonthKey", toMonthKey);
-
-            if (sectors != null && !sectors.isEmpty()) {
-                query.setParameter("sectors", sectors);
-            }
-            if (serviceLines != null && !serviceLines.isEmpty()) {
-                query.setParameter("serviceLines", serviceLines);
-            }
-            if (contractTypes != null && !contractTypes.isEmpty()) {
-                query.setParameter("contractTypes", contractTypes);
-            }
-            if (clientId != null && !clientId.isBlank()) {
-                query.setParameter("clientId", clientId);
-            }
-            if (wantCompanyFilter) {
-                query.setParameter("companyIds", companyIds);
-            }
-
-            @SuppressWarnings("unchecked")
-            List<Tuple> tmp = query.getResultList();
-            results = tmp;
-        } catch (RuntimeException ex) {
-            // Detect missing column error and retry without company filter
-            Throwable cause = ex;
-            String errorMessage = ex.getMessage();
-            while (cause.getCause() != null) {
-                cause = cause.getCause();
-                if (cause.getMessage() != null) {
-                    errorMessage = cause.getMessage();
-                }
-            }
-            boolean missingCompanyColumn = errorMessage != null && errorMessage.toLowerCase().contains("unknown column 'f.companyuuid'");
-            if (wantCompanyFilter && missingCompanyColumn) {
-                log.warnf("fact_project_financials missing column companyuuid; retrying without company filter. Error: %s", errorMessage);
-                // Retry without company filter
-                var retryQuery = em.createNativeQuery(sqlBuilder.apply(false), Tuple.class);
-                retryQuery.setParameter("fromMonthKey", fromMonthKey);
-                retryQuery.setParameter("toMonthKey", toMonthKey);
-                if (sectors != null && !sectors.isEmpty()) {
-                    retryQuery.setParameter("sectors", sectors);
-                }
-                if (serviceLines != null && !serviceLines.isEmpty()) {
-                    retryQuery.setParameter("serviceLines", serviceLines);
-                }
-                if (contractTypes != null && !contractTypes.isEmpty()) {
-                    retryQuery.setParameter("contractTypes", contractTypes);
-                }
-                if (clientId != null && !clientId.isBlank()) {
-                    retryQuery.setParameter("clientId", clientId);
-                }
-                @SuppressWarnings("unchecked")
-                List<Tuple> tmp = retryQuery.getResultList();
-                results = tmp;
-            } else {
-                throw ex; // rethrow other errors
-            }
+        var costQuery = em.createNativeQuery(costSql, Tuple.class);
+        costQuery.setParameter("fromMonthKey", fromMonthKey);
+        costQuery.setParameter("toMonthKey", toMonthKey);
+        if (sectors != null && !sectors.isEmpty()) {
+            costQuery.setParameter("sectors", sectors);
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            costQuery.setParameter("serviceLines", serviceLines);
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            costQuery.setParameter("contractTypes", contractTypes);
+        }
+        if (clientId != null && !clientId.isBlank()) {
+            costQuery.setParameter("clientId", clientId);
+        }
+        if (companyIds != null && !companyIds.isEmpty()) {
+            costQuery.setParameter("companyIds", companyIds);
         }
 
-        log.debugf("Query returned %d rows", results.size());
+        @SuppressWarnings("unchecked")
+        List<Tuple> costRows = costQuery.getResultList();
 
-        // Map results to DTOs, computing margin percentage
+        log.debugf("Cost query returned %d rows", costRows.size());
+
+        // Merge revenue (company-total) and cost (dimension-filtered) into monthly DTOs.
+        // The set of months is driven by the cost query (project activity defines months shown).
+        // Months present only in revenue are included by iterating the revenue map for any
+        // months that have no cost row.
+        java.util.Map<String, double[]> costByMonth = new java.util.LinkedHashMap<>();
+        for (Tuple row : costRows) {
+            String mk = (String) row.get("month_key");
+            int year  = ((Number) row.get("year")).intValue();
+            int month = ((Number) row.get("month_number")).intValue();
+            double cost = row.get("cost") != null ? ((Number) row.get("cost")).doubleValue() : 0.0;
+            costByMonth.put(mk, new double[]{year, month, cost});
+        }
+
+        // Union of months from both sources, sorted chronologically
+        java.util.Set<String> allMonthKeys = new java.util.TreeSet<>(costByMonth.keySet());
+        allMonthKeys.addAll(revenueByMonth.keySet());
+
         List<MonthlyRevenueMarginDTO> dtos = new ArrayList<>();
-        for (Tuple row : results) {
-            String monthKey = (String) row.get("month_key");
-            int year = ((Number) row.get("year")).intValue();
-            int monthNumber = ((Number) row.get("month_number")).intValue();
-            double revenue = ((Number) row.get("revenue")).doubleValue();
-            double cost = ((Number) row.get("cost")).doubleValue();
-
-            // Calculate margin percentage: (revenue - cost) / revenue * 100
-            // Null if revenue is zero (avoid division by zero)
-            Double marginPercent = null;
-            if (revenue > 0) {
-                marginPercent = ((revenue - cost) / revenue) * 100.0;
+        for (String monthKey : allMonthKeys) {
+            double[] yearMonth = costByMonth.getOrDefault(monthKey, null);
+            int year;
+            int monthNumber;
+            if (yearMonth != null) {
+                year        = (int) yearMonth[0];
+                monthNumber = (int) yearMonth[1];
+            } else {
+                year        = Integer.parseInt(monthKey.substring(0, 4));
+                monthNumber = Integer.parseInt(monthKey.substring(4));
             }
+            double revenue = revenueByMonth.getOrDefault(monthKey, 0.0);
+            double cost    = yearMonth != null ? yearMonth[2] : 0.0;
+
+            Double marginPercent = (revenue > 0)
+                    ? ((revenue - cost) / revenue) * 100.0
+                    : null;
 
             String monthLabel = formatMonthLabel(year, monthNumber);
+            dtos.add(new MonthlyRevenueMarginDTO(monthKey, year, monthNumber, monthLabel, revenue, cost, marginPercent));
 
-            MonthlyRevenueMarginDTO dto = new MonthlyRevenueMarginDTO(
-                    monthKey,
-                    year,
-                    monthNumber,
-                    monthLabel,
-                    revenue,
-                    cost,
-                    marginPercent
-            );
-
-            dtos.add(dto);
-            log.debugf("Month %s: revenue=%.2f, cost=%.2f, margin=%.2f%%", monthKey, revenue, cost, marginPercent != null ? marginPercent : 0);
+            log.debugf("Month %s: revenue=%.2f, cost=%.2f, margin=%.2f%%",
+                    monthKey, revenue, cost, marginPercent != null ? marginPercent : 0.0);
         }
 
         return dtos;
@@ -401,26 +395,23 @@ public class CxoFinanceService {
                 currentFiscalYear, fiscalYearStart, ytdEnd,
                 priorFiscalYear, priorYearStart, priorYearEnd);
 
-        // 2. Query actual revenue YTD (current fiscal year)
-        double actualYTD = queryActualRevenue(
-                fiscalYearStart, ytdEnd, sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        // 2. Query actual revenue YTD (current fiscal year).
+        // Revenue KPIs use fact_company_revenue_mat — company-total, no dimension filters.
+        double actualYTD = queryCompanyRevenue(fiscalYearStart, ytdEnd, companyIds);
 
         // 3. Query budget YTD (current fiscal year)
         double budgetYTD = queryBudgetRevenue(
                 fiscalYearStart, ytdEnd, sectors, serviceLines, contractTypes, clientId, companyIds
         );
 
-        // 4. Query prior year actual YTD (same fiscal period)
-        double priorYearYTD = queryActualRevenue(
-                priorYearStart, priorYearEnd, sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        // 4. Query prior year actual YTD (same fiscal period).
+        // Revenue KPIs use fact_company_revenue_mat — company-total, no dimension filters.
+        double priorYearYTD = queryCompanyRevenue(priorYearStart, priorYearEnd, companyIds);
 
-        // 5. Query sparkline data (last 12 months actual revenue)
+        // 5. Query sparkline data (last 12 months actual revenue, company-total).
         LocalDate sparklineStart = normalizedAsOfDate.minusMonths(11).withDayOfMonth(1);
-        double[] sparklineData = querySparklineRevenue(
-                sparklineStart, normalizedAsOfDate,
-                sectors, serviceLines, contractTypes, clientId, companyIds
+        double[] sparklineData = queryCompanyRevenueSparkline(
+                sparklineStart, normalizedAsOfDate, companyIds, 12
         );
 
         // 6. Calculate metrics
@@ -482,27 +473,22 @@ public class CxoFinanceService {
         log.debugf("TTM Revenue Growth calculation: Current TTM (%s to %s), Prior TTM (%s to %s)",
                 currentTTMStart, currentTTMEnd, priorTTMStart, priorTTMEnd);
 
-        // 4. Query current TTM revenue
-        double currentTTM = queryActualRevenue(
-                currentTTMStart, currentTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        // 4. Query current TTM revenue.
+        // Revenue KPIs use fact_company_revenue_mat — company-total, no dimension filters.
+        double currentTTM = queryCompanyRevenue(currentTTMStart, currentTTMEnd, companyIds);
 
-        // 5. Query prior TTM revenue
-        double priorTTM = queryActualRevenue(
-                priorTTMStart, priorTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        // 5. Query prior TTM revenue.
+        // Revenue KPIs use fact_company_revenue_mat — company-total, no dimension filters.
+        double priorTTM = queryCompanyRevenue(priorTTMStart, priorTTMEnd, companyIds);
 
         // 6. Calculate growth percentage (handle division by zero)
         double growthPercent = (priorTTM > 0)
                 ? ((currentTTM - priorTTM) / priorTTM) * 100.0
                 : 0.0;
 
-        // 7. Query sparkline data (last 12 calendar months from anchor date)
-        double[] sparklineData = querySparklineRevenue(
-                currentTTMStart, currentTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
+        // 7. Query sparkline data (last 12 calendar months, company-total).
+        double[] sparklineData = queryCompanyRevenueSparkline(
+                currentTTMStart, currentTTMEnd, companyIds, 12
         );
 
         log.debugf("TTM Revenue Growth results: Current=%.2f, Prior=%.2f, Growth=%.2f%%",
@@ -556,27 +542,33 @@ public class CxoFinanceService {
         log.debugf("Gross Margin TTM calculation: Current TTM (%s to %s), Prior TTM (%s to %s)",
                 currentTTMStart, currentTTMEnd, priorTTMStart, priorTTMEnd);
 
-        // 4. Query current TTM revenue and costs
-        double currentRevenue = queryActualRevenue(
-                currentTTMStart, currentTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        String currentFromKey = currentTTMStart.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String currentToKey   = currentTTMEnd.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String priorFromKey   = priorTTMStart.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String priorToKey     = priorTTMEnd.format(DateTimeFormatter.ofPattern("yyyyMM"));
+
+        // 4. Query current TTM revenue (company-total from fact_company_revenue_mat)
+        // and costs (from fact_project_financials_mat with dimension filters).
+        // Revenue KPIs always show company-total — dimension filters do not apply to revenue.
+        double currentRevenue = queryCompanyRevenue(currentTTMStart, currentTTMEnd, companyIds);
         double currentCost = queryActualCosts(
                 currentTTMStart, currentTTMEnd,
                 sectors, serviceLines, contractTypes, clientId, companyIds
         );
+        double currentInternalCost = queryTTMInternalInvoiceCost(currentFromKey, currentToKey, companyIds);
 
-        // 5. Query prior TTM revenue and costs
-        double priorRevenue = queryActualRevenue(
-                priorTTMStart, priorTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        // 5. Query prior TTM revenue (company-total) and costs (dimension-filtered).
+        double priorRevenue = queryCompanyRevenue(priorTTMStart, priorTTMEnd, companyIds);
         double priorCost = queryActualCosts(
                 priorTTMStart, priorTTMEnd,
                 sectors, serviceLines, contractTypes, clientId, companyIds
         );
+        double priorInternalCost = queryTTMInternalInvoiceCost(priorFromKey, priorToKey, companyIds);
 
         // 6. Calculate margin percentages (handle division by zero)
+        // Gross margin = (revenue - directCost) / revenue
+        // Note: internalInvoiceCost is NOT subtracted because fact_project_financials
+        // already attributes revenue and costs to each consultant's company.
         double currentMarginPercent = (currentRevenue > 0)
                 ? ((currentRevenue - currentCost) / currentRevenue) * 100.0
                 : 0.0;
@@ -792,15 +784,10 @@ public class CxoFinanceService {
         log.debugf("TTM windows: Current [%s → %s], Prior [%s → %s]",
                 currentTTMStart, currentTTMEnd, priorTTMStart, priorTTMEnd);
 
-        // 2. Query revenue for current and prior TTM periods
-        double currentTTMRevenue = queryActualRevenue(
-                currentTTMStart, currentTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
-        );
-        double priorTTMRevenue = queryActualRevenue(
-                priorTTMStart, priorTTMEnd,
-                sectors, serviceLines, contractTypes, clientId, companyIds
-        );
+        // 2. Query revenue for current and prior TTM periods.
+        // Revenue KPIs use fact_company_revenue_mat — company-total, no dimension filters.
+        double currentTTMRevenue = queryCompanyRevenue(currentTTMStart, currentTTMEnd, companyIds);
+        double priorTTMRevenue   = queryCompanyRevenue(priorTTMStart, priorTTMEnd, companyIds);
 
         // 3. Query average billable FTE for current and prior TTM periods
         double currentAvgBillableFTE = queryAvgBillableFTE(
@@ -1266,6 +1253,136 @@ public class CxoFinanceService {
         }
 
         return ((Number) query.getSingleResult()).doubleValue();
+    }
+
+    // ============================================================================
+    // Company Revenue helpers — fact_company_revenue_mat
+    // ============================================================================
+
+    /**
+     * Query total company revenue from {@code fact_company_revenue_mat} for a date range.
+     *
+     * <p><strong>Design decision:</strong> Revenue KPIs always show company-total figures
+     * regardless of dimension filters (sector, service line, contract type, client).
+     * Only the {@code companyIds} filter applies here.  Dimension filters are intentionally
+     * excluded because {@code fact_company_revenue_mat} has no project/sector/client
+     * dimension — it aggregates at company × month grain.
+     *
+     * @param fromDate   Start of range (inclusive, first-of-month semantics)
+     * @param toDate     End of range (inclusive, last-of-month semantics)
+     * @param companyIds Optional company UUID filter; null or empty = all companies
+     * @return Sum of {@code net_revenue_dkk} over the range
+     */
+    private double queryCompanyRevenue(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> companyIds) {
+
+        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT COALESCE(SUM(r.net_revenue_dkk), 0.0) " +
+                "FROM fact_company_revenue_mat r " +
+                "WHERE r.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND r.company_id IN (:companyIds) ");
+        }
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        return ((Number) query.getSingleResult()).doubleValue();
+    }
+
+    /**
+     * Query monthly revenue from {@code fact_company_revenue_mat} for sparkline generation.
+     *
+     * <p>Returns an array of up to {@code expectedMonths} doubles (oldest → newest).
+     * Months with no data remain zero.
+     *
+     * @param fromDate       Start of range (inclusive)
+     * @param toDate         End of range (inclusive)
+     * @param companyIds     Optional company UUID filter
+     * @param expectedMonths Array size (typically 12)
+     * @return Monthly revenue values
+     */
+    private double[] queryCompanyRevenueSparkline(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> companyIds, int expectedMonths) {
+
+        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT r.month_key, COALESCE(SUM(r.net_revenue_dkk), 0.0) AS monthly_revenue " +
+                "FROM fact_company_revenue_mat r " +
+                "WHERE r.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND r.company_id IN (:companyIds) ");
+        }
+        sql.append("GROUP BY r.month_key ORDER BY r.month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> results = query.getResultList();
+
+        double[] sparkline = new double[expectedMonths];
+        for (int i = 0; i < results.size() && i < expectedMonths; i++) {
+            sparkline[i] = ((Number) results.get(i).get("monthly_revenue")).doubleValue();
+        }
+        return sparkline;
+    }
+
+    /**
+     * Query monthly revenue from {@code fact_company_revenue_mat} as a Map.
+     * Key: monthKey (YYYYMM), Value: net_revenue_dkk for that month.
+     *
+     * @param fromKey    Start month key inclusive (YYYYMM)
+     * @param toKey      End month key inclusive (YYYYMM)
+     * @param companyIds Optional company UUID filter
+     * @return Map of monthKey → net_revenue_dkk
+     */
+    private java.util.Map<String, Double> queryCompanyRevenueByMonth(
+            String fromKey, String toKey,
+            Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT r.month_key, COALESCE(SUM(r.net_revenue_dkk), 0.0) AS monthly_revenue " +
+                "FROM fact_company_revenue_mat r " +
+                "WHERE r.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND r.company_id IN (:companyIds) ");
+        }
+        sql.append("GROUP BY r.month_key ORDER BY r.month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            result.put((String) row.get("month_key"), ((Number) row.get("monthly_revenue")).doubleValue());
+        }
+        return result;
     }
 
     /**
@@ -1875,73 +1992,84 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        // Query monthly revenue and costs for last 12 months
-        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
-        StringBuilder sql = new StringBuilder(
+        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+
+        // Revenue: fact_company_revenue_mat (company-total, companyIds filter only).
+        // Revenue KPIs always show company-total — dimension filters do not apply.
+        java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(fromKey, toKey, companyIds);
+
+        // Cost: fact_project_financials_mat with all dimension filters (deduplication via MAX per project-month).
+        StringBuilder costSql = new StringBuilder(
                 "SELECT f.month_key, " +
-                        "       COALESCE(SUM(f.recognized_revenue_dkk), 0.0) AS monthly_revenue, " +
-                        "       COALESCE(SUM(f.direct_delivery_cost_dkk), 0.0) AS monthly_cost " +
-                        "FROM fact_project_financials_mat f " +
-                        "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+                "       COALESCE(SUM(f.direct_delivery_cost_dkk), 0.0) AS monthly_cost " +
+                "FROM ( " +
+                "    SELECT f2.project_id, f2.month_key, MAX(f2.direct_delivery_cost_dkk) AS direct_delivery_cost_dkk " +
+                "    FROM fact_project_financials_mat f2 " +
+                "    WHERE f2.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            costSql.append("    AND f2.companyuuid IN (:companyIds) ");
+        }
+        if (sectors != null && !sectors.isEmpty()) {
+            costSql.append("    AND f2.sector_id IN (:sectors) ");
+        }
+        if (serviceLines != null && !serviceLines.isEmpty()) {
+            costSql.append("    AND f2.service_line_id IN (:serviceLines) ");
+        }
+        if (contractTypes != null && !contractTypes.isEmpty()) {
+            costSql.append("    AND f2.contract_type_id IN (:contractTypes) ");
+        }
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            costSql.append("    AND f2.client_id = :clientId ");
+        }
+        costSql.append(
+                "    GROUP BY f2.project_id, f2.month_key " +
+                ") AS f " +
+                "GROUP BY f.month_key ORDER BY f.month_key ASC"
         );
 
-        // Add optional filters (same as actual revenue query)
+        Query costQuery = em.createNativeQuery(costSql.toString(), Tuple.class);
+        costQuery.setParameter("fromKey", fromKey);
+        costQuery.setParameter("toKey", toKey);
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND f.companyuuid IN (:companyIds) ");
+            costQuery.setParameter("companyIds", companyIds);
         }
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("AND f.sector_id IN (:sectors) ");
+            costQuery.setParameter("sectors", sectors);
         }
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("AND f.service_line_id IN (:serviceLines) ");
+            costQuery.setParameter("serviceLines", serviceLines);
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("AND f.contract_type_id IN (:contractTypes) ");
+            costQuery.setParameter("contractTypes", contractTypes);
         }
         if (clientId != null && !clientId.trim().isEmpty()) {
-            sql.append("AND f.client_id = :clientId ");
-        }
-
-        sql.append("GROUP BY f.month_key ORDER BY f.month_key ASC");
-
-        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-
-        // Set parameters (same pattern as actual revenue)
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-        if (sectors != null && !sectors.isEmpty()) {
-            query.setParameter("sectors", sectors);
-        }
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            query.setParameter("serviceLines", serviceLines);
-        }
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            query.setParameter("contractTypes", contractTypes);
-        }
-        if (clientId != null && !clientId.trim().isEmpty()) {
-            query.setParameter("clientId", clientId);
+            costQuery.setParameter("clientId", clientId);
         }
 
         @SuppressWarnings("unchecked")
-        List<Tuple> results = query.getResultList();
+        List<Tuple> costResults = costQuery.getResultList();
 
-        // Convert to double array (12 elements, pad with zeros if missing months)
-        // Calculate margin % for each month: (revenue - cost) / revenue * 100
+        java.util.Map<String, Double> costByMonth = new java.util.HashMap<>();
+        for (Tuple row : costResults) {
+            costByMonth.put((String) row.get("month_key"), ((Number) row.get("monthly_cost")).doubleValue());
+        }
+
+        // Build 12-element sparkline ordered by month_key.
+        // Collect all months present in either map, sort, then fill array.
+        java.util.Set<String> allMonths = new java.util.TreeSet<>(revenueByMonth.keySet());
+        allMonths.addAll(costByMonth.keySet());
+        List<String> sortedMonths = new java.util.ArrayList<>(allMonths);
+
         double[] sparklineData = new double[12];
-        for (int i = 0; i < results.size() && i < 12; i++) {
-            Tuple tuple = results.get(i);
-            double monthlyRevenue = ((Number) tuple.get("monthly_revenue")).doubleValue();
-            double monthlyCost = ((Number) tuple.get("monthly_cost")).doubleValue();
-
-            // Calculate margin % (handle zero revenue)
-            if (monthlyRevenue > 0) {
-                sparklineData[i] = ((monthlyRevenue - monthlyCost) / monthlyRevenue) * 100.0;
-            } else {
-                sparklineData[i] = 0.0;
-            }
+        for (int i = 0; i < sortedMonths.size() && i < 12; i++) {
+            String mk = sortedMonths.get(i);
+            double monthlyRevenue = revenueByMonth.getOrDefault(mk, 0.0);
+            double monthlyCost    = costByMonth.getOrDefault(mk, 0.0);
+            sparklineData[i] = (monthlyRevenue > 0)
+                    ? ((monthlyRevenue - monthlyCost) / monthlyRevenue) * 100.0
+                    : 0.0;
         }
 
         return sparklineData;
@@ -2458,53 +2586,9 @@ public class CxoFinanceService {
         String fromKey = String.format("%04d%02d", fromDate.getYear(), fromDate.getMonthValue());
         String toKey = String.format("%04d%02d", toDate.getYear(), toDate.getMonthValue());
 
-        // Query 1: Monthly revenue from fact_project_financials
-        StringBuilder revenueSql = new StringBuilder(
-                "SELECT f.month_key, SUM(f.recognized_revenue_dkk) AS monthly_revenue " +
-                "FROM fact_project_financials_mat f " +
-                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
-        );
-
-        if (sectors != null && !sectors.isEmpty()) {
-            revenueSql.append("AND f.sector_id IN (:sectors) ");
-        }
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            revenueSql.append("AND f.service_line_id IN (:serviceLines) ");
-        }
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            revenueSql.append("AND f.contract_type_id IN (:contractTypes) ");
-        }
-        if (clientId != null && !clientId.trim().isEmpty()) {
-            revenueSql.append("AND f.client_id = :clientId ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            revenueSql.append("AND f.companyuuid IN (:companyIds) ");
-        }
-
-        revenueSql.append("GROUP BY f.month_key ORDER BY f.month_key");
-
-        Query revenueQuery = em.createNativeQuery(revenueSql.toString(), Tuple.class);
-        revenueQuery.setParameter("fromKey", fromKey);
-        revenueQuery.setParameter("toKey", toKey);
-
-        if (sectors != null && !sectors.isEmpty()) {
-            revenueQuery.setParameter("sectors", sectors);
-        }
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            revenueQuery.setParameter("serviceLines", serviceLines);
-        }
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            revenueQuery.setParameter("contractTypes", contractTypes);
-        }
-        if (clientId != null && !clientId.trim().isEmpty()) {
-            revenueQuery.setParameter("clientId", clientId);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            revenueQuery.setParameter("companyIds", companyIds);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Tuple> revenueResults = revenueQuery.getResultList();
+        // Query 1: Monthly revenue from fact_company_revenue_mat (company-total).
+        // Revenue KPIs always show company-total — dimension filters do not apply.
+        java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(fromKey, toKey, companyIds);
 
         // Query 2: Monthly billable FTE from work_full (accurate source for billable work)
         // FTE = billable_hours / 160.33 per month
@@ -2542,14 +2626,7 @@ public class CxoFinanceService {
         @SuppressWarnings("unchecked")
         List<Tuple> fteResults = fteQuery.getResultList();
 
-        // Build maps for easy lookup
-        java.util.Map<String, Double> revenueByMonth = new java.util.HashMap<>();
-        for (Tuple row : revenueResults) {
-            String monthKey = (String) row.get(0);
-            double revenue = ((Number) row.get(1)).doubleValue();
-            revenueByMonth.put(monthKey, revenue);
-        }
-
+        // Build FTE map for easy lookup
         java.util.Map<String, Double> fteByMonth = new java.util.HashMap<>();
         for (Tuple row : fteResults) {
             String monthKey = (String) row.get(0);
@@ -3372,49 +3449,34 @@ public class CxoFinanceService {
                 currentFiscalYear, currentFiscalYear + 1, currentFromMonthKey, currentToMonthKey,
                 priorFiscalYear, priorFiscalYear + 1, priorFromMonthKey, priorToMonthKey);
 
-        // Query both fiscal years with category breakdown
-        String sql = buildOpexByFYQuery(costCenters, companyIds);
-        Query query = em.createNativeQuery(sql);
-        query.setParameter("currentFromKey", currentFromMonthKey);
-        query.setParameter("currentToKey", currentToMonthKey);
-        query.setParameter("priorFromKey", priorFromMonthKey);
-        query.setParameter("priorToKey", priorToMonthKey);
+        // Query both fiscal years via the distribution-aware provider.
+        // Current FY uses distribution algorithm; prior FY uses raw GL (provider decides per month).
+        List<OpexRow> currentFYRows = opexProvider.getDistributionAwareOpex(
+                currentFromMonthKey, currentToMonthKey, companyIds, costCenters, null);
+        List<OpexRow> priorFYRows = opexProvider.getDistributionAwareOpex(
+                priorFromMonthKey, priorToMonthKey, companyIds, costCenters, null);
 
-        if (costCenters != null && !costCenters.isEmpty()) {
-            query.setParameter("costCenters", costCenters);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Object[]> results = query.getResultList();
-
-        // Parse results into category changes
+        // Aggregate by expense_category_id
         double priorFYOpex = 0.0;
         double currentFYOpex = 0.0;
-        double peopleNonBillableChange = 0.0;
-        double toolsSoftwareChange = 0.0;
-        double officeFacilitiesChange = 0.0;
-        double salesMarketingChange = 0.0;
-        double otherOpexChange = 0.0;
 
         java.util.Map<String, Double> priorByCategory = new java.util.HashMap<>();
         java.util.Map<String, Double> currentByCategory = new java.util.HashMap<>();
 
-        for (Object[] row : results) {
-            String fiscalYearLabel = (String) row[0];
-            String categoryId = (String) row[1];
-            double amount = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
-
-            if ("PRIOR".equals(fiscalYearLabel)) {
-                priorFYOpex += amount;
-                priorByCategory.put(categoryId, amount);
-            } else if ("CURRENT".equals(fiscalYearLabel)) {
-                currentFYOpex += amount;
-                currentByCategory.put(categoryId, amount);
-            }
+        for (OpexRow row : priorFYRows) {
+            priorFYOpex += row.opexAmountDkk();
+            priorByCategory.merge(row.expenseCategoryId(), row.opexAmountDkk(), Double::sum);
         }
+        for (OpexRow row : currentFYRows) {
+            currentFYOpex += row.opexAmountDkk();
+            currentByCategory.merge(row.expenseCategoryId(), row.opexAmountDkk(), Double::sum);
+        }
+
+        double peopleNonBillableChange;
+        double toolsSoftwareChange;
+        double officeFacilitiesChange;
+        double salesMarketingChange;
+        double otherOpexChange;
 
         // Calculate category-level changes
         peopleNonBillableChange = currentByCategory.getOrDefault("PEOPLE_NON_BILLABLE", 0.0)
@@ -3468,52 +3530,16 @@ public class CxoFinanceService {
         log.debugf("Expense Mix by Category: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
                 fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
 
-        StringBuilder sql = new StringBuilder(
-                "SELECT month_key, expense_category_id, SUM(opex_amount_dkk) AS amount " +
-                "FROM fact_opex_mat WHERE 1=1 "
-        );
-
-        sql.append("  AND month_key >= :fromMonthKey ")
-                .append("  AND month_key <= :toMonthKey ");
-
-        if (costCenters != null && !costCenters.isEmpty()) {
-            sql.append("  AND cost_center_id IN (:costCenters) ");
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            sql.append("  AND expense_category_id IN (:expenseCategories) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND company_id IN (:companyIds) ");
-        }
-
-        sql.append("GROUP BY month_key, expense_category_id ORDER BY month_key ASC");
-
-        Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromMonthKey", fromMonthKey);
-        query.setParameter("toMonthKey", toMonthKey);
-
-        if (costCenters != null && !costCenters.isEmpty()) {
-            query.setParameter("costCenters", costCenters);
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            query.setParameter("expenseCategories", expenseCategories);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Object[]> results = query.getResultList();
+        // Delegate to DistributionAwareOpexProvider: uses distribution for current-FY months,
+        // raw GL (fact_opex_mat) for previous-FY months.
+        List<OpexRow> opexRows = opexProvider.getDistributionAwareOpex(
+                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories);
 
         // Group by month and calculate percentages
         java.util.Map<String, java.util.Map<String, Double>> monthlyData = new java.util.LinkedHashMap<>();
-        for (Object[] row : results) {
-            String monthKey = (String) row[0];
-            String categoryId = (String) row[1];
-            double amount = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
-
-            monthlyData.putIfAbsent(monthKey, new java.util.HashMap<>());
-            monthlyData.get(monthKey).put(categoryId, amount);
+        for (OpexRow row : opexRows) {
+            monthlyData.putIfAbsent(row.monthKey(), new java.util.HashMap<>());
+            monthlyData.get(row.monthKey()).merge(row.expenseCategoryId(), row.opexAmountDkk(), Double::sum);
         }
 
         List<MonthlyExpenseMixDTO> resultList = new java.util.ArrayList<>();
@@ -3565,52 +3591,16 @@ public class CxoFinanceService {
         log.debugf("Expense Mix by Cost Center: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
                 fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
 
-        StringBuilder sql = new StringBuilder(
-                "SELECT month_key, cost_center_id, SUM(opex_amount_dkk) AS amount " +
-                "FROM fact_opex_mat WHERE 1=1 "
-        );
-
-        sql.append("  AND month_key >= :fromMonthKey ")
-                .append("  AND month_key <= :toMonthKey ");
-
-        if (costCenters != null && !costCenters.isEmpty()) {
-            sql.append("  AND cost_center_id IN (:costCenters) ");
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            sql.append("  AND expense_category_id IN (:expenseCategories) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND company_id IN (:companyIds) ");
-        }
-
-        sql.append("GROUP BY month_key, cost_center_id ORDER BY month_key ASC");
-
-        Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromMonthKey", fromMonthKey);
-        query.setParameter("toMonthKey", toMonthKey);
-
-        if (costCenters != null && !costCenters.isEmpty()) {
-            query.setParameter("costCenters", costCenters);
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            query.setParameter("expenseCategories", expenseCategories);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Object[]> results = query.getResultList();
+        // Delegate to DistributionAwareOpexProvider: uses distribution for current-FY months,
+        // raw GL (fact_opex_mat) for previous-FY months.
+        List<OpexRow> opexRows = opexProvider.getDistributionAwareOpex(
+                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories);
 
         // Group by month
         java.util.Map<String, java.util.Map<String, Double>> monthlyData = new java.util.LinkedHashMap<>();
-        for (Object[] row : results) {
-            String monthKey = (String) row[0];
-            String costCenterId = (String) row[1];
-            double amount = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
-
-            monthlyData.putIfAbsent(monthKey, new java.util.HashMap<>());
-            monthlyData.get(monthKey).put(costCenterId, amount);
+        for (OpexRow row : opexRows) {
+            monthlyData.putIfAbsent(row.monthKey(), new java.util.HashMap<>());
+            monthlyData.get(row.monthKey()).merge(row.costCenterId(), row.opexAmountDkk(), Double::sum);
         }
 
         List<MonthlyCostCenterMixDTO> resultList = new java.util.ArrayList<>();
@@ -3664,20 +3654,21 @@ public class CxoFinanceService {
         log.debugf("Payroll Headcount Structure: from=%s, to=%s, practices=%s, companies=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
 
-        // Build the payroll subquery with conditional company filtering
-        String payrollSubquery = "COALESCE((SELECT SUM(o.opex_amount_dkk) FROM fact_opex_mat o " +
-                "WHERE o.month_key = e.month_key AND o.is_payroll_flag = 1";
-        if (companyIds != null && !companyIds.isEmpty()) {
-            payrollSubquery += " AND o.company_id IN (:companyIdsForPayroll)";
+        // Payroll OPEX from provider (distribution-aware, filtered to isPayrollFlag = true)
+        List<OpexRow> payrollOpexRows = opexProvider.getDistributionAwareOpex(
+                fromMonthKey, toMonthKey, companyIds, null, null);
+        java.util.Map<String, Double> payrollByMonth = new java.util.HashMap<>();
+        for (OpexRow row : payrollOpexRows) {
+            if (row.isPayrollFlag()) {
+                payrollByMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
+            }
         }
-        payrollSubquery += "), 0) AS total_payroll";
 
-        // Build SQL joining payroll data, FTE data, and revenue
+        // FTE and revenue remain from fact_employee_monthly_mat / fact_project_financials_mat
         StringBuilder sql = new StringBuilder(
                 "SELECT e.month_key, " +
                 "  SUM(e.fte_billable) AS billable_fte, " +
                 "  SUM(e.fte_non_billable) AS non_billable_fte, " +
-                "  " + payrollSubquery + ", " +
                 "  COALESCE((SELECT SUM(f.recognized_revenue_dkk) FROM fact_project_financials_mat f" +
                 "    WHERE f.month_key = e.month_key), 0) AS total_revenue " +
                 "FROM fact_employee_monthly_mat e " +
@@ -3705,7 +3696,6 @@ public class CxoFinanceService {
         }
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
-            query.setParameter("companyIdsForPayroll", companyIds);
         }
 
         @SuppressWarnings("unchecked")
@@ -3716,8 +3706,9 @@ public class CxoFinanceService {
             String monthKey = (String) row[0];
             double billableFTE = row[1] != null ? ((Number) row[1]).doubleValue() : 0.0;
             double nonBillableFTE = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
-            double totalPayroll = row[3] != null ? ((Number) row[3]).doubleValue() : 0.0;
-            double totalRevenue = row[4] != null ? ((Number) row[4]).doubleValue() : 0.0;
+            // Merge distribution-aware payroll for this month (0.0 if no payroll data found)
+            double totalPayroll = payrollByMonth.getOrDefault(monthKey, 0.0);
+            double totalRevenue = row[3] != null ? ((Number) row[3]).doubleValue() : 0.0;
 
             double payrollAsPercentOfRevenue = totalRevenue > 0 ? (totalPayroll / totalRevenue) * 100.0 : 0.0;
             double totalFTE = billableFTE + nonBillableFTE;
@@ -3751,37 +3742,48 @@ public class CxoFinanceService {
 
         List<MonthlyOverheadPerFTEDTO> resultList = new java.util.ArrayList<>();
 
-        // For each month in range, calculate TTM metrics
         YearMonth start = YearMonth.from(normalizedFromDate);
         YearMonth end = YearMonth.from(normalizedToDate);
-        YearMonth current = start;
 
+        if (start.isAfter(end)) {
+            return resultList;
+        }
+
+        // Optimized: determine the full OPEX date range needed across all TTM windows,
+        // then call the provider once (cache hits apply per month inside provider).
+        LocalDate overallTtmStart = start.atEndOfMonth().minusMonths(11).withDayOfMonth(1);
+        LocalDate overallTtmEnd   = end.atEndOfMonth();
+        String overallFromKey = String.format("%04d%02d", overallTtmStart.getYear(), overallTtmStart.getMonthValue());
+        String overallToKey   = String.format("%04d%02d", overallTtmEnd.getYear(), overallTtmEnd.getMonthValue());
+
+        // Load all non-payroll OPEX for the full range in one provider call
+        List<OpexRow> allOpexRows = opexProvider.getDistributionAwareOpex(
+                overallFromKey, overallToKey, companyIds, null, null);
+
+        // Build a lookup: monthKey → non-payroll opex sum
+        java.util.Map<String, Double> nonPayrollByMonth = new java.util.HashMap<>();
+        for (OpexRow row : allOpexRows) {
+            if (!row.isPayrollFlag()) {
+                nonPayrollByMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
+            }
+        }
+
+        // For each output month in the requested range, aggregate the TTM window from the in-memory map
+        YearMonth current = start;
         while (!current.isAfter(end)) {
             LocalDate monthEnd = current.atEndOfMonth();
             LocalDate ttmStart = monthEnd.minusMonths(11).withDayOfMonth(1);
 
             String ttmStartKey = String.format("%04d%02d", ttmStart.getYear(), ttmStart.getMonthValue());
-            String ttmEndKey = String.format("%04d%02d", monthEnd.getYear(), monthEnd.getMonthValue());
+            String ttmEndKey   = String.format("%04d%02d", monthEnd.getYear(), monthEnd.getMonthValue());
 
-            // Query TTM non-payroll OPEX
-            StringBuilder opexSql = new StringBuilder(
-                    "SELECT SUM(opex_amount_dkk) FROM fact_opex_mat " +
-                    "WHERE is_payroll_flag = 0 " +
-                    "  AND month_key >= :fromKey AND month_key <= :toKey "
-            );
-            if (companyIds != null && !companyIds.isEmpty()) {
-                opexSql.append("  AND company_id IN (:companyIds) ");
-            }
+            // Sum non-payroll OPEX over the TTM window from the in-memory map
+            double ttmNonPayrollOpex = nonPayrollByMonth.entrySet().stream()
+                    .filter(e -> e.getKey().compareTo(ttmStartKey) >= 0 && e.getKey().compareTo(ttmEndKey) <= 0)
+                    .mapToDouble(java.util.Map.Entry::getValue)
+                    .sum();
 
-            Query opexQuery = em.createNativeQuery(opexSql.toString());
-            opexQuery.setParameter("fromKey", ttmStartKey);
-            opexQuery.setParameter("toKey", ttmEndKey);
-            if (companyIds != null && !companyIds.isEmpty()) {
-                opexQuery.setParameter("companyIds", companyIds);
-            }
-            double ttmNonPayrollOpex = ((Number) opexQuery.getSingleResult()).doubleValue();
-
-            // Query TTM average FTE
+            // FTE from fact_employee_monthly_mat — unchanged (no distribution needed for headcount)
             StringBuilder fteSql = new StringBuilder(
                     "SELECT AVG(fte_billable + fte_non_billable) AS avg_total_fte, " +
                     "  AVG(fte_billable) AS avg_billable_fte " +
@@ -3841,81 +3843,105 @@ public class CxoFinanceService {
         log.debugf("Expense Detail: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
                 fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
 
-        StringBuilder sql = new StringBuilder(
-                "SELECT a.month_key, c.name AS company_name, a.cost_center_id, a.expense_category_id, " +
-                "  '' AS account_code, '' AS account_name, " +
-                "  SUM(a.opex_amount_dkk) AS opex_amount, " +
-                "  SUM(COALESCE(b.budget_opex_dkk, 0)) AS budget_amount, " +
-                "  COUNT(*) AS invoice_count, " +
-                "  MAX(a.is_payroll_flag) AS is_payroll " +
-                "FROM fact_opex_mat a " +
-                "LEFT JOIN fact_opex_budget b ON a.company_id = b.company_id " +
-                "  AND a.month_key = b.month_key " +
-                "  AND a.cost_center_id = b.cost_center_id " +
-                "  AND a.expense_category_id = b.expense_category_id " +
-                "JOIN companies c ON a.company_id = c.uuid " +
-                "WHERE 1=1 "
-        );
+        // Step 1: Get distribution-aware OPEX rows from the provider
+        List<OpexRow> opexRows = opexProvider.getDistributionAwareOpex(
+                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories);
 
-        sql.append("  AND a.month_key >= :fromMonthKey ")
-                .append("  AND a.month_key <= :toMonthKey ");
+        // Step 2: Build a lookup of companyId → companyName from the companies table
+        java.util.Set<String> opexCompanyIds = opexRows.stream()
+                .map(OpexRow::companyId)
+                .collect(java.util.stream.Collectors.toSet());
 
-        if (costCenters != null && !costCenters.isEmpty()) {
-            sql.append("  AND a.cost_center_id IN (:costCenters) ");
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            sql.append("  AND a.expense_category_id IN (:expenseCategories) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND a.company_id IN (:companyIds) ");
+        java.util.Map<String, String> companyNameById = new java.util.HashMap<>();
+        if (!opexCompanyIds.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            List<Object[]> companyRows = em.createNativeQuery(
+                    "SELECT uuid, name FROM companies WHERE uuid IN (:uuids)")
+                    .setParameter("uuids", opexCompanyIds)
+                    .getResultList();
+            for (Object[] row : companyRows) {
+                companyNameById.put((String) row[0], (String) row[1]);
+            }
         }
 
-        sql.append("GROUP BY a.month_key, c.name, a.cost_center_id, a.expense_category_id ")
-                .append("ORDER BY a.month_key DESC, c.name, a.cost_center_id, a.expense_category_id");
+        // Step 3: Budget amounts from fact_opex_budget (stub — always 0 per GAP-6, kept for future use)
+        // Key: companyId + "|" + monthKey + "|" + costCenterId + "|" + expenseCategoryId → budgetAmount
+        java.util.Map<String, Double> budgetByKey = new java.util.HashMap<>();
+        if (!opexRows.isEmpty()) {
+            StringBuilder budgetSql = new StringBuilder(
+                    "SELECT company_id, month_key, cost_center_id, expense_category_id, " +
+                    "  COALESCE(SUM(budget_opex_dkk), 0) AS budget_amount " +
+                    "FROM fact_opex_budget " +
+                    "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey "
+            );
+            if (companyIds != null && !companyIds.isEmpty()) {
+                budgetSql.append("AND company_id IN (:companyIds) ");
+            }
+            budgetSql.append("GROUP BY company_id, month_key, cost_center_id, expense_category_id");
 
-        Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromMonthKey", fromMonthKey);
-        query.setParameter("toMonthKey", toMonthKey);
+            Query budgetQuery = em.createNativeQuery(budgetSql.toString());
+            budgetQuery.setParameter("fromMonthKey", fromMonthKey);
+            budgetQuery.setParameter("toMonthKey", toMonthKey);
+            if (companyIds != null && !companyIds.isEmpty()) {
+                budgetQuery.setParameter("companyIds", companyIds);
+            }
 
-        if (costCenters != null && !costCenters.isEmpty()) {
-            query.setParameter("costCenters", costCenters);
-        }
-        if (expenseCategories != null && !expenseCategories.isEmpty()) {
-            query.setParameter("expenseCategories", expenseCategories);
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
+            @SuppressWarnings("unchecked")
+            List<Object[]> budgetRows = budgetQuery.getResultList();
+            for (Object[] row : budgetRows) {
+                String key = row[0] + "|" + row[1] + "|" + row[2] + "|" + row[3];
+                budgetByKey.put(key, row[4] != null ? ((Number) row[4]).doubleValue() : 0.0);
+            }
         }
 
-        @SuppressWarnings("unchecked")
-        List<Object[]> results = query.getResultList();
+        // Step 4: Aggregate OPEX rows by (companyId, monthKey, costCenterId, expenseCategoryId)
+        // and merge with budget data
+        record DetailKey(String companyId, String monthKey, String costCenterId, String expenseCategoryId) {}
+        java.util.Map<DetailKey, double[]> aggregated = new java.util.LinkedHashMap<>();
+        // double[]{opexSum, invoiceCountSum, isPayrollMax}
+        for (OpexRow row : opexRows) {
+            DetailKey key = new DetailKey(row.companyId(), row.monthKey(), row.costCenterId(), row.expenseCategoryId());
+            aggregated.merge(key,
+                    new double[]{row.opexAmountDkk(), row.invoiceCount(), row.isPayrollFlag() ? 1.0 : 0.0},
+                    (existing, incoming) -> new double[]{
+                            existing[0] + incoming[0],
+                            existing[1] + incoming[1],
+                            Math.max(existing[2], incoming[2])
+                    });
+        }
+
+        // Sort: descending by monthKey, then companyName, then costCenter, then expenseCategory
+        List<DetailKey> sortedKeys = new java.util.ArrayList<>(aggregated.keySet());
+        sortedKeys.sort(java.util.Comparator
+                .comparing((DetailKey k) -> k.monthKey()).reversed()
+                .thenComparing(k -> companyNameById.getOrDefault(k.companyId(), k.companyId()))
+                .thenComparing(DetailKey::costCenterId)
+                .thenComparing(DetailKey::expenseCategoryId));
 
         List<OpexDetailRowDTO> resultList = new java.util.ArrayList<>();
-        for (Object[] row : results) {
-            String monthKey = (String) row[0];
-            String companyName = (String) row[1];
-            String costCenterId = (String) row[2];
-            String expenseCategoryId = (String) row[3];
-            String accountCode = (String) row[4];
-            String accountName = (String) row[5];
-            double opexAmount = row[6] != null ? ((Number) row[6]).doubleValue() : 0.0;
-            double budgetAmount = row[7] != null ? ((Number) row[7]).doubleValue() : 0.0;
-            int invoiceCount = row[8] != null ? ((Number) row[8]).intValue() : 0;
-            boolean isPayroll = row[9] != null && ((Number) row[9]).intValue() == 1;
+        for (DetailKey key : sortedKeys) {
+            double[] vals = aggregated.get(key);
+            double opexAmount = vals[0];
+            int invoiceCount = (int) vals[1];
+            boolean isPayroll = vals[2] > 0.0;
+
+            String budgetLookupKey = key.companyId() + "|" + key.monthKey() + "|" + key.costCenterId() + "|" + key.expenseCategoryId();
+            double budgetAmount = budgetByKey.getOrDefault(budgetLookupKey, 0.0);
 
             double varianceAmount = opexAmount - budgetAmount;
             Double variancePercent = budgetAmount > 0 ? (varianceAmount / budgetAmount) * 100.0 : null;
 
-            int year = Integer.parseInt(monthKey.substring(0, 4));
-            int month = Integer.parseInt(monthKey.substring(4));
+            int year = Integer.parseInt(key.monthKey().substring(0, 4));
+            int month = Integer.parseInt(key.monthKey().substring(4));
             int fiscalYear = month >= 7 ? year : year - 1;
             int fiscalMonthNumber = month >= 7 ? month - 6 : month + 6;
 
+            String companyName = companyNameById.getOrDefault(key.companyId(), key.companyId());
             String monthLabel = formatMonthLabel(year, month);
 
             resultList.add(new OpexDetailRowDTO(
-                    companyName, costCenterId, expenseCategoryId, accountCode, accountName,
-                    monthKey, monthLabel,
+                    companyName, key.costCenterId(), key.expenseCategoryId(), "", "",
+                    key.monthKey(), monthLabel,
                     opexAmount, budgetAmount, varianceAmount, variancePercent,
                     invoiceCount, isPayroll,
                     fiscalYear, fiscalMonthNumber
@@ -3927,43 +3953,6 @@ public class CxoFinanceService {
     }
 
     // ========== PRIVATE HELPER METHODS ==========
-
-    private String buildOpexByFYQuery(Set<String> costCenters, Set<String> companyIds) {
-        StringBuilder sql = new StringBuilder(
-                "SELECT fy_label, expense_category_id, SUM(opex_amount_dkk) AS amount " +
-                "FROM ( " +
-                "  SELECT 'CURRENT' AS fy_label, expense_category_id, opex_amount_dkk " +
-                "  FROM fact_opex_mat " +
-                "  WHERE month_key >= :currentFromKey " +
-                "    AND month_key <= :currentToKey "
-        );
-
-        if (costCenters != null && !costCenters.isEmpty()) {
-            sql.append("    AND cost_center_id IN (:costCenters) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND company_id IN (:companyIds) ");
-        }
-
-        sql.append("  UNION ALL " +
-                "  SELECT 'PRIOR' AS fy_label, expense_category_id, opex_amount_dkk " +
-                "  FROM fact_opex_mat " +
-                "  WHERE month_key >= :priorFromKey " +
-                "    AND month_key <= :priorToKey "
-        );
-
-        if (costCenters != null && !costCenters.isEmpty()) {
-            sql.append("    AND cost_center_id IN (:costCenters) ");
-        }
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND company_id IN (:companyIds) ");
-        }
-
-        sql.append(") combined " +
-                "GROUP BY fy_label, expense_category_id");
-
-        return sql.toString();
-    }
 
     /**
      * Query attrition data from fact_employee_monthly for a 12-month period.
@@ -4033,5 +4022,1139 @@ public class CxoFinanceService {
         }
 
         return sparkline;
+    }
+
+    // ============================================================================
+    // Accumulated Revenue (FY) — Chart D
+    // ============================================================================
+
+    /**
+     * Returns 12 data points (one per fiscal month, Jul–Jun) showing monthly and accumulated
+     * revenue for the fiscal year that contains {@code asOfDate}.
+     *
+     * <p>Past months use actuals from {@code fact_project_financials_mat} with the standard
+     * deduplication pattern (GROUP BY project_id + month_key, MAX revenue). Future months
+     * within the current fiscal year are returned with zero revenue and {@code isActual=false}.
+     *
+     * @param asOfDate     Reference date for fiscal year detection (defaults to today)
+     * @param sectors      Sector filter (nullable / empty = all)
+     * @param serviceLines Service line filter (nullable / empty = all)
+     * @param contractTypes Contract type filter (nullable / empty = all)
+     * @param clientId     Single client UUID filter (nullable / blank = all)
+     * @param companyIds   Company UUID filter (nullable / empty = all)
+     * @return Exactly 12 DTOs sorted by fiscal month number (1=Jul … 12=Jun)
+     */
+    public List<MonthlyAccumulatedRevenueDTO> getAccumulatedRevenue(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
+
+        // Fiscal year: July 1 → June 30
+        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);   // Jul 1
+        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30); // Jun 30
+
+        String fromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
+        String toKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+
+        log.debugf("getAccumulatedRevenue: FY=%d (%s → %s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fiscalYear, fromKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Revenue from fact_company_revenue_mat (company-total, companyIds filter only).
+        // Revenue KPIs always show company-total — dimension filters do not apply to revenue.
+        java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(fromKey, toKey, companyIds);
+
+        // Build 12 data points from Jul to Jun, accumulating running sum
+        String currentMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+        List<MonthlyAccumulatedRevenueDTO> result = new ArrayList<>(12);
+        double accumulated = 0.0;
+
+        for (int fiscalMonth = 1; fiscalMonth <= 12; fiscalMonth++) {
+            // Map fiscal month (1=Jul…12=Jun) to calendar year/month
+            int calMonth = (fiscalMonth <= 6) ? fiscalMonth + 6 : fiscalMonth - 6;
+            int calYear  = (fiscalMonth <= 6) ? fiscalYear : fiscalYear + 1;
+            String monthKey = String.format("%04d%02d", calYear, calMonth);
+
+            boolean isActual = monthKey.compareTo(currentMonthKey) <= 0
+                    && revenueByMonth.containsKey(monthKey);
+
+            double monthly = revenueByMonth.getOrDefault(monthKey, 0.0);
+            accumulated += monthly;
+
+            result.add(new MonthlyAccumulatedRevenueDTO(
+                    monthKey,
+                    calYear,
+                    calMonth,
+                    formatMonthLabel(calYear, calMonth),
+                    fiscalMonth,
+                    monthly,
+                    accumulated,
+                    isActual
+            ));
+        }
+
+        log.debugf("getAccumulatedRevenue: returning %d data points, total accumulated=%.2f DKK", result.size(), (Double) accumulated);
+        return result;
+    }
+
+    // ============================================================================
+    // Accumulated Revenue Source Data Export
+    // ============================================================================
+
+    /**
+     * Returns raw invoice and invoice-item records that make up the accumulated revenue
+     * for the fiscal year containing {@code asOfDate}.
+     *
+     * <p>Only invoices with {@code status = 'CREATED'} and types {@code INVOICE},
+     * {@code PHANTOM}, or {@code CREDIT_NOTE} are included.  The project universe is
+     * restricted to projects that appear in {@code fact_project_financials_mat} for the
+     * fiscal year, applying the same CXO dimension filters used by
+     * {@link #getAccumulatedRevenue}.
+     *
+     * @param asOfDate      Reference date for fiscal year detection (nullable → today)
+     * @param sectors       Sector filter (nullable / empty = all)
+     * @param serviceLines  Service line filter (nullable / empty = all)
+     * @param contractTypes Contract type filter (nullable / empty = all)
+     * @param clientId      Single client UUID filter (nullable / blank = all)
+     * @param companyIds    Company UUID filter (nullable / empty = all)
+     * @return Container with invoices, line items, and credit notes
+     */
+    public RevenueSourceDataDTO getAccumulatedRevenueSourceData(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
+
+        // Fiscal year: July 1 → June 30
+        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
+        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30);
+
+        String fromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
+        String toKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+
+        log.debugf("getAccumulatedRevenueSourceData: FY=%d (%s → %s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fiscalYear, fromKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Step 1: Resolve matching project IDs from the fact materialised view,
+        // applying the same dimension filters as getAccumulatedRevenue.
+        StringBuilder projectSql = new StringBuilder(
+                "SELECT DISTINCT f.project_id FROM fact_project_financials_mat f " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) projectSql.append("AND f.companyuuid IN (:companyIds) ");
+        if (sectors != null && !sectors.isEmpty())         projectSql.append("AND f.sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty()) projectSql.append("AND f.service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) projectSql.append("AND f.contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank())       projectSql.append("AND f.client_id = :clientId ");
+
+        Query projectQuery = em.createNativeQuery(projectSql.toString());
+        projectQuery.setParameter("fromKey", fromKey);
+        projectQuery.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty())      projectQuery.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty())             projectQuery.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty())   projectQuery.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) projectQuery.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank())           projectQuery.setParameter("clientId", clientId);
+
+        @SuppressWarnings("unchecked")
+        List<String> matchedProjects = projectQuery.getResultList();
+
+        if (matchedProjects.isEmpty()) {
+            log.debugf("getAccumulatedRevenueSourceData: no matching projects — returning empty result");
+            return new RevenueSourceDataDTO(new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
+        }
+
+        log.debugf("getAccumulatedRevenueSourceData: %d matched projects", matchedProjects.size());
+
+        // Step 2: Query raw invoice + line-item data for the matched projects.
+        String itemSql =
+                "SELECT " +
+                "    i.uuid           AS invoice_uuid, " +
+                "    i.invoicenumber  AS invoice_number, " +
+                "    DATE_FORMAT(i.invoicedate, '%Y-%m-%d') AS invoice_date, " +
+                "    i.clientname     AS client_name, " +
+                "    p.clientuuid     AS client_uuid, " +
+                "    i.projectname    AS project_name, " +
+                "    i.projectuuid    AS project_uuid, " +
+                "    i.type           AS invoice_type, " +
+                "    i.status         AS invoice_status, " +
+                "    i.currency       AS currency, " +
+                "    COALESCE(i.discount, 0)  AS discount, " +
+                "    COALESCE(i.companyuuid, '') AS company_uuid, " +
+                "    ii.uuid          AS item_uuid, " +
+                "    COALESCE(ii.consultantuuid, '') AS consultant_uuid, " +
+                "    COALESCE(CONCAT(u.firstname, ' ', u.lastname), ii.itemname) AS consultant_name, " +
+                "    ii.itemname      AS item_name, " +
+                "    COALESCE(ii.description, '') AS item_description, " +
+                "    ii.rate          AS rate, " +
+                "    ii.hours         AS hours, " +
+                "    ii.rate * ii.hours AS item_amount, " +
+                "    ii.rate * ii.hours * CASE WHEN i.currency = 'DKK' THEN 1 " +
+                "                             ELSE COALESCE(cur.conversion, 1) END AS item_amount_dkk, " +
+                "    COALESCE(ii.origin, 'BASE') AS item_origin " +
+                "FROM invoices i " +
+                "    INNER JOIN invoiceitems ii ON i.uuid = ii.invoiceuuid " +
+                "    INNER JOIN project p ON p.uuid = i.projectuuid " +
+                "    LEFT JOIN user u ON u.uuid = ii.consultantuuid " +
+                "    LEFT JOIN currences cur " +
+                "        ON cur.currency = i.currency " +
+                "        AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
+                "WHERE i.projectuuid IN (:matchedProjects) " +
+                "    AND i.invoicedate BETWEEN :fyStart AND :fyEnd " +
+                "    AND i.status = 'CREATED' " +
+                "    AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                "    AND ii.rate IS NOT NULL " +
+                "    AND ii.hours IS NOT NULL " +
+                "    AND (i.currency = 'DKK' OR cur.uuid IS NOT NULL) " +
+                (companyIds != null && !companyIds.isEmpty() ? "    AND i.companyuuid IN (:companyIds) " : "") +
+                "ORDER BY i.invoicedate, i.invoicenumber";
+
+        Query itemQuery = em.createNativeQuery(itemSql, Tuple.class);
+        itemQuery.setParameter("matchedProjects", matchedProjects);
+        itemQuery.setParameter("fyStart", fyStart);
+        itemQuery.setParameter("fyEnd", fyEnd);
+        if (companyIds != null && !companyIds.isEmpty()) itemQuery.setParameter("companyIds", companyIds);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = itemQuery.getResultList();
+
+        // Step 3: Map result rows to DTOs.
+        // Aggregate per-invoice totals using a LinkedHashMap to preserve invoice order.
+        Map<String, InvoiceExportDTO> invoiceMap     = new LinkedHashMap<>();
+        Map<String, InvoiceExportDTO> creditNoteMap  = new LinkedHashMap<>();
+        List<InvoiceItemExportDTO>    invoiceItems   = new ArrayList<>();
+
+        for (Tuple row : rows) {
+            String invoiceUuid   = (String) row.get("invoice_uuid");
+            int    invoiceNumber = ((Number) row.get("invoice_number")).intValue();
+            String invoiceDate   = (String) row.get("invoice_date");
+            String clientName    = (String) row.get("client_name");
+            String clientUuid    = (String) row.get("client_uuid");
+            String projectName   = (String) row.get("project_name");
+            String projectUuid   = (String) row.get("project_uuid");
+            String invoiceType   = (String) row.get("invoice_type");
+            String invoiceStatus = (String) row.get("invoice_status");
+            String currency      = (String) row.get("currency");
+            double discount      = ((Number) row.get("discount")).doubleValue();
+            String companyUuid   = (String) row.get("company_uuid");
+            double itemAmount    = ((Number) row.get("item_amount")).doubleValue();
+            double itemAmountDkk = ((Number) row.get("item_amount_dkk")).doubleValue();
+
+            // Accumulate invoice-level totals
+            boolean isCreditNote = "CREDIT_NOTE".equals(invoiceType);
+            Map<String, InvoiceExportDTO> targetMap = isCreditNote ? creditNoteMap : invoiceMap;
+
+            targetMap.compute(invoiceUuid, (key, existing) -> {
+                if (existing == null) {
+                    return new InvoiceExportDTO(
+                            invoiceUuid, invoiceNumber, invoiceDate,
+                            clientName, clientUuid, projectName, projectUuid,
+                            invoiceType, invoiceStatus, currency,
+                            itemAmount, itemAmountDkk, discount, companyUuid);
+                }
+                existing.setOriginalAmount(existing.getOriginalAmount() + itemAmount);
+                existing.setAmountDkk(existing.getAmountDkk() + itemAmountDkk);
+                return existing;
+            });
+
+            // One InvoiceItemExportDTO per line item
+            invoiceItems.add(new InvoiceItemExportDTO(
+                    (String) row.get("item_uuid"),
+                    invoiceUuid,
+                    invoiceNumber,
+                    invoiceDate,
+                    (String) row.get("consultant_name"),
+                    (String) row.get("consultant_uuid"),
+                    (String) row.get("item_name"),
+                    (String) row.get("item_description"),
+                    ((Number) row.get("rate")).doubleValue(),
+                    ((Number) row.get("hours")).doubleValue(),
+                    itemAmount,
+                    itemAmountDkk,
+                    (String) row.get("item_origin"),
+                    clientName,
+                    projectName
+            ));
+        }
+
+        List<InvoiceExportDTO> invoices    = new ArrayList<>(invoiceMap.values());
+        List<InvoiceExportDTO> creditNotes = new ArrayList<>(creditNoteMap.values());
+
+        log.debugf("getAccumulatedRevenueSourceData: %d invoices, %d items, %d credit notes",
+                invoices.size(), invoiceItems.size(), creditNotes.size());
+
+        return new RevenueSourceDataDTO(invoices, invoiceItems, creditNotes);
+    }
+
+    // ============================================================================
+    // Expected Accumulated EBITDA (FY) — Chart E
+    // ============================================================================
+
+    /**
+     * Returns 12 data points (one per fiscal month, Jul–Jun) showing monthly and accumulated
+     * EBITDA for the fiscal year that contains {@code asOfDate}.
+     *
+     * <p><strong>Past months</strong> ({@code isActual=true}):
+     * actual revenue and direct cost from {@code fact_project_financials_mat},
+     * actual OPEX from {@code fact_opex}.
+     *
+     * <p><strong>Future months</strong> ({@code isActual=false}):
+     * backlog revenue from {@code fact_backlog},
+     * estimated cost = backlog × (1 - TTM gross margin %),
+     * estimated OPEX = average monthly OPEX over trailing 12 months.
+     *
+     * @param asOfDate     Reference date (defaults to today)
+     * @param sectors      Sector filter (nullable / empty = all)
+     * @param serviceLines Service line filter (nullable / empty = all)
+     * @param contractTypes Contract type filter (nullable / empty = all)
+     * @param clientId     Single client UUID filter (nullable / blank = all)
+     * @param companyIds   Company UUID filter (nullable / empty = all)
+     * @return Exactly 12 DTOs sorted by fiscal month number
+     */
+    public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
+        String currentMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+
+        // Fiscal year: July 1 → June 30
+        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
+        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30);
+
+        String fyFromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
+        String fyToKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+
+        // TTM window (trailing 12 months ending at end of previous month)
+        LocalDate ttmEnd   = today.withDayOfMonth(1).minusDays(1); // last day of previous month
+        LocalDate ttmStart = ttmEnd.minusMonths(11).withDayOfMonth(1);
+        String ttmFromKey  = String.format("%04d%02d", ttmStart.getYear(), ttmStart.getMonthValue());
+        String ttmToKey    = String.format("%04d%02d", ttmEnd.getYear(), ttmEnd.getMonthValue());
+
+        log.debugf("getExpectedAccumulatedEBITDA: FY=%d (%s→%s), TTM (%s→%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fiscalYear, fyFromKey, fyToKey, ttmFromKey, ttmToKey,
+                sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 1. TTM gross margin: revenue from fact_company_revenue_mat (company-total),
+        //    cost from fact_project_financials_mat (dimension-filtered).
+        //    Revenue KPIs always show company-total — dimension filters do not apply to revenue.
+        double ttmRevenue = queryCompanyRevenue(ttmStart, ttmEnd, companyIds);
+        double ttmCost    = queryActualCosts(ttmStart, ttmEnd, sectors, serviceLines, contractTypes, clientId, companyIds);
+        double ttmGrossMarginPct = (ttmRevenue > 0) ? ((ttmRevenue - ttmCost) / ttmRevenue) * 100.0 : 0.0;
+
+        // 2. Average monthly OPEX from fact_opex over TTM period
+        double avgMonthlyOpex = queryAvgMonthlyOpex(ttmFromKey, ttmToKey, companyIds);
+
+        log.debugf("TTM gross margin=%.2f%%, avg monthly OPEX=%.2f DKK", ttmGrossMarginPct, avgMonthlyOpex);
+
+        // 3. Actual FY revenue from fact_company_revenue_mat (company-total, companyIds only)
+        //    and cost from fact_project_financials_mat (dimension-filtered) — merged by month.
+        java.util.Map<String, Double> fyRevenueByMonth = queryCompanyRevenueByMonth(fyFromKey, fyToKey, companyIds);
+        java.util.Map<String, double[]> fyCostByMonth  = queryMonthlyDirectCostByMonth(fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // Combine into the actualByMonth map: [revenue, cost] per month.
+        // A month is "actual" if it has either revenue or cost data.
+        java.util.Set<String> fyActualMonthKeys = new java.util.HashSet<>(fyRevenueByMonth.keySet());
+        fyActualMonthKeys.addAll(fyCostByMonth.keySet());
+        java.util.Map<String, double[]> actualByMonth = new java.util.HashMap<>();
+        for (String mk : fyActualMonthKeys) {
+            double rev  = fyRevenueByMonth.getOrDefault(mk, 0.0);
+            double cost = fyCostByMonth.containsKey(mk) ? fyCostByMonth.get(mk)[0] : 0.0;
+            actualByMonth.put(mk, new double[]{rev, cost});
+        }
+
+        // 4. Actual OPEX by month
+        java.util.Map<String, Double> opexByMonth = queryMonthlyOpex(fyFromKey, fyToKey, companyIds);
+
+        // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
+        java.util.Map<String, Double> internalCostByMonth = queryMonthlyInternalInvoiceCost(fyFromKey, fyToKey, companyIds);
+
+        // 5. Backlog by month for future months
+        java.util.Map<String, Double> backlogByMonth = queryBacklogByMonth(currentMonthKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 6. Build 12 data points
+        List<MonthlyAccumulatedEbitdaDTO> result = new ArrayList<>(12);
+        double accumulated = 0.0;
+
+        for (int fiscalMonth = 1; fiscalMonth <= 12; fiscalMonth++) {
+            int calMonth = (fiscalMonth <= 6) ? fiscalMonth + 6 : fiscalMonth - 6;
+            int calYear  = (fiscalMonth <= 6) ? fiscalYear : fiscalYear + 1;
+            String monthKey = String.format("%04d%02d", calYear, calMonth);
+
+            boolean isActual = monthKey.compareTo(currentMonthKey) < 0
+                    && actualByMonth.containsKey(monthKey);
+
+            double monthRevenue;
+            double monthDirectCost;
+            double monthInternalCost;
+            double monthOpex;
+
+            if (isActual) {
+                double[] revCost = actualByMonth.getOrDefault(monthKey, new double[]{0.0, 0.0});
+                monthRevenue       = revCost[0];
+                monthDirectCost    = revCost[1];
+                monthInternalCost  = internalCostByMonth.getOrDefault(monthKey, 0.0);
+                monthOpex          = opexByMonth.getOrDefault(monthKey, 0.0);
+            } else {
+                // Future month: use backlog revenue with TTM margin estimation.
+                // Internal invoice costs are not forecast — set to 0.
+                monthRevenue      = backlogByMonth.getOrDefault(monthKey, 0.0);
+                monthDirectCost   = monthRevenue * (1.0 - ttmGrossMarginPct / 100.0);
+                monthInternalCost = 0.0;
+                monthOpex         = avgMonthlyOpex;
+            }
+
+            // Note: monthInternalCost is NOT subtracted here because fact_project_financials
+            // already attributes revenue and costs to each consultant's company. Subtracting
+            // internal invoice cost would double-count the intercompany impact.
+            double monthEbitda = monthRevenue - monthDirectCost - monthOpex;
+            accumulated += monthEbitda;
+
+            result.add(new MonthlyAccumulatedEbitdaDTO(
+                    monthKey,
+                    calYear,
+                    calMonth,
+                    formatMonthLabel(calYear, calMonth),
+                    fiscalMonth,
+                    monthRevenue,
+                    monthDirectCost,
+                    monthInternalCost,
+                    monthOpex,
+                    monthEbitda,
+                    accumulated,
+                    isActual
+            ));
+        }
+
+        log.debugf("getExpectedAccumulatedEBITDA: returning %d data points, accumulated EBITDA=%.2f DKK", result.size(), (Double) accumulated);
+        return result;
+    }
+
+    // ============================================================================
+    // EBITDA Source Data Export
+    // ============================================================================
+
+    /**
+     * Returns all raw source records that feed the Expected Accumulated EBITDA chart,
+     * grouped into five lists for Excel export (one per worksheet tab).
+     *
+     * <p>Data sources and filter scoping:
+     * <ul>
+     *   <li>Invoices + credit notes: same query as
+     *       {@link #getAccumulatedRevenueSourceData} — all CXO dimension filters applied.</li>
+     *   <li>Direct costs: {@code fact_project_financials_mat} at project×month grain —
+     *       all CXO dimension filters applied.</li>
+     *   <li>Internal invoices: QUEUED rows from {@code invoices} table + CREATED_GL rows from
+     *       {@code finance_details} accounts 3050/3055/3070/3075/1350 — companyIds only.</li>
+     *   <li>OPEX: raw {@code finance_details} GL entries excluding 'Varesalg',
+     *       'Direkte omkostninger', 'Igangvaerende arbejde' categories — companyIds only.</li>
+     * </ul>
+     *
+     * @param asOfDate      Reference date for fiscal year detection (nullable → today)
+     * @param sectors       Sector filter (nullable / empty = all); applied to invoices + direct costs only
+     * @param serviceLines  Service line filter (nullable / empty = all); applied to invoices + direct costs only
+     * @param contractTypes Contract type filter (nullable / empty = all); applied to invoices + direct costs only
+     * @param clientId      Single client UUID filter (nullable / blank = all); applied to invoices + direct costs only
+     * @param companyIds    Company UUID filter (nullable / empty = all); applied to ALL data sources
+     * @return Container with invoices, creditNotes, directCosts, internalInvoices, and opexEntries
+     */
+    public EbitdaSourceDataDTO getEbitdaSourceData(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds) {
+
+        LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
+
+        // Fiscal year: July 1 → June 30
+        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
+        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30);
+
+        String fyFromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
+        String fyToKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+
+        log.debugf("getEbitdaSourceData: FY=%d (%s→%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                fiscalYear, fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 1) Invoices + credit notes: reuse same project-scoped query as getAccumulatedRevenueSourceData
+        List<InvoiceExportDTO> invoices    = new ArrayList<>();
+        List<InvoiceExportDTO> creditNotes = new ArrayList<>();
+        queryEbitdaInvoicesAndCreditNotes(fyStart, fyEnd, fyFromKey, fyToKey,
+                sectors, serviceLines, contractTypes, clientId, companyIds,
+                invoices, creditNotes);
+
+        // 2) Direct costs: fact_project_financials_mat at project×month grain
+        List<DirectCostRowDTO> directCosts = queryDirectCosts(
+                fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        // 3) Internal invoices: QUEUED from invoices table + CREATED_GL from finance_details
+        List<InternalInvoiceRowDTO> internalInvoices = queryInternalInvoices(fyStart, fyEnd, fyFromKey, fyToKey, companyIds);
+
+        // 4) OPEX: raw finance_details GL entries, excluding non-OPEX categories
+        List<OpexRowExportDTO> opexEntries = queryOpexEntries(fyStart, fyEnd, companyIds);
+
+        log.debugf("getEbitdaSourceData: %d invoices, %d creditNotes, %d directCosts, %d internalInvoices, %d opexEntries",
+                invoices.size(), creditNotes.size(), directCosts.size(), internalInvoices.size(), opexEntries.size());
+
+        return new EbitdaSourceDataDTO(invoices, creditNotes, directCosts, internalInvoices, opexEntries);
+    }
+
+    /**
+     * Helper: Query invoices and credit notes for the EBITDA source data export.
+     * Uses the same project-resolution pattern as {@link #getAccumulatedRevenueSourceData}.
+     * Results are written into the provided mutable lists.
+     */
+    private void queryEbitdaInvoicesAndCreditNotes(
+            LocalDate fyStart, LocalDate fyEnd,
+            String fyFromKey, String fyToKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds,
+            List<InvoiceExportDTO> invoicesOut, List<InvoiceExportDTO> creditNotesOut) {
+
+        // Step 1: Resolve matching project IDs from fact_project_financials_mat
+        StringBuilder projectSql = new StringBuilder(
+                "SELECT DISTINCT f.project_id FROM fact_project_financials_mat f " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty())      projectSql.append("AND f.companyuuid IN (:companyIds) ");
+        if (sectors != null && !sectors.isEmpty())             projectSql.append("AND f.sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty())   projectSql.append("AND f.service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) projectSql.append("AND f.contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank())           projectSql.append("AND f.client_id = :clientId ");
+
+        Query projectQuery = em.createNativeQuery(projectSql.toString());
+        projectQuery.setParameter("fromKey", fyFromKey);
+        projectQuery.setParameter("toKey", fyToKey);
+        if (companyIds != null && !companyIds.isEmpty())      projectQuery.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty())             projectQuery.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty())   projectQuery.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) projectQuery.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank())           projectQuery.setParameter("clientId", clientId);
+
+        @SuppressWarnings("unchecked")
+        List<String> matchedProjects = projectQuery.getResultList();
+
+        if (matchedProjects.isEmpty()) {
+            log.debugf("getEbitdaSourceData: no matching projects — returning empty invoices/creditNotes");
+            return;
+        }
+
+        // Step 2: Query invoice records for matched projects
+        String invoiceSql =
+                "SELECT " +
+                "    i.uuid           AS invoice_uuid, " +
+                "    i.invoicenumber  AS invoice_number, " +
+                "    DATE_FORMAT(i.invoicedate, '%Y-%m-%d') AS invoice_date, " +
+                "    i.clientname     AS client_name, " +
+                "    p.clientuuid     AS client_uuid, " +
+                "    i.projectname    AS project_name, " +
+                "    i.projectuuid    AS project_uuid, " +
+                "    i.type           AS invoice_type, " +
+                "    i.status         AS invoice_status, " +
+                "    i.currency       AS currency, " +
+                "    COALESCE(i.discount, 0)  AS discount, " +
+                "    COALESCE(i.companyuuid, '') AS company_uuid, " +
+                "    ii.rate * ii.hours AS item_amount, " +
+                "    ii.rate * ii.hours * CASE WHEN i.currency = 'DKK' THEN 1 " +
+                "                             ELSE COALESCE(cur.conversion, 1) END AS item_amount_dkk " +
+                "FROM invoices i " +
+                "    INNER JOIN invoiceitems ii ON i.uuid = ii.invoiceuuid " +
+                "    INNER JOIN project p ON p.uuid = i.projectuuid " +
+                "    LEFT JOIN currences cur " +
+                "        ON cur.currency = i.currency " +
+                "        AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
+                "WHERE i.projectuuid IN (:matchedProjects) " +
+                "    AND i.invoicedate BETWEEN :fyStart AND :fyEnd " +
+                "    AND i.status = 'CREATED' " +
+                "    AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                "    AND ii.rate IS NOT NULL " +
+                "    AND ii.hours IS NOT NULL " +
+                "    AND (i.currency = 'DKK' OR cur.uuid IS NOT NULL) " +
+                (companyIds != null && !companyIds.isEmpty() ? "    AND i.companyuuid IN (:companyIds) " : "") +
+                "ORDER BY i.invoicedate, i.invoicenumber";
+
+        Query invoiceQuery = em.createNativeQuery(invoiceSql, Tuple.class);
+        invoiceQuery.setParameter("matchedProjects", matchedProjects);
+        invoiceQuery.setParameter("fyStart", fyStart);
+        invoiceQuery.setParameter("fyEnd", fyEnd);
+        if (companyIds != null && !companyIds.isEmpty()) invoiceQuery.setParameter("companyIds", companyIds);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = invoiceQuery.getResultList();
+
+        Map<String, InvoiceExportDTO> invoiceMap    = new LinkedHashMap<>();
+        Map<String, InvoiceExportDTO> creditNoteMap = new LinkedHashMap<>();
+
+        for (Tuple row : rows) {
+            String invoiceUuid   = (String) row.get("invoice_uuid");
+            int    invoiceNumber = ((Number) row.get("invoice_number")).intValue();
+            String invoiceDate   = (String) row.get("invoice_date");
+            String clientName    = (String) row.get("client_name");
+            String clientUuid    = (String) row.get("client_uuid");
+            String projectName   = (String) row.get("project_name");
+            String projectUuid   = (String) row.get("project_uuid");
+            String invoiceType   = (String) row.get("invoice_type");
+            String invoiceStatus = (String) row.get("invoice_status");
+            String currency      = (String) row.get("currency");
+            double discount      = ((Number) row.get("discount")).doubleValue();
+            String companyUuid   = (String) row.get("company_uuid");
+            double itemAmount    = ((Number) row.get("item_amount")).doubleValue();
+            double itemAmountDkk = ((Number) row.get("item_amount_dkk")).doubleValue();
+
+            boolean isCreditNote = "CREDIT_NOTE".equals(invoiceType);
+            Map<String, InvoiceExportDTO> targetMap = isCreditNote ? creditNoteMap : invoiceMap;
+
+            targetMap.compute(invoiceUuid, (key, existing) -> {
+                if (existing == null) {
+                    return new InvoiceExportDTO(
+                            invoiceUuid, invoiceNumber, invoiceDate,
+                            clientName, clientUuid, projectName, projectUuid,
+                            invoiceType, invoiceStatus, currency,
+                            itemAmount, itemAmountDkk, discount, companyUuid);
+                }
+                existing.setOriginalAmount(existing.getOriginalAmount() + itemAmount);
+                existing.setAmountDkk(existing.getAmountDkk() + itemAmountDkk);
+                return existing;
+            });
+        }
+
+        invoicesOut.addAll(invoiceMap.values());
+        creditNotesOut.addAll(creditNoteMap.values());
+    }
+
+    /**
+     * Helper: Query direct delivery costs from fact_project_financials_mat at project×month grain.
+     * Applies all CXO dimension filters. Returns one row per distinct project×month×company combination.
+     */
+    private List<DirectCostRowDTO> queryDirectCosts(
+            String fyFromKey, String fyToKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT " +
+                "    f.companyuuid AS company_uuid, " +
+                "    comp.name AS company_name, " +
+                "    f.project_id AS project_uuid, " +
+                "    p.name AS project_name, " +
+                "    f.client_id AS client_uuid, " +
+                "    c.name AS client_name, " +
+                "    f.month_key, " +
+                "    f.year, " +
+                "    f.month_number, " +
+                "    f.sector_id, " +
+                "    f.service_line_id, " +
+                "    f.contract_type_id, " +
+                "    MAX(f.direct_delivery_cost_dkk) AS direct_delivery_cost_dkk " +
+                "FROM fact_project_financials_mat f " +
+                "    JOIN project p ON p.uuid = f.project_id " +
+                "    LEFT JOIN client c ON c.uuid = f.client_id " +
+                "    LEFT JOIN companies comp ON comp.uuid = f.companyuuid " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty())      sql.append("AND f.companyuuid IN (:companyIds) ");
+        if (sectors != null && !sectors.isEmpty())             sql.append("AND f.sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty())   sql.append("AND f.service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) sql.append("AND f.contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank())           sql.append("AND f.client_id = :clientId ");
+        sql.append("GROUP BY f.companyuuid, comp.name, f.project_id, p.name, f.client_id, c.name, " +
+                   "f.month_key, f.year, f.month_number, f.sector_id, f.service_line_id, f.contract_type_id " +
+                   "ORDER BY f.month_key, p.name");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fyFromKey);
+        query.setParameter("toKey", fyToKey);
+        if (companyIds != null && !companyIds.isEmpty())      query.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty())             query.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty())   query.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank())           query.setParameter("clientId", clientId);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<DirectCostRowDTO> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            String monthKey    = (String) row.get("month_key");
+            int    year        = ((Number) row.get("year")).intValue();
+            int    monthNumber = ((Number) row.get("month_number")).intValue();
+            result.add(new DirectCostRowDTO(
+                    (String) row.get("company_uuid"),
+                    row.get("company_name") != null ? (String) row.get("company_name") : "",
+                    (String) row.get("project_uuid"),
+                    row.get("project_name") != null ? (String) row.get("project_name") : "",
+                    (String) row.get("client_uuid"),
+                    row.get("client_name") != null ? (String) row.get("client_name") : "",
+                    monthKey,
+                    formatMonthLabel(year, monthNumber),
+                    (String) row.get("sector_id"),
+                    (String) row.get("service_line_id"),
+                    (String) row.get("contract_type_id"),
+                    ((Number) row.get("direct_delivery_cost_dkk")).doubleValue()
+            ));
+        }
+        return result;
+    }
+
+    /**
+     * Helper: Query intercompany (INTERNAL) invoice cost rows for the fiscal year.
+     * Returns two sets of rows:
+     * <ul>
+     *   <li>QUEUED_INVOICE: one row per QUEUED INTERNAL invoice, with cost from invoiceitems.</li>
+     *   <li>CREATED_GL: one row per finance_details GL entry in accounts 3050/3055/3070/3075/1350.</li>
+     * </ul>
+     * Filter: companyIds applies to debtor company only. No sector/serviceLine/contractType/clientId filter.
+     */
+    private List<InternalInvoiceRowDTO> queryInternalInvoices(
+            LocalDate fyStart, LocalDate fyEnd,
+            String fyFromKey, String fyToKey,
+            Set<String> companyIds) {
+
+        List<InternalInvoiceRowDTO> result = new ArrayList<>();
+
+        // Part A: QUEUED internal invoices — one row per invoice
+        StringBuilder queuedSql = new StringBuilder(
+                "SELECT " +
+                "    i.uuid AS invoice_uuid, " +
+                "    i.invoicenumber AS invoice_number, " +
+                "    DATE_FORMAT(i.invoicedate, '%Y-%m-%d') AS invoice_date, " +
+                "    CONCAT(LPAD(YEAR(i.invoicedate), 4, '0'), LPAD(MONTH(i.invoicedate), 2, '0')) AS month_key, " +
+                "    i.companyuuid AS issuer_company_uuid, " +
+                "    i.debtor_companyuuid AS debtor_company_uuid, " +
+                "    i.invoice_ref_uuid AS invoice_ref_uuid, " +
+                "    i.status AS invoice_status, " +
+                "    i.specificdescription AS description, " +
+                "    SUM(ii.rate * ii.hours * " +
+                "        CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "             ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                           WHERE c.currency = i.currency " +
+                "                             AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "        END) AS amount_dkk " +
+                "FROM invoices i " +
+                "    JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'QUEUED' " +
+                "  AND i.invoicedate BETWEEN :fyStart AND :fyEnd " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            queuedSql.append("  AND i.debtor_companyuuid IN (:companyIds) ");
+        }
+        queuedSql.append("GROUP BY i.uuid, i.invoicenumber, i.invoicedate, i.companyuuid, " +
+                         "i.debtor_companyuuid, i.invoice_ref_uuid, i.status, i.specificdescription " +
+                         "ORDER BY i.invoicedate, i.invoicenumber");
+
+        Query queuedQuery = em.createNativeQuery(queuedSql.toString(), Tuple.class);
+        queuedQuery.setParameter("fyStart", fyStart);
+        queuedQuery.setParameter("fyEnd", fyEnd);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            queuedQuery.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> queuedRows = queuedQuery.getResultList();
+
+        for (Tuple row : queuedRows) {
+            result.add(new InternalInvoiceRowDTO(
+                    (String) row.get("invoice_uuid"),
+                    ((Number) row.get("invoice_number")).intValue(),
+                    (String) row.get("invoice_date"),
+                    (String) row.get("month_key"),
+                    (String) row.get("issuer_company_uuid"),
+                    (String) row.get("debtor_company_uuid"),
+                    (String) row.get("invoice_ref_uuid"),
+                    (String) row.get("invoice_status"),
+                    "QUEUED_INVOICE",
+                    row.get("amount_dkk") != null ? ((Number) row.get("amount_dkk")).doubleValue() : 0.0,
+                    row.get("description") != null ? (String) row.get("description") : ""
+            ));
+        }
+
+        // Part B: CREATED_GL — one row per finance_details GL entry in internal invoice accounts
+        // Accounts: 3050, 3055, 3070, 3075 (TW A/S as debtor) and 1350 (subsidiaries as debtor)
+        StringBuilder glSql = new StringBuilder(
+                "SELECT " +
+                "    fd.companyuuid AS debtor_company_uuid, " +
+                "    fd.accountnumber AS account_number, " +
+                "    DATE_FORMAT(fd.expensedate, '%Y-%m-%d') AS expense_date, " +
+                "    CONCAT(LPAD(YEAR(fd.expensedate), 4, '0'), LPAD(MONTH(fd.expensedate), 2, '0')) AS month_key, " +
+                "    fd.amount AS amount_dkk, " +
+                "    fd.entrynumber AS entry_number, " +
+                "    fd.text AS gl_text " +
+                "FROM finance_details fd " +
+                "WHERE fd.expensedate BETWEEN :fyStart AND :fyEnd " +
+                "  AND fd.amount != 0 " +
+                "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            glSql.append("  AND fd.companyuuid IN (:companyIds) ");
+        }
+        glSql.append("ORDER BY fd.expensedate, fd.entrynumber");
+
+        Query glQuery = em.createNativeQuery(glSql.toString(), Tuple.class);
+        glQuery.setParameter("fyStart", fyStart);
+        glQuery.setParameter("fyEnd", fyEnd);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            glQuery.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> glRows = glQuery.getResultList();
+
+        for (Tuple row : glRows) {
+            result.add(new InternalInvoiceRowDTO(
+                    null,
+                    0,
+                    (String) row.get("expense_date"),
+                    (String) row.get("month_key"),
+                    null,
+                    (String) row.get("debtor_company_uuid"),
+                    null,
+                    null,
+                    "CREATED_GL",
+                    row.get("amount_dkk") != null ? ((Number) row.get("amount_dkk")).doubleValue() : 0.0,
+                    row.get("gl_text") != null ? (String) row.get("gl_text") : ""
+            ));
+        }
+
+        return result;
+    }
+
+    /**
+     * Helper: Query raw OPEX GL entries from finance_details for the fiscal year.
+     * Joins to accounting_accounts and accounting_categories for account metadata.
+     * Excludes 'Varesalg', 'Direkte omkostninger', and 'Igangvaerende arbejde' categories.
+     * Scoped by companyIds only — no sector/serviceLine/contractType/clientId filter.
+     */
+    private List<OpexRowExportDTO> queryOpexEntries(
+            LocalDate fyStart, LocalDate fyEnd,
+            Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT " +
+                "    fd.companyuuid AS company_uuid, " +
+                "    comp.name AS company_name, " +
+                "    fd.accountnumber AS account_number, " +
+                "    aa.account_description, " +
+                "    ac.groupname AS category_groupname, " +
+                "    DATE_FORMAT(fd.expensedate, '%Y-%m-%d') AS expense_date, " +
+                "    CONCAT(LPAD(YEAR(fd.expensedate), 4, '0'), LPAD(MONTH(fd.expensedate), 2, '0')) AS month_key, " +
+                "    YEAR(fd.expensedate) AS year_val, " +
+                "    MONTH(fd.expensedate) AS month_val, " +
+                "    fd.amount AS amount_dkk, " +
+                "    fd.entrynumber AS entry_number, " +
+                "    fd.text AS gl_text " +
+                "FROM finance_details fd " +
+                "    INNER JOIN accounting_accounts aa " +
+                "        ON fd.accountnumber = aa.account_code AND fd.companyuuid = aa.companyuuid " +
+                "    INNER JOIN accounting_categories ac ON aa.categoryuuid = ac.uuid " +
+                "    LEFT JOIN companies comp ON comp.uuid = fd.companyuuid " +
+                "WHERE fd.expensedate BETWEEN :fyStart AND :fyEnd " +
+                "  AND fd.amount != 0 " +
+                "  AND (aa.account_code >= '3000' AND aa.account_code < '6000') " +
+                "  AND ac.groupname NOT IN ('Varesalg', 'Direkte omkostninger', 'Igangvaerende arbejde') "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND fd.companyuuid IN (:companyIds) ");
+        }
+        sql.append("ORDER BY fd.expensedate, fd.companyuuid, fd.accountnumber, fd.entrynumber");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fyStart", fyStart);
+        query.setParameter("fyEnd", fyEnd);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<OpexRowExportDTO> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            int year        = ((Number) row.get("year_val")).intValue();
+            int monthNumber = ((Number) row.get("month_val")).intValue();
+            result.add(new OpexRowExportDTO(
+                    (String) row.get("company_uuid"),
+                    row.get("company_name") != null ? (String) row.get("company_name") : "",
+                    ((Number) row.get("account_number")).intValue(),
+                    row.get("account_description") != null ? (String) row.get("account_description") : "",
+                    row.get("category_groupname") != null ? (String) row.get("category_groupname") : "",
+                    (String) row.get("expense_date"),
+                    (String) row.get("month_key"),
+                    formatMonthLabel(year, monthNumber),
+                    row.get("amount_dkk") != null ? ((Number) row.get("amount_dkk")).doubleValue() : 0.0,
+                    row.get("entry_number") != null ? ((Number) row.get("entry_number")).intValue() : 0,
+                    row.get("gl_text") != null ? (String) row.get("gl_text") : ""
+            ));
+        }
+        return result;
+    }
+
+    /**
+     * Helper: Query TTM total revenue and direct delivery cost (deduplicated).
+     * Returns double[2]: {revenue, cost}.
+     */
+    private double[] queryTTMRevenueAndCost(
+            String fromKey, String toKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder inner = new StringBuilder(
+                "SELECT f.project_id, f.month_key, " +
+                "MAX(f.recognized_revenue_dkk) AS revenue, " +
+                "MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "FROM fact_project_financials_mat f " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) inner.append("AND f.companyuuid IN (:companyIds) ");
+        if (sectors != null && !sectors.isEmpty()) inner.append("AND f.sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty()) inner.append("AND f.service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) inner.append("AND f.contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank()) inner.append("AND f.client_id = :clientId ");
+        inner.append("GROUP BY f.project_id, f.month_key");
+
+        String sql = "SELECT COALESCE(SUM(d.revenue), 0.0), COALESCE(SUM(d.cost), 0.0) FROM (" + inner + ") AS d";
+        Query query = em.createNativeQuery(sql);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty()) query.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty()) query.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank()) query.setParameter("clientId", clientId);
+
+        Object[] row = (Object[]) query.getSingleResult();
+        return new double[]{((Number) row[0]).doubleValue(), ((Number) row[1]).doubleValue()};
+    }
+
+    /**
+     * Helper: Query average monthly OPEX over a TTM window.
+     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
+     * Divides total OPEX by number of distinct months that had data (max 12).
+     */
+    private double queryAvgMonthlyOpex(String fromKey, String toKey, Set<String> companyIds) {
+        double[] totalAndCount = opexProvider.getOpexTotalAndMonthCount(fromKey, toKey, companyIds);
+        double totalOpex    = totalAndCount[0];
+        double monthCount   = totalAndCount[1];
+        return monthCount > 0 ? totalOpex / monthCount : 0.0;
+    }
+
+    /**
+     * Helper: Query monthly revenue and direct cost (deduplicated) for EBITDA calculation.
+     * Returns map of monthKey → double[]{revenue, cost}.
+     */
+    private java.util.Map<String, double[]> queryMonthlyRevenueAndCost(
+            String fromKey, String toKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder inner = new StringBuilder(
+                "SELECT f.project_id, f.month_key, f.year, f.month_number, " +
+                "MAX(f.recognized_revenue_dkk) AS revenue, " +
+                "MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "FROM fact_project_financials_mat f " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) inner.append("AND f.companyuuid IN (:companyIds) ");
+        if (sectors != null && !sectors.isEmpty()) inner.append("AND f.sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty()) inner.append("AND f.service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) inner.append("AND f.contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank()) inner.append("AND f.client_id = :clientId ");
+        inner.append("GROUP BY f.project_id, f.month_key, f.year, f.month_number");
+
+        String sql = "SELECT d.month_key, SUM(d.revenue), SUM(d.cost) FROM (" + inner + ") AS d " +
+                     "GROUP BY d.month_key ORDER BY d.month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty()) query.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty()) query.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank()) query.setParameter("clientId", clientId);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, double[]> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            String mk = (String) row.get(0);
+            double rev  = row.get(1) != null ? ((Number) row.get(1)).doubleValue() : 0.0;
+            double cost = row.get(2) != null ? ((Number) row.get(2)).doubleValue() : 0.0;
+            result.put(mk, new double[]{rev, cost});
+        }
+        return result;
+    }
+
+    /**
+     * Helper: Query monthly direct delivery cost from {@code fact_project_financials_mat}.
+     * Returns map of monthKey → double[]{cost} (single-element array for uniform access).
+     * Applies the deduplication pattern (MAX per project-month) and all dimension filters.
+     * Used by {@link #getExpectedAccumulatedEBITDA} to keep costs dimension-filtered while
+     * revenue is sourced separately from {@code fact_company_revenue_mat}.
+     */
+    private java.util.Map<String, double[]> queryMonthlyDirectCostByMonth(
+            String fromKey, String toKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder inner = new StringBuilder(
+                "SELECT f.project_id, f.month_key, " +
+                "MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "FROM fact_project_financials_mat f " +
+                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) inner.append("AND f.companyuuid IN (:companyIds) ");
+        if (sectors != null && !sectors.isEmpty()) inner.append("AND f.sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty()) inner.append("AND f.service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) inner.append("AND f.contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank()) inner.append("AND f.client_id = :clientId ");
+        inner.append("GROUP BY f.project_id, f.month_key");
+
+        String sql = "SELECT d.month_key, SUM(d.cost) AS cost FROM (" + inner + ") AS d GROUP BY d.month_key ORDER BY d.month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+        if (sectors != null && !sectors.isEmpty()) query.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty()) query.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank()) query.setParameter("clientId", clientId);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, double[]> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            String mk = (String) row.get("month_key");
+            double cost = row.get("cost") != null ? ((Number) row.get("cost")).doubleValue() : 0.0;
+            result.put(mk, new double[]{cost});
+        }
+        return result;
+    }
+
+    /**
+     * Helper: Query actual OPEX by month.
+     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
+     * Returns map of monthKey → total opex_amount_dkk.
+     */
+    private java.util.Map<String, Double> queryMonthlyOpex(String fromKey, String toKey, Set<String> companyIds) {
+        return opexProvider.getMonthlyOpex(fromKey, toKey, companyIds);
+    }
+
+    /**
+     * Helper: Query monthly internal invoice cost from fact_internal_invoice_cost_mat.
+     * Returns map of monthKey → internal_invoice_cost_dkk.
+     * Values may be negative for reversal months (SUM, not ABS — per view design).
+     * Covers only actual months; future months should use 0.0 (not forecast).
+     */
+    private java.util.Map<String, Double> queryMonthlyInternalInvoiceCost(
+            String fromKey, String toKey, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT month_key, COALESCE(SUM(internal_invoice_cost_dkk), 0.0) AS internal_cost " +
+                "FROM fact_internal_invoice_cost_mat " +
+                "WHERE month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) sql.append("AND company_id IN (:companyIds) ");
+        sql.append("GROUP BY month_key ORDER BY month_key");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            result.put((String) row.get("month_key"), ((Number) row.get("internal_cost")).doubleValue());
+        }
+        return result;
+    }
+
+    /**
+     * Helper: Query total internal invoice cost over a time window (e.g., TTM).
+     * Returns the sum of internal_invoice_cost_dkk across all months in the range.
+     * Used by getGrossMarginTTM to include intercompany costs in gross margin %.
+     */
+    private double queryTTMInternalInvoiceCost(String fromKey, String toKey, Set<String> companyIds) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT COALESCE(SUM(internal_invoice_cost_dkk), 0.0) " +
+                "FROM fact_internal_invoice_cost_mat " +
+                "WHERE month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) sql.append("AND company_id IN (:companyIds) ");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+
+        return ((Number) query.getSingleResult()).doubleValue();
+    }
+
+    /**
+     * Helper: Query backlog revenue from fact_backlog for future fiscal months.
+     * Returns map of monthKey → backlog_revenue_dkk.
+     */
+    private java.util.Map<String, Double> queryBacklogByMonth(
+            String fromMonthKey, String toMonthKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT delivery_month_key AS month_key, SUM(backlog_revenue_dkk) AS backlog " +
+                "FROM fact_backlog " +
+                "WHERE delivery_month_key COLLATE utf8mb4_general_ci BETWEEN :fromMonthKey AND :toMonthKey " +
+                "  AND project_status COLLATE utf8mb4_general_ci = 'ACTIVE' "
+        );
+        if (sectors != null && !sectors.isEmpty()) sql.append("AND sector_id IN (:sectors) ");
+        if (serviceLines != null && !serviceLines.isEmpty()) sql.append("AND service_line_id IN (:serviceLines) ");
+        if (contractTypes != null && !contractTypes.isEmpty()) sql.append("AND contract_type_id IN (:contractTypes) ");
+        if (clientId != null && !clientId.isBlank()) sql.append("AND client_id = :clientId ");
+        if (companyIds != null && !companyIds.isEmpty()) sql.append("AND company_id IN (:companyIds) ");
+        sql.append("GROUP BY delivery_month_key ORDER BY delivery_month_key");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (sectors != null && !sectors.isEmpty()) query.setParameter("sectors", sectors);
+        if (serviceLines != null && !serviceLines.isEmpty()) query.setParameter("serviceLines", serviceLines);
+        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
+        if (clientId != null && !clientId.isBlank()) query.setParameter("clientId", clientId);
+        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            result.put((String) row.get("month_key"), ((Number) row.get("backlog")).doubleValue());
+        }
+        return result;
     }
 }

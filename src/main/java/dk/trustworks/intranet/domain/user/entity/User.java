@@ -106,7 +106,11 @@ public class User extends PanacheEntityBase {
     }
 
     public UserStatus getUserStatus(LocalDate date) {
-        return getStatuses().stream().filter(value -> value.getStatusdate().isBefore(date) || value.getStatusdate().isEqual(date)).max(Comparator.comparing(UserStatus::getStatusdate)).orElse(new UserStatus(ConsultantType.STAFF, StatusType.TERMINATED, date, 0, uuid));
+        return getStatuses().stream()
+                .filter(value -> value.getStatusdate().isBefore(date) || value.getStatusdate().isEqual(date))
+                .max(Comparator.comparing(UserStatus::getStatusdate)
+                        .thenComparing(us -> us.getStatus() == StatusType.TERMINATED ? 0 : 1))
+                .orElse(new UserStatus(ConsultantType.STAFF, StatusType.TERMINATED, date, 0, uuid));
     }
 
     public Salary getSalary(LocalDate date) {

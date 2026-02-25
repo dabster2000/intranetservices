@@ -209,7 +209,7 @@ public class InternalInvoiceControllingService {
 
         String linesSql = """
         WITH base AS (
-            SELECT 
+            SELECT
                 i.uuid AS invoiceuuid,
                 i.companyuuid AS invoice_companyuuid,
                 i.invoicedate,
@@ -224,7 +224,7 @@ public class InternalInvoiceControllingService {
             WHERE i.uuid IN (%s)
         ),
         status_pick AS (
-            SELECT 
+            SELECT
                 b.invoiceuuid,
                 b.consultantuuid,
                 us.companyuuid AS users_companyuuid,
@@ -237,7 +237,7 @@ public class InternalInvoiceControllingService {
               ON us.useruuid = b.consultantuuid
              AND us.statusdate <= b.invoicedate
         )
-        SELECT 
+        SELECT
             b.invoiceuuid,
             b.line_uuid,
             b.itemname,
@@ -245,19 +245,23 @@ public class InternalInvoiceControllingService {
             b.hours,
             b.rate,
             b.consultantuuid,
-            CASE 
+            CASE
               WHEN b.consultantuuid IS NULL THEN 0
-              WHEN sp.rn = 1 
+              WHEN sp.rn = 1
                    AND sp.users_companyuuid IS NOT NULL
-                   AND sp.users_companyuuid <> b.invoice_companyuuid 
+                   AND sp.users_companyuuid <> b.invoice_companyuuid
                 THEN 1
               ELSE 0
-            END AS cross_company
+            END AS cross_company,
+            sp.users_companyuuid AS consultant_company_uuid,
+            c.name AS consultant_company_name
         FROM base b
         LEFT JOIN status_pick sp
           ON sp.invoiceuuid = b.invoiceuuid
          AND sp.consultantuuid = b.consultantuuid
          AND sp.rn = 1
+        LEFT JOIN companies c
+          ON c.uuid = sp.users_companyuuid
         ORDER BY b.invoiceuuid
     """.formatted(ph.toString());
 
@@ -278,10 +282,12 @@ public class InternalInvoiceControllingService {
             Double rate    = r[5] == null ? null : ((Number) r[5]).doubleValue();
             String cuuid   = (String) r[6];
             boolean cross  = ((Number) r[7]).intValue() == 1;
+            String consultantCompanyUuid = (String) r[8];
+            String consultantCompanyName = (String) r[9];
             double amount  = (hours == null || rate == null) ? 0.0 : (hours * rate);
 
             linesByInvoice.computeIfAbsent(invId, k -> new java.util.ArrayList<>())
-                    .add(new InvoiceLineDTO(lineId, name, desc, hours, rate, round2(amount), cuuid, cross));
+                    .add(new InvoiceLineDTO(lineId, name, desc, hours, rate, round2(amount), cuuid, cross, consultantCompanyUuid, consultantCompanyName));
         }
 
         java.util.List<CrossCompanyInvoicePairDTO> result = new java.util.ArrayList<>();
@@ -548,7 +554,7 @@ public class InternalInvoiceControllingService {
 
             linesByInvoice.computeIfAbsent(invId, k -> new java.util.ArrayList<>())
                     .add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO(
-                            lineId, name, desc, hours, rate, round2(amount), cuuid, cross
+                            lineId, name, desc, hours, rate, round2(amount), cuuid, cross, null, null
                     ));
         }
 
@@ -727,7 +733,7 @@ public class InternalInvoiceControllingService {
                   ON us.useruuid = b.consultantuuid
                  AND us.statusdate <= b.invoicedate
             )
-            SELECT 
+            SELECT
                 b.invoiceuuid,
                 b.line_uuid,
                 b.itemname,
@@ -735,19 +741,23 @@ public class InternalInvoiceControllingService {
                 b.hours,
                 b.rate,
                 b.consultantuuid,
-                CASE 
+                CASE
                   WHEN b.consultantuuid IS NULL THEN 0
-                  WHEN sp.rn = 1 
+                  WHEN sp.rn = 1
                        AND sp.users_companyuuid IS NOT NULL
-                       AND sp.users_companyuuid <> b.invoice_companyuuid 
+                       AND sp.users_companyuuid <> b.invoice_companyuuid
                     THEN 1
                   ELSE 0
-                END AS cross_company
+                END AS cross_company,
+                sp.users_companyuuid AS consultant_company_uuid,
+                c.name AS consultant_company_name
             FROM base b
             LEFT JOIN status_pick sp
               ON sp.invoiceuuid = b.invoiceuuid
              AND sp.consultantuuid = b.consultantuuid
              AND sp.rn = 1
+            LEFT JOIN companies c
+              ON c.uuid = sp.users_companyuuid
             ORDER BY b.invoiceuuid
         """).formatted(ph.toString());
 
@@ -767,11 +777,13 @@ public class InternalInvoiceControllingService {
             Double rate    = r[5] == null ? null : ((Number) r[5]).doubleValue();
             String cuuid   = (String) r[6];
             boolean cross  = ((Number) r[7]).intValue() == 1;
+            String consultantCompanyUuid = (String) r[8];
+            String consultantCompanyName = (String) r[9];
             double amount  = (hours == null || rate == null) ? 0.0 : (hours * rate);
 
             linesByInvoice.computeIfAbsent(invId, k -> new java.util.ArrayList<>())
                     .add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO(
-                            lineId, name, desc, hours, rate, round2(amount), cuuid, cross
+                            lineId, name, desc, hours, rate, round2(amount), cuuid, cross, consultantCompanyUuid, consultantCompanyName
                     ));
         }
 
@@ -980,7 +992,7 @@ public class InternalInvoiceControllingService {
             linesByInvoice.computeIfAbsent(invoiceUuid, k -> new java.util.ArrayList<>())
                     .add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO(
                             lineUuid, itemName, description, hours, rate,
-                            round2(amount), consultUuid, cross
+                            round2(amount), consultUuid, cross, null, null
                     ));
         }
 
@@ -1197,7 +1209,7 @@ public class InternalInvoiceControllingService {
 
             linesByInvoice.computeIfAbsent(invId, k -> new java.util.ArrayList<>())
                     .add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO(
-                            lineId, name, desc, hours, rate, round2(amount), cuuid, cross
+                            lineId, name, desc, hours, rate, round2(amount), cuuid, cross, null, null
                     ));
         }
 

@@ -36,7 +36,11 @@ public record PageMigrationDto(
      */
     public static PageMigrationDto fromEntity(PageMigration entity) {
         List<String> roles = entity.getRequiredRoles() != null
-                ? Arrays.asList(entity.getRequiredRoles().split(","))
+                ? Arrays.stream(entity.getRequiredRoles().split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .map(String::toUpperCase)
+                        .toList()
                 : List.of("USER");
 
         return new PageMigrationDto(

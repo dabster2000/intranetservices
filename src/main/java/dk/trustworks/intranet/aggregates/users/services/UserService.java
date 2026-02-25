@@ -270,7 +270,7 @@ public class UserService {
 
     //@CacheResult(cacheName = "user-cache")
     public UserStatus getUserStatus(User user, LocalDate date) {
-        return user.getStatuses().stream().filter(value -> value.getStatusdate().isBefore(date) || value.getStatusdate().isEqual(date)).max(Comparator.comparing(UserStatus::getStatusdate)).orElse(new UserStatus(ConsultantType.STAFF, StatusType.TERMINATED, date, 0, user.getUuid()));
+        return user.getUserStatus(date);
     }
 
     public Salary getUserSalary(User user, LocalDate date) {

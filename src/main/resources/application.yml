@@ -157,6 +157,9 @@ event-topics:
       migration-registry:
         expire-after-write: 5M  # Page migration registry cache (5 min TTL for quick updates)
         maximum-size: 100  # Small table - only ~20-50 pages expected
+      distribution-opex:
+        expire-after-write: 5M  # Distribution OPEX cache - matches sp_incremental_bi_refresh frequency
+        maximum-size: 60  # One entry per month; 60 covers 5 years of monthly data
   s3:
     sync-client:
       type: APACHE

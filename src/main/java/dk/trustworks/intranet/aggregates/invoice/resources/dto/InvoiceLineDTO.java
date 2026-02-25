@@ -15,5 +15,7 @@ public record InvoiceLineDTO(
         Double rate,
         Double amountNoTax,
         String consultantuuid,
-        boolean crossCompany
+        boolean crossCompany,
+        String consultantCompanyUuid,
+        String consultantCompanyName
 ) {}

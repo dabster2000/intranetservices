@@ -35,7 +35,6 @@ import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
-import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.DateUtils;
 import dk.trustworks.intranet.utils.SortBuilder;
@@ -632,6 +631,158 @@ public class InvoiceService {
         internalInvoice.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
     }
 
+
+    /**
+     * Automatically creates an INTERNAL invoice draft for a given client invoice and target company,
+     * filtering line items to include only consultants belonging to the target company (the issuer)
+     * plus all CALCULATED items (discounts, fees). Then queues the draft.
+     *
+     * @param clientInvoiceUuid UUID of the client invoice to base the internal invoice on
+     * @param issuerCompanyUuid UUID of the company whose consultants should be included (becomes the issuer)
+     * @return the created and queued internal invoice
+     */
+    @Transactional
+    public Invoice autoCreateAndQueueInternal(String clientInvoiceUuid, String issuerCompanyUuid) {
+        log.info("Auto-creating internal invoice for client=" + clientInvoiceUuid + ", issuer company=" + issuerCompanyUuid);
+
+        // 1. Load and validate client invoice
+        Invoice clientInvoice = Invoice.findById(clientInvoiceUuid);
+        if (clientInvoice == null) {
+            throw new WebApplicationException("Client invoice not found", Response.Status.NOT_FOUND);
+        }
+        if (clientInvoice.getStatus() == InvoiceStatus.DRAFT) {
+            throw new WebApplicationException("Client invoice must not be DRAFT", Response.Status.BAD_REQUEST);
+        }
+        if (clientInvoice.getType() != InvoiceType.INVOICE && clientInvoice.getType() != InvoiceType.PHANTOM) {
+            throw new WebApplicationException("Client invoice must be INVOICE or PHANTOM type", Response.Status.BAD_REQUEST);
+        }
+
+        // 2. Validate issuer company exists
+        Company issuerCompany = Company.findById(issuerCompanyUuid);
+        if (issuerCompany == null) {
+            throw new WebApplicationException("Issuer company not found", Response.Status.NOT_FOUND);
+        }
+
+        // 3. Determine which consultants belong to the issuer company as-of the invoice date
+        String sql = """
+            SELECT ii.consultantuuid, us.companyuuid AS users_companyuuid
+            FROM invoiceitems ii
+            LEFT JOIN (
+                SELECT useruuid, companyuuid,
+                       ROW_NUMBER() OVER (PARTITION BY useruuid ORDER BY statusdate DESC) AS rn
+                FROM userstatus
+                WHERE statusdate <= :invoicedate
+            ) us ON us.useruuid = ii.consultantuuid AND us.rn = 1
+            WHERE ii.invoiceuuid = :invoiceuuid
+              AND ii.consultantuuid IS NOT NULL
+            """;
+        @SuppressWarnings("unchecked")
+        List<Object[]> consultantRows = em.createNativeQuery(sql)
+                .setParameter("invoiceuuid", clientInvoiceUuid)
+                .setParameter("invoicedate", clientInvoice.getInvoicedate())
+                .getResultList();
+
+        Set<String> issuerConsultants = new HashSet<>();
+        for (Object[] row : consultantRows) {
+            String consultantUuid = (String) row[0];
+            String companyUuid = (String) row[1];
+            if (issuerCompanyUuid.equals(companyUuid)) {
+                issuerConsultants.add(consultantUuid);
+            }
+        }
+
+        if (issuerConsultants.isEmpty()) {
+            throw new WebApplicationException(
+                    "No cross-company consultants found for company " + issuerCompany.getName(),
+                    Response.Status.BAD_REQUEST);
+        }
+
+        // 4. Create internal invoice draft
+        // The debtor is the client invoice's company (they owe the issuer)
+        String debtorCompanyUuid = clientInvoice.getCompany().getUuid();
+        Invoice internalInvoice = new Invoice(
+                clientInvoice.getUuid(),
+                clientInvoice.getInvoicenumber(),
+                InvoiceType.INTERNAL,
+                clientInvoice.getContractuuid(),
+                clientInvoice.getProjectuuid(),
+                clientInvoice.getProjectname(),
+                clientInvoice.getDiscount(),
+                clientInvoice.getYear(),
+                clientInvoice.getMonth(),
+                clientInvoice.getCompany().getName(),
+                clientInvoice.getCompany().getAddress(),
+                "",
+                clientInvoice.getCompany().getZipcode(),
+                "",
+                clientInvoice.getCompany().getCvr(),
+                "Tobias Kjølsen",
+                LocalDate.now(),
+                LocalDate.now().plusMonths(1),
+                clientInvoice.getProjectref(),
+                clientInvoice.getContractref(),
+                clientInvoice.contractType,
+                issuerCompany,
+                clientInvoice.getCurrency(),
+                "Intern faktura knyttet til " + clientInvoice.getInvoicenumber(),
+                debtorCompanyUuid);
+
+        // 5. Filter items: keep BASE items for issuer's consultants + all CALCULATED items
+        int position = 1;
+        for (InvoiceItem item : clientInvoice.getInvoiceitems()) {
+            if (item.getRate() == 0.0 || item.hours == 0.0) continue;
+
+            boolean include = false;
+            if (item.getOrigin() == InvoiceItemOrigin.CALCULATED) {
+                // Always include CALCULATED items (discounts, fees, etc.)
+                include = true;
+            } else if (item.consultantuuid == null || item.consultantuuid.isBlank()) {
+                // Items without a consultant (discounts, misc) - include them
+                include = true;
+            } else if (issuerConsultants.contains(item.consultantuuid)) {
+                // BASE item for a consultant from the issuer company
+                include = true;
+            }
+
+            if (include) {
+                InvoiceItem newItem = new InvoiceItem(
+                        item.consultantuuid,
+                        item.getItemname(),
+                        item.getDescription(),
+                        item.getRate(),
+                        item.getHours(),
+                        position++,
+                        internalInvoice.getUuid(),
+                        item.getOrigin()
+                );
+                if (item.getOrigin() == InvoiceItemOrigin.CALCULATED) {
+                    newItem.setCalculationRef(item.getCalculationRef());
+                    newItem.setRuleId(item.getRuleId());
+                    newItem.setLabel(item.getLabel());
+                }
+                internalInvoice.getInvoiceitems().add(newItem);
+            }
+        }
+
+        if (internalInvoice.getInvoiceitems().isEmpty()) {
+            throw new WebApplicationException(
+                    "No applicable line items for company " + issuerCompany.getName(),
+                    Response.Status.BAD_REQUEST);
+        }
+
+        // 6. Persist the draft
+        Invoice.persist(internalInvoice);
+        for (InvoiceItem item : internalInvoice.getInvoiceitems()) {
+            item.persist();
+        }
+        log.info("Internal draft created: " + internalInvoice.getUuid());
+
+        // 7. Queue the internal invoice (reuses existing validation)
+        queueInternalInvoice(internalInvoice.getUuid());
+        log.info("Internal invoice auto-created and queued: " + internalInvoice.getUuid());
+
+        return internalInvoice;
+    }
 
     @Transactional
     public void createInternalServiceInvoiceDraft(String fromCompanyuuid, String toCompanyuuid, LocalDate month) {
@@ -1428,14 +1579,16 @@ public class InvoiceService {
             );
         }
 
-        // Additional validation: ensure there is no existing non-DRAFT INTERNAL invoice for this client invoice
-        long existing = Invoice.count("type = ?1 and status in ?2 and invoiceRefUuid = ?3",
+        // Additional validation: ensure there is no existing non-DRAFT INTERNAL invoice for this client invoice + same debtor company
+        long existing = Invoice.count("type = ?1 and status in ?2 and invoiceRefUuid = ?3 and debtorCompanyuuid = ?4",
                 InvoiceType.INTERNAL,
                 java.util.List.of(InvoiceStatus.QUEUED, CREATED),
-                invoice.getInvoiceRefUuid());
+                invoice.getInvoiceRefUuid(),
+                invoice.getDebtorCompanyuuid());
         if (existing > 0) {
             throw new WebApplicationException(
-                    "An INTERNAL invoice already exists (QUEUED or CREATED) for client invoice_ref_uuid=" + invoice.getInvoiceRefUuid(),
+                    "An INTERNAL invoice already exists (QUEUED or CREATED) for client invoice_ref_uuid=" + invoice.getInvoiceRefUuid()
+                            + " and debtor company=" + invoice.getDebtorCompanyuuid(),
                     Response.Status.CONFLICT
             );
         }

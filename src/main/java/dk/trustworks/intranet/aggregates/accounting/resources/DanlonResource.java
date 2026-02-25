@@ -34,6 +34,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -539,17 +540,30 @@ public class DanlonResource {
     }
 
     // Helper method: Returns active users after filtering out preboarding and terminated users.
+    // Uses company-specific status lookup to handle company transitions correctly:
+    // a user TERMINATED in this company but ACTIVE in another on the same date
+    // should still appear (for "Sidste løn" reporting).
     private @NotNull List<User> getActiveUsersExcludingPreboardingAndTerminated(LocalDate endOfMonth) {
         return userService.listAll(false).stream()
                 .filter(user -> {
-                    UserStatus status = user.getUserStatus(endOfMonth);
-                    return !((status.getStatus().equals(TERMINATED) || status.getStatus().equals(PREBOARDING))
-                            && status.getStatusdate().isBefore(endOfMonth));
-                })
-                .filter(user -> user.getUserStatus(endOfMonth).getCompany() != null &&
-                        user.getUserStatus(endOfMonth).getCompany().getUuid().equals(companyuuid))
-                .filter(user -> {
-                    ConsultantType type = user.getUserStatus(endOfMonth).getType();
+                    // Find the user's most recent status for THIS specific company
+                    UserStatus companyStatus = user.getStatuses().stream()
+                            .filter(s -> s.getCompany() != null && s.getCompany().getUuid().equals(companyuuid))
+                            .filter(s -> !s.getStatusdate().isAfter(endOfMonth))
+                            .max(Comparator.comparing(UserStatus::getStatusdate))
+                            .orElse(null);
+
+                    if (companyStatus == null) return false;
+
+                    // Exclude if TERMINATED/PREBOARDING before the start of this month
+                    // (but include if terminated THIS month — needed for "Sidste løn" reporting)
+                    if ((companyStatus.getStatus().equals(TERMINATED) || companyStatus.getStatus().equals(PREBOARDING))
+                            && companyStatus.getStatusdate().isBefore(endOfMonth.withDayOfMonth(1))) {
+                        return false;
+                    }
+
+                    // Check consultant type
+                    ConsultantType type = companyStatus.getType();
                     return type.equals(ConsultantType.CONSULTANT) ||
                             type.equals(ConsultantType.STAFF) ||
                             type.equals(ConsultantType.STUDENT);

@@ -31,6 +31,7 @@ import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -324,6 +325,23 @@ public class InvoiceResource {
     }
 
     @POST
+    @Path("/{clientInvoiceUuid}/auto-create-internal")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Transactional
+    public Response autoCreateInternal(
+            @PathParam("clientInvoiceUuid") String clientInvoiceUuid,
+            @QueryParam("companyUuid") String companyUuid) {
+        try {
+            Invoice created = invoiceService.autoCreateAndQueueInternal(clientInvoiceUuid, companyUuid);
+            return Response.ok().entity(new KeyValueDTO("invoiceUuid", created.getUuid())).build();
+        } catch (WebApplicationException wae) {
+            return Response.status(wae.getResponse().getStatus())
+                    .entity(Map.of("error", wae.getMessage(), "message", wae.getMessage()))
+                    .build();
+        }
+    }
+
+    @POST
     @Path("/{invoiceuuid}/reference")
     public void updateInvoiceReference(@PathParam("invoiceuuid") String invoiceuuid, InvoiceReference invoiceReference) {
         log.info("InvoiceResource.updateInvoiceReference");
@@ -565,6 +583,7 @@ public class InvoiceResource {
      */
     @POST
     @Path("/{invoiceuuid}/force-create-queued")
+    @Produces(MediaType.APPLICATION_JSON)
     @Transactional
     public Response forceCreateQueuedInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
         log.infof("forceCreateQueuedInvoice: invoiceuuid=%s (manual bypass)", invoiceuuid);
@@ -602,7 +621,7 @@ public class InvoiceResource {
             }
 
             return Response.ok()
-                    .entity(message)
+                    .entity(Map.of("message", message))
                     .build();
 
         } catch (WebApplicationException wae) {
@@ -611,7 +630,7 @@ public class InvoiceResource {
         } catch (Exception e) {
             log.error("Unexpected error force-creating queued invoice: " + invoiceuuid, e);
             return Response.serverError()
-                    .entity("Failed to force-create invoice: " + e.getMessage())
+                    .entity(Map.of("error", "Failed to force-create invoice: " + e.getMessage()))
                     .build();
         }
     }

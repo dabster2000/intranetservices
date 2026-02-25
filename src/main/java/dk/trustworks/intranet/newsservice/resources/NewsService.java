@@ -79,8 +79,11 @@ public class NewsService {
     }
 
     private void persist(News news) {
-        for (RelatedResource relatedResource : news.getRelatedResources()) {
-            if(relatedResource.getUuid() == null || news.getUuid().isBlank()) relatedResource.setUuid(UUID.randomUUID().toString());
+        if (news.getRelatedResources() != null) {
+            for (RelatedResource relatedResource : news.getRelatedResources()) {
+                if (relatedResource.getUuid() == null || relatedResource.getUuid().isBlank())
+                    relatedResource.setUuid(UUID.randomUUID().toString());
+            }
         }
         news.persist();
     }

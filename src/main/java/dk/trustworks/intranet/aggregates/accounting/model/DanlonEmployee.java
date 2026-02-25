@@ -7,7 +7,7 @@ import lombok.ToString;
 @ToString
 @Getter
 public class DanlonEmployee {
-    String employeeNumber; // Medarb.nr.
+    String danlonNumber; // Medarb.nr.
     String name; // Navn
     String address; // Adresse
     String address2; // Adresse 2
@@ -25,10 +25,10 @@ public class DanlonEmployee {
     String active; // Aktiv
     SalaryType type; // Hourly og monthly paid
 
-    public DanlonEmployee(String employeeNumber, String name, String address, String address2, String postalCode,
+    public DanlonEmployee(String danlonNumber, String name, String address, String address2, String postalCode,
                           String city, String countryCode, String email, String privatePhone, String mobilePhone,
                           String cprNumber, String hireDate, String jobTitle, String bankAccount, String accountingGroup, String active, SalaryType type) {
-        this.employeeNumber = employeeNumber;
+        this.danlonNumber = danlonNumber;
         this.name = name;
         this.address = address;
         this.address2 = address2;

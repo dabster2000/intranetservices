@@ -198,26 +198,27 @@ public class SalaryService {
      */
     private void handleSalaryTypeChange(String useruuid, LocalDate effectiveDate) {
         LocalDate monthStart = effectiveDate.withDayOfMonth(1);
-        LocalDate monthEnd = monthStart.plusMonths(1);
+        LocalDate monthEnd = monthStart.plusMonths(1).minusDays(1);
 
-        // Check if user has new UserStatus in same month (excluding TERMINATED/PREBOARDING)
-        Optional<UserStatus> newStatus = UserStatus.find(
-                "useruuid = ?1 AND statusdate >= ?2 AND statusdate < ?3 AND status NOT IN (?4, ?5)",
+        // Check if user has a qualifying (non-TERMINATED, non-PREBOARDING) status effective as of this month.
+        // Previously required a status created IN the same month, which failed for users whose
+        // status was set in an earlier month (e.g. company transition months before salary type change).
+        Optional<UserStatus> activeStatus = UserStatus.find(
+                "useruuid = ?1 AND statusdate <= ?2 AND status NOT IN (?3, ?4) ORDER BY statusdate DESC",
                 useruuid,
-                monthStart,
                 monthEnd,
                 StatusType.TERMINATED,
                 StatusType.PREBOARDING
         ).firstResultOptional();
 
-        if (newStatus.isEmpty()) {
-            log.infof("No qualifying UserStatus found for user %s in month %s - skipping Danløn generation",
+        if (activeStatus.isEmpty()) {
+            log.infof("No qualifying UserStatus found for user %s as of month %s - skipping Danløn generation",
                     useruuid, monthStart);
             return;
         }
 
-        log.infof("Found qualifying UserStatus (%s) for user %s in month %s - generating new Danløn number",
-                newStatus.get().getStatus(), useruuid, monthStart);
+        log.infof("Found qualifying UserStatus (%s, date %s) for user %s in month %s - generating new Danløn number",
+                activeStatus.get().getStatus(), activeStatus.get().getStatusdate(), useruuid, monthStart);
 
         // Generate new Danløn number using the service
         String newDanlonNumber = danlonHistoryService.generateNextDanlonNumber();

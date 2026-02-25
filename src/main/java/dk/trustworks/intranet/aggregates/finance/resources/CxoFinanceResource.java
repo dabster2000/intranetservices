@@ -5,6 +5,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4Wee
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAccumulatedEbitdaDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAccumulatedRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyCostCenterMixDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyExpenseMixDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyOverheadPerFTEDTO;
@@ -20,6 +22,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenuePerBillableFTETTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.EbitdaSourceDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import jakarta.annotation.security.RolesAllowed;
@@ -1105,6 +1109,181 @@ public class CxoFinanceResource {
                 fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet);
 
         log.debugf("Returning %d expense detail rows", result.size());
+        return result;
+    }
+
+    /**
+     * Returns 12 monthly data points (Jul–Jun) showing accumulated revenue for the current fiscal year.
+     *
+     * @param asOfDateStr Reference date for fiscal year detection (ISO-8601, defaults to today)
+     * @param sectors     Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId    Client UUID filter (optional)
+     * @param companyIds  Comma-separated company UUIDs (optional)
+     * @return 12 data points sorted by fiscal month (1=Jul, 12=Jun), each with monthly + accumulated revenue
+     */
+    @GET
+    @Path("/accumulated-revenue")
+    public List<MonthlyAccumulatedRevenueDTO> getAccumulatedRevenue(
+            @QueryParam("asOfDate") String asOfDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/accumulated-revenue: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<MonthlyAccumulatedRevenueDTO> result = cxoFinanceService.getAccumulatedRevenue(
+                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet);
+
+        log.debugf("Returning %d accumulated revenue data points", result.size());
+        return result;
+    }
+
+    /**
+     * Returns raw invoice and invoice-item source data behind the accumulated revenue chart.
+     * Intended for Excel export — contains individual invoices, line items, and credit notes.
+     *
+     * @param asOfDateStr  Reference date for fiscal year detection (ISO-8601, defaults to today)
+     * @param sectors      Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId     Client UUID filter (optional)
+     * @param companyIds   Comma-separated company UUIDs (optional)
+     * @return Container with invoices, line items, and credit notes for the fiscal year
+     */
+    @GET
+    @Path("/accumulated-revenue/source-data")
+    public RevenueSourceDataDTO getAccumulatedRevenueSourceData(
+            @QueryParam("asOfDate") String asOfDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/accumulated-revenue/source-data: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        Set<String> sectorSet       = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet  = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet    = parseCommaSeparated(companyIds);
+
+        RevenueSourceDataDTO result = cxoFinanceService.getAccumulatedRevenueSourceData(
+                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet);
+
+        log.debugf("Returning source data: %d invoices, %d items, %d credit notes",
+                result.getInvoices().size(), result.getInvoiceItems().size(), result.getCreditNotes().size());
+        return result;
+    }
+
+    /**
+     * Returns 12 monthly data points (Jul–Jun) showing expected accumulated EBITDA for the current fiscal year.
+     * Past months use actuals; future months use backlog revenue + TTM gross margin estimation.
+     *
+     * @param asOfDateStr Reference date for fiscal year detection (ISO-8601, defaults to today)
+     * @param sectors     Comma-separated sector IDs (optional)
+     * @param serviceLines Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId    Client UUID filter (optional)
+     * @param companyIds  Comma-separated company UUIDs (optional)
+     * @return 12 data points sorted by fiscal month (1=Jul, 12=Jun), each with monthly + accumulated EBITDA
+     */
+    @GET
+    @Path("/expected-accumulated-ebitda")
+    public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
+            @QueryParam("asOfDate") String asOfDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        Set<String> sectorSet = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        List<MonthlyAccumulatedEbitdaDTO> result = cxoFinanceService.getExpectedAccumulatedEBITDA(
+                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet);
+
+        log.debugf("Returning %d expected accumulated EBITDA data points", result.size());
+        return result;
+    }
+
+    /**
+     * Returns raw source data records behind the Expected Accumulated EBITDA chart for Excel export.
+     * Contains five lists: invoices, creditNotes, directCosts, internalInvoices, and opexEntries,
+     * each representing a separate Excel tab in the downloaded workbook.
+     *
+     * <p>Filter scoping:
+     * <ul>
+     *   <li>companyIds — applied to ALL data sources.</li>
+     *   <li>sectors / serviceLines / contractTypes / clientId — applied to invoices, creditNotes,
+     *       and directCosts only; NOT applied to internalInvoices or opexEntries.</li>
+     * </ul>
+     *
+     * @param asOfDateStr   Reference date for fiscal year detection (ISO-8601, defaults to today)
+     * @param sectors       Comma-separated sector IDs (optional)
+     * @param serviceLines  Comma-separated service line IDs (optional)
+     * @param contractTypes Comma-separated contract type IDs (optional)
+     * @param clientId      Client UUID filter (optional)
+     * @param companyIds    Comma-separated company UUIDs (optional)
+     * @return EbitdaSourceDataDTO with five populated lists for the fiscal year
+     */
+    @GET
+    @Path("/expected-accumulated-ebitda/source-data")
+    public EbitdaSourceDataDTO getEbitdaSourceData(
+            @QueryParam("asOfDate") String asOfDateStr,
+            @QueryParam("sectors") String sectors,
+            @QueryParam("serviceLines") String serviceLines,
+            @QueryParam("contractTypes") String contractTypes,
+            @QueryParam("clientId") String clientId,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/expected-accumulated-ebitda/source-data: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+
+        LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
+                ? LocalDate.parse(asOfDateStr)
+                : LocalDate.now();
+
+        Set<String> sectorSet       = parseCommaSeparated(sectors);
+        Set<String> serviceLineSet  = parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet    = parseCommaSeparated(companyIds);
+
+        EbitdaSourceDataDTO result = cxoFinanceService.getEbitdaSourceData(
+                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet);
+
+        log.debugf("Returning EBITDA source data: %d invoices, %d creditNotes, %d directCosts, %d internalInvoices, %d opexEntries",
+                result.getInvoices().size(), result.getCreditNotes().size(),
+                result.getDirectCosts().size(), result.getInternalInvoices().size(),
+                result.getOpexEntries().size());
         return result;
     }
 

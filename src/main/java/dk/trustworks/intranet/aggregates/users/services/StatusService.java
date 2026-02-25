@@ -95,6 +95,13 @@ public class StatusService {
                     s.getStatusdate().withDayOfMonth(1))) {
                 checkForReEmployment(s);
             }
+
+            // BUSINESS RULE 4: Check for first-time employment (brand new employee, no Danløn history)
+            // Only check if no other rule has generated Danløn number this month
+            if (!danlonHistoryService.hasDanlonChangedInMonth(s.getUseruuid(),
+                    s.getStatusdate().withDayOfMonth(1))) {
+                checkForFirstTimeEmployment(s);
+            }
         }, () -> {
             log.info("StatusService.create -> creating status");
             log.info("status = " + status);
@@ -117,6 +124,13 @@ public class StatusService {
             if (!danlonHistoryService.hasDanlonChangedInMonth(status.getUseruuid(),
                     status.getStatusdate().withDayOfMonth(1))) {
                 checkForReEmployment(status);
+            }
+
+            // BUSINESS RULE 4: Check for first-time employment (brand new employee, no Danløn history)
+            // Only check if no other rule has generated Danløn number this month
+            if (!danlonHistoryService.hasDanlonChangedInMonth(status.getUseruuid(),
+                    status.getStatusdate().withDayOfMonth(1))) {
+                checkForFirstTimeEmployment(status);
             }
         });
     }
@@ -540,6 +554,58 @@ public class StatusService {
      *
      * @param status The UserStatus being created or updated
      */
+    private void checkForFirstTimeEmployment(UserStatus status) {
+        // Only check for qualifying statuses (not TERMINATED or PREBOARDING)
+        if (status.getStatus() == StatusType.TERMINATED || status.getStatus() == StatusType.PREBOARDING) {
+            log.debugf("Skipping first-time employment check for user %s - status is %s",
+                    status.getUseruuid(), status.getStatus());
+            return;
+        }
+
+        LocalDate statusDate = status.getStatusdate();
+        LocalDate monthStart = statusDate.withDayOfMonth(1);
+        String useruuid = status.getUseruuid();
+
+        log.infof("Checking for first-time employment for user %s on date %s", useruuid, statusDate);
+
+        // Check if Danløn was already generated this month (by ANY rule)
+        if (danlonHistoryService.hasDanlonChangedInMonth(useruuid, monthStart)) {
+            log.debugf("Danløn already generated for user %s in month %s - skipping first-time employment check",
+                    useruuid, monthStart);
+            return;
+        }
+
+        // Check if user has ANY existing Danløn history — if yes, they're not a first-time employee
+        if (danlonHistoryService.hasHistory(useruuid)) {
+            log.debugf("User %s already has Danløn history - skipping first-time employment",
+                    useruuid);
+            return;
+        }
+
+        // All conditions met - brand new employee with no Danløn number
+        log.infof("DETECTED first-time employment for user %s: ACTIVE on %s with no existing Danløn history",
+                useruuid, statusDate);
+
+        try {
+            String newDanlonNumber = danlonHistoryService.generateNextDanlonNumber();
+
+            danlonHistoryService.addDanlonHistory(
+                    useruuid,
+                    monthStart, // Active from 1st of month
+                    newDanlonNumber,
+                    "system-first-employment"
+            );
+
+            log.infof("Successfully generated Danløn number %s for user %s (triggered by first-time employment)",
+                    newDanlonNumber, useruuid);
+        } catch (IllegalArgumentException e) {
+            log.infof("Danløn history already exists for user %s in month %s (created by another process)",
+                    useruuid, monthStart);
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error generating Danløn number for user %s (first-time employment)", useruuid);
+        }
+    }
+
     private void checkForReEmployment(UserStatus status) {
         // Only check for qualifying statuses (not TERMINATED or PREBOARDING)
         if (status.getStatus() == StatusType.TERMINATED || status.getStatus() == StatusType.PREBOARDING) {
