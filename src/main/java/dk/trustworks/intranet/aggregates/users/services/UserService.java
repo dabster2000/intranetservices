@@ -127,7 +127,7 @@ public class UserService {
         SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
-               u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
+               u.photoconsent, u.other, u.practice,
                u.azure_oid, u.azure_issuer
         FROM user u
         JOIN latest_status ls ON ls.useruuid = u.uuid AND ls.rn = 1
@@ -162,7 +162,7 @@ public class UserService {
         SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
-               u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
+               u.photoconsent, u.other, u.practice,
                u.azure_oid, u.azure_issuer
         FROM user u
         JOIN latest_status ls ON ls.useruuid = u.uuid AND ls.rn = 1
@@ -341,7 +341,7 @@ public class UserService {
         SELECT u.uuid, u.created, u.email, u.firstname, u.lastname,
                u.gender, u.type, u.password, u.username, u.slackusername, u.birthday,
                u.cpr, u.phone, u.pension, u.healthcare, u.pensiondetails, u.defects,
-               u.photoconsent, u.other, u.primaryskilltype, u.primary_skill_level,
+               u.photoconsent, u.other, u.practice,
                u.azure_oid, u.azure_issuer
         FROM user u
         JOIN active_overlap ao ON ao.useruuid = u.uuid
@@ -374,7 +374,15 @@ public class UserService {
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
         user.setType("USER");
-        UserContactinfo userContactinfo = new UserContactinfo(UUID.randomUUID().toString(), "", "", "", "", user.getUuid());
+        UserContactinfo userContactinfo = new UserContactinfo();
+        userContactinfo.setUuid(UUID.randomUUID().toString());
+        userContactinfo.setStreetname("");
+        userContactinfo.setPostalcode("");
+        userContactinfo.setCity("");
+        userContactinfo.setPhone("");
+        userContactinfo.setUseruuid(user.getUuid());
+        userContactinfo.setActiveDate(LocalDate.now());
+        userContactinfo.setSlackusername("");
         user.setUserContactinfo(userContactinfo);
         user.setSalaries(new ArrayList<>());
         User.persist(user);
@@ -404,9 +412,8 @@ public class UserService {
                             "defects = ?14, " +
                             "photoconsent = ?15, " +
                             "other = ?16, " +
-                            "primaryskilltype = ?17, " +
-                            "primaryskilllevel = ?18 " +
-                            "WHERE uuid like ?19 ",
+                            "practice = ?17 " +
+                            "WHERE uuid like ?18 ",
                     user.getEmail(),
                     user.getFirstname(),
                     user.getLastname(),
@@ -423,8 +430,7 @@ public class UserService {
                     user.getDefects(),
                     user.isPhotoconsent(),
                     user.getOther(),
-                    user.getPrimaryskilltype(),
-                    user.getPrimaryskilllevel(),
+                    user.getPractice(),
                     user.getUuid());
         } catch (Exception e) {
             e.printStackTrace();

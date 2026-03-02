@@ -4,7 +4,9 @@ package dk.trustworks.intranet.domain.user.entity;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import dk.trustworks.intranet.model.Auditable;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.security.AuditEntityListener;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
@@ -16,6 +18,7 @@ import jakarta.persistence.*;
 import lombok.EqualsAndHashCode;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,7 +30,8 @@ import java.util.UUID;
 @EqualsAndHashCode(callSuper = true, onlyExplicitlyIncluded = true)
 @Entity
 @Table(name = "userstatus")
-public class UserStatus extends PanacheEntityBase {
+@EntityListeners(AuditEntityListener.class)
+public class UserStatus extends PanacheEntityBase implements Auditable {
 
     @Id
     @EqualsAndHashCode.Include
@@ -75,6 +79,22 @@ public class UserStatus extends PanacheEntityBase {
         this.allocation = allocation;
         this.useruuid = useruuid;
     }
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime updatedAt;
+
+    @Column(name = "created_by", nullable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String createdBy;
+
+    @Column(name = "modified_by")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String modifiedBy;
 
     public static List<UserStatus> findByUseruuid(String useruuid){
         return find("useruuid", useruuid).list();

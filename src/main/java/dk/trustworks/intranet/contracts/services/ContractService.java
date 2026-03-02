@@ -4,7 +4,9 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.contracts.dto.ValidationReport;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
+import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
 import dk.trustworks.intranet.dao.crm.model.Project;
+import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
@@ -34,6 +36,9 @@ public class ContractService {
 
     @Inject
     ContractTypeValidationService contractTypeValidationService;
+
+    @Inject
+    ClientActivityLogService activityLogService;
 
     @Inject
     EntityManager em;
@@ -241,6 +246,10 @@ public class ContractService {
         if(contract.getUuid()==null || contract.getUuid().trim().isEmpty()) contract.setUuid(UUID.randomUUID().toString());
         Contract.persist(contract);
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
+
+        // Log activity
+        activityLogService.logCreated(contract.getClientuuid(),
+                ClientActivityLog.TYPE_CONTRACT, contract.getUuid(), contract.getName());
     }
 
     @Transactional
@@ -269,12 +278,13 @@ public class ContractService {
             throw new jakarta.ws.rs.BadRequestException("Company is required when updating a contract");
         }
 
+        // Load old state for change logging
+        Contract oldContract = Contract.findById(contract.getUuid());
+
         // Validate contract type against the ORIGINAL contract creation date (grandfathered)
         if (contract.getContractType() != null) {
-            // Get the original contract to check its creation date
-            Contract originalContract = Contract.findById(contract.getUuid());
-            LocalDate validationDate = originalContract != null && originalContract.getCreated() != null
-                    ? originalContract.getCreated().toLocalDate()
+            LocalDate validationDate = oldContract != null && oldContract.getCreated() != null
+                    ? oldContract.getCreated().toLocalDate()
                     : LocalDate.now();
 
             if (!contractTypeValidationService.isValidContractType(contract.getContractType(), validationDate)) {
@@ -309,12 +319,49 @@ public class ContractService {
                 contract.getNote(), contract.getClientdatauuid(),
                 contract.getRefid(), contract.getCompany(), contract.getSalesconsultant(), contract.getUuid());
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
+
+        // Log field-level changes
+        if (oldContract != null) {
+            String clientUuid = oldContract.getClientuuid();
+            String entityUuid = contract.getUuid();
+            String entityName = oldContract.getName();
+
+            if (oldContract.getAmount() != contract.getAmount()) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "amount", String.valueOf(oldContract.getAmount()), String.valueOf(contract.getAmount()));
+            }
+            if (oldContract.getStatus() != contract.getStatus()) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "status", String.valueOf(oldContract.getStatus()), String.valueOf(contract.getStatus()));
+            }
+            if (!Objects.equals(oldContract.getNote(), contract.getNote())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "note", oldContract.getNote(), contract.getNote());
+            }
+            if (!Objects.equals(oldContract.getClientdatauuid(), contract.getClientdatauuid())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "clientdatauuid", oldContract.getClientdatauuid(), contract.getClientdatauuid());
+            }
+            if (!Objects.equals(oldContract.getRefid(), contract.getRefid())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "refid", oldContract.getRefid(), contract.getRefid());
+            }
+        }
     }
 
     @Transactional
     public void delete(String contractuuid) {
         if(Invoice.find("contractuuid like ?1", contractuuid).count()>0) throw new RuntimeException("Cannot delete contract with invoices");
+        Contract contract = Contract.findById(contractuuid);
+        String clientUuid = contract != null ? contract.getClientuuid() : null;
+        String contractName = contract != null ? contract.getName() : null;
         Contract.deleteById(contractuuid);
+
+        // Log activity
+        if (clientUuid != null) {
+            activityLogService.logDeleted(clientUuid,
+                    ClientActivityLog.TYPE_CONTRACT, contractuuid, contractName);
+        }
     }
 
     @Transactional
@@ -326,11 +373,30 @@ public class ContractService {
         validationService.enforceValidation(report);
 
         ContractProject.persist(projectLink);
+
+        // Log activity
+        Contract contract = Contract.findById(contractuuid);
+        if (contract != null) {
+            Project project = projectService.findByUuid(projectuuid);
+            String projectName = project != null ? project.getName() : projectuuid;
+            activityLogService.logCreated(contract.getClientuuid(),
+                    ClientActivityLog.TYPE_CONTRACT_PROJECT, projectuuid, projectName);
+        }
     }
 
     @Transactional
     public void removeProject(String contractuuid, String projectuuid) {
         ContractProject contractProject = ContractProject.find("contractuuid like ?1 AND projectuuid like ?2", contractuuid, projectuuid).firstResult();
+
+        // Log activity before delete
+        Contract contract = Contract.findById(contractuuid);
+        if (contract != null) {
+            Project project = projectService.findByUuid(projectuuid);
+            String projectName = project != null ? project.getName() : projectuuid;
+            activityLogService.logDeleted(contract.getClientuuid(),
+                    ClientActivityLog.TYPE_CONTRACT_PROJECT, projectuuid, projectName);
+        }
+
         ContractProject.deleteById(contractProject.getUuid());
     }
 
@@ -342,11 +408,22 @@ public class ContractService {
         validationService.enforceValidation(report);
 
         ContractConsultant.persist(contractConsultant);
+
+        // Log activity
+        Contract contract = Contract.findById(contractuuid);
+        if (contract != null) {
+            activityLogService.logCreated(contract.getClientuuid(),
+                    ClientActivityLog.TYPE_CONTRACT_CONSULTANT, contractConsultant.getUuid(),
+                    contractConsultant.getName() != null ? contractConsultant.getName() : consultantuuid);
+        }
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void updateConsultant(ContractConsultant contractConsultant) {
+        // Load old state for change logging
+        ContractConsultant oldCc = ContractConsultant.findById(contractConsultant.getUuid());
+
         // Validate the consultant before updating
         ValidationReport report = validationService.validateContractConsultant(contractConsultant);
         validationService.enforceValidation(report);
@@ -364,12 +441,50 @@ public class ContractService {
                 contractConsultant.getActiveTo(),
                 contractConsultant.getName(),
                 contractConsultant.getUuid());
+
+        // Log field-level changes
+        if (oldCc != null) {
+            Contract contract = Contract.findById(oldCc.getContractuuid());
+            if (contract != null) {
+                String clientUuid = contract.getClientuuid();
+                String entityUuid = contractConsultant.getUuid();
+                String entityName = oldCc.getName() != null ? oldCc.getName() : oldCc.getUseruuid();
+
+                if (oldCc.getRate() != contractConsultant.getRate()) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "rate", String.valueOf(oldCc.getRate()), String.valueOf(contractConsultant.getRate()));
+                }
+                if (oldCc.getHours() != contractConsultant.getHours()) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "hours", String.valueOf(oldCc.getHours()), String.valueOf(contractConsultant.getHours()));
+                }
+                if (!Objects.equals(oldCc.getActiveFrom(), contractConsultant.getActiveFrom())) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "activeFrom", String.valueOf(oldCc.getActiveFrom()), String.valueOf(contractConsultant.getActiveFrom()));
+                }
+                if (!Objects.equals(oldCc.getActiveTo(), contractConsultant.getActiveTo())) {
+                    activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT_CONSULTANT, entityUuid, entityName,
+                            "activeTo", String.valueOf(oldCc.getActiveTo()), String.valueOf(contractConsultant.getActiveTo()));
+                }
+            }
+        }
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void removeConsultant(String contractuuid, String consultantuuid) {
+        ContractConsultant cc = ContractConsultant.findById(consultantuuid);
         ContractConsultant.deleteById(consultantuuid);
+
+        // Log activity
+        if (cc != null) {
+            Contract contract = Contract.findById(contractuuid);
+            if (contract != null) {
+                activityLogService.logDeleted(contract.getClientuuid(),
+                        ClientActivityLog.TYPE_CONTRACT_CONSULTANT, consultantuuid,
+                        cc.getName() != null ? cc.getName() : cc.getUseruuid());
+            }
+        }
     }
 
 

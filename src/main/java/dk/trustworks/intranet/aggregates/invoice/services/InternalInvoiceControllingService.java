@@ -156,7 +156,7 @@ public class InternalInvoiceControllingService {
               AND sp.users_companyuuid <> i.companyuuid
         ),
         internal_pick AS (
-            SELECT 
+            SELECT
                 ci.uuid AS client_uuid,
                 ii.uuid AS internal_uuid,
                 ROW_NUMBER() OVER (
@@ -168,14 +168,28 @@ public class InternalInvoiceControllingService {
               ON ii.invoice_ref_uuid = ci.uuid
              AND ii.type          = 'INTERNAL'
              AND ii.status IN ('QUEUED','CREATED')
+        ),
+        skipped_clients AS (
+            SELECT ci.uuid AS client_uuid, CAST(NULL AS CHAR(36)) AS internal_uuid
+            FROM cross_clients ci
+            WHERE ci.internal_invoice_skip = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM invoices ii
+                  WHERE ii.invoice_ref_uuid = ci.uuid
+                    AND ii.type = 'INTERNAL'
+                    AND ii.status IN ('QUEUED','CREATED')
+              )
         )
-        SELECT 
+        SELECT
             ci.uuid       AS client_uuid,
             COALESCE(ip.internal_uuid, NULL) AS internal_uuid
         FROM cross_clients ci
         LEFT JOIN internal_pick ip
           ON ip.client_uuid = ci.uuid AND ip.r = 1
-        ORDER BY ci.invoicedate DESC, ci.invoicenumber DESC
+        WHERE ci.internal_invoice_skip = 0 OR ip.internal_uuid IS NOT NULL
+        UNION ALL
+        SELECT client_uuid, internal_uuid FROM skipped_clients
+        ORDER BY client_uuid
     """;
 
         @SuppressWarnings("unchecked")
@@ -314,7 +328,11 @@ public class InternalInvoiceControllingService {
                     client.getControlStatus(),
                     client.getControlNote(),
                     client.getControlStatusUpdatedAt(),
-                    client.getControlStatusUpdatedBy()
+                    client.getControlStatusUpdatedBy(),
+                    client.isInternalInvoiceSkip(),
+                    client.getInternalInvoiceSkipNote(),
+                    client.getInternalInvoiceSkipAt(),
+                    client.getInternalInvoiceSkipBy()
             );
 
             SimpleInvoiceDTO internalDto = null;
@@ -335,6 +353,10 @@ public class InternalInvoiceControllingService {
                             round2(itotal),
                             ilines,
                             null,
+                            null,
+                            null,
+                            null,
+                            false,
                             null,
                             null,
                             null
@@ -588,7 +610,11 @@ public class InternalInvoiceControllingService {
                     client.getControlStatus(),
                     client.getControlNote(),
                     client.getControlStatusUpdatedAt(),
-                    client.getControlStatusUpdatedBy()
+                    client.getControlStatusUpdatedBy(),
+                    client.isInternalInvoiceSkip(),
+                    client.getInternalInvoiceSkipNote(),
+                    client.getInternalInvoiceSkipAt(),
+                    client.getInternalInvoiceSkipBy()
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -603,6 +629,10 @@ public class InternalInvoiceControllingService {
                     round2(internalTotal),
                     internalLines,
                     null,
+                    null,
+                    null,
+                    null,
+                    false,
                     null,
                     null,
                     null
@@ -680,6 +710,7 @@ public class InternalInvoiceControllingService {
              AND ii.type = 'INTERNAL'
              AND ii.status IN ('QUEUED','CREATED')
             WHERE ii.uuid IS NULL
+              AND ci.internal_invoice_skip = 0
             ORDER BY ci.invoicedate DESC, ci.invoicenumber DESC
         """;
 
@@ -809,7 +840,11 @@ public class InternalInvoiceControllingService {
                     client.getControlStatus(),
                     client.getControlNote(),
                     client.getControlStatusUpdatedAt(),
-                    client.getControlStatusUpdatedBy()
+                    client.getControlStatusUpdatedBy(),
+                    client.isInternalInvoiceSkip(),
+                    client.getInternalInvoiceSkipNote(),
+                    client.getInternalInvoiceSkipAt(),
+                    client.getInternalInvoiceSkipBy()
             );
             result.add(clientDto);
         }
@@ -1024,7 +1059,11 @@ public class InternalInvoiceControllingService {
                     client.getControlStatus(),
                     client.getControlNote(),
                     client.getControlStatusUpdatedAt(),
-                    client.getControlStatusUpdatedBy()
+                    client.getControlStatusUpdatedBy(),
+                    client.isInternalInvoiceSkip(),
+                    client.getInternalInvoiceSkipNote(),
+                    client.getInternalInvoiceSkipAt(),
+                    client.getInternalInvoiceSkipBy()
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -1039,6 +1078,10 @@ public class InternalInvoiceControllingService {
                     round2(internalTotal),
                     internalLines,
                     null,
+                    null,
+                    null,
+                    null,
+                    false,
                     null,
                     null,
                     null
@@ -1238,7 +1281,11 @@ public class InternalInvoiceControllingService {
                     client.getControlStatus(),
                     client.getControlNote(),
                     client.getControlStatusUpdatedAt(),
-                    client.getControlStatusUpdatedBy()
+                    client.getControlStatusUpdatedBy(),
+                    client.isInternalInvoiceSkip(),
+                    client.getInternalInvoiceSkipNote(),
+                    client.getInternalInvoiceSkipAt(),
+                    client.getInternalInvoiceSkipBy()
             );
 
             java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO> internals = new java.util.ArrayList<>();
@@ -1259,6 +1306,10 @@ public class InternalInvoiceControllingService {
                         round2(total),
                         lines,
                         null,
+                        null,
+                        null,
+                        null,
+                        false,
                         null,
                         null,
                         null

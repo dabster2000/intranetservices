@@ -241,8 +241,11 @@ public class InvoiceService {
     public double calculateInvoiceSumByMonth(String companyuuid, LocalDate month) {
         String sql = "select sum(if(type = 0, (ii.rate*ii.hours), -(ii.rate*ii.hours))) sum from invoiceitems ii " +
                 "LEFT JOIN invoices i on i.uuid = ii.invoiceuuid " +
-                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = '"+companyuuid+"' AND EXTRACT(YEAR_MONTH FROM COALESCE(i.bookingdate, i.invoicedate)) = "+stringIt(month, "yyyyMM")+"; ";
-        Object singleResult = em.createNativeQuery(sql).getSingleResult();
+                "WHERE status NOT LIKE 'DRAFT' AND companyuuid = :companyuuid AND EXTRACT(YEAR_MONTH FROM COALESCE(i.bookingdate, i.invoicedate)) = :yearmonth";
+        Object singleResult = em.createNativeQuery(sql)
+                .setParameter("companyuuid", companyuuid)
+                .setParameter("yearmonth", Integer.parseInt(stringIt(month, "yyyyMM")))
+                .getSingleResult();
         return singleResult!=null?((Number) singleResult).doubleValue():0.0;
     }
 
@@ -250,17 +253,29 @@ public class InvoiceService {
     public List<Invoice> findInvoicesForSingleMonth(LocalDate month, String... status) {
         String[] finalStatus = (status!=null && status.length>0)?status:new String[]{CREATED.name(), DRAFT.name(), QUEUED.name()};
         LocalDate date = month.withDayOfMonth(1);
-        String sql = "SELECT * FROM invoices i WHERE " +
-                "i.year = " + date.getYear() + " AND i.month = " + date.getMonthValue() + " " +
-                " AND i.status IN ('"+String.join("','", finalStatus)+"');";
-        List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
+        // Build parameterized IN clause — one named parameter per status value
+        StringBuilder inClause = new StringBuilder();
+        for (int i = 0; i < finalStatus.length; i++) {
+            if (i > 0) inClause.append(", ");
+            inClause.append(":status").append(i);
+        }
+        String sql = "SELECT * FROM invoices i WHERE i.year = :year AND i.month = :month AND i.status IN (" + inClause + ")";
+        var query = em.createNativeQuery(sql, Invoice.class)
+                .setParameter("year", date.getYear())
+                .setParameter("month", date.getMonthValue());
+        for (int i = 0; i < finalStatus.length; i++) {
+            query.setParameter("status" + i, finalStatus[i]);
+        }
+        List<Invoice> invoices = query.getResultList();
         return Collections.unmodifiableList(invoices);
     }
 
     @SuppressWarnings("unchecked")
     public List<Invoice> findProjectInvoices(String projectuuid) {
-        String sql = "SELECT * FROM invoices i WHERE i.projectuuid like '"+projectuuid+"' AND i.status = 'CREATED' ORDER BY year DESC, month DESC;";
-        List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class).getResultList();
+        String sql = "SELECT * FROM invoices i WHERE i.projectuuid = :projectuuid AND i.status = 'CREATED' ORDER BY year DESC, month DESC";
+        List<Invoice> invoices = em.createNativeQuery(sql, Invoice.class)
+                .setParameter("projectuuid", projectuuid)
+                .getResultList();
         return Collections.unmodifiableList(invoices);
     }
 
@@ -387,6 +402,7 @@ public class InvoiceService {
                 // context, so calling persist() on the original (still-managed) instances is
                 // silently ignored. Creating fresh instances guarantees an INSERT.
                 .map(ii -> new InvoiceItem(
+                        ii.getUuid(),           // preserve existing UUID
                         ii.getConsultantuuid(),
                         ii.getItemname(),
                         ii.getDescription(),
@@ -438,7 +454,7 @@ public class InvoiceService {
     @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
-        draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice) + 1;
+        draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice);
         if(draftInvoice.getType() == InvoiceType.CREDIT_NOTE) {
             Invoice parentInvoice = Invoice.findById(draftInvoice.getCreditnoteForUuid());
             clearBonusFields(parentInvoice);
@@ -918,9 +934,14 @@ public class InvoiceService {
         return invoice.getPdf();
     }
 
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public Integer getMaxInvoiceNumber(Invoice invoice) {
-        Optional<Invoice> latestInvoice = Invoice.find("company = ?1", Sort.descending("invoicenumber"), invoice.getCompany()).firstResultOptional();
-        return latestInvoice.map(i -> i.invoicenumber).orElse(1);
+        Object result = em.createNativeQuery(
+                        "SELECT MAX(invoicenumber) FROM invoices WHERE companyuuid = :companyuuid FOR UPDATE")
+                .setParameter("companyuuid", invoice.getCompany().getUuid())
+                .getSingleResult();
+        int max = result != null ? ((Number) result).intValue() : 0;
+        return max + 1;
     }
 
     @Transactional
@@ -1619,7 +1640,7 @@ public class InvoiceService {
         }
 
         // Assign invoice number
-        queuedInvoice.invoicenumber = getMaxInvoiceNumber(queuedInvoice) + 1;
+        queuedInvoice.invoicenumber = getMaxInvoiceNumber(queuedInvoice);
 
         // Apply pricing engine for INTERNAL invoices (but not bonus calculation)
         if (queuedInvoice.getType() == InvoiceType.INTERNAL) {

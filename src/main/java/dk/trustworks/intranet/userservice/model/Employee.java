@@ -55,9 +55,8 @@ public class Employee extends PanacheEntityBase {
     private boolean photoconsent;
     private String other;
     @Enumerated(EnumType.STRING)
-    private PrimarySkillType primaryskilltype;
-    @Column(name = "primary_skill_level")
-    private int primaryskilllevel;
+    @Column(name = "practice")
+    private PrimarySkillType practice;
     @Enumerated(EnumType.STRING)
     private StatusType status;
     private int allocation;

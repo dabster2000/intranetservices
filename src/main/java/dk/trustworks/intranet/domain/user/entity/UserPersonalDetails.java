@@ -6,37 +6,51 @@ import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 @Data
 @EqualsAndHashCode(callSuper = false, onlyExplicitlyIncluded = true)
+@NoArgsConstructor
 @Entity
-@Table(name = "user_pension")
+@Table(name = "user_personal_details")
 @EntityListeners(AuditEntityListener.class)
-public class UserPension extends PanacheEntityBase implements Auditable {
+public class UserPersonalDetails extends PanacheEntityBase implements Auditable {
+
     @Id
-    @Size(max = 36)
-    @Column(name = "uuid", nullable = false, length = 36)
     @EqualsAndHashCode.Include
     private String uuid;
 
+    @Column(name = "useruuid", nullable = false)
     private String useruuid;
 
     @NotNull
     @Column(name = "active_date", nullable = false)
     private LocalDate activeDate;
 
-    @Column(name = "pension_own")
-    private Double ownPensionPayment;
+    @Column(name = "pension")
+    private boolean pension;
 
-    @Column(name = "pension_company")
-    private Double companyPensionPayment;
+    @Column(name = "healthcare")
+    private boolean healthcare;
+
+    @Column(name = "pensiondetails", columnDefinition = "TEXT")
+    private String pensiondetails;
+
+    @Column(name = "photoconsent")
+    private boolean photoconsent;
+
+    @Column(name = "defects", columnDefinition = "TEXT")
+    private String defects;
+
+    @Column(name = "other", columnDefinition = "TEXT")
+    private String other;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
@@ -54,7 +68,20 @@ public class UserPension extends PanacheEntityBase implements Auditable {
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private String modifiedBy;
 
-    public static List<UserPension> findByUser(String useruuid) {
-        return UserPension.find("useruuid", useruuid).list();
+    public UserPersonalDetails(String useruuid, LocalDate activeDate) {
+        this.uuid = UUID.randomUUID().toString();
+        this.useruuid = useruuid;
+        this.activeDate = activeDate;
+    }
+
+    public static List<UserPersonalDetails> findByUseruuid(String useruuid) {
+        return find("useruuid", useruuid).list();
+    }
+
+    public static UserPersonalDetails findActiveByUseruuid(String useruuid, LocalDate asOf) {
+        return UserPersonalDetails.<UserPersonalDetails>list("useruuid = ?1 AND activeDate <= ?2 ORDER BY activeDate DESC", useruuid, asOf)
+                .stream()
+                .findFirst()
+                .orElse(null);
     }
 }

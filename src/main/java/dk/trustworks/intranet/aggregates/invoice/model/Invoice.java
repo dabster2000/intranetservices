@@ -136,6 +136,19 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "control_status_updated_by")
     public String controlStatusUpdatedBy;
 
+    @Column(name = "internal_invoice_skip")
+    public boolean internalInvoiceSkip;
+
+    @Column(name = "internal_invoice_skip_note")
+    @Lob
+    public String internalInvoiceSkipNote;
+
+    @Column(name = "internal_invoice_skip_at")
+    public LocalDateTime internalInvoiceSkipAt;
+
+    @Column(name = "internal_invoice_skip_by")
+    public String internalInvoiceSkipBy;
+
     @Transient
     public Double sumBeforeDiscounts;
 

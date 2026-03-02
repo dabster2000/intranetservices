@@ -1,16 +1,17 @@
 package dk.trustworks.intranet.domain.user.entity;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import dk.trustworks.intranet.model.Auditable;
+import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -18,7 +19,8 @@ import java.util.UUID;
 @NoArgsConstructor
 @Entity
 @Table(name = "user_bank_info")
-public class UserBankInfo extends PanacheEntityBase {
+@EntityListeners(AuditEntityListener.class)
+public class UserBankInfo extends PanacheEntityBase implements Auditable {
     @Id
     @Size(max = 36)
     @Column(name = "uuid", nullable = false, length = 36)
@@ -54,6 +56,22 @@ public class UserBankInfo extends PanacheEntityBase {
         this.bicSwift = bicSwift;
         this.iban = iban;
     }
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private LocalDateTime updatedAt;
+
+    @Column(name = "created_by", nullable = false, updatable = false)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String createdBy;
+
+    @Column(name = "modified_by")
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private String modifiedBy;
 
     public static List<UserBankInfo> findByUseruuid(String useruuid) {
         return UserBankInfo.find("useruuid", useruuid).list();

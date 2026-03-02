@@ -148,7 +148,7 @@ public class CxoDeliveryService {
         sql.append("  AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("  AND u.primaryskilltype IN (:practices) ");
+            sql.append("  AND u.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -586,7 +586,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("    AND u.primaryskilltype IN (:practices) ");
+            sql.append("    AND u.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -718,7 +718,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("    AND u.primaryskilltype IN (:practices) ");
+            sql.append("    AND u.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -771,7 +771,7 @@ public class CxoDeliveryService {
      * - LIMIT 200 safety guard per list
      *
      * @param toDate   End of trailing 28-day window (optional, defaults to today)
-     * @param practices Multi-select practice filter (primaryskilltype)
+     * @param practices Multi-select practice filter (practice)
      * @param companyIds Multi-select company filter (UUIDs)
      * @return BenchOverloadDetailsDTO with two ordered lists
      */
@@ -805,7 +805,7 @@ public class CxoDeliveryService {
      *
      * @param fromDate   Start of 28-day window
      * @param toDate     End of 28-day window
-     * @param practices  Optional practice filter (primaryskilltype values)
+     * @param practices  Optional practice filter (practice values)
      * @param companyIds Optional company filter (UUIDs)
      * @return Ordered list of bench consultants (benchWeeks DESC, name ASC), max 200
      */
@@ -838,7 +838,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.status_type = 'ACTIVE' ");
         sql.append("    AND bdd.net_available_hours > 0 ");
         if (hasPractices) {
-            sql.append("    AND u_p.primaryskilltype IN (:practices) ");
+            sql.append("    AND u_p.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -899,7 +899,7 @@ public class CxoDeliveryService {
      *
      * @param fromDate   Start of 28-day window
      * @param toDate     End of 28-day window
-     * @param practices  Optional practice filter (primaryskilltype values)
+     * @param practices  Optional practice filter (practice values)
      * @param companyIds Optional company filter (UUIDs)
      * @return Ordered list of overloaded consultants (allocationPercent DESC, name ASC), max 200
      */
@@ -931,7 +931,7 @@ public class CxoDeliveryService {
         sql.append("    AND bdd.status_type = 'ACTIVE' ");
         sql.append("    AND bdd.net_available_hours > 0 ");
         if (hasPractices) {
-            sql.append("    AND u_p.primaryskilltype IN (:practices) ");
+            sql.append("    AND u_p.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("    AND bdd.companyuuid IN (:companyIds) ");
@@ -1513,7 +1513,7 @@ public class CxoDeliveryService {
         sql.append("  AND bdd.net_available_hours > 0 ");
 
         if (hasPractices) {
-            sql.append("  AND u.primaryskilltype IN (:practices) ");
+            sql.append("  AND u.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
@@ -1574,7 +1574,7 @@ public class CxoDeliveryService {
 
     /**
      * Returns team utilization by week for the trailing 8 weeks.
-     * Teams are grouped by user.primaryskilltype (practice/skill).
+     * Teams are grouped by user.practice (practice/skill).
      *
      * @param practices Optional practice filter
      * @param companyIds Optional company filter
@@ -1598,7 +1598,7 @@ public class CxoDeliveryService {
         // Query all data in one go: team + week + billable + available
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT ");
-        sql.append("  u.primaryskilltype AS team, ");
+        sql.append("  u.practice AS team, ");
         sql.append("  YEARWEEK(bdd.document_date, 1) AS yw, ");
         sql.append("  SUM(bdd.registered_billable_hours) AS billable, ");
         sql.append("  SUM(bdd.net_available_hours) AS available ");
@@ -1609,18 +1609,18 @@ public class CxoDeliveryService {
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
         sql.append("  AND bdd.net_available_hours > 0 ");
-        sql.append("  AND u.primaryskilltype IS NOT NULL ");
-        sql.append("  AND u.primaryskilltype != '' ");
+        sql.append("  AND u.practice IS NOT NULL ");
+        sql.append("  AND u.practice != '' ");
 
         if (hasPractices) {
-            sql.append("  AND u.primaryskilltype IN (:practices) ");
+            sql.append("  AND u.practice IN (:practices) ");
         }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
 
-        sql.append("GROUP BY u.primaryskilltype, YEARWEEK(bdd.document_date, 1) ");
-        sql.append("ORDER BY u.primaryskilltype, yw ");
+        sql.append("GROUP BY u.practice, YEARWEEK(bdd.document_date, 1) ");
+        sql.append("ORDER BY u.practice, yw ");
 
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("startDate", startMonday);

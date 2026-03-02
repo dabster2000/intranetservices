@@ -64,18 +64,6 @@ public class InvoiceResource {
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service invoicePdfS3Service;
 
-    @Inject
-    jakarta.batch.operations.JobOperator jobOperator;
-
-    @POST
-    @Path("/admin/migrate-pdfs-to-s3")
-    @Produces(MediaType.TEXT_PLAIN)
-    @jakarta.annotation.security.PermitAll
-    public Response triggerPdfMigration() {
-        long executionId = jobOperator.start("invoice-pdf-migration", new java.util.Properties());
-        return Response.ok("PDF migration job started. Execution ID: " + executionId).build();
-    }
-
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
@@ -274,10 +262,6 @@ public class InvoiceResource {
     @PUT
     @Path("/{invoiceuuid}")
     public Invoice updateDraftInvoice(@PathParam("invoiceuuid") String invoiceuuid, Invoice draftInvoice) {
-        System.out.println("InvoiceResource.updateDraftInvoice");
-        System.out.println("draftInvoice = " + draftInvoice);
-        System.out.print("INCOMING: ");
-        draftInvoice.invoiceitems.forEach(System.out::println);
         if (draftInvoice.getUuid() != null && !invoiceuuid.equals(draftInvoice.getUuid())) {
             throw new WebApplicationException("Path and body uuid mismatch", Response.Status.BAD_REQUEST);
         }
@@ -805,6 +789,121 @@ public class InvoiceResource {
                 .toList();
 
         return Response.ok(response).build();
+    }
+
+    /**
+     * Mark a client invoice as "no internal invoice needed".
+     * Requires X-Requested-By header with user UUID for audit trail.
+     * Will reject (409) if the invoice already has an INTERNAL invoice in QUEUED/CREATED status.
+     */
+    @POST
+    @Path("/{invoiceuuid}/mark-internal-skip")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Transactional
+    public Response markInternalInvoiceSkip(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @HeaderParam("X-Requested-By") String userUuid,
+            MarkInternalInvoiceSkipRequest request) {
+
+        if (userUuid == null || userUuid.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "X-Requested-By header is required"))
+                    .build();
+        }
+
+        if (request == null || request.note() == null || request.note().isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "A non-blank note is required"))
+                    .build();
+        }
+
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("error", "Invoice not found"))
+                    .build();
+        }
+
+        // Reject if there's already an INTERNAL invoice for this client invoice
+        long existingInternals = Invoice.count(
+                "invoiceRefUuid = ?1 and type = ?2 and status in ?3",
+                invoiceuuid,
+                dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.INTERNAL,
+                List.of(dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus.QUEUED,
+                        dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus.CREATED)
+        );
+        if (existingInternals > 0) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity(Map.of("error", "Invoice already has an internal invoice"))
+                    .build();
+        }
+
+        String note = request.note().strip();
+        if (note.length() > 2000) {
+            note = note.substring(0, 2000);
+        }
+
+        invoice.internalInvoiceSkip = true;
+        invoice.internalInvoiceSkipNote = note;
+        invoice.internalInvoiceSkipAt = LocalDateTime.now();
+        invoice.internalInvoiceSkipBy = userUuid;
+        invoice.persist();
+
+        log.infof("Marked invoice %s as internal-skip by user %s", invoiceuuid, userUuid);
+
+        return Response.ok(Map.of(
+                "uuid", invoice.uuid,
+                "internalInvoiceSkip", invoice.internalInvoiceSkip,
+                "internalInvoiceSkipNote", invoice.internalInvoiceSkipNote,
+                "internalInvoiceSkipAt", invoice.internalInvoiceSkipAt.toString(),
+                "internalInvoiceSkipBy", invoice.internalInvoiceSkipBy
+        )).build();
+    }
+
+    /**
+     * Unmark a client invoice that was previously marked as "no internal invoice needed".
+     * Requires X-Requested-By header with user UUID for audit trail.
+     */
+    @POST
+    @Path("/{invoiceuuid}/unmark-internal-skip")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Transactional
+    public Response unmarkInternalInvoiceSkip(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @HeaderParam("X-Requested-By") String userUuid) {
+
+        if (userUuid == null || userUuid.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "X-Requested-By header is required"))
+                    .build();
+        }
+
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("error", "Invoice not found"))
+                    .build();
+        }
+
+        if (!invoice.internalInvoiceSkip) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "Invoice is not marked as internal-skip"))
+                    .build();
+        }
+
+        invoice.internalInvoiceSkip = false;
+        invoice.internalInvoiceSkipNote = null;
+        invoice.internalInvoiceSkipAt = null;
+        invoice.internalInvoiceSkipBy = null;
+        invoice.persist();
+
+        log.infof("Unmarked invoice %s internal-skip by user %s", invoiceuuid, userUuid);
+
+        return Response.ok(Map.of(
+                "uuid", invoice.uuid,
+                "internalInvoiceSkip", false
+        )).build();
     }
 
     // ──────────────────────────────────────────────────────────────

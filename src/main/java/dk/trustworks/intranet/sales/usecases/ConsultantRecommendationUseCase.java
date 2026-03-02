@@ -132,7 +132,7 @@ public class ConsultantRecommendationUseCase {
         for (User c : consultants) {
             sb.append("- uuid: ").append(c.getUuid()).append("\n");
             sb.append("  name: ").append(c.getFullname()).append("\n");
-            sb.append("  primarySkill: ").append(c.getPrimaryskilltype() != null ? c.getPrimaryskilltype().name() : "Unknown").append("\n");
+            sb.append("  primarySkill: ").append(c.getPractice() != null ? c.getPractice().name() : "Unknown").append("\n");
             sb.append("\n");
         }
 

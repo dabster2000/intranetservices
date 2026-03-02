@@ -23,7 +23,7 @@ public class ClientDataService {
 
     @Transactional
     public Clientdata save(Clientdata clientdata) {
-        if(clientdata.getUuid()!=null || clientdata.getUuid().isEmpty()) clientdata.setUuid(UUID.randomUUID().toString());
+        if(clientdata.getUuid()==null || clientdata.getUuid().isEmpty()) clientdata.setUuid(UUID.randomUUID().toString());
         clientdata.persist();
         return clientdata;
     }

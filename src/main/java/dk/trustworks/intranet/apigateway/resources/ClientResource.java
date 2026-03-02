@@ -9,10 +9,13 @@ import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
 import dk.trustworks.intranet.dao.crm.model.Clientdata;
 import dk.trustworks.intranet.dao.crm.model.Project;
+import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
+import dk.trustworks.intranet.dto.ClientActivityLogDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
@@ -26,10 +29,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Tag(name = "crm")
 @JBossLog
@@ -54,6 +54,9 @@ public class ClientResource {
 
     @Inject
     BudgetService budgetService;
+
+    @Inject
+    ClientActivityLogService activityLogService;
 
     @GET
     public List<Client> findAll() {
@@ -111,12 +114,55 @@ public class ClientResource {
         clientAPI.save(client);
         CreateClientEvent createClientEvent = new CreateClientEvent(client.getUuid(), client);
         aggregateEventSender.handleEvent(createClientEvent);
+
+        // Log activity
+        activityLogService.logCreated(client.getUuid(),
+                ClientActivityLog.TYPE_CLIENT, client.getUuid(), client.getName());
     }
 
     @PUT
     public void updateOne(Client client) {
         log.debug("Updating client:\n"+client);
+
+        // Load old state for change logging
+        Client oldClient = clientAPI.findByUuid(client.getUuid());
+
         clientAPI.updateOne(client);
+
+        // Log field-level changes
+        if (oldClient != null) {
+            String clientUuid = client.getUuid();
+            String entityName = oldClient.getName();
+
+            if (!Objects.equals(oldClient.getName(), client.getName())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
+                        "name", oldClient.getName(), client.getName());
+            }
+            if (!Objects.equals(oldClient.getContactname(), client.getContactname())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
+                        "contactname", oldClient.getContactname(), client.getContactname());
+            }
+            if (oldClient.getSegment() != client.getSegment()) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
+                        "segment", String.valueOf(oldClient.getSegment()), String.valueOf(client.getSegment()));
+            }
+            if (oldClient.isActive() != client.isActive()) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
+                        "active", String.valueOf(oldClient.isActive()), String.valueOf(client.isActive()));
+            }
+            if (!Objects.equals(oldClient.getAccountmanager(), client.getAccountmanager())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CLIENT, clientUuid, entityName,
+                        "accountmanager", oldClient.getAccountmanager(), client.getAccountmanager());
+            }
+        }
+    }
+
+    @GET
+    @Path("/{clientuuid}/activity")
+    public List<ClientActivityLogDTO> getClientActivity(
+            @PathParam("clientuuid") String clientuuid,
+            @QueryParam("limit") @DefaultValue("50") int limit) {
+        return activityLogService.getActivityForClient(clientuuid, limit);
     }
 
     @GET

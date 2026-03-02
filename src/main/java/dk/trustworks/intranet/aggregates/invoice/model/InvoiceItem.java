@@ -71,6 +71,25 @@ public class InvoiceItem extends PanacheEntityBase {
         this.origin = origin;
     }
 
+    /**
+     * Copy-constructor that preserves an existing UUID.
+     * Falls back to a random UUID when {@code existingUuid} is null or blank.
+     */
+    public InvoiceItem(String existingUuid, String useruuid, String itemname,
+                       String description, double rate, double hours,
+                       int position, String invoiceuuid, InvoiceItemOrigin origin) {
+        this.uuid = (existingUuid != null && !existingUuid.isBlank())
+                    ? existingUuid : UUID.randomUUID().toString();
+        this.consultantuuid = useruuid;
+        this.itemname = itemname;
+        this.description = description;
+        this.rate = rate;
+        this.hours = hours;
+        this.position = position;
+        this.invoiceuuid = invoiceuuid;
+        this.origin = origin;
+    }
+
     @Override
     public String toString() {
         return "InvoiceItem{" +

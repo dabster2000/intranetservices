@@ -54,23 +54,30 @@ public class User extends PanacheEntityBase {
     public String issuer;
     @NotBlank(message="Username may not be blank")
     private String username;
+    @Deprecated
     private String slackusername;
     @JsonDeserialize(using = LocalDateDeserializer.class)
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate birthday;
 
     private String cpr;
+    @Deprecated
     private String phone;
+    @Deprecated
     private boolean pension;
+    @Deprecated
     private boolean healthcare;
+    @Deprecated
     private String pensiondetails;
+    @Deprecated
     private String defects;
+    @Deprecated
     private boolean photoconsent;
+    @Deprecated
     private String other;
     @Enumerated(EnumType.STRING)
-    private PrimarySkillType primaryskilltype;
-    @Column(name = "primary_skill_level")
-    private int primaryskilllevel;
+    @Column(name = "practice")
+    private PrimarySkillType practice;
 
     @Transient
     private List<Salary> salaries = new ArrayList<>();
@@ -95,6 +102,9 @@ public class User extends PanacheEntityBase {
 
     @Transient
     private List<UserCareerLevel> careerLevels = new ArrayList<>();
+
+    @Transient
+    private List<UserPersonalDetails> personalDetails = new ArrayList<>();
 
     public User() {
         uuid = UUID.randomUUID().toString();

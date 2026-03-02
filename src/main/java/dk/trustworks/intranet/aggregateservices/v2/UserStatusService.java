@@ -9,7 +9,7 @@ public class UserStatusService {
     public List<User> findByDate(LocalDate date) {
         return em.createNativeQuery("SELECT u.uuid, u.active, u.created, u.email, u.firstname, u.lastname, " +
                 "u.gender, u.type, u.password, u.username, u.slackusername, u.birthday, u.cpr, u.phone, u.pension, " +
-                "u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.primaryskilltype, us.status, " +
+                "u.healthcare, u.pensiondetails, u.defects, u.photoconsent, u.other, u.practice, us.status, " +
                 "us.allocation, us.type, s.salary " +
                 "FROM user u " +
                 "JOIN ( " +

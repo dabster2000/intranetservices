@@ -29,5 +29,9 @@ public record SimpleInvoiceDTO(
         InvoiceControlStatus controlStatus,
         String controlNote,
         LocalDateTime controlStatusUpdatedAt,
-        String controlStatusUpdatedBy
+        String controlStatusUpdatedBy,
+        boolean internalInvoiceSkip,
+        String internalInvoiceSkipNote,
+        LocalDateTime internalInvoiceSkipAt,
+        String internalInvoiceSkipBy
 ) {}
