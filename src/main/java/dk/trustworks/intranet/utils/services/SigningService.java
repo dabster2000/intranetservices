@@ -377,11 +377,14 @@ public class SigningService {
         }
 
         try {
-            // Fetch status from NextSign
+            // Fetch live status from NextSign
             GetCaseStatusResponse response = nextsignService.getCaseStatus(caseKey);
 
-            // Map to our DTO format
-            return mapToSigningCaseStatus(caseKey, response);
+            // Map to our DTO format (live data from NextSign)
+            SigningCaseStatus liveStatus = mapToSigningCaseStatus(caseKey, response);
+
+            // Merge with DB record for SharePoint fields and update DB with fresh data
+            return mergeWithDbAndUpdate(caseKey, liveStatus);
 
         } catch (NextsignSigningService.NextsignException e) {
             log.errorf(e, "NextSign API error fetching status: %s", e.getMessage());
@@ -391,6 +394,65 @@ public class SigningService {
             log.errorf(e, "Unexpected error fetching case status: %s", e.getMessage());
             throw new SigningException("Unexpected error: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Merges live NextSign status with DB-stored fields (SharePoint data, createdAt)
+     * and updates the DB record with fresh data from NextSign.
+     */
+    @Transactional
+    SigningCaseStatus mergeWithDbAndUpdate(String caseKey, SigningCaseStatus liveStatus) {
+        var dbCaseOpt = signingCaseRepository.findByCaseKey(caseKey);
+
+        String signingStoreUuid = null;
+        String spUploadStatus = null;
+        String spUploadError = null;
+        String spFileUrl = null;
+        LocalDateTime createdAt = liveStatus.createdAt();
+
+        if (dbCaseOpt.isPresent()) {
+            SigningCase dbCase = dbCaseOpt.get();
+
+            // Get SharePoint fields from DB (not available from NextSign API)
+            signingStoreUuid = dbCase.getSigningStoreUuid();
+            spUploadStatus = dbCase.getSharepointUploadStatus();
+            spUploadError = dbCase.getSharepointUploadError();
+            spFileUrl = dbCase.getSharepointFileUrl();
+
+            // Use DB createdAt if live data doesn't have it
+            if (createdAt == null && dbCase.getCreatedAt() != null) {
+                createdAt = dbCase.getCreatedAt();
+            }
+
+            // Update DB record with fresh data from NextSign
+            dbCase.setStatus(liveStatus.status());
+            dbCase.setDocumentName(liveStatus.documentName());
+            dbCase.setTotalSigners(liveStatus.totalSigners());
+            dbCase.setCompletedSigners(liveStatus.completedSigners());
+            dbCase.setLastStatusFetch(LocalDateTime.now());
+            dbCase.setStatusFetchError(null);
+            if ("PENDING_FETCH".equals(dbCase.getProcessingStatus()) || "FAILED".equals(dbCase.getProcessingStatus())) {
+                dbCase.setProcessingStatus("COMPLETED");
+            }
+
+            signingCaseRepository.persist(dbCase);
+            log.debugf("Updated DB record for case %s with live NextSign data", caseKey);
+        }
+
+        // Return merged status with SharePoint fields from DB
+        return new SigningCaseStatus(
+            liveStatus.caseKey(),
+            liveStatus.status(),
+            liveStatus.documentName(),
+            createdAt,
+            liveStatus.signers(),
+            liveStatus.totalSigners(),
+            liveStatus.completedSigners(),
+            signingStoreUuid,
+            spUploadStatus,
+            spUploadError,
+            spFileUrl
+        );
     }
 
     /**
@@ -597,11 +659,30 @@ public class SigningService {
         // Map recipients to SignerStatus
         List<SignerStatus> signers = mapRecipients(contract.recipients());
 
-        // Calculate completion counts
-        int totalSigners = signers.size();
-        int completedSigners = (int) signers.stream()
-            .filter(s -> "signed".equalsIgnoreCase(s.status()))
-            .count();
+        // Calculate completion counts — only count recipients who actually need to sign.
+        // Non-signing recipients (e.g. HR CC'd for notification) have signing=false and
+        // never reach "signed" status, so including them would prevent completion detection.
+        List<GetCaseStatusResponse.RecipientStatus> recipients = contract.recipients();
+        boolean hasSigningFlag = recipients != null && recipients.stream()
+            .anyMatch(GetCaseStatusResponse.RecipientStatus::signing);
+
+        int totalSigners;
+        int completedSigners;
+
+        if (hasSigningFlag) {
+            totalSigners = (int) recipients.stream()
+                .filter(GetCaseStatusResponse.RecipientStatus::signing)
+                .count();
+            completedSigners = (int) recipients.stream()
+                .filter(r -> r.signing() && "signed".equalsIgnoreCase(r.status()))
+                .count();
+        } else {
+            // Fallback: signing field not returned by API — count all recipients
+            totalSigners = signers.size();
+            completedSigners = (int) signers.stream()
+                .filter(s -> "signed".equalsIgnoreCase(s.status()))
+                .count();
+        }
 
         // Parse created date
         LocalDateTime createdAt = parseDateTime(contract.createdAt());

@@ -1,10 +1,13 @@
 package dk.trustworks.intranet.aggregates.delivery.services;
 
 import dk.trustworks.intranet.aggregates.delivery.dto.AvgProjectMarginDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.BenchConsultantDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.BenchCountDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.BenchOverloadDetailsDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.CapacityPlanningDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.CapacityWeekDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ForecastUtilizationDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.OverloadConsultantDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.OverloadCountDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapCellDTO;
@@ -750,6 +753,235 @@ public class CxoDeliveryService {
         log.tracef("Range [%s to %s]: overload_count=%d", fromDate, toDate, count);
 
         return count;
+    }
+
+    /**
+     * Returns individual consultant details for bench and overloaded consultants.
+     * Uses the identical 28-day trailing window and thresholds as the sibling
+     * bench-count (< 50%) and overload-count (> 95%) endpoints so that name counts
+     * always match the aggregate counts already displayed on the CXO dashboard.
+     *
+     * Business Logic:
+     * - Trailing 28-day window ending on toDate (or today if null)
+     * - Bench: (billable / available * 100) < 50
+     * - Overload: (billable / available * 100) > 95
+     * - benchWeeks = COUNT(days with 0 registered_billable_hours) / 5
+     * - allocationPercent = (billable / available) * 100, rounded to 1 decimal
+     * - Career level: most recent user_career_level record on or before toDate
+     * - LIMIT 200 safety guard per list
+     *
+     * @param toDate   End of trailing 28-day window (optional, defaults to today)
+     * @param practices Multi-select practice filter (primaryskilltype)
+     * @param companyIds Multi-select company filter (UUIDs)
+     * @return BenchOverloadDetailsDTO with two ordered lists
+     */
+    public BenchOverloadDetailsDTO getBenchOverloadDetails(
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        LocalDate toDateNormalized = (toDate != null) ? toDate : LocalDate.now();
+        LocalDate fromDateNormalized = toDateNormalized.minusDays(27);
+
+        log.debugf("Bench/Overload Details: window [%s to %s]", fromDateNormalized, toDateNormalized);
+
+        List<BenchConsultantDTO> bench = queryBenchConsultants(
+                fromDateNormalized, toDateNormalized, practices, companyIds);
+
+        List<OverloadConsultantDTO> overload = queryOverloadConsultants(
+                fromDateNormalized, toDateNormalized, practices, companyIds);
+
+        log.debugf("Bench/Overload Details: bench=%d, overload=%d", bench.size(), overload.size());
+
+        return new BenchOverloadDetailsDTO(bench, overload);
+    }
+
+    /**
+     * Query individual bench consultants (< 50% utilization) with names and career levels.
+     * Mirrors the CTE structure of queryBenchCount, adding JOINs to user and user_career_level.
+     *
+     * benchWeeks is calculated as COUNT(days where registered_billable_hours = 0) / 5
+     * which gives an approximate number of full bench weeks in the trailing window.
+     *
+     * @param fromDate   Start of 28-day window
+     * @param toDate     End of 28-day window
+     * @param practices  Optional practice filter (primaryskilltype values)
+     * @param companyIds Optional company filter (UUIDs)
+     * @return Ordered list of bench consultants (benchWeeks DESC, name ASC), max 200
+     */
+    @SuppressWarnings("unchecked")
+    private List<BenchConsultantDTO> queryBenchConsultants(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        log.tracef("queryBenchConsultants: date range [%s to %s]", fromDate, toDate);
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("WITH user_util AS ( ");
+        sql.append("  SELECT ");
+        sql.append("    bdd.useruuid, ");
+        sql.append("    SUM(bdd.registered_billable_hours) AS billable, ");
+        sql.append("    SUM(bdd.net_available_hours) AS available, ");
+        sql.append("    COUNT(CASE WHEN bdd.registered_billable_hours = 0 THEN 1 END) AS zero_billable_days ");
+        sql.append("  FROM fact_user_day bdd ");
+        if (hasPractices) {
+            sql.append("  JOIN user u_p ON u_p.uuid = bdd.useruuid ");
+        }
+        sql.append("  WHERE bdd.document_date >= :fromDate ");
+        sql.append("    AND bdd.document_date <= :toDate ");
+        sql.append("    AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("    AND bdd.status_type = 'ACTIVE' ");
+        sql.append("    AND bdd.net_available_hours > 0 ");
+        if (hasPractices) {
+            sql.append("    AND u_p.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("    AND bdd.companyuuid IN (:companyIds) ");
+        }
+        sql.append("  GROUP BY bdd.useruuid ");
+        sql.append("), ");
+        sql.append("latest_career_level AS ( ");
+        sql.append("  SELECT ucl.useruuid, ucl.career_level ");
+        sql.append("  FROM user_career_level ucl ");
+        sql.append("  INNER JOIN ( ");
+        sql.append("    SELECT useruuid, MAX(active_from) AS max_from ");
+        sql.append("    FROM user_career_level ");
+        sql.append("    WHERE active_from <= :toDate ");
+        sql.append("    GROUP BY useruuid ");
+        sql.append("  ) latest ON ucl.useruuid = latest.useruuid AND ucl.active_from = latest.max_from ");
+        sql.append(") ");
+        sql.append("SELECT ");
+        sql.append("  uu.useruuid, ");
+        sql.append("  CONCAT(u.firstname, ' ', u.lastname) AS name, ");
+        sql.append("  COALESCE(lcl.career_level, '') AS career_level, ");
+        sql.append("  FLOOR(uu.zero_billable_days / 5) AS bench_weeks ");
+        sql.append("FROM user_util uu ");
+        sql.append("JOIN user u ON u.uuid = uu.useruuid ");
+        sql.append("LEFT JOIN latest_career_level lcl ON lcl.useruuid = uu.useruuid ");
+        sql.append("WHERE (uu.billable / uu.available * 100) < 50 ");
+        sql.append("ORDER BY bench_weeks DESC, name ASC ");
+        sql.append("LIMIT 200 ");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+        if (hasPractices) {
+            query.setParameter("practices", practices);
+        }
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        List<Object[]> rows = query.getResultList();
+        List<BenchConsultantDTO> result = new ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            String uuid = (String) row[0];
+            String name = row[1] != null ? (String) row[1] : "";
+            String careerLevel = row[2] != null ? (String) row[2] : "";
+            int benchWeeks = ((Number) row[3]).intValue();
+            result.add(new BenchConsultantDTO(uuid, name, careerLevel, benchWeeks));
+        }
+
+        log.tracef("queryBenchConsultants: found %d consultants", result.size());
+        return result;
+    }
+
+    /**
+     * Query individual overloaded consultants (> 95% utilization) with names and career levels.
+     * Mirrors the CTE structure of queryOverloadCount, adding JOINs to user and user_career_level.
+     *
+     * allocationPercent = (billable / available) * 100, rounded to 1 decimal place.
+     *
+     * @param fromDate   Start of 28-day window
+     * @param toDate     End of 28-day window
+     * @param practices  Optional practice filter (primaryskilltype values)
+     * @param companyIds Optional company filter (UUIDs)
+     * @return Ordered list of overloaded consultants (allocationPercent DESC, name ASC), max 200
+     */
+    @SuppressWarnings("unchecked")
+    private List<OverloadConsultantDTO> queryOverloadConsultants(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        log.tracef("queryOverloadConsultants: date range [%s to %s]", fromDate, toDate);
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("WITH user_util AS ( ");
+        sql.append("  SELECT ");
+        sql.append("    bdd.useruuid, ");
+        sql.append("    SUM(bdd.registered_billable_hours) AS billable, ");
+        sql.append("    SUM(bdd.net_available_hours) AS available ");
+        sql.append("  FROM fact_user_day bdd ");
+        if (hasPractices) {
+            sql.append("  JOIN user u_p ON u_p.uuid = bdd.useruuid ");
+        }
+        sql.append("  WHERE bdd.document_date >= :fromDate ");
+        sql.append("    AND bdd.document_date <= :toDate ");
+        sql.append("    AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("    AND bdd.status_type = 'ACTIVE' ");
+        sql.append("    AND bdd.net_available_hours > 0 ");
+        if (hasPractices) {
+            sql.append("    AND u_p.primaryskilltype IN (:practices) ");
+        }
+        if (hasCompanies) {
+            sql.append("    AND bdd.companyuuid IN (:companyIds) ");
+        }
+        sql.append("  GROUP BY bdd.useruuid ");
+        sql.append("), ");
+        sql.append("latest_career_level AS ( ");
+        sql.append("  SELECT ucl.useruuid, ucl.career_level ");
+        sql.append("  FROM user_career_level ucl ");
+        sql.append("  INNER JOIN ( ");
+        sql.append("    SELECT useruuid, MAX(active_from) AS max_from ");
+        sql.append("    FROM user_career_level ");
+        sql.append("    WHERE active_from <= :toDate ");
+        sql.append("    GROUP BY useruuid ");
+        sql.append("  ) latest ON ucl.useruuid = latest.useruuid AND ucl.active_from = latest.max_from ");
+        sql.append(") ");
+        sql.append("SELECT ");
+        sql.append("  uu.useruuid, ");
+        sql.append("  CONCAT(u.firstname, ' ', u.lastname) AS name, ");
+        sql.append("  COALESCE(lcl.career_level, '') AS career_level, ");
+        sql.append("  ROUND(uu.billable / uu.available * 100, 1) AS allocation_pct ");
+        sql.append("FROM user_util uu ");
+        sql.append("JOIN user u ON u.uuid = uu.useruuid ");
+        sql.append("LEFT JOIN latest_career_level lcl ON lcl.useruuid = uu.useruuid ");
+        sql.append("WHERE (uu.billable / uu.available * 100) > 95 ");
+        sql.append("ORDER BY allocation_pct DESC, name ASC ");
+        sql.append("LIMIT 200 ");
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+        if (hasPractices) {
+            query.setParameter("practices", practices);
+        }
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        List<Object[]> rows = query.getResultList();
+        List<OverloadConsultantDTO> result = new ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            String uuid = (String) row[0];
+            String name = row[1] != null ? (String) row[1] : "";
+            String careerLevel = row[2] != null ? (String) row[2] : "";
+            double allocationPercent = ((Number) row[3]).doubleValue();
+            result.add(new OverloadConsultantDTO(uuid, name, careerLevel, allocationPercent));
+        }
+
+        log.tracef("queryOverloadConsultants: found %d consultants", result.size());
+        return result;
     }
 
     /**

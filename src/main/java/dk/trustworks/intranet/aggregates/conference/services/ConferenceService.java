@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.conference.services;
 
+import dk.trustworks.intranet.aggregates.conference.dto.ReturningCountDTO;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.knowledgeservice.model.Conference;
 import dk.trustworks.intranet.knowledgeservice.model.ConferenceParticipant;
@@ -9,6 +10,7 @@ import org.apache.commons.codec.binary.Base64;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import java.util.List;
 
@@ -18,6 +20,9 @@ public class ConferenceService {
 
     @Inject
     MailResource mailResource;
+
+    @Inject
+    EntityManager entityManager;
 
     public List<Conference> findAllConferences() {
         log.debugf("ConferenceService.findAllConferences");
@@ -89,5 +94,40 @@ public class ConferenceService {
 
     public ConferencePhase findConferencePhase(String conferenceUUID, int phase) {
         return (ConferencePhase) ConferencePhase.find("conferenceuuid = ?1 and step = ?2", conferenceUUID, phase).firstResultOptional().orElseThrow();
+    }
+
+    public ReturningCountDTO getReturningParticipantCount(String conferenceUuid) {
+        log.debugf("ConferenceService.getReturningParticipantCount: {}", conferenceUuid);
+
+        Number totalResult = (Number) entityManager.createNativeQuery("""
+                SELECT COUNT(DISTINCT email)
+                FROM conference_participants
+                WHERE conferenceuuid = :uuid
+                """)
+                .setParameter("uuid", conferenceUuid)
+                .getSingleResult();
+
+        long total = totalResult == null ? 0L : totalResult.longValue();
+        if (total == 0L) {
+            return new ReturningCountDTO(0L, 0L, 0L);
+        }
+
+        Number returningResult = (Number) entityManager.createNativeQuery("""
+                SELECT COUNT(DISTINCT email)
+                FROM conference_participants
+                WHERE conferenceuuid = :uuid
+                  AND email IN (
+                      SELECT DISTINCT email
+                      FROM conference_participants
+                      WHERE conferenceuuid != :uuid
+                  )
+                """)
+                .setParameter("uuid", conferenceUuid)
+                .getSingleResult();
+
+        long returning = returningResult == null ? 0L : returningResult.longValue();
+        long newParticipants = total - returning;
+
+        return new ReturningCountDTO(returning, newParticipants, total);
     }
 }

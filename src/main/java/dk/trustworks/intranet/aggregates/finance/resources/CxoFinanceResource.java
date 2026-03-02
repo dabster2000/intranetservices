@@ -24,8 +24,10 @@ import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.EbitdaSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
+import dk.trustworks.intranet.aggregates.finance.usecases.CareerLevelEconomicsUseCase;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -57,6 +59,9 @@ public class CxoFinanceResource {
 
     @Inject
     CxoFinanceService cxoFinanceService;
+
+    @Inject
+    CareerLevelEconomicsUseCase careerLevelEconomicsUseCase;
 
     /**
      * Gets monthly revenue and margin trend data.
@@ -1284,6 +1289,35 @@ public class CxoFinanceResource {
                 result.getInvoices().size(), result.getCreditNotes().size(),
                 result.getDirectCosts().size(), result.getInternalInvoices().size(),
                 result.getOpexEntries().size());
+        return result;
+    }
+
+    /**
+     * Returns cost economics and rate adequacy metrics for each career level.
+     *
+     * <p>Data is sourced from {@code fact_minimum_viable_rate}. Each item in the response
+     * contains the full cost breakdown (salary, pension, statutory, benefits, overhead
+     * allocations), actual utilization, average billing rate, and rate adequacy metrics
+     * (break-even rate target, minimum viable rates at 15%/20% margin, and rate buffer).</p>
+     *
+     * <p>{@code statutoryCosts} = ATP + AM-bidrag, summed in Java from the view columns
+     * {@code atp_per_person_dkk} and {@code am_bidrag_per_person_dkk}.</p>
+     *
+     * @param companyIds Comma-separated company UUIDs (optional; omit for all companies)
+     * @return CareerLevelEconomicsDTO with one item per career level, ordered by career_level
+     */
+    @GET
+    @Path("/career-level-economics")
+    public CareerLevelEconomicsDTO getCareerLevelEconomics(
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/career-level-economics: companyIds=%s", companyIds);
+
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        CareerLevelEconomicsDTO result = careerLevelEconomicsUseCase.getCareerLevelEconomics(companyIdSet);
+
+        log.debugf("Returning career-level economics for %d career levels", result.getCareerLevels().size());
         return result;
     }
 

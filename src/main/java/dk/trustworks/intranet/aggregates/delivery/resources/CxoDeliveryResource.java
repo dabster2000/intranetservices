@@ -2,6 +2,8 @@ package dk.trustworks.intranet.aggregates.delivery.resources;
 
 import dk.trustworks.intranet.aggregates.delivery.dto.AvgProjectMarginDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.BenchCountDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.BenchOverloadDetailsDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.BreakEvenUtilizationDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.CapacityPlanningDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.OverloadCountDTO;
@@ -9,6 +11,7 @@ import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
 import dk.trustworks.intranet.aggregates.delivery.services.CxoDeliveryService;
+import dk.trustworks.intranet.aggregates.delivery.usecases.BreakEvenUtilizationUseCase;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -40,6 +43,9 @@ public class CxoDeliveryResource {
 
     @Inject
     CxoDeliveryService cxoDeliveryService;
+
+    @Inject
+    BreakEvenUtilizationUseCase breakEvenUtilizationUseCase;
 
     /**
      * Gets Company Billable Utilization (TTM) KPI data.
@@ -202,6 +208,45 @@ public class CxoDeliveryResource {
     }
 
     /**
+     * Gets individual bench and overloaded consultant name lists.
+     * Uses the same trailing 28-day window and thresholds as the sibling bench-count
+     * and overload-count endpoints, ensuring the name counts are always consistent
+     * with the aggregate counts already displayed on the CXO dashboard.
+     *
+     * Bench threshold: < 50% utilization (matching bench-count)
+     * Overload threshold: > 95% utilization (matching overload-count)
+     *
+     * @param asOfDate   End of trailing 28-day window (ISO-8601, optional, defaults to today)
+     * @param practices  Comma-separated practice IDs (optional, e.g., "PM,DEV,BA")
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return BenchOverloadDetailsDTO with benchConsultants and overloadedConsultants lists
+     */
+    @GET
+    @Path("/bench-overload-details")
+    public Response getBenchOverloadDetails(
+            @QueryParam("asOfDate") LocalDate asOfDate,
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /delivery/cxo/bench-overload-details: asOfDate=%s, practices=%s, companyIds=%s",
+                asOfDate, practices, companyIds);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        BenchOverloadDetailsDTO result = cxoDeliveryService.getBenchOverloadDetails(
+                asOfDate,
+                practiceSet,
+                companyIdSet
+        );
+
+        log.debugf("Bench/Overload Details - bench=%d, overloaded=%d",
+                result.getBenchConsultants().size(), result.getOverloadedConsultants().size());
+
+        return Response.ok(result).build();
+    }
+
+    /**
      * Gets Capacity Planning data (13-week view).
      * Returns 4 weeks historical + current week + 8 weeks forecast
      * with allocated, bench, and available FTEs per week.
@@ -256,6 +301,25 @@ public class CxoDeliveryResource {
         log.debugf("Resource Heatmap: %d teams, %d weeks, %d cells",
                 result.getTeams().size(), result.getWeeks().size(), result.getData().size());
 
+        return Response.ok(result).build();
+    }
+
+    /**
+     * Gets Break-Even Utilization KPI data.
+     * Returns company-wide and per-career-level break-even utilization ratios,
+     * computed from the fact_minimum_viable_rate view.
+     *
+     * Break-even utilization is the minimum utilization rate required to cover
+     * fully-loaded consultant costs at the current average billing rate.
+     * Three thresholds are returned: 0% margin, 15% margin, 20% margin.
+     *
+     * @return BreakEvenUtilizationDTO with companyWide aggregate and per-career-level breakdown
+     */
+    @GET
+    @Path("/break-even-utilization")
+    public Response getBreakEvenUtilization() {
+        log.debugf("GET /delivery/cxo/break-even-utilization");
+        BreakEvenUtilizationDTO result = breakEvenUtilizationUseCase.getBreakEvenUtilization();
         return Response.ok(result).build();
     }
 

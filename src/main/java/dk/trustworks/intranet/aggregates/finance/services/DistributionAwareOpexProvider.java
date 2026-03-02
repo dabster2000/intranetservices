@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcSer
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
+import dk.trustworks.intranet.financeservice.model.enums.CostType;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.cache.CacheKey;
 import io.quarkus.cache.CacheResult;
@@ -41,7 +42,9 @@ import java.util.TreeMap;
  * to raw GL. No grace period or manual flag.
  *
  * <p>Category mapping logic is intentionally kept in sync with the {@code category_mapping} CTE in
- * {@code V125__fact_opex.sql}. Any change to V125 must be reflected here and vice versa.
+ * {@code V205__Recreate_fact_opex_with_cost_type.sql}. Any change to V205 must be reflected here
+ * and vice versa. Account filtering now uses {@code cost_type IN (OPEX, SALARIES)} instead of the
+ * brittle account-code-range filter [3000, 6000) that was removed in V205.
  */
 @ApplicationScoped
 @JBossLog
@@ -84,12 +87,12 @@ public class DistributionAwareOpexProvider {
         GROUPNAME_TO_COST_CENTER = Collections.unmodifiableMap(cc);
     }
 
-    /** Categories excluded from OPEX, matching V125 WHERE clause. */
-    private static final Set<String> EXCLUDED_GROUPNAMES = Set.of("Varesalg", "Direkte omkostninger");
-
-    /** OPEX account code range: [3000, 6000). Matches V125 filter. */
-    private static final int OPEX_ACCOUNT_MIN = 3000;
-    private static final int OPEX_ACCOUNT_MAX = 6000;
+    /**
+     * Cost types included in the OPEX distribution. Matches the filter in V205 fact_opex.
+     * OPEX and SALARIES are the two types that flow through the distribution algorithm.
+     * DIRECT_COSTS, REVENUE, IGNORE, and OTHER are excluded.
+     */
+    private static final Set<CostType> OPEX_COST_TYPES = Set.of(CostType.OPEX, CostType.SALARIES);
 
     /** Salary buffer multiplier — same config property used by AccountingResource. */
     @ConfigProperty(name = "dk.trustworks.intranet.aggregates.accounting.salary-buffer-multiplier", defaultValue = "1.02")
@@ -239,7 +242,7 @@ public class DistributionAwareOpexProvider {
             Set<String> expenseCategories) {
 
         StringBuilder sql = new StringBuilder(
-                "SELECT company_id, cost_center_id, expense_category_id, month_key, " +
+                "SELECT company_id, cost_center_id, expense_category_id, cost_type, month_key, " +
                 "  SUM(opex_amount_dkk) AS opex_amount, " +
                 "  SUM(invoice_count) AS invoice_count, " +
                 "  MAX(is_payroll_flag) AS is_payroll " +
@@ -256,7 +259,7 @@ public class DistributionAwareOpexProvider {
         if (expenseCategories != null && !expenseCategories.isEmpty()) {
             sql.append("AND expense_category_id IN (:expenseCategories) ");
         }
-        sql.append("GROUP BY company_id, cost_center_id, expense_category_id, month_key " +
+        sql.append("GROUP BY company_id, cost_center_id, expense_category_id, cost_type, month_key " +
                    "ORDER BY month_key ASC");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
@@ -284,7 +287,7 @@ public class DistributionAwareOpexProvider {
                     (String) row.get("month_key"),
                     amount,
                     row.get("invoice_count") != null ? ((Number) row.get("invoice_count")).intValue() : 0,
-                    row.get("is_payroll") != null && ((Number) row.get("is_payroll")).intValue() == 1,
+                    "SALARIES".equals(row.get("cost_type")),
                     OpexRow.SOURCE_ERP_GL
             ));
         }
@@ -361,7 +364,7 @@ public class DistributionAwareOpexProvider {
      *
      * <p>Algorithm:
      * <ol>
-     *   <li>For each origin company × account (in the OPEX range, excluding Varesalg/Direkte omkostninger):
+     *   <li>For each origin company × account where {@code cost_type IN (OPEX, SALARIES)}:
      *       <ul>
      *         <li>Compute {@link ShareAmounts} via
      *             {@link IntercompanyCalcService#computeDistributionLegacyShareForAccount}</li>
@@ -393,23 +396,21 @@ public class DistributionAwareOpexProvider {
         for (AccountingCategory category : md.categories) {
             String groupname = category.getAccountname();  // maps to groupname column
 
-            // Skip excluded categories (Varesalg, Direkte omkostninger)
-            if (EXCLUDED_GROUPNAMES.contains(groupname)) continue;
-
             String expenseCategoryId = resolveExpenseCategory(groupname);
             String costCenterId      = resolveCostCenter(groupname);
 
             for (AccountingAccount account : category.getAccounts()) {
-                int accountCode = account.getAccountCode();
 
-                // Apply OPEX account range filter: [3000, 6000)
-                if (accountCode < OPEX_ACCOUNT_MIN || accountCode >= OPEX_ACCOUNT_MAX) continue;
+                // Filter by cost_type: only OPEX and SALARIES accounts participate in distribution.
+                // Replaces the brittle account-code range [3000, 6000) and EXCLUDED_GROUPNAMES.
+                // Matches the filter in V205 fact_opex (aa.cost_type IN ('OPEX', 'SALARIES')).
+                if (!OPEX_COST_TYPES.contains(account.getCostType())) continue;
 
                 String originUuid = account.getCompany().getUuid();
 
                 BigDecimal gl = md.glByCompanyAccountRange
                         .getOrDefault(originUuid, Collections.emptyMap())
-                        .getOrDefault(accountCode, BigDecimal.ZERO);
+                        .getOrDefault(account.getAccountCode(), BigDecimal.ZERO);
 
                 // Use absolute value to match V125 fact_opex which uses SUM(ABS(amount)).
                 // Credit/reversal entries (negative GL) still contribute to OPEX totals.

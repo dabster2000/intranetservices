@@ -6,9 +6,10 @@ import lombok.NoArgsConstructor;
 
 /**
  * DTO representing monthly payroll and headcount structure for combo chart.
- * Shows FTE breakdown (billable vs non-billable) and payroll as percentage of revenue.
+ * Shows FTE breakdown (billable vs non-billable, plus staff and junior consultant)
+ * and payroll as percentage of revenue.
  *
- * Used by Cost Overview Dashboard to display Payroll & Headcount Structure chart.
+ * Used by Cost Overview Dashboard to display Payroll &amp; Headcount Structure chart.
  */
 @Data
 @NoArgsConstructor
@@ -44,4 +45,34 @@ public class MonthlyPayrollHeadcountDTO {
 
     /** Total FTE count: billableFTE + nonBillableFTE */
     private double totalFTE;
+
+    // Staff and Junior Consultant breakdown (item i)
+
+    /**
+     * Staff headcount (userstatus.type = 'STAFF').
+     * Staff are non-consulting support roles (HR, finance, admin, etc.).
+     * Derived from point-in-time userstatus lookup per month.
+     */
+    private double staffFTE;
+
+    /**
+     * Junior Consultant headcount (user_career_level.career_level = 'JUNIOR_CONSULTANT').
+     * Entry-level consultants typically on student contracts.
+     * Derived from point-in-time career level + userstatus lookup per month.
+     */
+    private double juniorFTE;
+
+    /**
+     * Total payroll for Staff employees in DKK.
+     * Sum of latest salary.salary for active STAFF users as of the month end.
+     * Note: this is gross salary only (not total employment cost).
+     */
+    private double staffPayroll;
+
+    /**
+     * Total payroll for Junior Consultants in DKK.
+     * Sum of latest salary.salary for active JUNIOR_CONSULTANT career-level users as of the month end.
+     * Note: this is gross salary only (not total employment cost).
+     */
+    private double juniorPayroll;
 }

@@ -9,12 +9,13 @@ import lombok.NoArgsConstructor;
  * DTO representing one month of accumulated EBITDA data for the fiscal year chart.
  * Used by CxO Executive Dashboard to display Expected Accumulated EBITDA (FY).
  *
- * EBITDA = Revenue - monthlyDirectCostDkk - monthlyInternalInvoiceCostDkk - monthlyOpexDkk
+ * EBITDA = Revenue - monthlyDirectCostDkk - monthlyInternalInvoiceCostDkk - monthlySalariesDkk - monthlyOpexDkk
  *
- * Past months use actuals from fact_project_financials_mat + fact_opex + fact_internal_invoice_cost_mat.
+ * Past months use actuals from GL (cost_type=DIRECT_COSTS) + fact_opex + fact_internal_invoice_cost_mat.
  * Future months use backlog revenue (fact_backlog) with TTM gross margin to estimate
  * direct costs, and average monthly OPEX (TTM) for opex estimate.
  * Internal invoice cost is not forecast for future months (set to 0.0).
+ * Salaries are kept as a separate field so the frontend can render them as a distinct stacked segment.
  */
 @Data
 @NoArgsConstructor
@@ -47,7 +48,7 @@ public class MonthlyAccumulatedEbitdaDTO {
 
     /**
      * Direct delivery cost for this month in DKK.
-     * Past months: actual direct_delivery_cost_dkk from fact_project_financials_mat.
+     * Past months: actual GL entries from finance_details JOIN accounting_accounts WHERE cost_type = 'DIRECT_COSTS'.
      * Future months: estimated as backlog_revenue × (1 - ttm_gross_margin_pct / 100).
      */
     private double monthlyDirectCostDkk;
@@ -63,14 +64,24 @@ public class MonthlyAccumulatedEbitdaDTO {
     private double monthlyInternalInvoiceCostDkk;
 
     /**
-     * Operating expenses for this month in DKK.
-     * Past months: actual opex_amount_dkk from fact_opex.
-     * Future months: average monthly OPEX from TTM period.
+     * Salary costs for this month in DKK (cost_type = 'SALARIES' in fact_opex).
+     * Past months: actual salary GL entries from fact_opex WHERE cost_type = 'SALARIES'.
+     * Future months: proportional slice of average monthly OPEX from TTM period (estimated).
+     * Kept separate from monthlyOpexDkk so the frontend can render a stacked OPEX bar with
+     * Salaries as a visually distinct segment.
+     */
+    private double monthlySalariesDkk;
+
+    /**
+     * Operating expenses (excluding salaries) for this month in DKK (cost_type = 'OPEX' in fact_opex).
+     * Past months: actual opex_amount_dkk from fact_opex WHERE cost_type = 'OPEX'.
+     * Future months: proportional slice of average monthly OPEX from TTM period (estimated).
      */
     private double monthlyOpexDkk;
 
     /**
-     * Monthly EBITDA = monthlyRevenueDkk - monthlyDirectCostDkk - monthlyInternalInvoiceCostDkk - monthlyOpexDkk.
+     * Monthly EBITDA = monthlyRevenueDkk - monthlyDirectCostDkk - monthlyInternalInvoiceCostDkk
+     *                  - monthlySalariesDkk - monthlyOpexDkk.
      * Can be negative.
      */
     private double monthlyEbitdaDkk;

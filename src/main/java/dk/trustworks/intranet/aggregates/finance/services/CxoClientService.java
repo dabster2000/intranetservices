@@ -754,24 +754,28 @@ public class CxoClientService {
      * Gets Client Revenue Pareto chart data (Chart A).
      * Returns top 20 clients by TTM revenue with cumulative percentage and margin classification.
      *
+     * <p>Revenue source: {@code fact_client_revenue} view (canonical invoice algorithm from V209).
+     * This matches the Executive Summary tab revenue figures. The margin is still derived from
+     * {@code fact_project_financials_mat} (direct delivery cost) because the canonical invoice
+     * view does not carry delivery costs.
+     *
      * Business Logic:
      * - Identifies top 20 clients by total TTM revenue
-     * - Calculates gross margin percentage for each client
+     * - Calculates gross margin percentage for each client (revenue from V209 view, cost from V118)
      * - Computes cumulative percentage (Pareto curve)
      * - Classifies margin into bands (High/Medium/Low) for color-coding
-     * - Uses V118 deduplication pattern to prevent double-counting
      *
      * Margin Band Thresholds:
-     * - High: > 30% (green bar)
-     * - Medium: 15-30% (orange bar)
-     * - Low: < 15% (red bar)
+     * - High: &gt; 30% (green bar)
+     * - Medium: 15–30% (orange bar)
+     * - Low: &lt; 15% (red bar)
      *
      * @param fromDate Start date (typically 12 months ago)
      * @param toDate End date (typically today)
-     * @param sectors Multi-select sector filter
-     * @param serviceLines Multi-select service line filter
-     * @param contractTypes Multi-select contract type filter
-     * @param companyIds Multi-select company filter
+     * @param sectors Multi-select sector filter (applied to cost dimension only)
+     * @param serviceLines Multi-select service line filter (applied to cost dimension only)
+     * @param contractTypes Multi-select contract type filter (applied to cost dimension only)
+     * @param companyIds Multi-select company filter (applied to both revenue and cost)
      * @return ClientRevenueParetoDTO with top 20 clients and total revenue
      */
     public ClientRevenueParetoDTO getClientRevenuePareto(
@@ -791,66 +795,83 @@ public class CxoClientService {
         String fromMonthKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
         String toMonthKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
 
-        log.debugf("Client Revenue Pareto: TTM window [%s to %s]", fromMonthKey, toMonthKey);
+        log.debugf("Client Revenue Pareto: TTM window [%s to %s] using fact_client_revenue", fromMonthKey, toMonthKey);
 
-        // 2. Build SQL with V118 deduplication
+        // 2. Build SQL using fact_client_revenue for canonical revenue (V209 algorithm)
+        //    and fact_project_financials_mat for direct delivery costs (unchanged).
+        //
+        //    Revenue grain in fact_client_revenue: client_id × company_id × month_key
+        //    No V118 deduplication needed — the view already produces one row per
+        //    client × company × month with the correct net_revenue_dkk.
         StringBuilder sql = new StringBuilder();
-        sql.append("WITH deduplicated AS ( ");
-        sql.append("  SELECT f.client_id, f.project_id, f.month_key, ");
-        sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
-        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
-        sql.append("  FROM fact_project_financials_mat f");
-        sql.append("  WHERE f.month_key ");
-        sql.append("    BETWEEN :fromKey AND :toKey ");
-        sql.append("    AND f.client_id IS NOT NULL ");
-        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
 
-        // Optional filters
+        // CTE 1: Canonical client revenue from fact_client_revenue
+        sql.append("WITH canonical_revenue AS ( ");
+        sql.append("  SELECT fcr.client_id, ");
+        sql.append("         SUM(fcr.net_revenue_dkk) AS total_revenue ");
+        sql.append("  FROM fact_client_revenue fcr ");
+        sql.append("  WHERE fcr.month_key BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND fcr.client_id IS NOT NULL ");
+        sql.append("    AND fcr.client_id NOT IN (:excludedClientIds) ");
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND fcr.company_id IN (:companyIds) ");
+        }
+        sql.append("  GROUP BY fcr.client_id ");
+        sql.append("), ");
+
+        // CTE 2: Delivery costs from fact_project_financials_mat (V118 deduplication)
+        sql.append("delivery_costs AS ( ");
+        sql.append("  SELECT f.client_id, ");
+        sql.append("         SUM(max_cost) AS total_cost ");
+        sql.append("  FROM ( ");
+        sql.append("    SELECT f2.client_id, f2.project_id, f2.month_key, ");
+        sql.append("           MAX(f2.direct_delivery_cost_dkk) AS max_cost ");
+        sql.append("    FROM fact_project_financials_mat f2 ");
+        sql.append("    WHERE f2.month_key BETWEEN :fromKey AND :toKey ");
+        sql.append("      AND f2.client_id IS NOT NULL ");
+        sql.append("      AND f2.client_id NOT IN (:excludedClientIds) ");
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("    AND f.sector_id IN (:sectors) ");
+            sql.append("      AND f2.sector_id IN (:sectors) ");
         }
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+            sql.append("      AND f2.service_line_id IN (:serviceLines) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+            sql.append("      AND f2.contract_type_id IN (:contractTypes) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND f.companyuuid IN (:companyIds) ");
+            sql.append("      AND f2.companyuuid IN (:companyIds) ");
         }
-
-        // CRITICAL: V118 deduplication
-        sql.append("  GROUP BY f.client_id, f.project_id, f.month_key ");
+        sql.append("    GROUP BY f2.client_id, f2.project_id, f2.month_key ");
+        sql.append("  ) f ");
+        sql.append("  GROUP BY f.client_id ");
         sql.append("), ");
 
-        sql.append("client_metrics AS ( ");
-        sql.append("  SELECT d.client_id, ");
-        sql.append("         SUM(d.revenue) as total_revenue, ");
-        sql.append("         SUM(d.cost) as total_cost ");
-        sql.append("  FROM deduplicated d ");
-        sql.append("  GROUP BY d.client_id ");
-        sql.append("), ");
-
+        // CTE 3: Combine revenue and cost, compute margin
         sql.append("with_margin AS ( ");
-        sql.append("  SELECT cm.client_id, cm.total_revenue, cm.total_cost, ");
-        sql.append("         CASE WHEN cm.total_revenue > 0 ");
-        sql.append("              THEN ((cm.total_revenue - cm.total_cost) / cm.total_revenue) * 100.0 ");
-        sql.append("              ELSE 0.0 END as margin_pct ");
-        sql.append("  FROM client_metrics cm ");
+        sql.append("  SELECT cr.client_id, cr.total_revenue, COALESCE(dc.total_cost, 0) AS total_cost, ");
+        sql.append("         CASE WHEN cr.total_revenue > 0 ");
+        sql.append("              THEN ((cr.total_revenue - COALESCE(dc.total_cost, 0)) / cr.total_revenue) * 100.0 ");
+        sql.append("              ELSE 0.0 END AS margin_pct ");
+        sql.append("  FROM canonical_revenue cr ");
+        sql.append("  LEFT JOIN delivery_costs dc ON dc.client_id = cr.client_id ");
+        sql.append("  WHERE cr.total_revenue > 0 ");
         sql.append("), ");
 
+        // CTE 4: Rank by revenue descending
         sql.append("ranked AS ( ");
         sql.append("  SELECT wm.client_id, wm.total_revenue, wm.margin_pct, ");
         sql.append("         ROW_NUMBER() OVER (ORDER BY wm.total_revenue DESC) as rank ");
         sql.append("  FROM with_margin wm ");
         sql.append("), ");
 
+        // CTE 5: Grand total of top-20 revenue (for cumulative % calculation)
         sql.append("total_calc AS ( ");
         sql.append("  SELECT SUM(total_revenue) as grand_total FROM ranked WHERE rank <= 20 ");
         sql.append(") ");
 
         sql.append("SELECT r.client_id, r.total_revenue, r.margin_pct, ");
-        sql.append("       SUM(r.total_revenue) OVER (ORDER BY r.rank) / tc.grand_total * 100.0 as cumulative_pct ");
+        sql.append("       SUM(r.total_revenue) OVER (ORDER BY r.rank) / tc.grand_total * 100.0 AS cumulative_pct ");
         sql.append("FROM ranked r, total_calc tc ");
         sql.append("WHERE r.rank <= 20 ");
         sql.append("ORDER BY r.rank");
@@ -927,11 +948,9 @@ public class CxoClientService {
      * Gets Client Portfolio Bubble chart data (Chart B).
      * Returns clients positioned by revenue (X-axis) and margin (Y-axis), grouped by sector.
      *
-     * Business Logic:
-     * - Calculates TTM revenue and gross margin for all active clients
-     * - Normalizes bubble size relative to max revenue
-     * - Groups clients by sector for color-coded series
-     * - Uses V118 deduplication pattern
+     * <p>Revenue source: {@code fact_client_revenue} view (canonical invoice algorithm from V209).
+     * This matches the Executive Summary tab revenue figures. Delivery costs and sector
+     * attribution are still derived from {@code fact_project_financials_mat}.
      *
      * Chart Quadrants:
      * - Top-Right: High revenue + High margin (strategic accounts)
@@ -941,10 +960,10 @@ public class CxoClientService {
      *
      * @param fromDate Start date (typically 12 months ago)
      * @param toDate End date (typically today)
-     * @param sectors Multi-select sector filter
-     * @param serviceLines Multi-select service line filter
-     * @param contractTypes Multi-select contract type filter
-     * @param companyIds Multi-select company filter
+     * @param sectors Multi-select sector filter (applied to cost/sector dimension only)
+     * @param serviceLines Multi-select service line filter (applied to cost dimension only)
+     * @param contractTypes Multi-select contract type filter (applied to cost dimension only)
+     * @param companyIds Multi-select company filter (applied to both revenue and cost)
      * @return ClientPortfolioBubbleDTO with clients grouped by sector
      */
     public ClientPortfolioBubbleDTO getClientPortfolioBubble(
@@ -964,48 +983,83 @@ public class CxoClientService {
         String fromMonthKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
         String toMonthKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
 
-        log.debugf("Client Portfolio Bubble: TTM window [%s to %s]", fromMonthKey, toMonthKey);
+        log.debugf("Client Portfolio Bubble: TTM window [%s to %s] using fact_client_revenue", fromMonthKey, toMonthKey);
 
-        // 2. Build SQL with V118 deduplication
+        // 2. Build SQL using fact_client_revenue for canonical revenue (V209 algorithm)
+        //    and fact_project_financials_mat for costs + sector attribution.
+        //
+        //    We join the two sources on client_id so each bubble has:
+        //    - X-axis (revenue): canonical invoice-based revenue from fact_client_revenue
+        //    - Y-axis (margin): (canonical_revenue - delivery_cost) / canonical_revenue
+        //    - Bubble size: normalized to max canonical_revenue
+        //    - Color series: sector_id from fact_project_financials_mat
         StringBuilder sql = new StringBuilder();
-        sql.append("WITH deduplicated AS ( ");
-        sql.append("  SELECT f.client_id, f.sector_id, f.project_id, f.month_key, ");
-        sql.append("         MAX(f.recognized_revenue_dkk) as revenue, ");
-        sql.append("         MAX(f.direct_delivery_cost_dkk) as cost ");
-        sql.append("  FROM fact_project_financials_mat f");
-        sql.append("  WHERE f.month_key ");
-        sql.append("    BETWEEN :fromKey AND :toKey ");
-        sql.append("    AND f.client_id IS NOT NULL ");
-        sql.append("    AND f.client_id NOT IN (:excludedClientIds) ");
 
-        // Optional filters
+        // CTE 1: Canonical client revenue from fact_client_revenue
+        sql.append("WITH canonical_revenue AS ( ");
+        sql.append("  SELECT fcr.client_id, ");
+        sql.append("         SUM(fcr.net_revenue_dkk) AS total_revenue ");
+        sql.append("  FROM fact_client_revenue fcr ");
+        sql.append("  WHERE fcr.month_key BETWEEN :fromKey AND :toKey ");
+        sql.append("    AND fcr.client_id IS NOT NULL ");
+        sql.append("    AND fcr.client_id NOT IN (:excludedClientIds) ");
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("    AND fcr.company_id IN (:companyIds) ");
+        }
+        sql.append("  GROUP BY fcr.client_id ");
+        sql.append("), ");
+
+        // CTE 2+3: Delivery costs + dominant sector from fact_project_financials_mat
+        // First, cost_by_sector groups per (client, sector). Then cost_sector picks the
+        // dominant sector (highest cost) and sums to exactly 1 row per client.
+        sql.append("cost_by_sector AS ( ");
+        sql.append("  SELECT f.client_id, f.sector_id, ");
+        sql.append("         SUM(max_cost) AS sector_cost ");
+        sql.append("  FROM ( ");
+        sql.append("    SELECT f2.client_id, ");
+        sql.append("           MAX(f2.sector_id) AS sector_id, ");
+        sql.append("           f2.project_id, f2.month_key, ");
+        sql.append("           MAX(f2.direct_delivery_cost_dkk) AS max_cost ");
+        sql.append("    FROM fact_project_financials_mat f2 ");
+        sql.append("    WHERE f2.month_key BETWEEN :fromKey AND :toKey ");
+        sql.append("      AND f2.client_id IS NOT NULL ");
+        sql.append("      AND f2.client_id NOT IN (:excludedClientIds) ");
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("    AND f.sector_id IN (:sectors) ");
+            sql.append("      AND f2.sector_id IN (:sectors) ");
         }
         if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("    AND f.service_line_id IN (:serviceLines) ");
+            sql.append("      AND f2.service_line_id IN (:serviceLines) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
+            sql.append("      AND f2.contract_type_id IN (:contractTypes) ");
         }
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND f.companyuuid IN (:companyIds) ");
+            sql.append("      AND f2.companyuuid IN (:companyIds) ");
         }
+        sql.append("    GROUP BY f2.client_id, f2.project_id, f2.month_key ");
+        sql.append("  ) f ");
+        sql.append("  GROUP BY f.client_id, f.sector_id ");
+        sql.append("), ");
 
-        // CRITICAL: V118 deduplication
-        sql.append("  GROUP BY f.client_id, f.sector_id, f.project_id, f.month_key ");
+        // CTE 3: Aggregate to 1 row per client — total cost + dominant sector (highest cost)
+        sql.append("cost_sector AS ( ");
+        sql.append("  SELECT cbs.client_id, ");
+        sql.append("         SUBSTRING_INDEX(GROUP_CONCAT(cbs.sector_id ORDER BY cbs.sector_cost DESC), ',', 1) AS sector_id, ");
+        sql.append("         SUM(cbs.sector_cost) AS total_cost ");
+        sql.append("  FROM cost_by_sector cbs ");
+        sql.append("  GROUP BY cbs.client_id ");
         sql.append(") ");
 
-        sql.append("SELECT d.client_id, d.sector_id, ");
-        sql.append("       SUM(d.revenue) as total_revenue, ");
-        sql.append("       SUM(d.cost) as total_cost, ");
-        sql.append("       CASE WHEN SUM(d.revenue) > 0 ");
-        sql.append("            THEN ((SUM(d.revenue) - SUM(d.cost)) / SUM(d.revenue)) * 100.0 ");
-        sql.append("            ELSE 0.0 END as margin_pct ");
-        sql.append("FROM deduplicated d ");
-        sql.append("GROUP BY d.client_id, d.sector_id ");
-        sql.append("HAVING SUM(d.revenue) > 0 ");
-        sql.append("ORDER BY total_revenue DESC");
+        // Final: join canonical revenue with cost+sector, compute margin
+        sql.append("SELECT cr.client_id, cs.sector_id, cr.total_revenue, ");
+        sql.append("       COALESCE(cs.total_cost, 0) AS total_cost, ");
+        sql.append("       CASE WHEN cr.total_revenue > 0 ");
+        sql.append("            THEN ((cr.total_revenue - COALESCE(cs.total_cost, 0)) / cr.total_revenue) * 100.0 ");
+        sql.append("            ELSE 0.0 END AS margin_pct ");
+        sql.append("FROM canonical_revenue cr ");
+        sql.append("LEFT JOIN cost_sector cs ON cs.client_id = cr.client_id ");
+        sql.append("WHERE cr.total_revenue > 0 ");
+        sql.append("ORDER BY cr.total_revenue DESC");
 
         // 3. Execute query
         Query query = em.createNativeQuery(sql.toString());
@@ -2041,10 +2095,12 @@ public class CxoClientService {
      * Gets Industry Distribution chart data.
      * Returns client portfolio distribution by industry segment.
      *
+     * <p>Revenue source: {@code fact_client_revenue} view (canonical invoice algorithm from V209).
+     * This matches the Executive Summary tab revenue figures.
+     *
      * Business Logic:
      * - Groups clients by segment (client.segment column)
      * - Calculates client count and revenue per segment
-     * - Uses fact_project_financials with V118 deduplication for revenue
      * - Maps segment codes to display names
      *
      * @param fromDate Start date (optional, defaults to 12 months before toDate)
@@ -2068,35 +2124,29 @@ public class CxoClientService {
         String fromKey = String.format("%d%02d", fromDateNormalized.getYear(), fromDateNormalized.getMonthValue());
         String toKey = String.format("%d%02d", toDateNormalized.getYear(), toDateNormalized.getMonthValue());
 
-        log.debugf("Industry Distribution: fromKey=%s, toKey=%s", fromKey, toKey);
+        log.debugf("Industry Distribution: fromKey=%s, toKey=%s using fact_client_revenue", fromKey, toKey);
 
-        // Build SQL with V118 deduplication for revenue
+        // Build SQL using fact_client_revenue for canonical revenue (V209 algorithm).
+        // No V118 deduplication needed — the view already produces one row per
+        // client × company × month with the correct net_revenue_dkk.
         StringBuilder sql = new StringBuilder();
         sql.append("WITH client_revenue AS ( ");
         sql.append("  SELECT ");
         sql.append("    c.uuid AS client_id, ");
         sql.append("    c.segment, ");
         sql.append("    c.active, ");
-        sql.append("    COALESCE(SUM(dedupe.revenue), 0) AS revenue ");
+        sql.append("    COALESCE(SUM(fcr.net_revenue_dkk), 0) AS revenue ");
         sql.append("  FROM client c ");
-        sql.append("  LEFT JOIN ( ");
-        sql.append("    SELECT client_id, SUM(max_revenue) AS revenue ");
-        sql.append("    FROM ( ");
-        sql.append("      SELECT client_id, project_id, month_key, MAX(recognized_revenue_dkk) AS max_revenue ");
-        sql.append("      FROM fact_project_financials_mat ");
-        sql.append("      WHERE month_key ");
-        sql.append("        BETWEEN :fromKey AND :toKey ");
+        sql.append("  LEFT JOIN fact_client_revenue fcr ");
+        sql.append("    ON fcr.client_id = c.uuid ");
+        sql.append("    AND fcr.month_key BETWEEN :fromKey AND :toKey ");
 
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("        AND companyuuid IN (:companyIds) ");
+            sql.append("    AND fcr.company_id IN (:companyIds) ");
         }
 
-        sql.append("      GROUP BY client_id, project_id, month_key ");
-        sql.append("    ) AS project_dedupe ");
-        sql.append("    GROUP BY client_id ");
-        sql.append("  ) dedupe ON c.uuid = dedupe.client_id ");
         sql.append("  WHERE c.uuid != :internalClientId ");
-        sql.append("    AND (c.active = 1 OR dedupe.revenue > 0) ");
+        sql.append("    AND (c.active = 1 OR fcr.client_id IS NOT NULL) ");
         sql.append("  GROUP BY c.uuid, c.segment, c.active ");
         sql.append("), ");
 

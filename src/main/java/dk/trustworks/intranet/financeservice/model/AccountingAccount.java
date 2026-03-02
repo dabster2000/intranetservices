@@ -2,6 +2,7 @@ package dk.trustworks.intranet.financeservice.model;
 
 import com.fasterxml.jackson.annotation.JsonGetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import dk.trustworks.intranet.financeservice.model.enums.CostType;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
@@ -34,6 +35,9 @@ public class AccountingAccount extends PanacheEntityBase {
     private String accountDescription;
     private boolean shared;
     private boolean salary;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cost_type", nullable = false, length = 20)
+    private CostType costType = CostType.OTHER;
     @Transient
     private double sum;
     @Transient

@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.fileservice.model.File;
 import io.quarkus.cache.CacheKey;
+import io.quarkus.cache.CacheManager;
 import io.quarkus.cache.CacheResult;
+import jakarta.inject.Inject;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
@@ -70,6 +72,12 @@ public class PhotoService {
 
     @ConfigProperty(name = "claid.ai.apikey")
     String claidApiKey;
+
+    @Inject
+    CacheManager cacheManager;
+
+    // Common thumbnail widths requested by the frontend (UserAvatar component)
+    private static final int[] COMMON_THUMBNAIL_WIDTHS = {32, 48, 64, 96, 128, 256, 512};
 
     // S3Client is thread-safe for operations, initialized once in constructor
     private final S3Client s3;
@@ -222,6 +230,36 @@ public class PhotoService {
         return "resized/" + width + "/" + uuid;
     }
 
+    /**
+     * Invalidate all cached versions of a photo when it is updated.
+     * Clears both Quarkus in-memory caches and stale S3 thumbnails.
+     */
+    private void invalidateCachesForPhoto(String relateduuid) {
+        log.info("Invalidating photo caches for relateduuid=" + relateduuid);
+
+        // Invalidate Quarkus in-memory caches
+        cacheManager.getCache("photo-cache").ifPresent(cache ->
+                cache.invalidateAll().await().indefinitely());
+        cacheManager.getCache("photo-resize-cache").ifPresent(cache ->
+                cache.invalidateAll().await().indefinitely());
+
+        // Delete stale S3 thumbnails asynchronously
+        CompletableFuture.runAsync(() -> {
+            for (int width : COMMON_THUMBNAIL_WIDTHS) {
+                String key = resizedKey(relateduuid, width);
+                try {
+                    s3.deleteObject(DeleteObjectRequest.builder()
+                            .bucket(bucketName)
+                            .key(key)
+                            .build());
+                    log.debug("Deleted stale S3 thumbnail: " + key);
+                } catch (S3Exception e) {
+                    log.debug("No S3 thumbnail to delete: " + key);
+                }
+            }
+        });
+    }
+
     private void saveToS3Async(String key, byte[] data) {
         CompletableFuture.runAsync(() -> {
             try {
@@ -287,6 +325,9 @@ public class PhotoService {
                         .key(photo.getUuid())
                         .build(),
                 RequestBody.fromBytes(photo.getFile()));
+
+        // Invalidate caches and delete stale thumbnails
+        invalidateCachesForPhoto(photo.getRelateduuid());
     }
 
     @Transactional
@@ -388,7 +429,6 @@ public class PhotoService {
     }
 
     @Transactional
-    //@CacheInvalidate(cacheName = "photo-cache")
     public void updatePortrait(File photo) throws IOException {
         HttpClient httpClient = HttpClientBuilder.create().build();
         HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");

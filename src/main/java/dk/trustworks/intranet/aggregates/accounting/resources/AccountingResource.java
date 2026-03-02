@@ -25,6 +25,9 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.Response;
@@ -1405,5 +1408,68 @@ public class AccountingResource {
     }
 
  */
+
+    // -------------------------------------------------------------------------
+    // Accounting Accounts Admin API
+    // -------------------------------------------------------------------------
+
+    /**
+     * GET /accounting/accounts
+     *
+     * Returns all accounting accounts with their category and company context.
+     * No financial amounts are included — this is a configuration/admin view.
+     * Restricted to ADMIN and SYSTEM roles — account metadata including salary flags is sensitive.
+     * Uses JOIN FETCH to avoid N+1 queries on category and company associations.
+     */
+    @GET
+    @Path("/accounts")
+    @RolesAllowed({"ADMIN", "SYSTEM"})
+    public List<AccountingAccountDTO> listAccounts() {
+        @SuppressWarnings("unchecked")
+        List<AccountingAccount> accounts = em.createQuery("""
+                SELECT a FROM AccountingAccount a
+                LEFT JOIN FETCH a.accountingCategory
+                JOIN FETCH a.company
+                ORDER BY a.accountCode ASC
+                """)
+                .getResultList();
+        return accounts.stream()
+                .map(a -> new AccountingAccountDTO(
+                        a.getUuid(),
+                        a.getAccountCode(),
+                        a.getAccountDescription(),
+                        a.isShared(),
+                        a.isSalary(),
+                        a.getCostType(),
+                        a.getCompany().getUuid(),
+                        a.getCompany().getName(),
+                        a.getAccountingCategory() != null ? a.getAccountingCategory().getUuid() : null,
+                        a.getAccountingCategory() != null ? a.getAccountingCategory().getAccountname() : null))
+                .toList();
+    }
+
+    /**
+     * PATCH /accounting/accounts/{uuid}/cost-type
+     *
+     * Updates the cost_type classification of a single accounting account.
+     * Restricted to ADMIN role — this is a privileged configuration change.
+     * Returns 204 No Content on success, 400 on invalid enum value, 404 if not found.
+     */
+    @PATCH
+    @Path("/accounts/{uuid}/cost-type")
+    @RolesAllowed({"ADMIN"})
+    @Transactional
+    public Response updateCostType(
+            @PathParam("uuid") String uuid,
+            @Valid @NotNull UpdateCostTypeRequest request) {
+        AccountingAccount account = AccountingAccount.findById(uuid);
+        if (account == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("AccountingAccount not found: " + uuid)
+                    .build();
+        }
+        account.setCostType(request.costType());
+        return Response.noContent().build();
+    }
 }
 

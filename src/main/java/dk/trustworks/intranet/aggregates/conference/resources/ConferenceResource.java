@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.conference.resources;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.conference.dto.ReturningCountDTO;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
@@ -93,6 +94,12 @@ public class ConferenceResource {
     }
 
     @GET
+    @Path("/{conferenceuuid}/returning-count")
+    public ReturningCountDTO getReturningCount(@PathParam("conferenceuuid") String conferenceuuid) {
+        return conferenceService.getReturningParticipantCount(conferenceuuid);
+    }
+
+    @GET
     @Path("/{conferenceuuid}/phases")
     public List<ConferencePhase> findAllConferencePhases(@PathParam("conferenceuuid") String conferenceuuid) {
         List<ConferencePhase> list = ConferencePhase.list("conferenceuuid", conferenceuuid);
@@ -103,14 +110,11 @@ public class ConferenceResource {
     @Path("/{conferenceuuid}/phases")
     @Transactional
     public void addConferencePhase(@PathParam("conferenceuuid") String conferenceuuid, ConferencePhase conferencePhase) {
-        System.out.println("ConferenceResource.addConferencePhase");
-        System.out.println("conferenceuuid = " + conferenceuuid + ", conferencePhase = " + conferencePhase);
         if(conferencePhase.getUuid()==null) throw new IllegalArgumentException("ConferencePhase must have a uuid");
         ConferencePhase.findByIdOptional(conferencePhase.getUuid()).ifPresentOrElse(cp -> updatePhase(conferencePhase), conferencePhase::persist);
     }
 
     private void updatePhase(ConferencePhase conferencePhase) {
-        System.out.println("ConferenceResource.updatePhase");
         ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5 where uuid = ?6",
                 conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getUuid());
     }
@@ -220,8 +224,6 @@ public class ConferenceResource {
     @PermitAll
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants")
     public void createParticipant(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, ConferenceParticipant conferenceParticipant) {
-        System.out.println("ConferenceResource.createParticipant");
-        System.out.println("conferenceUUID = " + conferenceUUID + ", phaseNumber = " + phaseNumber + ", conferenceParticipant = " + conferenceParticipant);
         conferenceParticipant.setRegistered(LocalDateTime.now());
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
@@ -307,6 +309,24 @@ public class ConferenceResource {
                              @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke) {
         if(phaseNumber == null) createParticipant("ebe8e716-7c1e-42bc-aaf0-43fd03ed99c4", 0, new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
         else createParticipant("ebe8e716-7c1e-42bc-aaf0-43fd03ed99c4", Integer.parseInt(phaseNumber), new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
+    }
+
+    @POST
+    @PermitAll
+    @Path("/apply/{conferenceSlug}/{phaseNumber}")
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Produces(MediaType.TEXT_HTML)
+    public void receiveFormBySlug(@PathParam("conferenceSlug") String conferenceSlug, @PathParam("phaseNumber") int phaseNumber,
+                                  @FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
+                                  @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke) {
+        Conference conference = conferenceService.findConferenceBySlug(conferenceSlug);
+        if (conference == null) {
+            conference = Conference.<Conference>find("LOWER(name) = ?1", conferenceSlug.toLowerCase()).firstResult();
+        }
+        if (conference == null) {
+            throw new NotFoundException("Conference not found: " + conferenceSlug);
+        }
+        createParticipant(conference.getUuid(), phaseNumber, new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
     }
 
     @POST

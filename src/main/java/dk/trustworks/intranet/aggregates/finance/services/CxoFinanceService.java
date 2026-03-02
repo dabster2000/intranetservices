@@ -1184,72 +1184,53 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper method: Query actual costs (direct delivery costs) from fact_project_financials for a date range.
-     * Supports optional filters for sectors, service lines, contract types, client, and companies.
-     * Uses direct_delivery_cost_dkk column which includes:
-     * - Employee salary costs (temporal salary join)
-     * - External consultant costs (HOURLY contractors)
-     * - Project expenses (travel, materials, etc.)
+     * Helper method: Query total direct costs from GL ({@code finance_details}) for a date range.
+     *
+     * <p>Source changed from {@code fact_project_financials_mat} (work × salary estimation) to
+     * actual GL entries classified as {@code cost_type = 'DIRECT_COSTS'} in
+     * {@code accounting_accounts}. This gives the true booked amount rather than an estimate.
+     *
+     * <p><strong>Dimension filter note:</strong> GL-based direct costs have no project, sector,
+     * service-line, or client attribution. Only the {@code companyIds} filter applies.
+     * Dimension filters (sectors, serviceLines, contractTypes, clientId) are accepted for
+     * signature compatibility but are intentionally ignored — GL costs are company-level only.
+     *
+     * @param fromDate   Start of range (inclusive, first-of-month semantics)
+     * @param toDate     End of range (inclusive, last-of-month semantics)
+     * @param sectors    Accepted for compatibility; not applied to GL-based query
+     * @param serviceLines Accepted for compatibility; not applied to GL-based query
+     * @param contractTypes Accepted for compatibility; not applied to GL-based query
+     * @param clientId   Accepted for compatibility; not applied to GL-based query
+     * @param companyIds Optional company UUID filter; null or empty = all companies
+     * @return Sum of {@code ABS(amount)} for all DIRECT_COSTS GL entries in the period
      */
     private double queryActualCosts(
             LocalDate fromDate, LocalDate toDate,
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        // Build dynamic SQL with deduplication (same pattern as queryActualRevenue)
-        // NOTE: V118 migration added companyuuid column, creating multiple rows per project-month
-        // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
-        // Strategy: GROUP BY project_id + month_key, then MAX(cost) to get single cost value per project-month
+        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+
         StringBuilder sql = new StringBuilder(
-                "SELECT COALESCE(SUM(max_cost), 0.0) AS total_cost " +
-                        "FROM ( " +
-                        "    SELECT " +
-                        "        f.project_id, " +
-                        "        f.month_key, " +
-                        "        MAX(f.direct_delivery_cost_dkk) AS max_cost " +
-                        "    FROM fact_project_financials_mat f" +
-                        "    WHERE f.month_key BETWEEN :fromKey AND :toKey "
+                "SELECT COALESCE(SUM(ABS(fd.amount)), 0.0) " +
+                "FROM finance_details fd " +
+                "INNER JOIN accounting_accounts aa " +
+                "    ON fd.accountnumber = aa.account_code " +
+                "    AND fd.companyuuid  = aa.companyuuid " +
+                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
+                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND fd.amount != 0 "
         );
-
-        // Add optional filters (same as revenue query)
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND f.companyuuid IN (:companyIds) ");
-        }
-        if (sectors != null && !sectors.isEmpty()) {
-            sql.append("    AND f.sector_id IN (:sectors) ");
-        }
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            sql.append("    AND f.service_line_id IN (:serviceLines) ");
-        }
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            sql.append("    AND f.contract_type_id IN (:contractTypes) ");
-        }
-        if (clientId != null && !clientId.trim().isEmpty()) {
-            sql.append("    AND f.client_id = :clientId ");
+            sql.append("AND fd.companyuuid IN (:companyIds) ");
         }
 
-        sql.append("    GROUP BY f.project_id, f.month_key " +
-                        ") AS deduplicated");
-
-        // Execute query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
-        }
-        if (sectors != null && !sectors.isEmpty()) {
-            query.setParameter("sectors", sectors);
-        }
-        if (serviceLines != null && !serviceLines.isEmpty()) {
-            query.setParameter("serviceLines", serviceLines);
-        }
-        if (contractTypes != null && !contractTypes.isEmpty()) {
-            query.setParameter("contractTypes", contractTypes);
-        }
-        if (clientId != null && !clientId.trim().isEmpty()) {
-            query.setParameter("clientId", clientId);
         }
 
         return ((Number) query.getSingleResult()).doubleValue();
@@ -3638,6 +3619,14 @@ public class CxoFinanceService {
     /**
      * Gets monthly payroll and headcount structure (combo chart).
      * Joins fact_opex (payroll), fact_employee_monthly (FTE), and revenue data.
+     * Also computes Staff and Junior Consultant FTE + payroll breakdowns per month.
+     *
+     * <p>Staff: employees with userstatus.type = 'STAFF' (non-consulting support roles).
+     * Junior Consultant: employees with user_career_level.career_level = 'JUNIOR_CONSULTANT'
+     * (entry-level consultants, typically on student contracts).
+     *
+     * <p>Staff/Junior payroll is the sum of latest salary.salary for active users as of the
+     * last day of each month. This is gross salary only, not total employment cost.
      */
     public List<MonthlyPayrollHeadcountDTO> getPayrollHeadcountStructure(
             LocalDate fromDate,
@@ -3664,7 +3653,7 @@ public class CxoFinanceService {
             }
         }
 
-        // FTE and revenue remain from fact_employee_monthly_mat / fact_project_financials_mat
+        // FTE and revenue from fact_employee_monthly_mat / fact_project_financials_mat
         StringBuilder sql = new StringBuilder(
                 "SELECT e.month_key, " +
                 "  SUM(e.fte_billable) AS billable_fte, " +
@@ -3701,6 +3690,11 @@ public class CxoFinanceService {
         @SuppressWarnings("unchecked")
         List<Object[]> results = query.getResultList();
 
+        // Build Staff + Junior breakdown per month using salary + userstatus point-in-time lookups.
+        // We run one query over the full month range and build a map keyed by month_key.
+        java.util.Map<String, double[]> staffJuniorByMonth = queryStaffJuniorBreakdown(
+                fromMonthKey, toMonthKey, companyIds);
+
         List<MonthlyPayrollHeadcountDTO> resultList = new java.util.ArrayList<>();
         for (Object[] row : results) {
             String monthKey = (String) row[0];
@@ -3715,15 +3709,107 @@ public class CxoFinanceService {
 
             String monthLabel = formatMonthLabel(Integer.parseInt(monthKey.substring(0, 4)), Integer.parseInt(monthKey.substring(4)));
 
+            // Staff/Junior breakdown: [staffFTE, staffPayroll, juniorFTE, juniorPayroll]
+            double[] sjData = staffJuniorByMonth.getOrDefault(monthKey, new double[]{0.0, 0.0, 0.0, 0.0});
+
             resultList.add(new MonthlyPayrollHeadcountDTO(
                     monthLabel, monthKey,
                     billableFTE, nonBillableFTE,
-                    totalPayroll, totalRevenue, payrollAsPercentOfRevenue, totalFTE
+                    totalPayroll, totalRevenue, payrollAsPercentOfRevenue, totalFTE,
+                    sjData[0], sjData[2], sjData[1], sjData[3]
             ));
         }
 
         log.debugf("Returning %d payroll/headcount data points", resultList.size());
         return resultList;
+    }
+
+    /**
+     * Queries monthly Staff and Junior Consultant headcount + gross payroll for a month range.
+     *
+     * <p>Staff: userstatus.type = 'STAFF', status = 'ACTIVE', point-in-time as of last day of month.
+     * Junior Consultant: user_career_level.career_level = 'JUNIOR_CONSULTANT', same point-in-time.
+     * Payroll: latest salary.salary as of the last day of the month (gross salary only).
+     *
+     * @param fromMonthKey Start month key (YYYYMM, inclusive)
+     * @param toMonthKey   End month key (YYYYMM, inclusive)
+     * @param companyIds   Optional company filter; null or empty means all companies
+     * @return Map from month_key to double[4]: [staffFTE, staffPayroll, juniorFTE, juniorPayroll]
+     */
+    private java.util.Map<String, double[]> queryStaffJuniorBreakdown(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> companyIds) {
+
+        // Derive the month range from fact_employee_monthly_mat to avoid generating month series in SQL.
+        // This piggybacks on existing month coverage and avoids complex recursive CTEs in MariaDB 10.
+        StringBuilder sql = new StringBuilder("""
+                SELECT
+                  m.month_key,
+                  COUNT(CASE WHEN us.type = 'STAFF' THEN 1 END)                                    AS staff_fte,
+                  SUM(CASE WHEN us.type = 'STAFF' THEN COALESCE(ls.salary, 0) ELSE 0 END)          AS staff_payroll,
+                  COUNT(CASE WHEN ucl.career_level = 'JUNIOR_CONSULTANT' THEN 1 END)               AS junior_fte,
+                  SUM(CASE WHEN ucl.career_level = 'JUNIOR_CONSULTANT' THEN COALESCE(ls.salary, 0) ELSE 0 END) AS junior_payroll
+                FROM (
+                  SELECT DISTINCT month_key FROM fact_employee_monthly_mat
+                  WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey
+                ) m
+                JOIN userstatus us
+                  ON us.status = 'ACTIVE'
+                  AND us.type IN ('STAFF', 'CONSULTANT', 'STUDENT', 'EXTERNAL')
+                  AND us.statusdate = (
+                      SELECT MAX(us2.statusdate) FROM userstatus us2
+                      WHERE us2.useruuid = us.useruuid
+                        AND us2.statusdate <= LAST_DAY(STR_TO_DATE(CONCAT(m.month_key, '01'), '%Y%m%d'))
+                  )
+                JOIN user u ON u.uuid = us.useruuid AND u.type = 'USER'
+                """);
+
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("  AND us.companyuuid IN (:companyIds) \n");
+        }
+
+        sql.append("""
+                LEFT JOIN user_career_level ucl
+                  ON ucl.useruuid = u.uuid
+                  AND ucl.active_from = (
+                      SELECT MAX(ucl2.active_from) FROM user_career_level ucl2
+                      WHERE ucl2.useruuid = u.uuid
+                        AND ucl2.active_from <= LAST_DAY(STR_TO_DATE(CONCAT(m.month_key, '01'), '%Y%m%d'))
+                  )
+                LEFT JOIN salary ls
+                  ON ls.useruuid = us.useruuid
+                  AND ls.activefrom = (
+                      SELECT MAX(s2.activefrom) FROM salary s2
+                      WHERE s2.useruuid = us.useruuid
+                        AND s2.activefrom <= LAST_DAY(STR_TO_DATE(CONCAT(m.month_key, '01'), '%Y%m%d'))
+                  )
+                GROUP BY m.month_key
+                ORDER BY m.month_key ASC
+                """);
+
+        Query q = em.createNativeQuery(sql.toString());
+        q.setParameter("fromMonthKey", fromMonthKey);
+        q.setParameter("toMonthKey", toMonthKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            q.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = q.getResultList();
+
+        java.util.Map<String, double[]> result = new java.util.LinkedHashMap<>();
+        for (Object[] row : rows) {
+            String monthKey = (String) row[0];
+            double staffFTE     = row[1] != null ? ((Number) row[1]).doubleValue() : 0.0;
+            double staffPayroll = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
+            double juniorFTE    = row[3] != null ? ((Number) row[3]).doubleValue() : 0.0;
+            double juniorPayroll = row[4] != null ? ((Number) row[4]).doubleValue() : 0.0;
+            result.put(monthKey, new double[]{staffFTE, staffPayroll, juniorFTE, juniorPayroll});
+        }
+
+        log.debugf("Staff/Junior breakdown: %d months queried", result.size());
+        return result;
     }
 
     /**
@@ -4351,19 +4437,22 @@ public class CxoFinanceService {
                 sectors, serviceLines, contractTypes, clientId, companyIds);
 
         // 1. TTM gross margin: revenue from fact_company_revenue_mat (company-total),
-        //    cost from fact_project_financials_mat (dimension-filtered).
+        //    cost from GL (cost_type=DIRECT_COSTS), company-level only.
         //    Revenue KPIs always show company-total — dimension filters do not apply to revenue.
         double ttmRevenue = queryCompanyRevenue(ttmStart, ttmEnd, companyIds);
         double ttmCost    = queryActualCosts(ttmStart, ttmEnd, sectors, serviceLines, contractTypes, clientId, companyIds);
         double ttmGrossMarginPct = (ttmRevenue > 0) ? ((ttmRevenue - ttmCost) / ttmRevenue) * 100.0 : 0.0;
 
-        // 2. Average monthly OPEX from fact_opex over TTM period
-        double avgMonthlyOpex = queryAvgMonthlyOpex(ttmFromKey, ttmToKey, companyIds);
+        // 2. Average monthly OPEX (OPEX-only, excluding salaries) and average monthly salaries
+        //    from fact_opex over TTM period. Both are used for projected future months.
+        double avgMonthlyOpex     = queryAvgMonthlyOpex(ttmFromKey, ttmToKey, companyIds);
+        double avgMonthlySalaries = queryAvgMonthlySalaries(ttmFromKey, ttmToKey, companyIds);
 
-        log.debugf("TTM gross margin=%.2f%%, avg monthly OPEX=%.2f DKK", ttmGrossMarginPct, avgMonthlyOpex);
+        log.debugf("TTM gross margin=%.2f%%, avg monthly OPEX=%.2f DKK, avg monthly salaries=%.2f DKK",
+                ttmGrossMarginPct, avgMonthlyOpex, avgMonthlySalaries);
 
         // 3. Actual FY revenue from fact_company_revenue_mat (company-total, companyIds only)
-        //    and cost from fact_project_financials_mat (dimension-filtered) — merged by month.
+        //    and cost from GL (cost_type=DIRECT_COSTS) — merged by month.
         java.util.Map<String, Double> fyRevenueByMonth = queryCompanyRevenueByMonth(fyFromKey, fyToKey, companyIds);
         java.util.Map<String, double[]> fyCostByMonth  = queryMonthlyDirectCostByMonth(fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
@@ -4378,8 +4467,9 @@ public class CxoFinanceService {
             actualByMonth.put(mk, new double[]{rev, cost});
         }
 
-        // 4. Actual OPEX by month
-        java.util.Map<String, Double> opexByMonth = queryMonthlyOpex(fyFromKey, fyToKey, companyIds);
+        // 4. Actual OPEX (OPEX-only) and salaries by month — separate fields per spec.
+        java.util.Map<String, Double> opexByMonth     = queryMonthlyOpex(fyFromKey, fyToKey, companyIds);
+        java.util.Map<String, Double> salariesByMonth = queryMonthlySalaries(fyFromKey, fyToKey, companyIds);
 
         // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
         java.util.Map<String, Double> internalCostByMonth = queryMonthlyInternalInvoiceCost(fyFromKey, fyToKey, companyIds);
@@ -4402,6 +4492,7 @@ public class CxoFinanceService {
             double monthRevenue;
             double monthDirectCost;
             double monthInternalCost;
+            double monthSalaries;
             double monthOpex;
 
             if (isActual) {
@@ -4409,6 +4500,7 @@ public class CxoFinanceService {
                 monthRevenue       = revCost[0];
                 monthDirectCost    = revCost[1];
                 monthInternalCost  = internalCostByMonth.getOrDefault(monthKey, 0.0);
+                monthSalaries      = salariesByMonth.getOrDefault(monthKey, 0.0);
                 monthOpex          = opexByMonth.getOrDefault(monthKey, 0.0);
             } else {
                 // Future month: use backlog revenue with TTM margin estimation.
@@ -4416,13 +4508,13 @@ public class CxoFinanceService {
                 monthRevenue      = backlogByMonth.getOrDefault(monthKey, 0.0);
                 monthDirectCost   = monthRevenue * (1.0 - ttmGrossMarginPct / 100.0);
                 monthInternalCost = 0.0;
+                monthSalaries     = avgMonthlySalaries;
                 monthOpex         = avgMonthlyOpex;
             }
 
-            // Note: monthInternalCost is NOT subtracted here because fact_project_financials
-            // already attributes revenue and costs to each consultant's company. Subtracting
-            // internal invoice cost would double-count the intercompany impact.
-            double monthEbitda = monthRevenue - monthDirectCost - monthOpex;
+            // Note: monthInternalCost is NOT subtracted here because GL-based direct costs
+            // are already company-level only and do not overlap with intercompany invoices.
+            double monthEbitda = monthRevenue - monthDirectCost - monthSalaries - monthOpex;
             accumulated += monthEbitda;
 
             result.add(new MonthlyAccumulatedEbitdaDTO(
@@ -4434,6 +4526,7 @@ public class CxoFinanceService {
                     monthRevenue,
                     monthDirectCost,
                     monthInternalCost,
+                    monthSalaries,
                     monthOpex,
                     monthEbitda,
                     accumulated,
@@ -4948,15 +5041,42 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper: Query average monthly OPEX over a TTM window.
+     * Helper: Query average monthly OPEX (OPEX-only, excluding SALARIES) over a TTM window.
      * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
-     * Divides total OPEX by number of distinct months that had data (max 12).
+     * Filters to non-payroll rows (isPayrollFlag = false) and divides total by distinct month count.
      */
     private double queryAvgMonthlyOpex(String fromKey, String toKey, Set<String> companyIds) {
-        double[] totalAndCount = opexProvider.getOpexTotalAndMonthCount(fromKey, toKey, companyIds);
-        double totalOpex    = totalAndCount[0];
-        double monthCount   = totalAndCount[1];
-        return monthCount > 0 ? totalOpex / monthCount : 0.0;
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
+                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
+        double totalOpex = 0.0;
+        java.util.Set<String> months = new java.util.HashSet<>();
+        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
+            if (!row.isPayrollFlag()) {
+                totalOpex += row.opexAmountDkk();
+                months.add(row.monthKey());
+            }
+        }
+        return months.isEmpty() ? 0.0 : totalOpex / months.size();
+    }
+
+    /**
+     * Helper: Query average monthly salary costs (SALARIES only) over a TTM window.
+     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
+     * Filters to payroll rows (isPayrollFlag = true) and divides total by distinct month count.
+     * Used to populate the {@code avgMonthlySalaries} estimate for projected future months.
+     */
+    private double queryAvgMonthlySalaries(String fromKey, String toKey, Set<String> companyIds) {
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
+                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
+        double totalSalaries = 0.0;
+        java.util.Set<String> months = new java.util.HashSet<>();
+        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
+            if (row.isPayrollFlag()) {
+                totalSalaries += row.opexAmountDkk();
+                months.add(row.monthKey());
+            }
+        }
+        return months.isEmpty() ? 0.0 : totalSalaries / months.size();
     }
 
     /**
@@ -5008,40 +5128,44 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper: Query monthly direct delivery cost from {@code fact_project_financials_mat}.
+     * Helper: Query monthly direct costs from GL ({@code finance_details}) by month.
      * Returns map of monthKey → double[]{cost} (single-element array for uniform access).
-     * Applies the deduplication pattern (MAX per project-month) and all dimension filters.
-     * Used by {@link #getExpectedAccumulatedEBITDA} to keep costs dimension-filtered while
-     * revenue is sourced separately from {@code fact_company_revenue_mat}.
+     *
+     * <p>Source changed from {@code fact_project_financials_mat} to actual GL entries classified
+     * as {@code cost_type = 'DIRECT_COSTS'} in {@code accounting_accounts}. This reflects
+     * what was actually booked in the accounting system rather than an estimate.
+     *
+     * <p><strong>Dimension filter note:</strong> GL-based direct costs have no project, sector,
+     * service-line, or client attribution. Dimension filters are accepted for signature
+     * compatibility but are intentionally ignored. Only {@code companyIds} applies.
      */
     private java.util.Map<String, double[]> queryMonthlyDirectCostByMonth(
             String fromKey, String toKey,
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        StringBuilder inner = new StringBuilder(
-                "SELECT f.project_id, f.month_key, " +
-                "MAX(f.direct_delivery_cost_dkk) AS cost " +
-                "FROM fact_project_financials_mat f " +
-                "WHERE f.month_key BETWEEN :fromKey AND :toKey "
+        StringBuilder sql = new StringBuilder(
+                "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(ABS(fd.amount)), 0.0) AS cost " +
+                "FROM finance_details fd " +
+                "INNER JOIN accounting_accounts aa " +
+                "    ON fd.accountnumber = aa.account_code " +
+                "    AND fd.companyuuid  = aa.companyuuid " +
+                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
+                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND fd.amount != 0 "
         );
-        if (companyIds != null && !companyIds.isEmpty()) inner.append("AND f.companyuuid IN (:companyIds) ");
-        if (sectors != null && !sectors.isEmpty()) inner.append("AND f.sector_id IN (:sectors) ");
-        if (serviceLines != null && !serviceLines.isEmpty()) inner.append("AND f.service_line_id IN (:serviceLines) ");
-        if (contractTypes != null && !contractTypes.isEmpty()) inner.append("AND f.contract_type_id IN (:contractTypes) ");
-        if (clientId != null && !clientId.isBlank()) inner.append("AND f.client_id = :clientId ");
-        inner.append("GROUP BY f.project_id, f.month_key");
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND fd.companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key");
 
-        String sql = "SELECT d.month_key, SUM(d.cost) AS cost FROM (" + inner + ") AS d GROUP BY d.month_key ORDER BY d.month_key";
-
-        Query query = em.createNativeQuery(sql, Tuple.class);
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
-        if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
-        if (sectors != null && !sectors.isEmpty()) query.setParameter("sectors", sectors);
-        if (serviceLines != null && !serviceLines.isEmpty()) query.setParameter("serviceLines", serviceLines);
-        if (contractTypes != null && !contractTypes.isEmpty()) query.setParameter("contractTypes", contractTypes);
-        if (clientId != null && !clientId.isBlank()) query.setParameter("clientId", clientId);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -5056,12 +5180,45 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper: Query actual OPEX by month.
-     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
-     * Returns map of monthKey → total opex_amount_dkk.
+     * Helper: Query actual OPEX by month (excludes SALARIES — cost_type = 'OPEX' only).
+     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection,
+     * then filters returned rows to OPEX cost type only.
+     * Returns map of monthKey → total opex_amount_dkk for OPEX rows.
      */
     private java.util.Map<String, Double> queryMonthlyOpex(String fromKey, String toKey, Set<String> companyIds) {
-        return opexProvider.getMonthlyOpex(fromKey, toKey, companyIds);
+        // DistributionAwareOpexProvider returns both OPEX and SALARIES rows.
+        // We filter to OPEX-only here; salaries are queried separately via queryMonthlySalaries.
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
+                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
+        java.util.Map<String, Double> byMonth = new java.util.TreeMap<>();
+        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
+            if (!row.isPayrollFlag()) {
+                byMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
+            }
+        }
+        return byMonth;
+    }
+
+    /**
+     * Helper: Query salary costs by month (cost_type = 'SALARIES' only).
+     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection,
+     * then filters returned rows to SALARIES cost type only (isPayrollFlag = true).
+     * Returns map of monthKey → total salary_amount_dkk.
+     *
+     * <p>Salary amounts are kept separate from OPEX so the EBITDA API can return them
+     * in a dedicated {@code monthlySalariesDkk} field, enabling the frontend to render
+     * SALARIES as a distinct stacked segment within the Operating Costs bar.
+     */
+    private java.util.Map<String, Double> queryMonthlySalaries(String fromKey, String toKey, Set<String> companyIds) {
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
+                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
+        java.util.Map<String, Double> byMonth = new java.util.TreeMap<>();
+        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
+            if (row.isPayrollFlag()) {
+                byMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
+            }
+        }
+        return byMonth;
     }
 
     /**
