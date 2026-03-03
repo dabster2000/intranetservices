@@ -388,16 +388,23 @@ public class ContractService {
     public void removeProject(String contractuuid, String projectuuid) {
         ContractProject contractProject = ContractProject.find("contractuuid like ?1 AND projectuuid like ?2", contractuuid, projectuuid).firstResult();
 
-        // Log activity before delete
-        Contract contract = Contract.findById(contractuuid);
-        if (contract != null) {
-            Project project = projectService.findByUuid(projectuuid);
-            String projectName = project != null ? project.getName() : projectuuid;
-            activityLogService.logDeleted(contract.getClientuuid(),
-                    ClientActivityLog.TYPE_CONTRACT_PROJECT, projectuuid, projectName);
-        }
+        if (contractProject != null) {
+            // Load contract and remove project from its collection
+            // to prevent stale state at flush time
+            Contract contract = Contract.findById(contractuuid);
+            if (contract != null) {
+                contract.getContractProjects().remove(contractProject);
 
-        ContractProject.deleteById(contractProject.getUuid());
+                Project project = projectService.findByUuid(projectuuid);
+                String projectName = project != null ? project.getName() : projectuuid;
+                activityLogService.logDeleted(contract.getClientuuid(),
+                        ClientActivityLog.TYPE_CONTRACT_PROJECT, projectuuid, projectName);
+            }
+
+            // Use Panache instance delete (em.remove()) instead of
+            // static deleteById (JPQL bulk delete that bypasses the PC)
+            contractProject.delete();
+        }
     }
 
     @Transactional
@@ -474,16 +481,23 @@ public class ContractService {
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void removeConsultant(String contractuuid, String consultantuuid) {
         ContractConsultant cc = ContractConsultant.findById(consultantuuid);
-        ContractConsultant.deleteById(consultantuuid);
 
-        // Log activity
         if (cc != null) {
+            // Load the contract and remove consultant from its collection
+            // to prevent CascadeType.ALL from re-persisting the entity
             Contract contract = Contract.findById(contractuuid);
             if (contract != null) {
+                contract.getContractConsultants().remove(cc);
+
+                // Log activity
                 activityLogService.logDeleted(contract.getClientuuid(),
                         ClientActivityLog.TYPE_CONTRACT_CONSULTANT, consultantuuid,
                         cc.getName() != null ? cc.getName() : cc.getUseruuid());
             }
+
+            // Use Panache instance delete (em.remove()) instead of
+            // static deleteById (JPQL bulk delete that bypasses the PC)
+            cc.delete();
         }
     }
 
