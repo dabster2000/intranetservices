@@ -63,6 +63,14 @@ public class TeamResource {
     }
 
     @GET
+    @Path("/{teamuuid}/users/search/findByMonthIncludingPreboarding")
+    public List<User> getUsersByTeamAndMonthIncludingPreboarding(
+            @PathParam("teamuuid") String teamuuid,
+            @QueryParam("month") String month) {
+        return getUsers(teamService.getUsersByTeamIncludingPreboarding(teamuuid, dateIt(month)));
+    }
+
+    @GET
     @Path("/{teamuuid}/users/search/findTeamleadersByMonth")
     public List<User> getTeamLeadersByTeam(@PathParam("teamuuid") String teamuuid, @QueryParam("month") String month) {
         return getUsers(teamService.getTeamLeadersByTeam(teamuuid, dateIt(month)));

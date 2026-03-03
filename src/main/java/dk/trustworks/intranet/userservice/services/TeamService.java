@@ -66,6 +66,18 @@ public class TeamService {
         return userService.filterForActiveTeamMembers(month, users);
     }
 
+    public List<User> getUsersByTeamIncludingPreboarding(String teamuuid, LocalDate month) {
+        List<User> users = User.find(
+                """
+                select u from User u
+                join TeamRole tu on u.uuid = tu.useruuid
+                where teammembertype like 'MEMBER' AND
+                tu.teamuuid like ?1 AND
+                tu.startdate <= ?2 AND (tu.enddate > ?2 OR tu.enddate is null)
+                """, teamuuid, month).list();
+        return userService.filterForActiveAndPreboardingTeamMembers(month, users);
+    }
+
     public List<User> getTeamLeadersByTeam(String teamuuid, LocalDate month) {
         List<User> users = User.find("select u from User u " +
                 "join TeamRole tu on u.uuid = tu.useruuid " +

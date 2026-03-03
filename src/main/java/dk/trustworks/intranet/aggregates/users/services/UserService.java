@@ -258,6 +258,18 @@ public class UserService {
                 .collect(Collectors.toList());
     }
 
+    public List<User> filterForActiveAndPreboardingTeamMembers(LocalDate month, List<User> usersInTeam) {
+        List<User> allMatchingConsultants = findUsersByDateAndStatusListAndTypes(
+                month,
+                new String[]{PREBOARDING.toString(), ACTIVE.toString(), PAID_LEAVE.toString(), MATERNITY_LEAVE.toString(), NON_PAY_LEAVE.toString()},
+                new String[]{CONSULTANT.toString(), STAFF.toString(), STUDENT.toString()},
+                true
+        );
+        return usersInTeam.stream()
+                .filter(candidate -> allMatchingConsultants.stream()
+                        .anyMatch(active -> active.getUuid().equals(candidate.getUuid())))
+                .collect(Collectors.toList());
+    }
 
     //@CacheResult(cacheName = "user-cache")
     public int calcMonthSalaries(LocalDate date, String... consultantTypes) {

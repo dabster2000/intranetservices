@@ -10,7 +10,10 @@ import jakarta.ws.rs.*;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import jakarta.ws.rs.core.Response;
+
 import java.util.List;
+import java.util.Map;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -47,9 +50,16 @@ public class StatusResource {
     @POST
     @Path("/{useruuid}/statuses")
     @CacheInvalidateAll(cacheName = "user-cache")
-    public void create(@PathParam("useruuid") String useruuid, UserStatus userStatus) {
+    public Response create(@PathParam("useruuid") String useruuid, UserStatus userStatus) {
         userStatus.setUseruuid(useruuid);
-        statusService.create(userStatus);
+        try {
+            statusService.create(userStatus);
+            return Response.noContent().build();
+        } catch (IllegalStateException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", e.getMessage()))
+                    .build();
+        }
     }
 
     @DELETE
