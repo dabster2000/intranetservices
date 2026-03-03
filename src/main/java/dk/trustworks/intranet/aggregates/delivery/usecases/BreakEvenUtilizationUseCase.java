@@ -86,7 +86,7 @@ public class BreakEvenUtilizationUseCase {
                          THEN SUM(total_monthly_cost_dkk * consultant_count) * SUM(actual_billable_hours * consultant_count)
                               / (0.80 * SUM(avg_net_available_hours * consultant_count) * SUM(avg_actual_billing_rate * actual_billable_hours * consultant_count))
                          ELSE NULL END AS break_even_utilization_20pct
-                FROM fact_minimum_viable_rate
+                FROM fact_minimum_viable_rate_mat
                 GROUP BY career_level
                 ORDER BY career_level
                 """).getResultList();

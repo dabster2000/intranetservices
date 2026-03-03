@@ -154,7 +154,7 @@ public class CareerLevelEconomicsUseCase {
                     CASE WHEN SUM(CASE WHEN rate_buffer_dkk IS NOT NULL THEN consultant_count ELSE 0 END) > 0
                         THEN SUM(COALESCE(rate_buffer_dkk, 0) * consultant_count) / SUM(CASE WHEN rate_buffer_dkk IS NOT NULL THEN consultant_count ELSE 0 END)
                         ELSE NULL END AS rate_buffer_dkk
-                FROM fact_minimum_viable_rate
+                FROM fact_minimum_viable_rate_mat
                 """ + whereClause + """
                 GROUP BY career_level
                 ORDER BY career_level

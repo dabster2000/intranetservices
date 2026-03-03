@@ -809,7 +809,7 @@ public class CxoClientService {
         sql.append("WITH canonical_revenue AS ( ");
         sql.append("  SELECT fcr.client_id, ");
         sql.append("         SUM(fcr.net_revenue_dkk) AS total_revenue ");
-        sql.append("  FROM fact_client_revenue fcr ");
+        sql.append("  FROM fact_client_revenue_mat fcr");
         sql.append("  WHERE fcr.month_key BETWEEN :fromKey AND :toKey ");
         sql.append("    AND fcr.client_id IS NOT NULL ");
         sql.append("    AND fcr.client_id NOT IN (:excludedClientIds) ");
@@ -999,7 +999,7 @@ public class CxoClientService {
         sql.append("WITH canonical_revenue AS ( ");
         sql.append("  SELECT fcr.client_id, ");
         sql.append("         SUM(fcr.net_revenue_dkk) AS total_revenue ");
-        sql.append("  FROM fact_client_revenue fcr ");
+        sql.append("  FROM fact_client_revenue_mat fcr");
         sql.append("  WHERE fcr.month_key BETWEEN :fromKey AND :toKey ");
         sql.append("    AND fcr.client_id IS NOT NULL ");
         sql.append("    AND fcr.client_id NOT IN (:excludedClientIds) ");
@@ -2137,7 +2137,7 @@ public class CxoClientService {
         sql.append("    c.active, ");
         sql.append("    COALESCE(SUM(fcr.net_revenue_dkk), 0) AS revenue ");
         sql.append("  FROM client c ");
-        sql.append("  LEFT JOIN fact_client_revenue fcr ");
+        sql.append("  LEFT JOIN fact_client_revenue_mat fcr");
         sql.append("    ON fcr.client_id = c.uuid ");
         sql.append("    AND fcr.month_key BETWEEN :fromKey AND :toKey ");
 
