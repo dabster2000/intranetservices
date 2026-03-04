@@ -38,6 +38,12 @@ public class MonthlyAccumulatedRevenueDTO {
     /** Running accumulated sum from fiscal month 1 through this month */
     private double accumulatedRevenueDkk;
 
+    /** Budget revenue in DKK for this calendar month (from fact_revenue_budget_mat) */
+    private double monthlyBudgetDkk;
+
+    /** Running accumulated budget sum from fiscal month 1 through this month */
+    private double accumulatedBudgetDkk;
+
     /**
      * True if this month has actual/past data from fact_project_financials_mat.
      * False if this is a future month with no actuals yet (revenue will be 0).

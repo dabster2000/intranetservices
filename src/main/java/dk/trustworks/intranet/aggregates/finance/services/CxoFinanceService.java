@@ -1367,6 +1367,49 @@ public class CxoFinanceService {
     }
 
     /**
+     * Query monthly budget revenue from fact_revenue_budget_mat, grouped by month_key.
+     * Returns a map of month_key → budget_revenue_dkk for the given fiscal year range.
+     *
+     * @param fiscalYear  Fiscal year (e.g. 2025 for FY Jul 2025 – Jun 2026)
+     * @param fromKey     Start month key (inclusive), format "YYYYMM"
+     * @param toKey       End month key (inclusive), format "YYYYMM"
+     * @param companyIds  Optional company filter
+     * @return Map of month_key → total budget revenue DKK
+     */
+    private java.util.Map<String, Double> queryBudgetRevenueByMonth(
+            int fiscalYear, String fromKey, String toKey,
+            Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT b.month_key, COALESCE(SUM(b.budget_revenue_dkk), 0.0) AS monthly_budget " +
+                "FROM fact_revenue_budget_mat b " +
+                "WHERE b.fiscal_year = :fiscalYear " +
+                "AND b.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND b.company_id IN (:companyIds) ");
+        }
+        sql.append("GROUP BY b.month_key ORDER BY b.month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fiscalYear", fiscalYear);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            result.put((String) row.get("month_key"), ((Number) row.get("monthly_budget")).doubleValue());
+        }
+        return result;
+    }
+
+    /**
      * Calculate Client Retention Rate for 12-month periods.
      * Compares current 12-month window (dashboard-driven from toDate) to prior 12-month window.
      *
@@ -4155,10 +4198,20 @@ public class CxoFinanceService {
         // Revenue KPIs always show company-total — dimension filters do not apply to revenue.
         java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(fromKey, toKey, companyIds);
 
+        // Budget from fact_revenue_budget_mat (monthly budget by company)
+        java.util.Map<String, Double> budgetByMonth = queryBudgetRevenueByMonth(fiscalYear, fromKey, toKey, companyIds);
+
         // Build 12 data points from Jul to Jun, accumulating running sum
         String currentMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+
+        // Backlog + weighted pipeline for projecting future (non-actual) months
+        java.util.Map<String, Double> backlogByMonth = queryBacklogByMonth(
+                currentMonthKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+        java.util.Map<String, Double> pipelineByMonth = queryPipelineData(
+                currentMonthKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds);
         List<MonthlyAccumulatedRevenueDTO> result = new ArrayList<>(12);
         double accumulated = 0.0;
+        double accumulatedBudget = 0.0;
 
         for (int fiscalMonth = 1; fiscalMonth <= 12; fiscalMonth++) {
             // Map fiscal month (1=Jul…12=Jun) to calendar year/month
@@ -4169,8 +4222,17 @@ public class CxoFinanceService {
             boolean isActual = monthKey.compareTo(currentMonthKey) <= 0
                     && revenueByMonth.containsKey(monthKey);
 
-            double monthly = revenueByMonth.getOrDefault(monthKey, 0.0);
+            double monthly;
+            if (isActual) {
+                monthly = revenueByMonth.getOrDefault(monthKey, 0.0);
+            } else {
+                monthly = backlogByMonth.getOrDefault(monthKey, 0.0)
+                        + pipelineByMonth.getOrDefault(monthKey, 0.0);
+            }
             accumulated += monthly;
+
+            double monthlyBudget = budgetByMonth.getOrDefault(monthKey, 0.0);
+            accumulatedBudget += monthlyBudget;
 
             result.add(new MonthlyAccumulatedRevenueDTO(
                     monthKey,
@@ -4180,11 +4242,14 @@ public class CxoFinanceService {
                     fiscalMonth,
                     monthly,
                     accumulated,
+                    monthlyBudget,
+                    accumulatedBudget,
                     isActual
             ));
         }
 
-        log.debugf("getAccumulatedRevenue: returning %d data points, total accumulated=%.2f DKK", result.size(), (Double) accumulated);
+        log.debugf("getAccumulatedRevenue: returning %d data points, total accumulated=%.2f DKK, total budget=%.2f DKK",
+                result.size(), (Double) accumulated, (Double) accumulatedBudget);
         return result;
     }
 
