@@ -54,6 +54,11 @@ public class SalesLead extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @Column(name = "lost_reason")
     private LostReason lostReason;
+    @Column(name = "lost_notes")
+    private String lostNotes;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "lost_at_stage")
+    private LeadStatus lostAtStage;
     @OneToMany(mappedBy = "lead", fetch = EAGER)
     Set<SalesLeadConsultant> salesLeadConsultants;
     @Column(name = "created")

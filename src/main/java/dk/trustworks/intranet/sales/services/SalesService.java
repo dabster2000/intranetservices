@@ -114,6 +114,12 @@ public class SalesService {
         return SalesLead.findAll().<SalesLead>stream().sorted(Comparator.comparing(SalesLead::getCreated)).toList();
     }
 
+    public List<SalesLead> findLost(int offset, int limit) {
+        return SalesLead.find("status = ?1 ORDER BY modified DESC", LeadStatus.LOST)
+                .page(Page.of(offset / Math.max(limit, 1), Math.max(limit, 1)))
+                .list();
+    }
+
     public List<SalesLead> findWon(LocalDate sinceDate) {
         LocalDateTime since = sinceDate.atStartOfDay();
         log.infof("since = %s", since);
@@ -190,8 +196,11 @@ public class SalesService {
                         "detailedDescription = ?11, " +
                         "status = ?12, " +
                         "modified = ?13, " +
-                        "wonDate = ?14 " +
-                        "WHERE uuid like ?15 ",
+                        "wonDate = ?14, " +
+                        "lostReason = ?15, " +
+                        "lostNotes = ?16, " +
+                        "lostAtStage = ?17 " +
+                        "WHERE uuid like ?18 ",
                 salesLead.getClient(),
                 salesLead.getAllocation(),
                 salesLead.getCloseDate(),
@@ -206,6 +215,9 @@ public class SalesService {
                 salesLead.getStatus(),
                 LocalDateTime.now(),
                 wonDate,
+                salesLead.getLostReason(),
+                salesLead.getLostNotes(),
+                salesLead.getLostAtStage(),
                 salesLead.getUuid());
     }
 

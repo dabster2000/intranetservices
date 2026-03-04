@@ -92,6 +92,15 @@ public class SalesResource {
     }
 
     @GET
+    @Path("/lost")
+    @Transactional
+    public List<SalesLead> findLost(
+            @QueryParam("offset") @DefaultValue("0") int offset,
+            @QueryParam("limit") @DefaultValue("200") int limit) {
+        return salesService.findLost(offset, limit);
+    }
+
+    @GET
     @Path("/won")
     public List<SalesLead> findWon(@QueryParam("sinceDate") String sinceDate) {
         log.infof("sinceDate = %s", sinceDate);

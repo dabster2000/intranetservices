@@ -90,6 +90,10 @@ public class CareerLevelEconomicsUseCase {
             Double rateWith20Margin    = row[14] != null ? ((Number) row[14]).doubleValue() : null;
             Double rateBuffer          = row[15] != null ? ((Number) row[15]).doubleValue() : null;
 
+            // Min/max salary across all consultants at this career level (nullable)
+            Integer minMonthlySalary   = row[16] != null ? ((Number) row[16]).intValue() : null;
+            Integer maxMonthlySalary   = row[17] != null ? ((Number) row[17]).intValue() : null;
+
             // Sum statutory costs in Java: ATP + AM-bidrag
             double statutoryCosts = atpPerPerson + amBidragPerPerson;
 
@@ -111,7 +115,9 @@ public class CareerLevelEconomicsUseCase {
                     breakEvenRateTarget,
                     rateWith15Margin,
                     rateWith20Margin,
-                    rateBuffer
+                    rateBuffer,
+                    minMonthlySalary,
+                    maxMonthlySalary
             ));
         }
 
@@ -153,7 +159,9 @@ public class CareerLevelEconomicsUseCase {
                         ELSE NULL END AS min_rate_20pct_margin,
                     CASE WHEN SUM(CASE WHEN rate_buffer_dkk IS NOT NULL THEN consultant_count ELSE 0 END) > 0
                         THEN SUM(COALESCE(rate_buffer_dkk, 0) * consultant_count) / SUM(CASE WHEN rate_buffer_dkk IS NOT NULL THEN consultant_count ELSE 0 END)
-                        ELSE NULL END AS rate_buffer_dkk
+                        ELSE NULL END AS rate_buffer_dkk,
+                    MIN(min_monthly_salary_dkk) AS min_monthly_salary_dkk,
+                    MAX(max_monthly_salary_dkk) AS max_monthly_salary_dkk
                 FROM fact_minimum_viable_rate_mat
                 """ + whereClause + """
                 GROUP BY career_level

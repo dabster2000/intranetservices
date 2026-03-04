@@ -117,4 +117,18 @@ public class CareerLevelEconomicsItemDTO {
      * Null when break-even rate cannot be computed.
      */
     private Double rateBuffer;
+
+    /**
+     * Minimum monthly salary across all consultants at this career level in DKK.
+     * Sourced from min_monthly_salary_dkk in fact_minimum_viable_rate_mat.
+     * Null when data is unavailable.
+     */
+    private Integer minMonthlySalary;
+
+    /**
+     * Maximum monthly salary across all consultants at this career level in DKK.
+     * Sourced from max_monthly_salary_dkk in fact_minimum_viable_rate_mat.
+     * Null when data is unavailable.
+     */
+    private Integer maxMonthlySalary;
 }
