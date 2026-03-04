@@ -10,6 +10,7 @@ import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
 import dk.trustworks.intranet.userservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.userservice.utils.LocalDateSerializer;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.quarkus.panache.common.Sort;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -17,6 +18,7 @@ import lombok.EqualsAndHashCode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Data
@@ -74,5 +76,13 @@ public class UserCareerLevel extends PanacheEntityBase implements Auditable {
 
     public static List<UserCareerLevel> findByUseruuid(String useruuid) {
         return find("useruuid", useruuid).list();
+    }
+
+    /**
+     * Find the current career level for a user (active_from <= today, most recent first).
+     */
+    public static Optional<UserCareerLevel> findCurrentByUseruuid(String useruuid) {
+        return find("useruuid = ?1 and activeFrom <= ?2", Sort.descending("activeFrom"), useruuid, LocalDate.now())
+                .firstResultOptional();
     }
 }

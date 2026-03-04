@@ -19,7 +19,7 @@ public class UserContactInfoService {
 
     @Transactional
     public UserContactinfo findOne(String useruuid) {
-        UserContactinfo userContactinfo = UserContactinfo.findByUseruuid(useruuid);
+        UserContactinfo userContactinfo = UserContactinfo.findCurrentByUseruuid(useruuid);
         if (userContactinfo == null) {
             userContactinfo = new UserContactinfo();
             userContactinfo.setUuid(UUID.randomUUID().toString());

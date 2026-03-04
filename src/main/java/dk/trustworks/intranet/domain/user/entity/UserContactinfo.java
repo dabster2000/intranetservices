@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import dk.trustworks.intranet.model.Auditable;
 import dk.trustworks.intranet.security.AuditEntityListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.quarkus.panache.common.Sort;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
@@ -65,6 +66,14 @@ public class UserContactinfo extends PanacheEntityBase implements Auditable {
 
     public static UserContactinfo findByUseruuid(String useruuid) {
         return find("useruuid", useruuid).firstResult();
+    }
+
+    /**
+     * Find the current contact info for a user (active_date <= today, most recent first).
+     */
+    public static UserContactinfo findCurrentByUseruuid(String useruuid) {
+        return find("useruuid = ?1 and activeDate <= ?2", Sort.descending("activeDate"), useruuid, LocalDate.now())
+                .firstResult();
     }
 
 }

@@ -7,8 +7,6 @@ import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.time.LocalDate;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,9 +19,7 @@ public class CareerLevelService {
     }
 
     public Optional<UserCareerLevel> getCurrent(String useruuid) {
-        return UserCareerLevel.findByUseruuid(useruuid).stream()
-                .filter(cl -> !cl.getActiveFrom().isAfter(LocalDate.now()))
-                .max(Comparator.comparing(UserCareerLevel::getActiveFrom));
+        return UserCareerLevel.findCurrentByUseruuid(useruuid);
     }
 
     @Transactional

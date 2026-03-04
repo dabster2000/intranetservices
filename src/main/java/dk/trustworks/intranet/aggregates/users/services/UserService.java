@@ -186,7 +186,7 @@ public class UserService {
     public static User addChildrenToUser(User user) {
         user.getTeams().addAll(TeamRole.getTeamrolesByUser(user.getUuid()));
         user.getRoleList().addAll(Role.findByUseruuid(user.getUuid()));
-        user.setUserContactinfo(UserContactinfo.findByUseruuid(user.getUuid()));
+        user.setUserContactinfo(UserContactinfo.findCurrentByUseruuid(user.getUuid()));
         user.getStatuses().addAll(UserStatus.findByUseruuid(user.getUuid()));
         user.getSalaries().addAll(Salary.findByUseruuid(user.getUuid()));
         user.getUserBankInfos().addAll(UserBankInfo.findByUseruuid(user.getUuid()));
@@ -208,9 +208,9 @@ public class UserService {
         Map<String, List<Role>> rolesByUser = Role.<Role>list("useruuid in ?1", ids)
                 .stream().collect(groupingBy(Role::getUseruuid));
 
-        // Contact info (one per user)
-        Map<String, UserContactinfo> contactByUser = UserContactinfo.<UserContactinfo>list("useruuid in ?1", ids)
-                .stream().collect(toMap(UserContactinfo::getUseruuid, ci -> ci, (a,b) -> a));
+        // Contact info (one per user — pick the most recent record where activeDate <= today)
+        Map<String, UserContactinfo> contactByUser = UserContactinfo.<UserContactinfo>list("useruuid in ?1 and activeDate <= ?2 order by activeDate desc", ids, LocalDate.now())
+                .stream().collect(toMap(UserContactinfo::getUseruuid, ci -> ci, (a, b) -> a));
 
         // Statuses
         Map<String, List<UserStatus>> statusesByUser = UserStatus.<UserStatus>list("useruuid in ?1 order by statusdate", ids)
