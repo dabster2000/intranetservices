@@ -81,6 +81,31 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
     }
 
     // ========================================================================
+    // ADMIN QUERIES
+    // ========================================================================
+
+    /**
+     * Find all signing cases ordered by creation date descending.
+     * Used by admin view to see all cases globally.
+     *
+     * @return All signing cases, newest first
+     */
+    public List<SigningCase> findAllCasesOrderedByCreatedAtDesc() {
+        return find("ORDER BY createdAt DESC").list();
+    }
+
+    /**
+     * Find all signing cases with a specific SharePoint upload status.
+     * Used for bulk retry of failed uploads.
+     *
+     * @param status SharePoint upload status to filter by (e.g., "FAILED")
+     * @return List of cases with matching SharePoint upload status
+     */
+    public List<SigningCase> findBySharepointUploadStatus(String status) {
+        return find("sharepointUploadStatus", status).list();
+    }
+
+    // ========================================================================
     // ASYNC STATUS FETCHING (Batch Job Support)
     // ========================================================================
 

@@ -24,22 +24,31 @@ import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.EbitdaSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelBonusDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import dk.trustworks.intranet.aggregates.finance.usecases.CareerLevelEconomicsUseCase;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -62,6 +71,9 @@ public class CxoFinanceResource {
 
     @Inject
     CareerLevelEconomicsUseCase careerLevelEconomicsUseCase;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     /**
      * Gets monthly revenue and margin trend data.
@@ -1319,6 +1331,63 @@ public class CxoFinanceResource {
 
         log.debugf("Returning career-level economics for %d career levels", result.getCareerLevels().size());
         return result;
+    }
+
+    // ========================================================================
+    // Career Level Bonus Endpoints
+    // ========================================================================
+
+    /**
+     * Returns all career level bonus percentages.
+     *
+     * @return List of CareerLevelBonusDTO with careerLevel and bonusPct
+     */
+    @GET
+    @Path("/career-level-bonuses")
+    public List<CareerLevelBonusDTO> getCareerLevelBonuses() {
+        log.debug("GET /finance/cxo/career-level-bonuses");
+
+        return CareerLevelBonus.<CareerLevelBonus>listAll().stream()
+                .map(b -> new CareerLevelBonusDTO(b.careerLevel, b.bonusPct.doubleValue()))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Updates the bonus percentage for a specific career level.
+     * Validates that bonusPct is between 0 and 100 inclusive.
+     *
+     * @param careerLevel the career level key (path param)
+     * @param dto         the DTO containing the new bonusPct
+     * @return updated CareerLevelBonusDTO
+     */
+    @PUT
+    @Path("/career-level-bonuses/{careerLevel}")
+    @Transactional
+    public Response updateCareerLevelBonus(
+            @PathParam("careerLevel") String careerLevel,
+            CareerLevelBonusDTO dto) {
+
+        log.debugf("PUT /finance/cxo/career-level-bonuses/%s: bonusPct=%s", careerLevel, dto.getBonusPct());
+
+        if (dto.getBonusPct() < 0 || dto.getBonusPct() > 100) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "bonusPct must be between 0 and 100"))
+                    .build();
+        }
+
+        CareerLevelBonus bonus = CareerLevelBonus.findById(careerLevel);
+        if (bonus == null) {
+            // Auto-create for unknown career levels
+            bonus = new CareerLevelBonus();
+            bonus.careerLevel = careerLevel;
+        }
+
+        bonus.bonusPct = BigDecimal.valueOf(dto.getBonusPct());
+        bonus.updatedAt = LocalDateTime.now();
+        bonus.updatedBy = requestHeaderHolder.getUsername();
+        bonus.persist();
+
+        return Response.ok(new CareerLevelBonusDTO(bonus.careerLevel, bonus.bonusPct.doubleValue())).build();
     }
 
     /**

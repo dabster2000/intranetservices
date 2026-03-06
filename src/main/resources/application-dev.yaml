@@ -123,77 +123,6 @@ mp:
       smallrye-kafka:
         bootstrap:
           servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9094}
-    incoming:
-      user-status-updates:
-        connector: smallrye-kafka
-        topic: user.status.updates
-        tracing-enabled: true
-        key:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        value:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        auto:
-          offset:
-            reset: earliest
-        enable:
-          auto:
-            commit: false
-      user-salary-updates:
-        connector: smallrye-kafka
-        topic: user.salary.updates
-        tracing-enabled: true
-        key:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        value:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        auto:
-          offset:
-            reset: earliest
-        enable:
-          auto:
-            commit: false
-      work-updates:
-        connector: smallrye-kafka
-        topic: work.updates
-        tracing-enabled: true
-        key:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        value:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        auto:
-          offset:
-            reset: earliest
-        enable:
-          auto:
-            commit: false
-      contract-consultant-updates:
-        connector: smallrye-kafka
-        topic: contract.consultant.updates
-        tracing-enabled: true
-        key:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        value:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        auto:
-          offset:
-            reset: earliest
-        enable:
-          auto:
-            commit: false
-      budget-updates:
-        connector: smallrye-kafka
-        topic: budget.updates
-        tracing-enabled: true
-        key:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        value:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        auto:
-          offset:
-            reset: earliest
-        enable:
-          auto:
-            commit: false
 feature:
   sns:
     enabled: false
@@ -248,9 +177,6 @@ bucket:
   expenses: expensefiles
   files: trustworksfiles
   invoices: ${INVOICE_S3:invoicefiles-test}
-claid:
-  ai:
-    apikey: ${CLAID_APIKEY:xx}
 edenai:
   api:
     key: ${EDENAI_APIKEY:xx}
@@ -261,10 +187,6 @@ openai:
 dk:
   trustworks:
     intranet:
-      #fileservice:
-      # network:
-      #PhotoAPI/mp-rest/url: https://api.claid.ai
-      #PhotoAPI/mp-rest/providers=dk.trustworks.intranet.network.BearerTokenFilter:
       expenseservice:
         remote:
           EconomicsAPI/mp-rest/url: https://restapi.e-conomic.com
@@ -281,19 +203,6 @@ hibernate:
   order_inserts: true
   order_updates: true
 
-# Mapping of domain event types to Kafka topics used by OutboxDispatcher
-# These become properties like event-topics.CREATE_CLIENT at runtime
-event-topics:
-  CREATE_CLIENT: client.updates
-  UPDATE_WORK: work.updates
-  MODIFY_CONTRACT_CONSULTANT: contract.consultant.updates
-  CREATE_USER: user.status.updates
-  UPDATE_USER: user.status.updates
-  CREATE_USER_STATUS: user.status.updates
-  DELETE_USER_STATUS: user.status.updates
-  CREATE_USER_SALARY: user.salary.updates
-  DELETE_USER_SALARY: user.salary.updates
-  CREATE_BANK_INFO: user.status.updates
 pricingEngine:
   enabled: true
 nextsign:

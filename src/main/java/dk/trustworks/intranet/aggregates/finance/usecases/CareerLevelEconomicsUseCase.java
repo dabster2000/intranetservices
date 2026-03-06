@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.finance.usecases;
 
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsItemDTO;
+import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -11,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Use case for retrieving career-level cost economics from the fact_minimum_viable_rate view.
@@ -68,6 +70,10 @@ public class CareerLevelEconomicsUseCase {
 
         log.debugf("fact_minimum_viable_rate returned %d career-level rows", rows.size());
 
+        // Fetch bonus percentages per career level
+        Map<String, Double> bonusMap = CareerLevelBonus.<CareerLevelBonus>listAll().stream()
+                .collect(Collectors.toMap(b -> b.careerLevel, b -> b.bonusPct.doubleValue()));
+
         List<CareerLevelEconomicsItemDTO> items = new ArrayList<>(rows.size());
 
         for (Object[] row : rows) {
@@ -97,6 +103,20 @@ public class CareerLevelEconomicsUseCase {
             // Sum statutory costs in Java: ATP + AM-bidrag
             double statutoryCosts = atpPerPerson + amBidragPerPerson;
 
+            // Apply bonus percentage: bonusCost = avgMonthlySalary * (bonusPct / 100)
+            double bonusPct = bonusMap.getOrDefault(careerLevel, 0.0);
+            if (bonusPct > 0 && totalMonthlyCost > 0) {
+                double bonusCost = avgMonthlySalary * bonusPct / 100.0;
+                double newTotalCost = totalMonthlyCost + bonusCost;
+                double costRatio = newTotalCost / totalMonthlyCost;
+                totalMonthlyCost = newTotalCost;
+                breakEvenRateTarget = breakEvenRateTarget != null ? breakEvenRateTarget * costRatio : null;
+                rateWith15Margin = rateWith15Margin != null ? rateWith15Margin * costRatio : null;
+                rateWith20Margin = rateWith20Margin != null ? rateWith20Margin * costRatio : null;
+                rateBuffer = (breakEvenRateTarget != null && avgBillingRate > 0)
+                        ? avgBillingRate - breakEvenRateTarget : null;
+            }
+
             String label = CAREER_LEVEL_LABELS.getOrDefault(careerLevel, toTitleCase(careerLevel));
 
             items.add(new CareerLevelEconomicsItemDTO(
@@ -117,7 +137,8 @@ public class CareerLevelEconomicsUseCase {
                     rateWith20Margin,
                     rateBuffer,
                     minMonthlySalary,
-                    maxMonthlySalary
+                    maxMonthlySalary,
+                    bonusPct
             ));
         }
 

@@ -11,22 +11,9 @@ public final class TopicMapper {
     private static final Map<String, String> TYPE_TO_TOPIC = new HashMap<>();
 
     static {
-        // User status changes
-        TYPE_TO_TOPIC.put("CREATE_USER_STATUS", "user.status.updates");
-        TYPE_TO_TOPIC.put("DELETE_USER_STATUS", "user.status.updates");
-
-        // Salary changes
-        TYPE_TO_TOPIC.put("CREATE_USER_SALARY", "user.salary.updates");
-        TYPE_TO_TOPIC.put("DELETE_USER_SALARY", "user.salary.updates");
-
-        // Work updates
-        TYPE_TO_TOPIC.put("UPDATE_WORK", "work.updates");
-
-        // Contract consultant updates
-        TYPE_TO_TOPIC.put("MODIFY_CONTRACT_CONSULTANT", "contract.consultant.updates");
-
-        // If in future a dedicated budget update type is introduced, map it here:
-        // TYPE_TO_TOPIC.put("BUDGET_UPDATE", "budget.updates");
+        // All BI-related topic mappings removed — recalculation is handled by
+        // DB triggers + sp_incremental_bi_refresh (every 5 min).
+        // Only expenses-created remains (managed via SmallRye reactive messaging, not this mapper).
     }
 
     private TopicMapper() {}

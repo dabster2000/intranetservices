@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.utils.resources;
 
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
+import dk.trustworks.intranet.utils.dto.signing.AdminSigningCaseDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
@@ -121,9 +122,10 @@ public class SigningResource {
                 }
 
             } catch (Exception e) {
-                // Log but don't fail - batch job will retry if needed
-                log.warnf(e, "Failed to save minimal case record for %s: %s",
-                         response.caseKey(), e.getMessage());
+                log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
+                    + "Case exists in NextSign but is NOT tracked locally!", response.caseKey());
+                return serverError("CASE_TRACKING_FAILED",
+                    "Signing case was created but could not be saved for tracking. Case key: " + response.caseKey());
             }
 
             return Response.status(Response.Status.CREATED)
@@ -224,9 +226,10 @@ public class SigningResource {
                     response.caseKey(), totalSigners, signingStoreUuid);
 
             } catch (Exception e) {
-                // Log but don't fail - batch job will retry if needed
-                log.warnf(e, "Failed to save minimal case record for %s: %s",
-                         response.caseKey(), e.getMessage());
+                log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
+                    + "Case exists in NextSign but is NOT tracked locally!", response.caseKey());
+                return serverError("CASE_TRACKING_FAILED",
+                    "Signing case was created but could not be saved for tracking. Case key: " + response.caseKey());
             }
 
             return Response.status(Response.Status.CREATED)
@@ -408,9 +411,10 @@ public class SigningResource {
                 }
 
             } catch (Exception e) {
-                // Log but don't fail - batch job will retry if needed
-                log.warnf(e, "Failed to save minimal case record for %s: %s",
-                         response.caseKey(), e.getMessage());
+                log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
+                    + "Case exists in NextSign but is NOT tracked locally!", response.caseKey());
+                return serverError("CASE_TRACKING_FAILED",
+                    "Signing case was created but could not be saved for tracking. Case key: " + response.caseKey());
             }
 
             return Response.status(Response.Status.CREATED)
@@ -749,6 +753,146 @@ public class SigningResource {
         } catch (Exception e) {
             log.errorf(e, "Failed to retrieve processing stats");
             return serverError("STATS_FAILED", "Failed to retrieve stats: " + e.getMessage());
+        }
+    }
+
+    // ========================================================================
+    // ADMIN ENDPOINTS
+    // ========================================================================
+
+    /**
+     * Lists ALL signing cases with enriched data for admin view.
+     * Returns cases with resolved employee names and template names.
+     */
+    @GET
+    @Path("/admin/cases")
+    @Operation(
+        summary = "List all signing cases (admin)",
+        description = "Returns ALL signing cases with enriched data including employee names and template names. " +
+                      "Ordered by creation date descending."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Cases retrieved successfully",
+            content = @Content(schema = @Schema(implementation = AdminSigningCaseDTO[].class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Server error",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response listAllCasesAdmin() {
+        log.info("GET /utils/signing/admin/cases - Admin listing all signing cases");
+        try {
+            List<AdminSigningCaseDTO> cases = signingService.listAllCasesAdmin();
+            log.infof("Admin: returning %d cases", cases.size());
+            return Response.ok(cases).build();
+        } catch (Exception e) {
+            log.errorf(e, "Failed to list admin cases");
+            return serverError("ADMIN_LIST_FAILED", "Failed to list cases: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Syncs ALL signing cases from NextSign (admin-level sync).
+     */
+    @POST
+    @Path("/admin/sync")
+    @Operation(
+        summary = "Sync all cases from NextSign (admin)",
+        description = "Synchronizes ALL signing cases across all users from NextSign."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Sync completed successfully",
+            content = @Content(schema = @Schema(implementation = Map.class))
+        ),
+        @APIResponse(
+            responseCode = "500",
+            description = "Sync failed",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class))
+        )
+    })
+    public Response syncAllCases() {
+        log.info("POST /utils/signing/admin/sync - Admin syncing all cases");
+        try {
+            int syncedCount = signingService.syncAllCasesFromNextSign();
+            return Response.ok(Map.of(
+                "status", "synced",
+                "count", syncedCount,
+                "message", String.format("Successfully synced %d cases from NextSign", syncedCount)
+            )).build();
+        } catch (Exception e) {
+            log.errorf(e, "Admin sync failed");
+            return serverError("ADMIN_SYNC_FAILED", "Sync failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Retries a single failed SharePoint upload.
+     */
+    @POST
+    @Path("/admin/retry-upload/{caseKey}")
+    @Operation(
+        summary = "Retry failed SharePoint upload (admin)",
+        description = "Resets a failed SharePoint upload to PENDING so the batch job picks it up."
+    )
+    @APIResponses({
+        @APIResponse(responseCode = "200", description = "Retry initiated"),
+        @APIResponse(responseCode = "404", description = "Case not found"),
+        @APIResponse(responseCode = "500", description = "Server error")
+    })
+    public Response retrySharePointUpload(
+        @Parameter(description = "The NextSign case key", required = true)
+        @PathParam("caseKey") String caseKey
+    ) {
+        log.infof("POST /utils/signing/admin/retry-upload/%s - Retrying SharePoint upload", caseKey);
+        try {
+            signingService.retryFailedSharePointUpload(caseKey);
+            return Response.ok(Map.of(
+                "status", "retry_initiated",
+                "caseKey", caseKey,
+                "message", "SharePoint upload retry initiated"
+            )).build();
+        } catch (SigningService.SigningException e) {
+            if (e.getMessage().contains("not found")) {
+                return notFound("CASE_NOT_FOUND", e.getMessage());
+            }
+            return serverError("RETRY_FAILED", e.getMessage());
+        } catch (Exception e) {
+            log.errorf(e, "Retry failed for case %s", caseKey);
+            return serverError("RETRY_FAILED", "Retry failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Retries ALL failed SharePoint uploads.
+     */
+    @POST
+    @Path("/admin/retry-uploads")
+    @Operation(
+        summary = "Retry all failed SharePoint uploads (admin)",
+        description = "Resets ALL failed SharePoint uploads to PENDING so the batch job picks them up."
+    )
+    @APIResponses({
+        @APIResponse(responseCode = "200", description = "Retries initiated"),
+        @APIResponse(responseCode = "500", description = "Server error")
+    })
+    public Response retryAllSharePointUploads() {
+        log.info("POST /utils/signing/admin/retry-uploads - Retrying all failed SharePoint uploads");
+        try {
+            int count = signingService.retryAllFailedSharePointUploads();
+            return Response.ok(Map.of(
+                "status", "retries_initiated",
+                "count", count,
+                "message", String.format("Initiated retry for %d failed uploads", count)
+            )).build();
+        } catch (Exception e) {
+            log.errorf(e, "Bulk retry failed");
+            return serverError("BULK_RETRY_FAILED", "Bulk retry failed: " + e.getMessage());
         }
     }
 

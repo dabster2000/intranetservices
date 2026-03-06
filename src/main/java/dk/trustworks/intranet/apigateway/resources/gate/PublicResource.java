@@ -44,7 +44,6 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityScheme;
 
-import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -257,11 +256,7 @@ public class PublicResource {
         logo.setUploaddate(LocalDate.now());
         logo.setFile(decoded);
 
-        try {
-            photoAPI.updateLogo(logo);
-        } catch (IOException e) {
-            throw new WebApplicationException("Unable to store logo", e, Response.Status.INTERNAL_SERVER_ERROR);
-        }
+        photoAPI.updateLogo(logo);
 
         return Response.noContent().build();
     }
@@ -308,11 +303,7 @@ public class PublicResource {
             logo.setUploaddate(LocalDate.now());
             logo.setFile(decoded);
 
-            try {
-                photoAPI.updateLogo(logo);
-            } catch (IOException e) {
-                throw new WebApplicationException("Unable to store logo", e, Response.Status.INTERNAL_SERVER_ERROR);
-            }
+            photoAPI.updateLogo(logo);
         }
 
         return client;

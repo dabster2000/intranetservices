@@ -13,7 +13,6 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.tika.Tika;
 
-import java.io.IOException;
 import java.util.List;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -88,19 +87,19 @@ public class FileResource {
 
     @PUT
     @Path("/photos")
-    public void updatePhoto(File photo) throws IOException {
+    public void updatePhoto(File photo) {
         photoService.updatePhoto(photo);
     }
 
     @PUT
     @Path("/photos/logo")
-    public void updateClientLogo(File photo) throws IOException {
+    public void updateClientLogo(File photo) {
         photoService.updateLogo(photo);
     }
 
     @PUT
     @Path("/photos/portrait")
-    public void updatePortrait(File photo) throws IOException {
+    public void updatePortrait(File photo) {
         photoService.updatePortrait(photo);
     }
 

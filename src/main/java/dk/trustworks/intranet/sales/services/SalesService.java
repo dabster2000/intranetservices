@@ -5,10 +5,12 @@ import dk.trustworks.intranet.sales.model.SalesLead;
 import dk.trustworks.intranet.sales.model.SalesLeadConsultant;
 import dk.trustworks.intranet.sales.model.enums.LeadStatus;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -19,6 +21,9 @@ import java.util.*;
 @JBossLog
 @ApplicationScoped
 public class SalesService {
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     public SalesLead findOne(String uuid) {
         return SalesLead.findById(uuid);
@@ -139,12 +144,14 @@ public class SalesService {
                 salesLead.setWonDate(LocalDateTime.now());
             }
             salesLead.persist();
+            logStageTransition(salesLead.getUuid(), null, salesLead.getStatus().name());
             log.info("Created new SalesLead with UUID: " + salesLead.getUuid());
         } else if(SalesLead.findById(salesLead.getUuid())==null) {
             if (salesLead.getStatus() == LeadStatus.WON) {
                 salesLead.setWonDate(LocalDateTime.now());
             }
             salesLead.persist();
+            logStageTransition(salesLead.getUuid(), null, salesLead.getStatus().name());
         } else {
             update(salesLead);
         }
@@ -171,6 +178,14 @@ public class SalesService {
 
         // Determine won_date based on status transition
         SalesLead existing = SalesLead.findById(salesLead.getUuid());
+
+        // Log stage transition if status changed
+        if (existing != null && existing.getStatus() != salesLead.getStatus()) {
+            logStageTransition(salesLead.getUuid(),
+                    existing.getStatus() != null ? existing.getStatus().name() : null,
+                    salesLead.getStatus().name());
+        }
+
         LocalDateTime wonDate;
         if (salesLead.getStatus() == LeadStatus.WON && (existing == null || existing.getStatus() != LeadStatus.WON)) {
             // Transitioning TO WON — set won_date to now
@@ -224,6 +239,23 @@ public class SalesService {
     @Transactional
     public void delete(String uuid) {
         SalesLead.deleteById(uuid);
+    }
+
+    private void logStageTransition(String leadUuid, String fromStage, String toStage) {
+        try {
+            String changedBy = requestHeaderHolder != null ? requestHeaderHolder.getUsername() : null;
+            SalesLead.getEntityManager().createNativeQuery(
+                "INSERT INTO sales_lead_stage_history (lead_uuid, from_stage, to_stage, changed_by) VALUES (?, ?, ?, ?)"
+            )
+            .setParameter(1, leadUuid)
+            .setParameter(2, fromStage)
+            .setParameter(3, toStage)
+            .setParameter(4, changedBy)
+            .executeUpdate();
+            log.infof("Logged stage transition for lead %s: %s -> %s (by %s)", leadUuid, fromStage, toStage, changedBy);
+        } catch (Exception e) {
+            log.errorf("Failed to log stage transition for lead %s: %s", leadUuid, e.getMessage());
+        }
     }
 
 }

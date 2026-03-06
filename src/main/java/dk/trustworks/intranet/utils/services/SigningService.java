@@ -1,8 +1,12 @@
 package dk.trustworks.intranet.utils.services;
 
+import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
+import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.utils.NextsignSigningService;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
+import dk.trustworks.intranet.utils.dto.signing.AdminSigningCaseDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateTemplateSigningRequest;
@@ -19,6 +23,7 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -694,7 +699,7 @@ public class SigningService {
 
         return new SigningCaseStatus(
             caseKey,
-            contract.caseStatus() != null ? contract.caseStatus() : "pending",
+            deriveSigningStatus(contract, totalSigners, completedSigners),
             documentName,
             createdAt,
             signers,
@@ -705,6 +710,36 @@ public class SigningService {
             null, // sharepointUploadError - not returned by NextSign API
             null  // sharepointFileUrl - not returned by NextSign API
         );
+    }
+
+    /**
+     * Derives the signing case status from signer completion data.
+     * The NextSign API does not return a case_status field, so we compute it.
+     */
+    private String deriveSigningStatus(GetCaseStatusResponse.CaseDetails contract, int totalSigners, int completedSigners) {
+        // If NextSign ever returns case_status in the future, use it
+        if (contract.caseStatus() != null && !contract.caseStatus().isBlank()) {
+            return contract.caseStatus();
+        }
+
+        // Check for rejections
+        if (contract.recipients() != null) {
+            boolean hasRejected = contract.recipients().stream()
+                .anyMatch(r -> "rejected".equalsIgnoreCase(r.status()));
+            if (hasRejected) {
+                return "rejected";
+            }
+        }
+
+        // Derive from completion counts
+        if (totalSigners > 0 && completedSigners >= totalSigners) {
+            return "completed";
+        }
+        if (completedSigners > 0) {
+            return "in_progress";
+        }
+
+        return "pending";
     }
 
     /**
@@ -1057,6 +1092,156 @@ public class SigningService {
             entity.getSharepointUploadError(),
             entity.getSharepointFileUrl()
         );
+    }
+
+    // ========================================================================
+    // ADMIN METHODS
+    // ========================================================================
+
+    /**
+     * Lists ALL signing cases with enriched admin data (employee names, template names).
+     * Used by admin view to see global signing case status.
+     *
+     * @return List of admin signing case DTOs with resolved names
+     */
+    public List<AdminSigningCaseDTO> listAllCasesAdmin() {
+        log.info("Listing all signing cases for admin view");
+
+        List<SigningCase> allCases = signingCaseRepository.findAllCasesOrderedByCreatedAtDesc();
+
+        // Batch-resolve user names
+        Map<String, String> userNameCache = new HashMap<>();
+        for (SigningCase sc : allCases) {
+            if (sc.getUserUuid() != null && !userNameCache.containsKey(sc.getUserUuid())) {
+                try {
+                    User user = User.findById(sc.getUserUuid());
+                    if (user != null) {
+                        userNameCache.put(sc.getUserUuid(), user.getFirstname() + " " + user.getLastname());
+                    } else {
+                        userNameCache.put(sc.getUserUuid(), "Unknown");
+                    }
+                } catch (Exception e) {
+                    log.warnf("Failed to resolve user name for UUID %s: %s", sc.getUserUuid(), e.getMessage());
+                    userNameCache.put(sc.getUserUuid(), "Unknown");
+                }
+            }
+        }
+
+        // Batch-resolve template names via signing_store_uuid -> template_signing_stores -> document_templates
+        Map<String, String> templateNameCache = new HashMap<>();
+        for (SigningCase sc : allCases) {
+            if (sc.getSigningStoreUuid() != null && !templateNameCache.containsKey(sc.getSigningStoreUuid())) {
+                try {
+                    TemplateSigningStoreEntity store = TemplateSigningStoreEntity.findById(sc.getSigningStoreUuid());
+                    if (store != null && store.getTemplate() != null) {
+                        templateNameCache.put(sc.getSigningStoreUuid(), store.getTemplate().getName());
+                    } else {
+                        templateNameCache.put(sc.getSigningStoreUuid(), null);
+                    }
+                } catch (Exception e) {
+                    log.warnf("Failed to resolve template name for store UUID %s: %s", sc.getSigningStoreUuid(), e.getMessage());
+                    templateNameCache.put(sc.getSigningStoreUuid(), null);
+                }
+            }
+        }
+
+        log.infof("Admin view: found %d total cases, resolved %d user names, %d template names",
+            allCases.size(), userNameCache.size(), templateNameCache.size());
+
+        return allCases.stream()
+            .map(sc -> new AdminSigningCaseDTO(
+                sc.getCaseKey(),
+                sc.getStatus() != null ? sc.getStatus() : "pending",
+                sc.getDocumentName(),
+                sc.getCreatedAt(),
+                List.of(), // Signers loaded on-demand
+                sc.getTotalSigners() != null ? sc.getTotalSigners() : 0,
+                sc.getCompletedSigners() != null ? sc.getCompletedSigners() : 0,
+                sc.getSigningStoreUuid(),
+                sc.getSharepointUploadStatus(),
+                sc.getSharepointUploadError(),
+                sc.getSharepointFileUrl(),
+                sc.getUserUuid(),
+                userNameCache.getOrDefault(sc.getUserUuid(), "Unknown"),
+                sc.getSigningStoreUuid() != null ? templateNameCache.get(sc.getSigningStoreUuid()) : null,
+                sc.getProcessingStatus(),
+                sc.getRetryCount(),
+                sc.getLastStatusFetch()
+            ))
+            .toList();
+    }
+
+    /**
+     * Syncs ALL signing cases from NextSign (not user-specific).
+     * Iterates all distinct userUuids and syncs each.
+     *
+     * @return Total number of cases synced across all users
+     */
+    public int syncAllCasesFromNextSign() {
+        log.info("Admin: syncing all cases from NextSign");
+
+        // Get all distinct user UUIDs from signing_cases
+        List<String> distinctUserUuids = signingCaseRepository.getEntityManager()
+            .createQuery("SELECT DISTINCT sc.userUuid FROM SigningCase sc", String.class)
+            .getResultList();
+
+        int totalSynced = 0;
+        for (String userUuid : distinctUserUuids) {
+            try {
+                int synced = syncCasesFromNextSign(userUuid);
+                totalSynced += synced;
+            } catch (Exception e) {
+                log.warnf("Failed to sync cases for user %s: %s", userUuid, e.getMessage());
+            }
+        }
+
+        log.infof("Admin sync completed. Total synced: %d across %d users", totalSynced, distinctUserUuids.size());
+        return totalSynced;
+    }
+
+    /**
+     * Retries a single failed SharePoint upload by resetting its status.
+     * The batch job will pick it up on the next 5-minute run.
+     *
+     * @param caseKey NextSign case key identifying the signing case
+     * @throws SigningException if the case is not found
+     */
+    @Transactional
+    public void retryFailedSharePointUpload(String caseKey) {
+        log.infof("Admin: retrying SharePoint upload for case %s", caseKey);
+
+        SigningCase sc = signingCaseRepository.findByCaseKey(caseKey)
+            .orElseThrow(() -> new SigningException("Case not found: " + caseKey));
+
+        sc.setSharepointUploadStatus("PENDING");
+        sc.setSharepointUploadError(null);
+        sc.setRetryCount(0);
+        signingCaseRepository.persist(sc);
+
+        log.infof("Reset SharePoint upload status to PENDING for case %s", caseKey);
+    }
+
+    /**
+     * Retries ALL failed SharePoint uploads by resetting their status.
+     * The batch job will pick them up on the next 5-minute run.
+     *
+     * @return Number of cases reset for retry
+     */
+    @Transactional
+    public int retryAllFailedSharePointUploads() {
+        log.info("Admin: retrying all failed SharePoint uploads");
+
+        List<SigningCase> failedCases = signingCaseRepository.findBySharepointUploadStatus("FAILED");
+
+        for (SigningCase sc : failedCases) {
+            sc.setSharepointUploadStatus("PENDING");
+            sc.setSharepointUploadError(null);
+            sc.setRetryCount(0);
+            signingCaseRepository.persist(sc);
+        }
+
+        log.infof("Reset %d failed SharePoint uploads to PENDING", failedCases.size());
+        return failedCases.size();
     }
 
     /**

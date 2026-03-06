@@ -1,7 +1,5 @@
 package dk.trustworks.intranet.fileservice.resources;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.fileservice.model.File;
 import io.quarkus.cache.CacheKey;
 import io.quarkus.cache.CacheManager;
@@ -10,21 +8,8 @@ import jakarta.inject.Inject;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.client.Client;
-import jakarta.ws.rs.client.ClientBuilder;
-import jakarta.ws.rs.core.MediaType;
-import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
-import org.apache.http.HttpEntity;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.ResponseHandler;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.entity.ContentType;
-import org.apache.http.entity.mime.HttpMultipartMode;
-import org.apache.http.entity.mime.MultipartEntityBuilder;
-import org.apache.http.impl.client.BasicResponseHandler;
-import org.apache.http.impl.client.HttpClientBuilder;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import net.coobird.thumbnailator.Thumbnails;
 import org.apache.tika.Tika;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -41,7 +26,6 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.*;
 
@@ -69,9 +53,6 @@ public class PhotoService {
 
     @ConfigProperty(name = "bucket.files")
     String bucketName;
-
-    @ConfigProperty(name = "claid.ai.apikey")
-    String claidApiKey;
 
     @Inject
     CacheManager cacheManager;
@@ -166,49 +147,40 @@ public class PhotoService {
         return fileData.length / 1024; // Convert bytes to kilobytes
     }
 
-    private byte[] resizeWithClaid(byte[] data, int width) {
-        log.debug("Resizing image with Claid to width=" + width);
+    private byte[] resizeImage(byte[] data, int width) {
+        log.debug("Resizing image locally to width=" + width);
         try {
-            HttpClient httpClient = HttpClientBuilder.create().build();
-            HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
-            MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-            builder.setBoundary("Boundary-Unique-Identifier");
-            builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
-            builder.addBinaryBody(
-                    "file",
-                    new ByteArrayInputStream(data),
-                    ContentType.APPLICATION_OCTET_STREAM,
-                    "photo"
-            );
-
-            // Build JSON body programmatically to keep it consistent with other Claid requests
-            ObjectNode root = objectMapper.createObjectNode();
-            ObjectNode operations = root.putObject("operations");
-            ObjectNode restorations = operations.putObject("restorations");
-            restorations.put("upscale", "faces");
-            restorations.put("polish", false);
-            ObjectNode resizing = operations.putObject("resizing");
-            resizing.put("width", width);
-            resizing.put("height", width);
-            ObjectNode fit = resizing.putObject("fit");
-            fit.put("crop", "smart");
-            ObjectNode output = root.putObject("output");
-            output.put("format", "webp");
-
-            String jsonData = objectMapper.writeValueAsString(root);
-            builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
-
-            HttpEntity multipart = builder.build();
-            uploadFile.setEntity(multipart);
-            uploadFile.setHeader("Authorization", "Bearer " + claidApiKey);
-
-            ResponseHandler<String> responseHandler = new BasicResponseHandler();
-            String response = httpClient.execute(uploadFile, responseHandler);
-            byte[] resized = downloadImageFromJson(response);
-            log.debug("Claid resize complete, size=" + getFileSize(resized) + "KB");
+            ByteArrayInputStream bais = new ByteArrayInputStream(data);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            Thumbnails.of(bais)
+                    .size(width, width)
+                    .outputFormat("jpg")
+                    .outputQuality(0.85)
+                    .toOutputStream(baos);
+            byte[] resized = baos.toByteArray();
+            log.debug("Local resize complete, size=" + getFileSize(resized) + "KB");
             return resized;
         } catch (Exception e) {
-            log.error("Claid resize failed", e);
+            log.error("Local resize failed", e);
+            return data;
+        }
+    }
+
+    private byte[] resizeToUploadDimensions(byte[] data, int maxWidth, int maxHeight) {
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(data);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            Thumbnails.of(bais)
+                    .size(maxWidth, maxHeight)
+                    .outputFormat("jpg")
+                    .outputQuality(0.90)
+                    .toOutputStream(baos);
+            byte[] result = baos.toByteArray();
+            log.debug("Resized upload image to fit " + maxWidth + "x" + maxHeight +
+                    ", size=" + getFileSize(result) + "KB");
+            return result;
+        } catch (Exception e) {
+            log.warn("Image resize failed, saving original", e);
             return data;
         }
     }
@@ -283,7 +255,7 @@ public class PhotoService {
 
         File photo = findPhotoByRelatedUUID(relateduuid);
         try {
-            byte[] resized = resizeWithClaid(photo.getFile(), width);
+            byte[] resized = resizeImage(photo.getFile(), width);
             saveToS3Async(key, resized);
             return resized;
         } catch (Exception e) {
@@ -331,185 +303,22 @@ public class PhotoService {
     }
 
     @Transactional
-    public void updatePhoto(File photo) throws IOException {
-        HttpClient httpClient = HttpClientBuilder.create().build();
-        HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
-        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-
-        // Explicit boundary setting (if necessary)
-        builder.setBoundary("Boundary-Unique-Identifier");
-        builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
-
-        // Adding file part
-        builder.addBinaryBody(
-                "file",
-                new ByteArrayInputStream(photo.getFile()),
-                ContentType.APPLICATION_OCTET_STREAM,
-                photo.getName()
-        );
-
-        // Adding JSON data part
-        String jsonData = """
-                {
-                    "operations": {
-                        "restorations": {
-                            "upscale": "smart_enhance"
-                        },
-                        "resizing": {
-                            "width": 1600,
-                            "height": 800,
-                            "fit": "outpaint"
-                        }
-                    },
-                    "output": {
-                        "format": "webp"
-                    }
-                }""";
-        builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
-
-        HttpEntity multipart = builder.build();
-        uploadFile.setEntity(multipart);
-        uploadFile.setHeader("Authorization", "Bearer "+claidApiKey);
-
-        // Letting HttpClient set the Content-Type
-        ResponseHandler<String> responseHandler = new BasicResponseHandler();
-        String response = httpClient.execute(uploadFile, responseHandler);
-
-        photo.setFile(downloadImageFromJson(response));
+    public void updatePhoto(File photo) {
+        photo.setFile(resizeToUploadDimensions(photo.getFile(), 1600, 800));
         update(photo);
     }
 
     @Transactional
-    public void updateLogo(File photo) throws IOException {
-        HttpClient httpClient = HttpClientBuilder.create().build();
-        HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
-        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-
-        // Explicit boundary setting (if necessary)
-        builder.setBoundary("Boundary-Unique-Identifier");
-        builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
-
-        // Adding file part
-        builder.addBinaryBody(
-                "file",
-                new ByteArrayInputStream(photo.getFile()),
-                ContentType.APPLICATION_OCTET_STREAM,
-                photo.getName()
-        );
-
-        // Adding JSON data part
-        String jsonData = """
-                {
-                    "operations": {
-                        "restorations": {
-                            "upscale": "smart_enhance"
-                        },
-                        "resizing": {
-                            "width": 1600,
-                            "height": 800,
-                            "fit": "outpaint"
-                        }
-                    },
-                    "output": {
-                        "format": "webp"
-                    }
-                }""";
-        builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
-
-        HttpEntity multipart = builder.build();
-        uploadFile.setEntity(multipart);
-        uploadFile.setHeader("Authorization", "Bearer "+claidApiKey);
-
-        // Letting HttpClient set the Content-Type
-        ResponseHandler<String> responseHandler = new BasicResponseHandler();
-        String response = httpClient.execute(uploadFile, responseHandler);
-
-        photo.setFile(downloadImageFromJson(response));
+    public void updateLogo(File photo) {
+        photo.setFile(resizeToUploadDimensions(photo.getFile(), 1600, 800));
         update(photo);
     }
 
     @Transactional
-    public void updatePortrait(File photo) throws IOException {
-        HttpClient httpClient = HttpClientBuilder.create().build();
-        HttpPost uploadFile = new HttpPost("https://api.claid.ai/v1-beta1/image/edit/upload");
-        MultipartEntityBuilder builder = MultipartEntityBuilder.create();
-
-        // Explicit boundary setting (if necessary)
-        builder.setBoundary("Boundary-Unique-Identifier");
-        builder.setMode(HttpMultipartMode.BROWSER_COMPATIBLE);
-
-        // Adding file part
-        builder.addBinaryBody(
-                "file",
-                new ByteArrayInputStream(photo.getFile()),
-                ContentType.APPLICATION_OCTET_STREAM,
-                photo.getName()
-        );
-
-        // Adding JSON data part
-        String jsonData = """
-                {
-                    "operations": {
-                        "restorations": {
-                            "upscale": "faces"
-                        },
-                        "resizing": {
-                            "width": 1600,
-                            "height": 800,
-                            "fit": "outpaint"
-                        }
-                    },
-                    "output": {
-                        "format": "webp"
-                    }
-                }""";
-        builder.addTextBody("data", jsonData, ContentType.APPLICATION_JSON);
-
-        HttpEntity multipart = builder.build();
-        uploadFile.setEntity(multipart);
-        uploadFile.setHeader("Authorization", "Bearer "+claidApiKey);
-
-        // Letting HttpClient set the Content-Type
-        ResponseHandler<String> responseHandler = new BasicResponseHandler();
-        String response = httpClient.execute(uploadFile, responseHandler);
-
-        log.info("Response: " + response);
-        photo.setFile(downloadImageFromJson(response));
+    public void updatePortrait(File photo) {
+        photo.setFile(resizeToUploadDimensions(photo.getFile(), 1600, 800));
         update(photo);
         log.info("Photo updated");
-    }
-
-    private static final ObjectMapper objectMapper = new ObjectMapper();
-
-    public byte[] downloadImageFromJson(String jsonResponse) {
-        try {
-            // Parse the JSON response
-            JsonNode rootNode = objectMapper.readTree(jsonResponse);
-            JsonNode tmpUrlNode = rootNode.path("data").path("output").path("tmp_url");
-            String tmpUrl = tmpUrlNode.asText();
-
-            if (tmpUrl == null || tmpUrl.isEmpty()) {
-                throw new IllegalArgumentException("tmp_url is missing in the JSON response.");
-            }
-
-            // Fetch the image using a HTTP client
-            Client client = ClientBuilder.newClient();
-            Response response = client.target(tmpUrl)
-                    .request(MediaType.APPLICATION_OCTET_STREAM)
-                    .get();
-
-            if (response.getStatus() != 200) {
-                throw new RuntimeException("Failed to download image: HTTP error code " + response.getStatus());
-            }
-
-            // Convert the response to byte array
-            byte[] imageBytes = response.readEntity(byte[].class);
-            response.close(); // Important to close the response
-            return imageBytes;
-
-        } catch (IOException e) {
-            throw new RuntimeException("Error processing JSON or fetching the image.", e);
-        }
     }
 
     @Transactional

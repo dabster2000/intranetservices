@@ -131,4 +131,11 @@ public class CareerLevelEconomicsItemDTO {
      * Null when data is unavailable.
      */
     private Integer maxMonthlySalary;
+
+    /**
+     * Configured bonus percentage for this career level (0-100).
+     * Applied at the use-case layer to increase totalMonthlyCost and scale rate metrics.
+     * Default 0.0 means no bonus adjustment.
+     */
+    private double bonusPct;
 }

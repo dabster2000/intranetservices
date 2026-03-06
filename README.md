@@ -105,7 +105,7 @@ See [docs/draft-invoice-frontend.md](../docs/invoice/draft-invoice-frontend.md) 
 
 ## Photo Service
 
-Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](../docs/photo-service.md). Images are resized through the Claid API.
+Caching behaviour, S3 storage layout and dynamic resizing are described in [docs/photo-service.md](../docs/photo-service.md). Images are resized locally using Thumbnailator.
 
 ## API Usage Logging
 
