@@ -117,20 +117,7 @@ quarkus:
           secret-access-key: minioadmin
 vertx:
   worker-pool-size: 10
-mp:
-  messaging:
-    connector:
-      smallrye-kafka:
-        bootstrap:
-          servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9094}
 feature:
-  sns:
-    enabled: false
-  kafka:
-    live-producer:
-      enabled: true
-    consumers:
-      shadow: false
   contract:
     overrides:
       # Master switch - controls all override functionality

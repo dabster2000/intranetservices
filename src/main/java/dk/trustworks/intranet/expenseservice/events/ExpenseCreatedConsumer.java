@@ -10,12 +10,11 @@ import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import io.quarkus.scheduler.Scheduled;
-import io.smallrye.reactive.messaging.annotations.Blocking;
+import io.quarkus.vertx.ConsumeEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.reactive.messaging.Incoming;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -46,8 +45,7 @@ public class ExpenseCreatedConsumer {
         expenseUuids.forEach(this::onExpenseCreated);
     }
 
-    @Incoming("expenses-created-in")
-    @Blocking
+    @ConsumeEvent(value = "expense.validate", blocking = true)
     public void onExpenseCreated(String expenseUuid) {
 
         log.infof("Received expense created event for uuid=%s", expenseUuid);

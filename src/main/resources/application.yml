@@ -166,48 +166,12 @@ quarkus:
 
 
 mp:
-  messaging:
-    connector:
-      smallrye-kafka:
-        bootstrap:
-          servers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9094}
-    outgoing:
-      expenses-created-out:
-        connector: smallrye-kafka
-        topic: expenses.created
-        tracing-enabled: true
-        key:
-          serializer: org.apache.kafka.common.serialization.StringSerializer
-        value:
-          serializer: org.apache.kafka.common.serialization.StringSerializer
-    incoming:
-      expenses-created-in:
-        connector: smallrye-kafka
-        topic: expenses.created
-        tracing-enabled: true
-        key:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        value:
-          deserializer: org.apache.kafka.common.serialization.StringDeserializer
-        auto:
-          offset:
-            reset: earliest
-        enable:
-          auto:
-            commit: false
   jwt:
     verify:
       issuer: https://trustworks.dk
       publickey:
         location: META-INF/resources/publicKey.pem
 feature:
-  sns:
-    enabled: false
-  kafka:
-    live-producer:
-      enabled: true
-    consumers:
-      shadow: false
   # Contract Rule Override System feature flags
   contract:
     overrides:

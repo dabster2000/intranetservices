@@ -159,7 +159,7 @@ COPY --chown=quarkus:quarkus target/quarkus-app/quarkus/ /deployments/quarkus/
 #ADD --chown=quarkus:quarkus src/main/resources/newrelic.yml /usr/local/newrelic/newrelic.yml
 #COPY --chown=quarkus:quarkus jboss-logging.properties /deployments/jboss-logging.properties
 
-EXPOSE 8080
+EXPOSE 9093
 USER quarkus
 
 # Add New Relic and other JVM options

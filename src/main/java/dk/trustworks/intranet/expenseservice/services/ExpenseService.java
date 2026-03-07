@@ -1,10 +1,7 @@
 package dk.trustworks.intranet.expenseservice.services;
 
-import dk.trustworks.intranet.apis.openai.OpenAIService;
-import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.events.ExpenseCreatedConsumer;
-import dk.trustworks.intranet.expenseservice.events.ExpenseCreatedProducer;
 import dk.trustworks.intranet.expenseservice.exceptions.ExpenseUploadException;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
@@ -13,6 +10,7 @@ import dk.trustworks.intranet.expenseservice.remote.dto.economics.Entries;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Journal;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Voucher;
 import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.vertx.mutiny.core.eventbus.EventBus;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -54,10 +52,7 @@ public class ExpenseService {
     EconomicsService economicsService;
 
     @Inject
-    ExpenseCreatedProducer expenseCreatedProducer;
-
-    @Inject
-    OpenAIService openAIService;
+    EventBus eventBus;
 
     @Inject
     ExpenseCreatedConsumer expenseCreatedConsumer;
@@ -104,9 +99,9 @@ public class ExpenseService {
             }
             log.info("Expense file stored in S3 for " + expense.getUuid());
 
-            // Publish Kafka event to validate asynchronously
+            // Publish EventBus event to validate asynchronously
             try {
-                expenseCreatedProducer.publishCreated(expense.getUuid());
+                eventBus.send("expense.validate", expense.getUuid());
             } catch (Exception ex) {
                 log.error("Failed to publish expense created event for uuid=" + expense.getUuid(), ex);
             }
