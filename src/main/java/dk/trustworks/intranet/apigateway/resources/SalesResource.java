@@ -5,6 +5,7 @@ import dk.trustworks.intranet.sales.model.SalesLead;
 import dk.trustworks.intranet.sales.model.dto.ConsultantRecommendation;
 import dk.trustworks.intranet.sales.model.dto.ConsultantRecommendationRequest;
 import dk.trustworks.intranet.sales.model.dto.DescriptionSuggestionRequest;
+import dk.trustworks.intranet.sales.model.dto.LeadTrendData;
 import dk.trustworks.intranet.sales.services.SalesService;
 import dk.trustworks.intranet.sales.usecases.ConsultantRecommendationUseCase;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -105,6 +106,15 @@ public class SalesResource {
     public List<SalesLead> findWon(@QueryParam("sinceDate") String sinceDate) {
         log.infof("sinceDate = %s", sinceDate);
         return salesService.findWon(DateUtils.dateIt(sinceDate));
+    }
+
+    @GET
+    @Path("/trends")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Transactional
+    public Response getTrends() {
+        LeadTrendData trends = salesService.calculateTrends();
+        return Response.ok(trends).build();
     }
 
     @POST
