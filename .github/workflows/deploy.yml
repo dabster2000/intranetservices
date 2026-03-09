@@ -2,7 +2,7 @@ name: Deploy Quarkus to Staging App Runner
 
 on:
   push:
-    branches: [master]
+    branches: [staging]
 
 permissions:
   id-token: write
