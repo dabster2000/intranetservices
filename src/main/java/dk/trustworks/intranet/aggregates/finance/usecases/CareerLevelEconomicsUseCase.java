@@ -170,8 +170,7 @@ public class CareerLevelEconomicsUseCase {
                     u.uuid,
                     u.firstname,
                     u.lastname,
-                    s.salary,
-                    u.photoconsent
+                    s.salary
                 FROM user u
                 INNER JOIN userstatus us ON us.useruuid = u.uuid
                 INNER JOIN (
@@ -222,9 +221,8 @@ public class CareerLevelEconomicsUseCase {
             String firstname = (String) row[1];
             String lastname  = (String) row[2];
             double salary    = ((Number) row[3]).doubleValue();
-            boolean consent  = row[4] != null && ((Number) row[4]).intValue() != 0;
 
-            consultants.add(new CareerLevelConsultantDTO(uuid, firstname, lastname, salary, consent));
+            consultants.add(new CareerLevelConsultantDTO(uuid, firstname, lastname, salary, true));
         }
 
         String label = CAREER_LEVEL_LABELS.getOrDefault(careerLevel, toTitleCase(careerLevel));
