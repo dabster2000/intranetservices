@@ -1,4 +1,4 @@
-name: Deploy Quarkus to App Runner
+name: Deploy Quarkus to Staging App Runner
 
 on:
   push:
