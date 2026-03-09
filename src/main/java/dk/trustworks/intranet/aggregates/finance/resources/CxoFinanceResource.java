@@ -25,6 +25,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.EbitdaSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelBonusDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
@@ -1331,6 +1332,37 @@ public class CxoFinanceResource {
 
         log.debugf("Returning career-level economics for %d career levels", result.getCareerLevels().size());
         return result;
+    }
+
+    /**
+     * Returns individual consultants at a specific career level.
+     *
+     * <p>Drill-down endpoint for the Career Level Cost Structure cards.
+     * Uses the same join logic as fact_minimum_viable_rate (V178).</p>
+     *
+     * @param careerLevel the career level key (e.g., "SENIOR", "JUNIOR") — required
+     * @param companyIds  optional comma-separated company UUIDs to filter by
+     * @return CareerLevelConsultantsDTO with career level metadata and individual consultant rows
+     */
+    @GET
+    @Path("/career-level-consultants")
+    public Response getCareerLevelConsultants(
+            @QueryParam("careerLevel") String careerLevel,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/career-level-consultants: careerLevel=%s, companyIds=%s", careerLevel, companyIds);
+
+        if (careerLevel == null || careerLevel.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "careerLevel query parameter is required"))
+                    .build();
+        }
+
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        CareerLevelConsultantsDTO result = careerLevelEconomicsUseCase.getConsultantsByCareerLevel(careerLevel, companyIdSet);
+
+        log.debugf("Returning %d consultants for career level %s", result.getConsultants().size(), careerLevel);
+        return Response.ok(result).build();
     }
 
     // ========================================================================

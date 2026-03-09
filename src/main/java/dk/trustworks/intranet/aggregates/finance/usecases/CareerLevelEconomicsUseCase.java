@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.usecases;
 
+import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsItemDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
@@ -143,6 +145,91 @@ public class CareerLevelEconomicsUseCase {
         }
 
         return new CareerLevelEconomicsDTO(items);
+    }
+
+    /**
+     * Retrieves individual consultants at a specific career level, optionally filtered
+     * by a set of company UUIDs.
+     *
+     * <p>Uses the same join pattern as the {@code fact_minimum_viable_rate} view (V178):
+     * point-in-time {@code user_career_level} lookup, active consultant status,
+     * and current salary.</p>
+     *
+     * @param careerLevel the career level key to filter by (e.g., "SENIOR", "JUNIOR")
+     * @param companyIds  optional set of company UUIDs to filter by; null means no filter
+     * @return CareerLevelConsultantsDTO with the career level metadata and individual consultants
+     */
+    @SuppressWarnings("unchecked")
+    public CareerLevelConsultantsDTO getConsultantsByCareerLevel(String careerLevel, Set<String> companyIds) {
+        log.debugf("Querying consultants for career level=%s, companyIds=%s", careerLevel, companyIds);
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+
+        String sql = """
+                SELECT
+                    u.uuid,
+                    u.firstname,
+                    u.lastname,
+                    s.salary,
+                    u.photoconsent
+                FROM user u
+                INNER JOIN userstatus us ON us.useruuid = u.uuid
+                INNER JOIN (
+                    SELECT ucl.useruuid, ucl.career_level
+                    FROM user_career_level ucl
+                    INNER JOIN (
+                        SELECT useruuid, MAX(active_from) AS max_active_from
+                        FROM user_career_level
+                        WHERE active_from <= CURDATE()
+                        GROUP BY useruuid
+                    ) latest ON ucl.useruuid = latest.useruuid AND ucl.active_from = latest.max_active_from
+                ) ccl ON ccl.useruuid = u.uuid
+                INNER JOIN salary s ON s.useruuid = u.uuid
+                WHERE u.type = 'USER'
+                  AND us.type = 'CONSULTANT'
+                  AND us.status = 'ACTIVE'
+                  AND us.statusdate = (
+                      SELECT MAX(us2.statusdate)
+                      FROM userstatus us2
+                      WHERE us2.useruuid = u.uuid
+                        AND us2.statusdate <= CURDATE()
+                  )
+                  AND s.activefrom = (
+                      SELECT MAX(s2.activefrom)
+                      FROM salary s2
+                      WHERE s2.useruuid = u.uuid
+                        AND s2.activefrom <= CURDATE()
+                  )
+                  AND ccl.career_level = :careerLevel
+                """ + (hasCompanyFilter ? "  AND us.companyuuid IN :companyIds\n" : "") + """
+                ORDER BY s.salary DESC
+                """;
+
+        var query = em.createNativeQuery(sql)
+                .setParameter("careerLevel", careerLevel);
+
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        List<Object[]> rows = query.getResultList();
+
+        log.debugf("Found %d consultants at career level %s", rows.size(), careerLevel);
+
+        List<CareerLevelConsultantDTO> consultants = new ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            String uuid      = (String) row[0];
+            String firstname = (String) row[1];
+            String lastname  = (String) row[2];
+            double salary    = ((Number) row[3]).doubleValue();
+            boolean consent  = row[4] != null && ((Number) row[4]).intValue() != 0;
+
+            consultants.add(new CareerLevelConsultantDTO(uuid, firstname, lastname, salary, consent));
+        }
+
+        String label = CAREER_LEVEL_LABELS.getOrDefault(careerLevel, toTitleCase(careerLevel));
+
+        return new CareerLevelConsultantsDTO(careerLevel, label, consultants);
     }
 
     /**
