@@ -35,6 +35,18 @@ public class JkDashboardService {
     @Inject
     EntityManager em;
 
+    // ─── Date conversion helper ─────────────────────────────────────────
+
+    /**
+     * Converts a native query date result to LocalDate, handling both
+     * java.time.LocalDate (Quarkus 3.32+ / Hibernate 6.6+) and legacy java.sql.Date.
+     */
+    private static LocalDate toLocalDate(Object value) {
+        if (value instanceof LocalDate ld) return ld;
+        if (value instanceof java.sql.Date sd) return sd.toLocalDate();
+        throw new IllegalArgumentException("Unexpected date type: " + (value == null ? "null" : value.getClass().getName()));
+    }
+
     // ─── Shared lookup helpers ───────────────────────────────────────────
 
     /**
@@ -79,7 +91,7 @@ public class JkDashboardService {
         for (Tuple row : statusRows) {
             String uuid = (String) row.get("useruuid");
             String type = (String) row.get("type");
-            LocalDate date = ((java.sql.Date) row.get("statusdate")).toLocalDate();
+            LocalDate date = toLocalDate(row.get("statusdate"));
             userStatuses.computeIfAbsent(uuid, k -> new ArrayList<>())
                     .add(new Object[]{type, date});
         }
@@ -266,7 +278,7 @@ public class JkDashboardService {
         var map = new HashMap<String, TreeMap<LocalDate, Integer>>();
         for (Tuple row : rows) {
             String uuid = (String) row.get("useruuid");
-            LocalDate from = ((java.sql.Date) row.get("activefrom")).toLocalDate();
+            LocalDate from = toLocalDate(row.get("activefrom"));
             int salary = ((Number) row.get("salary")).intValue();
             map.computeIfAbsent(uuid, k -> new TreeMap<>()).put(from, salary);
         }
@@ -1256,7 +1268,7 @@ public class JkDashboardService {
             String uuid = (String) row.get("useruuid");
             String status = (String) row.get("status");
             String type = (String) row.get("type");
-            LocalDate date = ((java.sql.Date) row.get("statusdate")).toLocalDate();
+            LocalDate date = toLocalDate(row.get("statusdate"));
 
             currentStatusMap.put(uuid, status);
             if ("STUDENT".equals(type)) {
@@ -1392,7 +1404,7 @@ public class JkDashboardService {
         for (Tuple row : statusRows) {
             String uuid = (String) row.get("useruuid");
             String type = (String) row.get("type");
-            LocalDate date = ((java.sql.Date) row.get("statusdate")).toLocalDate();
+            LocalDate date = toLocalDate(row.get("statusdate"));
             userStatuses.computeIfAbsent(uuid, k -> new ArrayList<>())
                     .add(new Object[]{type, date});
         }
