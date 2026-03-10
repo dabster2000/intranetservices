@@ -35,6 +35,15 @@ public class JkDashboardResource {
     JkDashboardService jkDashboardService;
 
     @GET
+    @Path("/all")
+    public Response getAll(@QueryParam("fiscalYear") int fiscalYear) {
+        log.infof("GET /jk-dashboard/all: fiscalYear=%d", fiscalYear);
+        validateFiscalYear(fiscalYear);
+        JkDashboardAllResponse result = jkDashboardService.getAll(fiscalYear);
+        return Response.ok(result).build();
+    }
+
+    @GET
     @Path("/kpis")
     public Response getKpis(@QueryParam("fiscalYear") int fiscalYear) {
         log.debugf("GET /jk-dashboard/kpis: fiscalYear=%d", fiscalYear);

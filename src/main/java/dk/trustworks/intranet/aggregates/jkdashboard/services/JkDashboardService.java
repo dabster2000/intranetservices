@@ -653,8 +653,14 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public RevenueLeakageResponse getRevenueLeakage(int fiscalYear) {
-        var traceability = getBillingTraceability(fiscalYear);
-        var jkUuids = findAllEverStudentUuids();
+        return getRevenueLeakage(fiscalYear, null, null);
+    }
+
+    RevenueLeakageResponse getRevenueLeakage(int fiscalYear,
+                                              List<BillingTraceabilityRow> precomputedTraceability,
+                                              List<String> precomputedJkUuids) {
+        var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
+        var jkUuids = precomputedJkUuids != null ? precomputedJkUuids : findAllEverStudentUuids();
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
 
         // Group by month
@@ -728,6 +734,11 @@ public class JkDashboardService {
     }
 
     private JkKpiResponse computeKpis(int fiscalYear) {
+        return computeKpis(fiscalYear, null, null);
+    }
+
+    JkKpiResponse computeKpis(int fiscalYear, RevenueLeakageResponse precomputedLeakage,
+                               Map<LocalDate, Integer> activeJkCache) {
         var jkUuids = findAllEverStudentUuids();
         var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
@@ -736,7 +747,7 @@ public class JkDashboardService {
         // 1. Active JK count (at end of latest complete month)
         LocalDate latestMonth = fyMonths.isEmpty() ? fyStart(fiscalYear)
                 : YearMonth.parse(fyMonths.get(fyMonths.size() - 1)).atEndOfMonth();
-        int activeJkCount = countActiveJks(latestMonth);
+        int activeJkCount = countActiveJksCached(latestMonth, activeJkCache);
 
         // 2. Total salary cost
         double totalSalaryCost = 0;
@@ -757,7 +768,7 @@ public class JkDashboardService {
         }
 
         // 4-6. Billing coverage, revenue leakage (derive from revenue leakage response)
-        var leakage = getRevenueLeakage(fiscalYear);
+        var leakage = precomputedLeakage != null ? precomputedLeakage : getRevenueLeakage(fiscalYear);
         var totals = leakage.getFyTotals();
         double billingCoverage = totals.getBillingCoveragePercent();
         double directAndMergedRevenue = totals.getDirectlyBilled() + totals.getMerged();
@@ -791,7 +802,7 @@ public class JkDashboardService {
         }
 
         // 8. Team growth
-        int startCount = countActiveJks(fyStart(fiscalYear));
+        int startCount = countActiveJksCached(fyStart(fiscalYear), activeJkCache);
         double teamGrowthPct = startCount > 0
                 ? ((double) (activeJkCount - startCount) / startCount) * 100.0
                 : (activeJkCount > 0 ? 100.0 : 0.0);
@@ -813,11 +824,17 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public JkProfitabilityResponse getProfitability(int fiscalYear) {
+        return getProfitability(fiscalYear, null, null);
+    }
+
+    JkProfitabilityResponse getProfitability(int fiscalYear,
+                                              RevenueLeakageResponse precomputedLeakage,
+                                              Map<LocalDate, Integer> activeJkCache) {
         var jkUuids = findAllEverStudentUuids();
         var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
-        var leakage = getRevenueLeakage(fiscalYear);
+        var leakage = precomputedLeakage != null ? precomputedLeakage : getRevenueLeakage(fiscalYear);
 
         // Build leakage month lookup
         var leakageByMonth = new HashMap<String, RevenueLeakageMonth>();
@@ -840,7 +857,7 @@ public class JkDashboardService {
 
             // Overhead cost
             YearMonth ym = YearMonth.parse(month);
-            int activeCount = countActiveJks(ym.atEndOfMonth());
+            int activeCount = countActiveJksCached(ym.atEndOfMonth(), activeJkCache);
             double overheadCost = OVERHEAD_PER_JK_PER_MONTH * activeCount;
 
             double totalCost = salaryCost + overheadCost;
@@ -865,9 +882,13 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public RateAnalysisResponse getRateAnalysis(int fiscalYear) {
+        return getRateAnalysis(fiscalYear, null);
+    }
+
+    RateAnalysisResponse getRateAnalysis(int fiscalYear, List<BillingTraceabilityRow> precomputedTraceability) {
         var jkUuids = findAllEverStudentUuids();
         var jkWork = queryJkClientWork(jkUuids, fiscalYear);
-        var traceability = getBillingTraceability(fiscalYear);
+        var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
 
         // Monthly rates (excluding rate <= 1)
         var monthlyData = new TreeMap<String, double[]>();
@@ -1022,12 +1043,18 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<JkTeamMemberSummary> getTeamOverview(int fiscalYear) {
+        return getTeamOverview(fiscalYear, null, null);
+    }
+
+    List<JkTeamMemberSummary> getTeamOverview(int fiscalYear,
+                                               List<BillingTraceabilityRow> precomputedTraceability,
+                                               RevenueLeakageResponse precomputedLeakage) {
         var jkUuids = findAllEverStudentUuids();
         var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
         var jkWork = queryJkClientWork(jkUuids, fiscalYear);
-        var traceability = getBillingTraceability(fiscalYear);
+        var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
         var userNames = loadUserNames(jkUuids);
 
         // Per-JK client hours by client
@@ -1096,7 +1123,8 @@ public class JkDashboardService {
 
         // Build per-JK P&L (reuse from getPnl computation)
         var pnlMap = new HashMap<String, Double>();
-        var leakage = getRevenueLeakage(fiscalYear);
+        var leakage = precomputedLeakage != null ? precomputedLeakage
+                : getRevenueLeakage(fiscalYear, traceability, jkUuids);
         // Simple P&L: (direct+merged revenue - salary cost - overhead)
         // Compute per-JK revenue from traceability
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
@@ -1493,12 +1521,16 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<JkPnlEntry> getPerJkPnl(int fiscalYear) {
+        return getPerJkPnl(fiscalYear, null);
+    }
+
+    List<JkPnlEntry> getPerJkPnl(int fiscalYear, List<BillingTraceabilityRow> precomputedTraceability) {
         var jkUuids = findAllEverStudentUuids();
         var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
-        var traceability = getBillingTraceability(fiscalYear);
+        var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
         var userNames = loadUserNames(jkUuids);
 
         var result = new ArrayList<JkPnlEntry>();
@@ -1548,5 +1580,98 @@ public class JkDashboardService {
         // Sort by net P&L descending (most profitable first)
         result.sort(Comparator.comparingDouble(JkPnlEntry::getNetProfitLoss).reversed());
         return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  CACHED ACTIVE JK COUNT
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns countActiveJks using an optional cache to avoid redundant SQL calls.
+     * If cache is null, falls back to the database query.
+     */
+    private int countActiveJksCached(LocalDate asOfDate, Map<LocalDate, Integer> cache) {
+        if (cache == null) return countActiveJks(asOfDate);
+        return cache.computeIfAbsent(asOfDate, this::countActiveJks);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  COMBINED: ALL DASHBOARD DATA IN ONE CALL
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Returns all JK dashboard data in a single response.
+     * <p>
+     * Computes {@code getBillingTraceability()} once and passes it to all
+     * dependent methods, eliminating the redundancy that causes timeouts
+     * when 11 individual endpoints are called simultaneously.
+     */
+    public JkDashboardAllResponse getAll(int fiscalYear) {
+        log.infof("Computing all JK dashboard data for FY %d", fiscalYear);
+        long start = System.currentTimeMillis();
+
+        // Cache for countActiveJks calls (avoids ~10+ redundant SQL queries)
+        var activeJkCache = new HashMap<LocalDate, Integer>();
+
+        // 1. Compute billing traceability ONCE (the most expensive computation)
+        var billingTraceability = getBillingTraceability(fiscalYear);
+        log.debugf("  billingTraceability: %d rows (%d ms)", billingTraceability.size(), System.currentTimeMillis() - start);
+
+        // 2. Compute revenue leakage from pre-computed traceability
+        var jkUuids = findAllEverStudentUuids();
+        var revenueLeakage = getRevenueLeakage(fiscalYear, billingTraceability, jkUuids);
+        log.debugf("  revenueLeakage: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 3. KPIs (uses pre-computed leakage + cached active counts)
+        var kpis = computeKpis(fiscalYear, revenueLeakage, activeJkCache);
+        // Add previous FY for YoY comparison
+        try {
+            var prevKpi = computeKpis(fiscalYear - 1, null, activeJkCache);
+            kpis.setPreviousFy(prevKpi);
+        } catch (Exception e) {
+            log.debugf("No previous FY data for %d: %s", fiscalYear - 1, e.getMessage());
+        }
+        log.debugf("  kpis: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 4. Profitability (uses pre-computed leakage + cached active counts)
+        var profitability = getProfitability(fiscalYear, revenueLeakage, activeJkCache);
+        log.debugf("  profitability: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 5. Rate analysis (uses pre-computed traceability)
+        var rateAnalysis = getRateAnalysis(fiscalYear, billingTraceability);
+        log.debugf("  rateAnalysis: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 6. Salary analysis (no traceability dependency — independent queries)
+        var salaryAnalysis = getSalaryAnalysis(fiscalYear);
+        log.debugf("  salaryAnalysis: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 7. Team overview (uses pre-computed traceability + leakage)
+        var teamOverview = getTeamOverview(fiscalYear, billingTraceability, revenueLeakage);
+        log.debugf("  teamOverview: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 8. Conversions (no traceability dependency — independent query)
+        var conversions = getConversions();
+        log.debugf("  conversions: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 9. Mentor pairings (no traceability dependency — independent queries)
+        var mentorPairings = getMentorPairings(fiscalYear);
+        log.debugf("  mentorPairings: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 10. Client concentration (no traceability dependency — simple aggregate)
+        var clientConcentration = getClientConcentration(fiscalYear);
+        log.debugf("  clientConcentration: done (%d ms)", System.currentTimeMillis() - start);
+
+        // 11. Per-JK P&L (uses pre-computed traceability)
+        var perJkPnl = getPerJkPnl(fiscalYear, billingTraceability);
+        log.debugf("  perJkPnl: done (%d ms)", System.currentTimeMillis() - start);
+
+        long total = System.currentTimeMillis() - start;
+        log.infof("All JK dashboard data computed in %d ms", total);
+
+        return new JkDashboardAllResponse(
+                kpis, profitability, revenueLeakage, billingTraceability,
+                rateAnalysis, salaryAnalysis, teamOverview, conversions,
+                mentorPairings, clientConcentration, perJkPnl
+        );
     }
 }
