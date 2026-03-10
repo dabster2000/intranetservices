@@ -12,7 +12,6 @@ import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.sql.Date;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -81,12 +80,8 @@ public class CrmService {
             String userUuid = tuple.get("useruuid", String.class);
             String contractUuid = tuple.get("contractuuid", String.class);
 
-            // Get java.sql.Date from tuple and convert it to LocalDate
             LocalDate fromDate = tuple.get("fromdate", LocalDate.class);
-            //LocalDate fromDate = fromSqlDate != null ? fromSqlDate.toLocalDate() : null;
-
             LocalDate toDate = tuple.get("todate", LocalDate.class);
-            //LocalDate toDate = toSqlDate != null ? toSqlDate.toLocalDate() : null;
 
             // Construct a Client object
             Client client = new Client();

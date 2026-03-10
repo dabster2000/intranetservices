@@ -16,7 +16,6 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.sql.Date;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -101,8 +100,8 @@ public class WorkService {
                      "ORDER BY w.registered, w.useruuid";
 
         List<Object[]> results = em.createNativeQuery(sql)
-                .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
-                .setParameter("toDate", java.sql.Date.valueOf(toDate))
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getResultList();
 
         return results.stream()
@@ -145,8 +144,8 @@ public class WorkService {
                      "GROUP BY useruuid";
 
         List<String> userIds = em.createNativeQuery(sql)
-                .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
-                .setParameter("toDate", java.sql.Date.valueOf(toDate))
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getResultList();
 
         Map<String, List<WorkFull>> result = new HashMap<>();
@@ -183,8 +182,8 @@ public class WorkService {
                      "WHERE w.registered >= :fromDate AND w.registered < :toDate";
 
         Object[] result = (Object[]) em.createNativeQuery(sql)
-                .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
-                .setParameter("toDate", java.sql.Date.valueOf(toDate))
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getSingleResult();
 
         Map<String, Object> summary = new HashMap<>();
@@ -245,7 +244,7 @@ public class WorkService {
 
         var q = em.createNativeQuery(sql);
         q.setParameter("useruuid", useruuid);
-        q.setParameter("day", java.sql.Date.valueOf(day));
+        q.setParameter("day", day);
 
         Number value = (Number) q.getSingleResult();
         return new DateValueDTO(day, value != null ? value.doubleValue() : 0d);
@@ -285,7 +284,7 @@ public class WorkService {
 
         var q = em.createNativeQuery(sql);
         q.setParameter("useruuid", useruuid);
-        q.setParameter("day", java.sql.Date.valueOf(day));
+        q.setParameter("day", day);
 
         Object raw = q.getSingleResult();
         java.math.BigDecimal revenue = (raw == null)

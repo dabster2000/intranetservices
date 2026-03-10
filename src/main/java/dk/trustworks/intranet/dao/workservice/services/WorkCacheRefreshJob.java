@@ -39,8 +39,8 @@ public class WorkCacheRefreshJob {
             int rowsUpdated = em.createNativeQuery(
                 "CALL refresh_work_full_cache(:fromDate, :toDate)"
             )
-            .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
-            .setParameter("toDate", java.sql.Date.valueOf(toDate))
+            .setParameter("fromDate", fromDate)
+            .setParameter("toDate", toDate)
             .executeUpdate();
 
             log.infof("Recent work cache refresh completed. Period: %s to %s", fromDate, toDate);
@@ -79,8 +79,8 @@ public class WorkCacheRefreshJob {
                 int rowsUpdated = em.createNativeQuery(
                     "CALL refresh_work_full_cache(:fromDate, :toDate)"
                 )
-                .setParameter("fromDate", java.sql.Date.valueOf(currentDate))
-                .setParameter("toDate", java.sql.Date.valueOf(chunkEnd))
+                .setParameter("fromDate", currentDate)
+                .setParameter("toDate", chunkEnd)
                 .executeUpdate();
 
                 log.infof("Historical cache chunk refreshed: %s to %s", currentDate, chunkEnd);
@@ -113,8 +113,8 @@ public class WorkCacheRefreshJob {
             int rowsUpdated = em.createNativeQuery(
                 "CALL refresh_work_full_cache(:fromDate, :toDate)"
             )
-            .setParameter("fromDate", java.sql.Date.valueOf(today))
-            .setParameter("toDate", java.sql.Date.valueOf(tomorrow))
+            .setParameter("fromDate", today)
+            .setParameter("toDate", tomorrow)
             .executeUpdate();
 
             log.debugf("Today's work cache refreshed: %s", today);
@@ -141,8 +141,8 @@ public class WorkCacheRefreshJob {
             em.createNativeQuery(
                 "CALL refresh_work_full_cache(:fromDate, :toDate)"
             )
-            .setParameter("fromDate", java.sql.Date.valueOf(fromDate))
-            .setParameter("toDate", java.sql.Date.valueOf(toDate))
+            .setParameter("fromDate", fromDate)
+            .setParameter("toDate", toDate)
             .executeUpdate();
 
             log.infof("Manual cache refresh completed: %s to %s", fromDate, toDate);
@@ -176,7 +176,9 @@ public class WorkCacheRefreshJob {
         stats.totalEntries = ((Number) result[0]).longValue();
         stats.oldestEntry = result[1] != null ? (LocalDate) result[1] : null;
         stats.newestEntry = result[2] != null ? (LocalDate) result[2] : null;
-        stats.lastUpdate = result[3] != null ? ((java.sql.Timestamp) result[3]).toLocalDateTime() : null;
+        stats.lastUpdate = result[3] != null
+                ? (result[3] instanceof LocalDateTime ldt ? ldt : ((java.sql.Timestamp) result[3]).toLocalDateTime())
+                : null;
 
         return stats;
     }

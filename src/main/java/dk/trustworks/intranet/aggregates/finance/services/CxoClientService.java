@@ -1346,10 +1346,10 @@ public class CxoClientService {
             // Format first invoice date
             String firstInvoiceDate = "";
             if (firstInvoiceObj != null) {
-                if (firstInvoiceObj instanceof java.sql.Date) {
-                    firstInvoiceDate = ((java.sql.Date) firstInvoiceObj).toLocalDate().format(dateFormatter);
-                } else if (firstInvoiceObj instanceof LocalDate) {
-                    firstInvoiceDate = ((LocalDate) firstInvoiceObj).format(dateFormatter);
+                if (firstInvoiceObj instanceof LocalDate ld) {
+                    firstInvoiceDate = ld.format(dateFormatter);
+                } else if (firstInvoiceObj instanceof java.sql.Date sd) {
+                    firstInvoiceDate = sd.toLocalDate().format(dateFormatter);
                 } else {
                     firstInvoiceDate = firstInvoiceObj.toString();
                 }
@@ -1358,10 +1358,10 @@ public class CxoClientService {
             // Format last invoice date
             String lastInvoiceDate = "";
             if (lastInvoiceObj != null) {
-                if (lastInvoiceObj instanceof java.sql.Date) {
-                    lastInvoiceDate = ((java.sql.Date) lastInvoiceObj).toLocalDate().format(dateFormatter);
-                } else if (lastInvoiceObj instanceof LocalDate) {
-                    lastInvoiceDate = ((LocalDate) lastInvoiceObj).format(dateFormatter);
+                if (lastInvoiceObj instanceof LocalDate ld) {
+                    lastInvoiceDate = ld.format(dateFormatter);
+                } else if (lastInvoiceObj instanceof java.sql.Date sd) {
+                    lastInvoiceDate = sd.toLocalDate().format(dateFormatter);
                 } else {
                     lastInvoiceDate = lastInvoiceObj.toString();
                 }

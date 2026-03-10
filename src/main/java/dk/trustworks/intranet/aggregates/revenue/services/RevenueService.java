@@ -25,7 +25,6 @@ import jakarta.inject.Inject;
 import jakarta.persistence.*;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.sql.Date;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
