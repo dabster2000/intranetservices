@@ -38,7 +38,7 @@ public class TeamService {
     public List<Team> findByRoles(String useruuid, LocalDate strDate, String... roles) {
         log.info("TeamService.findByRoles");
         log.info("useruuid = " + useruuid + ", strDate = " + strDate + ", roles = " + Arrays.deepToString(roles));
-        List<Team> list = Team.find("select t from Team t " +
+        List<Team> list = Team.find("select distinct t from Team t " +
                 "join TeamRole tu on tu.teamuuid = t.uuid " +
                 "where teammembertype in ('" + String.join("','", roles) + "') " +
                 "AND useruuid like ?1 " +
@@ -165,7 +165,7 @@ public class TeamService {
         LocalDate fiscalYear = LocalDate.of(intFiscalYear, 7,1);
 
         Map<String, User> users = new HashMap<>();
-        for (int i = 0; i < 11; i++) {
+        for (int i = 0; i < 12; i++) {
             LocalDate date = fiscalYear.plusMonths(i);
             getUsersByTeam(teamuuid, date).forEach(user -> users.put(user.getUuid(), user));
         }
