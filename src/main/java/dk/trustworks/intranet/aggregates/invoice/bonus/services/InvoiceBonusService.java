@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.invoice.bonus.services;
 
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibility;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.BonusEligibilityGroup;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.BonusCacheInvalidationEvent;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.EnrichedBonusLineDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus.ShareType;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
@@ -16,6 +18,8 @@ import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
 import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -31,6 +35,9 @@ import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.
 
 @ApplicationScoped
 public class InvoiceBonusService {
+
+    @Inject
+    Event<BonusCacheInvalidationEvent> cacheInvalidation;
 
     public SalesApprovalStatus aggregatedStatusForInvoice(String invoiceuuid) {
         List<InvoiceBonus> bonuses = InvoiceBonus.list("invoiceuuid = ?1", invoiceuuid);
@@ -140,6 +147,9 @@ public class InvoiceBonusService {
             recomputeComputedAmount(inv, ib);
             ib.persist();
         }
+
+        // Fire cache invalidation event
+        fireCacheInvalidation(inv);
     }
 
     /** Default selection at approve-time if none exists (bulk persist):
@@ -172,6 +182,10 @@ public class InvoiceBonusService {
         if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
         ib.setOverrideNote(note);
         setStatus(bonusUuid, approverUuid, SalesApprovalStatus.REJECTED);
+
+        // Fire cache invalidation event
+        Invoice inv = Invoice.findById(ib.getInvoiceuuid());
+        fireCacheInvalidation(inv);
     }
 
     private void setStatus(String bonusUuid, String approver, SalesApprovalStatus status) {
@@ -217,6 +231,72 @@ public class InvoiceBonusService {
 
     public List<InvoiceBonusLine> listLines(String bonusuuid) {
         return InvoiceBonusLine.list("bonusuuid = ?1", bonusuuid);
+    }
+
+    /**
+     * Returns enriched bonus lines with server-computed estimatedShare, lineAmount, editable flag.
+     * Eliminates 3 client-side calculations.
+     */
+    public List<EnrichedBonusLineDTO> listEnrichedLines(String bonusuuid) {
+        InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
+        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+
+        Invoice inv = Invoice.findById(ib.getInvoiceuuid());
+        if (inv == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+
+        List<InvoiceBonusLine> lines = listLines(bonusuuid);
+        Map<String, InvoiceItem> itemById = (inv.getInvoiceitems() == null) ?
+                Map.of() :
+                inv.getInvoiceitems().stream()
+                        .collect(Collectors.toMap(InvoiceItem::getUuid, java.util.function.Function.identity(), (a, b) -> a));
+
+        double discountPct = Optional.ofNullable(inv.getDiscount()).orElse(0.0);
+        double discountFactor = 1.0 - (discountPct / 100.0);
+
+        return lines.stream().map(line -> {
+            InvoiceItem item = itemById.get(line.getInvoiceitemuuid());
+            double lineAmount = 0;
+            double estimatedShare = 0;
+            boolean editable = true;
+            String origin = "BASE";
+
+            if (item != null) {
+                lineAmount = round2(item.rate * item.hours);
+                origin = item.origin != null ? item.origin.name() : "BASE";
+
+                // editable = not CALCULATED, rate >= 0, has consultantuuid
+                boolean isCalculated = item.origin == InvoiceItemOrigin.CALCULATED;
+                boolean isNegativeRate = item.rate < 0;
+                boolean hasNoConsultant = item.consultantuuid == null || item.consultantuuid.isBlank();
+                editable = !isCalculated && !isNegativeRate && !hasNoConsultant;
+
+                // estimatedShare = lineAmount * discountFactor * (pct/100), negated for credit notes
+                if (!isCalculated && line.getPercentage() > 0) {
+                    estimatedShare = lineAmount * discountFactor * (line.getPercentage() / 100.0);
+                    if (inv.getType() == CREDIT_NOTE) {
+                        estimatedShare = -estimatedShare;
+                    }
+                    estimatedShare = round2(estimatedShare);
+                }
+            }
+
+            return new EnrichedBonusLineDTO(
+                    line.getUuid(),
+                    line.getInvoiceitemuuid(),
+                    line.getPercentage(),
+                    lineAmount,
+                    estimatedShare,
+                    editable,
+                    origin
+            );
+        }).toList();
+    }
+
+    private void fireCacheInvalidation(Invoice inv) {
+        if (inv != null && inv.getInvoicedate() != null) {
+            int fy = fiscalYearOf(inv.getInvoicedate());
+            cacheInvalidation.fire(new BonusCacheInvalidationEvent(fy));
+        }
     }
 
     @Transactional

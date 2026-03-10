@@ -257,5 +257,13 @@ word-converter:
   fallback-enabled: ${WORD_CONVERTER_FALLBACK:true}
   max-concurrent: ${WORD_CONVERTER_MAX_CONCURRENT:3}
 
+bonus:
+  partner:
+    sales-threshold-per-partner: 4000000.0
+    base-share-value: 0.035
+    calibration-value: 30.0
+    production-annual-threshold: 1500000.0
+    production-commission-rate: 0.20
+
 sharepoint:
   hostname: tenant.sharepoint.com

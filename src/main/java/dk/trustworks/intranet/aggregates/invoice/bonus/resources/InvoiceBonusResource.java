@@ -1,6 +1,7 @@
 // src/main/java/dk/trustworks/intranet/aggregates/invoice/bonus/resources/InvoiceBonusResource.java
 package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.EnrichedBonusLineDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonusLine;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
@@ -291,8 +292,8 @@ public class InvoiceBonusResource {
 
     @GET
     @Path("/{bonusuuid}/lines")
-    public List<InvoiceBonusLine> getLines(@PathParam("bonusuuid") String bonusuuid) {
-        return service.listLines(bonusuuid);
+    public List<EnrichedBonusLineDTO> getLines(@PathParam("bonusuuid") String bonusuuid) {
+        return service.listEnrichedLines(bonusuuid);
     }
 
     @PUT
