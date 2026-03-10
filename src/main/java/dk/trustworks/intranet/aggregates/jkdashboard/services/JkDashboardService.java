@@ -52,6 +52,128 @@ public class JkDashboardService {
     }
 
     /**
+     * For each ever-student JK, determines the last date they were a STUDENT.
+     * <p>
+     * The "student tenure end date" is the date of the first non-STUDENT status record
+     * that follows the JK's last STUDENT record. If the JK is still a STUDENT, returns
+     * the fiscal year end date or today (whichever is earlier) as an open-ended upper bound.
+     * <p>
+     * Only work_full rows with {@code registered < studentTenureEndDate} should be included
+     * in JK analytics. This prevents post-conversion consultant work from inflating JK metrics.
+     *
+     * @param fiscalYear the fiscal year to cap the end date within
+     * @return map of jkUuid to the exclusive end date of their student tenure
+     */
+    Map<String, LocalDate> getStudentTenureEndDates(int fiscalYear) {
+        @SuppressWarnings("unchecked")
+        List<Tuple> statusRows = em.createNativeQuery("""
+                SELECT us.useruuid, us.type, us.statusdate
+                FROM userstatus us
+                WHERE us.useruuid IN (SELECT DISTINCT useruuid FROM userstatus WHERE type = 'STUDENT')
+                ORDER BY us.useruuid, us.statusdate
+                """, Tuple.class)
+                .getResultList();
+
+        // Group status transitions by user, in order
+        var userStatuses = new LinkedHashMap<String, List<Object[]>>();
+        for (Tuple row : statusRows) {
+            String uuid = (String) row.get("useruuid");
+            String type = (String) row.get("type");
+            LocalDate date = ((java.sql.Date) row.get("statusdate")).toLocalDate();
+            userStatuses.computeIfAbsent(uuid, k -> new ArrayList<>())
+                    .add(new Object[]{type, date});
+        }
+
+        LocalDate fyEndDate = fyEnd(fiscalYear);
+        LocalDate today = LocalDate.now();
+        LocalDate cap = fyEndDate.isAfter(today) ? today : fyEndDate;
+
+        var tenureEndDates = new HashMap<String, LocalDate>();
+        for (var entry : userStatuses.entrySet()) {
+            String jkUuid = entry.getKey();
+            var statuses = entry.getValue();
+
+            // Walk through statuses to find the last STUDENT -> non-STUDENT transition.
+            // If no transition happened, the JK is still a student.
+            LocalDate lastStudentEnd = null;
+            boolean lastWasStudent = false;
+
+            for (Object[] s : statuses) {
+                String type = (String) s[0];
+                LocalDate date = (LocalDate) s[1];
+
+                if ("STUDENT".equals(type)) {
+                    lastWasStudent = true;
+                } else if (lastWasStudent) {
+                    // First non-STUDENT record after being a STUDENT = conversion date
+                    lastStudentEnd = date;
+                    lastWasStudent = false;
+                }
+            }
+
+            if (lastWasStudent) {
+                // Still a STUDENT — use the cap date
+                tenureEndDates.put(jkUuid, cap);
+            } else if (lastStudentEnd != null) {
+                // Converted — use the conversion date (capped by FY end)
+                tenureEndDates.put(jkUuid, lastStudentEnd.isBefore(cap) ? lastStudentEnd : cap);
+            }
+            // If lastStudentEnd is null and lastWasStudent is false, user had STUDENT
+            // records but also non-STUDENT records before — edge case, skip
+        }
+
+        return tenureEndDates;
+    }
+
+    /**
+     * Filters JK client work tuples to only include rows within each JK's student tenure period.
+     * A row is included when its month starts before the JK's student tenure end date.
+     */
+    private List<Tuple> filterWorkByTenure(List<Tuple> workRows, Map<String, LocalDate> tenureEndDates) {
+        return workRows.stream()
+                .filter(row -> {
+                    String jkUuid = (String) row.get("useruuid");
+                    LocalDate tenureEnd = tenureEndDates.get(jkUuid);
+                    if (tenureEnd == null) return false;
+                    // Month key is "YYYY-MM" — the row is within tenure if the 1st of the month < tenureEnd
+                    LocalDate monthStart = YearMonth.parse((String) row.get("month")).atDay(1);
+                    return monthStart.isBefore(tenureEnd);
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Filters salary hours map to only include entries within each JK's student tenure period.
+     * Keys are "jkUuid|YYYY-MM" — included when the month starts before the JK's tenure end date.
+     */
+    private Map<String, Double> filterSalaryHoursByTenure(Map<String, Double> salaryHoursMap,
+                                                           Map<String, LocalDate> tenureEndDates) {
+        var filtered = new HashMap<String, Double>();
+        for (var entry : salaryHoursMap.entrySet()) {
+            String[] parts = entry.getKey().split("\\|");
+            String jkUuid = parts[0];
+            String monthKey = parts[1];
+            LocalDate tenureEnd = tenureEndDates.get(jkUuid);
+            if (tenureEnd == null) continue;
+            LocalDate monthStart = YearMonth.parse(monthKey).atDay(1);
+            if (monthStart.isBefore(tenureEnd)) {
+                filtered.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return filtered;
+    }
+
+    /**
+     * Returns true if the given month falls within the JK's student tenure period.
+     */
+    private boolean isMonthWithinTenure(String jkUuid, String monthKey, Map<String, LocalDate> tenureEndDates) {
+        LocalDate tenureEnd = tenureEndDates.get(jkUuid);
+        if (tenureEnd == null) return false;
+        LocalDate monthStart = YearMonth.parse(monthKey).atDay(1);
+        return monthStart.isBefore(tenureEnd);
+    }
+
+    /**
      * Returns a map of userUuid -> "lastname, firstname" for the given UUIDs.
      */
     private Map<String, String> loadUserNames(List<String> uuids) {
@@ -486,11 +608,18 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<BillingTraceabilityRow> getBillingTraceability(int fiscalYear) {
+        return getBillingTraceability(fiscalYear, null);
+    }
+
+    List<BillingTraceabilityRow> getBillingTraceability(int fiscalYear,
+                                                        Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
         if (jkUuids.isEmpty()) return List.of();
 
-        // Pre-fetch all data
-        var jkWork = queryJkClientWork(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+
+        // Pre-fetch all data, then filter by student tenure period
+        var jkWork = filterWorkByTenure(queryJkClientWork(jkUuids, fiscalYear), tenureEndDates);
         var jkInvoiced = queryJkInvoicedHours(jkUuids, fiscalYear);
         var workasMap = queryJkWorkasMap(jkUuids, fiscalYear);
 
@@ -653,13 +782,14 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public RevenueLeakageResponse getRevenueLeakage(int fiscalYear) {
-        return getRevenueLeakage(fiscalYear, null, null);
+        return getRevenueLeakage(fiscalYear, null, null, null);
     }
 
     RevenueLeakageResponse getRevenueLeakage(int fiscalYear,
                                               List<BillingTraceabilityRow> precomputedTraceability,
-                                              List<String> precomputedJkUuids) {
-        var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
+                                              List<String> precomputedJkUuids,
+                                              Map<String, LocalDate> precomputedTenure) {
+        var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear, precomputedTenure);
         var jkUuids = precomputedJkUuids != null ? precomputedJkUuids : findAllEverStudentUuids();
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
 
@@ -734,13 +864,15 @@ public class JkDashboardService {
     }
 
     private JkKpiResponse computeKpis(int fiscalYear) {
-        return computeKpis(fiscalYear, null, null);
+        return computeKpis(fiscalYear, null, null, null);
     }
 
     JkKpiResponse computeKpis(int fiscalYear, RevenueLeakageResponse precomputedLeakage,
-                               Map<LocalDate, Integer> activeJkCache) {
+                               Map<LocalDate, Integer> activeJkCache,
+                               Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
-        var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+        var salaryHoursMap = filterSalaryHoursByTenure(queryJkSalaryHours(jkUuids, fiscalYear), tenureEndDates);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
 
@@ -749,7 +881,7 @@ public class JkDashboardService {
                 : YearMonth.parse(fyMonths.get(fyMonths.size() - 1)).atEndOfMonth();
         int activeJkCount = countActiveJksCached(latestMonth, activeJkCache);
 
-        // 2. Total salary cost
+        // 2. Total salary cost (only for months within student tenure)
         double totalSalaryCost = 0;
         for (String jkUuid : jkUuids) {
             for (String month : fyMonths) {
@@ -760,8 +892,8 @@ public class JkDashboardService {
             }
         }
 
-        // 3. Total client hours
-        var jkWork = queryJkClientWork(jkUuids, fiscalYear);
+        // 3. Total client hours (filtered by tenure)
+        var jkWork = filterWorkByTenure(queryJkClientWork(jkUuids, fiscalYear), tenureEndDates);
         double totalClientHours = 0;
         for (Tuple row : jkWork) {
             totalClientHours += ((Number) row.get("registered_hours")).doubleValue();
@@ -824,14 +956,16 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public JkProfitabilityResponse getProfitability(int fiscalYear) {
-        return getProfitability(fiscalYear, null, null);
+        return getProfitability(fiscalYear, null, null, null);
     }
 
     JkProfitabilityResponse getProfitability(int fiscalYear,
                                               RevenueLeakageResponse precomputedLeakage,
-                                              Map<LocalDate, Integer> activeJkCache) {
+                                              Map<LocalDate, Integer> activeJkCache,
+                                              Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
-        var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+        var salaryHoursMap = filterSalaryHoursByTenure(queryJkSalaryHours(jkUuids, fiscalYear), tenureEndDates);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
         var leakage = precomputedLeakage != null ? precomputedLeakage : getRevenueLeakage(fiscalYear);
@@ -882,12 +1016,15 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public RateAnalysisResponse getRateAnalysis(int fiscalYear) {
-        return getRateAnalysis(fiscalYear, null);
+        return getRateAnalysis(fiscalYear, null, null);
     }
 
-    RateAnalysisResponse getRateAnalysis(int fiscalYear, List<BillingTraceabilityRow> precomputedTraceability) {
+    RateAnalysisResponse getRateAnalysis(int fiscalYear,
+                                          List<BillingTraceabilityRow> precomputedTraceability,
+                                          Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
-        var jkWork = queryJkClientWork(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+        var jkWork = filterWorkByTenure(queryJkClientWork(jkUuids, fiscalYear), tenureEndDates);
         var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
 
         // Monthly rates (excluding rate <= 1)
@@ -981,11 +1118,16 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public SalaryAnalysisResponse getSalaryAnalysis(int fiscalYear) {
+        return getSalaryAnalysis(fiscalYear, null);
+    }
+
+    SalaryAnalysisResponse getSalaryAnalysis(int fiscalYear, Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
-        var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+        var salaryHoursMap = filterSalaryHoursByTenure(queryJkSalaryHours(jkUuids, fiscalYear), tenureEndDates);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
-        var jkWork = queryJkClientWork(jkUuids, fiscalYear);
+        var jkWork = filterWorkByTenure(queryJkClientWork(jkUuids, fiscalYear), tenureEndDates);
         var userNames = loadUserNames(jkUuids);
 
         // Monthly salary aggregation
@@ -1043,17 +1185,19 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<JkTeamMemberSummary> getTeamOverview(int fiscalYear) {
-        return getTeamOverview(fiscalYear, null, null);
+        return getTeamOverview(fiscalYear, null, null, null);
     }
 
     List<JkTeamMemberSummary> getTeamOverview(int fiscalYear,
                                                List<BillingTraceabilityRow> precomputedTraceability,
-                                               RevenueLeakageResponse precomputedLeakage) {
+                                               RevenueLeakageResponse precomputedLeakage,
+                                               Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
-        var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+        var salaryHoursMap = filterSalaryHoursByTenure(queryJkSalaryHours(jkUuids, fiscalYear), tenureEndDates);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
-        var jkWork = queryJkClientWork(jkUuids, fiscalYear);
+        var jkWork = filterWorkByTenure(queryJkClientWork(jkUuids, fiscalYear), tenureEndDates);
         var traceability = precomputedTraceability != null ? precomputedTraceability : getBillingTraceability(fiscalYear);
         var userNames = loadUserNames(jkUuids);
 
@@ -1124,7 +1268,7 @@ public class JkDashboardService {
         // Build per-JK P&L (reuse from getPnl computation)
         var pnlMap = new HashMap<String, Double>();
         var leakage = precomputedLeakage != null ? precomputedLeakage
-                : getRevenueLeakage(fiscalYear, traceability, jkUuids);
+                : getRevenueLeakage(fiscalYear, traceability, jkUuids, precomputedTenure);
         // Simple P&L: (direct+merged revenue - salary cost - overhead)
         // Compute per-JK revenue from traceability
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
@@ -1310,14 +1454,21 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<MentorPairingEntry> getMentorPairings(int fiscalYear) {
+        return getMentorPairings(fiscalYear, null);
+    }
+
+    List<MentorPairingEntry> getMentorPairings(int fiscalYear, Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
         if (jkUuids.isEmpty()) return List.of();
 
-        // 1. Explicit pairings via workas
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+
+        // 1. Explicit pairings via workas — fetch raw then filter by tenure
         @SuppressWarnings("unchecked")
-        List<Tuple> explicitRows = em.createNativeQuery("""
+        List<Tuple> explicitRowsRaw = em.createNativeQuery("""
                 SELECT wf.useruuid AS jk_uuid, wf.workas AS senior_uuid,
                        wf.clientuuid,
+                       DATE_FORMAT(wf.registered, '%Y-%m') AS month,
                        SUM(wf.workduration) AS paired_hours
                 FROM work_full wf
                 WHERE wf.useruuid IN (:jkUuids)
@@ -1325,7 +1476,7 @@ public class JkDashboardService {
                   AND wf.taskuuid != :salaryTask
                   AND wf.clientuuid != :internalClient
                   AND wf.registered >= :fyStart AND wf.registered < :fyEnd
-                GROUP BY wf.useruuid, wf.workas, wf.clientuuid
+                GROUP BY wf.useruuid, wf.workas, wf.clientuuid, DATE_FORMAT(wf.registered, '%Y-%m')
                 """, Tuple.class)
                 .setParameter("jkUuids", jkUuids)
                 .setParameter("salaryTask", SALARY_TASK_UUID)
@@ -1334,24 +1485,43 @@ public class JkDashboardService {
                 .setParameter("fyEnd", fyEnd(fiscalYear))
                 .getResultList();
 
-        // 2. Shared-project pairings
+        // Filter explicit pairings by student tenure
+        var explicitRows = explicitRowsRaw.stream()
+                .filter(row -> isMonthWithinTenure((String) row.get("jk_uuid"),
+                        (String) row.get("month"), tenureEndDates))
+                .toList();
+
+        // 2. Shared-project pairings: CTE-based pre-aggregation to prevent N*M cross-join
         @SuppressWarnings("unchecked")
         List<Tuple> sharedRows = em.createNativeQuery("""
-                SELECT jk.useruuid AS jk_uuid, senior.useruuid AS senior_uuid,
-                       jk.clientuuid,
-                       LEAST(SUM(jk.workduration), SUM(senior.workduration)) AS paired_hours
-                FROM work_full jk
-                JOIN work_full senior ON jk.projectuuid = senior.projectuuid
-                    AND DATE_FORMAT(jk.registered, '%Y-%m') = DATE_FORMAT(senior.registered, '%Y-%m')
-                WHERE jk.useruuid IN (:jkUuids)
-                  AND senior.useruuid NOT IN (:jkUuids)
-                  AND jk.taskuuid != :salaryTask
-                  AND senior.taskuuid != :salaryTask
-                  AND jk.clientuuid != :internalClient
-                  AND (jk.workas IS NULL OR jk.workas = '' OR jk.workas = jk.useruuid)
-                  AND jk.registered >= :fyStart AND jk.registered < :fyEnd
-                  AND senior.registered >= :fyStart AND senior.registered < :fyEnd
-                GROUP BY jk.useruuid, senior.useruuid, jk.clientuuid
+                WITH jk_agg AS (
+                    SELECT wf.useruuid, wf.projectuuid, wf.clientuuid,
+                           DATE_FORMAT(wf.registered, '%Y-%m') AS month,
+                           SUM(wf.workduration) AS hours
+                    FROM work_full wf
+                    WHERE wf.useruuid IN (:jkUuids)
+                      AND wf.taskuuid != :salaryTask
+                      AND wf.clientuuid != :internalClient
+                      AND (wf.workas IS NULL OR wf.workas = '' OR wf.workas = wf.useruuid)
+                      AND wf.registered >= :fyStart AND wf.registered < :fyEnd
+                    GROUP BY wf.useruuid, wf.projectuuid, wf.clientuuid, DATE_FORMAT(wf.registered, '%Y-%m')
+                ),
+                senior_agg AS (
+                    SELECT wf.useruuid, wf.projectuuid,
+                           DATE_FORMAT(wf.registered, '%Y-%m') AS month,
+                           SUM(wf.workduration) AS hours
+                    FROM work_full wf
+                    WHERE wf.useruuid NOT IN (:jkUuids)
+                      AND wf.taskuuid != :salaryTask
+                      AND wf.clientuuid != :internalClient
+                      AND wf.registered >= :fyStart AND wf.registered < :fyEnd
+                    GROUP BY wf.useruuid, wf.projectuuid, DATE_FORMAT(wf.registered, '%Y-%m')
+                )
+                SELECT jk.useruuid AS jk_uuid, s.useruuid AS senior_uuid,
+                       jk.clientuuid, jk.month,
+                       LEAST(jk.hours, s.hours) AS paired_hours
+                FROM jk_agg jk
+                JOIN senior_agg s ON jk.projectuuid = s.projectuuid AND jk.month = s.month
                 """, Tuple.class)
                 .setParameter("jkUuids", jkUuids)
                 .setParameter("salaryTask", SALARY_TASK_UUID)
@@ -1359,6 +1529,12 @@ public class JkDashboardService {
                 .setParameter("fyStart", fyStart(fiscalYear))
                 .setParameter("fyEnd", fyEnd(fiscalYear))
                 .getResultList();
+
+        // Filter shared pairings by student tenure
+        sharedRows = sharedRows.stream()
+                .filter(row -> isMonthWithinTenure((String) row.get("jk_uuid"),
+                        (String) row.get("month"), tenureEndDates))
+                .collect(Collectors.toList());
 
         // Collect all UUIDs for name lookup
         Set<String> allUuids = new HashSet<>(jkUuids);
@@ -1470,47 +1646,61 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<ClientConcentrationEntry> getClientConcentration(int fiscalYear) {
+        return getClientConcentration(fiscalYear, null);
+    }
+
+    List<ClientConcentrationEntry> getClientConcentration(int fiscalYear,
+                                                           Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
         if (jkUuids.isEmpty()) return List.of();
 
-        @SuppressWarnings("unchecked")
-        List<Tuple> rows = em.createNativeQuery("""
-                SELECT wf.clientuuid,
-                       COUNT(DISTINCT wf.useruuid) AS jk_count,
-                       SUM(wf.workduration) AS total_hours,
-                       SUM(CASE WHEN wf.rate > 1 THEN wf.workduration * wf.rate ELSE 0 END) AS potential_revenue,
-                       AVG(CASE WHEN wf.rate > 1 THEN wf.rate ELSE NULL END) AS avg_rate
-                FROM work_full wf
-                WHERE wf.useruuid IN (:jkUuids)
-                  AND wf.taskuuid != :salaryTask
-                  AND wf.clientuuid != :internalClient
-                  AND wf.registered >= :fyStart AND wf.registered < :fyEnd
-                GROUP BY wf.clientuuid
-                ORDER BY total_hours DESC
-                """, Tuple.class)
-                .setParameter("jkUuids", jkUuids)
-                .setParameter("salaryTask", SALARY_TASK_UUID)
-                .setParameter("internalClient", INTERNAL_CLIENT_UUID)
-                .setParameter("fyStart", fyStart(fiscalYear))
-                .setParameter("fyEnd", fyEnd(fiscalYear))
-                .getResultList();
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
 
-        Set<String> clientUuids = new HashSet<>();
-        for (Tuple row : rows) {
-            clientUuids.add((String) row.get("clientuuid"));
+        // Fetch and filter work by tenure, then aggregate per client in Java
+        var jkWork = filterWorkByTenure(queryJkClientWork(jkUuids, fiscalYear), tenureEndDates);
+
+        // Aggregate: clientUuid -> [jkUuids set, totalHours, potentialRevenue, sumRate*hours, rateHours]
+        var clientAgg = new HashMap<String, double[]>();
+        var clientJkSets = new HashMap<String, Set<String>>();
+
+        for (Tuple row : jkWork) {
+            String clientUuid = (String) row.get("clientuuid");
+            String jkUuid = (String) row.get("useruuid");
+            double hours = ((Number) row.get("registered_hours")).doubleValue();
+            double rate = ((Number) row.get("avg_rate")).doubleValue();
+
+            double[] agg = clientAgg.computeIfAbsent(clientUuid, k -> new double[4]);
+            agg[0] += hours; // total_hours
+            if (rate > 1) {
+                agg[1] += hours * rate; // potential_revenue
+                agg[2] += rate * hours; // weighted rate sum
+                agg[3] += hours;        // rate-hours for weighted avg
+            }
+            clientJkSets.computeIfAbsent(clientUuid, k -> new HashSet<>()).add(jkUuid);
         }
-        var clientNameMap = loadClientNames(clientUuids);
+
+        Set<String> allClientUuids = clientAgg.keySet();
+        var clientNameMap = loadClientNames(allClientUuids);
 
         var result = new ArrayList<ClientConcentrationEntry>();
-        for (Tuple row : rows) {
-            String clientUuid = (String) row.get("clientuuid");
+        // Sort by total hours descending
+        var sortedClients = clientAgg.entrySet().stream()
+                .sorted(Map.Entry.<String, double[]>comparingByValue(Comparator.comparingDouble(d -> -d[0])))
+                .toList();
+
+        for (var entry : sortedClients) {
+            String clientUuid = entry.getKey();
+            double[] agg = entry.getValue();
+            int jkCount = clientJkSets.getOrDefault(clientUuid, Set.of()).size();
+            double avgRate = agg[3] > 0 ? agg[2] / agg[3] : 0;
+
             result.add(new ClientConcentrationEntry(
                     clientUuid,
                     clientNameMap.getOrDefault(clientUuid, clientUuid),
-                    ((Number) row.get("jk_count")).intValue(),
-                    ((Number) row.get("total_hours")).doubleValue(),
-                    row.get("potential_revenue") != null ? ((Number) row.get("potential_revenue")).doubleValue() : 0,
-                    row.get("avg_rate") != null ? ((Number) row.get("avg_rate")).doubleValue() : 0
+                    jkCount,
+                    agg[0],  // total_hours
+                    agg[1],  // potential_revenue
+                    avgRate
             ));
         }
         return result;
@@ -1521,12 +1711,15 @@ public class JkDashboardService {
     // ═══════════════════════════════════════════════════════════════════════
 
     public List<JkPnlEntry> getPerJkPnl(int fiscalYear) {
-        return getPerJkPnl(fiscalYear, null);
+        return getPerJkPnl(fiscalYear, null, null);
     }
 
-    List<JkPnlEntry> getPerJkPnl(int fiscalYear, List<BillingTraceabilityRow> precomputedTraceability) {
+    List<JkPnlEntry> getPerJkPnl(int fiscalYear,
+                                   List<BillingTraceabilityRow> precomputedTraceability,
+                                   Map<String, LocalDate> precomputedTenure) {
         var jkUuids = findAllEverStudentUuids();
-        var salaryHoursMap = queryJkSalaryHours(jkUuids, fiscalYear);
+        var tenureEndDates = precomputedTenure != null ? precomputedTenure : getStudentTenureEndDates(fiscalYear);
+        var salaryHoursMap = filterSalaryHoursByTenure(queryJkSalaryHours(jkUuids, fiscalYear), tenureEndDates);
         var salaryRateMap = loadSalaryRateMap(jkUuids);
         var fyMonths = fyMonthKeys(fiscalYear);
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
@@ -1613,56 +1806,60 @@ public class JkDashboardService {
         // Cache for countActiveJks calls (avoids ~10+ redundant SQL queries)
         var activeJkCache = new HashMap<LocalDate, Integer>();
 
+        // Compute student tenure end dates ONCE — used by all tenure-aware methods
+        var tenureEndDates = getStudentTenureEndDates(fiscalYear);
+
         // 1. Compute billing traceability ONCE (the most expensive computation)
-        var billingTraceability = getBillingTraceability(fiscalYear);
+        var billingTraceability = getBillingTraceability(fiscalYear, tenureEndDates);
         log.debugf("  billingTraceability: %d rows (%d ms)", billingTraceability.size(), System.currentTimeMillis() - start);
 
         // 2. Compute revenue leakage from pre-computed traceability
         var jkUuids = findAllEverStudentUuids();
-        var revenueLeakage = getRevenueLeakage(fiscalYear, billingTraceability, jkUuids);
+        var revenueLeakage = getRevenueLeakage(fiscalYear, billingTraceability, jkUuids, tenureEndDates);
         log.debugf("  revenueLeakage: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 3. KPIs (uses pre-computed leakage + cached active counts)
-        var kpis = computeKpis(fiscalYear, revenueLeakage, activeJkCache);
+        // 3. KPIs (uses pre-computed leakage + cached active counts + tenure)
+        var kpis = computeKpis(fiscalYear, revenueLeakage, activeJkCache, tenureEndDates);
         // Add previous FY for YoY comparison
         try {
-            var prevKpi = computeKpis(fiscalYear - 1, null, activeJkCache);
+            var prevTenure = getStudentTenureEndDates(fiscalYear - 1);
+            var prevKpi = computeKpis(fiscalYear - 1, null, activeJkCache, prevTenure);
             kpis.setPreviousFy(prevKpi);
         } catch (Exception e) {
             log.debugf("No previous FY data for %d: %s", fiscalYear - 1, e.getMessage());
         }
         log.debugf("  kpis: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 4. Profitability (uses pre-computed leakage + cached active counts)
-        var profitability = getProfitability(fiscalYear, revenueLeakage, activeJkCache);
+        // 4. Profitability (uses pre-computed leakage + cached active counts + tenure)
+        var profitability = getProfitability(fiscalYear, revenueLeakage, activeJkCache, tenureEndDates);
         log.debugf("  profitability: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 5. Rate analysis (uses pre-computed traceability)
-        var rateAnalysis = getRateAnalysis(fiscalYear, billingTraceability);
+        // 5. Rate analysis (uses pre-computed traceability + tenure)
+        var rateAnalysis = getRateAnalysis(fiscalYear, billingTraceability, tenureEndDates);
         log.debugf("  rateAnalysis: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 6. Salary analysis (no traceability dependency — independent queries)
-        var salaryAnalysis = getSalaryAnalysis(fiscalYear);
+        // 6. Salary analysis (uses tenure)
+        var salaryAnalysis = getSalaryAnalysis(fiscalYear, tenureEndDates);
         log.debugf("  salaryAnalysis: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 7. Team overview (uses pre-computed traceability + leakage)
-        var teamOverview = getTeamOverview(fiscalYear, billingTraceability, revenueLeakage);
+        // 7. Team overview (uses pre-computed traceability + leakage + tenure)
+        var teamOverview = getTeamOverview(fiscalYear, billingTraceability, revenueLeakage, tenureEndDates);
         log.debugf("  teamOverview: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 8. Conversions (no traceability dependency — independent query)
+        // 8. Conversions (no traceability dependency — independent query, unchanged)
         var conversions = getConversions();
         log.debugf("  conversions: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 9. Mentor pairings (no traceability dependency — independent queries)
-        var mentorPairings = getMentorPairings(fiscalYear);
+        // 9. Mentor pairings (uses tenure)
+        var mentorPairings = getMentorPairings(fiscalYear, tenureEndDates);
         log.debugf("  mentorPairings: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 10. Client concentration (no traceability dependency — simple aggregate)
-        var clientConcentration = getClientConcentration(fiscalYear);
+        // 10. Client concentration (uses tenure)
+        var clientConcentration = getClientConcentration(fiscalYear, tenureEndDates);
         log.debugf("  clientConcentration: done (%d ms)", System.currentTimeMillis() - start);
 
-        // 11. Per-JK P&L (uses pre-computed traceability)
-        var perJkPnl = getPerJkPnl(fiscalYear, billingTraceability);
+        // 11. Per-JK P&L (uses pre-computed traceability + tenure)
+        var perJkPnl = getPerJkPnl(fiscalYear, billingTraceability, tenureEndDates);
         log.debugf("  perJkPnl: done (%d ms)", System.currentTimeMillis() - start);
 
         long total = System.currentTimeMillis() - start;
