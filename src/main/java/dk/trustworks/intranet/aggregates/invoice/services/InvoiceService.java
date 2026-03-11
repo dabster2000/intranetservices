@@ -934,7 +934,12 @@ public class InvoiceService {
         return invoice.getPdf();
     }
 
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    /**
+     * Returns the next available invoice number for the given company.
+     * Must be called from within the caller's @Transactional context so the
+     * FOR UPDATE lock is held until the invoice row is persisted, preventing
+     * concurrent calls from reading the same MAX value.
+     */
     public Integer getMaxInvoiceNumber(Invoice invoice) {
         Object result = em.createNativeQuery(
                         "SELECT MAX(invoicenumber) FROM invoices WHERE companyuuid = :companyuuid FOR UPDATE")
