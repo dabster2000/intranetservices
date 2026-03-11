@@ -237,6 +237,16 @@ public class JkDashboardService {
         return LocalDate.of(fiscalYear + 1, 7, 1);
     }
 
+    /** Work-period start as YYYYMM integer for invoice year/month filtering. */
+    private int fyStartPeriod(int fiscalYear) {
+        return fiscalYear * 100 + 7;
+    }
+
+    /** Work-period end (exclusive) as YYYYMM integer. */
+    private int fyEndPeriod(int fiscalYear) {
+        return (fiscalYear + 1) * 100 + 7;
+    }
+
     /**
      * Returns the months in a fiscal year as "YYYY-MM" strings (Jul through Jun).
      * For the current FY, caps at the start of the current month.
@@ -424,20 +434,21 @@ public class JkDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT ii.consultantuuid, i.projectuuid,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m') AS month,
+                       CONCAT(i.year, '-', LPAD(i.month, 2, '0')) AS month,
                        SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -ii.hours ELSE ii.hours END) AS invoiced_hours,
                        AVG(ii.rate) AS invoice_rate
                 FROM invoiceitems ii
                 JOIN invoices i ON i.uuid = ii.invoiceuuid
                 WHERE ii.consultantuuid IN (:jkUuids)
                   AND i.type IN ('INVOICE', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :fyStart AND i.invoicedate < :fyEnd
+                  AND i.status IN ('CREATED', 'QUEUED')
+                  AND (i.year * 100 + i.month) >= :fyStartPeriod AND (i.year * 100 + i.month) < :fyEndPeriod
                 GROUP BY ii.consultantuuid, i.projectuuid,
-                         DATE_FORMAT(i.invoicedate, '%Y-%m')
+                         CONCAT(i.year, '-', LPAD(i.month, 2, '0'))
                 """, Tuple.class)
                 .setParameter("jkUuids", jkUuids)
-                .setParameter("fyStart", fyStart(fiscalYear))
-                .setParameter("fyEnd", fyEnd(fiscalYear))
+                .setParameter("fyStartPeriod", fyStartPeriod(fiscalYear))
+                .setParameter("fyEndPeriod", fyEndPeriod(fiscalYear))
                 .getResultList();
         return rows;
     }
@@ -450,19 +461,20 @@ public class JkDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT ii.consultantuuid, i.projectuuid,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m') AS month,
+                       CONCAT(i.year, '-', LPAD(i.month, 2, '0')) AS month,
                        SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -(ii.hours * ii.rate) ELSE (ii.hours * ii.rate) END) AS revenue
                 FROM invoiceitems ii
                 JOIN invoices i ON i.uuid = ii.invoiceuuid
                 WHERE ii.consultantuuid IN (:jkUuids)
                   AND i.type IN ('INVOICE', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :fyStart AND i.invoicedate < :fyEnd
+                  AND i.status IN ('CREATED', 'QUEUED')
+                  AND (i.year * 100 + i.month) >= :fyStartPeriod AND (i.year * 100 + i.month) < :fyEndPeriod
                 GROUP BY ii.consultantuuid, i.projectuuid,
-                         DATE_FORMAT(i.invoicedate, '%Y-%m')
+                         CONCAT(i.year, '-', LPAD(i.month, 2, '0'))
                 """, Tuple.class)
                 .setParameter("jkUuids", jkUuids)
-                .setParameter("fyStart", fyStart(fiscalYear))
-                .setParameter("fyEnd", fyEnd(fiscalYear))
+                .setParameter("fyStartPeriod", fyStartPeriod(fiscalYear))
+                .setParameter("fyEndPeriod", fyEndPeriod(fiscalYear))
                 .getResultList();
 
         var map = new HashMap<String, Double>();
@@ -521,7 +533,7 @@ public class JkDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT ii.consultantuuid, i.projectuuid,
-                       DATE_FORMAT(i.invoicedate, '%Y-%m') AS month,
+                       CONCAT(i.year, '-', LPAD(i.month, 2, '0')) AS month,
                        SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -ii.hours ELSE ii.hours END) AS invoiced_hours,
                        AVG(ii.rate) AS invoice_rate
                 FROM invoiceitems ii
@@ -529,14 +541,15 @@ public class JkDashboardService {
                 WHERE i.projectuuid IN (:projectUuids)
                   AND ii.consultantuuid NOT IN (:jkUuids)
                   AND i.type IN ('INVOICE', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :fyStart AND i.invoicedate < :fyEnd
+                  AND i.status IN ('CREATED', 'QUEUED')
+                  AND (i.year * 100 + i.month) >= :fyStartPeriod AND (i.year * 100 + i.month) < :fyEndPeriod
                 GROUP BY ii.consultantuuid, i.projectuuid,
-                         DATE_FORMAT(i.invoicedate, '%Y-%m')
+                         CONCAT(i.year, '-', LPAD(i.month, 2, '0'))
                 """, Tuple.class)
                 .setParameter("projectUuids", projectUuids)
                 .setParameter("jkUuids", jkUuids)
-                .setParameter("fyStart", fyStart(fiscalYear))
-                .setParameter("fyEnd", fyEnd(fiscalYear))
+                .setParameter("fyStartPeriod", fyStartPeriod(fiscalYear))
+                .setParameter("fyEndPeriod", fyEndPeriod(fiscalYear))
                 .getResultList();
 
         var map = new HashMap<String, double[]>();
