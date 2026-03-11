@@ -440,7 +440,7 @@ public class JkDashboardService {
                 FROM invoiceitems ii
                 JOIN invoices i ON i.uuid = ii.invoiceuuid
                 WHERE ii.consultantuuid IN (:jkUuids)
-                  AND i.type IN ('INVOICE', 'CREDIT_NOTE')
+                  AND i.type IN ('INVOICE', 'CREDIT_NOTE', 'PHANTOM')
                   AND i.status IN ('CREATED', 'QUEUED')
                   AND (i.year * 100 + i.month) >= :fyStartPeriod AND (i.year * 100 + i.month) < :fyEndPeriod
                 GROUP BY ii.consultantuuid, i.projectuuid,
@@ -466,7 +466,7 @@ public class JkDashboardService {
                 FROM invoiceitems ii
                 JOIN invoices i ON i.uuid = ii.invoiceuuid
                 WHERE ii.consultantuuid IN (:jkUuids)
-                  AND i.type IN ('INVOICE', 'CREDIT_NOTE')
+                  AND i.type IN ('INVOICE', 'CREDIT_NOTE', 'PHANTOM')
                   AND i.status IN ('CREATED', 'QUEUED')
                   AND (i.year * 100 + i.month) >= :fyStartPeriod AND (i.year * 100 + i.month) < :fyEndPeriod
                 GROUP BY ii.consultantuuid, i.projectuuid,
@@ -540,7 +540,7 @@ public class JkDashboardService {
                 JOIN invoices i ON i.uuid = ii.invoiceuuid
                 WHERE i.projectuuid IN (:projectUuids)
                   AND ii.consultantuuid NOT IN (:jkUuids)
-                  AND i.type IN ('INVOICE', 'CREDIT_NOTE')
+                  AND i.type IN ('INVOICE', 'CREDIT_NOTE', 'PHANTOM')
                   AND i.status IN ('CREATED', 'QUEUED')
                   AND (i.year * 100 + i.month) >= :fyStartPeriod AND (i.year * 100 + i.month) < :fyEndPeriod
                 GROUP BY ii.consultantuuid, i.projectuuid,
