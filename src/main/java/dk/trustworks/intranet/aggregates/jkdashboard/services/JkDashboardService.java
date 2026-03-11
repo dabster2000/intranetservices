@@ -1282,13 +1282,18 @@ public class JkDashboardService {
         var leakage = precomputedLeakage != null ? precomputedLeakage
                 : getRevenueLeakage(fiscalYear, traceability, jkUuids, precomputedTenure);
         // Simple P&L: (direct+merged revenue - salary cost - overhead)
-        // Compute per-JK revenue from traceability
+        // Compute per-JK revenue from traceability (tenure-filtered)
         var jkRevenue = queryJkActualRevenue(jkUuids, fiscalYear);
         for (String jkUuid : jkUuids) {
             double totalRev = 0;
+            LocalDate tenureEnd = tenureEndDates.get(jkUuid);
             for (var entry : jkRevenue.entrySet()) {
                 if (entry.getKey().startsWith(jkUuid + "|")) {
-                    totalRev += entry.getValue();
+                    String monthKey = entry.getKey().substring(entry.getKey().lastIndexOf('|') + 1);
+                    LocalDate monthStart = YearMonth.parse(monthKey).atDay(1);
+                    if (tenureEnd != null && monthStart.isBefore(tenureEnd)) {
+                        totalRev += entry.getValue();
+                    }
                 }
             }
             // Add estimated merged revenue from traceability
@@ -1751,11 +1756,16 @@ public class JkDashboardService {
             }
             double overheadCost = OVERHEAD_PER_JK_PER_MONTH * activeMonths;
 
-            // Direct revenue
+            // Direct revenue — only during student tenure
             double directRevenue = 0;
+            LocalDate tenureEnd = tenureEndDates.get(jkUuid);
             for (var entry : jkRevenue.entrySet()) {
                 if (entry.getKey().startsWith(jkUuid + "|")) {
-                    directRevenue += entry.getValue();
+                    String monthKey = entry.getKey().substring(entry.getKey().lastIndexOf('|') + 1);
+                    LocalDate monthStart = YearMonth.parse(monthKey).atDay(1);
+                    if (tenureEnd != null && monthStart.isBefore(tenureEnd)) {
+                        directRevenue += entry.getValue();
+                    }
                 }
             }
 
