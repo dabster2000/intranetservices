@@ -3,7 +3,6 @@ package dk.trustworks.intranet.userservice.services;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.domain.user.entity.Role;
 import dk.trustworks.intranet.domain.user.entity.User;
-import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.utils.TokenUtils;
 import jakarta.enterprise.context.ApplicationScoped;
 import lombok.extern.jbosslog.JBossLog;
@@ -57,7 +56,7 @@ public class LoginService {
         timeClaims.put(Claims.exp.name(), exp);
 
         User user = new User();
-        user.getRoleList().add(new Role(UUID.randomUUID().toString(), RoleType.valueOf(role), user.uuid));
+        user.getRoleList().add(new Role(UUID.randomUUID().toString(), role, user.uuid));
         user.setUsername("system.intra");
 
         return new LoginTokenResult(TokenUtils.generateSystemUserTokenString(user, timeClaims, user.getRoleList()), user.getUuid(), true, "", user.getRoleList());

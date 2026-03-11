@@ -2,7 +2,6 @@ package dk.trustworks.intranet.domain.user.entity;
 
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 
 import jakarta.persistence.*;
@@ -18,8 +17,8 @@ public class Role extends PanacheEntityBase {
     @Id
     private String uuid;
 
-    @Enumerated(EnumType.STRING)
-    private RoleType role;
+    @Column(name = "role")
+    private String role;
 
     @JsonIgnore
     private String useruuid;
@@ -27,13 +26,13 @@ public class Role extends PanacheEntityBase {
     public Role() {
     }
 
-    public Role(String uuid, RoleType role, String useruuid) {
+    public Role(String uuid, String role, String useruuid) {
         this.uuid = uuid;
         this.role = role;
         this.useruuid = useruuid;
     }
 
-    public Role(RoleType role) {
+    public Role(String role) {
         this.role = role;
     }
 
@@ -45,11 +44,11 @@ public class Role extends PanacheEntityBase {
         this.uuid = uuid;
     }
 
-    public RoleType getRole() {
+    public String getRole() {
         return role;
     }
 
-    public void setRole(RoleType role) {
+    public void setRole(String role) {
         this.role = role;
     }
 

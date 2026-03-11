@@ -11,7 +11,6 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.dto.LoginTokenResult;
 import dk.trustworks.intranet.userservice.model.*;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
-import dk.trustworks.intranet.userservice.model.enums.RoleType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.userservice.services.LoginService;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -398,7 +397,7 @@ public class UserService {
         user.setUserContactinfo(userContactinfo);
         user.setSalaries(new ArrayList<>());
         User.persist(user);
-        Role.persist(new Role(UUID.randomUUID().toString(), RoleType.USER, user.getUuid()));
+        Role.persist(new Role(UUID.randomUUID().toString(), "USER", user.getUuid()));
         UserContactinfo.persist(userContactinfo);
         System.out.println("User created");
     }
@@ -511,9 +510,9 @@ public class UserService {
     }
 
     public List<User> clearSalaries(List<User> users) {
-        List<RoleType> roles = jwt.getGroups().stream().map(RoleType::valueOf).toList();
+        List<String> roles = jwt.getGroups().stream().toList();
         List<String> validRoles = List.of("SYSTEM","CXO", "ADMIN");
-        if (roles.stream().noneMatch(roleType -> validRoles.contains(roleType.name()))) {
+        if (roles.stream().noneMatch(validRoles::contains)) {
             // users.forEach(user -> user.getSalaries().clear());
         }
         return users;
