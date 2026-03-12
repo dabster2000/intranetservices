@@ -46,7 +46,9 @@ public class ConsultantProfileService {
 
             Based on the CV data provided, generate:
             1. "pitch": A compelling 1-2 sentence sales pitch highlighting the consultant's \
-            strongest value proposition for potential clients. Write in third person.
+            strongest value proposition for potential clients. Write in third person. \
+            Never include the consultant's name. Lead with the most important differentiator \
+            first — the text may be truncated, so front-load the value.
             2. "industries": The top 2-3 industries the consultant has experience in, derived \
             from their project history. Use short labels (e.g. "Finance", "Healthcare", "Energy").
             3. "topSkills": The top 4 most relevant technical or professional skills from their \
