@@ -29,7 +29,7 @@ import java.util.List;
 @Path("/auth/clients")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@RolesAllowed({"admin:*", "ADMIN"})
+@RolesAllowed({"admin:*", "ADMIN", "SYSTEM"})
 @JBossLog
 public class ClientManagementResource {
 
