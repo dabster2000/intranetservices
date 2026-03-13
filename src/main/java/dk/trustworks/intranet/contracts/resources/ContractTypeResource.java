@@ -36,7 +36,7 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class ContractTypeResource {
 
     @Inject
@@ -154,6 +154,7 @@ public class ContractTypeResource {
     @Operation(summary = "Create contract type", description = "Creates a new contract type definition")
     @APIResponse(responseCode = "201", description = "Contract type created")
     @APIResponse(responseCode = "400", description = "Invalid request or duplicate code")
+    @RolesAllowed({"contracts:write"})
     public Response create(@Valid CreateContractTypeRequest request) {
         log.info("ContractTypeResource.create");
         log.info("request = " + request);
@@ -174,6 +175,7 @@ public class ContractTypeResource {
     @Operation(summary = "Update contract type", description = "Updates an existing contract type definition")
     @APIResponse(responseCode = "200", description = "Contract type updated")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response update(
             @Parameter(description = "Contract type code") @PathParam("code") String code,
             @Valid UpdateContractTypeRequest request) {
@@ -197,6 +199,7 @@ public class ContractTypeResource {
     @APIResponse(responseCode = "204", description = "Contract type deleted")
     @APIResponse(responseCode = "404", description = "Contract type not found")
     @APIResponse(responseCode = "400", description = "Contract type has active rules")
+    @RolesAllowed({"contracts:write"})
     public Response delete(@Parameter(description = "Contract type code") @PathParam("code") String code) {
         log.info("ContractTypeResource.delete");
         log.info("code = " + code);
@@ -216,6 +219,7 @@ public class ContractTypeResource {
     @Operation(summary = "Activate contract type", description = "Reactivates a soft-deleted contract type")
     @APIResponse(responseCode = "204", description = "Contract type activated")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response activate(@Parameter(description = "Contract type code") @PathParam("code") String code) {
         log.info("ContractTypeResource.activate");
         log.info("code = " + code);

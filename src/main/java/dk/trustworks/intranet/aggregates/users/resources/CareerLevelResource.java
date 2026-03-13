@@ -19,7 +19,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"careerlevel:read"})
 public class CareerLevelResource {
 
     @Inject
@@ -39,6 +39,7 @@ public class CareerLevelResource {
 
     @POST
     @Path("/{useruuid}/careerlevels")
+    @RolesAllowed({"careerlevel:write"})
     public void create(@PathParam("useruuid") String useruuid, UserCareerLevel careerLevel) {
         careerLevel.setUseruuid(useruuid);
         careerLevelService.create(careerLevel);
@@ -46,6 +47,7 @@ public class CareerLevelResource {
 
     @DELETE
     @Path("/{useruuid}/careerlevels/{uuid}")
+    @RolesAllowed({"careerlevel:write"})
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("uuid") String uuid) {
         careerLevelService.delete(uuid);
     }

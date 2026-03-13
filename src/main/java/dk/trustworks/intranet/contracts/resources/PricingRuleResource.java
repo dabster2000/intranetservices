@@ -33,7 +33,7 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class PricingRuleResource {
 
     @Inject
@@ -97,6 +97,7 @@ public class PricingRuleResource {
     @APIResponse(responseCode = "201", description = "Rule created")
     @APIResponse(responseCode = "400", description = "Invalid request or duplicate rule ID")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response create(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Valid CreateRuleStepRequest request) {
@@ -120,6 +121,7 @@ public class PricingRuleResource {
     @APIResponse(responseCode = "201", description = "Rules created")
     @APIResponse(responseCode = "400", description = "Invalid request")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response createBulk(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Valid BulkCreateRulesRequest request) {
@@ -144,6 +146,7 @@ public class PricingRuleResource {
     @APIResponse(responseCode = "200", description = "Rule updated")
     @APIResponse(responseCode = "404", description = "Rule not found")
     @APIResponse(responseCode = "400", description = "Invalid request")
+    @RolesAllowed({"contracts:write"})
     public Response update(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId,
@@ -168,6 +171,7 @@ public class PricingRuleResource {
     @Operation(summary = "Delete rule", description = "Soft deletes a pricing rule (sets active=false)")
     @APIResponse(responseCode = "204", description = "Rule deleted")
     @APIResponse(responseCode = "404", description = "Rule not found")
+    @RolesAllowed({"contracts:write"})
     public Response delete(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {

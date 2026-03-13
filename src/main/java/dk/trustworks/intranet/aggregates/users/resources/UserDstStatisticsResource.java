@@ -16,7 +16,7 @@ import java.util.List;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"dststatistics:read"})
 @SecurityRequirement(name = "jwt")
 public class UserDstStatisticsResource {
 

@@ -28,7 +28,7 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class ContractRateAdjustmentResource {
 
     @Inject
@@ -55,6 +55,7 @@ public class ContractRateAdjustmentResource {
 
     @POST
     @Operation(summary = "Create rate adjustment")
+    @RolesAllowed({"contracts:write"})
     public Response create(
             @PathParam("contractTypeCode") String contractTypeCode,
             @Valid CreateRateAdjustmentRequest request) {
@@ -65,6 +66,7 @@ public class ContractRateAdjustmentResource {
     @PUT
     @Path("/{ruleId}")
     @Operation(summary = "Update rate adjustment")
+    @RolesAllowed({"contracts:write"})
     public Response update(
             @PathParam("contractTypeCode") String contractTypeCode,
             @PathParam("ruleId") String ruleId,
@@ -76,6 +78,7 @@ public class ContractRateAdjustmentResource {
     @DELETE
     @Path("/{ruleId}")
     @Operation(summary = "Delete rate adjustment")
+    @RolesAllowed({"contracts:write"})
     public Response delete(
             @PathParam("contractTypeCode") String contractTypeCode,
             @PathParam("ruleId") String ruleId) {

@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"documents:read"})
 public class SharePointLocationResource {
 
     /**
@@ -66,6 +66,7 @@ public class SharePointLocationResource {
      */
     @POST
     @Transactional
+    @RolesAllowed({"documents:write"})
     public Response create(@Valid SharePointLocationDTO dto) {
         log.infof("POST /sharepoint-locations: %s", dto.getName());
 
@@ -93,6 +94,7 @@ public class SharePointLocationResource {
     @PUT
     @Path("/{uuid}")
     @Transactional
+    @RolesAllowed({"documents:write"})
     public SharePointLocationDTO update(@PathParam("uuid") String uuid, @Valid SharePointLocationDTO dto) {
         log.infof("PUT /sharepoint-locations/%s: %s", uuid, dto.getName());
 
@@ -129,6 +131,7 @@ public class SharePointLocationResource {
     @DELETE
     @Path("/{uuid}")
     @Transactional
+    @RolesAllowed({"documents:write"})
     public Response delete(@PathParam("uuid") String uuid) {
         log.infof("DELETE /sharepoint-locations/%s", uuid);
 

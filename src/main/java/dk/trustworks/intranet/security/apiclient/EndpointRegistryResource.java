@@ -19,7 +19,7 @@ import java.util.List;
  */
 @Path("/auth/endpoint-registry")
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"admin:*", "ADMIN", "SYSTEM"})
+@RolesAllowed({"admin:*"})
 @JBossLog
 public class EndpointRegistryResource {
 

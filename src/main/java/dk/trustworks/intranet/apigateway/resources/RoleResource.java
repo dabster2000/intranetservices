@@ -19,7 +19,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"teams:read"})
 @SecurityRequirement(name = "jwt")
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
@@ -36,6 +36,7 @@ public class RoleResource {
 
     @POST
     @Path("/{uuid}/roles")
+    @RolesAllowed({"teams:write"})
     public void create(@PathParam("uuid") String useruuid, @Valid Role role) {
         roleService.create(useruuid, role);
     }

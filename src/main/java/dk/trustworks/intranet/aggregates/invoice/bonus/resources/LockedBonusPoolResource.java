@@ -37,7 +37,7 @@ import java.util.Optional;
 @SecurityRequirement(name = "jwt")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"partnerbonus:read"})
 public class LockedBonusPoolResource {
 
     @Inject
@@ -173,6 +173,7 @@ public class LockedBonusPoolResource {
     }
 
     @POST
+    @RolesAllowed({"partnerbonus:write"})
     @Operation(
             summary = "Lock bonus pool data for a fiscal year (DEPRECATED: Use /snapshots API)",
             description = "Creates an immutable snapshot of bonus pool data with SHA-256 checksum. Once locked, data cannot be modified (only deleted by admin in exceptional cases). DEPRECATED: Use POST /snapshots with entityType=bonus_pool instead."
@@ -243,6 +244,7 @@ public class LockedBonusPoolResource {
 
     @DELETE
     @Path("/{fiscalYear}")
+    @RolesAllowed({"partnerbonus:write"})
     @Operation(
             summary = "Unlock (delete) bonus pool data (DEPRECATED: Use /snapshots API)",
             description = "DANGEROUS: Deletes locked bonus pool data for a fiscal year. This breaks the audit trail and should only be used in exceptional circumstances. DEPRECATED: Use DELETE /snapshots/bonus_pool/{fiscalYear} instead."

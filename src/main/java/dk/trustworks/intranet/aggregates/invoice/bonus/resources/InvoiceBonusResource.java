@@ -28,7 +28,7 @@ import java.util.List;
 
 @Path("/invoices/{invoiceuuid}/bonuses")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"partnerbonus:read"})
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class InvoiceBonusResource {
@@ -88,6 +88,7 @@ public class InvoiceBonusResource {
 
     @POST
     @Path("/self")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(
             operationId = "selfAssignInvoiceBonus",
@@ -156,6 +157,7 @@ public class InvoiceBonusResource {
     }
 
     @POST
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(
             operationId = "adminAddInvoiceBonus",
@@ -224,6 +226,7 @@ public class InvoiceBonusResource {
 
     @PUT
     @Path("/{bonusuuid}")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(
             operationId = "updateInvoiceBonus",
@@ -252,6 +255,7 @@ public class InvoiceBonusResource {
 
     @POST
     @Path("/{bonusuuid}/approve")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     public BonusAggregateResponse approve(@PathParam("bonusuuid") String bonusuuid,
                                           @HeaderParam("X-Requested-By") String approver) {
@@ -270,6 +274,7 @@ public class InvoiceBonusResource {
 
     @POST
     @Path("/{bonusuuid}/reject")
+    @RolesAllowed({"partnerbonus:write"})
     @Consumes(MediaType.TEXT_PLAIN)
     @Transactional
     public BonusAggregateResponse reject(@PathParam("bonusuuid") String bonusuuid,
@@ -298,6 +303,7 @@ public class InvoiceBonusResource {
 
     @PUT
     @Path("/{bonusuuid}/lines")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     public BonusAggregateResponse putLines(@PathParam("invoiceuuid") String invoiceuuid,
                              @PathParam("bonusuuid") String bonusuuid,
@@ -317,6 +323,7 @@ public class InvoiceBonusResource {
 
     @DELETE
     @Path("/{bonusuuid}")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     public void delete(@PathParam("bonusuuid") String bonusuuid) {
         service.delete(bonusuuid);

@@ -35,7 +35,7 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class ContractValidationRuleResource {
 
     @Inject
@@ -95,6 +95,7 @@ public class ContractValidationRuleResource {
      * @return Created validation rule DTO
      */
     @POST
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Create validation rule", description = "Creates a new validation rule for a contract type")
     @APIResponse(responseCode = "201", description = "Validation rule created")
     @APIResponse(responseCode = "400", description = "Invalid request or duplicate rule ID")
@@ -118,6 +119,7 @@ public class ContractValidationRuleResource {
      */
     @PUT
     @Path("/{ruleId}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Update validation rule", description = "Updates an existing validation rule")
     @APIResponse(responseCode = "200", description = "Validation rule updated")
     @APIResponse(responseCode = "404", description = "Validation rule not found")
@@ -142,6 +144,7 @@ public class ContractValidationRuleResource {
      */
     @DELETE
     @Path("/{ruleId}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Delete validation rule", description = "Soft deletes a validation rule (sets active=false)")
     @APIResponse(responseCode = "204", description = "Validation rule deleted")
     @APIResponse(responseCode = "404", description = "Validation rule not found")

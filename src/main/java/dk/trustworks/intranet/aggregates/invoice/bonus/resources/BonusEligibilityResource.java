@@ -30,7 +30,7 @@ import java.util.List;
 @SecurityRequirement(name = "jwt")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"}) // adjust as needed
+@RolesAllowed({"partnerbonus:read"})
 public class BonusEligibilityResource {
 
     @Inject InvoiceBonusService service;
@@ -84,6 +84,7 @@ public class BonusEligibilityResource {
     }
 
     @POST
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(
             summary = "Upsert eligibility",
@@ -119,6 +120,7 @@ public class BonusEligibilityResource {
 
     @DELETE
     @Path("/{useruuid}")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(summary = "Delete eligibility",
                description = "Deletes all eligibility rows for the given user across financial years")

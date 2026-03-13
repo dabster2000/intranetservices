@@ -7,7 +7,7 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
-import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
@@ -29,8 +29,7 @@ import java.util.stream.Collectors;
 @RequestScoped
 //@SecurityRequirement(name = "jwt")
 //@ClientHeaderParam(name="Authorization", value="{generateRequestId}")
-//@RolesAllowed({"SYSTEM", "USER", "EXTERNAL", "EDITOR", "CXO", "SALES", "VTV", "ACCOUNTING", "MANAGER", "PARTNER", "ADMIN"})
-@PermitAll
+@RolesAllowed({"vacation:read"})
 public class VacationResource {
 
     @Inject

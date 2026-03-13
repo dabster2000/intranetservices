@@ -21,7 +21,7 @@ import java.util.List;
 @Path("/company/{companyuuid}/crm")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"crm:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class CrmResource {
 

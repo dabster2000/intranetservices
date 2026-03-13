@@ -18,7 +18,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"users:read"})
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 public class UserContactInfoResource {
@@ -40,6 +40,7 @@ public class UserContactInfoResource {
 
     @POST
     @Path("/{useruuid}/contactinfo")
+    @RolesAllowed({"users:write"})
     public Response create(@PathParam("useruuid") String useruuid, UserContactinfo userContactinfo) {
         UserContactinfo created = userContactInfoService.create(useruuid, userContactinfo);
         return Response.created(URI.create("/users/" + useruuid + "/contactinfo"))
@@ -49,6 +50,7 @@ public class UserContactInfoResource {
 
     @PUT
     @Path("/{useruuid}/contactinfo")
+    @RolesAllowed({"users:write"})
     public void update(@PathParam("useruuid") String useruuid, UserContactinfo userContactinfo) {
         userContactInfoService.update(useruuid, userContactinfo);
     }

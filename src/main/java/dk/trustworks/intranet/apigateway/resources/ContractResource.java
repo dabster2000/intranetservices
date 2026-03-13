@@ -42,7 +42,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class ContractResource {
 
     @Inject
@@ -133,6 +133,7 @@ public class ContractResource {
     }
 
     @POST
+    @RolesAllowed({"contracts:write"})
     public void save(Contract contract) {
         contractService.save(contract);
     }
@@ -140,6 +141,7 @@ public class ContractResource {
     @POST
     @Path("/{contractuuid}/extend")
     @CacheInvalidateAll(cacheName = "employee-budgets")
+    @RolesAllowed({"contracts:write"})
     public Contract extendContract(@PathParam("contractuuid") String contractuuid) {
         log.info("ContractResource.extendContract");
         log.info("contractuuid = " + contractuuid);
@@ -147,12 +149,14 @@ public class ContractResource {
     }
 
     @PUT
+    @RolesAllowed({"contracts:write"})
     public void updateContract(Contract contract) {
         contractService.update(contract);
     }
 
     @DELETE
     @Path("/{contractuuid}")
+    @RolesAllowed({"contracts:write"})
     public void deleteContract(@PathParam("contractuuid") String contractuuid) {
         log.info("ContractResource.deleteContract");
         log.info("contractuuid = " + contractuuid);
@@ -165,12 +169,14 @@ public class ContractResource {
 
     @POST
     @Path("/{contractuuid}/projects/{projectuuid}")
+    @RolesAllowed({"contracts:write"})
     public void addProject(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
         contractService.addProject(contractuuid, projectuuid);
     }
 
     @DELETE
     @Path("/{contractuuid}/projects/{projectuuid}")
+    @RolesAllowed({"contracts:write"})
     public void removeProject(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
         contractService.removeProject(contractuuid, projectuuid);
     }
@@ -178,6 +184,7 @@ public class ContractResource {
     @POST
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     @CacheInvalidateAll(cacheName = "employee-budgets")
+    @RolesAllowed({"contracts:write"})
     public void addConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         contractService.addConsultant(contractuuid, consultantuuid, contractConsultant);
         aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), contractConsultant));
@@ -186,6 +193,7 @@ public class ContractResource {
     @PUT
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     @CacheInvalidateAll(cacheName = "employee-budgets")
+    @RolesAllowed({"contracts:write"})
     public void updateConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
         ContractConsultant existingContractConsultant = ContractConsultant.findById(contractConsultant.getUuid());
         contractService.updateConsultant(contractConsultant);
@@ -196,6 +204,7 @@ public class ContractResource {
     @DELETE
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     @CacheInvalidateAll(cacheName = "employee-budgets")
+    @RolesAllowed({"contracts:write"})
     public void removeConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid) {
         ContractConsultant contractConsultant = ContractConsultant.findById(consultantuuid);
         contractService.removeConsultant(contractuuid, consultantuuid);
@@ -204,12 +213,14 @@ public class ContractResource {
 
     @POST
     @Path("/{contractuuid}/contracttypeitems")
+    @RolesAllowed({"contracts:write"})
     public void addContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
         contractService.addContractTypeItem(contractuuid, contractTypeItem);
     }
 
     @PUT
     @Path("/{contractuuid}/contracttypeitems")
+    @RolesAllowed({"contracts:write"})
     public void updateContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
         contractService.updateContractTypeItem(contractTypeItem);
     }
@@ -220,6 +231,7 @@ public class ContractResource {
      */
     @POST
     @Path("/validate")
+    @RolesAllowed({"contracts:write"})
     public ValidationReport validateContract(Contract contract) {
         log.debug("ContractResource.validateContract");
         return validationService.validateContractActivation(contract);
@@ -231,6 +243,7 @@ public class ContractResource {
      */
     @POST
     @Path("/{contractuuid}/consultants/validate")
+    @RolesAllowed({"contracts:write"})
     public ValidationReport validateConsultant(@PathParam("contractuuid") String contractuuid, ContractConsultant consultant) {
         log.debug("ContractResource.validateConsultant for contract: " + contractuuid);
         consultant.setContractuuid(contractuuid);
@@ -243,6 +256,7 @@ public class ContractResource {
      */
     @POST
     @Path("/{contractuuid}/projects/{projectuuid}/validate")
+    @RolesAllowed({"contracts:write"})
     public ValidationReport validateProjectLinkage(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
         log.debug("ContractResource.validateProjectLinkage for contract: " + contractuuid + ", project: " + projectuuid);
         ContractProject projectLink = new ContractProject(contractuuid, projectuuid);
@@ -257,6 +271,7 @@ public class ContractResource {
      */
     @POST
     @Path("/batch/registeredamounts")
+    @RolesAllowed({"contracts:write"})
     public Map<String, Double> calcRegisteredAmountsForContracts(List<String> contractUuids) {
         log.debug("ContractResource.calcRegisteredAmountsForContracts for " + contractUuids.size() + " contracts");
         if (contractUuids == null || contractUuids.isEmpty()) {
@@ -273,6 +288,7 @@ public class ContractResource {
      */
     @POST
     @Path("/batch/invoices")
+    @RolesAllowed({"contracts:write"})
     public Map<String, List<Invoice>> findInvoicesForContracts(List<String> contractUuids) {
         log.debug("ContractResource.findInvoicesForContracts for " + contractUuids.size() + " contracts");
         if (contractUuids == null || contractUuids.isEmpty()) {

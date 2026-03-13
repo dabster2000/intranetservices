@@ -36,7 +36,7 @@ import java.util.*;
 @Path("/clients")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"crm:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class ClientResource {
 
@@ -110,6 +110,7 @@ public class ClientResource {
     }
 
     @POST
+    @RolesAllowed({"crm:write"})
     public void save(Client client) {
         clientAPI.save(client);
         CreateClientEvent createClientEvent = new CreateClientEvent(client.getUuid(), client);
@@ -121,6 +122,7 @@ public class ClientResource {
     }
 
     @PUT
+    @RolesAllowed({"crm:write"})
     public void updateOne(Client client) {
         log.debug("Updating client:\n"+client);
 

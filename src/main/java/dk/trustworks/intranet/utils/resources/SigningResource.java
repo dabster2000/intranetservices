@@ -44,7 +44,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"signing:read"})
 public class SigningResource {
 
     @Inject
@@ -62,6 +62,7 @@ public class SigningResource {
      */
     @POST
     @Path("/cases")
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Create a signing case",
         description = "Creates a new document signing case with the specified signers. " +
@@ -156,6 +157,7 @@ public class SigningResource {
      */
     @POST
     @Path("/cases/from-template")
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Create a signing case from template",
         description = "Creates a new document signing case by generating a PDF from an HTML/Thymeleaf template. " +
@@ -273,7 +275,7 @@ public class SigningResource {
     @Path("/preview/template")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
+    @RolesAllowed({"signing:read"})
     @Operation(
         summary = "Preview documents from template",
         description = "Generates preview PDFs from template documents with placeholder values replaced. " +
@@ -352,6 +354,7 @@ public class SigningResource {
      */
     @POST
     @Path("/cases/multi-document")
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Create a multi-document signing case",
         description = "Creates a new signing case with multiple documents. All documents are bundled " +
@@ -613,7 +616,7 @@ public class SigningResource {
     @GET
     @Path("/cases")
     @Produces(MediaType.APPLICATION_JSON)
-    @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
+    @RolesAllowed({"signing:read"})
     @Operation(
         summary = "List user's signing cases",
         description = "Retrieves all signing cases created by the authenticated user from local database. " +
@@ -664,7 +667,7 @@ public class SigningResource {
     @POST
     @Path("/cases/sync")
     @Produces(MediaType.APPLICATION_JSON)
-    @RolesAllowed({"SYSTEM", "USER", "ADMIN", "MANAGER"})
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Sync cases with NextSign",
         description = "Synchronizes local database with NextSign's case list. " +
@@ -722,7 +725,7 @@ public class SigningResource {
     @GET
     @Path("/processing-stats")
     @Produces(MediaType.APPLICATION_JSON)
-    @RolesAllowed({"SYSTEM", "ADMIN", "MANAGER"})
+    @RolesAllowed({"signing:read"})
     @Operation(
         summary = "Get async processing statistics",
         description = "Returns counts of signing cases by async processing status. " +
@@ -800,6 +803,7 @@ public class SigningResource {
      */
     @POST
     @Path("/admin/sync")
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Sync all cases from NextSign (admin)",
         description = "Synchronizes ALL signing cases across all users from NextSign."
@@ -836,6 +840,7 @@ public class SigningResource {
      */
     @POST
     @Path("/admin/retry-upload/{caseKey}")
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Retry failed SharePoint upload (admin)",
         description = "Resets a failed SharePoint upload to PENDING so the batch job picks it up."
@@ -873,6 +878,7 @@ public class SigningResource {
      */
     @POST
     @Path("/admin/retry-uploads")
+    @RolesAllowed({"signing:write"})
     @Operation(
         summary = "Retry all failed SharePoint uploads (admin)",
         description = "Resets ALL failed SharePoint uploads to PENDING so the batch job picks them up."

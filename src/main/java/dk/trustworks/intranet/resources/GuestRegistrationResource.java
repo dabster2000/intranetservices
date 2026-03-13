@@ -16,7 +16,7 @@ import java.util.List;
 @JBossLog
 @Path("/registration/guest")
 @RequestScoped
-@RolesAllowed({"APPLICATION", "SYSTEM"})
+@RolesAllowed({"guest:read"})
 @SecurityRequirement(name = "jwt")
 @Produces("application/json")
 @Consumes("application/json")
@@ -26,6 +26,7 @@ public class GuestRegistrationResource {
     GuestRegistrationService service;
 
     @POST
+    @RolesAllowed({"guest:write"})
     public void register(RegistrationRequest registrationRequest) {
         log.info("register called " + registrationRequest);
         service.register(registrationRequest);

@@ -21,6 +21,7 @@ import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.dto.UserFinanceDocument;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
+import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.resources.PhotoService;
 import dk.trustworks.intranet.fileservice.dto.UserSharePointDocumentDTO;
@@ -68,7 +69,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @JBossLog
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"users:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class UserResource {
 
@@ -121,6 +122,9 @@ public class UserResource {
     @Inject
     CourseService courseService;
 
+    @Inject
+    ScopeContext scopeContext;
+
     /** DTO for linking Azure fields **/
     public static class AzureLinkDto {
         public String azureOid;
@@ -151,6 +155,7 @@ public class UserResource {
      */
     @PUT
     @Path("/{uuid}/azure")
+    @RolesAllowed({"users:write"})
     public Response linkAzureAccount(
             @PathParam("uuid") String uuid,
             AzureLinkDto dto) {
@@ -289,14 +294,30 @@ public class UserResource {
         AtomicReference<Double> sumHours = new AtomicReference<>(0.0);
         double sumRate = workService.findByPeriodAndUserUUID(date, date.plusYears(1), user.getUuid()).stream().filter(work -> work.getRate() > 0).peek(work -> sumHours.updateAndGet(v -> v + work.getWorkduration())).mapToDouble(work1 -> work1.getRate()*work1.getWorkduration()).sum();
 
-        return new GraphKeyValue(user.getUuid(), user.getUsername(), sumRate / sumHours.get());
+        GraphKeyValue result = new GraphKeyValue(user.getUuid(), user.getUsername(), sumRate / sumHours.get());
+
+        // Data boundary: mask rate value when caller lacks revenue:read
+        if (!scopeContext.hasScope("revenue:read")) {
+            result.setValue(0.0);
+        }
+
+        return result;
     }
 
     @GET
     @Path("/expenses")
     public List<UserFinanceDocument> getConsultantsExpensesByMonth(@QueryParam("month") String month) {
         List<User> users = userAPI.findUsersByDateAndStatusListAndTypes(dateIt(month), "ACTIVE, NON_PAY_LEAVE", "CONSULTANT", true);
-        return financeService.getUserFinanceData().stream().filter(userFinanceDocument -> users.stream().map(User::getUuid).anyMatch(s -> s.equals(userFinanceDocument.getUser().getUuid()))).collect(Collectors.toList());
+        List<UserFinanceDocument> result = financeService.getUserFinanceData().stream().filter(userFinanceDocument -> users.stream().map(User::getUuid).anyMatch(s -> s.equals(userFinanceDocument.getUser().getUuid()))).collect(Collectors.toList());
+
+        // Data boundary: mask salary fields when caller lacks salaries:read
+        if (!scopeContext.hasScope("salaries:read")) {
+            result = result.stream()
+                    .map(doc -> new UserFinanceDocument(doc.getMonth(), doc.getUser(), doc.getSharedExpense(), 0.0, 0.0, doc.getPersonaleExpense()))
+                    .collect(Collectors.toList());
+        }
+
+        return result;
     }
 
     @GET
@@ -331,6 +352,7 @@ public class UserResource {
 
     @PUT
     @Path("/{uuid}")
+    @RolesAllowed({"users:write"})
     public void updateOne(@PathParam("uuid") String uuid, User user) {
         System.out.println("UserResource.updateOne");
         System.out.println("uuid = " + uuid + ", user = " + user);
@@ -340,6 +362,7 @@ public class UserResource {
     }
 
     @POST
+    @RolesAllowed({"users:write"})
     public void createUser(User user) {
         System.out.println("UserResource.createUser");
         System.out.println("user = " + user);
@@ -361,6 +384,7 @@ public class UserResource {
 
     @POST
     @Path("/{uuid}/password/{newpassword}")
+    @RolesAllowed({"users:write"})
     public void updatePasswordByUUID(@PathParam("uuid") String uuid, @PathParam("newpassword") String newPassword) {
         userAPI.updatePasswordByUUID(uuid, decode(newPassword, UTF_8));
     }
@@ -374,6 +398,7 @@ public class UserResource {
 
     @PUT
     @Path("/{uuid}/birthday")
+    @RolesAllowed({"users:write"})
     public void updateBirthday(@PathParam("uuid") String uuid, User user) {
         UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
         aggregateEventSender.handleEvent(event);
@@ -395,6 +420,7 @@ public class UserResource {
     @POST
     @GZIP
     @Path("/{useruuid}/documents")
+    @RolesAllowed({"users:write"})
     public void saveDocument(File document) {
         documentAPI.save(document);
     }
@@ -419,6 +445,7 @@ public class UserResource {
 
     @POST
     @Path("/{useruuid}/certifications/{certificationuuid}")
+    @RolesAllowed({"users:write"})
     @Transactional
     public void addUserCertification(@PathParam("useruuid") String useruuid, @PathParam("certificationuuid") String certificationuuid, Certification body) {
         if(certificationService.findAllUserCertifications(useruuid).stream().noneMatch(userCertification -> userCertification.getCertificationuuid().equals(certificationuuid))) {
@@ -428,6 +455,7 @@ public class UserResource {
 
     @DELETE
     @Path("/{useruuid}/certifications/{certificationuuid}")
+    @RolesAllowed({"users:write"})
     @Transactional
     public void deleteUserCertification(@PathParam("useruuid") String useruuid, @PathParam("certificationuuid") String certificationuuid) {
         for (UserCertification userCertification : certificationService.findAllUserCertifications(useruuid)) {
@@ -475,6 +503,7 @@ public class UserResource {
 
     @POST
     @Path("/{useruuid}/resume")
+    @RolesAllowed({"users:write"})
     public void saveResume(@PathParam("useruuid") String useruuid, File resume) throws IOException {
         System.out.println("UserResource.saveResume");
         System.out.println("useruuid = " + useruuid + ", resume = " + resume);

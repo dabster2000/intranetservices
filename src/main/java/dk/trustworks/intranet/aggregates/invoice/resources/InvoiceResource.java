@@ -8,6 +8,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
+import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.dto.InvoiceReference;
@@ -42,7 +43,7 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @Path("/invoices")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"invoices:read"})
 @ClientHeaderParam(name="Authorization", value="{generateRequestId}")
 public class InvoiceResource {
 
@@ -63,6 +64,9 @@ public class InvoiceResource {
 
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service invoicePdfS3Service;
+
+    @Inject
+    ScopeContext scopeContext;
 
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
@@ -224,6 +228,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/drafts")
+    @RolesAllowed({"invoices:write"})
     @Transactional
     public Response createDraftInvoice(@QueryParam("contractuuid") String contractuuid,
                                        @QueryParam("projectuuid") String projectuuid,
@@ -261,6 +266,7 @@ public class InvoiceResource {
 
     @PUT
     @Path("/{invoiceuuid}")
+    @RolesAllowed({"invoices:write"})
     public Invoice updateDraftInvoice(@PathParam("invoiceuuid") String invoiceuuid, Invoice draftInvoice) {
         if (draftInvoice.getUuid() != null && !invoiceuuid.equals(draftInvoice.getUuid())) {
             throw new WebApplicationException("Path and body uuid mismatch", Response.Status.BAD_REQUEST);
@@ -271,11 +277,13 @@ public class InvoiceResource {
 
     @DELETE
     @Path("/drafts/{invoiceuuid}")
+    @RolesAllowed({"invoices:write"})
     public void deleteInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
         invoiceService.deleteDraftInvoice(invoiceuuid);
     }
 
     @POST
+    @RolesAllowed({"invoices:write"})
     @Transactional
     public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
         log.debug("InvoiceResource.createInvoice");
@@ -285,6 +293,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/regenerate/{invoiceuuid}")
+    @RolesAllowed({"invoices:write"})
     @Transactional
     public void regenerateInvoicePdf(@PathParam("invoiceuuid") String invoiceuuid) throws JsonProcessingException {
         invoiceService.regenerateInvoicePdf(invoiceuuid);
@@ -292,24 +301,28 @@ public class InvoiceResource {
 
     @POST
     @Path("/phantoms")
+    @RolesAllowed({"invoices:write"})
     public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
         return invoiceService.createPhantomInvoice(draftInvoice);
     }
 
     @POST
     @Path("/creditnotes")
+    @RolesAllowed({"invoices:write"})
     public Invoice createCreditNote(Invoice draftInvoice) {
         return invoiceService.createCreditNote(draftInvoice);
     }
 
     @POST
     @Path("/internal/companies/{companyuuid}")
+    @RolesAllowed({"invoices:write"})
     public void createInternalInvoiceDraft(@PathParam("companyuuid") String companyuuid, Invoice invoice) {
         invoiceService.createInternalInvoiceDraft(companyuuid, invoice);
     }
 
     @POST
     @Path("/{clientInvoiceUuid}/auto-create-internal")
+    @RolesAllowed({"invoices:write"})
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
     public Response autoCreateInternal(
@@ -327,6 +340,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/{invoiceuuid}/reference")
+    @RolesAllowed({"invoices:write"})
     public void updateInvoiceReference(@PathParam("invoiceuuid") String invoiceuuid, InvoiceReference invoiceReference) {
         log.info("InvoiceResource.updateInvoiceReference");
         log.info("invoiceuuid = " + invoiceuuid + ", invoiceReference = " + invoiceReference);
@@ -349,6 +363,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/internalservices")
+    @RolesAllowed({"invoices:write"})
     public void createInternalServiceInvoiceDraft(@QueryParam("fromCompany") String fromCompanyuuid, @QueryParam("toCompany") String toCompanyuuid, @QueryParam("month") String month) {
         log.info("InvoiceResource.createInternalServiceInvoiceDraft");
         log.info("fromCompanyuuid = " + fromCompanyuuid + ", toCompanyuuid = " + toCompanyuuid + ", month = " + month);
@@ -357,12 +372,14 @@ public class InvoiceResource {
 
     @PUT
     @Path("/{invoiceuuid}/bonusstatus/{bonusStatus}")
+    @RolesAllowed({"invoices:write"})
     public void updateInvoiceStatus(@PathParam("invoiceuuid") String invoiceuuid, @PathParam("bonusStatus") String bonusStatus) {
         invoiceService.updateInvoiceStatus(invoiceuuid, SalesApprovalStatus.valueOf(bonusStatus));
     }
 
     @PUT
     @Path("/{invoiceuuid}/bonusstatus")
+    @RolesAllowed({"invoices:write"})
     public void updateInvoiceStatus(Invoice invoice) {
         invoiceService.updateInvoiceBonusStatus(invoice);
     }
@@ -375,6 +392,7 @@ public class InvoiceResource {
 
     @PUT
     @Path("/notes")
+    @RolesAllowed({"invoices:write"})
     public void createOrUpdateInvoiceNote(InvoiceNote invoiceNote) {
         invoiceNotesService.createOrUpdateInvoiceNote(invoiceNote);
     }
@@ -411,7 +429,14 @@ public class InvoiceResource {
     @Path("/cross-company")
     public List<Invoice> findCrossCompanyInvoices(@QueryParam("fromdate") String fromdate,
                                                    @QueryParam("todate") String todate) {
-        return internalInvoiceControllingService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
+        List<Invoice> result = internalInvoiceControllingService.findCrossCompanyInvoicesByDateRange(dateIt(fromdate), dateIt(todate));
+
+        // Data boundary: mask consultant details when caller lacks users:read
+        if (!scopeContext.hasScope("users:read")) {
+            result.forEach(inv -> inv.invoiceitems.forEach(item -> item.consultantuuid = null));
+        }
+
+        return result;
     }
 
     /**
@@ -433,7 +458,8 @@ public class InvoiceResource {
     public List<CrossCompanyInvoicePairDTO> findCrossCompanyInvoicesWithInternal(
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate) {
-        return internalInvoiceControllingService.findCrossCompanyInvoicesWithInternal(dateIt(fromdate), dateIt(todate));
+        List<CrossCompanyInvoicePairDTO> result = internalInvoiceControllingService.findCrossCompanyInvoicesWithInternal(dateIt(fromdate), dateIt(todate));
+        return maskCrossCompanyPairs(result);
     }
 
     /**
@@ -459,7 +485,8 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return internalInvoiceControllingService.findCrossCompanyClientLessThanInternal(dateIt(fromdate), dateIt(todate));
+        List<CrossCompanyInvoicePairDTO> result = internalInvoiceControllingService.findCrossCompanyClientLessThanInternal(dateIt(fromdate), dateIt(todate));
+        return maskCrossCompanyPairs(result);
     }
 
     /**
@@ -483,7 +510,11 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return internalInvoiceControllingService.findCrossCompanyClientInvoicesWithoutInternal(dateIt(fromdate), dateIt(todate));
+        List<SimpleInvoiceDTO> result = internalInvoiceControllingService.findCrossCompanyClientInvoicesWithoutInternal(dateIt(fromdate), dateIt(todate));
+        if (!scopeContext.hasScope("users:read")) {
+            result = result.stream().map(this::maskSimpleInvoiceConsultantDetails).toList();
+        }
+        return result;
     }
 
     /**
@@ -507,7 +538,8 @@ public class InvoiceResource {
             @QueryParam("fromdate") String fromdate,
             @QueryParam("todate") String todate
     ) {
-        return internalInvoiceControllingService.findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(dateIt(fromdate), dateIt(todate));
+        List<CrossCompanyInvoicePairDTO> result = internalInvoiceControllingService.findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(dateIt(fromdate), dateIt(todate));
+        return maskCrossCompanyPairs(result);
     }
 
     /**
@@ -531,6 +563,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/{invoiceuuid}/queue")
+    @RolesAllowed({"invoices:write"})
     @Transactional
     public Response queueInternalInvoice(@PathParam("invoiceuuid") String invoiceuuid, KeyValueDTO body) {
         log.infof("queueInternalInvoice: invoiceuuid=%s", invoiceuuid);
@@ -567,6 +600,7 @@ public class InvoiceResource {
      */
     @POST
     @Path("/{invoiceuuid}/force-create-queued")
+    @RolesAllowed({"invoices:write"})
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
     public Response forceCreateQueuedInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
@@ -657,6 +691,7 @@ public class InvoiceResource {
      */
     @POST
     @Path("/{invoiceuuid}/retry-economics-upload")
+    @RolesAllowed({"invoices:write"})
     @Transactional
     public Response retryEconomicsUpload(@PathParam("invoiceuuid") String invoiceuuid) {
         Invoice invoice = Invoice.findById(invoiceuuid);
@@ -698,6 +733,7 @@ public class InvoiceResource {
      */
     @PUT
     @Path("/{invoiceuuid}/control-status")
+    @RolesAllowed({"invoices:write"})
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
@@ -798,6 +834,7 @@ public class InvoiceResource {
      */
     @POST
     @Path("/{invoiceuuid}/mark-internal-skip")
+    @RolesAllowed({"invoices:write"})
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
@@ -867,6 +904,7 @@ public class InvoiceResource {
      */
     @POST
     @Path("/{invoiceuuid}/unmark-internal-skip")
+    @RolesAllowed({"invoices:write"})
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
     public Response unmarkInternalInvoiceSkip(
@@ -907,6 +945,42 @@ public class InvoiceResource {
     }
 
     // ──────────────────────────────────────────────────────────────
+    // Data boundary: cross-company consultant detail masking
+    // ──────────────────────────────────────────────────────────────
+
+    private List<CrossCompanyInvoicePairDTO> maskCrossCompanyPairs(List<CrossCompanyInvoicePairDTO> pairs) {
+        if (scopeContext.hasScope("users:read")) {
+            return pairs;
+        }
+        return pairs.stream()
+                .map(pair -> new CrossCompanyInvoicePairDTO(
+                        maskSimpleInvoiceConsultantDetails(pair.client()),
+                        pair.internal() != null ? maskSimpleInvoiceConsultantDetails(pair.internal()) : null
+                ))
+                .toList();
+    }
+
+    private SimpleInvoiceDTO maskSimpleInvoiceConsultantDetails(SimpleInvoiceDTO dto) {
+        if (dto == null || dto.lines() == null) return dto;
+        List<InvoiceLineDTO> maskedLines = dto.lines().stream()
+                .map(line -> new InvoiceLineDTO(
+                        line.uuid(), line.itemName(), line.description(),
+                        line.hours(), line.rate(), line.amountNoTax(),
+                        null, line.crossCompany(), null, null
+                ))
+                .toList();
+        return new SimpleInvoiceDTO(
+                dto.uuid(), dto.invoicenumber(), dto.invoicedate(),
+                dto.creditorCompanyUuid(), dto.creditorCompanyName(), dto.clientName(),
+                dto.status(), dto.economicsStatus(), dto.totalAmountNoTax(),
+                maskedLines, dto.controlStatus(), dto.controlNote(),
+                dto.controlStatusUpdatedAt(), dto.controlStatusUpdatedBy(),
+                dto.internalInvoiceSkip(), dto.internalInvoiceSkipNote(),
+                dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy()
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────
     // Temporary: Invoice item recovery endpoints (data-loss fix)
     // ──────────────────────────────────────────────────────────────
 
@@ -920,6 +994,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/admin/recovery/{invoiceuuid}")
+    @RolesAllowed({"invoices:write"})
     @Transactional
     public Response recoverInvoiceItems(@PathParam("invoiceuuid") String invoiceuuid) {
         int inserted = invoiceService.recoverBaseItemsForInvoice(invoiceuuid);

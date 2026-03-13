@@ -15,7 +15,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"vacation:read"})
 @SecurityRequirement(name = "jwt")
 public class VacationResource {
 
@@ -36,6 +36,7 @@ public class VacationResource {
 
     @POST
     @Path("/{useruuid}/vacation/transfer")
+    @RolesAllowed({"vacation:write"})
     public Response transferVacationDays(@PathParam("useruuid") String useruuid, @QueryParam("year") int year, @QueryParam("days") double days) {
         try {
             vacationService.transferVacationDays(useruuid, year, days);

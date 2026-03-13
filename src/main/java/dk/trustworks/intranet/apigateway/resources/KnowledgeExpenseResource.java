@@ -16,7 +16,7 @@ import java.util.List;
 @ApplicationScoped
 @Tag(name = "Knowledge")
 @Path("/knowledge/expenses")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"knowledge:read"})
 @SecurityRequirement(name = "jwt")
 public class KnowledgeExpenseResource {
 
@@ -37,12 +37,14 @@ public class KnowledgeExpenseResource {
     }
 
     @POST
+    @RolesAllowed({"knowledge:write"})
     //@CacheInvalidateAll(cacheName = "knowledge-cache")
     public void saveExpense(CKOExpense ckoExpense) {
         knowledgeExpenseAPI.saveExpense(ckoExpense);
     }
 
     @PUT
+    @RolesAllowed({"knowledge:write"})
     //@CacheInvalidateAll(cacheName = "knowledge-cache")
     public void updateExpense(CKOExpense ckoExpense) {
         knowledgeExpenseAPI.updateExpense(ckoExpense);
@@ -50,6 +52,7 @@ public class KnowledgeExpenseResource {
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"knowledge:write"})
     //@CacheInvalidateAll(cacheName = "knowledge-cache")
     public void deleteExpense(@PathParam("uuid") String uuid) {
         knowledgeExpenseAPI.deleteExpense(uuid);

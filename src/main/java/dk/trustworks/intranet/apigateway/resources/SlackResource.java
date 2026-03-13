@@ -25,7 +25,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @JBossLog
 @RequestScoped
 @Path("/slack")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"notifications:write"})
 @SecurityRequirement(name = "jwt")
 public class SlackResource {
 
@@ -72,7 +72,7 @@ public class SlackResource {
     @Path("/new-lead-notification")
     @Consumes(APPLICATION_JSON)
     @Produces(APPLICATION_JSON)
-    @RolesAllowed({"SALES", "ADMIN", "SYSTEM"})
+    @RolesAllowed({"notifications:write"})
     public Response sendNewLeadNotification(NewLeadNotificationDTO dto) {
         log.info("Received new lead notification request for client: " + dto.getClientName());
 

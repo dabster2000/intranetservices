@@ -17,7 +17,7 @@ import java.util.List;
 @Path("/api-usage-logs")
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"system:read"})
 public class ApiUsageLogResource {
 
     @Inject

@@ -43,7 +43,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"timeregistration:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class WorkResource {
 
@@ -99,6 +99,7 @@ public class WorkResource {
 
     @POST
     @Path("/work")
+    @RolesAllowed({"timeregistration:write"})
     public void save(Work work) {
         workAPI.persistOrUpdate(work);
 

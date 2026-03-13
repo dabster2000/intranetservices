@@ -4,6 +4,7 @@ import io.quarkus.vertx.ConsumeEvent;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.operators.multi.processors.BroadcastProcessor;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
@@ -14,6 +15,7 @@ import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.
 
 @Path("/sse")
 @ApplicationScoped
+@RolesAllowed({"system:read"})
 public class SSEResource {
 
     private final BroadcastProcessor<String> broadcastProcessor = BroadcastProcessor.create();

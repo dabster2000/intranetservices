@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 @Tag(name = "partner-bonus-dashboard", description = "Partner bonus admin dashboard")
 @Path("/invoices/bonuses/partner-dashboard")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"partnerbonus:read"})
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public class PartnerBonusDashboardResource {
@@ -48,6 +48,7 @@ public class PartnerBonusDashboardResource {
 
     @POST
     @Path("/invalidate-cache")
+    @RolesAllowed({"partnerbonus:write"})
     @Operation(summary = "Clear dashboard cache for a fiscal year")
     public Response invalidateCache(@QueryParam("fiscalYear") Integer fiscalYear) {
         if (fiscalYear == null) throw new BadRequestException("fiscalYear is required");
@@ -87,6 +88,7 @@ public class PartnerBonusDashboardResource {
 
     @POST
     @Path("/payouts")
+    @RolesAllowed({"partnerbonus:write"})
     @Operation(summary = "Create partner bonus payouts (sales + production)")
     public Response createPayouts(PayoutRequestDTO request,
                                    @HeaderParam("X-Requested-By") String requestedBy) {

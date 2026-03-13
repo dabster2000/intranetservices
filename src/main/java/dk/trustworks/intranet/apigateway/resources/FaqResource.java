@@ -16,7 +16,7 @@ import java.util.UUID;
 @Tag(name = "faq")
 @Path("/faq")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"news:read"})
 @SecurityRequirement(name = "jwt")
 public class FaqResource {
 
@@ -35,6 +35,7 @@ public class FaqResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"news:write"})
     public void create(Faq faq) {
         if(faq.getUuid() == null || faq.getUuid().isEmpty()) faq.setUuid(UUID.randomUUID().toString());
         faqService.create(faq);
@@ -42,6 +43,7 @@ public class FaqResource {
 
     @PUT
     @Transactional
+    @RolesAllowed({"news:write"})
     public void update(Faq faq) {
         faqService.update(faq);
     }
@@ -49,6 +51,7 @@ public class FaqResource {
     @DELETE
     @Path("/{uuid}")
     @Transactional
+    @RolesAllowed({"news:write"})
     public void delete(@PathParam("uuid") String uuid) {
         faqService.delete(uuid);
     }

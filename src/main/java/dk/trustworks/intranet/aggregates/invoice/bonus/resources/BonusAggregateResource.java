@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusServ
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import dk.trustworks.intranet.userservice.services.TeamService;
@@ -36,7 +37,7 @@ import java.util.*;
 @SecurityRequirement(name = "jwt")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM", "FINANCE", "ADMIN"})
+@RolesAllowed({"partnerbonus:read"})
 public class BonusAggregateResource {
 
     @Inject
@@ -47,6 +48,9 @@ public class BonusAggregateResource {
 
     @Inject
     UserService userService;
+
+    @Inject
+    ScopeContext scopeContext;
 
     /** DTO for company‑specific amount. */
     public record CompanyAmount(
@@ -150,6 +154,13 @@ public class BonusAggregateResource {
                 .toList();
 
         double grandTotal = userShares.stream().mapToDouble(UserCompanyShare::totalAmount).sum();
+
+        // Data boundary: mask user names when caller lacks users:read
+        if (!scopeContext.hasScope("users:read")) {
+            userShares = userShares.stream()
+                    .map(s -> new UserCompanyShare(s.userId(), null, s.totalAmount(), s.companyAmounts()))
+                    .toList();
+        }
 
         return new CompanyBonusShareResponse(financialYear, periodStart, periodEnd, grandTotal, userShares);
     }
@@ -306,13 +317,21 @@ public class BonusAggregateResource {
         System.out.println("eligibleLeaders.size() = " + eligibleLeaders.size());
         eligibleLeaders.sort(Comparator.comparing(EligibleLeader::teamName).thenComparing(EligibleLeader::userName));
 
-        System.out.println("new EligibleLeadersResponse(\n                financialYear,\n                fyStart,\n                fyEnd,\n                eligibleLeaders,\n                eligibleLeaders.size()\n        ) = " + new EligibleLeadersResponse(
-                financialYear,
-                fyStart,
-                fyEnd,
-                eligibleLeaders,
-                eligibleLeaders.size()
-        ));
+        // Data boundary: mask user names and team names when caller lacks required scopes
+        boolean maskUserNames = !scopeContext.hasScope("users:read");
+        boolean maskTeamNames = !scopeContext.hasScope("teams:read");
+        if (maskUserNames || maskTeamNames) {
+            eligibleLeaders = eligibleLeaders.stream()
+                    .map(l -> new EligibleLeader(
+                            l.userUuid(),
+                            maskUserNames ? null : l.userName(),
+                            l.teamUuid(),
+                            maskTeamNames ? null : l.teamName(),
+                            l.startDate(),
+                            l.endDate()
+                    ))
+                    .toList();
+        }
 
         return new EligibleLeadersResponse(
                 financialYear,

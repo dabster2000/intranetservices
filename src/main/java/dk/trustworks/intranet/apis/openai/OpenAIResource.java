@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apis.openai;
 
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
@@ -8,6 +9,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 
 @Path("/openai")
+@RolesAllowed({"system:write"})
 public class OpenAIResource {
     
     @Inject

@@ -19,7 +19,7 @@ import java.util.Optional;
 @Tag(name = "course")
 @Path("/knowledge/courses")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"knowledge:read"})
 @SecurityRequirement(name = "jwt")
 public class CourseResource {
 
@@ -44,12 +44,14 @@ public class CourseResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     public void create(CkoCourse course) {
         service.create(course);
     }
 
     @PUT
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     public void update(CkoCourse course) {
         service.update(course);
     }
@@ -68,6 +70,7 @@ public class CourseResource {
     @POST
     @Path("/{courseuuid}/participants/user/{useruuid}")
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     public void signupForCourse(@PathParam("courseuuid") String courseuuid, @PathParam("useruuid") String useruuid) {
         CkoCourse.<CkoCourse>findByIdOptional(courseuuid).ifPresent(ckoCourse -> service.addParticipants(ckoCourse, User.findById(useruuid)));
     }
@@ -75,6 +78,7 @@ public class CourseResource {
     @DELETE
     @Path("/{courseuuid}/participants/{participantuuid}")
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     public void removeParticipants(@PathParam("courseuuid") String courseuuid, @PathParam("participantuuid") String participantuuid) {
         // Validate participant exists
         CkoCourseParticipant participant = CkoCourseParticipant.findById(participantuuid);

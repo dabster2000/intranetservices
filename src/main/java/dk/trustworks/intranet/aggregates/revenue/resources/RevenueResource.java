@@ -6,6 +6,7 @@ import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.FinanceDocument;
 import dk.trustworks.intranet.dto.GraphKeyValue;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -32,7 +33,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"revenue:read"})
 public class RevenueResource {
     
     @PathParam("companyuuid")
@@ -46,6 +47,9 @@ public class RevenueResource {
 
     @Inject
     TeamService teamService;
+
+    @Inject
+    ScopeContext scopeContext;
 
 
     @GET
@@ -108,7 +112,6 @@ public class RevenueResource {
 
     @GET
     @Path("/profits")
-    @RolesAllowed({"PARTNER", "ADMIN"})
     //@CacheResult(cacheName = "registered-revenue-cache")
     public List<GraphKeyValue> getProfitsByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         return revenueService.getProfitsByPeriod(companyuuid, dateIt(fromdate), dateIt(todate));
@@ -122,13 +125,21 @@ public class RevenueResource {
         log.info("intFiscalYear = " + intFiscalYear + ", fromdate = " + fromdate + ", todate = " + todate + ", teamlist = " + teamlist);
         List<String> teams = Arrays.stream(teamlist.split(",")).collect(Collectors.toList());
 
+        GraphKeyValue totalTeamProfits;
         if(intFiscalYear != null) {
             log.info("Search by fiscalYear");
-            return revenueService.getTotalTeamProfits(companyuuid, LocalDate.of(intFiscalYear, 7,1), teams);
+            totalTeamProfits = revenueService.getTotalTeamProfits(companyuuid, LocalDate.of(intFiscalYear, 7,1), teams);
+        } else {
+            log.info("Search by period");
+            totalTeamProfits = revenueService.getTotalTeamProfits(companyuuid, dateIt(fromdate), dateIt(todate), teams);
         }
-        log.info("Search by period");
-        GraphKeyValue totalTeamProfits = revenueService.getTotalTeamProfits(companyuuid, dateIt(fromdate), dateIt(todate), teams);
         log.info("totalTeamProfits = " + totalTeamProfits);
+
+        // Data boundary: mask salary expense aggregates when caller lacks salaries:read
+        if (!scopeContext.hasScope("salaries:read")) {
+            totalTeamProfits.setValue(0.0);
+        }
+
         return totalTeamProfits;
     }
 

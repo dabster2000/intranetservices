@@ -43,7 +43,7 @@ import java.util.stream.Collectors;
 @Tag(name = "SharePoint Files", description = "SharePoint file operations via Microsoft Graph API")
 @Path("/files/sharepoint")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"documents:read"})
 @Produces(MediaType.APPLICATION_JSON)
 public class SharePointFileResource {
 
@@ -136,6 +136,7 @@ public class SharePointFileResource {
     @POST
     @Path("/{siteUrl}/{driveName}")
     @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+    @RolesAllowed({"documents:write"})
     @Operation(
         summary = "Upload file to SharePoint root",
         description = "Uploads a file to the root of the specified document library. Use X-Filename header for filename."
@@ -164,6 +165,7 @@ public class SharePointFileResource {
     @POST
     @Path("/{siteUrl}/{driveName}/{folderPath:.*}")
     @Consumes(MediaType.APPLICATION_OCTET_STREAM)
+    @RolesAllowed({"documents:write"})
     @Operation(
         summary = "Upload file to SharePoint folder",
         description = "Uploads a file to the specified SharePoint folder. Use X-Filename header for filename."

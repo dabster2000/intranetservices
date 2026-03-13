@@ -22,7 +22,7 @@ import java.util.UUID;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"crm:read"})
 public class AlertDismissalResource {
 
     @GET
@@ -38,6 +38,7 @@ public class AlertDismissalResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"crm:write"})
     public Response upsertDismissal(DismissalRequest request) {
         if (request == null || request.userUuid() == null || request.alertId() == null) {
             throw new BadRequestException("userUuid and alertId are required");
@@ -57,6 +58,7 @@ public class AlertDismissalResource {
     @DELETE
     @Path("/{alertId}")
     @Transactional
+    @RolesAllowed({"crm:write"})
     public Response deleteDismissal(@PathParam("alertId") String alertId,
                                     @QueryParam("userUuid") String userUuid) {
         if (userUuid == null || userUuid.isBlank()) {

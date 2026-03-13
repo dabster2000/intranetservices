@@ -20,7 +20,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"users:read"})
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 public class UserPersonalDetailsResource {
@@ -42,7 +42,7 @@ public class UserPersonalDetailsResource {
 
     @POST
     @Path("/{useruuid}/personaldetails")
-    @RolesAllowed({"SYSTEM", "ADMIN"})
+    @RolesAllowed({"users:write"})
     public Response create(@PathParam("useruuid") String useruuid,
                            @Valid @NotNull UserPersonalDetails details) {
         UserPersonalDetails created = userPersonalDetailsService.create(useruuid, details);
@@ -53,7 +53,7 @@ public class UserPersonalDetailsResource {
 
     @PUT
     @Path("/{useruuid}/personaldetails/{uuid}")
-    @RolesAllowed({"SYSTEM", "ADMIN"})
+    @RolesAllowed({"users:write"})
     public Response update(@PathParam("useruuid") String useruuid,
                            @PathParam("uuid") String uuid,
                            @Valid @NotNull UserPersonalDetails details) {
@@ -63,7 +63,7 @@ public class UserPersonalDetailsResource {
 
     @DELETE
     @Path("/{useruuid}/personaldetails/{uuid}")
-    @RolesAllowed({"SYSTEM", "ADMIN"})
+    @RolesAllowed({"users:write"})
     public Response delete(@PathParam("useruuid") String useruuid,
                            @PathParam("uuid") String uuid) {
         userPersonalDetailsService.delete(uuid);

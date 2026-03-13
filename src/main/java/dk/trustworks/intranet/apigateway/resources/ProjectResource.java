@@ -36,7 +36,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class ProjectResource {
 
     @Inject
@@ -143,17 +143,20 @@ public class ProjectResource {
  */
 
     @POST
+    @RolesAllowed({"contracts:write"})
     public Project save(Project project) {
         return projectAPI.save(project);
     }
 
     @PUT
+    @RolesAllowed({"contracts:write"})
     public void updateOne(Project project) {
         projectAPI.updateOne(project);
     }
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"contracts:write"})
     public void delete(@PathParam("uuid") String uuid) {
         projectAPI.delete(uuid);
     }

@@ -23,7 +23,7 @@ import java.time.LocalDate;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"expenses:read"})
 public class UserAccountResource {
 
     @Inject
@@ -79,6 +79,7 @@ public class UserAccountResource {
      * </p>
      */
     @POST
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void saveAccount(@Valid UserAccountDTO dto, @Context SecurityContext securityContext) {
         String useruuid = dto.getUseruuid();
@@ -117,6 +118,7 @@ public class UserAccountResource {
      */
     @PUT
     @Path("/{useruuid}")
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void updateAccount(@PathParam("useruuid") String useruuid,
                               UserAccountDTO dto,

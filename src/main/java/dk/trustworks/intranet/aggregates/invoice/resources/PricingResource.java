@@ -17,7 +17,7 @@ import java.util.stream.Collectors;
 @Path("/pricing")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"invoices:read"})
 public class PricingResource {
 
     @Inject PricingEngine pricingEngine;

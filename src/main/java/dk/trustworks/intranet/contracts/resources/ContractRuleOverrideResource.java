@@ -9,6 +9,7 @@ import dk.trustworks.intranet.contracts.services.ContractOverrideFeatureService;
 import dk.trustworks.intranet.contracts.services.ContractRuleAuditService;
 import dk.trustworks.intranet.contracts.services.ContractRuleOverrideService;
 import dk.trustworks.intranet.contracts.services.RuleResolutionService;
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
@@ -59,6 +60,7 @@ import java.util.List;
 @Consumes(MediaType.APPLICATION_JSON)
 @JBossLog
 @Tag(name = "Contract Rule Overrides", description = "Manage contract-specific rule overrides")
+@RolesAllowed({"contracts:read"})
 public class ContractRuleOverrideResource {
 
     @Inject
@@ -130,6 +132,7 @@ public class ContractRuleOverrideResource {
 
     @POST
     @Path("/validation")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Create validation override", description = "Creates a new validation rule override for a contract")
     @APIResponses(value = {
         @APIResponse(responseCode = "201", description = "Validation override created successfully"),
@@ -166,6 +169,7 @@ public class ContractRuleOverrideResource {
 
     @PUT
     @Path("/validation/{id}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Update validation override", description = "Updates an existing validation rule override")
     @APIResponses(value = {
         @APIResponse(responseCode = "200", description = "Validation override updated successfully"),
@@ -200,6 +204,7 @@ public class ContractRuleOverrideResource {
 
     @DELETE
     @Path("/validation/{id}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Delete validation override", description = "Deletes (soft delete) a validation rule override")
     @APIResponses(value = {
         @APIResponse(responseCode = "204", description = "Validation override deleted successfully"),
@@ -255,6 +260,7 @@ public class ContractRuleOverrideResource {
 
     @POST
     @Path("/rate")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Create rate adjustment override", description = "Creates a new rate adjustment override")
     @APIResponses(value = {
         @APIResponse(responseCode = "201", description = "Rate adjustment override created successfully"),
@@ -291,6 +297,7 @@ public class ContractRuleOverrideResource {
 
     @PUT
     @Path("/rate/{id}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Update rate adjustment override", description = "Updates an existing rate adjustment override")
     @APIResponses(value = {
         @APIResponse(responseCode = "200", description = "Rate adjustment override updated successfully"),
@@ -325,6 +332,7 @@ public class ContractRuleOverrideResource {
 
     @DELETE
     @Path("/rate/{id}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Delete rate adjustment override", description = "Deletes (soft delete) a rate adjustment override")
     @APIResponses(value = {
         @APIResponse(responseCode = "204", description = "Rate adjustment override deleted successfully"),
@@ -380,6 +388,7 @@ public class ContractRuleOverrideResource {
 
     @POST
     @Path("/pricing")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Create pricing rule override", description = "Creates a new pricing rule override")
     @APIResponses(value = {
         @APIResponse(responseCode = "201", description = "Pricing rule override created successfully"),
@@ -416,6 +425,7 @@ public class ContractRuleOverrideResource {
 
     @PUT
     @Path("/pricing/{id}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Update pricing rule override", description = "Updates an existing pricing rule override")
     @APIResponses(value = {
         @APIResponse(responseCode = "200", description = "Pricing rule override updated successfully"),
@@ -450,6 +460,7 @@ public class ContractRuleOverrideResource {
 
     @DELETE
     @Path("/pricing/{id}")
+    @RolesAllowed({"contracts:write"})
     @Operation(summary = "Delete pricing rule override", description = "Deletes (soft delete) a pricing rule override")
     @APIResponses(value = {
         @APIResponse(responseCode = "204", description = "Pricing rule override deleted successfully"),

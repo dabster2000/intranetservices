@@ -17,7 +17,7 @@ import java.util.List;
 @JBossLog
 @SecurityRequirement(name = "jwt")
 @ClientHeaderParam(name="Authorization", value="{generateRequestId}")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"knowledge:read"})
 @Path("/knowledge/projects")
 public class ProjectDescriptionResource {
 
@@ -30,18 +30,21 @@ public class ProjectDescriptionResource {
     }
 
     @POST
+    @RolesAllowed({"knowledge:write"})
     public void create(ProjectDescription projectDescription) {
         knowledgeProjectAPI.create(projectDescription);
     }
 
     @PUT
     @Path("/{uuid}")
+    @RolesAllowed({"knowledge:write"})
     public void update(@PathParam("uuid") String uuid, ProjectDescription projectDescription) {
         knowledgeProjectAPI.update(uuid, projectDescription);
     }
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"knowledge:write"})
     public void delete(@PathParam("uuid") String uuid) {
         knowledgeProjectAPI.delete(uuid);
     }
@@ -54,12 +57,14 @@ public class ProjectDescriptionResource {
 
     @DELETE
     @Path("/{projectdesc_uuid}/consultants/{useruuid}")
+    @RolesAllowed({"knowledge:write"})
     public void removeProjectDescriptionUser(@PathParam("projectdesc_uuid") String uuid, @PathParam("useruuid") String useruuid) {
         knowledgeProjectAPI.removeProjectDescriptionUser(uuid, useruuid);
     }
 
     @DELETE
     @Path("/{projectdesc_uuid}/consultants")
+    @RolesAllowed({"knowledge:write"})
     public void removeProjectDescriptionUsers(@PathParam("projectdesc_uuid") String uuid) {
         knowledgeProjectAPI.removeProjectDescriptionUsers(uuid);
     }

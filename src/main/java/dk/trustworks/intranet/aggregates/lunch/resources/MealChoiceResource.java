@@ -5,11 +5,14 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 
+import jakarta.annotation.security.RolesAllowed;
+
 import java.util.List;
 
 @Path("/lunch/mealchoices")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RolesAllowed({"lunch:read"})
 public class MealChoiceResource {
 
     @GET
@@ -21,6 +24,7 @@ public class MealChoiceResource {
     @POST
     @Path("/updateChoices")
     @Transactional
+    @RolesAllowed({"lunch:write"})
     public MealChoice updateMealChoice(MealChoice mealChoice) {
         mealChoice.persist();
         return mealChoice;

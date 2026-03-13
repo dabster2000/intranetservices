@@ -29,7 +29,7 @@ import java.util.List;
 @Tag(name = "role-definitions")
 @Path("/role-definitions")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"teams:read"})
 @SecurityRequirement(name = "jwt")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -57,6 +57,7 @@ public class RoleDefinitionResource {
 
     @POST
     @Operation(summary = "Create a new role definition")
+    @RolesAllowed({"teams:write"})
     public Response create(@Valid @NotNull CreateRoleDefinitionRequest request) {
         try {
             var created = roleDefinitionService.create(request);
@@ -77,6 +78,7 @@ public class RoleDefinitionResource {
     @PUT
     @Path("/{name}")
     @Operation(summary = "Update a role definition's display label")
+    @RolesAllowed({"teams:write"})
     public Response update(@PathParam("name") String name,
                            @Valid @NotNull UpdateRoleDefinitionRequest request) {
         try {
@@ -96,6 +98,7 @@ public class RoleDefinitionResource {
     @DELETE
     @Path("/{name}")
     @Operation(summary = "Delete a role definition")
+    @RolesAllowed({"teams:write"})
     public Response delete(@PathParam("name") String name) {
         try {
             roleDefinitionService.delete(name);

@@ -27,7 +27,7 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @JBossLog
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"availability:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class CompanyAvailabilityResource {
 

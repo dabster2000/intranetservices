@@ -22,7 +22,7 @@ import static dk.trustworks.intranet.userservice.model.enums.StatusType.TERMINAT
 @Path("/employees")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"users:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class EmployeeResource {
 

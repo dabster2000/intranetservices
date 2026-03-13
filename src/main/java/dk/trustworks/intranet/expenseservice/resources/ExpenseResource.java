@@ -33,7 +33,7 @@ import java.util.List;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"expenses:read"})
 public class ExpenseResource {
 
     @Inject
@@ -73,7 +73,7 @@ public class ExpenseResource {
      */
     @GET
     @Path("/{uuid}/validate")
-    @RolesAllowed({"SYSTEM"})
+    @RolesAllowed({"expenses:read"})
     public KeyValueDTO validateExpense(@PathParam("uuid") String uuid) {
         log.infof("Validating expense receipt via REST API for uuid=%s", uuid);
         String validationMessage = expenseService.validateExpenseReceipt(uuid);
@@ -179,6 +179,7 @@ public class ExpenseResource {
     }
 
     @POST
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void saveExpense(@Valid Expense expense) throws IOException {
         log.info("ExpenseResource.saveExpense");
@@ -188,6 +189,7 @@ public class ExpenseResource {
 
     @PUT
     @Path("/{uuid}")
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void updateOne(@PathParam("uuid") String uuid, Expense expense) {
         Expense existing = Expense.findById(uuid);
@@ -239,6 +241,7 @@ public class ExpenseResource {
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
         log.info("Deleting expense with uuid: "+ uuid);

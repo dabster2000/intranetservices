@@ -13,7 +13,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 @Tag(name = "BI")
 //@Path("/company/{companyuuid}")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"userstatus:read"})
 @SecurityRequirement(name = "jwt")
 public class EmployeeStateResource {
 

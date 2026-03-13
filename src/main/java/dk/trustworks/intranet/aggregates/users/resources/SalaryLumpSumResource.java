@@ -17,7 +17,7 @@ import java.util.List;
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"salaries:read"})
 @SecurityRequirement(name = "jwt")
 public class SalaryLumpSumResource {
 
@@ -37,6 +37,7 @@ public class SalaryLumpSumResource {
 
     @POST
     @Path("/{useruuid}/salarylumpsums")
+    @RolesAllowed({"salaries:write"})
     public void create(@PathParam("useruuid") String useruuid, SalaryLumpSum entity) {
         entity.setUseruuid(useruuid);
         service.create(entity);
@@ -44,6 +45,7 @@ public class SalaryLumpSumResource {
 
     @DELETE
     @Path("/{useruuid}/salarylumpsums/{uuid}")
+    @RolesAllowed({"salaries:write"})
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("uuid") String uuid) {
         service.delete(uuid);
     }

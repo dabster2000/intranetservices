@@ -18,7 +18,7 @@ import java.util.Set;
 @JBossLog
 @Path("/taskboards")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"taskboard:read"})
 @SecurityRequirement(name = "jwt")
 public class TaskboardResource {
 
@@ -39,6 +39,7 @@ public class TaskboardResource {
 
     @POST
     @Path("/{taskboarduuid}/items")
+    @RolesAllowed({"taskboard:write"})
     public void persistTaskboardItem(TaskboardItem item, @PathParam("taskboarduuid") String taskboarduuid) {
         taskboardService.persistTaskboardItem(item);
     }

@@ -30,7 +30,7 @@ import java.util.Properties;
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"system:write"})
 @JBossLog
 public class TestExceptionTrackingResource {
     

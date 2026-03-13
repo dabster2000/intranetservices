@@ -38,7 +38,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM", "ADMIN"})
+@RolesAllowed({"bonus:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class TwBonusResource {
 
@@ -58,6 +58,7 @@ public class TwBonusResource {
 
     @PUT
     @Path("/pools/{companyUuid}")
+    @RolesAllowed({"bonus:write"})
     @Transactional
     public TwBonusPoolConfig upsertPoolConfig(
             @PathParam("companyUuid") String companyUuid,
@@ -266,6 +267,7 @@ public class TwBonusResource {
 
     @POST
     @Path("/payouts")
+    @RolesAllowed({"bonus:write"})
     @Transactional
     public Response createPayouts(@Valid TwBonusPayoutRequest request) {
         int fiscalYear = request.getFiscalYear();

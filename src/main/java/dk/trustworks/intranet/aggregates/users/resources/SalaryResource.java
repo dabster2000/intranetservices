@@ -38,7 +38,7 @@ import static dk.trustworks.intranet.utils.NumberUtils.formatCurrency;
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"salaries:read"})
 @SecurityRequirement(name = "jwt")
 public class SalaryResource {
 
@@ -217,6 +217,7 @@ public class SalaryResource {
 
     @POST
     @Path("/{useruuid}/salaries")
+    @RolesAllowed({"salaries:write"})
     public void create(@PathParam("useruuid") String useruuid, Salary salary) {
         salary.setUseruuid(useruuid);
         salaryService.create(salary);
@@ -224,6 +225,7 @@ public class SalaryResource {
 
     @DELETE
     @Path("/{useruuid}/salaries/{salaryuuid}")
+    @RolesAllowed({"salaries:write"})
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("salaryuuid") String salaryuuid) {
         salaryService.delete(salaryuuid);
     }
