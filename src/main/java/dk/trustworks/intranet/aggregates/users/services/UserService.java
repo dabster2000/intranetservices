@@ -24,7 +24,6 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotAllowedException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.hibernate.query.NativeQuery;
 import org.mindrot.jbcrypt.BCrypt;
 
@@ -47,9 +46,6 @@ public class UserService {
 
     @Inject
     EntityManager em;
-
-    @Inject
-    JsonWebToken jwt;
 
     @Inject
     MailResource mailAPI;
@@ -507,20 +503,6 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateBirthday(String uuid, User user) {
         User.update("birthday = ?1 WHERE uuid like ?2 ", user.getBirthday(), uuid);
-    }
-
-    public List<User> clearSalaries(List<User> users) {
-        List<String> roles = jwt.getGroups().stream().toList();
-        List<String> validRoles = List.of("SYSTEM","CXO", "ADMIN");
-        if (roles.stream().noneMatch(validRoles::contains)) {
-            // users.forEach(user -> user.getSalaries().clear());
-        }
-        return users;
-    }
-
-    public User clearSalaries(User user) {
-        return user;
-        //return clearSalaries(List.of(user)).get(0);
     }
 
     public UserResume findUserResume(String useruuid) {

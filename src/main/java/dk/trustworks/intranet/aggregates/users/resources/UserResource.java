@@ -168,11 +168,9 @@ public class UserResource {
     public List<User> listAll(@QueryParam("username") Optional<String> username,
                               @QueryParam("shallow") Optional<String> shallow) {
         boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
-        return userService.clearSalaries(
-                username
-                        .map(s -> Collections.singletonList(userAPI.findByUsername(s, shallowFlag)))
-                        .orElseGet(() -> userAPI.listAll(shallowFlag))
-        );
+        return username
+                .map(s -> Collections.singletonList(userAPI.findByUsername(s, shallowFlag)))
+                .orElseGet(() -> userAPI.listAll(shallowFlag));
     }
 
     @GET
@@ -181,7 +179,7 @@ public class UserResource {
                          @QueryParam("shallow") Optional<String> shallow) {
         boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
         User user = userAPI.findById(uuid, shallowFlag);
-        return userService.clearSalaries(user);
+        return user;
     }
 
     @GET
@@ -191,15 +189,13 @@ public class UserResource {
                                                            @QueryParam("consultantTypes") String consultantTypes,
                                                            @QueryParam("shallow") Optional<String> shallow) {
         boolean shallowFlag = Boolean.parseBoolean(shallow.orElse("false")); // FIXED
-        return userService.clearSalaries(
-                userAPI.findUsersByDateAndStatusListAndTypes(dateIt(date), statusList, consultantTypes, shallowFlag)
-        );
+        return userAPI.findUsersByDateAndStatusListAndTypes(dateIt(date), statusList, consultantTypes, shallowFlag);
     }
 
     @GET
     @Path("/consultants/search/findByFiscalYear")
     public List<User> getActiveConsultantsByFiscalYear(@QueryParam("fiscalyear") String intFiscalYear) {
-        return userService.clearSalaries(userAPI.getActiveConsultantsByFiscalYear(intFiscalYear));
+        return userAPI.getActiveConsultantsByFiscalYear(intFiscalYear);
     }
 
     @GET
@@ -216,7 +212,7 @@ public class UserResource {
         );
         // Sorting is already pushed into SQL in the service; this is just in case.
         users.sort(Comparator.comparing(User::getUsername));
-        return userService.clearSalaries(users);
+        return users;
     }
 
 
@@ -275,12 +271,14 @@ public class UserResource {
 
     @GET
     @Path("/{useruuid}/vacation")
+    @RolesAllowed({"vacation:read"})
     public List<WorkFull> findVacationByUser(@PathParam("useruuid") String useruuid) {
         return workService.findVacationByUser(useruuid);
     }
 
     @GET
     @Path("/vacation/sum")
+    @RolesAllowed({"vacation:read"})
     public Map<String, Map<String, Double>> findVacationSumByMonth() {
         return workService.findVacationSumByMonth();
     }
