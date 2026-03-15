@@ -87,6 +87,10 @@ public class BugReportService {
         analyzeWithAi(report, request.screenshotBase64(),
                 request.screenshotMimeType() != null ? request.screenshotMimeType() : "image/png");
 
+        // Flush + refresh to pick up the DB-generated updated_at (ON UPDATE CURRENT_TIMESTAMP)
+        report.flush();
+        report.getEntityManager().refresh(report);
+
         return toDTO(report);
     }
 
