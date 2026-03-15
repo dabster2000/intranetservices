@@ -117,6 +117,29 @@ public class ContractService {
         return Contract.findById(contractuuid);
     }
 
+    public Optional<Contract> findActiveContractByClientAndUserAndDate(String clientUuid, String userUuid, LocalDate date) {
+        String sql = "SELECT c.* FROM contracts c " +
+                "JOIN contract_consultants cc ON c.uuid = cc.contractuuid " +
+                "WHERE c.clientuuid = :clientUuid " +
+                "AND cc.useruuid = :userUuid " +
+                "AND cc.activefrom <= :date " +
+                "AND (cc.activeto IS NULL OR cc.activeto >= :date) " +
+                "AND c.status IN ('TIME','SIGNED','CLOSED') " +
+                "AND cc.hours > 0";
+        Query query = em.createNativeQuery(sql, Contract.class);
+        query.setParameter("clientUuid", clientUuid);
+        query.setParameter("userUuid", userUuid);
+        query.setParameter("date", date);
+        try {
+            @SuppressWarnings("unchecked")
+            List<Contract> results = query.getResultList();
+            return results.stream().findFirst();
+        } catch (Exception e) {
+            log.warnf("Failed to find contract for client=%s user=%s date=%s: %s", clientUuid, userUuid, date, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
     public List<Contract> findTimeActiveConsultantContracts(String useruuid, LocalDate activeon) {
         String sql = "select c.* from contracts c " +
                 "right join contract_consultants cc on c.uuid = cc.contractuuid " +
@@ -214,7 +237,7 @@ public class ContractService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
-    public void save(Contract contract) {
+    public Contract save(Contract contract) {
         log.info("ContractService.save");
         log.info("contract = " + contract);
 
@@ -250,6 +273,8 @@ public class ContractService {
         // Log activity
         activityLogService.logCreated(contract.getClientuuid(),
                 ClientActivityLog.TYPE_CONTRACT, contract.getUuid(), contract.getName());
+
+        return contract;
     }
 
     @Transactional
@@ -365,7 +390,7 @@ public class ContractService {
     }
 
     @Transactional
-    public void addProject(String contractuuid, String projectuuid) {
+    public ContractProject addProject(String contractuuid, String projectuuid) {
         ContractProject projectLink = new ContractProject(contractuuid, projectuuid);
 
         // Validate the project linkage
@@ -382,6 +407,8 @@ public class ContractService {
             activityLogService.logCreated(contract.getClientuuid(),
                     ClientActivityLog.TYPE_CONTRACT_PROJECT, projectuuid, projectName);
         }
+
+        return projectLink;
     }
 
     @Transactional
@@ -409,7 +436,7 @@ public class ContractService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
-    public void addConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
+    public ContractConsultant addConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
         // Validate the consultant before adding
         ValidationReport report = validationService.validateContractConsultant(contractConsultant);
         validationService.enforceValidation(report);
@@ -423,6 +450,8 @@ public class ContractService {
                     ClientActivityLog.TYPE_CONTRACT_CONSULTANT, contractConsultant.getUuid(),
                     contractConsultant.getName() != null ? contractConsultant.getName() : consultantuuid);
         }
+
+        return contractConsultant;
     }
 
     @Transactional

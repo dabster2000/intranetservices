@@ -1394,6 +1394,7 @@ public class CxoFinanceResource {
      */
     @PUT
     @Path("/career-level-bonuses/{careerLevel}")
+    @RolesAllowed({"dashboard:write"})
     @Transactional
     public Response updateCareerLevelBonus(
             @PathParam("careerLevel") String careerLevel,

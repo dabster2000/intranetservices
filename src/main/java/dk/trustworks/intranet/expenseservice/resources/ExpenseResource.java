@@ -20,6 +20,7 @@ import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.jboss.resteasy.annotations.jaxrs.PathParam;
 
@@ -181,10 +182,11 @@ public class ExpenseResource {
     @POST
     @RolesAllowed({"expenses:write"})
     @Transactional
-    public void saveExpense(@Valid Expense expense) throws IOException {
+    public Response saveExpense(@Valid Expense expense) throws IOException {
         log.info("ExpenseResource.saveExpense");
         log.info("expense = " + expense);
         expenseService.processExpense(expense);
+        return Response.status(Response.Status.CREATED).entity(expense).build();
     }
 
     @PUT

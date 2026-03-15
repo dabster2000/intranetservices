@@ -372,10 +372,10 @@ public class UserService {
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
-    public void createUser(User user) {
+    public User createUser(User user) {
         System.out.println("UserService.createUser");
         log.info("Create user: "+user);
-        if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) return;
+        if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) return user;
         System.out.println("User does not exist");
         log.info("User does not exist");
         user.setCreated(LocalDate.now());
@@ -396,6 +396,7 @@ public class UserService {
         Role.persist(new Role(UUID.randomUUID().toString(), "USER", user.getUuid()));
         UserContactinfo.persist(userContactinfo);
         System.out.println("User created");
+        return user;
     }
 
     @Transactional

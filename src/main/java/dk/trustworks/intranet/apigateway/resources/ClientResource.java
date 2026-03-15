@@ -22,6 +22,7 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -111,14 +112,16 @@ public class ClientResource {
 
     @POST
     @RolesAllowed({"crm:write"})
-    public void save(Client client) {
-        clientAPI.save(client);
-        CreateClientEvent createClientEvent = new CreateClientEvent(client.getUuid(), client);
+    public Response save(Client client) {
+        Client created = clientAPI.save(client);
+        CreateClientEvent createClientEvent = new CreateClientEvent(created.getUuid(), created);
         aggregateEventSender.handleEvent(createClientEvent);
 
         // Log activity
-        activityLogService.logCreated(client.getUuid(),
-                ClientActivityLog.TYPE_CLIENT, client.getUuid(), client.getName());
+        activityLogService.logCreated(created.getUuid(),
+                ClientActivityLog.TYPE_CLIENT, created.getUuid(), created.getName());
+
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @PUT

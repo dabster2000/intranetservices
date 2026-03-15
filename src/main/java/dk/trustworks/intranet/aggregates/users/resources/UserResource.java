@@ -361,12 +361,13 @@ public class UserResource {
 
     @POST
     @RolesAllowed({"users:write"})
-    public void createUser(User user) {
+    public Response createUser(User user) {
         System.out.println("UserResource.createUser");
         System.out.println("user = " + user);
-        userService.createUser(user);
-        CreateUserEvent event = new CreateUserEvent(user.getUuid(), user);
+        User created = userService.createUser(user);
+        CreateUserEvent event = new CreateUserEvent(created.getUuid(), created);
         aggregateEventSender.handleEvent(event);
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     /*

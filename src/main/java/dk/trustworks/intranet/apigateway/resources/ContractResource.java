@@ -21,6 +21,7 @@ import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -117,6 +118,18 @@ public class ContractResource {
     }
 
     @GET
+    @Path("/lookup")
+    public Response lookupContract(
+            @QueryParam("clientUuid") String clientUuid,
+            @QueryParam("userUuid") String userUuid,
+            @QueryParam("date") String date) {
+        return contractService.findActiveContractByClientAndUserAndDate(
+                clientUuid, userUuid, dateIt(date))
+                .map(c -> Response.ok(new KeyValueDTO("contractUuid", c.getUuid())).build())
+                .orElse(Response.status(Response.Status.NOT_FOUND).build());
+    }
+
+    @GET
     @Path("/count-by-type/{contractTypeCode}")
     public Long countContractsByType(@PathParam("contractTypeCode") String contractTypeCode) {
         log.debug("ContractResource.countContractsByType");
@@ -134,8 +147,9 @@ public class ContractResource {
 
     @POST
     @RolesAllowed({"contracts:write"})
-    public void save(Contract contract) {
-        contractService.save(contract);
+    public Response save(Contract contract) {
+        Contract created = contractService.save(contract);
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @POST
@@ -170,8 +184,9 @@ public class ContractResource {
     @POST
     @Path("/{contractuuid}/projects/{projectuuid}")
     @RolesAllowed({"contracts:write"})
-    public void addProject(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
-        contractService.addProject(contractuuid, projectuuid);
+    public Response addProject(@PathParam("contractuuid") String contractuuid, @PathParam("projectuuid") String projectuuid) {
+        var created = contractService.addProject(contractuuid, projectuuid);
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @DELETE
@@ -185,9 +200,10 @@ public class ContractResource {
     @Path("/{contractuuid}/consultants/{consultantuuid}")
     @CacheInvalidateAll(cacheName = "employee-budgets")
     @RolesAllowed({"contracts:write"})
-    public void addConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
-        contractService.addConsultant(contractuuid, consultantuuid, contractConsultant);
+    public Response addConsultant(@PathParam("contractuuid") String contractuuid, @PathParam("consultantuuid") String consultantuuid, ContractConsultant contractConsultant) {
+        var created = contractService.addConsultant(contractuuid, consultantuuid, contractConsultant);
         aggregateEventSender.handleEvent(new ModifyContractConsultantEvent(contractConsultant.getUseruuid(), contractConsultant));
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @PUT

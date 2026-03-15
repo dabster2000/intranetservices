@@ -25,12 +25,13 @@ public class ClientService {
     }
 
     @Transactional
-    public void save(Client client) {
+    public Client save(Client client) {
         client.setUuid(UUID.randomUUID().toString());
         if(client.getManaged() == null || client.getManaged().isBlank()) {
             client.setManaged("INTRA");
         }
         client.persist();
+        return client;
     }
 
     @Transactional

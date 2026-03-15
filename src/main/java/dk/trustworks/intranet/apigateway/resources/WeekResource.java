@@ -30,12 +30,14 @@ public class WeekResource {
     WeekService weekService;
 
     @POST
+    @RolesAllowed({"timeregistration:write"})
     public void saveWeek(Week week) {
         weekService.save(week);
     }
 
     @DELETE
     @Path("/{weekuuid}")
+    @RolesAllowed({"timeregistration:write"})
     public void deleteWeek(@PathParam("weekuuid") String weekuuid) {
         weekService.delete(weekuuid);
     }
