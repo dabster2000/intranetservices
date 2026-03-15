@@ -52,7 +52,7 @@ public class ClientManagementResource {
                     .build();
         }
 
-        String createdBy = requestHeaderHolder.getUsername();
+        String createdBy = requestHeaderHolder.getUserUuid();
         int ttl = request.tokenTtlSeconds() != null ? request.tokenTtlSeconds() : 3600;
 
         var result = ApiClient.create(

@@ -71,10 +71,8 @@ public class AuditEntityListener {
 
         try {
             // Get current user identifier from request context
-            // Note: RequestHeaderHolder.username is misleadingly named but contains the user identifier
-            // from X-Requested-By header (typically a UUID)
             RequestHeaderHolder holder = CDI.current().select(RequestHeaderHolder.class).get();
-            String userIdentifier = holder.getUsername();
+            String userIdentifier = holder.getUserUuid();
 
             // Fallback to "system" if no user identifier available
             if (userIdentifier == null || userIdentifier.isEmpty()) {

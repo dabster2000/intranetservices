@@ -63,7 +63,12 @@ quarkus:
   smallrye-health:
     root-path: /health
   otel:
-    enabled: false
+    enabled: true
+    exporter:
+      otlp:
+        traces:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4317}
+          enabled: ${OTEL_EXPORTER_OTLP_TRACES_ENABLED:false}
   rest-client:
     graph-api:
       url: https://graph.microsoft.com
@@ -111,7 +116,7 @@ quarkus:
       #  level: DEBUG
     console:
       enable: true
-      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
+      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] [%X{userUuid}] traceId=%X{traceId} %c{1.} - %m%n"
       #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
       #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
@@ -264,6 +269,11 @@ bonus:
     calibration-value: 30.0
     production-annual-threshold: 1500000.0
     production-commission-rate: 0.20
+
+bug-report:
+  cloudwatch:
+    log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/apprunner/quarkus-service}
+    log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/apprunner/nextjs-service}
 
 sharepoint:
   hostname: tenant.sharepoint.com

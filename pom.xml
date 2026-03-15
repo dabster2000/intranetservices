@@ -269,6 +269,11 @@
       <artifactId>aws-java-sdk-ses</artifactId>
       <version>1.11.858</version>
     </dependency>
+    <!-- CloudWatch Logs SDK for bug report log retrieval -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>cloudwatchlogs</artifactId>
+    </dependency>
     <dependency>
       <groupId>net.coobird</groupId>
       <artifactId>thumbnailator</artifactId>

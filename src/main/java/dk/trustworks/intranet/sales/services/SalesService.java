@@ -383,7 +383,7 @@ public class SalesService {
 
     private void logStageTransition(String leadUuid, String fromStage, String toStage) {
         try {
-            String changedBy = requestHeaderHolder != null ? requestHeaderHolder.getUsername() : null;
+            String changedBy = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
             SalesLead.getEntityManager().createNativeQuery(
                 "INSERT INTO sales_lead_stage_history (lead_uuid, from_stage, to_stage, changed_by) VALUES (?, ?, ?, ?)"
             )

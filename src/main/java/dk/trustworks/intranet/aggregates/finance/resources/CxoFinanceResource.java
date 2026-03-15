@@ -1417,7 +1417,7 @@ public class CxoFinanceResource {
 
         bonus.bonusPct = BigDecimal.valueOf(dto.getBonusPct());
         bonus.updatedAt = LocalDateTime.now();
-        bonus.updatedBy = requestHeaderHolder.getUsername();
+        bonus.updatedBy = requestHeaderHolder.getUserUuid();
         bonus.persist();
 
         return Response.ok(new CareerLevelBonusDTO(bonus.careerLevel, bonus.bonusPct.doubleValue())).build();

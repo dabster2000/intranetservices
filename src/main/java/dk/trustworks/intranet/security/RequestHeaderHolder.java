@@ -6,7 +6,6 @@ import jakarta.enterprise.context.RequestScoped;
 
 @Data
 @RequestScoped
-//@Unremovable
 public class RequestHeaderHolder {
-    private String username;
+    private String userUuid;
 }

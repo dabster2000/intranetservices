@@ -38,7 +38,7 @@ public class ApiUsageLoggingFilter implements ContainerRequestFilter, ContainerR
             referer = requestContext.getHeaderString("X-View-Id");
         }
         log.infof("API request - user=%s method=%s path=%s referer=%s duration=%dms",
-                requestHeaderHolder.getUsername(), method, path, referer, duration);
-        logService.record(requestHeaderHolder.getUsername(), method, path, referer, duration);
+                requestHeaderHolder.getUserUuid(), method, path, referer, duration);
+        logService.record(requestHeaderHolder.getUserUuid(), method, path, referer, duration);
     }
 }
