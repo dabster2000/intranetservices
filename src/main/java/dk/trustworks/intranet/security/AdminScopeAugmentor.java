@@ -127,6 +127,9 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
             // Guest
             "guest:read", "guest:write",
 
+            // Bug Reports
+            "bugreports:read", "bugreports:write", "bugreports:admin",
+
             // Admin wildcard (included so admin:* is always present)
             ADMIN_WILDCARD
     );
