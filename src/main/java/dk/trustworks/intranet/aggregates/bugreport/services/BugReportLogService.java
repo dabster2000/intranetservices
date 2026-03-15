@@ -7,9 +7,7 @@ import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.http.apache.ProxyConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
-import software.amazon.awssdk.services.cloudwatchlogs.model.FilterLogEventsRequest;
-import software.amazon.awssdk.services.cloudwatchlogs.model.FilterLogEventsResponse;
-import software.amazon.awssdk.services.cloudwatchlogs.model.FilteredLogEvent;
+import software.amazon.awssdk.services.cloudwatchlogs.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -17,9 +15,12 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Retrieves recent backend and frontend logs from CloudWatch Logs for a specific user.
+ * Dynamically discovers the active App Runner log group by prefix (since App Runner
+ * log group names contain a random instance ID that changes on each deployment).
  * Caps log excerpt at 500KB to prevent oversized database entries.
  */
 @JBossLog
@@ -31,12 +32,15 @@ public class BugReportLogService {
     private static final long LOOKBACK_MINUTES = 3;
 
     @ConfigProperty(name = "bug-report.cloudwatch.log-group-backend")
-    String backendLogGroup;
+    String backendLogGroupPrefix;
 
     @ConfigProperty(name = "bug-report.cloudwatch.log-group-frontend")
-    String frontendLogGroup;
+    String frontendLogGroupPrefix;
 
     private final CloudWatchLogsClient logsClient;
+
+    // Cache resolved log group names (they only change on redeploy)
+    private final ConcurrentHashMap<String, String> resolvedLogGroups = new ConcurrentHashMap<>();
 
     public BugReportLogService() {
         ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
@@ -53,7 +57,7 @@ public class BugReportLogService {
      * Results are merged and sorted by timestamp.
      *
      * @param userUuid the user UUID to filter logs by
-     * @return log excerpt as a string, capped at 500KB
+     * @return log excerpt as a string, capped at 500KB, or null if retrieval fails
      */
     public String retrieveLogExcerpt(String userUuid) {
         try {
@@ -61,8 +65,20 @@ public class BugReportLogService {
             Instant startTime = endTime.minus(LOOKBACK_MINUTES, ChronoUnit.MINUTES);
 
             List<FilteredLogEvent> allEvents = new ArrayList<>();
-            allEvents.addAll(queryLogGroup(backendLogGroup, userUuid, startTime, endTime));
-            allEvents.addAll(queryLogGroup(frontendLogGroup, userUuid, startTime, endTime));
+
+            String backendGroup = resolveLogGroup(backendLogGroupPrefix);
+            if (backendGroup != null) {
+                allEvents.addAll(queryLogGroup(backendGroup, userUuid, startTime, endTime));
+            } else {
+                log.warnf("Could not resolve backend log group from prefix: %s", backendLogGroupPrefix);
+            }
+
+            String frontendGroup = resolveLogGroup(frontendLogGroupPrefix);
+            if (frontendGroup != null) {
+                allEvents.addAll(queryLogGroup(frontendGroup, userUuid, startTime, endTime));
+            } else {
+                log.warnf("Could not resolve frontend log group from prefix: %s", frontendLogGroupPrefix);
+            }
 
             allEvents.sort(Comparator.comparingLong(FilteredLogEvent::timestamp));
 
@@ -75,9 +91,50 @@ public class BugReportLogService {
             }
 
             String result = sb.toString();
+            if (result.isBlank()) {
+                log.infof("No CloudWatch log events found for user %s in last %d minutes", userUuid, LOOKBACK_MINUTES);
+                return null;
+            }
             return capAtMaxSize(result);
         } catch (Exception e) {
             log.warnf("Failed to retrieve CloudWatch logs for user %s: %s", userUuid, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Discovers the most recent "application" log group matching the given prefix.
+     * App Runner log groups have the format: /aws/apprunner/{service-name}/{instance-id}/application
+     * The instance ID changes on each deployment, so we discover it dynamically.
+     * Results are cached until invalidated.
+     */
+    private String resolveLogGroup(String prefix) {
+        return resolvedLogGroups.computeIfAbsent(prefix, this::discoverLogGroup);
+    }
+
+    private String discoverLogGroup(String prefix) {
+        try {
+            var response = logsClient.describeLogGroups(
+                    DescribeLogGroupsRequest.builder()
+                            .logGroupNamePrefix(prefix)
+                            .limit(20)
+                            .build());
+
+            var resolved = response.logGroups().stream()
+                    .filter(g -> g.logGroupName().endsWith("/application"))
+                    .max(Comparator.comparingLong(LogGroup::creationTime))
+                    .map(LogGroup::logGroupName)
+                    .orElse(null);
+
+            if (resolved != null) {
+                log.infof("Resolved log group: %s → %s", prefix, resolved);
+            } else {
+                log.warnf("No application log group found for prefix: %s (found %d groups total)",
+                        prefix, response.logGroups().size());
+            }
+            return resolved;
+        } catch (Exception e) {
+            log.warnf("Could not discover log group for prefix %s: %s", prefix, e.getMessage());
             return null;
         }
     }
@@ -94,9 +151,13 @@ public class BugReportLogService {
                     .build();
 
             FilterLogEventsResponse response = logsClient.filterLogEvents(request);
+            log.infof("CloudWatch query returned %d events from %s for user %s",
+                    response.events().size(), logGroupName, userUuid);
             return response.events();
         } catch (Exception e) {
-            log.debugf("Could not query log group %s for user %s: %s", logGroupName, userUuid, e.getMessage());
+            log.warnf("Could not query log group %s for user %s: %s", logGroupName, userUuid, e.getMessage());
+            // Invalidate cached log group in case it changed (redeploy)
+            resolvedLogGroups.values().remove(logGroupName);
             return List.of();
         }
     }

@@ -334,7 +334,7 @@ public class BugReportService {
                         aiResponse);
             }
         } catch (Exception e) {
-            log.warnf("AI analysis failed for bug report %s: %s", report.getUuid(), e.getMessage());
+            log.errorf(e, "AI analysis failed for bug report %s: %s", report.getUuid(), e.getMessage());
             // Degraded mode -- the draft still has screenshot and logs
         }
     }

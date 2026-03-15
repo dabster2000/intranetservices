@@ -64,6 +64,8 @@ quarkus:
     root-path: /health
   otel:
     enabled: true
+    traces:
+      exporter: ${OTEL_TRACES_EXPORTER:none}
     exporter:
       otlp:
         traces:
@@ -272,8 +274,8 @@ bonus:
 
 bug-report:
   cloudwatch:
-    log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/apprunner/quarkus-service}
-    log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/apprunner/nextjs-service}
+    log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/apprunner/tw-quarkus-staging}
+    log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/apprunner/tw-nextjs-staging}
 
 sharepoint:
   hostname: tenant.sharepoint.com
