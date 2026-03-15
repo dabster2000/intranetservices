@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.bugreport.resources;
 
 import dk.trustworks.intranet.aggregates.bugreport.dto.*;
+import dk.trustworks.intranet.aggregates.bugreport.services.AiSuggestionException;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
@@ -223,7 +224,32 @@ public class BugReportResource {
         }
     }
 
-    // ---- 12. GET /bug-reports/notifications — Get user's notifications ----
+    // ---- 12. POST /bug-reports/{uuid}/suggest — Per-field AI suggestion ----
+    @POST
+    @Path("/{uuid}/suggest")
+    @RolesAllowed({"bugreports:write"})
+    public Response suggest(@PathParam("uuid") String uuid,
+                            @Valid @NotNull SuggestRequest request) {
+        String callerUuid = requestHeaderHolder.getUserUuid();
+        try {
+            var suggestion = bugReportService.suggestField(uuid, request, callerUuid);
+            return Response.ok(suggestion).build();
+        } catch (SecurityException e) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        } catch (AiSuggestionException e) {
+            return Response.status(502)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        }
+    }
+
+    // ---- 13. GET /bug-reports/notifications — Get user's notifications ----
     @GET
     @Path("/notifications")
     public Response getNotifications(@QueryParam("userUuid") String userUuid) {
@@ -233,7 +259,7 @@ public class BugReportResource {
         return Response.ok(result).build();
     }
 
-    // ---- 13. PUT /bug-reports/notifications/{uuid}/read — Mark as read ----
+    // ---- 14. PUT /bug-reports/notifications/{uuid}/read — Mark as read ----
     @PUT
     @Path("/notifications/{uuid}/read")
     @RolesAllowed({"bugreports:write"})
@@ -242,7 +268,7 @@ public class BugReportResource {
         return Response.ok().build();
     }
 
-    // ---- 14. PUT /bug-reports/notifications/read-all — Mark all as read ----
+    // ---- 15. PUT /bug-reports/notifications/read-all — Mark all as read ----
     @PUT
     @Path("/notifications/read-all")
     @RolesAllowed({"bugreports:write"})
