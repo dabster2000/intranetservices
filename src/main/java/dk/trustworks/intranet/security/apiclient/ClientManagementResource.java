@@ -153,6 +153,16 @@ public class ClientManagementResource {
         }
 
         ApiClient client = clientOpt.get();
+
+        // Bulk-delete existing scopes first, then flush, to avoid
+        // Hibernate INSERT-before-DELETE ordering hitting the unique constraint.
+        var em = repository.getEntityManager();
+        em.createQuery("DELETE FROM ApiClientScope s WHERE s.client.uuid = :uuid")
+                .setParameter("uuid", uuid)
+                .executeUpdate();
+        client.getScopes().clear();
+        em.flush();
+
         client.replaceScopes(request.scopes());
         repository.persist(client);
 
