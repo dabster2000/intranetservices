@@ -11,11 +11,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
+import lombok.extern.jbosslog.JBossLog;
+
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
+@JBossLog
 @ApplicationScoped
 public class ProjectService {
 /*
@@ -55,11 +58,15 @@ public class ProjectService {
         project.persist();
         notify(project.getUuid());
         new Task("Ikke fakturerbar", TaskType.SO, project.getUuid()).persist();
+        log.infof("Project created: uuid=%s, name=%s, clientdatauuid=%s",
+                project.getUuid(), project.getName(), project.getClientdatauuid());
         return project;
     }
 
     @Transactional
     public void updateOne(Project project) {
+        log.infof("Project updating: uuid=%s, name=%s, active=%s, locked=%s",
+                project.getUuid(), project.getName(), project.isActive(), project.isLocked());
         Project.update("active = ?1, " +
                         "budget = ?2, " +
                         "customerreference = ?3, " +
@@ -77,10 +84,12 @@ public class ProjectService {
                 project.isLocked(),
                 project.getUuid());
         notify(project.getUuid());
+        log.infof("Project updated: uuid=%s", project.getUuid());
     }
 
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
+        log.infof("Project delete requested: uuid=%s", uuid);
         AtomicBoolean safeToDelete = new AtomicBoolean(true);
         Task.<Task>stream("projectuuid like ?1", uuid).forEach(t -> {
             if(Work.count("taskuuid like ?1", t.getUuid()) > 0) safeToDelete.set(false);
@@ -89,6 +98,9 @@ public class ProjectService {
             Project.deleteById(uuid);
             Task.delete("projectuuid like ?1", uuid);
             ContractProject.delete("projectuuid like ?1", uuid);
+            log.infof("Project deleted: uuid=%s (with associated tasks and contract-projects)", uuid);
+        } else {
+            log.warnf("Project delete blocked: uuid=%s has tasks with registered work", uuid);
         }
     }
 

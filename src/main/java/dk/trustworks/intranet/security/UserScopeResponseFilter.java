@@ -128,7 +128,7 @@ public class UserScopeResponseFilter implements ContainerResponseFilter {
         } catch (NoSuchMethodException e) {
             // No getUser() method — fall through to field check
         } catch (Exception e) {
-            log.debugf("Failed to invoke getUser() on %s: %s",
+            log.warnf("Reflection failure invoking getUser() on %s: %s — this may indicate a security-relevant field stripping bypass",
                     object.getClass().getSimpleName(), e.getMessage());
         }
 
@@ -142,7 +142,7 @@ public class UserScopeResponseFilter implements ContainerResponseFilter {
         } catch (NoSuchFieldException e) {
             // No 'user' field — this object doesn't embed a User
         } catch (Exception e) {
-            log.debugf("Failed to access 'user' field on %s: %s",
+            log.warnf("Reflection failure accessing 'user' field on %s: %s — this may indicate a security-relevant field stripping bypass",
                     object.getClass().getSimpleName(), e.getMessage());
         }
 

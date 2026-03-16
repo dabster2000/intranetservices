@@ -27,12 +27,17 @@ public class WorkAggregateService {
 
     @Transactional
     public void recalculateWork(String useruuid, LocalDate testDay) {
-        log.debug("WorkAggregateService.recalculateWork");
+        log.debugf("WorkAggregateService.recalculateWork: userUuid=%s, date=%s", useruuid, testDay);
 
         DateValueDTO workByDay = workService.findWorkHoursByUserAndDay(useruuid, testDay);
-        biDataPerDayRepository.insertOrUpdateWork(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workByDay!=null?workByDay.getValue():0);
+        double workHours = workByDay != null ? workByDay.getValue() : 0;
+        biDataPerDayRepository.insertOrUpdateWork(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workHours);
 
         DateValueDTO workRevenueByUserAndPeriod = workService.findWorkRevenueByUserAndDay(useruuid, testDay);
-        biDataPerDayRepository.insertOrUpdateRevenue(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), workRevenueByUserAndPeriod!=null?workRevenueByUserAndPeriod.getValue():0);
+        double revenue = workRevenueByUserAndPeriod != null ? workRevenueByUserAndPeriod.getValue() : 0;
+        biDataPerDayRepository.insertOrUpdateRevenue(useruuid, testDay, testDay.getYear(), testDay.getMonthValue(), testDay.getDayOfMonth(), revenue);
+
+        log.infof("Work recalculated for BI data: userUuid=%s, date=%s, hours=%.2f, revenue=%.2f",
+                useruuid, testDay, workHours, revenue);
     }
 }

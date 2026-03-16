@@ -108,8 +108,8 @@ public class VacationService {
         VacationService vacationService = new VacationService(null, null);
         List<Map.Entry<LocalDate, LocalDate>> activePeriods = vacationService.getActiveVacationPeriods();
 
-        System.out.println("Active Vacation Periods:");
+        log.info("Active Vacation Periods:");
         activePeriods.forEach(period ->
-                System.out.println("From " + period.getKey() + " to " + period.getValue()));
+                log.infof("From %s to %s", period.getKey(), period.getValue()));
     }
 }

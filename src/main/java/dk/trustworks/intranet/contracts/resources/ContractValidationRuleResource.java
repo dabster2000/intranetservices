@@ -4,6 +4,7 @@ import dk.trustworks.intranet.contracts.dto.CreateValidationRuleRequest;
 import dk.trustworks.intranet.contracts.dto.UpdateValidationRuleRequest;
 import dk.trustworks.intranet.contracts.dto.ValidationRuleDTO;
 import dk.trustworks.intranet.contracts.services.ContractValidationRuleService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -41,6 +42,9 @@ public class ContractValidationRuleResource {
     @Inject
     ContractValidationRuleService validationRuleService;
 
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
     /**
      * List all validation rules for a contract type.
      *
@@ -58,8 +62,7 @@ public class ContractValidationRuleResource {
     public Response listAll(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Include inactive rules") @QueryParam("includeInactive") @DefaultValue("false") boolean includeInactive) {
-        log.info("ContractValidationRuleResource.listAll");
-        log.info("contractTypeCode = " + contractTypeCode + ", includeInactive = " + includeInactive);
+        log.debugf("Listing validation rules for contractType=%s, includeInactive=%s", contractTypeCode, includeInactive);
 
         List<ValidationRuleDTO> rules = validationRuleService.listAll(contractTypeCode, includeInactive);
         return Response.ok(rules).build();
@@ -80,8 +83,7 @@ public class ContractValidationRuleResource {
     public Response getByRuleId(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {
-        log.info("ContractValidationRuleResource.getByRuleId");
-        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
+        log.debugf("Getting validation rule ruleId=%s for contractType=%s", ruleId, contractTypeCode);
 
         ValidationRuleDTO dto = validationRuleService.findByRuleId(contractTypeCode, ruleId);
         return Response.ok(dto).build();
@@ -102,10 +104,9 @@ public class ContractValidationRuleResource {
     public Response create(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Valid CreateValidationRuleRequest request) {
-        log.info("ContractValidationRuleResource.create");
-        log.info("contractTypeCode = " + contractTypeCode + ", request = " + request);
-
+        log.debugf("Creating validation rule for contractType=%s, user=%s", contractTypeCode, requestHeaderHolder.getUserUuid());
         ValidationRuleDTO created = validationRuleService.create(contractTypeCode, request);
+        log.infof("Created validation rule ruleId=%s for contractType=%s, user=%s", created.getRuleId(), contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -127,10 +128,9 @@ public class ContractValidationRuleResource {
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId,
             @Valid UpdateValidationRuleRequest request) {
-        log.info("ContractValidationRuleResource.update");
-        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId + ", request = " + request);
-
+        log.debugf("Updating validation rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         ValidationRuleDTO updated = validationRuleService.update(contractTypeCode, ruleId, request);
+        log.infof("Updated validation rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.ok(updated).build();
     }
 
@@ -151,10 +151,9 @@ public class ContractValidationRuleResource {
     public Response delete(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {
-        log.info("ContractValidationRuleResource.delete");
-        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
-
+        log.debugf("Deleting validation rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         validationRuleService.softDelete(contractTypeCode, ruleId);
+        log.infof("Deleted validation rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.noContent().build();
     }
 }

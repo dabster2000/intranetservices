@@ -476,16 +476,24 @@ public class WorkService {
     @CacheInvalidateAll(cacheName = "work-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
     public void persistOrUpdate(Work work) {
+        log.debugf("persistOrUpdate called: userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
+                work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
         List<Work> workList = Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", work.getRegistered(), work.getUseruuid(), work.getTaskuuid()).list();
         if(!workList.isEmpty()) {
-            if(workList.stream().findFirst().get().isPaidOut()) return;
+            if(workList.stream().findFirst().get().isPaidOut()) {
+                log.warnf("Skipping update for already paid-out work: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s",
+                        workList.stream().findFirst().get().getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered());
+                return;
+            }
             work.setUuid(workList.stream().findFirst().get().getUuid());
             Work.update("workduration = ?1, comments = ?2, paidOut = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6", work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
-            log.info("Updating work via save: "+work);
+            log.infof("Work updated: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
+                    work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
         } else {
             work.setUuid(UUID.randomUUID().toString());
             Work.persist(work);
-            log.info("Saving work: "+work);
+            log.infof("Work created: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
+                    work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
         }
     }
 
@@ -501,20 +509,32 @@ public class WorkService {
     public void setPaidAndUpdate(Work work) {
         work.setPaidOut(LocalDateTime.now());
         Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
+        log.infof("Work marked as paid: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f, paidOut=%s",
+                work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(),
+                work.getWorkduration(), work.getRate(), work.getPaidOut());
     }
 
     @Transactional
     public void clearPaidAndUpdate(Work work) {
+        log.infof("Work paid-out cleared: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, previousPaidOut=%s",
+                work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getPaidOut());
         work.setPaidOut(null);
         Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
     }
 
     @Transactional
     public void registerAsPaidout(String contractuuid, String projectuuid, int month, int year) {
+        log.infof("Batch paidout registration started: contractUuid=%s, projectUuid=%s, month=%d, year=%d",
+                contractuuid, projectuuid, month, year);
         LocalDateTime now = LocalDateTime.now();
-        WorkFull.<WorkFull>find("contractuuid = ?1 AND projectuuid = ?2 AND MONTH(registered) = ?3 AND YEAR(registered) = ?4", contractuuid, projectuuid, month, year).stream().forEach(work -> {
+        long count = 0;
+        List<WorkFull> workItems = WorkFull.<WorkFull>find("contractuuid = ?1 AND projectuuid = ?2 AND MONTH(registered) = ?3 AND YEAR(registered) = ?4", contractuuid, projectuuid, month, year).list();
+        for (WorkFull work : workItems) {
             Work.update("paidOut = ?1 WHERE uuid = ?2 ", now, work.getUuid());
-        });
+            count++;
+        }
+        log.infof("Batch paidout registration completed: contractUuid=%s, projectUuid=%s, month=%d, year=%d, workItemsMarked=%d, paidOutTimestamp=%s",
+                contractuuid, projectuuid, month, year, count, now);
     }
 
     /**

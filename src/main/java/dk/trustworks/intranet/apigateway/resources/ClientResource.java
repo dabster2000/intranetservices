@@ -17,6 +17,7 @@ import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.ClientActivityLogDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -58,6 +59,9 @@ public class ClientResource {
 
     @Inject
     ClientActivityLogService activityLogService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     @GET
     public List<Client> findAll() {
@@ -105,14 +109,15 @@ public class ClientResource {
     @GET
     @Path("/{clientuuid}/contracts")
     public List<Contract> findContractByClientUuid(@PathParam("clientuuid") String clientuuid) {
-        System.out.println("ClientResource.findContractByClientUuid");
-        System.out.println("clientuuid = " + clientuuid);
+        log.debugf("findContractByClientUuid: clientuuid=%s", clientuuid);
         return contractService.findByClientuuid(clientuuid);
     }
 
     @POST
     @RolesAllowed({"crm:write"})
     public Response save(Client client) {
+        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        log.infof("Creating client name=%s, user=%s", client.getName(), userUuid);
         Client created = clientAPI.save(client);
         CreateClientEvent createClientEvent = new CreateClientEvent(created.getUuid(), created);
         aggregateEventSender.handleEvent(createClientEvent);
@@ -121,13 +126,15 @@ public class ClientResource {
         activityLogService.logCreated(created.getUuid(),
                 ClientActivityLog.TYPE_CLIENT, created.getUuid(), created.getName());
 
+        log.infof("Created client uuid=%s, name=%s, user=%s", created.getUuid(), created.getName(), userUuid);
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @PUT
     @RolesAllowed({"crm:write"})
     public void updateOne(Client client) {
-        log.debug("Updating client:\n"+client);
+        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        log.infof("Updating client uuid=%s, name=%s, user=%s", client.getUuid(), client.getName(), userUuid);
 
         // Load old state for change logging
         Client oldClient = clientAPI.findByUuid(client.getUuid());

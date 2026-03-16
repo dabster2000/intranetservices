@@ -65,6 +65,9 @@ public class ClientManagementResource {
         );
 
         repository.persist(result.client());
+        log.infof("AUDIT: API client created — uuid=%s, clientId=%s, scopes=%s, performedBy=%s",
+                result.client().getUuid(), result.client().getClientId(),
+                request.scopes(), createdBy);
         logAudit(result.client().getUuid(), AuditEventType.CLIENT_CREATED, null,
                 "scopes=" + request.scopes());
 
@@ -117,6 +120,9 @@ public class ClientManagementResource {
         client.updateMetadata(request.name(), request.description(), request.tokenTtlSeconds());
         repository.persist(client);
 
+        String performedBy = requestHeaderHolder.getUserUuid();
+        log.infof("AUDIT: API client updated — uuid=%s, clientId=%s, name=%s, performedBy=%s",
+                uuid, client.getClientId(), request.name(), performedBy);
         logAudit(uuid, AuditEventType.CLIENT_UPDATED, null,
                 "Updated metadata");
 
@@ -136,6 +142,9 @@ public class ClientManagementResource {
         client.softDelete();
         repository.persist(client);
 
+        String performedBy = requestHeaderHolder.getUserUuid();
+        log.infof("AUDIT: API client deleted (soft) — uuid=%s, clientId=%s, performedBy=%s",
+                uuid, client.getClientId(), performedBy);
         logAudit(uuid, AuditEventType.CLIENT_DELETED, null, null);
         return Response.noContent().build();
     }
@@ -168,6 +177,9 @@ public class ClientManagementResource {
         client.replaceScopes(request.scopes());
         repository.persist(client);
 
+        String performedBy = requestHeaderHolder.getUserUuid();
+        log.infof("AUDIT: API client scopes replaced — uuid=%s, clientId=%s, newScopes=%s, performedBy=%s",
+                uuid, client.getClientId(), request.scopes(), performedBy);
         logAudit(uuid, AuditEventType.CLIENT_UPDATED, null,
                 "Scopes replaced: " + request.scopes());
 
@@ -189,6 +201,9 @@ public class ClientManagementResource {
         String newSecret = client.rotateSecret();
         repository.persist(client);
 
+        String performedBy = requestHeaderHolder.getUserUuid();
+        log.infof("AUDIT: API client secret rotated — uuid=%s, clientId=%s, performedBy=%s",
+                uuid, client.getClientId(), performedBy);
         logAudit(uuid, AuditEventType.SECRET_ROTATED, null, null);
 
         return Response.ok(new SecretRotatedResponse(
@@ -213,6 +228,9 @@ public class ClientManagementResource {
         client.disable();
         repository.persist(client);
 
+        String performedBy = requestHeaderHolder.getUserUuid();
+        log.infof("AUDIT: API client disabled — uuid=%s, clientId=%s, performedBy=%s",
+                uuid, client.getClientId(), performedBy);
         logAudit(uuid, AuditEventType.CLIENT_DISABLED, null, null);
         return Response.ok(ClientResponse.from(client)).build();
     }
@@ -230,6 +248,9 @@ public class ClientManagementResource {
         client.enable();
         repository.persist(client);
 
+        String performedBy = requestHeaderHolder.getUserUuid();
+        log.infof("AUDIT: API client enabled — uuid=%s, clientId=%s, performedBy=%s",
+                uuid, client.getClientId(), performedBy);
         logAudit(uuid, AuditEventType.CLIENT_ENABLED, null, null);
         return Response.ok(ClientResponse.from(client)).build();
     }

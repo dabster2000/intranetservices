@@ -11,6 +11,7 @@ import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.ProjectUserDateDTO;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.hibernate.orm.panache.Panache;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -39,6 +40,9 @@ public class ContractService {
 
     @Inject
     ClientActivityLogService activityLogService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     @Inject
     EntityManager em;
@@ -238,8 +242,9 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public Contract save(Contract contract) {
-        log.info("ContractService.save");
-        log.info("contract = " + contract);
+        String userUuid = requestHeaderHolder.getUserUuid();
+        log.debugf("Saving contract uuid=%s, client=%s, status=%s, user=%s",
+                contract.getUuid(), contract.getClientuuid(), contract.getStatus(), userUuid);
 
         if (contract.getCompany() == null) {
             throw new jakarta.ws.rs.BadRequestException("Company is required when creating a contract");
@@ -252,7 +257,7 @@ public class ContractService {
                     : LocalDate.now();
             if (!contractTypeValidationService.isValidContractType(contract.getContractType(), createdDate)) {
                 String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
-                log.error("Invalid contract type: " + errorMessage);
+                log.warnf("Invalid contract type for contract uuid=%s: %s, user=%s", contract.getUuid(), errorMessage, userUuid);
                 throw new jakarta.ws.rs.BadRequestException(errorMessage);
             }
         }
@@ -274,12 +279,17 @@ public class ContractService {
         activityLogService.logCreated(contract.getClientuuid(),
                 ClientActivityLog.TYPE_CONTRACT, contract.getUuid(), contract.getName());
 
+        log.infof("Saved contract uuid=%s, client=%s, status=%s, user=%s",
+                contract.getUuid(), contract.getClientuuid(), contract.getStatus(), userUuid);
         return contract;
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public Contract extendContract(String contractuuid) {
+        String userUuid = requestHeaderHolder.getUserUuid();
+        log.debugf("Extending contract uuid=%s, user=%s", contractuuid, userUuid);
+
         Contract c = Contract.findById(contractuuid);
         Contract contract = new Contract(c);
         contract.persist();
@@ -293,12 +303,17 @@ public class ContractService {
             addProject(contract.getUuid(), cp.getProjectuuid());
             contract.getContractProjects().add(contractProject);
         }
+
+        log.infof("Extended contract uuid=%s to new contract uuid=%s, user=%s", contractuuid, contract.getUuid(), userUuid);
         return contract;
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
+        String userUuid = requestHeaderHolder.getUserUuid();
+        log.debugf("Updating contract uuid=%s, status=%s, user=%s", contract.getUuid(), contract.getStatus(), userUuid);
+
         if (contract.getCompany() == null) {
             throw new jakarta.ws.rs.BadRequestException("Company is required when updating a contract");
         }
@@ -314,7 +329,7 @@ public class ContractService {
 
             if (!contractTypeValidationService.isValidContractType(contract.getContractType(), validationDate)) {
                 String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
-                log.error("Invalid contract type: " + errorMessage);
+                log.warnf("Invalid contract type for contract uuid=%s: %s, user=%s", contract.getUuid(), errorMessage, userUuid);
                 throw new jakarta.ws.rs.BadRequestException(errorMessage);
             }
         }
@@ -372,11 +387,19 @@ public class ContractService {
                         "refid", oldContract.getRefid(), contract.getRefid());
             }
         }
+
+        log.infof("Updated contract uuid=%s, status=%s, user=%s", contract.getUuid(), contract.getStatus(), userUuid);
     }
 
     @Transactional
     public void delete(String contractuuid) {
-        if(Invoice.find("contractuuid like ?1", contractuuid).count()>0) throw new RuntimeException("Cannot delete contract with invoices");
+        String userUuid = requestHeaderHolder.getUserUuid();
+        log.debugf("Deleting contract uuid=%s, user=%s", contractuuid, userUuid);
+
+        if(Invoice.find("contractuuid like ?1", contractuuid).count()>0) {
+            log.warnf("Cannot delete contract uuid=%s: has associated invoices, user=%s", contractuuid, userUuid);
+            throw new RuntimeException("Cannot delete contract with invoices");
+        }
         Contract contract = Contract.findById(contractuuid);
         String clientUuid = contract != null ? contract.getClientuuid() : null;
         String contractName = contract != null ? contract.getName() : null;
@@ -387,10 +410,14 @@ public class ContractService {
             activityLogService.logDeleted(clientUuid,
                     ClientActivityLog.TYPE_CONTRACT, contractuuid, contractName);
         }
+
+        log.infof("Deleted contract uuid=%s, client=%s, user=%s", contractuuid, clientUuid, userUuid);
     }
 
     @Transactional
     public ContractProject addProject(String contractuuid, String projectuuid) {
+        log.debugf("Adding project=%s to contract=%s, user=%s", projectuuid, contractuuid, requestHeaderHolder.getUserUuid());
+
         ContractProject projectLink = new ContractProject(contractuuid, projectuuid);
 
         // Validate the project linkage
@@ -408,11 +435,14 @@ public class ContractService {
                     ClientActivityLog.TYPE_CONTRACT_PROJECT, projectuuid, projectName);
         }
 
+        log.infof("Added project=%s to contract=%s, user=%s", projectuuid, contractuuid, requestHeaderHolder.getUserUuid());
         return projectLink;
     }
 
     @Transactional
     public void removeProject(String contractuuid, String projectuuid) {
+        log.debugf("Removing project=%s from contract=%s, user=%s", projectuuid, contractuuid, requestHeaderHolder.getUserUuid());
+
         ContractProject contractProject = ContractProject.find("contractuuid like ?1 AND projectuuid like ?2", contractuuid, projectuuid).firstResult();
 
         if (contractProject != null) {
@@ -437,6 +467,8 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public ContractConsultant addConsultant(String contractuuid, String consultantuuid, ContractConsultant contractConsultant) {
+        log.debugf("Adding consultant=%s to contract=%s, user=%s", consultantuuid, contractuuid, requestHeaderHolder.getUserUuid());
+
         // Validate the consultant before adding
         ValidationReport report = validationService.validateContractConsultant(contractConsultant);
         validationService.enforceValidation(report);
@@ -451,12 +483,17 @@ public class ContractService {
                     contractConsultant.getName() != null ? contractConsultant.getName() : consultantuuid);
         }
 
+        log.infof("Added consultant=%s to contract=%s, ccUuid=%s, user=%s",
+                consultantuuid, contractuuid, contractConsultant.getUuid(), requestHeaderHolder.getUserUuid());
         return contractConsultant;
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void updateConsultant(ContractConsultant contractConsultant) {
+        log.debugf("Updating contract consultant uuid=%s, contract=%s, user=%s",
+                contractConsultant.getUuid(), contractConsultant.getContractuuid(), requestHeaderHolder.getUserUuid());
+
         // Load old state for change logging
         ContractConsultant oldCc = ContractConsultant.findById(contractConsultant.getUuid());
 
@@ -504,11 +541,16 @@ public class ContractService {
                 }
             }
         }
+
+        log.infof("Updated contract consultant uuid=%s, contract=%s, user=%s",
+                contractConsultant.getUuid(), contractConsultant.getContractuuid(), requestHeaderHolder.getUserUuid());
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void removeConsultant(String contractuuid, String consultantuuid) {
+        log.debugf("Removing consultant=%s from contract=%s, user=%s", consultantuuid, contractuuid, requestHeaderHolder.getUserUuid());
+
         ContractConsultant cc = ContractConsultant.findById(consultantuuid);
 
         if (cc != null) {
@@ -527,6 +569,10 @@ public class ContractService {
             // Use Panache instance delete (em.remove()) instead of
             // static deleteById (JPQL bulk delete that bypasses the PC)
             cc.delete();
+
+            log.infof("Removed consultant=%s from contract=%s, user=%s", consultantuuid, contractuuid, requestHeaderHolder.getUserUuid());
+        } else {
+            log.warnf("Consultant=%s not found for removal from contract=%s, user=%s", consultantuuid, contractuuid, requestHeaderHolder.getUserUuid());
         }
     }
 

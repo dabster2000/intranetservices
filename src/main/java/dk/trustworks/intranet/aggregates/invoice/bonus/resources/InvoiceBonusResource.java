@@ -13,6 +13,7 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.enums.ParameterIn;
@@ -26,6 +27,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 
 import java.util.List;
 
+@JBossLog
 @Path("/invoices/{invoiceuuid}/bonuses")
 @RequestScoped
 @RolesAllowed({"partnerbonus:read"})
@@ -63,6 +65,7 @@ public class InvoiceBonusResource {
                     example = "2b0d9fbe-6f1a-4a17-9f8c-8a8a8a8a8a8a"
             )
             @PathParam("invoiceuuid") String invoiceuuid) {
+        log.debugf("Listing bonuses for invoiceUuid=%s", invoiceuuid);
         return service.findByInvoice(invoiceuuid);
     }
 
@@ -152,7 +155,11 @@ public class InvoiceBonusResource {
             )
             @PathParam("invoiceuuid") String invoiceuuid,
             CreateBonusDTO dto) {
+        log.infof("Self-assign bonus: invoiceUuid=%s, userUuid=%s, shareType=%s, shareValue=%.2f",
+                invoiceuuid, dto.useruuid(), dto.shareType(), dto.shareValue());
         var ib = service.addSelfAssign(invoiceuuid, dto.useruuid(), dto.shareType(), dto.shareValue(), dto.note());
+        log.infof("Self-assign bonus created: bonusUuid=%s, invoiceUuid=%s, computedAmount=%.2f",
+                ib.getUuid(), invoiceuuid, ib.getComputedAmount());
         return Response.status(Response.Status.CREATED).entity(ib).build();
     }
 
@@ -204,7 +211,11 @@ public class InvoiceBonusResource {
                     example = "22222222-2222-2222-2222-222222222222"
             )
             @HeaderParam("X-Requested-By") String actingUser) {
+        log.infof("Admin add bonus: invoiceUuid=%s, targetUserUuid=%s, addedBy=%s, shareType=%s, shareValue=%.2f",
+                invoiceuuid, dto.useruuid(), actingUser, dto.shareType(), dto.shareValue());
         var ib = service.addAdmin(invoiceuuid, dto.useruuid(), actingUser, dto.shareType(), dto.shareValue(), dto.note());
+        log.infof("Admin bonus created: bonusUuid=%s, invoiceUuid=%s, computedAmount=%.2f",
+                ib.getUuid(), invoiceuuid, ib.getComputedAmount());
         return Response.status(Response.Status.CREATED).entity(ib).build();
     }
 
@@ -250,6 +261,8 @@ public class InvoiceBonusResource {
             )
             @PathParam("bonusuuid") String bonusuuid,
             UpdateBonusDTO dto) {
+        log.infof("Update bonus share: bonusUuid=%s, shareType=%s, shareValue=%.2f",
+                bonusuuid, dto.shareType(), dto.shareValue());
         service.updateShare(bonusuuid, dto.shareType(), dto.shareValue(), dto.note());
     }
 
@@ -262,13 +275,18 @@ public class InvoiceBonusResource {
         String resolved = (approver != null && !approver.isBlank())
                 ? approver
                 : (jwt.containsClaim("uuid") ? jwt.getClaim("uuid") : jwt.getSubject());
-        if (resolved == null || resolved.isBlank())
+        if (resolved == null || resolved.isBlank()) {
+            log.warnf("Bonus approval rejected: bonusUuid=%s, reason=no approver identity resolved", bonusuuid);
             throw new WebApplicationException(Response.Status.UNAUTHORIZED);
+        }
+        log.infof("Bonus approval requested: bonusUuid=%s, approvedBy=%s", bonusuuid, resolved);
         service.approve(bonusuuid, resolved);
         InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
         String invoiceuuid = ib.getInvoiceuuid();
         var agg = service.aggregatedStatusForInvoice(invoiceuuid);
         double total = service.totalBonusAmountForInvoice(invoiceuuid);
+        log.infof("Bonus approved: bonusUuid=%s, invoiceUuid=%s, approvedBy=%s, computedAmount=%.2f, aggregatedStatus=%s",
+                bonusuuid, invoiceuuid, resolved, ib.getComputedAmount(), agg);
         return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
@@ -283,13 +301,18 @@ public class InvoiceBonusResource {
         String resolved = (approver != null && !approver.isBlank())
                 ? approver
                 : (jwt.containsClaim("uuid") ? jwt.getClaim("uuid") : jwt.getSubject());
-        if (resolved == null || resolved.isBlank())
+        if (resolved == null || resolved.isBlank()) {
+            log.warnf("Bonus rejection rejected: bonusUuid=%s, reason=no approver identity resolved", bonusuuid);
             throw new WebApplicationException(Response.Status.UNAUTHORIZED);
+        }
+        log.infof("Bonus rejection requested: bonusUuid=%s, rejectedBy=%s, note=%s", bonusuuid, resolved, note);
         service.reject(bonusuuid, resolved, note);
         InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
         String invoiceuuid = ib.getInvoiceuuid();
         var agg = service.aggregatedStatusForInvoice(invoiceuuid);
         double total = service.totalBonusAmountForInvoice(invoiceuuid);
+        log.infof("Bonus rejected: bonusUuid=%s, invoiceUuid=%s, rejectedBy=%s, aggregatedStatus=%s",
+                bonusuuid, invoiceuuid, resolved, agg);
         return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
@@ -298,6 +321,7 @@ public class InvoiceBonusResource {
     @GET
     @Path("/{bonusuuid}/lines")
     public List<EnrichedBonusLineDTO> getLines(@PathParam("bonusuuid") String bonusuuid) {
+        log.debugf("Listing enriched bonus lines for bonusUuid=%s", bonusuuid);
         return service.listEnrichedLines(bonusuuid);
     }
 
@@ -308,6 +332,8 @@ public class InvoiceBonusResource {
     public BonusAggregateResponse putLines(@PathParam("invoiceuuid") String invoiceuuid,
                              @PathParam("bonusuuid") String bonusuuid,
                              List<LineDTO> body) {
+        log.infof("Put bonus lines: invoiceUuid=%s, bonusUuid=%s, lineCount=%d",
+                invoiceuuid, bonusuuid, body == null ? 0 : body.size());
         List<InvoiceBonusLine> mapped = body == null ? List.of() :
                 body.stream().map(dto -> {
                     InvoiceBonusLine l = new InvoiceBonusLine();
@@ -318,6 +344,8 @@ public class InvoiceBonusResource {
         service.putLines(invoiceuuid, bonusuuid, mapped);
         var agg = service.aggregatedStatusForInvoice(invoiceuuid);
         double total = service.totalBonusAmountForInvoice(invoiceuuid);
+        log.debugf("Put bonus lines completed: invoiceUuid=%s, bonusUuid=%s, aggregatedStatus=%s, totalAmount=%.2f",
+                invoiceuuid, bonusuuid, agg, total);
         return new BonusAggregateResponse(invoiceuuid, agg, total);
     }
 
@@ -326,7 +354,9 @@ public class InvoiceBonusResource {
     @RolesAllowed({"partnerbonus:write"})
     @Transactional
     public void delete(@PathParam("bonusuuid") String bonusuuid) {
+        log.infof("Delete bonus: bonusUuid=%s", bonusuuid);
         service.delete(bonusuuid);
+        log.infof("Bonus deleted: bonusUuid=%s", bonusuuid);
     }
 
 }

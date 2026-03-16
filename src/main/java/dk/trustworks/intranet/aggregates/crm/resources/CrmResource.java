@@ -34,6 +34,7 @@ public class CrmResource {
     @GET
     @Path("")
     public List<ConsultantContract> findContractsOverTime() {
+        log.debugf("findContractsOverTime: companyuuid=%s", companyuuid);
         return crmService.getContractsOverTime(companyuuid);
     }
 

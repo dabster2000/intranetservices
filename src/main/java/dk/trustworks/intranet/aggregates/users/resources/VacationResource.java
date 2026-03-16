@@ -30,6 +30,7 @@ public class VacationResource {
             DateValueDTO overview = new DateValueDTO();
             return Response.ok(overview).build();
         } catch (IllegalArgumentException e) {
+            log.warnf("Vacation overview not found for user uuid=%s year=%d: %s", useruuid, year, e.getMessage());
             return Response.status(Response.Status.NOT_FOUND).entity(e.getMessage()).build();
         }
     }
@@ -42,6 +43,7 @@ public class VacationResource {
             vacationService.transferVacationDays(useruuid, year, days);
             return Response.ok("Vacation days transferred successfully.").build();
         } catch (IllegalArgumentException e) {
+            log.warnf("Vacation transfer failed for user uuid=%s year=%d days=%.1f: %s", useruuid, year, days, e.getMessage());
             return Response.status(Response.Status.NOT_FOUND).entity(e.getMessage()).build();
         }
     }

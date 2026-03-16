@@ -6,6 +6,7 @@ import io.quarkus.security.identity.SecurityIdentityAugmentor;
 import io.quarkus.security.runtime.QuarkusSecurityIdentity;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.util.Set;
 
@@ -21,6 +22,7 @@ import java.util.Set;
  * The scope list must be kept in sync with the full scope catalogue
  * defined in the API client management system.
  */
+@JBossLog
 @ApplicationScoped
 public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
 
@@ -146,6 +148,12 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
         }
 
         // Identity already has admin:* — expand to all scopes
+        log.infof("AUDIT: Expanding admin:* identity to all %d scopes — subject=%s, name=%s",
+                ALL_SCOPES.size(), identity.getPrincipal().getName(),
+                identity.getAttribute("client_id") != null
+                        ? identity.getAttribute("client_id")
+                        : identity.getPrincipal().getName());
+
         QuarkusSecurityIdentity augmented = QuarkusSecurityIdentity.builder(identity)
                 .addRoles(ALL_SCOPES)
                 .build();

@@ -352,8 +352,8 @@ public class UserResource {
     @Path("/{uuid}")
     @RolesAllowed({"users:write"})
     public void updateOne(@PathParam("uuid") String uuid, User user) {
-        System.out.println("UserResource.updateOne");
-        System.out.println("uuid = " + uuid + ", user = " + user);
+        log.infof("Updating user uuid=%s", uuid);
+        log.debugf("Update payload for uuid=%s: username=%s", uuid, user.getUsername());
         UpdateUserEvent event = new UpdateUserEvent(user.getUuid(), user);
         userService.updateOne(user);
         aggregateEventSender.handleEvent(event);
@@ -362,8 +362,7 @@ public class UserResource {
     @POST
     @RolesAllowed({"users:write"})
     public Response createUser(User user) {
-        System.out.println("UserResource.createUser");
-        System.out.println("user = " + user);
+        log.infof("Creating user uuid=%s username=%s", user.getUuid(), user.getUsername());
         User created = userService.createUser(user);
         CreateUserEvent event = new CreateUserEvent(created.getUuid(), created);
         aggregateEventSender.handleEvent(event);
@@ -504,8 +503,7 @@ public class UserResource {
     @Path("/{useruuid}/resume")
     @RolesAllowed({"users:write"})
     public void saveResume(@PathParam("useruuid") String useruuid, File resume) throws IOException {
-        System.out.println("UserResource.saveResume");
-        System.out.println("useruuid = " + useruuid + ", resume = " + resume);
+        log.infof("Saving resume for user uuid=%s filename=%s", useruuid, resume != null ? resume.getFilename() : "null");
         userService.updateResume(useruuid, resume);
     }
 }

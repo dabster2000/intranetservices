@@ -23,6 +23,7 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.*;
@@ -33,6 +34,7 @@ import dk.trustworks.intranet.utils.DateUtils;
 
 import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType.CREDIT_NOTE;
 
+@JBossLog
 @ApplicationScoped
 public class InvoiceBonusService {
 
@@ -70,6 +72,8 @@ public class InvoiceBonusService {
     @Transactional
     public InvoiceBonus addSelfAssign(String invoiceuuid, String useruuid,
                                       InvoiceBonus.ShareType type, double value, String note) {
+        log.debugf("addSelfAssign: invoiceUuid=%s, userUuid=%s, shareType=%s, shareValue=%.2f",
+                invoiceuuid, useruuid, type, value);
         assertEligibleForInvoice(invoiceuuid, useruuid);
         return addInternal(invoiceuuid, useruuid, useruuid, type, value, note);
     }
@@ -77,17 +81,23 @@ public class InvoiceBonusService {
     @Transactional
     public InvoiceBonus addAdmin(String invoiceuuid, String targetUseruuid, String addedBy,
                                  InvoiceBonus.ShareType type, double value, String note) {
+        log.debugf("addAdmin: invoiceUuid=%s, targetUserUuid=%s, addedBy=%s, shareType=%s, shareValue=%.2f",
+                invoiceuuid, targetUseruuid, addedBy, type, value);
         return addInternal(invoiceuuid, targetUseruuid, addedBy, type, value, note);
     }
 
     private InvoiceBonus addInternal(String invoiceuuid, String useruuid, String addedBy,
                                      InvoiceBonus.ShareType type, double value, String note) {
         if (InvoiceBonus.count("invoiceuuid = ?1 and useruuid = ?2", invoiceuuid, useruuid) > 0) {
+            log.warnf("Duplicate bonus attempt: invoiceUuid=%s, userUuid=%s already exists", invoiceuuid, useruuid);
             throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
                     .entity("User already added for invoice bonus").build());
         }
         Invoice inv = Invoice.findById(invoiceuuid);
-        if (inv == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (inv == null) {
+            log.warnf("Bonus add failed: invoiceUuid=%s not found", invoiceuuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
 
         InvoiceBonus ib = new InvoiceBonus();
         ib.setInvoiceuuid(invoiceuuid);
@@ -98,12 +108,15 @@ public class InvoiceBonusService {
         ib.setOverrideNote(note);
         recomputeComputedAmount(inv, ib);
         ib.persist();
+        log.infof("Bonus created: bonusUuid=%s, invoiceUuid=%s, userUuid=%s, addedBy=%s, shareType=%s, shareValue=%.2f, computedAmount=%.2f",
+                ib.getUuid(), invoiceuuid, useruuid, addedBy, type, value, ib.getComputedAmount());
 
         if (type == InvoiceBonus.ShareType.PERCENT) {
             double sumPct = InvoiceBonus.<InvoiceBonus>stream("invoiceuuid = ?1 and shareType = ?2",
                             invoiceuuid, InvoiceBonus.ShareType.PERCENT)
                     .mapToDouble(InvoiceBonus::getShareValue).sum();
             if (sumPct > 100.0 + 1e-9) {
+                log.warnf("Percent share sum exceeds 100%%: invoiceUuid=%s, totalPct=%.2f", invoiceuuid, sumPct);
                 throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
                         .entity("Sum of percent shares exceeds 100%").build());
             }
@@ -114,19 +127,30 @@ public class InvoiceBonusService {
     @Transactional
     public void updateShare(String bonusUuid, InvoiceBonus.ShareType type, double value, String note) {
         InvoiceBonus ib = InvoiceBonus.findById(bonusUuid);
-        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (ib == null) {
+            log.warnf("Update share failed: bonusUuid=%s not found", bonusUuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+        log.infof("Updating bonus share: bonusUuid=%s, oldShareType=%s, oldShareValue=%.2f, newShareType=%s, newShareValue=%.2f",
+                bonusUuid, ib.getShareType(), ib.getShareValue(), type, value);
         ib.setShareType(type);
         ib.setShareValue(value);
         ib.setOverrideNote(note);
         Invoice inv = Invoice.findById(ib.getInvoiceuuid());
         recomputeComputedAmount(inv, ib);
         ib.persist();
+        log.infof("Bonus share updated: bonusUuid=%s, computedAmount=%.2f", bonusUuid, ib.getComputedAmount());
     }
 
     @Transactional
     public void approve(String bonusUuid, String approverUuid) {
         InvoiceBonus ib = InvoiceBonus.findById(bonusUuid);
-        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (ib == null) {
+            log.warnf("Approval failed: bonusUuid=%s not found", bonusUuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+        log.infof("Approving bonus: bonusUuid=%s, invoiceUuid=%s, userUuid=%s, approverUuid=%s",
+                bonusUuid, ib.getInvoiceuuid(), ib.getUseruuid(), approverUuid);
 
         // Seed defaults once (bulk)
         ensureDefaultLinesIfEmptyBulk(ib);
@@ -143,9 +167,13 @@ public class InvoiceBonusService {
             ib.setShareValue(amount);
             ib.setComputedAmount(amount);
             ib.persist();
+            log.infof("Bonus approved (from lines): bonusUuid=%s, invoiceUuid=%s, approvedBy=%s, computedAmount=%.2f, lineCount=%d",
+                    bonusUuid, ib.getInvoiceuuid(), approverUuid, amount, lines.size());
         } else {
             recomputeComputedAmount(inv, ib);
             ib.persist();
+            log.infof("Bonus approved (legacy calc): bonusUuid=%s, invoiceUuid=%s, approvedBy=%s, computedAmount=%.2f",
+                    bonusUuid, ib.getInvoiceuuid(), approverUuid, ib.getComputedAmount());
         }
 
         // Fire cache invalidation event
@@ -179,9 +207,16 @@ public class InvoiceBonusService {
     @Transactional
     public void reject(String bonusUuid, String approverUuid, String note) {
         InvoiceBonus ib = InvoiceBonus.findById(bonusUuid);
-        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (ib == null) {
+            log.warnf("Rejection failed: bonusUuid=%s not found", bonusUuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+        log.infof("Rejecting bonus: bonusUuid=%s, invoiceUuid=%s, userUuid=%s, rejectedBy=%s, note=%s",
+                bonusUuid, ib.getInvoiceuuid(), ib.getUseruuid(), approverUuid, note);
         ib.setOverrideNote(note);
         setStatus(bonusUuid, approverUuid, SalesApprovalStatus.REJECTED);
+        log.infof("Bonus rejected: bonusUuid=%s, invoiceUuid=%s, rejectedBy=%s",
+                bonusUuid, ib.getInvoiceuuid(), approverUuid);
 
         // Fire cache invalidation event
         Invoice inv = Invoice.findById(ib.getInvoiceuuid());
@@ -190,10 +225,14 @@ public class InvoiceBonusService {
 
     private void setStatus(String bonusUuid, String approver, SalesApprovalStatus status) {
         InvoiceBonus ib = InvoiceBonus.findById(bonusUuid);
-        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (ib == null) {
+            log.warnf("setStatus failed: bonusUuid=%s not found", bonusUuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
 
         String approverUuid = resolveUserUuid(approver);
         if (approverUuid == null) {
+            log.warnf("setStatus failed: invalid approver identity '%s' for bonusUuid=%s", approver, bonusUuid);
             throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
                     .entity("Approver must be a valid user UUID or username").build());
         }
@@ -202,6 +241,7 @@ public class InvoiceBonusService {
         ib.setApprovedBy(approverUuid);
         ib.setApprovedAt(java.time.LocalDateTime.now());
         ib.persist();
+        log.debugf("Bonus status set: bonusUuid=%s, status=%s, approverUuid=%s", bonusUuid, status, approverUuid);
     }
 
     private String resolveUserUuid(String input) {
@@ -225,8 +265,16 @@ public class InvoiceBonusService {
 
     @Transactional
     public void delete(String bonusUuid) {
-        Panache.getEntityManager().remove(Objects.requireNonNull(InvoiceBonus.findById(bonusUuid)));
-        InvoiceBonusLine.delete("bonusuuid", bonusUuid);
+        InvoiceBonus ib = InvoiceBonus.findById(bonusUuid);
+        if (ib == null) {
+            log.warnf("Delete failed: bonusUuid=%s not found", bonusUuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+        log.infof("Deleting bonus: bonusUuid=%s, invoiceUuid=%s, userUuid=%s, status=%s",
+                bonusUuid, ib.getInvoiceuuid(), ib.getUseruuid(), ib.getStatus());
+        Panache.getEntityManager().remove(ib);
+        long deletedLines = InvoiceBonusLine.delete("bonusuuid", bonusUuid);
+        log.infof("Bonus deleted: bonusUuid=%s, deletedLines=%d", bonusUuid, deletedLines);
     }
 
     public List<InvoiceBonusLine> listLines(String bonusuuid) {
@@ -301,9 +349,16 @@ public class InvoiceBonusService {
 
     @Transactional
     public void putLines(String invoiceuuid, String bonusuuid, List<InvoiceBonusLine> lines) {
+        log.debugf("putLines: invoiceUuid=%s, bonusUuid=%s, lineCount=%d",
+                invoiceuuid, bonusuuid, lines == null ? 0 : lines.size());
         InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
-        if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (ib == null) {
+            log.warnf("putLines failed: bonusUuid=%s not found", bonusuuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
         if (!Objects.equals(ib.getInvoiceuuid(), invoiceuuid)) {
+            log.warnf("putLines failed: bonusUuid=%s belongs to invoiceUuid=%s, not %s",
+                    bonusuuid, ib.getInvoiceuuid(), invoiceuuid);
             throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
                     .entity("bonusuuid does not belong to invoiceuuid").build());
         }
@@ -406,9 +461,14 @@ public class InvoiceBonusService {
     /** Recalc all bonuses for an invoice (honors line selections). */
     @Transactional
     public void recalcForInvoice(String invoiceuuid) {
+        log.debugf("recalcForInvoice: invoiceUuid=%s", invoiceuuid);
         Invoice inv = Invoice.findById(invoiceuuid);
-        if (inv == null) return;
+        if (inv == null) {
+            log.warnf("recalcForInvoice skipped: invoiceUuid=%s not found", invoiceuuid);
+            return;
+        }
         List<InvoiceBonus> list = findByInvoice(invoiceuuid);
+        log.debugf("recalcForInvoice: invoiceUuid=%s, bonusCount=%d", invoiceuuid, list.size());
         for (InvoiceBonus ib : list) {
             List<InvoiceBonusLine> lines = InvoiceBonusLine.list("bonusuuid = ?1", ib.getUuid());
             if (!lines.isEmpty()) {
@@ -434,13 +494,18 @@ public class InvoiceBonusService {
 
     private static void assertEligibleForInvoice(String invoiceuuid, String useruuid) {
         Invoice inv = Invoice.findById(invoiceuuid);
-        if (inv == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (inv == null) {
+            log.warnf("Eligibility check failed: invoiceUuid=%s not found", invoiceuuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
         LocalDate date = inv.getInvoicedate();
         if (date == null) date = LocalDate.now();
         int fy = fiscalYearOf(date);
         BonusEligibility be = BonusEligibility.find("useruuid = ?1 and financialYear = ?2", useruuid, fy).firstResult();
         if (be == null) {
             String msg = "User not eligible to self-assign for FY " + fiscalYearLabel(fy);
+            log.warnf("Eligibility check failed: userUuid=%s not eligible for FY %s, invoiceUuid=%s",
+                    useruuid, fiscalYearLabel(fy), invoiceuuid);
             throw new WebApplicationException(Response.status(Response.Status.FORBIDDEN).entity(msg).build());
         }
     }
@@ -468,7 +533,9 @@ public class InvoiceBonusService {
     public BonusEligibility upsertEligibility(String useruuid,
                                              boolean canSelfAssign,
                                              String groupUuid) {
+        log.debugf("upsertEligibility: userUuid=%s, canSelfAssign=%s, groupUuid=%s", useruuid, canSelfAssign, groupUuid);
         if (groupUuid == null || groupUuid.isBlank()) {
+            log.warnf("upsertEligibility failed: groupUuid is required for userUuid=%s", useruuid);
             throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
                     .entity("groupUuid is required").build());
         }
@@ -494,8 +561,13 @@ public class InvoiceBonusService {
 
     @Transactional
     public void deleteEligibilityByUseruuid(String useruuid) {
+        log.infof("Deleting eligibility for userUuid=%s", useruuid);
         long deleted = BonusEligibility.delete("useruuid", useruuid);
-        if (deleted == 0) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (deleted == 0) {
+            log.warnf("Delete eligibility failed: no eligibility found for userUuid=%s", useruuid);
+            throw new WebApplicationException(Response.Status.NOT_FOUND);
+        }
+        log.infof("Eligibility deleted: userUuid=%s, deletedCount=%d", useruuid, deleted);
     }
 
     /**

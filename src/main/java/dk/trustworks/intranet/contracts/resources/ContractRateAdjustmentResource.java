@@ -4,6 +4,7 @@ import dk.trustworks.intranet.contracts.dto.CreateRateAdjustmentRequest;
 import dk.trustworks.intranet.contracts.dto.RateAdjustmentDTO;
 import dk.trustworks.intranet.contracts.dto.UpdateRateAdjustmentRequest;
 import dk.trustworks.intranet.contracts.services.ContractRateAdjustmentService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -34,6 +35,9 @@ public class ContractRateAdjustmentResource {
     @Inject
     ContractRateAdjustmentService rateAdjustmentService;
 
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
     @GET
     @Operation(summary = "List rate adjustments")
     public Response listAll(
@@ -59,7 +63,9 @@ public class ContractRateAdjustmentResource {
     public Response create(
             @PathParam("contractTypeCode") String contractTypeCode,
             @Valid CreateRateAdjustmentRequest request) {
+        log.debugf("Creating rate adjustment for contractType=%s, user=%s", contractTypeCode, requestHeaderHolder.getUserUuid());
         RateAdjustmentDTO created = rateAdjustmentService.create(contractTypeCode, request);
+        log.infof("Created rate adjustment ruleId=%s for contractType=%s, user=%s", created.getRuleId(), contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -71,7 +77,9 @@ public class ContractRateAdjustmentResource {
             @PathParam("contractTypeCode") String contractTypeCode,
             @PathParam("ruleId") String ruleId,
             @Valid UpdateRateAdjustmentRequest request) {
+        log.debugf("Updating rate adjustment ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         RateAdjustmentDTO updated = rateAdjustmentService.update(contractTypeCode, ruleId, request);
+        log.infof("Updated rate adjustment ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.ok(updated).build();
     }
 
@@ -82,7 +90,9 @@ public class ContractRateAdjustmentResource {
     public Response delete(
             @PathParam("contractTypeCode") String contractTypeCode,
             @PathParam("ruleId") String ruleId) {
+        log.debugf("Deleting rate adjustment ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         rateAdjustmentService.softDelete(contractTypeCode, ruleId);
+        log.infof("Deleted rate adjustment ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.noContent().build();
     }
 

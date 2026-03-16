@@ -373,11 +373,12 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public User createUser(User user) {
-        System.out.println("UserService.createUser");
-        log.info("Create user: "+user);
-        if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) return user;
-        System.out.println("User does not exist");
-        log.info("User does not exist");
+        log.infof("Creating user uuid=%s username=%s", user.getUuid(), user.getUsername());
+        if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) {
+            log.infof("User already exists, skipping creation: uuid=%s username=%s", user.getUuid(), user.getUsername());
+            return user;
+        }
+        log.debugf("User does not exist, proceeding with creation: uuid=%s", user.getUuid());
         user.setCreated(LocalDate.now());
         user.setBirthday(LocalDate.of(1900, 1, 1));
         user.setType("USER");
@@ -395,14 +396,14 @@ public class UserService {
         User.persist(user);
         Role.persist(new Role(UUID.randomUUID().toString(), "USER", user.getUuid()));
         UserContactinfo.persist(userContactinfo);
-        System.out.println("User created");
+        log.infof("User created successfully: uuid=%s username=%s", user.getUuid(), user.getUsername());
         return user;
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateOne(User user) {
-        System.out.println("UserService.updateOne");
+        log.infof("Updating user uuid=%s username=%s", user.getUuid(), user.getUsername());
         try {
             User.update("email = ?1, " +
                             "firstname = ?2, " +
@@ -441,16 +442,15 @@ public class UserService {
                     user.getPractice(),
                     user.getUuid());
         } catch (Exception e) {
-            e.printStackTrace();
+            log.errorf(e, "Failed to update user uuid=%s", user.getUuid());
         }
-        System.out.println("User updated");
+        log.debugf("User updated successfully: uuid=%s", user.getUuid());
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordByUsername(String username, String newPassword) {
-        log.info("UserResource.updatePasswordByUsername");
-        log.info("username = " + username + ", newPassword = " + newPassword);
+        log.infof("Updating password by username=%s", username);
         User user = (User) User.find("username like ?1", username).firstResultOptional().orElseThrow(NotFoundException::new);
         String key = UUID.randomUUID().toString();
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
@@ -462,8 +462,7 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordByUUID(String uuid, String newPassword) {
-        log.info("UserResource.updatePasswordByUUID");
-        log.info("uuid = " + uuid + ", newPassword = " + newPassword);
+        log.infof("Updating password by uuid=%s", uuid);
         User user = (User) User.find("uuid like ?1", uuid).firstResultOptional().orElseThrow(NotFoundException::new);
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
         user.setPassword(hashpw);
@@ -475,8 +474,7 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordBySlackid(String slackid, String newPassword) {
-        log.info("UserResource.updatePasswordBySlackid");
-        log.info("slackid = " + slackid + ", newPassword = " + newPassword);
+        log.infof("Updating password by slackId=%s", slackid);
         User user = (User) User.find("slackusername like ?1", slackid).firstResultOptional().orElseThrow(NotFoundException::new);
         String key = UUID.randomUUID().toString();
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
@@ -487,17 +485,16 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void confirmPasswordChange(String key) {
-        System.out.println("UserService.confirmPasswordChange");
-        System.out.println("key = " + key);
+        log.infof("Confirming password change for key=%s", key);
         PasswordChange passwordChange = PasswordChange.findById(key);
         if(passwordChange.getCreated().isAfter(LocalDateTime.now().plusHours(1))) throw new NotAllowedException("Password change too late");
-        System.out.println("Updating password for user "+passwordChange.getUseruuid());
+        log.infof("Updating password for user uuid=%s", passwordChange.getUseruuid());
         User.update("password = ?1 where uuid like ?2",
                 passwordChange.getPassword(),
                 passwordChange.getUseruuid());
-        System.out.println("Updated");
+        log.debugf("Password updated for user uuid=%s", passwordChange.getUseruuid());
         PasswordChange.deleteById(key);
-        System.out.println("Cleaned");
+        log.debugf("Password change record cleaned up for key=%s", key);
     }
 
     @Transactional

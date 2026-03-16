@@ -11,6 +11,7 @@ import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -53,6 +54,9 @@ public class ProjectResource {
 
     @Inject
     WorkService workAPI;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     @GET
     public List<Project> listAll() {
@@ -145,12 +149,16 @@ public class ProjectResource {
     @POST
     @RolesAllowed({"contracts:write"})
     public Project save(Project project) {
+        log.infof("Project create requested by user=%s, name=%s, clientdatauuid=%s",
+                requestHeaderHolder.getUserUuid(), project.getName(), project.getClientdatauuid());
         return projectAPI.save(project);
     }
 
     @PUT
     @RolesAllowed({"contracts:write"})
     public void updateOne(Project project) {
+        log.infof("Project update requested: uuid=%s by user=%s",
+                project.getUuid(), requestHeaderHolder.getUserUuid());
         projectAPI.updateOne(project);
     }
 
@@ -158,6 +166,8 @@ public class ProjectResource {
     @Path("/{uuid}")
     @RolesAllowed({"contracts:write"})
     public void delete(@PathParam("uuid") String uuid) {
+        log.infof("Project delete requested: uuid=%s by user=%s",
+                uuid, requestHeaderHolder.getUserUuid());
         projectAPI.delete(uuid);
     }
 }

@@ -12,10 +12,14 @@ public class WorkEventHandler {
     @ConsumeEvent(value = "domain.events.UPDATE_WORK", blocking = true)
     public void onUpdateWork(String envelopeJson) {
         DomainEventEnvelope env = DomainEventEnvelope.fromJson(envelopeJson);
-        log.info("WorkEventHandler.onUpdateWork -> envelopeId = " + env.getEventId());
+        log.infof("WorkEventHandler.onUpdateWork: eventId=%s, aggregateId=%s, eventType=%s, actor=%s, occurredAt=%s",
+                env.getEventId(), env.getAggregateId(), env.getEventType(), env.getActor(), env.getOccurredAt());
         updateWork(env);
     }
 
     private void updateWork(DomainEventEnvelope env) {
+        log.debugf("updateWork processing: eventId=%s, aggregateId=%s, payload=%s",
+                env.getEventId(), env.getAggregateId(), env.getPayload());
+        // TODO: Implement work aggregate projection update
     }
 }
