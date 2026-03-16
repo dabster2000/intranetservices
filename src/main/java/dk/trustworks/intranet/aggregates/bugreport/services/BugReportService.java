@@ -402,6 +402,10 @@ public class BugReportService {
             // Store raw AI response on the report
             report.setAiRawResponse(aiResponse);
 
+            // Flush + refresh to get DB-generated updatedAt (ON UPDATE CURRENT_TIMESTAMP)
+            report.flush();
+            report.getEntityManager().refresh(report);
+
             JsonNode json = objectMapper.readTree(aiResponse);
 
             // Parse expectedBehaviorOptions array
@@ -414,6 +418,11 @@ public class BugReportService {
                 }
             }
 
+            // Include the fresh updatedAt so the frontend can use it for optimistic locking on submit
+            String updatedAt = report.getUpdatedAt() != null
+                    ? report.getUpdatedAt().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                    : null;
+
             return new TriageResponse(
                     getTextOrNull(json, "pageSummary"),
                     getTextOrNull(json, "assessment"),
@@ -421,7 +430,8 @@ public class BugReportService {
                     getTextOrNull(json, "suggestedSeverity"),
                     getTextOrNull(json, "severityReason"),
                     getTextOrNull(json, "userGuidance"),
-                    List.copyOf(expectedBehaviorOptions));
+                    List.copyOf(expectedBehaviorOptions),
+                    updatedAt);
         } catch (AiSuggestionException e) {
             throw e;
         } catch (Exception e) {

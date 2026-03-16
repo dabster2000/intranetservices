@@ -21,5 +21,6 @@ public record TriageResponse(
         String suggestedSeverity,
         String severityReason,
         String userGuidance,
-        List<String> expectedBehaviorOptions
+        List<String> expectedBehaviorOptions,
+        String updatedAt
 ) {}
