@@ -253,10 +253,11 @@ public class BugReportResource {
     @POST
     @Path("/{uuid}/analyze")
     @RolesAllowed({"bugreports:write"})
-    public Response analyze(@PathParam("uuid") String uuid) {
+    public Response analyze(@PathParam("uuid") String uuid,
+                            @Valid @NotNull AnalyzeRequest request) {
         String callerUuid = requestHeaderHolder.getUserUuid();
         try {
-            var triage = bugReportService.analyzeReport(uuid, callerUuid);
+            var triage = bugReportService.analyzeReport(uuid, callerUuid, request);
             return Response.ok(triage).build();
         } catch (SecurityException e) {
             return Response.status(Response.Status.FORBIDDEN)

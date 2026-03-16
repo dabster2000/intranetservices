@@ -820,6 +820,15 @@ public class OpenAIService {
 
             return extractOutputTextOrEmpty(root);
 
+        } catch (jakarta.ws.rs.WebApplicationException wae) {
+            // REST client throws on non-2xx — extract the response body for debugging
+            String errorBody = "";
+            try {
+                errorBody = wae.getResponse() != null ? wae.getResponse().readEntity(String.class) : "";
+            } catch (Exception ignored) {}
+            log.errorf("[OpenAIService] OpenAI HTTP error (file search): status=%d body=%s",
+                    wae.getResponse() != null ? wae.getResponse().getStatus() : -1, errorBody);
+            return refusalFallbackJson != null ? refusalFallbackJson : "{}";
         } catch (Exception e) {
             log.error("[OpenAIService] Responses request failed (schema + image + file search)", e);
             return refusalFallbackJson != null ? refusalFallbackJson : "{}";

@@ -2,25 +2,24 @@ package dk.trustworks.intranet.aggregates.bugreport.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+import java.util.List;
+
 /**
  * Response DTO for the AI triage analysis of a bug report.
- * Contains the AI's assessment plus pre-filled bug report fields.
  * <p>
  * {@code userGuidance} is nullable -- only present for POSSIBLY_EXPECTED
- * and USER_GUIDANCE_NEEDED assessments.
+ * and UNCERTAIN assessments.
+ * <p>
+ * {@code expectedBehaviorOptions} contains 1-3 AI-generated expected behavior
+ * suggestions for LIKELY_BUG and UNCERTAIN assessments; empty for POSSIBLY_EXPECTED.
  */
 @JsonInclude(JsonInclude.Include.ALWAYS)
 public record TriageResponse(
         String pageSummary,
-        String observation,
-        String expectedBehavior,
         String assessment,
-        String assessmentExplanation,
+        String explanation,
         String suggestedSeverity,
         String severityReason,
         String userGuidance,
-        String title,
-        String description,
-        String stepsToReproduce,
-        String actualBehavior
+        List<String> expectedBehaviorOptions
 ) {}
