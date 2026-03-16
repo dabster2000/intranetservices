@@ -136,7 +136,7 @@ public class UserResource {
      * GET /users/search/findByAzureOidAndIssuer?azureOid=…&issuer=…
      */
     @GET
-    @PermitAll
+    @RolesAllowed({"users:read"})
     @Path("/search/findByAzureOidAndIssuer")
     public Response findByAzureOidAndIssuer(
             @QueryParam("azureOid") String azureOid,
