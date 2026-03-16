@@ -249,7 +249,27 @@ public class BugReportResource {
         }
     }
 
-    // ---- 13. GET /bug-reports/notifications — Get user's notifications ----
+    // ---- 13. POST /bug-reports/{uuid}/analyze — AI triage analysis ----
+    @POST
+    @Path("/{uuid}/analyze")
+    @RolesAllowed({"bugreports:write"})
+    public Response analyze(@PathParam("uuid") String uuid) {
+        String callerUuid = requestHeaderHolder.getUserUuid();
+        try {
+            var triage = bugReportService.analyzeReport(uuid, callerUuid);
+            return Response.ok(triage).build();
+        } catch (SecurityException e) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        } catch (AiSuggestionException e) {
+            return Response.status(502)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        }
+    }
+
+    // ---- 14. GET /bug-reports/notifications — Get user's notifications ----
     @GET
     @Path("/notifications")
     public Response getNotifications(@QueryParam("userUuid") String userUuid) {

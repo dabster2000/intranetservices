@@ -273,6 +273,9 @@ bonus:
     production-commission-rate: 0.20
 
 bug-report:
+  ai:
+    model: ${BUGREPORT_AI_MODEL:gpt-5-mini-2025-08-07}
+    vector-store-id: ${BUGREPORT_VECTOR_STORE_ID:vs_69b732518c0081918dcd98133a178742}
   cloudwatch:
     log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/apprunner/tw-quarkus-staging}
     log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/apprunner/tw-nextjs-staging}

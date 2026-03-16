@@ -718,6 +718,115 @@ public class OpenAIService {
     }
 
 
+    /**
+     * Structured output + VISION + FILE SEARCH in a single Responses call.
+     * - Uses JSON Schema via text.format (Responses API style)
+     * - Includes a base64 image (vision)
+     * - Enables the built-in file_search tool against a specified vector store
+     * - Accepts a per-request model override (does not use this.model)
+     *
+     * @param model             Model ID to use for this request (e.g., "gpt-5-mini-2025-08-07")
+     * @param system            System prompt (role: system)
+     * @param userInstructionText User instructions (role: user, type: input_text)
+     * @param base64Image       Base64-encoded image data
+     * @param mimeType          Image MIME type (e.g., "image/png")
+     * @param jsonSchema        JSON schema for structured output
+     * @param schemaName        Schema name identifier
+     * @param vectorStoreId     OpenAI vector store ID for file_search
+     * @param refusalFallbackJson JSON to return if model refuses (must match schema)
+     * @return Structured JSON response matching schema, or refusalFallbackJson on error
+     */
+    public String askWithSchemaImageAndFileSearch(String model,
+                                                   String system,
+                                                   String userInstructionText,
+                                                   String base64Image,
+                                                   String mimeType,
+                                                   ObjectNode jsonSchema,
+                                                   String schemaName,
+                                                   String vectorStoreId,
+                                                   String refusalFallbackJson) {
+        try {
+            // Build request with caller-specified model (not this.model)
+            ObjectNode req = objectMapper.createObjectNode();
+            req.put("model", model);
+            req.put("max_output_tokens", 4096);
+
+            // Configure text format with JSON schema
+            ObjectNode text = req.putObject("text");
+            ObjectNode format = text.putObject("format");
+            format.put("type", "json_schema");
+            format.put("name", schemaName == null ? "schema" : schemaName);
+            format.set("schema", jsonSchema);
+            format.put("strict", true);
+
+            // --- File search tool config ---
+            ArrayNode tools = req.putArray("tools");
+            ObjectNode fileSearch = tools.addObject();
+            fileSearch.put("type", "file_search");
+            ArrayNode vectorStoreIds = fileSearch.putArray("vector_store_ids");
+            vectorStoreIds.add(vectorStoreId);
+
+            // --- Store response ---
+            req.put("store", true);
+
+            // --- Input messages (system + user with text + image) ---
+            ArrayNode input = req.putArray("input");
+
+            if (system != null && !system.isBlank()) {
+                ObjectNode sys = input.addObject();
+                sys.put("role", "system");
+                sys.put("content", system);
+            }
+
+            ObjectNode user = input.addObject();
+            user.put("role", "user");
+
+            ArrayNode content = objectMapper.createArrayNode();
+
+            // Text part
+            ObjectNode textPart = content.addObject();
+            textPart.put("type", "input_text");
+            textPart.put("text", userInstructionText == null ? "" : userInstructionText);
+
+            // Image part
+            if (base64Image != null && !base64Image.isBlank()) {
+                ObjectNode imagePart = content.addObject();
+                imagePart.put("type", "input_image");
+                imagePart.put("image_url", toDataUrl(base64Image, mimeType));
+            }
+
+            user.set("content", content);
+
+            String body = objectMapper.writeValueAsString(req);
+            log.debugf(
+                    "[OpenAIService] Sending response (json_schema + image + file_search). model=%s, vectorStore=%s, bodySize=%d",
+                    model, vectorStoreId, body.length()
+            );
+
+            Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
+            String payload = http.readEntity(String.class);
+
+            if (http.getStatus() / 100 != 2) {
+                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+
+            JsonNode root = objectMapper.readTree(payload);
+            String refusal = extractRefusal(root);
+            if (refusal != null) {
+                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+            }
+
+            return extractOutputTextOrEmpty(root);
+
+        } catch (Exception e) {
+            log.error("[OpenAIService] Responses request failed (schema + image + file search)", e);
+            return refusalFallbackJson != null ? refusalFallbackJson : "{}";
+        }
+    }
+
+
     /* ----------------- helpers ----------------- */
 
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName) {
