@@ -28,8 +28,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class BugReportLogService {
 
     private static final int MAX_LOG_BYTES = 500 * 1024; // 500KB
-    private static final int LOG_EVENT_LIMIT = 200;
-    private static final long LOOKBACK_MINUTES = 3;
+    private static final int LOG_EVENT_LIMIT = 500;
+    private static final long LOOKBACK_MINUTES = 10;
 
     @ConfigProperty(name = "bug-report.cloudwatch.log-group-backend")
     String backendLogGroupPrefix;
@@ -53,7 +53,7 @@ public class BugReportLogService {
     }
 
     /**
-     * Retrieves the user's last 3 minutes of logs from both backend and frontend log groups.
+     * Retrieves the user's last 10 minutes of logs from both backend and frontend log groups.
      * Results are merged and sorted by timestamp.
      *
      * @param userUuid the user UUID to filter logs by
@@ -144,7 +144,7 @@ public class BugReportLogService {
         try {
             FilterLogEventsRequest request = FilterLogEventsRequest.builder()
                     .logGroupName(logGroupName)
-                    .filterPattern("\"userUuid=" + userUuid + "\"")
+                    .filterPattern("\"" + userUuid + "\"")
                     .startTime(startTime.toEpochMilli())
                     .endTime(endTime.toEpochMilli())
                     .limit(LOG_EVENT_LIMIT)
