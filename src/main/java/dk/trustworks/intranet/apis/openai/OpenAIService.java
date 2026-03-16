@@ -788,11 +788,12 @@ public class OpenAIService {
             textPart.put("type", "input_text");
             textPart.put("text", userInstructionText == null ? "" : userInstructionText);
 
-            // Image part
+            // Image part — use "high" detail for accurate UI text reading
             if (base64Image != null && !base64Image.isBlank()) {
                 ObjectNode imagePart = content.addObject();
                 imagePart.put("type", "input_image");
                 imagePart.put("image_url", toDataUrl(base64Image, mimeType));
+                imagePart.put("detail", "high");
             }
 
             user.set("content", content);
