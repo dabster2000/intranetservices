@@ -749,7 +749,7 @@ public class OpenAIService {
             // Build request with caller-specified model (not this.model)
             ObjectNode req = objectMapper.createObjectNode();
             req.put("model", model);
-            req.put("max_output_tokens", 4096);
+            req.put("max_output_tokens", 16384);
 
             // Configure text format with JSON schema
             ObjectNode text = req.putObject("text");
