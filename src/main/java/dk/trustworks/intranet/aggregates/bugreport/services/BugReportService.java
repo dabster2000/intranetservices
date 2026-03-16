@@ -347,7 +347,6 @@ public class BugReportService {
      * @throws SecurityException               if the caller is not the reporter
      * @throws AiSuggestionException           if the AI call fails or returns empty/unparseable response
      */
-    @Transactional
     public TriageResponse analyzeReport(String reportUuid, String callerUuid, AnalyzeRequest request) {
         var report = findOrThrow(reportUuid);
 
@@ -399,13 +398,6 @@ public class BugReportService {
         }
 
         try {
-            // Store raw AI response on the report
-            report.setAiRawResponse(aiResponse);
-
-            // Flush + refresh to get DB-generated updatedAt (ON UPDATE CURRENT_TIMESTAMP)
-            report.flush();
-            report.getEntityManager().refresh(report);
-
             JsonNode json = objectMapper.readTree(aiResponse);
 
             // Parse expectedBehaviorOptions array
@@ -418,7 +410,8 @@ public class BugReportService {
                 }
             }
 
-            // Include the fresh updatedAt so the frontend can use it for optimistic locking on submit
+            // Return the current updatedAt for optimistic locking on submit
+            // (we don't modify the report during analyze, so this is still fresh)
             String updatedAt = report.getUpdatedAt() != null
                     ? report.getUpdatedAt().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME)
                     : null;
