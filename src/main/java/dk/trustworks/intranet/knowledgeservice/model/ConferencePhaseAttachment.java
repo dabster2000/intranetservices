@@ -1,6 +1,10 @@
 package dk.trustworks.intranet.knowledgeservice.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import dk.trustworks.intranet.communicationsservice.model.EmailAttachment;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
@@ -40,6 +44,8 @@ public class ConferencePhaseAttachment extends PanacheEntityBase {
     @Column(name = "file_size", nullable = false)
     private long fileSize;
 
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
