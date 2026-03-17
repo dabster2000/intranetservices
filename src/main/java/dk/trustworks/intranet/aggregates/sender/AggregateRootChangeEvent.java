@@ -58,6 +58,7 @@ public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
     private AggregateEventType eventType;
     @Column(name = "aggregate_root_uuid")
     private String aggregateRootUUID;
+    @Lob
     @Column(name = "event_content")
     private String eventContent;
     @Transient
