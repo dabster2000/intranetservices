@@ -2,11 +2,15 @@ package dk.trustworks.intranet.aggregates.bugreport.resources;
 
 import dk.trustworks.intranet.aggregates.bugreport.dto.*;
 import dk.trustworks.intranet.aggregates.bugreport.services.AiSuggestionException;
+import dk.trustworks.intranet.aggregates.bugreport.services.BugReportAutoFixService;
+import dk.trustworks.intranet.aggregates.bugreport.services.BugReportS3Service;
 import dk.trustworks.intranet.aggregates.bugreport.services.BugReportService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.ws.rs.*;
@@ -15,8 +19,10 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.net.URI;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 
 /**
  * REST resource for the Bug Report bounded context.
@@ -31,6 +37,15 @@ public class BugReportResource {
 
     @Inject
     BugReportService bugReportService;
+
+    @Inject
+    BugReportAutoFixService autoFixService;
+
+    @Inject
+    BugReportS3Service s3Service;
+
+    @Inject
+    EntityManager em;
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
@@ -184,7 +199,16 @@ public class BugReportResource {
     public Response addComment(@PathParam("uuid") String uuid,
                                @Valid @NotNull BugReportCommentCreateRequest request) {
         String authorUuid = requestHeaderHolder.getUserUuid();
-        var comment = bugReportService.addComment(uuid, authorUuid, request.content());
+
+        // Allow is_system=true only for admin scope callers
+        boolean isSystem = request.isSystem() != null && request.isSystem();
+        if (isSystem && !scopeContext.hasScope("bugreports:admin")) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity("{\"error\":\"System comments require bugreports:admin scope\"}")
+                    .build();
+        }
+
+        var comment = bugReportService.addComment(uuid, authorUuid, request.content(), isSystem);
         return Response.created(URI.create("/bug-reports/" + uuid + "/comments/" + comment.uuid()))
                 .entity(comment)
                 .build();
@@ -193,8 +217,9 @@ public class BugReportResource {
     // ---- 11. GET /bug-reports/{uuid}/screenshot — Get screenshot ----
     @GET
     @Path("/{uuid}/screenshot")
-    @Produces("image/png")
-    public Response getScreenshot(@PathParam("uuid") String uuid) {
+    @Produces({"image/png", MediaType.APPLICATION_JSON})
+    public Response getScreenshot(@PathParam("uuid") String uuid,
+                                  @QueryParam("format") String format) {
         try {
             // IDOR fix: verify ownership before serving screenshot
             var report = bugReportService.findByUuid(uuid);
@@ -211,6 +236,16 @@ public class BugReportResource {
                         .type(MediaType.APPLICATION_JSON_TYPE)
                         .build();
             }
+
+            // Pre-signed URL variant for the auto-fix worker
+            if ("url".equals(format)) {
+                String presignedUrl = s3Service.generatePresignedUrl(uuid, Duration.ofMinutes(15));
+                return Response.ok(Map.of("url", presignedUrl, "expires_in", 900))
+                        .type(MediaType.APPLICATION_JSON_TYPE)
+                        .build();
+            }
+
+            // Default: return raw image bytes
             byte[] screenshot = bugReportService.getScreenshot(uuid);
             return Response.ok(screenshot)
                     .type("image/png")
@@ -298,6 +333,75 @@ public class BugReportResource {
                 ? userUuid : requestHeaderHolder.getUserUuid();
         bugReportService.markAllNotificationsAsRead(effectiveUuid);
         return Response.ok().build();
+    }
+
+    // ---- 16. POST /bug-reports/{uuid}/auto-fix — Request auto-fix ----
+    @POST
+    @Path("/{uuid}/auto-fix")
+    @RolesAllowed({"bugreports:admin"})
+    public Response requestAutoFix(@PathParam("uuid") String uuid) {
+        String requestedBy = requestHeaderHolder.getUserUuid();
+        if (requestedBy == null || requestedBy.isBlank()) {
+            return Response.status(Response.Status.UNAUTHORIZED)
+                    .entity("{\"error\":\"Missing X-Requested-By header\"}")
+                    .build();
+        }
+
+        try {
+            AutoFixTaskDTO task = autoFixService.requestAutoFix(uuid, requestedBy);
+            return Response.status(Response.Status.CREATED).entity(task).build();
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage())).build();
+        } catch (IllegalStateException e) {
+            return Response.status(409)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage())).build();
+        }
+    }
+
+    // ---- 17. GET /bug-reports/{uuid}/auto-fix-tasks — List auto-fix attempts ----
+    @GET
+    @Path("/{uuid}/auto-fix-tasks")
+    @RolesAllowed({"bugreports:admin"})
+    public Response getAutoFixTasks(@PathParam("uuid") String uuid) {
+        var tasks = autoFixService.findTasksByBugReport(uuid);
+        return Response.ok(tasks).build();
+    }
+
+    // ---- 18. GET /bug-reports/auto-fix/config — Kill switch status ----
+    @GET
+    @Path("/auto-fix/config")
+    @RolesAllowed({"bugreports:admin"})
+    public Response getAutoFixConfig() {
+        String enabled = autoFixService.getConfigValue("autofix.enabled", "true");
+        return Response.ok(Map.of("enabled", Boolean.parseBoolean(enabled))).build();
+    }
+
+    // ---- 19. PUT /bug-reports/auto-fix/config — Toggle kill switch ----
+    @PUT
+    @Path("/auto-fix/config")
+    @RolesAllowed({"bugreports:admin"})
+    @Transactional
+    public Response updateAutoFixConfig(Map<String, Object> config) {
+        String requestedBy = requestHeaderHolder.getUserUuid();
+        Boolean enabled = (Boolean) config.get("enabled");
+        if (enabled == null) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("{\"error\":\"'enabled' field is required\"}").build();
+        }
+
+        em.createNativeQuery(
+            "INSERT INTO autofix_config (config_key, config_value, updated_by) " +
+            "VALUES ('autofix.enabled', :value, :updatedBy) " +
+            "ON DUPLICATE KEY UPDATE config_value = :value, updated_by = :updatedBy")
+            .setParameter("value", enabled.toString())
+            .setParameter("updatedBy", requestedBy)
+            .executeUpdate();
+
+        autoFixService.invalidateConfigCache();
+
+        log.infof("Auto-fix %s by %s", enabled ? "enabled" : "disabled", requestedBy);
+        return Response.ok(Map.of("enabled", enabled)).build();
     }
 
     // ---- Helpers ----

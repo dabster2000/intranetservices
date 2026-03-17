@@ -1,0 +1,59 @@
+-- ============================================================================
+-- V251: Add previously_worked column to bug_reports
+-- ============================================================================
+-- Purpose: Adds a boolean column indicating whether the reported behavior
+--          previously worked (i.e., the bug is a regression). This field is
+--          set by the employee via a checkbox on the bug report form and is
+--          used by the auto-fix policy engine for two rules:
+--
+--          - Rule D (feature request detection): NULL or false weakens the
+--            "this is a real bug" signal. Combined with other heuristics,
+--            helps detect feature requests disguised as bugs.
+--          - Rule G (regression detection): true is a strong positive signal
+--            that the report describes a genuine regression, increasing
+--            auto-fix candidacy confidence.
+--
+-- Spec references:
+--   - docs/specs/self-healing-app-phase-1d2-security-ui.md, Section 5.1
+--   - docs/specs/plans/phase-1d2-security-ui-plan.md, Task 1.1
+--   - docs/specs/secure_ai_bug_fix_spec.md, Section 5.3 (valid auto-fix candidate)
+--
+-- Changes:
+--   1. ADD COLUMN previously_worked TINYINT(1) DEFAULT NULL to bug_reports
+--
+-- Backwards compatibility:
+--   - Purely additive column with DEFAULT NULL
+--   - Existing rows get NULL (employee did not answer)
+--   - No existing queries are affected; the column is only read by the
+--     new policy engine code
+--   - The BugReport entity's @Column annotation will map this as Boolean
+--     (null-safe: NULL in DB maps to null in Java)
+--
+-- Data semantics:
+--   - NULL: Employee did not answer the checkbox (treated same as false
+--     for feature request detection Rule D)
+--   - 0 (false): Employee explicitly unchecked (currently the form maps
+--     unchecked to NULL, but the column supports explicit false)
+--   - 1 (true): Employee checked "This used to work before" (strong
+--     regression signal for Rule G)
+--   - TINYINT(1) is the standard MariaDB boolean representation, consistent
+--     with is_system on bug_report_comments and is_read on notifications
+--
+-- Rollback strategy:
+--   ALTER TABLE bug_reports DROP COLUMN previously_worked;
+--
+-- Impact:
+--   - BugReport.java: Add @Column(name = "previously_worked") Boolean previouslyWorked
+--   - BugReportCreateRequest.java (or equivalent DTO): Add previouslyWorked field
+--   - BugReportService.java: Map DTO field to entity on create
+--   - TypeScript types: Add previously_worked?: boolean | null to IBugReport
+--   - BugReportModal.tsx: Add regression checkbox
+--   - BFF route: Pass previously_worked in create request body
+--
+-- Author: Claude Code
+-- Date: 2026-03-17
+-- ============================================================================
+
+ALTER TABLE bug_reports
+    ADD COLUMN previously_worked TINYINT(1) DEFAULT NULL
+    COMMENT 'Employee indicates whether this feature previously worked (regression signal for policy engine)';

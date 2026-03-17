@@ -86,6 +86,9 @@ public class BugReport extends PanacheEntityBase {
     @Column(name = "ai_raw_response", columnDefinition = "TEXT")
     private String aiRawResponse;
 
+    @Column(name = "previously_worked")
+    private Boolean previouslyWorked;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

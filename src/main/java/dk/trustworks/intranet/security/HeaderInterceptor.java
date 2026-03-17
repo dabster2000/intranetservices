@@ -34,6 +34,22 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
     @Override
     public void filter(ContainerRequestContext context) throws IOException {
         String requestedBy = context.getHeaders().getFirst("X-Requested-By");
+
+        // SECURITY: Reject system: prefix from non-API-client callers.
+        // API client JWTs have preferred_username set to the client_id (e.g., "autofix-worker").
+        // Only API clients may identify as system actors.
+        if (requestedBy != null && requestedBy.startsWith("system:")) {
+            String jwtUsername = jwt.getClaim("preferred_username");
+            // API client JWTs have non-UUID preferred_username (e.g., "autofix-worker")
+            // User/BFF JWTs have UUID-format preferred_username or none
+            boolean isApiClient = jwtUsername != null && !jwtUsername.isEmpty()
+                    && !jwtUsername.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-.*");
+            if (!isApiClient) {
+                log.warnf("Rejected system: prefix in X-Requested-By from non-API-client JWT (preferred_username=%s)", jwtUsername);
+                requestedBy = null; // Fall through to JWT resolution below
+            }
+        }
+
         if (requestedBy == null || requestedBy.isEmpty()) {
             requestedBy = jwt.getClaim("preferred_username");
             if (requestedBy != null) log.debugf("User identifier resolved from JWT: %s", requestedBy);

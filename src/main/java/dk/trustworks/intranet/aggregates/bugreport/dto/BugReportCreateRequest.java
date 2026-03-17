@@ -12,5 +12,6 @@ public record BugReportCreateRequest(
     Integer viewportWidth,
     Integer viewportHeight,
     String consoleErrors,
-    @Size(max = 500) String userRoles
+    @Size(max = 500) String userRoles,
+    Boolean previouslyWorked
 ) {}

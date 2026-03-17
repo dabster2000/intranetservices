@@ -81,6 +81,11 @@ public class BugReportService {
         String s3Key = s3Service.saveScreenshot(report.getUuid(), imageBytes);
         report.setScreenshotS3Key(s3Key);
 
+        // 2b. Set previously_worked regression signal if provided
+        if (request.previouslyWorked() != null) {
+            report.setPreviouslyWorked(request.previouslyWorked());
+        }
+
         // 3. Persist DRAFT before async work
         report.persist();
 
@@ -231,8 +236,13 @@ public class BugReportService {
 
     @Transactional
     public BugReportCommentDTO addComment(String reportUuid, String authorUuid, String content) {
+        return addComment(reportUuid, authorUuid, content, false);
+    }
+
+    @Transactional
+    public BugReportCommentDTO addComment(String reportUuid, String authorUuid, String content, boolean isSystem) {
         var report = findOrThrow(reportUuid);
-        var comment = report.addComment(authorUuid, content, false);
+        var comment = report.addComment(authorUuid, content, isSystem);
         comment.persist();
 
         // Notify: if author is not reporter, notify reporter
@@ -741,7 +751,16 @@ public class BugReportService {
         return title.length() > 50 ? title.substring(0, 47) + "..." : title;
     }
 
-    private String resolveUserName(String userUuid) {
+    private static final java.util.Map<String, String> SYSTEM_ACTOR_NAMES = java.util.Map.of(
+            "system:autofix-worker", "Auto-Fix Worker",
+            "system:autofix-reaper", "Auto-Fix Reaper",
+            "system:autofix-policy", "Auto-Fix Policy"
+    );
+
+    String resolveUserName(String userUuid) {
+        if (userUuid != null && userUuid.startsWith("system:")) {
+            return SYSTEM_ACTOR_NAMES.getOrDefault(userUuid, userUuid);
+        }
         try {
             User user = userService.findById(userUuid, true);
             if (user != null) {
@@ -780,6 +799,7 @@ public class BugReportService {
                 report.getConsoleErrors(),
                 report.getUserRoles(),
                 report.getAiRawResponse(),
+                report.getPreviouslyWorked(),
                 report.getCreatedAt(),
                 report.getUpdatedAt(),
                 commentCount);

@@ -13,8 +13,11 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 
 import java.io.ByteArrayOutputStream;
+import java.time.Duration;
 
 /**
  * S3 storage for bug report screenshots.
@@ -28,6 +31,7 @@ public class BugReportS3Service {
     String bucketName;
 
     private final S3Client s3;
+    private final S3Presigner s3Presigner;
 
     public BugReportS3Service() {
         ProxyConfiguration.Builder proxyConfig = ProxyConfiguration.builder();
@@ -36,6 +40,9 @@ public class BugReportS3Service {
         this.s3 = S3Client.builder()
                 .region(Region.EU_WEST_1)
                 .httpClientBuilder(httpClientBuilder)
+                .build();
+        this.s3Presigner = S3Presigner.builder()
+                .region(Region.EU_WEST_1)
                 .build();
     }
 
@@ -83,6 +90,28 @@ public class BugReportS3Service {
             log.errorf("Failed to download bug report screenshot from S3: %s - %s", key, e.awsErrorDetails().errorMessage());
             throw e;
         }
+    }
+
+    /**
+     * Generates a pre-signed URL for downloading a screenshot from S3.
+     * Used by the auto-fix worker to fetch the screenshot without direct S3 credentials.
+     *
+     * @param reportUuid UUID of the bug report
+     * @param validity   duration the URL remains valid
+     * @return pre-signed URL string
+     */
+    public String generatePresignedUrl(String reportUuid, Duration validity) {
+        String key = buildKey(reportUuid);
+        log.debugf("Generating pre-signed URL for screenshot: %s (validity: %s)", key, validity);
+        var presignRequest = GetObjectPresignRequest.builder()
+                .signatureDuration(validity)
+                .getObjectRequest(GetObjectRequest.builder()
+                        .bucket(bucketName)
+                        .key(key)
+                        .build())
+                .build();
+        var presignedUrl = s3Presigner.presignGetObject(presignRequest);
+        return presignedUrl.url().toString();
     }
 
     /**

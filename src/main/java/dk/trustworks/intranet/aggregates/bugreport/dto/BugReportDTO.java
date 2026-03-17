@@ -24,6 +24,7 @@ public record BugReportDTO(
     String consoleErrors,
     String userRoles,
     String aiRawResponse,
+    Boolean previouslyWorked,
     LocalDateTime createdAt,
     LocalDateTime updatedAt,
     long commentCount
