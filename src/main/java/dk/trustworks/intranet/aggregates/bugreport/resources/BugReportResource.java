@@ -368,7 +368,16 @@ public class BugReportResource {
         return Response.ok(tasks).build();
     }
 
-    // ---- 18. GET /bug-reports/auto-fix/config — Kill switch status ----
+    // ---- 18. GET /bug-reports/auto-fix/stats — Monitoring dashboard stats ----
+    @GET
+    @Path("/auto-fix/stats")
+    @RolesAllowed({"bugreports:admin"})
+    public Response getAutoFixStats() {
+        var stats = autoFixService.getAutoFixStats();
+        return Response.ok(stats).build();
+    }
+
+    // ---- 20. GET /bug-reports/auto-fix/config — Kill switch status ----
     @GET
     @Path("/auto-fix/config")
     @RolesAllowed({"bugreports:admin"})
@@ -377,7 +386,7 @@ public class BugReportResource {
         return Response.ok(Map.of("enabled", Boolean.parseBoolean(enabled))).build();
     }
 
-    // ---- 19. PUT /bug-reports/auto-fix/config — Toggle kill switch ----
+    // ---- 21. PUT /bug-reports/auto-fix/config — Toggle kill switch ----
     @PUT
     @Path("/auto-fix/config")
     @RolesAllowed({"bugreports:admin"})

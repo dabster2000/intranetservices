@@ -16,9 +16,13 @@ import lombok.extern.jbosslog.JBossLog;
 
 import org.yaml.snakeyaml.Yaml;
 
+import dk.trustworks.intranet.aggregates.bugreport.dto.AutoFixStatsDTO;
+
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -317,37 +321,164 @@ public class BugReportAutoFixService {
 
     /**
      * Find all auto-fix tasks for a bug report (admin dashboard history).
+     * Includes result, usage_info, and heartbeat_at for the monitoring dashboard.
      */
     public List<AutoFixTaskDTO> findTasksByBugReport(String bugReportUuid) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(
             "SELECT task_id, bug_report_uuid, status, repo_name, branch_name, " +
             "       pr_url, pr_number, error_message, retry_count, max_retries, " +
-            "       requested_by, created_at, started_at, completed_at " +
+            "       requested_by, created_at, started_at, completed_at, " +
+            "       result, usage_info, heartbeat_at " +
             "FROM autofix_tasks " +
             "WHERE bug_report_uuid = :uuid " +
             "ORDER BY created_at DESC")
             .setParameter("uuid", bugReportUuid)
             .getResultList();
 
-        return rows.stream().map(row -> {
-            var dto = new AutoFixTaskDTO();
-            dto.setTaskId((String) row[0]);
-            dto.setBugReportUuid((String) row[1]);
-            dto.setStatus((String) row[2]);
-            dto.setRepoName((String) row[3]);
-            dto.setBranchName((String) row[4]);
-            dto.setPrUrl((String) row[5]);
-            dto.setPrNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
-            dto.setErrorMessage((String) row[7]);
-            dto.setRetryCount(row[8] != null ? ((Number) row[8]).intValue() : null);
-            dto.setMaxRetries(row[9] != null ? ((Number) row[9]).intValue() : null);
-            dto.setRequestedBy((String) row[10]);
-            dto.setCreatedAt(row[11] != null ? ((java.sql.Timestamp) row[11]).toLocalDateTime() : null);
-            dto.setStartedAt(row[12] != null ? ((java.sql.Timestamp) row[12]).toLocalDateTime() : null);
-            dto.setCompletedAt(row[13] != null ? ((java.sql.Timestamp) row[13]).toLocalDateTime() : null);
-            return dto;
-        }).toList();
+        return rows.stream().map(this::mapTaskRow).toList();
+    }
+
+    /**
+     * Aggregate statistics for the auto-fix monitoring dashboard.
+     * Runs 4 lightweight native queries against autofix_tasks.
+     */
+    public AutoFixStatsDTO getAutoFixStats() {
+        // 1. Queue depth: count of PENDING tasks
+        int queueDepth = queryInt(
+            "SELECT COUNT(*) FROM autofix_tasks WHERE status = 'PENDING'");
+
+        // 2. Worker status: check for PROCESSING tasks
+        @SuppressWarnings("unchecked")
+        List<Object[]> activeRows = em.createNativeQuery(
+            "SELECT task_id, started_at, heartbeat_at " +
+            "FROM autofix_tasks WHERE status = 'PROCESSING' " +
+            "ORDER BY started_at DESC LIMIT 1")
+            .getResultList();
+
+        String workerStatus = "idle";
+        String activeTaskId = null;
+        Long activeElapsedSeconds = null;
+
+        if (!activeRows.isEmpty()) {
+            Object[] active = activeRows.get(0);
+            workerStatus = "processing";
+            activeTaskId = (String) active[0];
+            if (active[1] != null) {
+                LocalDateTime startedAt = ((java.sql.Timestamp) active[1]).toLocalDateTime();
+                activeElapsedSeconds = ChronoUnit.SECONDS.between(startedAt, LocalDateTime.now());
+            }
+        }
+
+        // 3. Last successful fix
+        @SuppressWarnings("unchecked")
+        List<Object[]> lastSuccessRows = em.createNativeQuery(
+            "SELECT completed_at, pr_url, pr_number " +
+            "FROM autofix_tasks WHERE status = 'COMPLETED' " +
+            "ORDER BY completed_at DESC LIMIT 1")
+            .getResultList();
+
+        LocalDateTime lastSuccessfulFixAt = null;
+        String lastSuccessfulPrUrl = null;
+        Integer lastSuccessfulPrNumber = null;
+
+        if (!lastSuccessRows.isEmpty()) {
+            Object[] lastSuccess = lastSuccessRows.get(0);
+            lastSuccessfulFixAt = lastSuccess[0] != null
+                ? ((java.sql.Timestamp) lastSuccess[0]).toLocalDateTime() : null;
+            lastSuccessfulPrUrl = (String) lastSuccess[1];
+            lastSuccessfulPrNumber = lastSuccess[2] != null
+                ? ((Number) lastSuccess[2]).intValue() : null;
+        }
+
+        // 4. 30-day stats: success rate + monthly cost from usage_info JSON
+        @SuppressWarnings("unchecked")
+        List<Object[]> statsRows = em.createNativeQuery(
+            "SELECT " +
+            "  COUNT(*) AS total_count, " +
+            "  SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS success_count, " +
+            "  COALESCE(SUM(" +
+            "    CASE WHEN usage_info IS NOT NULL " +
+            "         THEN COALESCE(" +
+            "           JSON_VALUE(usage_info, '$.cost'), " +
+            "           JSON_VALUE(usage_info, '$.total_cost')" +
+            "         ) " +
+            "         ELSE 0 END" +
+            "  ), 0) AS monthly_cost " +
+            "FROM autofix_tasks " +
+            "WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)")
+            .getResultList();
+
+        int totalCount = 0;
+        int successCount = 0;
+        BigDecimal monthlyCost = BigDecimal.ZERO;
+
+        if (!statsRows.isEmpty()) {
+            Object[] stats = statsRows.get(0);
+            totalCount = stats[0] != null ? ((Number) stats[0]).intValue() : 0;
+            successCount = stats[1] != null ? ((Number) stats[1]).intValue() : 0;
+            if (stats[2] != null) {
+                try {
+                    monthlyCost = new BigDecimal(stats[2].toString());
+                } catch (NumberFormatException e) {
+                    log.warn("Malformed monthly cost value in autofix_tasks: " + stats[2]);
+                    monthlyCost = BigDecimal.ZERO;
+                }
+            }
+        }
+
+        double successRate = totalCount > 0
+            ? (double) successCount / totalCount
+            : 0.0;
+
+        return new AutoFixStatsDTO(
+            queueDepth,
+            workerStatus,
+            activeTaskId,
+            activeElapsedSeconds,
+            lastSuccessfulFixAt,
+            lastSuccessfulPrUrl,
+            lastSuccessfulPrNumber,
+            successRate,
+            successCount,
+            totalCount,
+            monthlyCost
+        );
+    }
+
+    // --- Row mapping helpers ---
+
+    private AutoFixTaskDTO mapTaskRow(Object[] row) {
+        var dto = new AutoFixTaskDTO();
+        dto.setTaskId((String) row[0]);
+        dto.setBugReportUuid((String) row[1]);
+        dto.setStatus((String) row[2]);
+        dto.setRepoName((String) row[3]);
+        dto.setBranchName((String) row[4]);
+        dto.setPrUrl((String) row[5]);
+        dto.setPrNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
+        dto.setErrorMessage((String) row[7]);
+        dto.setRetryCount(row[8] != null ? ((Number) row[8]).intValue() : null);
+        dto.setMaxRetries(row[9] != null ? ((Number) row[9]).intValue() : null);
+        dto.setRequestedBy((String) row[10]);
+        dto.setCreatedAt(toLocalDateTime(row[11]));
+        dto.setStartedAt(toLocalDateTime(row[12]));
+        dto.setCompletedAt(toLocalDateTime(row[13]));
+        dto.setResult(row[14] != null ? row[14].toString() : null);
+        dto.setUsageInfo(row[15] != null ? row[15].toString() : null);
+        dto.setHeartbeatAt(toLocalDateTime(row[16]));
+        return dto;
+    }
+
+    private LocalDateTime toLocalDateTime(Object value) {
+        if (value == null) return null;
+        if (value instanceof java.sql.Timestamp ts) return ts.toLocalDateTime();
+        return null;
+    }
+
+    private int queryInt(String sql) {
+        Object result = em.createNativeQuery(sql).getSingleResult();
+        return result instanceof Number n ? n.intValue() : 0;
     }
 
     // --- Kill switch ---
