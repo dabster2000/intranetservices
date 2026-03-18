@@ -58,6 +58,46 @@ public class BugReportAutoFixService {
     );
 
     /**
+     * Reverse lookup: repo slug → repo key (e.g., "trustworksdk/trustworks-intranet-v3" → "trustworks-intranet-v3").
+     */
+    private static final Map<String, String> SLUG_TO_KEY = Map.of(
+        "trustworksdk/trustworks-intranet-v3", "trustworks-intranet-v3",
+        "dabster2000/intranetservices", "intranetservices"
+    );
+
+    /**
+     * Resolve the GitHub PAT for a given repo slug.
+     * GH_TOKEN env var can be either a plain token string (works for all repos)
+     * or a JSON object with per-repo tokens: {"trustworks-intranet-v3": "ghp_...", "intranetservices": "ghp_..."}.
+     */
+    private String resolveGhToken(String repoSlug) {
+        String ghTokenEnv = System.getenv("GH_TOKEN");
+        if (ghTokenEnv == null || ghTokenEnv.isBlank()) {
+            throw new IllegalStateException("GH_TOKEN environment variable is not set");
+        }
+
+        if (ghTokenEnv.startsWith("{")) {
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode tokens = mapper.readTree(ghTokenEnv);
+                String repoKey = SLUG_TO_KEY.get(repoSlug);
+                if (repoKey != null && tokens.has(repoKey)) {
+                    return tokens.get(repoKey).asText();
+                }
+                // Fallback: return the first token
+                var fields = tokens.fields();
+                if (fields.hasNext()) {
+                    return fields.next().getValue().asText();
+                }
+            } catch (Exception e) {
+                log.warnf("Failed to parse GH_TOKEN as JSON, using as plain token: %s", e.getMessage());
+            }
+        }
+
+        return ghTokenEnv;
+    }
+
+    /**
      * Deploy branch per repo — used by getDeployStatus() to check CI workflow runs.
      */
     private static final Map<String, String> DEPLOY_BRANCHES = Map.of(
@@ -624,10 +664,7 @@ public class BugReportAutoFixService {
      * (already-merged detection) and branch cleanup.
      */
     private void mergeSinglePr(String taskId, int prNumber, String repoSlug) {
-        String ghToken = System.getenv("GH_TOKEN");
-        if (ghToken == null || ghToken.isBlank()) {
-            throw new IllegalStateException("GH_TOKEN environment variable is not set");
-        }
+        String ghToken = resolveGhToken(repoSlug);
 
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -824,11 +861,7 @@ public class BugReportAutoFixService {
      */
     private DeployStatusDTO pollDeployStatus(String repoSlug, String deployBranch) {
         try {
-            String ghToken = System.getenv("GH_TOKEN");
-            if (ghToken == null || ghToken.isBlank()) {
-                log.warn("GH_TOKEN not set, cannot check deploy status");
-                return new DeployStatusDTO("unknown", null, null, null);
-            }
+            String ghToken = resolveGhToken(repoSlug);
 
             HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
