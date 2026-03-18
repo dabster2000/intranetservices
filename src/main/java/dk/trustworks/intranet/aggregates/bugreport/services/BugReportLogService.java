@@ -65,19 +65,18 @@ public class BugReportLogService {
             Instant endTime = Instant.now();
             Instant startTime = endTime.minus(LOOKBACK_MINUTES, ChronoUnit.MINUTES);
 
-            String domainKeyword = extractDomainKeyword(pageUrl);
             List<FilteredLogEvent> allEvents = new ArrayList<>();
 
             String backendGroup = resolveLogGroup(backendLogGroupPrefix);
             if (backendGroup != null) {
-                allEvents.addAll(queryLogGroup(backendGroup, userUuid, domainKeyword, startTime, endTime));
+                allEvents.addAll(queryLogGroup(backendGroup, userUuid, startTime, endTime));
             } else {
                 log.warnf("Could not resolve backend log group from prefix: %s", backendLogGroupPrefix);
             }
 
             String frontendGroup = resolveLogGroup(frontendLogGroupPrefix);
             if (frontendGroup != null) {
-                allEvents.addAll(queryLogGroup(frontendGroup, userUuid, domainKeyword, startTime, endTime));
+                allEvents.addAll(queryLogGroup(frontendGroup, userUuid, startTime, endTime));
             } else {
                 log.warnf("Could not resolve frontend log group from prefix: %s", frontendLogGroupPrefix);
             }
@@ -142,16 +141,11 @@ public class BugReportLogService {
     }
 
     private List<FilteredLogEvent> queryLogGroup(String logGroupName, String userUuid,
-                                                  String domainKeyword, Instant startTime, Instant endTime) {
+                                                  Instant startTime, Instant endTime) {
         try {
-            // Build filter: always include user UUID. If we have a domain keyword,
-            // require it OR error-level logs to reduce noise from unrelated activity.
-            String filterPattern;
-            if (domainKeyword != null && !domainKeyword.isBlank()) {
-                filterPattern = "\"" + userUuid + "\" ?(\"" + domainKeyword + "\" || \"ERROR\" || \"WARN\")";
-            } else {
-                filterPattern = "\"" + userUuid + "\"";
-            }
+            // CloudWatch filter patterns only support AND (space-separated quoted terms),
+            // not OR or parentheses. Use UUID-only filter for broad matching.
+            String filterPattern = "\"" + userUuid + "\"";
 
             FilterLogEventsRequest request = FilterLogEventsRequest.builder()
                     .logGroupName(logGroupName)
