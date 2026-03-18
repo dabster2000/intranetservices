@@ -25,6 +25,7 @@ repositories:
       - ".env*"
       - ".claude/**"
       - "CLAUDE.md"
+      - ".gitignore"
 
   intranetservices:
     allow:
@@ -47,6 +48,7 @@ repositories:
       - ".env*"
       - ".claude/**"
       - "CLAUDE.md"
+      - ".gitignore"
 
 # Patterns in diff content that trigger human review flags.
 # Checked against actual diff text (added lines only), not file paths.

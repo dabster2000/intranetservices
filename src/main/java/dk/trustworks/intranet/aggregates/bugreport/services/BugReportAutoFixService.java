@@ -423,7 +423,7 @@ public class BugReportAutoFixService {
             workerStatus = "processing";
             activeTaskId = (String) active[0];
             if (active[1] != null) {
-                LocalDateTime startedAt = ((java.sql.Timestamp) active[1]).toLocalDateTime();
+                LocalDateTime startedAt = toLocalDateTime(active[1]);
                 activeElapsedSeconds = ChronoUnit.SECONDS.between(startedAt, LocalDateTime.now());
             }
         }
@@ -442,8 +442,7 @@ public class BugReportAutoFixService {
 
         if (!lastSuccessRows.isEmpty()) {
             Object[] lastSuccess = lastSuccessRows.get(0);
-            lastSuccessfulFixAt = lastSuccess[0] != null
-                ? ((java.sql.Timestamp) lastSuccess[0]).toLocalDateTime() : null;
+            lastSuccessfulFixAt = toLocalDateTime(lastSuccess[0]);
             lastSuccessfulPrUrl = (String) lastSuccess[1];
             lastSuccessfulPrNumber = lastSuccess[2] != null
                 ? ((Number) lastSuccess[2]).intValue() : null;
@@ -531,6 +530,7 @@ public class BugReportAutoFixService {
     private LocalDateTime toLocalDateTime(Object value) {
         if (value == null) return null;
         if (value instanceof java.sql.Timestamp ts) return ts.toLocalDateTime();
+        if (value instanceof java.time.LocalDateTime ldt) return ldt;
         return null;
     }
 

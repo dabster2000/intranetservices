@@ -90,7 +90,7 @@ public class BugReportService {
         report.persist();
 
         // 4. Retrieve CloudWatch logs (non-critical -- failures are tolerated)
-        String logExcerpt = logService.retrieveLogExcerpt(authenticatedUuid);
+        String logExcerpt = logService.retrieveLogExcerpt(authenticatedUuid, report.getPageUrl());
         if (logExcerpt != null) {
             report.setLogExcerpt(logExcerpt);
         }

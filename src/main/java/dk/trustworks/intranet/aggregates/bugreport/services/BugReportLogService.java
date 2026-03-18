@@ -29,7 +29,7 @@ public class BugReportLogService {
 
     private static final int MAX_LOG_BYTES = 500 * 1024; // 500KB
     private static final int LOG_EVENT_LIMIT = 500;
-    private static final long LOOKBACK_MINUTES = 10;
+    private static final long LOOKBACK_MINUTES = 5;
 
     @ConfigProperty(name = "bug-report.cloudwatch.log-group-backend")
     String backendLogGroupPrefix;
@@ -53,29 +53,31 @@ public class BugReportLogService {
     }
 
     /**
-     * Retrieves the user's last 10 minutes of logs from both backend and frontend log groups.
-     * Results are merged and sorted by timestamp.
+     * Retrieves the user's recent logs from both backend and frontend log groups,
+     * filtered by the page URL's domain path for relevance.
      *
      * @param userUuid the user UUID to filter logs by
+     * @param pageUrl  the page URL from the bug report (used to narrow log relevance)
      * @return log excerpt as a string, capped at 500KB, or null if retrieval fails
      */
-    public String retrieveLogExcerpt(String userUuid) {
+    public String retrieveLogExcerpt(String userUuid, String pageUrl) {
         try {
             Instant endTime = Instant.now();
             Instant startTime = endTime.minus(LOOKBACK_MINUTES, ChronoUnit.MINUTES);
 
+            String domainKeyword = extractDomainKeyword(pageUrl);
             List<FilteredLogEvent> allEvents = new ArrayList<>();
 
             String backendGroup = resolveLogGroup(backendLogGroupPrefix);
             if (backendGroup != null) {
-                allEvents.addAll(queryLogGroup(backendGroup, userUuid, startTime, endTime));
+                allEvents.addAll(queryLogGroup(backendGroup, userUuid, domainKeyword, startTime, endTime));
             } else {
                 log.warnf("Could not resolve backend log group from prefix: %s", backendLogGroupPrefix);
             }
 
             String frontendGroup = resolveLogGroup(frontendLogGroupPrefix);
             if (frontendGroup != null) {
-                allEvents.addAll(queryLogGroup(frontendGroup, userUuid, startTime, endTime));
+                allEvents.addAll(queryLogGroup(frontendGroup, userUuid, domainKeyword, startTime, endTime));
             } else {
                 log.warnf("Could not resolve frontend log group from prefix: %s", frontendLogGroupPrefix);
             }
@@ -140,11 +142,20 @@ public class BugReportLogService {
     }
 
     private List<FilteredLogEvent> queryLogGroup(String logGroupName, String userUuid,
-                                                  Instant startTime, Instant endTime) {
+                                                  String domainKeyword, Instant startTime, Instant endTime) {
         try {
+            // Build filter: always include user UUID. If we have a domain keyword,
+            // require it OR error-level logs to reduce noise from unrelated activity.
+            String filterPattern;
+            if (domainKeyword != null && !domainKeyword.isBlank()) {
+                filterPattern = "\"" + userUuid + "\" ?(\"" + domainKeyword + "\" || \"ERROR\" || \"WARN\")";
+            } else {
+                filterPattern = "\"" + userUuid + "\"";
+            }
+
             FilterLogEventsRequest request = FilterLogEventsRequest.builder()
                     .logGroupName(logGroupName)
-                    .filterPattern("\"" + userUuid + "\"")
+                    .filterPattern(filterPattern)
                     .startTime(startTime.toEpochMilli())
                     .endTime(endTime.toEpochMilli())
                     .limit(LOG_EVENT_LIMIT)
@@ -160,6 +171,25 @@ public class BugReportLogService {
             resolvedLogGroups.values().remove(logGroupName);
             return List.of();
         }
+    }
+
+    /**
+     * Extracts a domain keyword from the page URL to use as a log filter.
+     * E.g., "/admin/bug-reports/abc-123" → "bug-reports"
+     *       "/profile" → "profile"
+     *       "/clients/xyz" → "clients"
+     */
+    private String extractDomainKeyword(String pageUrl) {
+        if (pageUrl == null || pageUrl.isBlank()) return null;
+        // Remove leading slash, strip query params
+        String path = pageUrl.split("\\?")[0];
+        if (path.startsWith("/")) path = path.substring(1);
+        // Skip "admin/" prefix to get the domain
+        if (path.startsWith("admin/")) path = path.substring(6);
+        // Take the first path segment as the domain keyword
+        int slash = path.indexOf('/');
+        String keyword = slash > 0 ? path.substring(0, slash) : path;
+        return keyword.isBlank() ? null : keyword;
     }
 
     private String capAtMaxSize(String logExcerpt) {
