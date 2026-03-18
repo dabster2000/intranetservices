@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -223,5 +224,89 @@ class AutoFixTaskDTOTest {
         dto.setPrNumber(42);
         assertEquals("autofix/bug-abc12345", dto.getBranchName());
         assertEquals(42, dto.getPrNumber());
+    }
+
+    // --- Multi-repo PR computed getters ---
+
+    @Test
+    void getPrUrls_withMultiRepoJson_returnsMap() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("""
+            {
+              "trustworks-intranet-v3": {"pr_url": "https://github.com/trustworksdk/trustworks-intranet-v3/pull/123", "pr_number": 123},
+              "intranetservices": {"pr_url": "https://github.com/dabster2000/intranetservices/pull/456", "pr_number": 456}
+            }
+            """);
+        Map<String, Object> urls = dto.getPrUrls();
+        assertNotNull(urls);
+        assertEquals(2, urls.size());
+        assertTrue(urls.containsKey("trustworks-intranet-v3"));
+        assertTrue(urls.containsKey("intranetservices"));
+    }
+
+    @Test
+    void getPrUrls_withPlainUrl_returnsNull() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("https://github.com/trustworksdk/trustworks-intranet-v3/pull/123");
+        assertNull(dto.getPrUrls());
+    }
+
+    @Test
+    void getPrUrls_withNull_returnsNull() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl(null);
+        assertNull(dto.getPrUrls());
+    }
+
+    @Test
+    void getPrNumbers_withMultiRepoJson_returnsMap() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("""
+            {
+              "trustworks-intranet-v3": {"pr_url": "https://github.com/trustworksdk/trustworks-intranet-v3/pull/123", "pr_number": 123},
+              "intranetservices": {"pr_url": "https://github.com/dabster2000/intranetservices/pull/456", "pr_number": 456}
+            }
+            """);
+        Map<String, Integer> numbers = dto.getPrNumbers();
+        assertNotNull(numbers);
+        assertEquals(123, numbers.get("trustworks-intranet-v3"));
+        assertEquals(456, numbers.get("intranetservices"));
+    }
+
+    @Test
+    void getPrNumbers_withPlainUrl_returnsNull() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("https://github.com/trustworksdk/trustworks-intranet-v3/pull/123");
+        assertNull(dto.getPrNumbers());
+    }
+
+    @Test
+    void isMultiRepo_withJsonPrUrl_returnsTrue() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("""
+            {"trustworks-intranet-v3": {"pr_url": "...", "pr_number": 1}}
+            """);
+        assertTrue(dto.isMultiRepo());
+    }
+
+    @Test
+    void isMultiRepo_withPlainUrl_returnsFalse() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("https://github.com/foo/bar/pull/1");
+        assertFalse(dto.isMultiRepo());
+    }
+
+    @Test
+    void isMultiRepo_withNull_returnsFalse() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl(null);
+        assertFalse(dto.isMultiRepo());
+    }
+
+    @Test
+    void getPrUrls_withMalformedJson_returnsNull() {
+        var dto = new AutoFixTaskDTO();
+        dto.setPrUrl("{not valid json");
+        assertNull(dto.getPrUrls());
     }
 }

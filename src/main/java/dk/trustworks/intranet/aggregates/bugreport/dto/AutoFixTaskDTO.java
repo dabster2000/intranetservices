@@ -132,6 +132,61 @@ public class AutoFixTaskDTO {
     public LocalDateTime getHeartbeatAt() { return heartbeatAt; }
     public void setHeartbeatAt(LocalDateTime heartbeatAt) { this.heartbeatAt = heartbeatAt; }
 
+    // --- Computed getters for multi-repo PR data (backward compatible) ---
+
+    /**
+     * Multi-repo PR URLs parsed from pr_url when it contains JSON.
+     * Returns {@code {"repo_key": {"pr_url": "...", "pr_number": N}}} or null
+     * when pr_url is a plain URL string (single-repo legacy data).
+     */
+    @JsonProperty("pr_urls")
+    public Map<String, Object> getPrUrls() {
+        if (prUrl == null || prUrl.isBlank() || !prUrl.trim().startsWith("{")) {
+            return null;
+        }
+        try {
+            return MAPPER.readValue(prUrl, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.debugf("Failed to parse pr_url as JSON for multi-repo PRs: %s", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Multi-repo PR numbers extracted from pr_url JSON.
+     * Returns {@code {"repo_key": pr_number}} or null for single-repo tasks.
+     */
+    @JsonProperty("pr_numbers")
+    public Map<String, Integer> getPrNumbers() {
+        Map<String, Object> urls = getPrUrls();
+        if (urls == null) {
+            return null;
+        }
+        try {
+            Map<String, Integer> result = new java.util.LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : urls.entrySet()) {
+                if (entry.getValue() instanceof Map<?, ?> repoData) {
+                    Object prNum = repoData.get("pr_number");
+                    if (prNum instanceof Number n) {
+                        result.put(entry.getKey(), n.intValue());
+                    }
+                }
+            }
+            return result.isEmpty() ? null : result;
+        } catch (Exception e) {
+            log.debugf("Failed to extract pr_numbers from multi-repo pr_url: %s", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Whether this task spans multiple repositories.
+     */
+    @JsonProperty("is_multi_repo")
+    public boolean isMultiRepo() {
+        return getPrUrls() != null;
+    }
+
     // --- Computed getters (derived from raw fields, null-safe) ---
 
     /**
