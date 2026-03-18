@@ -670,7 +670,8 @@ public class BugReportAutoFixService {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-        // Idempotency guard: check if PR is already merged
+        // Idempotency guard + draft detection: check PR state before merge
+        String prNodeId = null;
         try {
             HttpRequest viewReq = HttpRequest.newBuilder()
                 .uri(URI.create("https://api.github.com/repos/" + repoSlug + "/pulls/" + prNumber))
@@ -690,6 +691,11 @@ public class BugReportAutoFixService {
                     log.infof("PR #%d for task %s is already merged (%s)", prNumber, taskId, repoSlug);
                     throw new IllegalStateException(
                         "Pull request #" + prNumber + " has already been merged.");
+                }
+                boolean isDraft = pr.has("draft") && pr.get("draft").asBoolean();
+                prNodeId = pr.has("node_id") ? pr.get("node_id").asText() : null;
+                if (isDraft && prNodeId != null) {
+                    markPrReadyForReview(client, ghToken, prNodeId, prNumber);
                 }
             }
         } catch (IllegalStateException e) {
@@ -762,6 +768,34 @@ public class BugReportAutoFixService {
         } catch (Exception e) {
             log.errorf("Error merging PR via GitHub API: %s", e.getMessage());
             throw new IllegalStateException("Failed to merge PR: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Mark a draft PR as ready for review using GitHub GraphQL API.
+     * The REST API does not support this operation — GraphQL is required.
+     */
+    private void markPrReadyForReview(HttpClient client, String ghToken, String prNodeId, int prNumber) {
+        try {
+            String graphqlBody = "{\"query\":\"mutation { markPullRequestReadyForReview(input: {pullRequestId: \\\""
+                + prNodeId + "\\\"}) { pullRequest { isDraft } } }\"}";
+
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.github.com/graphql"))
+                .header("Authorization", "Bearer " + ghToken)
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(15))
+                .POST(HttpRequest.BodyPublishers.ofString(graphqlBody))
+                .build();
+
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                log.infof("Marked PR #%d as ready for review", prNumber);
+            } else {
+                log.warnf("Failed to mark PR #%d as ready (HTTP %d): %s", prNumber, resp.statusCode(), resp.body());
+            }
+        } catch (Exception e) {
+            log.warnf("Failed to mark PR #%d as ready for review (non-fatal): %s", prNumber, e.getMessage());
         }
     }
 
