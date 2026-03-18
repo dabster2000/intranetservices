@@ -23,12 +23,16 @@ import dk.trustworks.intranet.aggregates.bugreport.dto.AutoFixStatsDTO;
 
 import java.io.InputStream;
 import java.math.BigDecimal;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Application service for the auto-fix pipeline.
@@ -616,34 +620,40 @@ public class BugReportAutoFixService {
     }
 
     /**
-     * Execute gh pr merge for a single PR. Includes idempotency check
-     * (already-merged detection) and timeout handling.
+     * Merge a single PR via GitHub REST API. Includes idempotency check
+     * (already-merged detection) and branch cleanup.
      */
     private void mergeSinglePr(String taskId, int prNumber, String repoSlug) {
-        // Idempotency guard: check if PR is already merged before spawning merge process
+        String ghToken = System.getenv("GH_TOKEN");
+        if (ghToken == null || ghToken.isBlank()) {
+            throw new IllegalStateException("GH_TOKEN environment variable is not set");
+        }
+
+        HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+
+        // Idempotency guard: check if PR is already merged
         try {
-            ProcessBuilder viewPb = new ProcessBuilder(
-                "gh", "pr", "view", String.valueOf(prNumber),
-                "--repo", repoSlug,
-                "--json", "state"
-            );
-            String ghTokenView = System.getenv("GH_TOKEN");
-            if (ghTokenView != null && !ghTokenView.isBlank()) {
-                viewPb.environment().put("GH_TOKEN", ghTokenView);
-            }
-            viewPb.redirectErrorStream(false);
-            Process viewProcess = viewPb.start();
-            boolean viewFinished = viewProcess.waitFor(15, TimeUnit.SECONDS);
-            if (viewFinished && viewProcess.exitValue() == 0) {
-                String viewOut = new String(viewProcess.getInputStream().readAllBytes()).trim();
-                if (viewOut.contains("\"MERGED\"")) {
+            HttpRequest viewReq = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.github.com/repos/" + repoSlug + "/pulls/" + prNumber))
+                .header("Authorization", "Bearer " + ghToken)
+                .header("Accept", "application/vnd.github+json")
+                .timeout(Duration.ofSeconds(15))
+                .GET()
+                .build();
+
+            HttpResponse<String> viewResp = client.send(viewReq, HttpResponse.BodyHandlers.ofString());
+            if (viewResp.statusCode() == 200) {
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode pr = mapper.readTree(viewResp.body());
+                String state = pr.has("state") ? pr.get("state").asText() : "";
+                boolean merged = pr.has("merged") && pr.get("merged").asBoolean();
+                if (merged || "closed".equals(state)) {
                     log.infof("PR #%d for task %s is already merged (%s)", prNumber, taskId, repoSlug);
                     throw new IllegalStateException(
                         "Pull request #" + prNumber + " has already been merged.");
                 }
-            } else if (!viewFinished) {
-                viewProcess.destroyForcibly();
-                log.warnf("gh pr view timed out for PR #%d, proceeding with merge attempt", prNumber);
             }
         } catch (IllegalStateException e) {
             throw e;
@@ -651,45 +661,69 @@ public class BugReportAutoFixService {
             log.warnf("Failed to check PR #%d merge state, proceeding with merge attempt: %s", prNumber, e.getMessage());
         }
 
-        // Execute gh pr merge via ProcessBuilder
+        // Merge the PR via GitHub REST API
         try {
-            ProcessBuilder pb = new ProcessBuilder(
-                "gh", "pr", "merge", String.valueOf(prNumber),
-                "--repo", repoSlug,
-                "--merge", "--delete-branch"
-            );
+            String mergeBody = "{\"merge_method\":\"merge\"}";
+            HttpRequest mergeReq = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.github.com/repos/" + repoSlug + "/pulls/" + prNumber + "/merge"))
+                .header("Authorization", "Bearer " + ghToken)
+                .header("Accept", "application/vnd.github+json")
+                .timeout(Duration.ofSeconds(30))
+                .PUT(HttpRequest.BodyPublishers.ofString(mergeBody))
+                .build();
 
-            String ghToken = System.getenv("GH_TOKEN");
-            if (ghToken != null && !ghToken.isBlank()) {
-                pb.environment().put("GH_TOKEN", ghToken);
-            }
+            HttpResponse<String> mergeResp = client.send(mergeReq, HttpResponse.BodyHandlers.ofString());
 
-            pb.redirectErrorStream(false);
-            Process process = pb.start();
-
-            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                throw new IllegalStateException("PR merge timed out after 30 seconds");
-            }
-
-            String stdout = new String(process.getInputStream().readAllBytes()).trim();
-            String stderr = new String(process.getErrorStream().readAllBytes()).trim();
-
-            if (process.exitValue() != 0) {
-                if (stderr.contains("already been merged") || stdout.contains("already been merged")) {
+            if (mergeResp.statusCode() == 200) {
+                log.infof("Merged PR #%d for task %s (repo: %s)", prNumber, taskId, repoSlug);
+            } else if (mergeResp.statusCode() == 405) {
+                // 405 = PR not mergeable (already merged, or merge conflict)
+                String body = mergeResp.body();
+                if (body.contains("already been merged") || body.contains("Pull Request is not mergeable")) {
                     throw new IllegalStateException("Pull request #" + prNumber + " has already been merged.");
                 }
-                log.errorf("gh pr merge failed (exit %d): %s", process.exitValue(), stderr);
-                throw new IllegalStateException("Failed to merge PR #" + prNumber + ". Check server logs for details.");
+                log.errorf("PR merge returned 405: %s", body);
+                throw new IllegalStateException("Failed to merge PR #" + prNumber + ": not mergeable.");
+            } else {
+                log.errorf("PR merge failed (HTTP %d): %s", mergeResp.statusCode(), mergeResp.body());
+                throw new IllegalStateException("Failed to merge PR #" + prNumber + ". HTTP " + mergeResp.statusCode());
             }
 
-            log.infof("Merged PR #%d for task %s (repo: %s)", prNumber, taskId, repoSlug);
+            // Delete the branch after merge
+            try {
+                // Get the branch name from the PR
+                HttpRequest prReq = HttpRequest.newBuilder()
+                    .uri(URI.create("https://api.github.com/repos/" + repoSlug + "/pulls/" + prNumber))
+                    .header("Authorization", "Bearer " + ghToken)
+                    .header("Accept", "application/vnd.github+json")
+                    .timeout(Duration.ofSeconds(10))
+                    .GET()
+                    .build();
+                HttpResponse<String> prResp = client.send(prReq, HttpResponse.BodyHandlers.ofString());
+                if (prResp.statusCode() == 200) {
+                    ObjectMapper mapper = new ObjectMapper();
+                    JsonNode pr = mapper.readTree(prResp.body());
+                    String branchRef = pr.path("head").path("ref").asText("");
+                    if (!branchRef.isBlank()) {
+                        HttpRequest delReq = HttpRequest.newBuilder()
+                            .uri(URI.create("https://api.github.com/repos/" + repoSlug + "/git/refs/heads/" + branchRef))
+                            .header("Authorization", "Bearer " + ghToken)
+                            .header("Accept", "application/vnd.github+json")
+                            .timeout(Duration.ofSeconds(10))
+                            .DELETE()
+                            .build();
+                        client.send(delReq, HttpResponse.BodyHandlers.ofString());
+                        log.infof("Deleted branch %s after merging PR #%d", branchRef, prNumber);
+                    }
+                }
+            } catch (Exception e) {
+                log.warnf("Failed to delete branch after merge (non-fatal): %s", e.getMessage());
+            }
 
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
-            log.errorf("Error executing gh pr merge: %s", e.getMessage());
+            log.errorf("Error merging PR via GitHub API: %s", e.getMessage());
             throw new IllegalStateException("Failed to merge PR: " + e.getMessage());
         }
     }
@@ -785,48 +819,48 @@ public class BugReportAutoFixService {
     }
 
     /**
-     * Poll a single repo's latest GitHub Actions workflow run on the deploy branch.
+     * Poll a single repo's latest GitHub Actions workflow run on the deploy branch
+     * via GitHub REST API.
      */
     private DeployStatusDTO pollDeployStatus(String repoSlug, String deployBranch) {
         try {
-            ProcessBuilder pb = new ProcessBuilder(
-                "gh", "run", "list",
-                "--repo", repoSlug,
-                "--branch", deployBranch,
-                "--limit", "1",
-                "--json", "status,conclusion,url,headBranch"
-            );
-
             String ghToken = System.getenv("GH_TOKEN");
-            if (ghToken != null && !ghToken.isBlank()) {
-                pb.environment().put("GH_TOKEN", ghToken);
-            }
-
-            pb.redirectErrorStream(false);
-            Process process = pb.start();
-
-            boolean finished = process.waitFor(15, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
+            if (ghToken == null || ghToken.isBlank()) {
+                log.warn("GH_TOKEN not set, cannot check deploy status");
                 return new DeployStatusDTO("unknown", null, null, null);
             }
 
-            String stdout = new String(process.getInputStream().readAllBytes()).trim();
+            HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
 
-            if (process.exitValue() != 0) {
-                log.warnf("gh run list failed (exit %d) for %s", process.exitValue(), repoSlug);
+            String encodedBranch = deployBranch.replace(" ", "%20");
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.github.com/repos/" + repoSlug
+                    + "/actions/runs?branch=" + encodedBranch + "&per_page=1"))
+                .header("Authorization", "Bearer " + ghToken)
+                .header("Accept", "application/vnd.github+json")
+                .timeout(Duration.ofSeconds(15))
+                .GET()
+                .build();
+
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() != 200) {
+                log.warnf("GitHub Actions API returned %d for %s", resp.statusCode(), repoSlug);
                 return new DeployStatusDTO("unknown", null, null, null);
             }
 
             ObjectMapper mapper = new ObjectMapper();
-            JsonNode runs = mapper.readTree(stdout);
-            if (runs.isArray() && !runs.isEmpty()) {
+            JsonNode body = mapper.readTree(resp.body());
+            JsonNode runs = body.get("workflow_runs");
+            if (runs != null && runs.isArray() && !runs.isEmpty()) {
                 JsonNode latestRun = runs.get(0);
                 String status = latestRun.has("status") ? latestRun.get("status").asText() : "unknown";
                 String conclusion = latestRun.has("conclusion") && !latestRun.get("conclusion").isNull()
                     ? latestRun.get("conclusion").asText() : null;
-                String url = latestRun.has("url") ? latestRun.get("url").asText() : null;
-                String headBranch = latestRun.has("headBranch") ? latestRun.get("headBranch").asText() : null;
+                String url = latestRun.has("html_url") ? latestRun.get("html_url").asText() : null;
+                String headBranch = latestRun.has("head_branch") ? latestRun.get("head_branch").asText() : null;
                 return new DeployStatusDTO(status, conclusion, url, headBranch);
             }
 
