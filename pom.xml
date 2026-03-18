@@ -238,18 +238,42 @@
       <groupId>com.deepoove</groupId>
       <artifactId>poi-tl</artifactId>
       <version>1.12.2</version>
+      <exclusions>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis-ext</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
-    <!-- Xalan XML transformer - required by Apache POI for Word document processing -->
+    <!-- Xalan XML transformer - required by Apache POI for Word document processing.
+         xml-apis excluded to prevent LinkageError with JDK's built-in org.w3c.dom classes
+         in Quarkus fast-jar mode (classloader constraint violation). -->
     <dependency>
       <groupId>xalan</groupId>
       <artifactId>xalan</artifactId>
       <version>2.7.3</version>
+      <exclusions>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <!-- Xalan serializer - contains OutputPropertiesFactory required by POI/Xalan XML transformation -->
     <dependency>
       <groupId>xalan</groupId>
       <artifactId>serializer</artifactId>
       <version>2.7.3</version>
+      <exclusions>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.woodstox</groupId>
@@ -261,6 +285,12 @@
       <groupId>xerces</groupId>
       <artifactId>xercesImpl</artifactId>
       <version>2.12.2</version>
+      <exclusions>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
 
