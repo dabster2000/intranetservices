@@ -150,19 +150,33 @@ public class AutoFixPolicyEngine {
             return featureCheck;
         }
 
-        // Restricted domain check (admin/settings pages get elevated risk)
+        // Restricted domain check: admin/settings pages get elevated risk,
+        // but admins reporting bugs on their own pages should be allowed through
         if (isRestrictedDomain(report.getPageUrl())) {
-            return PolicyDecision.reject(
-                "needs_human_triage", 0.60,
-                List.of("Bug is in a restricted domain (admin/settings). Auto-fix requires additional review."),
-                List.of("restricted_domain")
-            );
+            Set<String> reporterScopes = parseScopes(
+                report.getUserRoles() != null ? report.getUserRoles() : "");
+            boolean isAdmin = hasMatchingScope(reporterScopes, "admin:");
+
+            if (!isAdmin) {
+                return PolicyDecision.reject(
+                    "needs_human_triage", 0.60,
+                    List.of("Bug is in a restricted domain (admin/settings). Auto-fix requires additional review."),
+                    List.of("restricted_domain")
+                );
+            }
+            // Admin reporting on admin page — allow but elevate risk score below
         }
 
         // Rule G: Regression signal (positive)
         double riskScore = 0.15;
         List<String> reasons = new ArrayList<>();
         reasons.add("Report passed all policy checks");
+
+        // Elevate risk for admin/settings pages (admin reporter allowed through above)
+        if (isRestrictedDomain(report.getPageUrl())) {
+            riskScore = Math.max(riskScore, 0.40);
+            reasons.add("Restricted domain (admin/settings) — elevated risk");
+        }
 
         if (report.getPreviouslyWorked() != null && report.getPreviouslyWorked()) {
             riskScore = 0.10;
@@ -314,9 +328,20 @@ public class AutoFixPolicyEngine {
         }
     }
 
+    /**
+     * Check if the user has a matching scope OR role name.
+     * userRoles may contain scope strings ("admin:read") or role names ("ADMIN").
+     * We check both formats: scope prefix match and case-insensitive role name match.
+     */
     private boolean hasMatchingScope(Set<String> scopes, String prefix) {
-        return scopes.stream().anyMatch(s ->
-            s.trim().startsWith(prefix) || s.trim().equals("admin:*"));
+        // Derive the role name from the scope prefix (e.g., "admin:" → "ADMIN")
+        String roleName = prefix.replace(":", "").toUpperCase();
+        return scopes.stream().anyMatch(s -> {
+            String trimmed = s.trim();
+            return trimmed.startsWith(prefix)
+                || trimmed.equalsIgnoreCase(roleName)
+                || trimmed.equals("admin:*");
+        });
     }
 
     /**
