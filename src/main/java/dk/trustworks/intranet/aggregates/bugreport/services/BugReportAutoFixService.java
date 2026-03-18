@@ -921,8 +921,8 @@ public class BugReportAutoFixService {
      * Stores worker configuration (tools, max_turns) that the Fargate worker reads at runtime.
      *
      * <p>Phase 2: repo_url removed (worker clones both repos from its own config).
-     * max_turns reduced from 200 to 75 (multi-repo gives Claude full visibility,
-     * so fewer turns are needed).
+     * max_turns set to 150 (multi-repo needs room for cross-layer investigation;
+     * the $2 budget cap is the real safety limit).
      */
     private String buildMetadataJson(BugReport report, String previousStatus, PolicyDecision policy) {
         try {
@@ -935,7 +935,7 @@ public class BugReportAutoFixService {
 
             // Worker configuration (read by the Fargate worker from metadata)
             metadata.put("allowed_tools", "Read,Write,Edit,Bash,Glob,Grep");
-            metadata.put("max_turns", 75);
+            metadata.put("max_turns", 150);
 
             // Security policy decision (for audit)
             ObjectNode policyNode = metadata.putObject("policy_decision");
