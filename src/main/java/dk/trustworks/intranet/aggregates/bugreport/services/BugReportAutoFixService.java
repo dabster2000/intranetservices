@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.aggregates.bugreport.services;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dk.trustworks.intranet.aggregates.bugreport.dto.AutoFixTaskDTO;
+import dk.trustworks.intranet.aggregates.bugreport.dto.DeployStatusDTO;
+import dk.trustworks.intranet.aggregates.bugreport.dto.MergeResultDTO;
 import dk.trustworks.intranet.aggregates.bugreport.dto.PolicyDecision;
 import dk.trustworks.intranet.aggregates.bugreport.entities.BugReport;
 import dk.trustworks.intranet.aggregates.bugreport.entities.BugReportStatus;
@@ -27,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Application service for the auto-fix pipeline.
@@ -47,6 +51,15 @@ public class BugReportAutoFixService {
             "https://github.com/trustworksdk/trustworks-intranet-v3.git",
         "intranetservices",
             "https://github.com/dabster2000/intranetservices.git"
+    );
+
+    /**
+     * GitHub owner/repo slugs used for gh CLI commands.
+     * Derived from REPO_CONFIG URLs but stored separately for clarity.
+     */
+    private static final Map<String, String> REPO_SLUGS = Map.of(
+        "trustworks-intranet-v3", "trustworksdk/trustworks-intranet-v3",
+        "intranetservices", "dabster2000/intranetservices"
     );
 
     /**
@@ -501,6 +514,227 @@ public class BugReportAutoFixService {
             totalCount,
             monthlyCost
         );
+    }
+
+    // --- Merge and deploy status ---
+
+    /**
+     * Merge a draft PR for an auto-fix task via the gh CLI.
+     * Transitions the bug report status to IN_PROGRESS after successful merge.
+     *
+     * @throws NotFoundException     if bug report or task not found
+     * @throws IllegalStateException if no PR exists, PR already merged, or merge fails
+     */
+    @Transactional
+    public MergeResultDTO mergePullRequest(String bugReportUuid, String taskId) {
+        BugReport report = em.find(BugReport.class, bugReportUuid);
+        if (report == null) {
+            throw new NotFoundException("Bug report not found: " + bugReportUuid);
+        }
+
+        // Load task row
+        @SuppressWarnings("unchecked")
+        List<Object[]> taskRows = em.createNativeQuery(
+            "SELECT task_id, repo_name, pr_number, pr_url, status " +
+            "FROM autofix_tasks WHERE task_id = :taskId AND bug_report_uuid = :uuid")
+            .setParameter("taskId", taskId)
+            .setParameter("uuid", bugReportUuid)
+            .getResultList();
+
+        if (taskRows.isEmpty()) {
+            throw new NotFoundException("Auto-fix task not found: " + taskId);
+        }
+
+        Object[] taskRow = taskRows.get(0);
+        String repoName = (String) taskRow[1];
+        Integer prNumber = taskRow[2] != null ? ((Number) taskRow[2]).intValue() : null;
+        String taskStatus = (String) taskRow[4];
+
+        if (prNumber == null) {
+            throw new IllegalStateException(
+                "No pull request exists for this auto-fix task. " +
+                "The task may have completed without code changes.");
+        }
+
+        if (!"COMPLETED".equals(taskStatus)) {
+            throw new IllegalStateException(
+                "Cannot merge PR for a task with status " + taskStatus + ". Task must be COMPLETED.");
+        }
+
+        String repoSlug = REPO_SLUGS.get(repoName);
+        if (repoSlug == null) {
+            throw new IllegalStateException("Unknown repository: " + repoName);
+        }
+
+        // Idempotency guard: check if PR is already merged before spawning merge process
+        try {
+            ProcessBuilder viewPb = new ProcessBuilder(
+                "gh", "pr", "view", String.valueOf(prNumber),
+                "--repo", repoSlug,
+                "--json", "state"
+            );
+            String ghTokenView = System.getenv("GH_TOKEN");
+            if (ghTokenView != null && !ghTokenView.isBlank()) {
+                viewPb.environment().put("GH_TOKEN", ghTokenView);
+            }
+            viewPb.redirectErrorStream(false);
+            Process viewProcess = viewPb.start();
+            boolean viewFinished = viewProcess.waitFor(15, TimeUnit.SECONDS);
+            if (viewFinished && viewProcess.exitValue() == 0) {
+                String viewOut = new String(viewProcess.getInputStream().readAllBytes()).trim();
+                if (viewOut.contains("\"MERGED\"")) {
+                    log.infof("PR #%d for task %s is already merged, returning idempotent response", prNumber, taskId);
+                    return new MergeResultDTO(
+                        taskId, prNumber, "already_merged", report.getStatus().name(),
+                        "PR #" + prNumber + " was already merged.");
+                }
+            } else if (!viewFinished) {
+                viewProcess.destroyForcibly();
+                log.warnf("gh pr view timed out for PR #%d, proceeding with merge attempt", prNumber);
+            }
+        } catch (Exception e) {
+            log.warnf("Failed to check PR #%d merge state, proceeding with merge attempt: %s", prNumber, e.getMessage());
+        }
+
+        // Execute gh pr merge via ProcessBuilder
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                "gh", "pr", "merge", String.valueOf(prNumber),
+                "--repo", repoSlug,
+                "--merge", "--delete-branch"
+            );
+
+            // GH_TOKEN is available via environment variable on the server
+            String ghToken = System.getenv("GH_TOKEN");
+            if (ghToken != null && !ghToken.isBlank()) {
+                pb.environment().put("GH_TOKEN", ghToken);
+            }
+
+            pb.redirectErrorStream(false);
+            Process process = pb.start();
+
+            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new IllegalStateException("PR merge timed out after 30 seconds");
+            }
+
+            String stdout = new String(process.getInputStream().readAllBytes()).trim();
+            String stderr = new String(process.getErrorStream().readAllBytes()).trim();
+
+            if (process.exitValue() != 0) {
+                // Check for "already merged" in the error output
+                if (stderr.contains("already been merged") || stdout.contains("already been merged")) {
+                    throw new IllegalStateException("Pull request #" + prNumber + " has already been merged.");
+                }
+                log.errorf("gh pr merge failed (exit %d): %s", process.exitValue(), stderr);
+                throw new IllegalStateException("Failed to merge PR #" + prNumber + ". Check server logs for details.");
+            }
+
+            log.infof("Merged PR #%d for task %s (repo: %s)", prNumber, taskId, repoSlug);
+
+        } catch (IllegalStateException e) {
+            throw e; // Re-throw domain exceptions
+        } catch (Exception e) {
+            log.errorf("Error executing gh pr merge: %s", e.getMessage());
+            throw new IllegalStateException("Failed to merge PR: " + e.getMessage());
+        }
+
+        // Transition bug report to IN_PROGRESS
+        report.transitionTo(BugReportStatus.IN_PROGRESS);
+
+        // Add system comment
+        bugReportService.addComment(
+            bugReportUuid, "system:autofix-worker",
+            "Pull request #" + prNumber + " merged to staging. Deployment in progress.",
+            true
+        );
+
+        return new MergeResultDTO(
+            taskId, prNumber, "merged", report.getStatus().name(),
+            "PR #" + prNumber + " merged successfully. Bug report transitioned to IN_PROGRESS."
+        );
+    }
+
+    /**
+     * Poll GitHub Actions deploy status for the staging branch after a merge.
+     * Uses gh CLI to check the most recent workflow run.
+     *
+     * @throws NotFoundException     if bug report or task not found
+     * @throws IllegalStateException if repo is unknown
+     */
+    public DeployStatusDTO getDeployStatus(String bugReportUuid, String taskId) {
+        // Validate task exists for this bug report
+        @SuppressWarnings("unchecked")
+        List<Object[]> taskRows = em.createNativeQuery(
+            "SELECT task_id, repo_name " +
+            "FROM autofix_tasks WHERE task_id = :taskId AND bug_report_uuid = :uuid")
+            .setParameter("taskId", taskId)
+            .setParameter("uuid", bugReportUuid)
+            .getResultList();
+
+        if (taskRows.isEmpty()) {
+            throw new NotFoundException("Auto-fix task not found: " + taskId);
+        }
+
+        String repoName = (String) taskRows.get(0)[1];
+        String repoSlug = REPO_SLUGS.get(repoName);
+        if (repoSlug == null) {
+            throw new IllegalStateException("Unknown repository: " + repoName);
+        }
+
+        // Determine the deploy branch for this repo
+        String deployBranch = "intranetservices".equals(repoName) ? "master" : "main";
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                "gh", "run", "list",
+                "--repo", repoSlug,
+                "--branch", deployBranch,
+                "--limit", "1",
+                "--json", "status,conclusion,url,headBranch"
+            );
+
+            String ghToken = System.getenv("GH_TOKEN");
+            if (ghToken != null && !ghToken.isBlank()) {
+                pb.environment().put("GH_TOKEN", ghToken);
+            }
+
+            pb.redirectErrorStream(false);
+            Process process = pb.start();
+
+            boolean finished = process.waitFor(15, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                return new DeployStatusDTO("unknown", null, null, null);
+            }
+
+            String stdout = new String(process.getInputStream().readAllBytes()).trim();
+
+            if (process.exitValue() != 0) {
+                log.warnf("gh run list failed (exit %d)", process.exitValue());
+                return new DeployStatusDTO("unknown", null, null, null);
+            }
+
+            // Parse the JSON array output from gh
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode runs = mapper.readTree(stdout);
+            if (runs.isArray() && !runs.isEmpty()) {
+                JsonNode latestRun = runs.get(0);
+                String status = latestRun.has("status") ? latestRun.get("status").asText() : "unknown";
+                String conclusion = latestRun.has("conclusion") && !latestRun.get("conclusion").isNull()
+                    ? latestRun.get("conclusion").asText() : null;
+                String url = latestRun.has("url") ? latestRun.get("url").asText() : null;
+                String headBranch = latestRun.has("headBranch") ? latestRun.get("headBranch").asText() : null;
+                return new DeployStatusDTO(status, conclusion, url, headBranch);
+            }
+
+            return new DeployStatusDTO("unknown", null, null, null);
+
+        } catch (Exception e) {
+            log.warnf("Error checking deploy status: %s", e.getMessage());
+            return new DeployStatusDTO("unknown", null, null, null);
+        }
     }
 
     // --- Row mapping helpers ---

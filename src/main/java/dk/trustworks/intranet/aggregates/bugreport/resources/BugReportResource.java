@@ -368,7 +368,40 @@ public class BugReportResource {
         return Response.ok(tasks).build();
     }
 
-    // ---- 18. GET /bug-reports/auto-fix/stats — Monitoring dashboard stats ----
+    // ---- 18. POST /bug-reports/{uuid}/auto-fix-tasks/{taskId}/merge — Merge draft PR ----
+    @POST
+    @Path("/{uuid}/auto-fix-tasks/{taskId}/merge")
+    @RolesAllowed({"bugreports:admin"})
+    public Response mergePullRequest(@PathParam("uuid") String uuid,
+                                     @PathParam("taskId") String taskId) {
+        try {
+            var result = autoFixService.mergePullRequest(uuid, taskId);
+            return Response.ok(result).build();
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage())).build();
+        } catch (IllegalStateException e) {
+            return Response.status(409)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage())).build();
+        }
+    }
+
+    // ---- 19. GET /bug-reports/{uuid}/auto-fix-tasks/{taskId}/deploy-status — Deploy status ----
+    @GET
+    @Path("/{uuid}/auto-fix-tasks/{taskId}/deploy-status")
+    @RolesAllowed({"bugreports:admin"})
+    public Response getDeployStatus(@PathParam("uuid") String uuid,
+                                    @PathParam("taskId") String taskId) {
+        try {
+            var status = autoFixService.getDeployStatus(uuid, taskId);
+            return Response.ok(status).build();
+        } catch (NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage())).build();
+        }
+    }
+
+    // ---- 20. GET /bug-reports/auto-fix/stats — Monitoring dashboard stats ----
     @GET
     @Path("/auto-fix/stats")
     @RolesAllowed({"bugreports:admin"})

@@ -147,28 +147,62 @@ public class AutoFixTaskDTO {
     }
 
     /**
-     * Total cost from usage_info JSON. Expects: {@code {"cost": 0.42}} or
-     * {@code {"total_cost": 0.42}}.
+     * Total cost in USD from usage_info JSON.
+     * Worker stores: {@code {"cost_usd": 0.42}} (primary) or
+     * legacy {@code {"cost": 0.42}} / {@code {"total_cost": 0.42}}.
      */
-    @JsonProperty("cost")
-    public BigDecimal getCost() {
-        return readBigDecimalFromJson(usageInfo, "cost", "total_cost");
+    @JsonProperty("cost_usd")
+    public BigDecimal getCostUsd() {
+        return readBigDecimalFromJson(usageInfo, "cost_usd", "cost", "total_cost");
     }
 
     /**
-     * Diff scanner verdict from result JSON. Expects: {@code {"diff_verdict": "PASS"}}.
+     * Diff scanner verdict from result JSON.
+     * Worker stores: {@code {"diff_scanner": {"decision": "approve_candidate"}}}.
      */
-    @JsonProperty("diff_verdict")
-    public String getDiffVerdict() {
-        return readStringFromJson(result, "diff_verdict");
+    @JsonProperty("verdict")
+    public String getVerdict() {
+        return readNestedStringFromJson(result, "diff_scanner", "decision");
+    }
+
+    /**
+     * Human-readable summary of what the auto-fix did.
+     * Extracted from result JSON {@code diagnosis} field (worker stores the
+     * parsed Claude output summary there).
+     */
+    @JsonProperty("result_summary")
+    public String getResultSummary() {
+        return readStringFromJson(result, "diagnosis");
+    }
+
+    /**
+     * Root cause diagnosis from result JSON.
+     */
+    @JsonProperty("diagnosis")
+    public String getDiagnosis() {
+        return readStringFromJson(result, "root_cause");
+    }
+
+    /**
+     * Number of files changed from the diff scanner result.
+     * Worker stores: {@code {"diff_scanner": {"files_changed": 3}}}.
+     */
+    @JsonProperty("files_changed")
+    public Integer getFilesChanged() {
+        return readNestedIntFromJson(result, "diff_scanner", "files_changed");
     }
 
     /**
      * Security or quality flags from result JSON. Expects:
-     * {@code {"flagged_patterns": ["auth_change", "scope_modification"]}}.
+     * {@code {"diff_scanner": {"flagged_patterns": ["auth_change"]}}}.
+     * Falls back to top-level flagged_patterns for legacy data.
      */
     @JsonProperty("flagged_patterns")
     public List<String> getFlaggedPatterns() {
+        List<String> nested = readNestedStringListFromJson(result, "diff_scanner", "flagged_patterns");
+        if (!nested.isEmpty()) {
+            return nested;
+        }
         return readStringListFromJson(result, "flagged_patterns");
     }
 
@@ -195,6 +229,15 @@ public class AutoFixTaskDTO {
     @JsonProperty("manual_followups")
     public List<String> getManualFollowups() {
         return readStringListFromJson(result, "manual_followups");
+    }
+
+    /**
+     * Files examined by Claude during analysis.
+     * Worker stores: {@code {"files_examined": ["src/App.tsx", "src/utils.ts"]}}.
+     */
+    @JsonProperty("files_examined")
+    public List<String> getFilesExamined() {
+        return readStringListFromJson(result, "files_examined");
     }
 
     // --- JSON parsing helpers (all null/malformed safe) ---
@@ -245,6 +288,71 @@ public class AutoFixTaskDTO {
             return List.of();
         } catch (Exception e) {
             log.debugf("Failed to parse JSON list field '%s': %s", fieldName, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * Read a string from a nested JSON object: {@code json.parent.child}.
+     */
+    private String readNestedStringFromJson(String json, String parentField, String childField) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode node = MAPPER.readTree(json);
+            JsonNode parent = node.get(parentField);
+            if (parent != null && parent.isObject()) {
+                JsonNode child = parent.get(childField);
+                return child != null && !child.isNull() ? child.asText() : null;
+            }
+            return null;
+        } catch (Exception e) {
+            log.debugf("Failed to parse nested JSON field '%s.%s': %s", parentField, childField, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Read an integer from a nested JSON object: {@code json.parent.child}.
+     */
+    private Integer readNestedIntFromJson(String json, String parentField, String childField) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode node = MAPPER.readTree(json);
+            JsonNode parent = node.get(parentField);
+            if (parent != null && parent.isObject()) {
+                JsonNode child = parent.get(childField);
+                return child != null && !child.isNull() && child.isNumber() ? child.intValue() : null;
+            }
+            return null;
+        } catch (Exception e) {
+            log.debugf("Failed to parse nested JSON int '%s.%s': %s", parentField, childField, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Read a string list from a nested JSON object: {@code json.parent.child}.
+     */
+    private List<String> readNestedStringListFromJson(String json, String parentField, String childField) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode node = MAPPER.readTree(json);
+            JsonNode parent = node.get(parentField);
+            if (parent != null && parent.isObject()) {
+                JsonNode child = parent.get(childField);
+                if (child != null && child.isArray()) {
+                    return MAPPER.convertValue(child, new TypeReference<List<String>>() {});
+                }
+            }
+            return List.of();
+        } catch (Exception e) {
+            log.debugf("Failed to parse nested JSON list '%s.%s': %s", parentField, childField, e.getMessage());
             return List.of();
         }
     }
