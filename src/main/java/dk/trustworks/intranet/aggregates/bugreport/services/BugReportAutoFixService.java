@@ -780,7 +780,7 @@ public class BugReportAutoFixService {
             String repoName = detectRepo(report);
             metadata.put("repo_url", REPO_CONFIG.getOrDefault(repoName, ""));
             metadata.put("allowed_tools", "Read,Write,Edit,Bash,Glob,Grep");
-            metadata.put("max_turns", 30);
+            metadata.put("max_turns", 200);
 
             // Security policy decision (for audit)
             ObjectNode policyNode = metadata.putObject("policy_decision");
