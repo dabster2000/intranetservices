@@ -10,12 +10,12 @@ repositories:
   trustworks-intranet-v3:
     allow:
       - "src/app/(protected)/**"
+      - "src/app/api/**"
       - "src/components/**"
       - "src/lib/hooks/**"
       - "src/lib/utils/**"
       - "src/lib/types/**"
     deny:
-      - "src/app/api/**"
       - "src/lib/auth/**"
       - "src/lib/config/**"
       - "proxy.ts"
@@ -94,6 +94,11 @@ sensitive_patterns:
   - "\\bexport\\b"
   - "\\bdownload\\b"
   - "SELECT \\*"
+
+  # BFF proxy safety (flag for manual review when BFF routes are modified)
+  - "getRequestedByHeaders"
+  - "backendFetch"
+  - "NextResponse"
 
 # Thresholds for diff size checks (flag for manual review if exceeded).
 thresholds:
