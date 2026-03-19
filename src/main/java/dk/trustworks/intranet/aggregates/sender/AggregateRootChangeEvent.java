@@ -73,6 +73,6 @@ public abstract class AggregateRootChangeEvent extends PanacheEntityBase {
 
     @PrePersist
     private void beforePersist() {
-        eventUser = CDI.current().select(RequestHeaderHolder.class).get().getUsername();
+        eventUser = CDI.current().select(RequestHeaderHolder.class).get().getUserUuid();
     }
 }

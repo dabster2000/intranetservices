@@ -50,7 +50,7 @@ import static jakarta.transaction.Transactional.TxType.REQUIRED;
 @Path("/company/{companyuuid}/danlon")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"salaries:read"})
 @SecurityRequirement(name = "jwt")
 public class DanlonResource {
 
@@ -420,6 +420,7 @@ public class DanlonResource {
 
     @PUT
     @Path("/employees/salarysupplements/create")
+    @RolesAllowed({"salaries:write"})
     @Transactional(REQUIRED)
     @CacheInvalidateAll(cacheName = "work-cache")
     public void createTimeStampSalarySupplements(@QueryParam("month") String strMonth) throws SystemException {
@@ -457,6 +458,7 @@ public class DanlonResource {
 
     @PUT
     @Path("/employees/salarysupplements/reset")
+    @RolesAllowed({"salaries:write"})
     @Transactional(REQUIRED)
     @CacheInvalidateAll(cacheName = "work-cache")
     public void resetTimeStampSalarySupplements(@QueryParam("month") String strMonth) throws SystemException {

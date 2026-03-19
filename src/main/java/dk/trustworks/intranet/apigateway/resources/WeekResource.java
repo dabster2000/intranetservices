@@ -22,7 +22,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"timeregistration:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class WeekResource {
 
@@ -30,12 +30,14 @@ public class WeekResource {
     WeekService weekService;
 
     @POST
+    @RolesAllowed({"timeregistration:write"})
     public void saveWeek(Week week) {
         weekService.save(week);
     }
 
     @DELETE
     @Path("/{weekuuid}")
+    @RolesAllowed({"timeregistration:write"})
     public void deleteWeek(@PathParam("weekuuid") String weekuuid) {
         weekService.delete(weekuuid);
     }

@@ -18,7 +18,7 @@ import java.util.List;
 @Tag(name = "Knowledge")
 @Path("/knowledge/certifications")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"knowledge:read"})
 @SecurityRequirement(name = "jwt")
 public class KnowledgeResource {
 

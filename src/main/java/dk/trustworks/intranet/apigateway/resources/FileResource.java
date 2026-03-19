@@ -21,7 +21,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @ApplicationScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"documents:read"})
 @JBossLog
 public class FileResource {
 
@@ -87,24 +87,28 @@ public class FileResource {
 
     @PUT
     @Path("/photos")
+    @RolesAllowed({"documents:write"})
     public void updatePhoto(File photo) {
         photoService.updatePhoto(photo);
     }
 
     @PUT
     @Path("/photos/logo")
+    @RolesAllowed({"documents:write"})
     public void updateClientLogo(File photo) {
         photoService.updateLogo(photo);
     }
 
     @PUT
     @Path("/photos/portrait")
+    @RolesAllowed({"documents:write"})
     public void updatePortrait(File photo) {
         photoService.updatePortrait(photo);
     }
 
     @DELETE
     @Path("/photos/{uuid}")
+    @RolesAllowed({"documents:write"})
     public void deletePhoto(@PathParam("uuid") String uuid) {
         photoService.delete(uuid);
     }
@@ -123,6 +127,7 @@ public class FileResource {
 
     @DELETE
     @Path("/documents/{uuid}")
+    @RolesAllowed({"documents:write"})
     public void deleteDocument(@PathParam("uuid") String uuid) {
         documentAPI.delete(uuid);
     }

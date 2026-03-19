@@ -5,7 +5,7 @@ import dk.trustworks.intranet.aggregates.users.events.CreateBankInfoEvent;
 import dk.trustworks.intranet.aggregates.users.services.UserBankInfoService;
 import dk.trustworks.intranet.domain.user.entity.UserBankInfo;
 import dk.trustworks.intranet.utils.DateUtils;
-import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -20,7 +20,7 @@ import java.util.Optional;
 @Path("/bankinfos")
 @RequestScoped
 @JBossLog
-@PermitAll
+@RolesAllowed({"salaries:write"})
 public class BankInfoResource {
 
     @Inject

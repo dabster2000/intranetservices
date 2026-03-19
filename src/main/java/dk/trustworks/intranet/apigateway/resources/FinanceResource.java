@@ -29,7 +29,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"accounting:read"})
 @SecurityRequirement(name = "jwt")
 public class FinanceResource {
 

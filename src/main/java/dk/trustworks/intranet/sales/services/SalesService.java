@@ -93,13 +93,13 @@ public class SalesService {
         query = query.page(Page.of(pageNumber, limit));
 
         List<SalesLead> list = query.list();
-        System.out.println("list = " + list.size());
+        log.debugf("findAll returned %d leads (offset=%d, limit=%d, filter=%s, status=%s)",
+                list.size(), offset, limit, filter, status);
         return list;
     }
 
     public long count(String filter, String status) {
-        System.out.println("SalesService.count");
-        System.out.println("filter = " + filter + ", status = " + status);
+        log.debugf("count: filter=%s, status=%s", filter, status);
         Map<String, Object> params = new HashMap<>();
         List<String> conditions = new ArrayList<>();
 
@@ -120,7 +120,7 @@ public class SalesService {
         String queryString = String.join(" AND ", conditions);
 
         long count = SalesLead.count(queryString, params);
-        System.out.println("count = " + count);
+        log.debugf("count result: %d (filter=%s, status=%s)", count, filter, status);
         return count;
     }
 
@@ -154,7 +154,9 @@ public class SalesService {
             }
             salesLead.persist();
             logStageTransition(salesLead.getUuid(), null, salesLead.getStatus().name());
-            log.info("Created new SalesLead with UUID: " + salesLead.getUuid());
+            log.infof("Created new SalesLead uuid=%s, status=%s, user=%s",
+                    salesLead.getUuid(), salesLead.getStatus(),
+                    requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null);
         } else if(SalesLead.findById(salesLead.getUuid())==null) {
             if (salesLead.getStatus() == LeadStatus.WON) {
                 salesLead.setWonDate(LocalDateTime.now());
@@ -170,11 +172,17 @@ public class SalesService {
 
     @Transactional
     public void addConsultant(String salesLeaduuid, User user) {
+        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        log.infof("Adding consultant userUuid=%s to sales lead=%s, requestedBy=%s",
+                user.getUuid(), salesLeaduuid, userUuid);
         new SalesLeadConsultant(SalesLead.findById(salesLeaduuid), user).persist();
     }
 
     @Transactional
     public void removeConsultant(String salesleaduuid, String useruuid) {
+        String requestedBy = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        log.infof("Removing consultant userUuid=%s from sales lead=%s, requestedBy=%s",
+                useruuid, salesleaduuid, requestedBy);
         SalesLead salesLead = SalesLead.findById(salesleaduuid);
         User user = User.findById(useruuid);
         SalesLeadConsultant.delete("lead = ?1 and user = ?2", salesLead, user);
@@ -182,8 +190,8 @@ public class SalesService {
 
     @Transactional
     public void update(SalesLead salesLead) {
-        log.info("SalesService.update");
-        log.info("salesLead = " + salesLead);
+        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        log.infof("Updating sales lead uuid=%s, status=%s, user=%s", salesLead.getUuid(), salesLead.getStatus(), userUuid);
 
         // Determine won_date based on status transition
         SalesLead existing = SalesLead.findById(salesLead.getUuid());
@@ -247,6 +255,8 @@ public class SalesService {
 
     @Transactional
     public void delete(String uuid) {
+        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        log.infof("Deleting sales lead uuid=%s, user=%s", uuid, userUuid);
         SalesLead.deleteById(uuid);
     }
 
@@ -383,7 +393,7 @@ public class SalesService {
 
     private void logStageTransition(String leadUuid, String fromStage, String toStage) {
         try {
-            String changedBy = requestHeaderHolder != null ? requestHeaderHolder.getUsername() : null;
+            String changedBy = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
             SalesLead.getEntityManager().createNativeQuery(
                 "INSERT INTO sales_lead_stage_history (lead_uuid, from_stage, to_stage, changed_by) VALUES (?, ?, ?, ?)"
             )

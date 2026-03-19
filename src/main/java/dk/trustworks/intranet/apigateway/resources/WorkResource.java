@@ -10,6 +10,7 @@ import dk.trustworks.intranet.dto.work.LightweightWork;
 import dk.trustworks.intranet.dto.work.PagedWorkResponse;
 import dk.trustworks.intranet.dto.work.WorkByUserResponse;
 import dk.trustworks.intranet.dto.work.WorkSummary;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -43,7 +44,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"timeregistration:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class WorkResource {
 
@@ -53,11 +54,13 @@ public class WorkResource {
     @Inject
     AggregateEventSender sender;
 
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
+
     @GET
     @Path("/work")
     public List<WorkFull> listAll(@QueryParam("page") Integer page) {
-        log.debug("WorkResource.listAll");
-        log.debug("page = " + page);
+        log.debugf("WorkResource.listAll: page=%d", page);
         return workAPI.listAll(page);
     }
 
@@ -99,12 +102,20 @@ public class WorkResource {
 
     @POST
     @Path("/work")
+    @RolesAllowed({"timeregistration:write"})
     public void save(Work work) {
+        log.infof("Work save requested: userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f, requestedBy=%s",
+                work.getUseruuid(), work.getTaskuuid(), work.getRegistered(),
+                work.getWorkduration(), work.getRate(), requestHeaderHolder.getUserUuid());
+
         workAPI.persistOrUpdate(work);
 
         sender.handleEvent(new UpdateWorkEvent(work.getUseruuid(), work));
         if(work.getWorkas()!=null && !work.getWorkas().isEmpty())
             sender.handleEvent(new UpdateWorkEvent(work.getWorkas(), work));
+
+        log.infof("Work save completed: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s",
+                work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered());
     }
 /*
     @GET

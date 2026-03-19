@@ -24,6 +24,7 @@ import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -38,6 +39,7 @@ import java.util.stream.Collectors;
 @Tag(name = "Conference")
 @Path("/knowledge/conferences")
 @RequestScoped
+@RolesAllowed({"conference:read"})
 public class ConferenceResource {
 
     // Email attachment validation constants
@@ -81,6 +83,7 @@ public class ConferenceResource {
     }
 
     @POST
+    @RolesAllowed({"conference:write"})
     public void createConference(Conference conference) {
         conferenceService.createConference(conference);
     }
@@ -109,6 +112,7 @@ public class ConferenceResource {
     @POST
     @Path("/{conferenceuuid}/phases")
     @Transactional
+    @RolesAllowed({"conference:write"})
     public void addConferencePhase(@PathParam("conferenceuuid") String conferenceuuid, ConferencePhase conferencePhase) {
         if(conferencePhase.getUuid()==null) throw new IllegalArgumentException("ConferencePhase must have a uuid");
         ConferencePhase.findByIdOptional(conferencePhase.getUuid()).ifPresentOrElse(cp -> updatePhase(conferencePhase), conferencePhase::persist);
@@ -122,6 +126,7 @@ public class ConferenceResource {
     @DELETE
     @Path("/{conferenceuuid}/phases/{phaseuuid}")
     @Transactional
+    @RolesAllowed({"conference:write"})
     public void deleteConferencePhase(@PathParam("conferenceuuid") String conferenceuuid, @PathParam("phaseuuid") String phaseuuid) {
         ConferencePhase.delete("uuid", phaseuuid);
     }
@@ -140,6 +145,7 @@ public class ConferenceResource {
     @Path("/{conferenceuuid}/phases/{phaseuuid}/attachments")
     @Consumes(MediaType.APPLICATION_JSON)
     @Transactional
+    @RolesAllowed({"conference:write"})
     @Operation(
         summary = "Add attachment to conference phase",
         description = "Uploads a file attachment to be sent with emails when participants transition to this phase. " +
@@ -189,6 +195,7 @@ public class ConferenceResource {
     @DELETE
     @Path("/{conferenceuuid}/phases/{phaseuuid}/attachments/{attachmentid}")
     @Transactional
+    @RolesAllowed({"conference:write"})
     @Operation(
         summary = "Delete phase attachment",
         description = "Removes a file attachment from a conference phase"
@@ -237,6 +244,7 @@ public class ConferenceResource {
 
     @PUT
     @Path("/{conferenceuuid}/participants")
+    @RolesAllowed({"conference:write"})
     public void updateParticipantData(@PathParam("conferenceuuid") String conferenceUUID, ConferenceParticipant conferenceParticipant) {
         conferenceParticipant.setRegistered(LocalDateTime.now());
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
@@ -247,6 +255,7 @@ public class ConferenceResource {
 
     @POST
     @Path("/{conferenceuuid}/phase/{phasenumber}/participants/list")
+    @RolesAllowed({"conference:write"})
     public void changeParticipantPhase(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("phasenumber") int phaseNumber, List<ConferenceParticipant> conferenceParticipantList) {
         // Fetch the target phase to check for email and attachments
         ConferencePhase targetPhase = conferenceService.findConferencePhase(conferenceUUID, phaseNumber);
@@ -293,6 +302,7 @@ public class ConferenceResource {
     }
 
     @POST
+    @PermitAll
     @Path("/apply/forefront2024")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)
@@ -302,6 +312,7 @@ public class ConferenceResource {
     }
 
     @POST
+    @PermitAll
     @Path("/apply/forefront2025/{phaseNumber}")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)
@@ -330,6 +341,7 @@ public class ConferenceResource {
     }
 
     @POST
+    @PermitAll
     @Path("/{conferenceuuid}/apply")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_HTML)
@@ -340,6 +352,7 @@ public class ConferenceResource {
 
     @POST
     @Path("/message")
+    @RolesAllowed({"conference:write"})
     @Operation(
         summary = "Send email to conference participant",
         description = "Sends an email with optional file attachments to a conference participant. " +
@@ -507,6 +520,7 @@ public class ConferenceResource {
 
     @POST
     @Path("/bulk-message")
+    @RolesAllowed({"conference:write"})
     @Operation(
         summary = "Send bulk email to multiple conference participants",
         description = "Sends the same email with optional attachments to multiple recipients. " +

@@ -20,7 +20,7 @@ import java.util.Optional;
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"users:read"})
 public class UserSettingResource {
 
     @Inject
@@ -74,6 +74,7 @@ public class UserSettingResource {
      */
     @PUT
     @Path("/{key}")
+    @RolesAllowed({"users:write"})
     @Transactional
     public UserSetting upsertSetting(@PathParam("useruuid") String userUuid,
                                      @PathParam("key") String key,
@@ -97,6 +98,7 @@ public class UserSettingResource {
      */
     @DELETE
     @Path("/{key}")
+    @RolesAllowed({"users:write"})
     @Transactional
     public Response deleteSetting(@PathParam("useruuid") String userUuid,
                                   @PathParam("key") String key) {

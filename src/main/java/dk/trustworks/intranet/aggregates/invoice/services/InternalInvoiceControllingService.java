@@ -43,6 +43,7 @@ public class InternalInvoiceControllingService {
      */
     @SuppressWarnings("unchecked")
     public List<Invoice> findCrossCompanyInvoicesByDateRange(LocalDate fromdate, LocalDate todate) {
+        log.debugf("findCrossCompanyInvoicesByDateRange: fromdate=%s, todate=%s", fromdate, todate);
         LocalDate finalFromdate = fromdate != null ? fromdate : LocalDate.of(2014, 1, 1);
         LocalDate finalTodate = todate != null ? todate : LocalDate.now();
 
@@ -82,10 +83,13 @@ public class InternalInvoiceControllingService {
             ORDER BY i.invoicedate DESC, i.invoicenumber DESC
         """;
 
-        return em.createNativeQuery(sql, Invoice.class)
+        List<Invoice> results = em.createNativeQuery(sql, Invoice.class)
                 .setParameter("fromdate", finalFromdate)
                 .setParameter("todate", finalTodate)
                 .getResultList();
+        log.debugf("findCrossCompanyInvoicesByDateRange: found %d invoices for range [%s, %s)",
+                results.size(), finalFromdate, finalTodate);
+        return results;
     }
 
 
@@ -116,6 +120,7 @@ public class InternalInvoiceControllingService {
      * @return List of client/internal invoice pairs. Internal may be null when not present.
      */
     public java.util.List<CrossCompanyInvoicePairDTO> findCrossCompanyInvoicesWithInternal(java.time.LocalDate fromdate, java.time.LocalDate todate) {
+        log.debugf("findCrossCompanyInvoicesWithInternal: fromdate=%s, todate=%s", fromdate, todate);
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
@@ -367,6 +372,7 @@ public class InternalInvoiceControllingService {
             result.add(new CrossCompanyInvoicePairDTO(clientDto, internalDto));
         }
 
+        log.debugf("findCrossCompanyInvoicesWithInternal: found %d pairs for range [%s, %s)", result.size(), from, to);
         return result;
     }
 
@@ -394,6 +400,7 @@ public class InternalInvoiceControllingService {
      */
     public java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO>
     findCrossCompanyClientLessThanInternal(java.time.LocalDate fromdate, java.time.LocalDate todate) {
+        log.debugf("findCrossCompanyClientLessThanInternal: fromdate=%s, todate=%s", fromdate, todate);
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
@@ -641,6 +648,7 @@ public class InternalInvoiceControllingService {
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
         }
 
+        log.debugf("findCrossCompanyClientLessThanInternal: found %d pairs for range [%s, %s)", result.size(), from, to);
         return result;
     }
 
@@ -664,6 +672,7 @@ public class InternalInvoiceControllingService {
      */
     public java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO>
     findCrossCompanyClientInvoicesWithoutInternal(java.time.LocalDate fromdate, java.time.LocalDate todate) {
+        log.debugf("findCrossCompanyClientInvoicesWithoutInternal: fromdate=%s, todate=%s", fromdate, todate);
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
@@ -849,6 +858,7 @@ public class InternalInvoiceControllingService {
             result.add(clientDto);
         }
 
+        log.debugf("findCrossCompanyClientInvoicesWithoutInternal: found %d invoices for range [%s, %s)", result.size(), from, to);
         return result;
     }
 
@@ -869,6 +879,7 @@ public class InternalInvoiceControllingService {
      */
     public List<CrossCompanyInvoicePairDTO>
     findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(java.time.LocalDate fromdate, java.time.LocalDate todate) {
+        log.debugf("findCrossCompanyClientInvoicesStatusCreditNoteWithInternal: fromdate=%s, todate=%s", fromdate, todate);
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
@@ -1090,6 +1101,7 @@ public class InternalInvoiceControllingService {
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
         }
 
+        log.debugf("findCrossCompanyClientInvoicesStatusCreditNoteWithInternal: found %d pairs for range [%s, %s)", result.size(), from, to);
         return result;
     }
 
@@ -1112,6 +1124,7 @@ public class InternalInvoiceControllingService {
      * @return List of ClientWithInternalsDTO containing the client and all its internal invoices
      */
     public java.util.List<ClientWithInternalsDTO> findClientInvoicesWithMultipleInternals(java.time.LocalDate fromdate, java.time.LocalDate todate) {
+        log.debugf("findClientInvoicesWithMultipleInternals: fromdate=%s, todate=%s", fromdate, todate);
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
@@ -1321,6 +1334,7 @@ public class InternalInvoiceControllingService {
             ));
         }
 
+        log.debugf("findClientInvoicesWithMultipleInternals: found %d clients with multiple internals for range [%s, %s)", result.size(), from, to);
         return result;
     }
 
@@ -1352,8 +1366,8 @@ public class InternalInvoiceControllingService {
                     }
                 }
             }
-        } catch (Exception ignore) {
-            // Fall back to invoice snapshot if anything fails
+        } catch (Exception e) {
+            log.warnf(e, "Failed to resolve client name for invoiceUuid=%s, falling back to snapshot name", invoice.getUuid());
         }
         return invoice.getClientname();
     }

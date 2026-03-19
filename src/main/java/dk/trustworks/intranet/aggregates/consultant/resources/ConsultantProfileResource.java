@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
 @RequestScoped
 @JBossLog
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"consultant:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class ConsultantProfileResource {
 

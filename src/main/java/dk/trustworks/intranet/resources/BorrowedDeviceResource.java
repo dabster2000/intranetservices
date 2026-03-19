@@ -16,7 +16,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @ApplicationScoped
 @JBossLog
 @Path("/users/{useruuid}/borroweddevices")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"devices:read"})
 @SecurityRequirement(name = "jwt")
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
@@ -32,6 +32,7 @@ public class BorrowedDeviceResource {
     }
 
     @POST
+    @RolesAllowed({"devices:write"})
     public void create(@PathParam("useruuid") String useruuid, BorrowedDevice device) {
         device.setUseruuid(useruuid);
         log.info("BorrowedDeviceResource.create user=" + useruuid + ", device=" + device);
@@ -39,6 +40,7 @@ public class BorrowedDeviceResource {
     }
 
     @PUT
+    @RolesAllowed({"devices:write"})
     public void update(@PathParam("useruuid") String useruuid, BorrowedDevice device) {
         device.setUseruuid(useruuid);
         log.info("BorrowedDeviceResource.update user=" + useruuid + ", device=" + device);
@@ -47,6 +49,7 @@ public class BorrowedDeviceResource {
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"devices:write"})
     public void delete(@PathParam("uuid") String uuid) {
         log.info("BorrowedDeviceResource.delete uuid=" + uuid);
         service.delete(uuid);

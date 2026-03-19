@@ -30,7 +30,7 @@ import java.util.Set;
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"documents:read"})
 public class TemplateResource {
 
     @Inject
@@ -100,6 +100,7 @@ public class TemplateResource {
      * @return Created template
      */
     @POST
+    @RolesAllowed({"documents:write"})
     public Response create(@Valid DocumentTemplateDTO dto) {
         String currentUser = getCurrentUserUuid();
         log.infof("POST /templates by user %s: %s", currentUser, dto.getName());
@@ -117,6 +118,7 @@ public class TemplateResource {
      */
     @PUT
     @Path("/{uuid}")
+    @RolesAllowed({"documents:write"})
     public DocumentTemplateDTO update(@PathParam("uuid") String uuid, @Valid DocumentTemplateDTO dto) {
         String currentUser = getCurrentUserUuid();
         log.infof("PUT /templates/%s by user %s", uuid, currentUser);
@@ -141,6 +143,7 @@ public class TemplateResource {
      */
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"documents:write"})
     public Response delete(@PathParam("uuid") String uuid) {
         String currentUser = getCurrentUserUuid();
         log.infof("DELETE /templates/%s by user %s", uuid, currentUser);
@@ -157,6 +160,7 @@ public class TemplateResource {
      */
     @POST
     @Path("/{uuid}/validate")
+    @RolesAllowed({"documents:write"})
     public Response validate(@PathParam("uuid") String uuid, @Valid DocumentTemplateDTO dto) {
         log.infof("POST /templates/%s/validate", uuid);
 
@@ -201,6 +205,7 @@ public class TemplateResource {
      */
     @POST
     @Path("/documents/upload")
+    @RolesAllowed({"documents:write"})
     public Response uploadWordTemplate(WordTemplateUploadRequest request) {
         log.infof("POST /templates/documents/upload: filename=%s, documentUuid=%s",
                 request.filename(), request.documentUuid());
@@ -324,6 +329,7 @@ public class TemplateResource {
      */
     @POST
     @Path("/documents/extract-placeholders")
+    @RolesAllowed({"documents:write"})
     public Response extractPlaceholdersFromContent(WordTemplateUploadRequest request) {
         log.infof("POST /templates/documents/extract-placeholders: filename=%s", request.filename());
 
@@ -353,6 +359,7 @@ public class TemplateResource {
      */
     @DELETE
     @Path("/documents/{fileUuid}")
+    @RolesAllowed({"documents:write"})
     public Response deleteWordTemplate(@PathParam("fileUuid") String fileUuid) {
         log.infof("DELETE /templates/documents/%s", fileUuid);
 

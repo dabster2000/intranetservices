@@ -34,7 +34,7 @@ import java.util.Optional;
 @RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"system:read"})
 @SecurityRequirement(name = "jwt")
 public class MigrationRegistryResource {
 
@@ -112,7 +112,7 @@ public class MigrationRegistryResource {
      */
     @PUT
     @Path("/{pageKey}/toggle")
-    @RolesAllowed({"ADMIN", "SYSTEM"})
+    @RolesAllowed({"system:write"})
     @Operation(
             summary = "Toggle page migration status",
             description = "Switches a page between migrated (React) and non-migrated (Vaadin) status"
@@ -146,7 +146,7 @@ public class MigrationRegistryResource {
      */
     @PUT
     @Path("/{pageKey}")
-    @RolesAllowed({"ADMIN", "SYSTEM"})
+    @RolesAllowed({"system:write"})
     @Operation(
             summary = "Set page migration status",
             description = "Explicitly sets a page as migrated (React) or non-migrated (Vaadin)"
@@ -182,7 +182,7 @@ public class MigrationRegistryResource {
      */
     @PUT
     @Path("/{pageKey}/roles")
-    @RolesAllowed({"ADMIN", "SYSTEM"})
+    @RolesAllowed({"system:write"})
     @Operation(
             summary = "Update page required roles",
             description = "Sets the required roles for a page"

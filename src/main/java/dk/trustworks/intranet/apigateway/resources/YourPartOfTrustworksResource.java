@@ -6,6 +6,7 @@ import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
+import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -32,12 +33,15 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"bonus:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class YourPartOfTrustworksResource {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    ScopeContext scopeContext;
 
     // --------- OLD ENDPOINT (kept for backward compatibility) ----------
     // Now computed from day-based data: month boolean = (eligibleShare > 0)
@@ -200,6 +204,16 @@ public class YourPartOfTrustworksResource {
             }
 
             out.add(new EmployeeBonusBasisDTO(user, year, months));
+        }
+
+        // Data boundary: mask salary fields when caller lacks salaries:read
+        if (!scopeContext.hasScope("salaries:read")) {
+            for (EmployeeBonusBasisDTO dto : out) {
+                for (EmployeeBonusBasisDTO.MonthBasis mb : dto.getMonths()) {
+                    mb.setAvgSalary(0.0);
+                    mb.setWeightedAvgSalary(0.0);
+                }
+            }
         }
 
         return out;

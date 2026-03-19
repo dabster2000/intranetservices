@@ -7,7 +7,7 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.utils.DateUtils;
-import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
@@ -29,8 +29,7 @@ import java.util.stream.Collectors;
 @RequestScoped
 //@SecurityRequirement(name = "jwt")
 //@ClientHeaderParam(name="Authorization", value="{generateRequestId}")
-//@RolesAllowed({"SYSTEM", "USER", "EXTERNAL", "EDITOR", "CXO", "SALES", "VTV", "ACCOUNTING", "MANAGER", "PARTNER", "ADMIN"})
-@PermitAll
+@RolesAllowed({"vacation:read"})
 public class VacationResource {
 
     @Inject
@@ -47,16 +46,15 @@ public class VacationResource {
     @GET
     @Path("/user/{useruuid}")
     public List<Work> getVacation(@PathParam("useruuid") String useruuid) {
-        System.out.println("VacationResource.listAll");
-        System.out.println("useruuid = " + useruuid);
+        log.infof("Getting vacation for user uuid=%s", useruuid);
 
         User user = userService.findById(useruuid, false);
         List<WorkFull> vacation = workAPI.findVacationByUser(useruuid);
         LocalDate employedDate = user.getHireDate();
-        System.out.println("employedDate = " + employedDate);
+        log.debugf("User uuid=%s employedDate=%s", useruuid, employedDate);
 
         if(employedDate!= null && employedDate.isAfter(startDate)) startDate = employedDate.withDayOfMonth(1);
-        System.out.println("startDate = " + startDate);
+        log.debugf("User uuid=%s startDate=%s", useruuid, startDate);
 
         Map<LocalDate, VacationMonth> vacationMonths = new HashMap<>();
 
@@ -66,7 +64,7 @@ public class VacationResource {
         Map<LocalDate, Double> vacationByYear = new HashMap<>();
 
         LocalDate testDate = startDate;
-        System.out.println("User: "+user.getUsername());
+        log.debugf("Processing vacation for user=%s", user.getUsername());
         StringBuilder strMonth =    new StringBuilder("MONTH,");
         StringBuilder strEarned =   new StringBuilder("EARNED,");
         StringBuilder strUsed =     new StringBuilder("USED,");
@@ -93,14 +91,11 @@ public class VacationResource {
         //if(vacationByYear.containsKey(convertToVacationUsedYear(testDate))) vacationByYear.put(convertToVacationUsedYear(testDate), vacationByYear.get(convertToVacationUsedYear(testDate))-vacationUsedTestMonth);
 
 
-        System.out.println("vacationByYear = " + convertWithStream(vacationByYear));
+        log.debugf("vacationByYear = %s", convertWithStream(vacationByYear));
 
-        //System.out.println("convertWithStream(vacationEarnedByMonth) = " + convertWithStream(vacationEarnedByMonth));
-        //System.out.println("convertWithStream(vacationEarnedByMonth) = " + convertWithStream(vacationUsedByMonth));
-
-        System.out.println(strMonth);
-        System.out.println(strEarned);
-        System.out.println(strUsed);
+        log.debugf("strMonth=%s", strMonth);
+        log.debugf("strEarned=%s", strEarned);
+        log.debugf("strUsed=%s", strUsed);
 
         return null;
     }

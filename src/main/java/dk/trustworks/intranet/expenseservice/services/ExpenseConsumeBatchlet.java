@@ -20,11 +20,17 @@ public class ExpenseConsumeBatchlet extends AbstractBatchlet {
     @Override
     @ActivateRequestContext
     public String process() throws Exception {
+        long startTime = System.currentTimeMillis();
+        log.infof("ExpenseConsumeBatchlet started — processing validated expenses for upload");
         try {
             expenseService.consumeCreate();
+            long durationMs = System.currentTimeMillis() - startTime;
+            log.infof("ExpenseConsumeBatchlet completed successfully in %d ms", durationMs);
             return "COMPLETED";
         } catch (Exception e) {
-            log.error("ExpenseConsumeBatchlet failed", e);
+            long durationMs = System.currentTimeMillis() - startTime;
+            log.errorf(e, "ExpenseConsumeBatchlet failed after %d ms during expense consume/upload — %s: %s",
+                    durationMs, e.getClass().getSimpleName(), e.getMessage());
             throw e;
         }
     }

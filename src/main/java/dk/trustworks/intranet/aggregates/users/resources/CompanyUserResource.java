@@ -25,7 +25,7 @@ import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 @JBossLog
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"users:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class CompanyUserResource {
 
@@ -38,13 +38,13 @@ public class CompanyUserResource {
     @GET
     public List<User> listAll(@QueryParam("shallow") Optional<String> shallow) {
         boolean shallowValue = Boolean.getBoolean(shallow.orElse("false"));
-        return userService.clearSalaries(userService.listAllByCompany(companyuuid, shallowValue));
+        return userService.listAllByCompany(companyuuid, shallowValue);
     }
 
     @GET
     @Path("/search/findUsersByDateAndStatusListAndTypes")
     public List<User> findUsersByDateAndStatusListAndTypes(@QueryParam("date") String date, @QueryParam("consultantStatusList") String statusList, @QueryParam("consultantTypes") String consultantTypes, @QueryParam("shallow") Optional<String> shallow) {
         boolean shallowValue = Boolean.getBoolean(shallow.orElse("false"));
-        return userService.clearSalaries(userService.findUsersByDateAndStatusListAndTypesAndCompany(companyuuid, dateIt(date), statusList, consultantTypes, shallowValue));
+        return userService.findUsersByDateAndStatusListAndTypesAndCompany(companyuuid, dateIt(date), statusList, consultantTypes, shallowValue);
     }
 }

@@ -10,9 +10,12 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 
+import jakarta.annotation.security.RolesAllowed;
+
 import java.util.List;
 
 @Path("/lunch/mealplans")
+@RolesAllowed({"lunch:read"})
 public class MealPlanResource {
 
     @Inject
@@ -32,6 +35,7 @@ public class MealPlanResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"lunch:write"})
     public MealPlan createMealPlan(MealPlan mealPlan) {
         mealPlan.persist();
         return mealPlan;

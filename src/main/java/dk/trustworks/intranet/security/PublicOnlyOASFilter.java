@@ -20,7 +20,7 @@ public class PublicOnlyOASFilter implements OASFilter {
 
         List<String> toRemove = new ArrayList<>();
         for (Map.Entry<String, PathItem> entry : openAPI.getPaths().getPathItems().entrySet()) {
-            if (!entry.getKey().startsWith("/public") && !entry.getKey().startsWith("/login")) {
+            if (!entry.getKey().startsWith("/public") && !entry.getKey().startsWith("/login") && !entry.getKey().equals("/auth/token")) {
                 toRemove.add(entry.getKey());
             }
         }

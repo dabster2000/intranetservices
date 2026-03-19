@@ -18,7 +18,7 @@ import java.util.List;
 @Tag(name = "News")
 @Path("/news")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"news:read"})
 @SecurityRequirement(name = "jwt")
 public class NewsResource {
 
@@ -37,6 +37,7 @@ public class NewsResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"news:write"})
     public Response save(News news) {
         newsAPI.save(news);
         return Response.ok().build();
@@ -45,6 +46,7 @@ public class NewsResource {
     @DELETE
     @Path("/{newsuuid}")
     @Transactional
+    @RolesAllowed({"news:write"})
     public Response delete(@PathParam("newsuuid") String uuid) {
         newsAPI.delete(uuid);
         return Response.ok().build();

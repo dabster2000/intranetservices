@@ -29,6 +29,9 @@ public class ProjectDescriptionService {
         projectDescription.getProjectDescriptionUserList().forEach(projectDescriptionUser -> {
             addProjectDescriptionUser(projectDescription, projectDescriptionUser.getUseruuid());
         });
+        log.infof("ProjectDescription created: uuid=%s, name=%s, consultantCount=%d",
+                projectDescription.getUuid(), projectDescription.getName(),
+                projectDescription.getProjectDescriptionUserList().size());
         return projectDescription;
     }
 
@@ -46,6 +49,9 @@ public class ProjectDescriptionService {
             existingProjectDescription.setMethods(updatedProjectDescription.getMethods());
             existingProjectDescription.setFromDate(updatedProjectDescription.getFromDate());
             existingProjectDescription.setToDate(updatedProjectDescription.getToDate());
+            log.infof("ProjectDescription updated: uuid=%s, name=%s", uuid, updatedProjectDescription.getName());
+        } else {
+            log.warnf("ProjectDescription update failed: uuid=%s not found", uuid);
         }
         return existingProjectDescription;
     }
@@ -53,6 +59,7 @@ public class ProjectDescriptionService {
     @Transactional
     public void delete(String uuid) {
         ProjectDescription.deleteById(uuid);
+        log.infof("ProjectDescription deleted: uuid=%s", uuid);
     }
 
     @Transactional
@@ -63,9 +70,15 @@ public class ProjectDescriptionService {
 
     @Transactional
     public void addProjectDescriptionUser(ProjectDescription projectDescription, String useruuid) {
-        if(ProjectDescriptionUser.find("useruuid like ?1 and projectDescription = ?2", useruuid, projectDescription).singleResultOptional().isPresent()) return;
+        if(ProjectDescriptionUser.find("useruuid like ?1 and projectDescription = ?2", useruuid, projectDescription).singleResultOptional().isPresent()) {
+            log.debugf("ProjectDescription consultant already exists: projectDescUuid=%s, useruuid=%s",
+                    projectDescription.getUuid(), useruuid);
+            return;
+        }
         ProjectDescriptionUser projectDescriptionUser = new ProjectDescriptionUser(useruuid, projectDescription);
         projectDescriptionUser.persist();
+        log.infof("ProjectDescription consultant added: projectDescUuid=%s, useruuid=%s",
+                projectDescription.getUuid(), useruuid);
     }
 
 
@@ -73,11 +86,14 @@ public class ProjectDescriptionService {
     public void removeProjectDescriptionUser(String projectdesc_uuid, String useruuid) {
         ProjectDescription projectDescription = ProjectDescription.findById(projectdesc_uuid);
         ProjectDescriptionUser.delete("projectDescription = ?1 and useruuid like ?2", projectDescription, useruuid);
+        log.infof("ProjectDescription consultant removed: projectDescUuid=%s, useruuid=%s",
+                projectdesc_uuid, useruuid);
     }
 
     @Transactional
     public void removeProjectDescriptionUsers(String projectdesc_uuid) {
         ProjectDescriptionUser.delete("projectDescription = ?1", ProjectDescription.<ProjectDescription>findById(projectdesc_uuid));
+        log.infof("ProjectDescription all consultants removed: projectDescUuid=%s", projectdesc_uuid);
     }
 
 }

@@ -31,7 +31,7 @@ import java.util.Set;
 @SecurityRequirement(name = "jwt")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"partnerbonus:read"})
 public class BonusEligibilityGroupResource {
 
     public record GroupDTO(
@@ -67,6 +67,7 @@ public class BonusEligibilityGroupResource {
     }
 
     @POST
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(summary = "Create group", description = "Create a new bonus eligibility group")
     @APIResponse(responseCode = "201", description = "Created",
@@ -83,6 +84,7 @@ public class BonusEligibilityGroupResource {
 
     @PUT
     @Path("/{uuid}")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(summary = "Update group", description = "Update name and financial year of an existing group")
     public BonusEligibilityGroup update(@PathParam("uuid") String uuid, GroupDTO dto) {
@@ -97,6 +99,7 @@ public class BonusEligibilityGroupResource {
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"partnerbonus:write"})
     @Transactional
     @Operation(summary = "Delete group", description = "Delete a group. Existing eligibility rows will have group set to NULL (FK ON DELETE SET NULL)")
     public void delete(@PathParam("uuid") String uuid) {

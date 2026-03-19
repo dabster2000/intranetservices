@@ -25,6 +25,7 @@ quarkus:
     baseline-on-migrate: true
     baseline-version: 1.0
     baseline-description: initial baseline
+    out-of-order: true
   swagger-ui:
     always-include: true
   smallrye-openapi:
@@ -63,7 +64,14 @@ quarkus:
   smallrye-health:
     root-path: /health
   otel:
-    enabled: false
+    enabled: true
+    traces:
+      exporter: ${OTEL_TRACES_EXPORTER:none}
+    exporter:
+      otlp:
+        traces:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4317}
+          enabled: ${OTEL_EXPORTER_OTLP_TRACES_ENABLED:false}
   rest-client:
     graph-api:
       url: https://graph.microsoft.com
@@ -73,7 +81,7 @@ quarkus:
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
-      read-timeout: 120000      # 120 seconds for web search + reasoning (was ~30s default)
+      read-timeout: 180000      # 180 seconds for GPT-5 file_search + vision (can take 60-120s)
       connect-timeout: 10000    # 10 seconds for connection establishment
     economics-journals-api:
       url: https://apis.e-conomic.com/journalsapi/v13.0.1
@@ -111,7 +119,7 @@ quarkus:
       #  level: DEBUG
     console:
       enable: true
-      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %c{1.} - %m%n"
+      format: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] [%X{userUuid}] traceId=%X{traceId} %c{1.} - %m%n"
       #format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
       level: DEBUG
       #providers: com. #com.fasterxml.jackson.jaxrs.json.JacksonJsonProvider
@@ -264,6 +272,14 @@ bonus:
     calibration-value: 30.0
     production-annual-threshold: 1500000.0
     production-commission-rate: 0.20
+
+bug-report:
+  ai:
+    model: ${BUGREPORT_AI_MODEL:gpt-5}
+    vector-store-id: ${BUGREPORT_VECTOR_STORE_ID:vs_69b732518c0081918dcd98133a178742}
+  cloudwatch:
+    log-group-backend: ${CLOUDWATCH_LOG_GROUP_BACKEND:/aws/apprunner/tw-quarkus-staging}
+    log-group-frontend: ${CLOUDWATCH_LOG_GROUP_FRONTEND:/aws/apprunner/tw-nextjs-staging}
 
 sharepoint:
   hostname: tenant.sharepoint.com

@@ -22,7 +22,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @RequestScoped
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"news:read"})
 @SecurityRequirement(name = "jwt")
 public class BubbleResource {
 
@@ -47,18 +47,21 @@ public class BubbleResource {
     }
 
     @POST
+    @RolesAllowed({"news:write"})
     public void save(Bubble bubble) throws SlackApiException, IOException {
         bubbleService.save(bubble);
         bubble.getBubbleMembers().forEach(bubbleMember -> bubbleService.addBubbleMember(bubble, bubbleMember.getUseruuid()));
     }
 
     @PUT
+    @RolesAllowed({"news:write"})
     public void update(Bubble bubble) throws SlackApiException, IOException {
         bubbleService.update(bubble);
     }
 
     @DELETE
     @Path("/{bubbleuuid}")
+    @RolesAllowed({"news:write"})
     public void delete(@PathParam("bubbleuuid") String bubbleuuid) throws SlackApiException, IOException {
         bubbleService.delete(bubbleuuid);
     }
@@ -77,12 +80,14 @@ public class BubbleResource {
 
     @DELETE
     @Path("/{bubbleuuid}/users/{useruuid}")
+    @RolesAllowed({"news:write"})
     public void removeBubbleMember(@PathParam("bubbleuuid") String bubbleuuid, @PathParam("useruuid") String useruuid) {
         bubbleService.removeBubbleMember(bubbleuuid, useruuid);
     }
 
     @DELETE
     @Path("/{bubbleuuid}/users")
+    @RolesAllowed({"news:write"})
     public void removeBubbleMembers(@PathParam("bubbleuuid") String bubbleuuid) {
         bubbleService.removeBubbleMembers(bubbleuuid);
     }

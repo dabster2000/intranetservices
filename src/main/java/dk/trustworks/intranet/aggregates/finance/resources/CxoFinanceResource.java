@@ -64,7 +64,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"dashboard:read"})
 public class CxoFinanceResource {
 
     @Inject
@@ -1394,6 +1394,7 @@ public class CxoFinanceResource {
      */
     @PUT
     @Path("/career-level-bonuses/{careerLevel}")
+    @RolesAllowed({"dashboard:write"})
     @Transactional
     public Response updateCareerLevelBonus(
             @PathParam("careerLevel") String careerLevel,
@@ -1416,7 +1417,7 @@ public class CxoFinanceResource {
 
         bonus.bonusPct = BigDecimal.valueOf(dto.getBonusPct());
         bonus.updatedAt = LocalDateTime.now();
-        bonus.updatedBy = requestHeaderHolder.getUsername();
+        bonus.updatedBy = requestHeaderHolder.getUserUuid();
         bonus.persist();
 
         return Response.ok(new CareerLevelBonusDTO(bonus.careerLevel, bonus.bonusPct.doubleValue())).build();

@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.domain.user.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
@@ -21,8 +20,6 @@ import org.mindrot.jbcrypt.BCrypt;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
-
-import static com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY;
 
 /**
  * Created by hans on 23/06/2017.
@@ -44,7 +41,7 @@ public class User extends PanacheEntityBase {
     private String gender;
     @JsonIgnore
     private String type;
-    @JsonProperty(access = READ_ONLY)
+    @JsonIgnore
     private String password;
     @JsonIgnore
     @Column(name = "azure_oid", length = 36, unique = true)
@@ -60,6 +57,7 @@ public class User extends PanacheEntityBase {
     @JsonSerialize(using = LocalDateSerializer.class)
     private LocalDate birthday;
 
+    @JsonIgnore
     private String cpr;
     @Deprecated
     private String phone;

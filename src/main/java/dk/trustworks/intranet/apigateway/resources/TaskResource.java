@@ -23,7 +23,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class TaskResource {
 
     @Inject
@@ -52,17 +52,20 @@ public class TaskResource {
     }
 
     @POST
+    @RolesAllowed({"contracts:write"})
     public Task save(Task task) {
         return taskAPI.save(task);
     }
 
     @PUT
+    @RolesAllowed({"contracts:write"})
     public void updateOne(Task task) {
         taskAPI.updateOne(task);
     }
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"contracts:write"})
     public void delete(@PathParam("uuid") String uuid) {
         taskAPI.delete(uuid);
     }

@@ -15,7 +15,7 @@ import java.util.List;
 @JBossLog
 @ApplicationScoped
 @Path("/itexpense/category")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"devices:read"})
 @SecurityRequirement(name = "jwt")
 public class ItExpenseCategoryResource {
 

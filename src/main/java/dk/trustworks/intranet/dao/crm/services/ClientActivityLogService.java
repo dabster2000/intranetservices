@@ -81,7 +81,7 @@ public class ClientActivityLogService {
     // --- Private helpers ---
 
     private String resolveCurrentUser() {
-        String username = requestHeaderHolder.getUsername();
+        String username = requestHeaderHolder.getUserUuid();
         if (username != null && !username.isBlank()) {
             return username;
         }

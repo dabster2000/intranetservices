@@ -28,7 +28,7 @@ import java.util.List;
 @Tag(name = "Sales")
 @Path("/sales/leads")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"crm:read"})
 @SecurityRequirement(name = "jwt")
 public class SalesResource {
 
@@ -119,28 +119,33 @@ public class SalesResource {
 
     @POST
     @Path("/{uuid}/consultant")
+    @RolesAllowed({"crm:write"})
     public void addConsultant(@PathParam("uuid") String salesleaduuid, User user) {
         salesService.addConsultant(salesleaduuid, user);
     }
 
     @DELETE
     @Path("/{uuid}/consultant/{useruuid}")
+    @RolesAllowed({"crm:write"})
     public void addConsultant(@PathParam("uuid") String salesleaduuid, @PathParam("useruuid") String useruuid) {
         salesService.removeConsultant(salesleaduuid, useruuid);
     }
 
     @POST
+    @RolesAllowed({"crm:write"})
     public SalesLead persist(SalesLead salesLead) {
         return salesService.persist(salesLead);
     }
 
     @PUT
+    @RolesAllowed({"crm:write"})
     public void update(SalesLead salesLead) {
         salesService.update(salesLead);
     }
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"crm:write"})
     public void delete(@PathParam("uuid") String uuid) {
         salesService.delete(uuid);
     }
@@ -165,6 +170,7 @@ public class SalesResource {
     @Path("/{uuid}/consultant-recommendations")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"crm:write"})
     public Response getConsultantRecommendations(
             @PathParam("uuid") String leadUuid,
             ConsultantRecommendationRequest request) {
@@ -208,6 +214,7 @@ public class SalesResource {
     @Path("/suggest-description")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.TEXT_PLAIN)
+    @RolesAllowed({"crm:write"})
     public Response suggestDescription(DescriptionSuggestionRequest request) {
         log.infof("[suggestDescription] Received request for description suggestion");
 

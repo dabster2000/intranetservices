@@ -19,7 +19,7 @@ import java.util.List;
 @Tag(name = "culture")
 @Path("/culture")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"news:read"})
 @SecurityRequirement(name = "jwt")
 public class CultureResource {
 
@@ -52,6 +52,7 @@ public class CultureResource {
 
     @POST
     @Path("/lessonframed")
+    @RolesAllowed({"news:write"})
     public void saveLesson(Lesson lesson) {
         lessonFramedAPI.save(lesson);
     }

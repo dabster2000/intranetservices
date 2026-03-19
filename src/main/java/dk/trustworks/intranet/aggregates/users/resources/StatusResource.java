@@ -23,7 +23,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"userstatus:read"})
 public class StatusResource {
 
     @Inject
@@ -49,6 +49,7 @@ public class StatusResource {
 
     @POST
     @Path("/{useruuid}/statuses")
+    @RolesAllowed({"userstatus:write"})
     @CacheInvalidateAll(cacheName = "user-cache")
     public Response create(@PathParam("useruuid") String useruuid, UserStatus userStatus) {
         userStatus.setUseruuid(useruuid);
@@ -64,6 +65,7 @@ public class StatusResource {
 
     @DELETE
     @Path("/{useruuid}/status/{statusuuid}")
+    @RolesAllowed({"userstatus:write"})
     @CacheInvalidateAll(cacheName = "user-cache")
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("statusuuid") String statusuuid) {
         statusService.delete(statusuuid);

@@ -17,7 +17,7 @@ import java.util.List;
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"transportation:read"})
 @SecurityRequirement(name = "jwt")
 public class TransportationRegistrationResource {
 
@@ -37,6 +37,7 @@ public class TransportationRegistrationResource {
 
     @POST
     @Path("/{useruuid}/transportation/registrations")
+    @RolesAllowed({"transportation:write"})
     public void create(@PathParam("useruuid") String useruuid, TransportationRegistration entity) {
         entity.setUseruuid(useruuid);
         service.persistOrUpdate(entity);
@@ -44,6 +45,7 @@ public class TransportationRegistrationResource {
 
     @DELETE
     @Path("/{useruuid}/transportation/registrations/{uuid}")
+    @RolesAllowed({"transportation:write"})
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("uuid") String entityuuid) {
         service.delete(entityuuid);
     }

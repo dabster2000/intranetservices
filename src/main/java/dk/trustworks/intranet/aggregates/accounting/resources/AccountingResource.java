@@ -17,6 +17,7 @@ import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -52,7 +53,7 @@ import java.util.stream.Collectors;
 @Path("/accounting")
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"accounting:read"})
 @SecurityRequirement(name = "jwt")
 public class AccountingResource {
 
@@ -70,6 +71,9 @@ public class AccountingResource {
 
     @Inject
     IntercompanyCalcService calcService;
+
+    @Inject
+    ScopeContext scopeContext;
 
     @ConfigProperty(name = "dk.trustworks.intranet.aggregates.accounting.salary-buffer-multiplier", defaultValue = "1.02")
     double salaryBufferMultiplier;
@@ -489,6 +493,7 @@ public class AccountingResource {
             if (cs != null) cs.staffPayable = amt.setScale(SCALE, RM);
         });
 
+        maskSalaryFieldsIfNeeded(result);
         return result;
     }
 
@@ -782,6 +787,7 @@ public class AccountingResource {
                 })
         ));
 
+        maskSalaryFieldsIfNeeded(result);
         return result;
     }
 
@@ -1301,6 +1307,7 @@ public class AccountingResource {
 
     @POST
     @Path("/receipts")
+    @RolesAllowed({"accounting:write"})
     public void save(Expense expense) throws IOException, InterruptedException {
         if(expense.getUseruuid().equals("173ee0b6-4ee5-11e7-b114-b2f933d5fe66")) return;
         expenseAPI.saveExpense(expense);
@@ -1308,12 +1315,14 @@ public class AccountingResource {
 
     @PUT
     @Path("/receipts/{uuid}")
+    @RolesAllowed({"accounting:write"})
     public void updateOne(@PathParam("uuid") String uuid, Expense expense) {
         expenseAPI.updateOne(uuid, expense);
     }
 
     @DELETE
     @Path("/receipts/{uuid}")
+    @RolesAllowed({"accounting:write"})
     public void delete(@PathParam("uuid") String uuid) {
         expenseAPI.delete(uuid);
     }
@@ -1335,12 +1344,14 @@ public class AccountingResource {
 
     @POST
     @Path("/user-accounts")
+    @RolesAllowed({"accounting:write"})
     public void saveUserAccount(UserAccountDTO userAccount, @Context SecurityContext securityContext) {
         userAccountAPI.saveAccount(userAccount, securityContext);
     }
 
     @PUT
     @Path("/user-accounts/{useruuid}")
+    @RolesAllowed({"accounting:write"})
     public void updateUserAccount(@PathParam("useruuid") String useruuid,
                                   UserAccountDTO userAccount,
                                   @Context SecurityContext securityContext) {
@@ -1357,6 +1368,7 @@ public class AccountingResource {
 
     @POST
     @Path("/expense-accounts")
+    @RolesAllowed({"accounting:write"})
     @Transactional
     public void saveExpenseAccount(@Valid ExpenseAccount expenseAccount) {
         accountPlanAPI.saveExpenseAccount(expenseAccount);
@@ -1364,6 +1376,7 @@ public class AccountingResource {
 
     @PUT
     @Path("/expense-accounts/{account-no}")
+    @RolesAllowed({"accounting:write"})
     @Transactional
     public void updateExpenseAccount(@PathParam("account-no") String account_no, ExpenseAccount expenseAccount) {
         accountPlanAPI.updateExpenseAccount(account_no, expenseAccount);
@@ -1395,6 +1408,7 @@ public class AccountingResource {
 
     @POST
     @Path("/expense-categories")
+    @RolesAllowed({"accounting:write"})
     @Transactional
     public void saveExpenseCategory(@Valid ExpenseCategory expenseCategory) {
         accountPlanAPI.saveExpenseCategory(expenseCategory);
@@ -1402,6 +1416,7 @@ public class AccountingResource {
 
     @PUT
     @Path("/expense-categories/{uuid}")
+    @RolesAllowed({"accounting:write"})
     @Transactional
     public void updateExpenseCategory(@PathParam("uuid") String uuid, ExpenseCategory expenseCategory) {
         accountPlanAPI.updateExpenseCategory(uuid, expenseCategory);
@@ -1423,7 +1438,7 @@ public class AccountingResource {
      */
     @GET
     @Path("/accounts")
-    @RolesAllowed({"ADMIN", "SYSTEM"})
+    @RolesAllowed({"accounting:write"})
     public List<AccountingAccountDTO> listAccounts() {
         @SuppressWarnings("unchecked")
         List<AccountingAccount> accounts = em.createQuery("""
@@ -1457,7 +1472,7 @@ public class AccountingResource {
      */
     @PATCH
     @Path("/accounts/{uuid}/cost-type")
-    @RolesAllowed({"ADMIN"})
+    @RolesAllowed({"accounting:write"})
     @Transactional
     public Response updateCostType(
             @PathParam("uuid") String uuid,
@@ -1470,6 +1485,31 @@ public class AccountingResource {
         }
         account.setCostType(request.costType());
         return Response.noContent().build();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Data boundary: salary field masking
+    // ──────────────────────────────────────────────────────────────
+
+    /**
+     * Masks salary-related fields in an {@link ExpenseDistributionResult} when the
+     * caller lacks the {@code salaries:read} scope. Nulls {@code staffCostOrigin}
+     * and {@code staffPayable} on company summaries, and zeroes allocations on
+     * salary-flagged account distributions.
+     */
+    private void maskSalaryFieldsIfNeeded(ExpenseDistributionResult result) {
+        if (scopeContext.hasScope("salaries:read")) {
+            return;
+        }
+        for (CompanySummary cs : result.companies) {
+            cs.staffCostOrigin = null;
+            cs.staffPayable = null;
+        }
+        for (AccountDistribution ad : result.accounts) {
+            if (ad.salary) {
+                ad.allocations.replaceAll((k, v) -> BigDecimal.ZERO);
+            }
+        }
     }
 }
 

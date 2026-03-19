@@ -1,0 +1,109 @@
+# Path policy for the auto-fix pipeline.
+# Single source of truth consumed by:
+#   1. Java AutoFixPolicyEngine (runtime, classpath resource)
+#   2. Python diff_scanner.py (Docker build copies this file)
+#   3. BugReportAutoFixService.buildPrompt() (generates ALLOWED/RESTRICTED sections)
+#
+# See secure_ai_bug_fix_spec.md section 6 for rationale.
+
+repositories:
+  trustworks-intranet-v3:
+    allow:
+      - "src/app/(protected)/**"
+      - "src/app/api/**"
+      - "src/components/**"
+      - "src/lib/hooks/**"
+      - "src/lib/utils/**"
+      - "src/lib/types/**"
+    deny:
+      - "src/lib/auth/**"
+      - "src/lib/config/**"
+      - "proxy.ts"
+      - "next.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - ".env*"
+      - ".claude/**"
+      - "CLAUDE.md"
+      - ".gitignore"
+
+  intranetservices:
+    allow:
+      - "src/main/java/**/resources/**"
+      - "src/main/java/**/services/**"
+      - "src/main/java/**/dto/**"
+      - "src/main/java/**/entities/**"
+      - "src/test/**"
+    deny:
+      - "src/main/java/**/security/**"
+      - "src/main/java/**/SecurityResource*"
+      - "src/main/java/**/AdminScopeAugmentor*"
+      - "src/main/java/**/UserScopeResponseFilter*"
+      - "src/main/java/**/ScopeContext*"
+      - "src/main/java/**/HeaderInterceptor*"
+      - "src/main/java/**/RequestHeaderHolder*"
+      - "src/main/resources/db/migration/**"
+      - "src/main/resources/application*"
+      - "pom.xml"
+      - ".env*"
+      - ".claude/**"
+      - "CLAUDE.md"
+      - ".gitignore"
+
+# Patterns in diff content that trigger human review flags.
+# Checked against actual diff text (added lines only), not file paths.
+sensitive_patterns:
+  # Authorization
+  - "@RolesAllowed"
+  - "ScopeContext"
+  - "AdminScopeAugmentor"
+  - "UserScopeResponseFilter"
+  - "RequestHeaderHolder"
+  - "HeaderInterceptor"
+  - "X-Requested-By"
+  - "isAdmin"
+  - "hasRole"
+  - "hasScope"
+  - "authorize"
+  - "canView"
+  - "canEdit"
+
+  # Data sensitivity
+  - "salary"
+  - "bankInfo"
+  - "\\bcpr\\b"
+  - "pension"
+  - "@JsonIgnore"
+  - "password"
+  - "\\bsecret\\b"
+  - "\\btoken\\b"
+  - "apiKey"
+  - "credential"
+
+  # Infrastructure
+  - "Flyway"
+  - "V\\d+__"
+  - "application\\.properties"
+  - "application\\.yml"
+  - "\\.env"
+  - "process\\.env"
+  - "AUTH_SECRET"
+  - "AUTH_URL"
+  - "NEXTAUTH"
+
+  # Feature expansion
+  - "@Path"
+  - "\\bexport\\b"
+  - "\\bdownload\\b"
+  - "SELECT \\*"
+
+  # BFF proxy safety (flag for manual review when BFF routes are modified)
+  - "getRequestedByHeaders"
+  - "backendFetch"
+  - "NextResponse"
+
+# Thresholds for diff size checks (flag for manual review if exceeded).
+thresholds:
+  max_files: 5
+  max_lines_added: 200
+  max_lines_removed: 200

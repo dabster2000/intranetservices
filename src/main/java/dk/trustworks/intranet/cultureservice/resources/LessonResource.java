@@ -16,7 +16,7 @@ import java.util.UUID;
 @JBossLog
 @Path("/lessonframed")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"knowledge:read"})
 public class LessonResource {
 
     @GET
@@ -45,6 +45,7 @@ public class LessonResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     public void save(Lesson lesson) {
         if(lesson.getUuid()==null || lesson.getUuid().isEmpty()) lesson.setUuid(UUID.randomUUID().toString());
         Lesson.persist(lesson);
@@ -52,6 +53,7 @@ public class LessonResource {
 
     @PUT
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     public void update(Lesson lesson) {
         if(lesson.getUuid()==null || lesson.getUuid().isEmpty()) throw new EntityNotFoundException("Missing uuid");
         Lesson.update("note = ?1, " +
@@ -66,6 +68,7 @@ public class LessonResource {
 
     @DELETE
     @Transactional
+    @RolesAllowed({"knowledge:write"})
     @Path("/{lessonuuid}")
     public void delete(@PathParam("lessonuuid") String uuid) {
         if(uuid==null || uuid.isEmpty()) throw new EntityNotFoundException("Missing uuid");

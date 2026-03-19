@@ -15,7 +15,7 @@ import java.util.List;
 @ApplicationScoped
 //@Tag(name = "ItBudget")
 @Path("/users/{useruuid}/itexpense")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"devices:read"})
 @SecurityRequirement(name = "jwt")
 public class ItExpenseResource {
 
@@ -28,12 +28,14 @@ public class ItExpenseResource {
     }
 
     @POST
+    @RolesAllowed({"devices:write"})
     public void saveExpense(@PathParam("useruuid") String userUuid, ItExpenseItem itExpenseItem) {
         itExpenseItem.setUseruuid(userUuid);
         expenseService.saveExpense(itExpenseItem);
     }
 
     @PUT
+    @RolesAllowed({"devices:write"})
     public void updateExpense(@PathParam("useruuid") String userUuid, ItExpenseItem itExpenseItem) {
         itExpenseItem.setUseruuid(userUuid);
         expenseService.updateExpense(itExpenseItem);
@@ -41,6 +43,7 @@ public class ItExpenseResource {
 
     @DELETE
     @Path("/{id}")
+    @RolesAllowed({"devices:write"})
     public void deleteExpense(@PathParam("id") int id) {
         expenseService.deleteExpense(id);
     }

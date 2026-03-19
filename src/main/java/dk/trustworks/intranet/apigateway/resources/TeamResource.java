@@ -27,7 +27,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"teams:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class TeamResource {
 
@@ -132,18 +132,21 @@ public class TeamResource {
 
     @POST
     @Path("/{teamuuid}/users")
+    @RolesAllowed({"teams:write"})
     public void addUserToTeam(@PathParam("teamuuid") String teamuuid, TeamRole teamrole) {
         teamService.addTeamroleToUser(teamuuid, teamrole);
     }
 
     @DELETE
     @Path("/{teamuuid}/users")
+    @RolesAllowed({"teams:write"})
     public void deleteTeamRole(@PathParam("teamuuid") String teamuuid, @QueryParam("teamroleuuid") String teamroleuuid) {
         teamService.removeUserFromTeam(teamroleuuid);
     }
 
     @POST
     @Path("/regenerate-descriptions")
+    @RolesAllowed({"teams:write"})
     public void regenerateDescriptions() {
         teamService.updateTeamDescription();
     }

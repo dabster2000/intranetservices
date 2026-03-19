@@ -48,7 +48,7 @@ public class TokenUtils {
                 .preferredUserName(user.getUsername())
                 .issuedAt(currentTimeInSecs)
                 .expiresAt(exp)
-                .groups(Role.findByUseruuid(user.getUuid()).stream().map(role -> role.getRole().toString()).collect(Collectors.toSet()));
+                .groups(Role.findByUseruuid(user.getUuid()).stream().map(Role::getRole).collect(Collectors.toSet()));
 
 
         return claims.jws().keyId(kid).sign(privateKey);
@@ -72,7 +72,7 @@ public class TokenUtils {
                 .preferredUserName(user.getUsername())
                 .issuedAt(currentTimeInSecs)
                 .expiresAt(exp)
-                .groups(roles.stream().map(role -> role.getRole().toString()).collect(Collectors.toSet()));
+                .groups(roles.stream().map(Role::getRole).collect(Collectors.toSet()));
 
 
         return claims.jws().keyId(kid).sign(privateKey);

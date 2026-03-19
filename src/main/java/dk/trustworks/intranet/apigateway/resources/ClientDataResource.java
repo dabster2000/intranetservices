@@ -23,7 +23,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 @Produces(APPLICATION_JSON)
 @Consumes(APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"crm:read"})
 public class ClientDataResource {
 
     @Inject
@@ -50,6 +50,7 @@ public class ClientDataResource {
     }
 
     @POST
+    @RolesAllowed({"crm:write"})
     public Clientdata save(Clientdata clientdata) {
         Clientdata saved = clientDataService.save(clientdata);
 
@@ -63,6 +64,7 @@ public class ClientDataResource {
     }
 
     @PUT
+    @RolesAllowed({"crm:write"})
     public void update(Clientdata clientdata) {
         // Load old state for change logging
         Clientdata oldData = clientDataService.findByUuid(clientdata.getUuid());
@@ -104,6 +106,7 @@ public class ClientDataResource {
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"crm:write"})
     public void delete(@PathParam("uuid") String uuid) {
         clientDataService.delete(uuid);
     }

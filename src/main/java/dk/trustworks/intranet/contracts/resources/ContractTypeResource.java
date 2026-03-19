@@ -5,6 +5,7 @@ import dk.trustworks.intranet.contracts.services.ContractTypeDefinitionService;
 import dk.trustworks.intranet.contracts.services.ContractValidationRuleService;
 import dk.trustworks.intranet.contracts.services.ContractRateAdjustmentService;
 import dk.trustworks.intranet.contracts.services.PricingRuleStepService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -36,7 +37,7 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class ContractTypeResource {
 
     @Inject
@@ -50,6 +51,9 @@ public class ContractTypeResource {
 
     @Inject
     ContractRateAdjustmentService rateAdjustmentService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     /**
      * List all contract types.
@@ -66,8 +70,7 @@ public class ContractTypeResource {
     )
     public Response listAll(
             @Parameter(description = "Include inactive types") @QueryParam("includeInactive") @DefaultValue("false") boolean includeInactive) {
-        log.info("ContractTypeResource.listAll");
-        log.info("includeInactive = " + includeInactive);
+        log.debugf("Listing contract types, includeInactive=%s", includeInactive);
 
         List<ContractTypeDefinitionDTO> types = contractTypeService.listAll(includeInactive);
         return Response.ok(types).build();
@@ -85,8 +88,7 @@ public class ContractTypeResource {
     @APIResponse(responseCode = "200", description = "Contract type found")
     @APIResponse(responseCode = "404", description = "Contract type not found")
     public Response getByCode(@Parameter(description = "Contract type code") @PathParam("code") String code) {
-        log.info("ContractTypeResource.getByCode");
-        log.info("code = " + code);
+        log.debugf("Getting contract type by code=%s", code);
 
         ContractTypeDefinitionDTO dto = contractTypeService.findByCode(code);
         return Response.ok(dto).build();
@@ -104,8 +106,7 @@ public class ContractTypeResource {
     @APIResponse(responseCode = "200", description = "Contract type with rules found")
     @APIResponse(responseCode = "404", description = "Contract type not found")
     public Response getWithRules(@Parameter(description = "Contract type code") @PathParam("code") String code) {
-        log.info("ContractTypeResource.getWithRules");
-        log.info("code = " + code);
+        log.debugf("Getting contract type with rules, code=%s", code);
 
         ContractTypeDefinitionDTO contractType = contractTypeService.findByCode(code);
         var rules = pricingRuleService.getRulesForContractType(code, true);
@@ -127,8 +128,7 @@ public class ContractTypeResource {
     @APIResponse(responseCode = "200", description = "Contract type with all rules found")
     @APIResponse(responseCode = "404", description = "Contract type not found")
     public Response getAllRules(@Parameter(description = "Contract type code") @PathParam("code") String code) {
-        log.info("ContractTypeResource.getAllRules");
-        log.info("code = " + code);
+        log.debugf("Getting contract type with all rules, code=%s", code);
 
         ContractTypeDefinitionDTO contractType = contractTypeService.findByCode(code);
         var pricingRules = pricingRuleService.getRulesForContractType(code, true);
@@ -154,11 +154,11 @@ public class ContractTypeResource {
     @Operation(summary = "Create contract type", description = "Creates a new contract type definition")
     @APIResponse(responseCode = "201", description = "Contract type created")
     @APIResponse(responseCode = "400", description = "Invalid request or duplicate code")
+    @RolesAllowed({"contracts:write"})
     public Response create(@Valid CreateContractTypeRequest request) {
-        log.info("ContractTypeResource.create");
-        log.info("request = " + request);
-
+        log.debugf("Creating contract type, user=%s", requestHeaderHolder.getUserUuid());
         ContractTypeDefinitionDTO created = contractTypeService.create(request);
+        log.infof("Created contract type code=%s, user=%s", created.getCode(), requestHeaderHolder.getUserUuid());
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -174,13 +174,13 @@ public class ContractTypeResource {
     @Operation(summary = "Update contract type", description = "Updates an existing contract type definition")
     @APIResponse(responseCode = "200", description = "Contract type updated")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response update(
             @Parameter(description = "Contract type code") @PathParam("code") String code,
             @Valid UpdateContractTypeRequest request) {
-        log.info("ContractTypeResource.update");
-        log.info("code = " + code + ", request = " + request);
-
+        log.debugf("Updating contract type code=%s, user=%s", code, requestHeaderHolder.getUserUuid());
         ContractTypeDefinitionDTO updated = contractTypeService.update(code, request);
+        log.infof("Updated contract type code=%s, user=%s", code, requestHeaderHolder.getUserUuid());
         return Response.ok(updated).build();
     }
 
@@ -197,11 +197,11 @@ public class ContractTypeResource {
     @APIResponse(responseCode = "204", description = "Contract type deleted")
     @APIResponse(responseCode = "404", description = "Contract type not found")
     @APIResponse(responseCode = "400", description = "Contract type has active rules")
+    @RolesAllowed({"contracts:write"})
     public Response delete(@Parameter(description = "Contract type code") @PathParam("code") String code) {
-        log.info("ContractTypeResource.delete");
-        log.info("code = " + code);
-
+        log.debugf("Deleting contract type code=%s, user=%s", code, requestHeaderHolder.getUserUuid());
         contractTypeService.softDelete(code);
+        log.infof("Deleted contract type code=%s, user=%s", code, requestHeaderHolder.getUserUuid());
         return Response.noContent().build();
     }
 
@@ -216,11 +216,11 @@ public class ContractTypeResource {
     @Operation(summary = "Activate contract type", description = "Reactivates a soft-deleted contract type")
     @APIResponse(responseCode = "204", description = "Contract type activated")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response activate(@Parameter(description = "Contract type code") @PathParam("code") String code) {
-        log.info("ContractTypeResource.activate");
-        log.info("code = " + code);
-
+        log.debugf("Activating contract type code=%s, user=%s", code, requestHeaderHolder.getUserUuid());
         contractTypeService.activate(code);
+        log.infof("Activated contract type code=%s, user=%s", code, requestHeaderHolder.getUserUuid());
         return Response.noContent().build();
     }
 }

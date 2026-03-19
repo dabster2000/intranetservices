@@ -99,7 +99,7 @@ public class UserEventHandler {
             slackService.sendMessage(User.findByUsername("hans.lassen").get(), "*"+userBankInfo.getFullname()+"* has submitted new bank account information for approval.");
             if(!userBankInfo.getFullname().equals("Hans Ernst Lassen")) slackService.sendMessage(User.findByUsername("marie.myssing").get(), "*"+userBankInfo.getFullname()+"* has submitted new bank account information for approval.");
         } catch (SlackApiException | IOException e) {
-            e.printStackTrace();
+            log.errorf(e, "Failed to send Slack notification for bank info change by user=%s", userBankInfo.getFullname());
         }
     }
 

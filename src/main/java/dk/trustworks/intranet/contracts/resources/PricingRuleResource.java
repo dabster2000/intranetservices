@@ -2,6 +2,7 @@ package dk.trustworks.intranet.contracts.resources;
 
 import dk.trustworks.intranet.contracts.dto.*;
 import dk.trustworks.intranet.contracts.services.PricingRuleStepService;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -33,11 +34,14 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"contracts:read"})
 public class PricingRuleResource {
 
     @Inject
     PricingRuleStepService pricingRuleService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     /**
      * List all rules for a contract type.
@@ -56,8 +60,7 @@ public class PricingRuleResource {
     public Response listAll(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Include inactive rules") @QueryParam("includeInactive") @DefaultValue("false") boolean includeInactive) {
-        log.info("PricingRuleResource.listAll");
-        log.info("contractTypeCode = " + contractTypeCode + ", includeInactive = " + includeInactive);
+        log.debugf("Listing pricing rules for contractType=%s, includeInactive=%s", contractTypeCode, includeInactive);
 
         List<PricingRuleStepDTO> rules = pricingRuleService.getRulesForContractType(contractTypeCode, includeInactive);
         return Response.ok(rules).build();
@@ -78,8 +81,7 @@ public class PricingRuleResource {
     public Response getById(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {
-        log.info("PricingRuleResource.getById");
-        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
+        log.debugf("Getting pricing rule ruleId=%s for contractType=%s", ruleId, contractTypeCode);
 
         PricingRuleStepDTO rule = pricingRuleService.getRule(contractTypeCode, ruleId);
         return Response.ok(rule).build();
@@ -97,13 +99,13 @@ public class PricingRuleResource {
     @APIResponse(responseCode = "201", description = "Rule created")
     @APIResponse(responseCode = "400", description = "Invalid request or duplicate rule ID")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response create(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Valid CreateRuleStepRequest request) {
-        log.info("PricingRuleResource.create");
-        log.info("contractTypeCode = " + contractTypeCode + ", request = " + request);
-
+        log.debugf("Creating pricing rule for contractType=%s, user=%s", contractTypeCode, requestHeaderHolder.getUserUuid());
         PricingRuleStepDTO created = pricingRuleService.createRule(contractTypeCode, request);
+        log.infof("Created pricing rule ruleId=%s for contractType=%s, user=%s", created.getRuleId(), contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -120,13 +122,14 @@ public class PricingRuleResource {
     @APIResponse(responseCode = "201", description = "Rules created")
     @APIResponse(responseCode = "400", description = "Invalid request")
     @APIResponse(responseCode = "404", description = "Contract type not found")
+    @RolesAllowed({"contracts:write"})
     public Response createBulk(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Valid BulkCreateRulesRequest request) {
-        log.info("PricingRuleResource.createBulk");
-        log.info("contractTypeCode = " + contractTypeCode + ", rulesCount = " + request.getRules().size());
-
+        int rulesCount = request.getRules().size();
+        log.debugf("Bulk creating %d pricing rules for contractType=%s, user=%s", rulesCount, contractTypeCode, requestHeaderHolder.getUserUuid());
         List<PricingRuleStepDTO> created = pricingRuleService.createRulesBulk(contractTypeCode, request);
+        log.infof("Bulk created %d pricing rules for contractType=%s, user=%s", created.size(), contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -144,14 +147,14 @@ public class PricingRuleResource {
     @APIResponse(responseCode = "200", description = "Rule updated")
     @APIResponse(responseCode = "404", description = "Rule not found")
     @APIResponse(responseCode = "400", description = "Invalid request")
+    @RolesAllowed({"contracts:write"})
     public Response update(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId,
             @Valid UpdateRuleStepRequest request) {
-        log.info("PricingRuleResource.update");
-        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
-
+        log.debugf("Updating pricing rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         PricingRuleStepDTO updated = pricingRuleService.updateRule(contractTypeCode, ruleId, request);
+        log.infof("Updated pricing rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.ok(updated).build();
     }
 
@@ -168,13 +171,13 @@ public class PricingRuleResource {
     @Operation(summary = "Delete rule", description = "Soft deletes a pricing rule (sets active=false)")
     @APIResponse(responseCode = "204", description = "Rule deleted")
     @APIResponse(responseCode = "404", description = "Rule not found")
+    @RolesAllowed({"contracts:write"})
     public Response delete(
             @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
             @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {
-        log.info("PricingRuleResource.delete");
-        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
-
+        log.debugf("Deleting pricing rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         pricingRuleService.deleteRule(contractTypeCode, ruleId);
+        log.infof("Deleted pricing rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
         return Response.noContent().build();
     }
 }

@@ -5,11 +5,14 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 
+import jakarta.annotation.security.RolesAllowed;
+
 import java.util.List;
 
 @Path("/lunch/buffers")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RolesAllowed({"lunch:read"})
 public class MealBufferResource {
 
     @GET
@@ -20,6 +23,7 @@ public class MealBufferResource {
 
     @POST
     @Transactional
+    @RolesAllowed({"lunch:write"})
     public MealBuffer createBuffer(MealBuffer buffer) {
         buffer.persist();
         return buffer;

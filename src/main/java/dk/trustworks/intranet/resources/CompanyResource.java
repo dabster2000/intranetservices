@@ -14,7 +14,7 @@ import java.util.List;
 @JBossLog
 @Path("/companies")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"companies:read"})
 @SecurityRequirement(name = "jwt")
 public class CompanyResource {
 

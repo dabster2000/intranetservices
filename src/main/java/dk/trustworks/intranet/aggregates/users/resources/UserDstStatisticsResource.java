@@ -16,7 +16,7 @@ import java.util.List;
 @Tag(name = "user")
 @Path("/users")
 @RequestScoped
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"dststatistics:read"})
 @SecurityRequirement(name = "jwt")
 public class UserDstStatisticsResource {
 
@@ -31,6 +31,7 @@ public class UserDstStatisticsResource {
 
     @POST
     @Path("/{useruuid}/dststatistics")
+    @RolesAllowed({"dststatistics:write"})
     public void create(@PathParam("useruuid") String useruuid, UserDstStatistic entity) {
         System.out.println("UserDstStatisticsResource.create");
         System.out.println("useruuid = " + useruuid + ", entity = " + entity);
@@ -40,6 +41,7 @@ public class UserDstStatisticsResource {
 
     @DELETE
     @Path("/{useruuid}/dststatistics/{uuid}")
+    @RolesAllowed({"dststatistics:write"})
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("uuid") String entityuuid) {
         service.delete(entityuuid);
     }

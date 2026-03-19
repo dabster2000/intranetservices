@@ -15,7 +15,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 @Path("/users")
 @RequestScoped
 @JBossLog
-@RolesAllowed({"SYSTEM"})
+@RolesAllowed({"vacation:read"})
 @SecurityRequirement(name = "jwt")
 public class VacationResource {
 
@@ -30,17 +30,20 @@ public class VacationResource {
             DateValueDTO overview = new DateValueDTO();
             return Response.ok(overview).build();
         } catch (IllegalArgumentException e) {
+            log.warnf("Vacation overview not found for user uuid=%s year=%d: %s", useruuid, year, e.getMessage());
             return Response.status(Response.Status.NOT_FOUND).entity(e.getMessage()).build();
         }
     }
 
     @POST
     @Path("/{useruuid}/vacation/transfer")
+    @RolesAllowed({"vacation:write"})
     public Response transferVacationDays(@PathParam("useruuid") String useruuid, @QueryParam("year") int year, @QueryParam("days") double days) {
         try {
             vacationService.transferVacationDays(useruuid, year, days);
             return Response.ok("Vacation days transferred successfully.").build();
         } catch (IllegalArgumentException e) {
+            log.warnf("Vacation transfer failed for user uuid=%s year=%d days=%.1f: %s", useruuid, year, days, e.getMessage());
             return Response.status(Response.Status.NOT_FOUND).entity(e.getMessage()).build();
         }
     }

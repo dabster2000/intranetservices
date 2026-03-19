@@ -20,6 +20,7 @@ import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.jboss.resteasy.annotations.jaxrs.PathParam;
 
@@ -33,7 +34,7 @@ import java.util.List;
 @RequestScoped
 @Produces("application/json")
 @Consumes("application/json")
-@RolesAllowed({"SYSTEM", "USER"})
+@RolesAllowed({"expenses:read"})
 public class ExpenseResource {
 
     @Inject
@@ -73,7 +74,7 @@ public class ExpenseResource {
      */
     @GET
     @Path("/{uuid}/validate")
-    @RolesAllowed({"SYSTEM"})
+    @RolesAllowed({"expenses:read"})
     public KeyValueDTO validateExpense(@PathParam("uuid") String uuid) {
         log.infof("Validating expense receipt via REST API for uuid=%s", uuid);
         String validationMessage = expenseService.validateExpenseReceipt(uuid);
@@ -179,15 +180,18 @@ public class ExpenseResource {
     }
 
     @POST
+    @RolesAllowed({"expenses:write"})
     @Transactional
-    public void saveExpense(@Valid Expense expense) throws IOException {
+    public Response saveExpense(@Valid Expense expense) throws IOException {
         log.info("ExpenseResource.saveExpense");
         log.info("expense = " + expense);
         expenseService.processExpense(expense);
+        return Response.status(Response.Status.CREATED).entity(expense).build();
     }
 
     @PUT
     @Path("/{uuid}")
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void updateOne(@PathParam("uuid") String uuid, Expense expense) {
         Expense existing = Expense.findById(uuid);
@@ -239,6 +243,7 @@ public class ExpenseResource {
 
     @DELETE
     @Path("/{uuid}")
+    @RolesAllowed({"expenses:write"})
     @Transactional
     public void delete(@PathParam("uuid") String uuid) {
         log.info("Deleting expense with uuid: "+ uuid);

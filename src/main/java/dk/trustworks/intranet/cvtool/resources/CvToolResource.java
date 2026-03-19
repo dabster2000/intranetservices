@@ -26,7 +26,7 @@ import java.util.Properties;
 @Path("/cvtool")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"SYSTEM", "ADMIN"})
+@RolesAllowed({"knowledge:read"})
 public class CvToolResource {
 
     @Inject
@@ -47,7 +47,6 @@ public class CvToolResource {
     @GET
     @Path("/cv/{useruuid}")
     @Produces(MediaType.APPLICATION_JSON)
-    @PermitAll
     public Response getCvByUserUuid(@PathParam("useruuid") String useruuid) {
         CvToolEmployeeCv cv = CvToolEmployeeCv.find("useruuid", useruuid).firstResult();
         if (cv == null) {
@@ -61,7 +60,6 @@ public class CvToolResource {
     @GET
     @Path("/search")
     @Produces(MediaType.APPLICATION_JSON)
-    @PermitAll
     public Response searchCvs(@QueryParam("q") String query) {
         if (query == null || query.trim().length() < 2) {
             return Response.status(Response.Status.BAD_REQUEST)

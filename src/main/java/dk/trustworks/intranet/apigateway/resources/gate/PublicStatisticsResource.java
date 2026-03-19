@@ -25,7 +25,7 @@ import static dk.trustworks.intranet.userservice.model.enums.ConsultantType.*;
 @Path("/public/stats/")
 @RequestScoped
 @SecurityRequirement(name = "jwt")
-@RolesAllowed({"USER", "APPLICATION"})
+@RolesAllowed({"public:read"})
 @SecurityScheme(securitySchemeName = "jwt", type = SecuritySchemeType.HTTP, scheme = "bearer", bearerFormat = "jwt")
 public class PublicStatisticsResource {
 

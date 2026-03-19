@@ -35,7 +35,7 @@ import java.util.Optional;
 @SecurityRequirement(name = "jwt")
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
-@RolesAllowed({"SYSTEM", "ADMIN"})
+@RolesAllowed({"system:read"})
 public class SnapshotResource {
 
     @Inject
@@ -295,6 +295,7 @@ public class SnapshotResource {
     }
 
     @POST
+    @RolesAllowed({"system:write"})
     @Operation(
         summary = "Create new snapshot",
         description = "Creates an immutable snapshot with automatic versioning and checksum generation"
@@ -349,6 +350,7 @@ public class SnapshotResource {
 
     @DELETE
     @Path("/{entityType}/{entityId}/{version}")
+    @RolesAllowed({"system:write"})
     @Operation(
         summary = "Delete snapshot version",
         description = "DANGEROUS: Deletes a snapshot version. This breaks the audit trail and should only be used in exceptional circumstances."
@@ -380,6 +382,7 @@ public class SnapshotResource {
 
     @DELETE
     @Path("/{entityType}/{entityId}")
+    @RolesAllowed({"system:write"})
     @Operation(
         summary = "Delete all versions of an entity",
         description = "DANGEROUS: Deletes all snapshot versions for an entity. This breaks the audit trail."
