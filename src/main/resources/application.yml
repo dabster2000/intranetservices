@@ -81,7 +81,7 @@ quarkus:
     openai-api:
       url: https://api.openai.com
       scope: jakarta.inject.Singleton
-      read-timeout: 180000      # 180 seconds for GPT-5 file_search + vision (can take 60-120s)
+      read-timeout: 110000      # 110 seconds — must complete before BFF timeout (118s)
       connect-timeout: 10000    # 10 seconds for connection establishment
     economics-journals-api:
       url: https://apis.e-conomic.com/journalsapi/v13.0.1
