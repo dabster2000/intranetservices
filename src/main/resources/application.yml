@@ -25,6 +25,7 @@ quarkus:
     baseline-on-migrate: true
     baseline-version: 1.0
     baseline-description: initial baseline
+    out-of-order: true
   swagger-ui:
     always-include: true
   smallrye-openapi:
