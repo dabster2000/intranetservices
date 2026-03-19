@@ -4,6 +4,7 @@ import jakarta.batch.operations.JobOperator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -31,7 +32,8 @@ public class BatchScheduler {
      *
      * Parameters: 3-month lookback, 24-month forward projection.
      */
-    @Scheduled(cron = "0 0 3 ? * 7-1")
+    @Scheduled(cron = "0 0 3 * * ?")
+    @Transactional
     void trigger() {
         log.info("Starting BI nightly refresh via stored procedure (3-month lookback, 24-month forward)");
         try {
