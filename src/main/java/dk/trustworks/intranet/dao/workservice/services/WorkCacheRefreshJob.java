@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.dao.workservice.services;
 
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -57,45 +58,53 @@ public class WorkCacheRefreshJob {
     /**
      * Refresh historical work data cache nightly at 2 AM.
      * This covers older data that changes less frequently.
+     * Each chunk releases and re-acquires the DB lock so that recent/today
+     * refreshes are not blocked for the entire multi-year processing time.
      */
     //@Scheduled(cron = "0 0 2 * * ?")
     @Scheduled(every = "1h")
-    @Transactional
     public void refreshHistoricalCache() {
         LocalDate fromDate = LocalDate.of(2021, 7, 1); // Start from when work_full view filters begin
         LocalDate toDate = LocalDate.now().minusMonths(3);
 
         log.infof("Starting historical work cache refresh from %s to %s", fromDate, toDate);
 
-        try {
-            // Process in yearly chunks to avoid large transactions
-            LocalDate currentDate = fromDate;
-            while (currentDate.isBefore(toDate)) {
-                LocalDate chunkEnd = currentDate.plusYears(1);
-                if (chunkEnd.isAfter(toDate)) {
-                    chunkEnd = toDate;
+        int chunksCompleted = 0;
+        // Process in yearly chunks, each in its own transaction so the DB lock
+        // is released between chunks and recent/today refreshes can proceed.
+        LocalDate currentDate = fromDate;
+        while (currentDate.isBefore(toDate)) {
+            LocalDate chunkStart = currentDate;
+            LocalDate chunkEnd = currentDate.plusYears(1);
+            if (chunkEnd.isAfter(toDate)) {
+                chunkEnd = toDate;
+            }
+            LocalDate finalChunkEnd = chunkEnd;
+
+            try {
+                QuarkusTransaction.requiringNew().run(() -> {
+                    em.createNativeQuery(
+                        "CALL refresh_work_full_cache(:fromDate, :toDate)"
+                    )
+                    .setParameter("fromDate", chunkStart)
+                    .setParameter("toDate", finalChunkEnd)
+                    .executeUpdate();
+                });
+
+                log.infof("Historical cache chunk refreshed: %s to %s", chunkStart, chunkEnd);
+                chunksCompleted++;
+            } catch (Exception e) {
+                if (e.getMessage() != null && e.getMessage().contains("Cache refresh already in progress")) {
+                    log.debugf("Historical cache chunk skipped (another refresh in progress): %s to %s", chunkStart, chunkEnd);
+                } else {
+                    log.errorf(e, "Failed to refresh historical work cache chunk %s to %s", chunkStart, chunkEnd);
                 }
-
-                int rowsUpdated = em.createNativeQuery(
-                    "CALL refresh_work_full_cache(:fromDate, :toDate)"
-                )
-                .setParameter("fromDate", currentDate)
-                .setParameter("toDate", chunkEnd)
-                .executeUpdate();
-
-                log.infof("Historical cache chunk refreshed: %s to %s", currentDate, chunkEnd);
-                currentDate = chunkEnd;
+                // Continue with next chunk rather than aborting the entire refresh
             }
-
-            log.infof("Historical work cache refresh completed");
-        } catch (Exception e) {
-            // Check if this is a lock conflict (expected when another refresh is running)
-            if (e.getMessage() != null && e.getMessage().contains("Cache refresh already in progress")) {
-                log.debugf("Historical cache refresh skipped (another refresh in progress)");
-            } else {
-                log.errorf(e, "Failed to refresh historical work cache");
-            }
+            currentDate = chunkEnd;
         }
+
+        log.infof("Historical work cache refresh completed (%d chunks)", chunksCompleted);
     }
 
     /**

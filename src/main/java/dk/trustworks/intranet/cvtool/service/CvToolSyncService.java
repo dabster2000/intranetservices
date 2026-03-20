@@ -159,10 +159,11 @@ public class CvToolSyncService {
 
         // Check if we already have this CV and if it's unchanged
         LocalDateTime cvLastUpdated = parseCvToolDateTime(fullEmployee.lastUpdatedAt());
-        CvToolEmployeeCv existing = CvToolEmployeeCv.find("cvtoolEmployeeId", employee.id()).firstResult();
 
-        if (existing != null && existing.getCvLastUpdatedAt() != null && cvLastUpdated != null
-            && !cvLastUpdated.isAfter(existing.getCvLastUpdatedAt())) {
+        // Check staleness outside the transaction (read-only, no entity managed state needed)
+        long existingCount = CvToolEmployeeCv.count("cvtoolEmployeeId = ?1 AND cvLastUpdatedAt >= ?2",
+                employee.id(), cvLastUpdated != null ? cvLastUpdated : LocalDateTime.MIN);
+        if (cvLastUpdated != null && existingCount > 0) {
             log.debugf("Employee %d (%s) CV unchanged since last sync, skipping", employee.id(), employee.name());
             return false;
         }
@@ -177,8 +178,12 @@ public class CvToolSyncService {
         }
 
         // Upsert in a new transaction (so one failure doesn't roll back others)
+        // Entity lookup MUST be inside requiringNew() to avoid cross-context HibernateException
+        int employeeId = employee.id();
+        String employeeUuid = employee.employeeUuid();
         try {
             QuarkusTransaction.requiringNew().run(() -> {
+                CvToolEmployeeCv existing = CvToolEmployeeCv.find("cvtoolEmployeeId", employeeId).firstResult();
                 if (existing != null) {
                     existing.setCvtoolCvId(cvId);
                     existing.setEmployeeName(fullEmployee.name());
@@ -192,8 +197,8 @@ public class CvToolSyncService {
                 } else {
                     CvToolEmployeeCv newRecord = new CvToolEmployeeCv();
                     newRecord.setUuid(UUID.randomUUID().toString());
-                    newRecord.setUseruuid(employee.employeeUuid());
-                    newRecord.setCvtoolEmployeeId(employee.id());
+                    newRecord.setUseruuid(employeeUuid);
+                    newRecord.setCvtoolEmployeeId(employeeId);
                     newRecord.setCvtoolCvId(cvId);
                     newRecord.setEmployeeName(fullEmployee.name());
                     newRecord.setEmployeeTitle(fullEmployee.employeeTitle());
