@@ -94,7 +94,16 @@ public class BatchScheduler {
 
     @Scheduled(every = "1m")
     void scheduleMailSend() {
-        jobOperator.start("mail-send", new Properties());
+        try {
+            if (jobOperator.getJobNames().contains("mail-send")) {
+                if (!jobOperator.getRunningExecutions("mail-send").isEmpty()) {
+                    return; // Already running, skip this cycle
+                }
+            }
+            jobOperator.start("mail-send", new Properties());
+        } catch (Exception e) {
+            log.warn("Could not schedule mail-send: " + e.getMessage());
+        }
     }
 
     @Scheduled(every = "1m")
@@ -142,12 +151,7 @@ public class BatchScheduler {
             }
             jobOperator.start("expense-sync", new Properties());
         } catch (Exception e) {
-            // Log and do not fail the scheduler; it will try again in next tick
-            // If job still isn’t known, the next cycle will typically succeed
-            // once the repository has fully initialized
-            // (You can narrow this to NoSuchJobException if you prefer)
-            // log.warn("Could not schedule expense-sync now: " + e.getMessage(), e);
-            jobOperator.start("expense-sync", new Properties());
+            log.warn("Could not schedule expense-sync: " + e.getMessage());
         }
     }
 
@@ -179,7 +183,7 @@ public class BatchScheduler {
             log.info("Starting economics-invoice-status-sync");
             jobOperator.start("economics-invoice-status-sync", new Properties());
         } catch (Exception e) {
-            jobOperator.start("economics-invoice-status-sync", new Properties());
+            log.warn("Could not schedule economics-invoice-status-sync: " + e.getMessage());
         }
     }
 
