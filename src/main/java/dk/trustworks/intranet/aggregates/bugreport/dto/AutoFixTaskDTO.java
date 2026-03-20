@@ -270,6 +270,15 @@ public class AutoFixTaskDTO {
     }
 
     /**
+     * Fix verification reasoning from result JSON.
+     * Claude explains how the fix restores expected behavior.
+     */
+    @JsonProperty("fix_verification")
+    public String getFixVerification() {
+        return readStringFromJson(result, "fix_verification");
+    }
+
+    /**
      * Confidence level from result JSON. Expects: {@code {"confidence": "high"}}.
      */
     @JsonProperty("confidence")

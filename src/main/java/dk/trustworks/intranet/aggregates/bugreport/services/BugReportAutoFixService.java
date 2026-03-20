@@ -46,7 +46,7 @@ import java.util.UUID;
 @ApplicationScoped
 public class BugReportAutoFixService {
 
-    private static final String PROMPT_VERSION = "2.0.0";
+    private static final String PROMPT_VERSION = "2.1.0";
 
     /**
      * GitHub owner/repo slugs used for gh CLI commands (merge, deploy status).
@@ -248,12 +248,32 @@ public class BugReportAutoFixService {
         sb.append("   - 409 CONFLICT? Check If-Match header in BFF route AND optimistic locking in Quarkus service.\n");
         sb.append("   - 500 INTERNAL? Check Quarkus resource handler. Look for NPEs on Panache queries.\n");
         sb.append("   - 400 BAD REQUEST? Check request body in BFF route AND @Valid annotations in Quarkus DTO.\n");
+        sb.append("   CROSS-LAYER LIFECYCLE RULE (for delete/create/update bugs):\n");
+        sb.append("   When a user action (delete, create, update) succeeds on the backend but the UI\n");
+        sb.append("   doesn't reflect the change, trace BOTH directions:\n");
+        sb.append("   a) BACKEND: Does the service method clean up ALL related records? A delete that\n");
+        sb.append("      removes the parent but leaves child/junction records creates orphaned data.\n");
+        sb.append("      Check: cascading deletes, related table cleanup, junction table entries.\n");
+        sb.append("   b) FRONTEND: Does the SWR mutate() / revalidation properly refresh? Does the\n");
+        sb.append("      transform function re-derive rows from related data that may still exist?\n");
+        sb.append("      Check: mutate() calls after action, transform functions that create rows\n");
+        sb.append("      from related records (orphaned records = phantom rows).\n");
+        sb.append("   c) Use `git log --oneline -20 -- <file>` to check recent changes to suspect files.\n\n");
         sb.append("5. Apply the minimal fix. Only change files traceable from the bug's call chain.\n");
         sb.append("6. Run tests ONLY in repos you modified:\n");
         sb.append("   - Frontend: cd trustworks-intranet-v2 && npm run type-check && npm run lint\n");
         sb.append("   - Backend:  cd intranetservices && ./mvnw compile\n");
-        sb.append("7. Commit in each modified repo: \"fix: ").append(nullSafe(report.getTitle())).append("\"\n");
-        sb.append("8. Do NOT push or create PRs — the worker handles that.\n\n");
+        sb.append("7. VERIFY YOUR FIX MATCHES EXPECTED BEHAVIOR:\n");
+        sb.append("   Before committing, trace forward from your change and confirm:\n");
+        sb.append("   a) Re-read the 'Expected behavior' from the bug report.\n");
+        sb.append("   b) Walk through the code path with your fix applied: does the expected\n");
+        sb.append("      behavior actually result? (e.g., if 'row should disappear after delete',\n");
+        sb.append("      confirm that no other data source will recreate it.)\n");
+        sb.append("   c) If your fix only addresses a SYMPTOM (e.g., label display) but not the\n");
+        sb.append("      ROOT CAUSE (e.g., data still exists), keep investigating.\n");
+        sb.append("   d) Document your verification reasoning in the fix_verification output field.\n\n");
+        sb.append("8. Commit in each modified repo: \"fix: ").append(nullSafe(report.getTitle())).append("\"\n");
+        sb.append("9. Do NOT push or create PRs — the worker handles that.\n\n");
 
         sb.append("GUARDRAILS:\n");
         sb.append("- Only modify files traceable from the bug's call chain.\n");
