@@ -588,8 +588,10 @@ public class BugReportAutoFixService {
 
         mergeSinglePr(taskId, prNumber, repoSlug);
 
-        // Transition bug report to IN_PROGRESS
-        report.transitionTo(BugReportStatus.IN_PROGRESS);
+        // Transition bug report to IN_PROGRESS (skip if already there)
+        if (report.getStatus() != BugReportStatus.IN_PROGRESS) {
+            report.transitionTo(BugReportStatus.IN_PROGRESS);
+        }
 
         bugReportService.addComment(
             bugReportUuid, "system:autofix-worker",
@@ -662,8 +664,10 @@ public class BugReportAutoFixService {
             throw new IllegalStateException("No valid PRs found in multi-repo PR data.");
         }
 
-        // Transition bug report to IN_PROGRESS
-        report.transitionTo(BugReportStatus.IN_PROGRESS);
+        // Transition bug report to IN_PROGRESS (skip if already there)
+        if (report.getStatus() != BugReportStatus.IN_PROGRESS) {
+            report.transitionTo(BugReportStatus.IN_PROGRESS);
+        }
 
         String message = "Merged " + mergedCount + "/" + totalPrs + " PRs: " + mergedSummary
             + ". Bug report transitioned to IN_PROGRESS.";
