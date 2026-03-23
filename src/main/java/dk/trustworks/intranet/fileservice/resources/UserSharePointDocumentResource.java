@@ -145,8 +145,9 @@ public class UserSharePointDocumentResource {
      */
     private FolderAndFilename extractFolderAndFilename(String url, String storeFolderPath) {
         try {
-            String decodedUrl = URLDecoder.decode(url, StandardCharsets.UTF_8);
-            URI uri = URI.create(decodedUrl);
+            // Use the original percent-encoded URL with URI.create() — decoding first
+            // would produce spaces that are illegal in URIs. URI.getPath() auto-decodes.
+            URI uri = URI.create(url);
             String path = uri.getPath();
 
             // Extract filename (last segment)
