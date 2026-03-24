@@ -48,6 +48,13 @@ public class UserContactInfoService {
 
     @Transactional
     public void update(String useruuid, UserContactinfo userContactinfo) {
+        // Preserve existing activeDate when not provided (BFF doesn't send it)
+        LocalDate activeDate = userContactinfo.getActiveDate();
+        if (activeDate == null) {
+            UserContactinfo existing = UserContactinfo.findCurrentByUseruuid(useruuid);
+            activeDate = existing != null ? existing.getActiveDate() : LocalDate.now();
+        }
+
         UserContactinfo.update("city = ?1, " +
                         "phone = ?2, " +
                         "postalcode = ?3, " +
@@ -60,7 +67,7 @@ public class UserContactInfoService {
                 userContactinfo.getPostalcode(),
                 userContactinfo.getStreetname(),
                 userContactinfo.getSlackusername(),
-                userContactinfo.getActiveDate(),
+                activeDate,
                 useruuid);
     }
 }
