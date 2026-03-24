@@ -9,6 +9,8 @@ quarkus:
       min-size: 5
       max-size: 32
       idle-removal-interval: PT1M
+      background-validation-interval: PT2M
+      leak-detection-interval: PT5M
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   hibernate-orm:
