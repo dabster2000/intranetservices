@@ -404,56 +404,52 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateOne(User user) {
         log.infof("Updating user uuid=%s username=%s", user.getUuid(), user.getUsername());
-        try {
-            // Preserve CPR: @JsonIgnore on User.cpr prevents Jackson deserialization,
-            // so REST calls always have cpr=null. Read existing value to avoid erasing it.
-            String cprValue = user.getCpr();
-            if (cprValue == null) {
-                User existing = User.findById(user.getUuid());
-                if (existing != null) {
-                    cprValue = existing.getCpr();
-                }
-            }
 
-            User.update("email = ?1, " +
-                            "firstname = ?2, " +
-                            "lastname = ?3, " +
-                            "username = ?4, " +
-                            "slackusername = ?5, " +
-                            "birthday = ?6, " +
-                            "gender = ?7, " +
-                            "cpr = ?8, " +
-                            "phone = ?9, " +
-                            "pension = ?10, " +
-                            "healthcare = ?11, " +
-                            "pensiondetails = ?12, " +
-                            "birthday = ?13, " +
-                            "defects = ?14, " +
-                            "photoconsent = ?15, " +
-                            "other = ?16, " +
-                            "practice = ?17 " +
-                            "WHERE uuid like ?18 ",
-                    user.getEmail(),
-                    user.getFirstname(),
-                    user.getLastname(),
-                    user.getUsername(),
-                    user.getSlackusername(),
-                    user.getBirthday(),
-                    user.getGender(),
-                    cprValue,
-                    user.getPhone(),
-                    user.isPension(),
-                    user.isHealthcare(),
-                    user.getPensiondetails(),
-                    user.getBirthday(),
-                    user.getDefects(),
-                    user.isPhotoconsent(),
-                    user.getOther(),
-                    user.getPractice(),
-                    user.getUuid());
-        } catch (Exception e) {
-            log.errorf(e, "Failed to update user uuid=%s", user.getUuid());
+        // Preserve CPR: @JsonIgnore on User.cpr prevents Jackson deserialization,
+        // so REST calls always have cpr=null. Read existing value to avoid erasing it.
+        String cprValue = user.getCpr();
+        if (cprValue == null) {
+            User existing = User.findById(user.getUuid());
+            if (existing != null) {
+                cprValue = existing.getCpr();
+            }
         }
+
+        User.update("email = ?1, " +
+                        "firstname = ?2, " +
+                        "lastname = ?3, " +
+                        "username = ?4, " +
+                        "slackusername = ?5, " +
+                        "birthday = ?6, " +
+                        "gender = ?7, " +
+                        "cpr = ?8, " +
+                        "phone = ?9, " +
+                        "pension = ?10, " +
+                        "healthcare = ?11, " +
+                        "pensiondetails = ?12, " +
+                        "defects = ?13, " +
+                        "photoconsent = ?14, " +
+                        "other = ?15, " +
+                        "practice = ?16 " +
+                        "WHERE uuid like ?17 ",
+                user.getEmail(),
+                user.getFirstname(),
+                user.getLastname(),
+                user.getUsername(),
+                user.getSlackusername(),
+                user.getBirthday(),
+                user.getGender(),
+                cprValue,
+                user.getPhone(),
+                user.isPension(),
+                user.isHealthcare(),
+                user.getPensiondetails(),
+                user.getDefects(),
+                user.isPhotoconsent(),
+                user.getOther(),
+                user.getPractice(),
+                user.getUuid());
+
         log.debugf("User updated successfully: uuid=%s", user.getUuid());
     }
 

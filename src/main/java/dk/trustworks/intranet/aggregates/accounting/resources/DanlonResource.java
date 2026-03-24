@@ -562,10 +562,10 @@ public class DanlonResource {
                         return false;
                     }
 
-                    // Exclude TERMINATED only if before start of month
-                    // (include if terminated THIS month — needed for "Sidste løn" reporting)
-                    if (companyStatus.getStatus().equals(TERMINATED)
-                            && companyStatus.getStatusdate().isBefore(endOfMonth.withDayOfMonth(1))) {
+                    // Exclude ALL TERMINATED users.
+                    // "Sidste løn" reporting is handled by isUserTerminatedInCurrentMonth()
+                    // which checks for termination in the NEXT month.
+                    if (companyStatus.getStatus().equals(TERMINATED)) {
                         return false;
                     }
 
