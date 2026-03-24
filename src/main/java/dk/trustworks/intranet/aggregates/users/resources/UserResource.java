@@ -182,6 +182,39 @@ public class UserResource {
         return user;
     }
 
+    /** DTO for CPR value transport */
+    public static class CprDto {
+        public String cpr;
+
+        public CprDto() {}
+        public CprDto(String cpr) { this.cpr = cpr; }
+    }
+
+    @GET
+    @Path("/{uuid}/cpr")
+    @RolesAllowed({"users:read"})
+    public CprDto getCpr(@PathParam("uuid") String uuid) {
+        User user = User.findById(uuid);
+        if (user == null) {
+            throw new jakarta.ws.rs.NotFoundException("User not found: " + uuid);
+        }
+        return new CprDto(user.getCpr());
+    }
+
+    @PUT
+    @Path("/{uuid}/cpr")
+    @RolesAllowed({"users:write"})
+    @Transactional
+    public Response updateCpr(@PathParam("uuid") String uuid, CprDto dto) {
+        log.infof("Updating CPR for user uuid=%s", uuid);
+        User user = User.findById(uuid);
+        if (user == null) {
+            throw new jakarta.ws.rs.NotFoundException("User not found: " + uuid);
+        }
+        User.update("cpr = ?1 WHERE uuid = ?2", dto.cpr, uuid);
+        return Response.noContent().build();
+    }
+
     @GET
     @Path("/search/findUsersByDateAndStatusListAndTypes")
     public List<User> findUsersByDateAndStatusListAndTypes(@QueryParam("date") String date,

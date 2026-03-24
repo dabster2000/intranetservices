@@ -405,6 +405,16 @@ public class UserService {
     public void updateOne(User user) {
         log.infof("Updating user uuid=%s username=%s", user.getUuid(), user.getUsername());
         try {
+            // Preserve CPR: @JsonIgnore on User.cpr prevents Jackson deserialization,
+            // so REST calls always have cpr=null. Read existing value to avoid erasing it.
+            String cprValue = user.getCpr();
+            if (cprValue == null) {
+                User existing = User.findById(user.getUuid());
+                if (existing != null) {
+                    cprValue = existing.getCpr();
+                }
+            }
+
             User.update("email = ?1, " +
                             "firstname = ?2, " +
                             "lastname = ?3, " +
@@ -430,7 +440,7 @@ public class UserService {
                     user.getSlackusername(),
                     user.getBirthday(),
                     user.getGender(),
-                    user.getCpr(),
+                    cprValue,
                     user.getPhone(),
                     user.isPension(),
                     user.isHealthcare(),
