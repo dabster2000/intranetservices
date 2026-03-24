@@ -557,9 +557,14 @@ public class DanlonResource {
 
                     if (companyStatus == null) return false;
 
-                    // Exclude if TERMINATED/PREBOARDING before the start of this month
-                    // (but include if terminated THIS month — needed for "Sidste løn" reporting)
-                    if ((companyStatus.getStatus().equals(TERMINATED) || companyStatus.getStatus().equals(PREBOARDING))
+                    // Always exclude PREBOARDING — they are not paid
+                    if (companyStatus.getStatus().equals(PREBOARDING)) {
+                        return false;
+                    }
+
+                    // Exclude TERMINATED only if before start of month
+                    // (include if terminated THIS month — needed for "Sidste løn" reporting)
+                    if (companyStatus.getStatus().equals(TERMINATED)
                             && companyStatus.getStatusdate().isBefore(endOfMonth.withDayOfMonth(1))) {
                         return false;
                     }
