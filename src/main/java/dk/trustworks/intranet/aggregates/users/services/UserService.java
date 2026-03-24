@@ -374,7 +374,7 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public User createUser(User user) {
         log.infof("Creating user uuid=%s username=%s", user.getUuid(), user.getUsername());
-        if(User.find("uuid like ?1 or username like ?2", user.getUuid(), user.getUsername()).count() > 0) {
+        if(User.find("uuid = ?1 or username = ?2", user.getUuid(), user.getUsername()).count() > 0) {
             log.infof("User already exists, skipping creation: uuid=%s username=%s", user.getUuid(), user.getUsername());
             return user;
         }
@@ -431,7 +431,7 @@ public class UserService {
                         "photoconsent = ?14, " +
                         "other = ?15, " +
                         "practice = ?16 " +
-                        "WHERE uuid like ?17 ",
+                        "WHERE uuid = ?17 ",
                 user.getEmail(),
                 user.getFirstname(),
                 user.getLastname(),
@@ -457,7 +457,7 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordByUsername(String username, String newPassword) {
         log.infof("Updating password by username=%s", username);
-        User user = (User) User.find("username like ?1", username).firstResultOptional().orElseThrow(NotFoundException::new);
+        User user = (User) User.find("username = ?1", username).firstResultOptional().orElseThrow(NotFoundException::new);
         String key = UUID.randomUUID().toString();
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
         PasswordChange.persist(new PasswordChange(key, user.getUuid(), hashpw, "'INTRA'"));
@@ -469,10 +469,10 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordByUUID(String uuid, String newPassword) {
         log.infof("Updating password by uuid=%s", uuid);
-        User user = (User) User.find("uuid like ?1", uuid).firstResultOptional().orElseThrow(NotFoundException::new);
+        User user = (User) User.find("uuid = ?1", uuid).firstResultOptional().orElseThrow(NotFoundException::new);
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
         user.setPassword(hashpw);
-        User.update("password = ?1 WHERE uuid like ?2",
+        User.update("password = ?1 WHERE uuid = ?2",
                 hashpw,
                 uuid);
     }
@@ -481,7 +481,7 @@ public class UserService {
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updatePasswordBySlackid(String slackid, String newPassword) {
         log.infof("Updating password by slackId=%s", slackid);
-        User user = (User) User.find("slackusername like ?1", slackid).firstResultOptional().orElseThrow(NotFoundException::new);
+        User user = (User) User.find("slackusername = ?1", slackid).firstResultOptional().orElseThrow(NotFoundException::new);
         String key = UUID.randomUUID().toString();
         String hashpw = BCrypt.hashpw(newPassword, BCrypt.gensalt());
         PasswordChange.persist(new PasswordChange(key, user.getUuid(), hashpw, "SLACK"));
@@ -495,7 +495,7 @@ public class UserService {
         PasswordChange passwordChange = PasswordChange.findById(key);
         if(passwordChange.getCreated().isAfter(LocalDateTime.now().plusHours(1))) throw new NotAllowedException("Password change too late");
         log.infof("Updating password for user uuid=%s", passwordChange.getUseruuid());
-        User.update("password = ?1 where uuid like ?2",
+        User.update("password = ?1 where uuid = ?2",
                 passwordChange.getPassword(),
                 passwordChange.getUseruuid());
         log.debugf("Password updated for user uuid=%s", passwordChange.getUseruuid());
@@ -506,7 +506,7 @@ public class UserService {
     @Transactional
     @CacheInvalidateAll(cacheName = "user-cache")
     public void updateBirthday(String uuid, User user) {
-        User.update("birthday = ?1 WHERE uuid like ?2 ", user.getBirthday(), uuid);
+        User.update("birthday = ?1 WHERE uuid = ?2 ", user.getBirthday(), uuid);
     }
 
     public UserResume findUserResume(String useruuid) {
@@ -532,7 +532,7 @@ public class UserService {
             String htmlResumeResult = extractFirstDiv(resumeParserService.convertResultToHTML(parsedResume));
             userResume.setResumeENG(htmlResumeResult);
             QuarkusTransaction.begin();
-            UserResume.update("resumeENG = ?1, resumeVersion = ?2 where uuid like ?3", htmlResumeResult, UserResume.version, userResume.getUuid());
+            UserResume.update("resumeENG = ?1, resumeVersion = ?2 where uuid = ?3", htmlResumeResult, UserResume.version, userResume.getUuid());
             QuarkusTransaction.commit();
         });
     }

@@ -61,7 +61,7 @@ public class UserContactInfoService {
                         "streetname = ?4, " +
                         "slackusername = ?5, " +
                         "activeDate = ?6 " +
-                        "where useruuid like ?7",
+                        "where useruuid = ?7",
                 userContactinfo.getCity(),
                 userContactinfo.getPhone(),
                 userContactinfo.getPostalcode(),
