@@ -414,6 +414,8 @@ public class InvoiceService {
                 .toList();
 
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        em.flush();
+        invoice.getInvoiceitems().forEach(em::detach);
         InvoiceItem.persist(baseItemData);
 
         Map<String, String> cti = new HashMap<>();
