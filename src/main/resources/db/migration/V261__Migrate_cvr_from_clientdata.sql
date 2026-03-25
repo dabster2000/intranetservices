@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration V260: Migrate CVR and billing address from clientdata to client
+-- Migration V261: Migrate CVR and billing address from clientdata to client
 -- =============================================================================
 -- Purpose: Best-effort backfill of CVR and address data from the `clientdata`
 --          table to the `client` table. Copies data only where the clientdata

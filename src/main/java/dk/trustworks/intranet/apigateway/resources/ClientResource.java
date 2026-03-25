@@ -328,6 +328,7 @@ public class ClientResource {
 
     @GET
     @Path("/search")
+    @RolesAllowed({"crm:read"})
     @Operation(summary = "Search for clients", description = "Search clients by CVR (exact match) or name (case-insensitive partial match). " +
             "At least one of cvr or name must be provided.")
     @APIResponses({
