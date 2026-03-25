@@ -33,6 +33,47 @@ public class Client extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     private ClientSegment segment;
 
+    // Billing fields
+    @Column(name = "cvr", length = 20)
+    private String cvr;
+
+    @Column(name = "ean", length = 20)
+    private String ean;
+
+    @Column(name = "billing_address", length = 510)
+    private String billingAddress;
+
+    @Column(name = "billing_zipcode", length = 30)
+    private String billingZipcode;
+
+    @Column(name = "billing_city", length = 50)
+    private String billingCity;
+
+    @Column(name = "billing_country", length = 2)
+    private String billingCountry;
+
+    @Column(name = "billing_email", length = 255)
+    private String billingEmail;
+
+    @Column(name = "currency", length = 3)
+    private String currency;
+
+    // CVR registry data
+    @Column(name = "phone", length = 50)
+    private String phone;
+
+    @Column(name = "industry_code")
+    private Integer industryCode;
+
+    @Column(name = "industry_desc", length = 255)
+    private String industryDesc;
+
+    @Column(name = "company_code")
+    private Integer companyCode;
+
+    @Column(name = "company_desc", length = 100)
+    private String companyDesc;
+
     @Transient private List<Clientdata> clientdata;
     @Transient private List<Project> projects;
 
@@ -42,6 +83,8 @@ public class Client extends PanacheEntityBase {
         this.created = LocalDateTime.now();
         this.segment = ClientSegment.OTHER;
         this.managed = "INTRA";
+        this.billingCountry = "DK";
+        this.currency = "DKK";
     }
 
     public Client(String contactname, String name) {
@@ -55,6 +98,8 @@ public class Client extends PanacheEntityBase {
         this.projects = new ArrayList<>();
         this.clientdata = new ArrayList<>();
         this.managed = "INTRA";
+        this.billingCountry = "DK";
+        this.currency = "DKK";
     }
 
     @Override
