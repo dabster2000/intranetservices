@@ -104,6 +104,11 @@ quarkus:
       scope: jakarta.inject.Singleton
       connect-timeout: 5000       # 5 seconds for connection
       read-timeout: 90000         # 90 seconds for PDF conversion
+    cvr-api:
+      url: https://cvrapi.dk
+      scope: jakarta.inject.Singleton
+      connect-timeout: 5000       # 5 seconds for connection
+      read-timeout: 10000         # 10 seconds for CVR API response
     core-threads: 10
     max-threads: 30
   log:
@@ -157,6 +162,9 @@ quarkus:
       distribution-opex:
         expire-after-write: 5M  # Distribution OPEX cache - matches sp_incremental_bi_refresh frequency
         maximum-size: 60  # One entry per month; 60 covers 5 years of monthly data
+      cvr-lookup:
+        expire-after-write: 24H  # CVR data rarely changes; cache for 24h to conserve 50/day quota
+        maximum-size: 500  # Max cached CVR lookups
   s3:
     sync-client:
       type: APACHE
