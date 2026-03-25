@@ -100,6 +100,13 @@ public class UserService {
         return user;
     }
 
+    public List<User> findByUuids(List<String> uuids, boolean shallow) {
+        if (uuids == null || uuids.isEmpty()) return List.of();
+        List<User> users = User.list("uuid IN ?1", uuids);
+        if (!shallow) hydrateUsers(users);
+        return users;
+    }
+
     public User findByUsername(String username, boolean shallow) {
         User user = User.<User>find("username = ?1", username)  // '=' not 'like'
                 .firstResultOptional()

@@ -6,15 +6,21 @@ import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @JBossLog
 @ApplicationScoped
 public class ClientService {
+
+    @Inject
+    EntityManager em;
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
@@ -68,5 +74,40 @@ public class ClientService {
 
     public List<Clientdata> listAllClientData(String clientuuid) {
         return Clientdata.stream("clientuuid", Sort.ascending("contactperson"), clientuuid).map(p -> (Clientdata) p).toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> getContractCounts() {
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT c.clientuuid, COUNT(*) AS total, " +
+                "SUM(CASE WHEN c.status IN ('BUDGET', 'TIME', 'SIGNED') THEN 1 ELSE 0 END) AS active " +
+                "FROM contracts c GROUP BY c.clientuuid")
+                .getResultList();
+        return rows.stream().map(row -> Map.<String, Object>of(
+                "clientUuid", (String) row[0],
+                "total", (Number) row[1],
+                "active", (Number) row[2]
+        )).toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Map<String, String>> getClientConsultants(LocalDate fromDate, LocalDate toDate) {
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT DISTINCT c.clientuuid, cc.useruuid, " +
+                "COALESCE(cc.name, CONCAT(u.firstname, ' ', u.lastname)) as consultantName " +
+                "FROM contracts c " +
+                "JOIN contract_consultants cc ON c.uuid = cc.contractuuid " +
+                "LEFT JOIN user u ON cc.useruuid = u.uuid " +
+                "WHERE c.status IN ('BUDGET', 'TIME', 'SIGNED') " +
+                "AND cc.activefrom <= ?1 " +
+                "AND cc.activeto >= ?2")
+                .setParameter(1, toDate)
+                .setParameter(2, fromDate)
+                .getResultList();
+        return rows.stream().map(row -> Map.of(
+                "clientUuid", (String) row[0],
+                "userUuid", (String) row[1],
+                "consultantName", row[2] != null ? (String) row[2] : "Unknown"
+        )).toList();
     }
 }

@@ -178,6 +178,21 @@ public class ClientResource {
     }
 
     @GET
+    @Path("/contract-counts")
+    public List<Map<String, Object>> getContractCounts() {
+        return clientAPI.getContractCounts();
+    }
+
+    @GET
+    @Path("/consultants")
+    public List<Map<String, String>> getClientConsultants(
+            @QueryParam("fromdate") String fromDate,
+            @QueryParam("todate") String toDate) {
+        return clientAPI.getClientConsultants(
+                DateUtils.dateIt(fromDate), DateUtils.dateIt(toDate));
+    }
+
+    @GET
     @Path("/budgets/{fiscalyear}")
     public List<GraphKeyValue> getClientBudgetSum(@PathParam("fiscalyear") int fiscalYear) {
         LocalDate startDate = DateUtils.getCurrentFiscalStartDate().withYear(fiscalYear);
