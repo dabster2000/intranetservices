@@ -8,6 +8,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceLedgerService;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceNotesService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
@@ -66,6 +67,9 @@ public class InvoiceResource {
     dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service invoicePdfS3Service;
 
     @Inject
+    InvoiceLedgerService invoiceLedgerService;
+
+    @Inject
     ScopeContext scopeContext;
 
     @GET
@@ -82,6 +86,35 @@ public class InvoiceResource {
                 size,
                 sort                         // may be empty or blank
         );
+    }
+
+    /**
+     * Returns a paginated, filterable, sortable ledger view of all invoices.
+     * Includes resolved account manager info and upload error status.
+     */
+    @GET
+    @Path("/ledger")
+    @RolesAllowed({"invoices:read"})
+    public Response ledger(
+            @QueryParam("page")             @DefaultValue("0")  int page,
+            @QueryParam("size")             @DefaultValue("50") int size,
+            @QueryParam("sortBy")           String sortBy,
+            @QueryParam("sortOrder")        @DefaultValue("desc") String sortOrder,
+            @QueryParam("type")             String type,
+            @QueryParam("status")           String status,
+            @QueryParam("economicsStatus")  String economicsStatus,
+            @QueryParam("companyuuid")      String companyuuid,
+            @QueryParam("search")           String search,
+            @QueryParam("fromdate")         String fromdate,
+            @QueryParam("todate")           String todate,
+            @QueryParam("currency")         String currency) {
+
+        var result = invoiceLedgerService.findLedger(
+                type, status, economicsStatus, companyuuid,
+                search, dateIt(fromdate), dateIt(todate), currency,
+                sortBy, sortOrder, page, size);
+
+        return Response.ok(result).build();
     }
 
     @GET
