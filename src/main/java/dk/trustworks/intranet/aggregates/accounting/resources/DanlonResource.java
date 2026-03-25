@@ -569,6 +569,20 @@ public class DanlonResource {
                         return false;
                     }
 
+                    // Exclude users who have transitioned to another company.
+                    // Some company transitions lack a TERMINATED record in the old company.
+                    // If the user has a more recent ACTIVE/NON_PAY_LEAVE/PAID_LEAVE/MATERNITY_LEAVE
+                    // status in a DIFFERENT company, they've moved and should not appear here.
+                    boolean hasTransitionedAway = user.getStatuses().stream()
+                            .filter(s -> s.getCompany() != null && !s.getCompany().getUuid().equals(companyuuid))
+                            .filter(s -> !s.getStatusdate().isAfter(endOfMonth))
+                            .filter(s -> s.getStatus().equals(ACTIVE)
+                                    || s.getStatus().equals(NON_PAY_LEAVE)
+                                    || s.getStatus().equals(StatusType.PAID_LEAVE)
+                                    || s.getStatus().equals(StatusType.MATERNITY_LEAVE))
+                            .anyMatch(s -> s.getStatusdate().isAfter(companyStatus.getStatusdate()));
+                    if (hasTransitionedAway) return false;
+
                     // Check consultant type
                     ConsultantType type = companyStatus.getType();
                     return type.equals(ConsultantType.CONSULTANT) ||
@@ -606,16 +620,15 @@ public class DanlonResource {
                 || (user.getUserStatus(month).getStatus().equals(NON_PAY_LEAVE) && !hasOnlyNonPayLeave(availability));
     }
 
-    // Helper method: Checks if the user is terminated in the current month (based on next month's period).
-    // Updated to detect company transitions: checks if user has ANY TERMINATED status effective from
-    // the first day of next month, even if they're ACTIVE in a different company on the same date.
-    private static boolean isUserTerminatedInCurrentMonth(User user, LocalDate endOfMonth, LocalDate month) {
-        // Check if user has ANY TERMINATED status effective from first day of next month
-        // This handles company transitions where user is TERMINATED from one company
-        // and ACTIVE in another on the same date
+    // Helper method: Checks if the user is terminated from THIS company in the current month.
+    // Scoped to the specific company to avoid false positives from company transitions
+    // (e.g., user terminated from company A and active in company B on the same date).
+    private boolean isUserTerminatedInCurrentMonth(User user, LocalDate endOfMonth, LocalDate month) {
         return user.getStatuses().stream()
                 .anyMatch(status ->
                         status.getStatus().equals(TERMINATED)
+                                && status.getCompany() != null
+                                && status.getCompany().getUuid().equals(companyuuid)
                                 && status.getStatusdate().withDayOfMonth(1).isEqual(month.withDayOfMonth(1))
                 );
     }
