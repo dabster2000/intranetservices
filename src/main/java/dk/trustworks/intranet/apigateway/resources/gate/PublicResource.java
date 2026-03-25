@@ -270,6 +270,14 @@ public class PublicResource {
             throw new WebApplicationException("name is required", Response.Status.BAD_REQUEST);
         }
 
+        // Dedup: return existing client if name matches (exact or fuzzy)
+        Optional<Client> existingMatch = clientAPI.findFuzzyMatch(request.getName());
+        if (existingMatch.isPresent()) {
+            log.infof("Client dedup: returning existing client uuid=%s for requested name='%s'",
+                    existingMatch.get().getUuid(), request.getName());
+            return existingMatch.get();
+        }
+
         Client client = new Client();
         client.setActive(false);
         client.setContactname("");

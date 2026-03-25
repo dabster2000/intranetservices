@@ -10,9 +10,12 @@ import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
+import dk.trustworks.intranet.utils.StringSimilarity;
+
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @JBossLog
@@ -98,6 +101,62 @@ public class ClientService {
 
     public Client findByExactNameIgnoreCase(String name) {
         return Client.find("LOWER(name) = LOWER(?1)", name).firstResult();
+    }
+
+    /**
+     * Jaro-Winkler similarity threshold for fuzzy name matching.
+     * 0.90 catches typos, spacing, and minor punctuation differences
+     * while rejecting genuinely different names.
+     */
+    private static final double FUZZY_MATCH_THRESHOLD = 0.90;
+
+    /**
+     * Finds an existing client whose name matches the given name either exactly
+     * (case-insensitive) or via Jaro-Winkler fuzzy similarity above the threshold.
+     * <p>
+     * The exact match is checked first (via DB query) for efficiency. If no exact
+     * match is found, all client names are compared using Jaro-Winkler, and the
+     * best match above the threshold is returned.
+     *
+     * @param name the candidate client name to match against
+     * @return the best matching client, or empty if no match meets the threshold
+     */
+    private static final int MAX_NAME_LENGTH = 255;
+
+    public Optional<Client> findFuzzyMatch(String name) {
+        if (name == null || name.isBlank() || name.length() > MAX_NAME_LENGTH) {
+            return Optional.empty();
+        }
+
+        String normalized = name.trim().toLowerCase();
+
+        // Fast path: exact case-insensitive match via DB query
+        Client exactMatch = findByExactNameIgnoreCase(normalized);
+        if (exactMatch != null) {
+            return Optional.of(exactMatch);
+        }
+
+        // Slow path: Jaro-Winkler comparison against all clients
+        List<Client> allClients = listAllClients();
+        Client bestMatch = null;
+        double bestScore = 0.0;
+
+        for (Client client : allClients) {
+            if (client.getName() == null) continue;
+            String candidateNormalized = client.getName().trim().toLowerCase();
+            double score = StringSimilarity.jaroWinkler(normalized, candidateNormalized);
+            if (score >= FUZZY_MATCH_THRESHOLD && score > bestScore) {
+                bestScore = score;
+                bestMatch = client;
+            }
+        }
+
+        if (bestMatch != null) {
+            log.infof("Fuzzy match found: input='%s' matched client uuid=%s name='%s' score=%.4f",
+                    name, bestMatch.getUuid(), bestMatch.getName(), bestScore);
+        }
+
+        return Optional.ofNullable(bestMatch);
     }
 
     public List<Client> searchClients(String cvr, String name) {
