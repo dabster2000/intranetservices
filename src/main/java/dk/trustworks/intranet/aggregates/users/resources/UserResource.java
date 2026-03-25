@@ -174,6 +174,15 @@ public class UserResource {
     }
 
     @GET
+    @Path("/batch")
+    public List<User> findByUuids(@QueryParam("uuid") List<String> uuids,
+                                   @QueryParam("shallow") @DefaultValue("true") String shallow) {
+        if (uuids == null || uuids.isEmpty()) return List.of();
+        boolean shallowFlag = Boolean.parseBoolean(shallow);
+        return userAPI.findByUuids(uuids, shallowFlag);
+    }
+
+    @GET
     @Path("/{uuid}")
     public User findById(@PathParam("uuid") String uuid,
                          @QueryParam("shallow") Optional<String> shallow) {
