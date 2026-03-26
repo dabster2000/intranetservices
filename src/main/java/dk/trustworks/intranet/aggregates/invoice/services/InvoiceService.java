@@ -413,13 +413,18 @@ public class InvoiceService {
                         BASE))
                 .toList();
 
-        // Capture old managed items BEFORE bulk delete — after delete+flush the
-        // EAGER collection may be stale/empty, so iterating it for detach is unreliable.
         List<InvoiceItem> oldManagedItems = new ArrayList<>(invoice.getInvoiceitems());
 
+        // Delete from DB first (auto-flush sees unchanged collection → no interference)
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
         em.flush();
+
+        // CRITICAL: Clear the PersistentBag to break the CascadeType.ALL cascade path.
+        // Without this, the bag re-attaches detached items during subsequent flushes,
+        // causing "different object with same identifier" on persist.
+        invoice.invoiceitems.clear();
         oldManagedItems.forEach(em::detach);
+
         InvoiceItem.persist(baseItemData);
 
         Map<String, String> cti = new HashMap<>();
