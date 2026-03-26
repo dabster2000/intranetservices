@@ -413,9 +413,13 @@ public class InvoiceService {
                         BASE))
                 .toList();
 
+        // Capture old managed items BEFORE bulk delete — after delete+flush the
+        // EAGER collection may be stale/empty, so iterating it for detach is unreliable.
+        List<InvoiceItem> oldManagedItems = new ArrayList<>(invoice.getInvoiceitems());
+
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
         em.flush();
-        invoice.getInvoiceitems().forEach(em::detach);
+        oldManagedItems.forEach(em::detach);
         InvoiceItem.persist(baseItemData);
 
         Map<String, String> cti = new HashMap<>();
