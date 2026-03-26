@@ -95,7 +95,7 @@ public class InvoiceResource {
     @GET
     @Path("/ledger")
     @RolesAllowed({"invoices:read"})
-    public Response ledger(
+    public InvoiceLedgerListResponse ledger(
             @QueryParam("page")             @DefaultValue("0")  int page,
             @QueryParam("size")             @DefaultValue("50") int size,
             @QueryParam("sortBy")           String sortBy,
@@ -109,12 +109,10 @@ public class InvoiceResource {
             @QueryParam("todate")           String todate,
             @QueryParam("currency")         String currency) {
 
-        var result = invoiceLedgerService.findLedger(
+        return invoiceLedgerService.findLedger(
                 type, status, economicsStatus, companyuuid,
                 search, dateIt(fromdate), dateIt(todate), currency,
                 sortBy, sortOrder, page, size);
-
-        return Response.ok(result).build();
     }
 
     @GET
