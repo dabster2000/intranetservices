@@ -261,7 +261,12 @@ public class CxoFinanceService {
         log.debugf("getUtilizationTrend: fromDate=%s, toDate=%s, practices=%s, companyIds=%s",
                 normalizedFromDate, normalizedToDate, practices, companyIds);
 
-        boolean hasPractices = practices != null && !practices.isEmpty();
+        // Always filter by known practices to exclude UD/undefined and include
+        // bench consultants who are in a real practice. When caller passes specific
+        // practices, use those; otherwise default to all 5 known practices.
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : Set.of("PM", "BA", "CYB", "DEV", "SA");
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
@@ -275,19 +280,14 @@ public class CxoFinanceService {
         sql.append("  COALESCE(SUM(bdd.net_available_hours), 0) AS net_available_hours, ");
         sql.append("  COALESCE(SUM(bdd.gross_available_hours), 0) AS gross_available_hours ");
         sql.append("FROM fact_user_day bdd ");
-
-        if (hasPractices) {
-            sql.append("JOIN user u ON u.uuid = bdd.useruuid ");
-        }
+        sql.append("JOIN user u ON u.uuid = bdd.useruuid ");
 
         sql.append("WHERE bdd.document_date >= :fromDate ");
         sql.append("  AND bdd.document_date <= :toDate ");
         sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
         sql.append("  AND bdd.status_type = 'ACTIVE' ");
+        sql.append("  AND u.practice IN (:practices) ");
 
-        if (hasPractices) {
-            sql.append("  AND u.practice IN (:practices) ");
-        }
         if (hasCompanies) {
             sql.append("  AND bdd.companyuuid IN (:companyIds) ");
         }
@@ -298,10 +298,8 @@ public class CxoFinanceService {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromDate", normalizedFromDate);
         query.setParameter("toDate", normalizedToDate);
+        query.setParameter("practices", effectivePractices);
 
-        if (hasPractices) {
-            query.setParameter("practices", practices);
-        }
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
         }
