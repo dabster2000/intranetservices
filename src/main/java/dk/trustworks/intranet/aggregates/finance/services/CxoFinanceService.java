@@ -2714,7 +2714,7 @@ public class CxoFinanceService {
         }
         // For project-level filters (sectors, contractTypes, clientId), we need to join with projects
         if (sectors != null && !sectors.isEmpty()) {
-            sql.append("AND EXISTS (SELECT 1 FROM projects p JOIN clients c ON p.clientuuid = c.uuid WHERE p.uuid = w.projectuuid AND c.segment IN (:sectors)) ");
+            sql.append("AND EXISTS (SELECT 1 FROM projects p JOIN client c ON p.clientuuid = c.uuid WHERE p.uuid = w.projectuuid AND c.segment IN (:sectors)) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
             sql.append("AND EXISTS (SELECT 1 FROM projects p JOIN contracts con ON p.uuid = con.projectuuid WHERE p.uuid = w.projectuuid AND con.contract_type IN (:contractTypes)) ");
@@ -2788,7 +2788,7 @@ public class CxoFinanceService {
             expectedSql.append("AND w.consultant_company_uuid IN (:companyIds) ");
         }
         if (sectors != null && !sectors.isEmpty()) {
-            expectedSql.append("AND EXISTS (SELECT 1 FROM projects p JOIN clients c ON p.clientuuid = c.uuid WHERE p.uuid = w.projectuuid AND c.segment IN (:sectors)) ");
+            expectedSql.append("AND EXISTS (SELECT 1 FROM projects p JOIN client c ON p.clientuuid = c.uuid WHERE p.uuid = w.projectuuid AND c.segment IN (:sectors)) ");
         }
         if (contractTypes != null && !contractTypes.isEmpty()) {
             expectedSql.append("AND EXISTS (SELECT 1 FROM projects p JOIN contracts con ON p.uuid = con.projectuuid WHERE p.uuid = w.projectuuid AND con.contract_type IN (:contractTypes)) ");
