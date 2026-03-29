@@ -1,9 +1,18 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.finance.dto.TeamAbsenceOverviewDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamCareerDistributionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamSalaryBandDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamSickLeaveTrackingDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamTenureDistributionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamTimeToFirstContractDTO;
+import dk.trustworks.intranet.aggregates.finance.services.TeamDashboardService;
+import dk.trustworks.intranet.aggregates.finance.services.TeamPeopleService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.userservice.services.TeamService;
 import jakarta.annotation.security.RolesAllowed;
 import lombok.extern.jbosslog.JBossLog;
@@ -33,6 +42,15 @@ public class TeamResource {
 
     @Inject
     TeamService teamService;
+
+    @Inject
+    TeamPeopleService teamPeopleService;
+
+    @Inject
+    TeamDashboardService teamDashboardService;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     @GET
     public List<Team> listAll() {
@@ -149,5 +167,57 @@ public class TeamResource {
     @RolesAllowed({"teams:write"})
     public void regenerateDescriptions() {
         teamService.updateTeamDescription();
+    }
+
+    // -----------------------------------------------------------------------
+    // Team Dashboard — People & Sick Leave endpoints
+    // -----------------------------------------------------------------------
+
+    @GET
+    @Path("/{teamuuid}/dashboard/career-distribution")
+    @RolesAllowed({"dashboard:read"})
+    public List<TeamCareerDistributionDTO> getCareerDistribution(@PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        return teamPeopleService.getCareerDistribution(teamuuid);
+    }
+
+    @GET
+    @Path("/{teamuuid}/dashboard/tenure-distribution")
+    @RolesAllowed({"dashboard:read"})
+    public List<TeamTenureDistributionDTO> getTenureDistribution(@PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        return teamPeopleService.getTenureDistribution(teamuuid);
+    }
+
+    @GET
+    @Path("/{teamuuid}/dashboard/absence-overview")
+    @RolesAllowed({"dashboard:read"})
+    public List<TeamAbsenceOverviewDTO> getAbsenceOverview(@PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        return teamPeopleService.getAbsenceOverview(teamuuid);
+    }
+
+    @GET
+    @Path("/{teamuuid}/dashboard/time-to-first-contract")
+    @RolesAllowed({"dashboard:read"})
+    public TeamTimeToFirstContractDTO getTimeToFirstContract(@PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        return teamPeopleService.getTimeToFirstContract(teamuuid);
+    }
+
+    @GET
+    @Path("/{teamuuid}/dashboard/sick-leave-tracking")
+    @RolesAllowed({"dashboard:read"})
+    public List<TeamSickLeaveTrackingDTO> getSickLeaveTracking(@PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        return teamPeopleService.getSickLeaveTracking(teamuuid);
+    }
+
+    @GET
+    @Path("/{teamuuid}/dashboard/salary-band-positioning")
+    @RolesAllowed({"dashboard:read"})
+    public List<TeamSalaryBandDTO> getSalaryBandPositioning(@PathParam("teamuuid") String teamuuid) {
+        teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
+        return teamPeopleService.getSalaryBandPositioning(teamuuid);
     }
 }
