@@ -185,10 +185,8 @@ public class ConsultantInsightsService {
 
         List<TimeToFirstContractDTO> results = new ArrayList<>();
         for (Tuple row : rows) {
-            LocalDate hireDate = row.get("hire_date") != null
-                    ? ((java.sql.Date) row.get("hire_date")).toLocalDate() : null;
-            LocalDate firstContractDate = row.get("first_contract_date") != null
-                    ? ((java.sql.Date) row.get("first_contract_date")).toLocalDate() : null;
+            LocalDate hireDate = toLocalDate(row.get("hire_date"));
+            LocalDate firstContractDate = toLocalDate(row.get("first_contract_date"));
 
             Integer daysToContract = null;
             if (hireDate != null && firstContractDate != null) {
@@ -267,9 +265,7 @@ public class ConsultantInsightsService {
 
         List<ConsultantWithoutContractDTO> results = new ArrayList<>();
         for (Tuple row : rows) {
-            Object lastContractEndRaw = row.get("last_contract_end");
-            LocalDate lastContractEnd = lastContractEndRaw != null
-                    ? ((java.sql.Date) lastContractEndRaw).toLocalDate() : null;
+            LocalDate lastContractEnd = toLocalDate(row.get("last_contract_end"));
 
             int daysSince = lastContractEnd != null
                     ? ((Number) row.get("days_since")).intValue() : -1;
@@ -398,6 +394,12 @@ public class ConsultantInsightsService {
                 ) ms GROUP BY useruuid
             ) sal ON sal.useruuid = rev.useruuid
             WHERE u.practice IN (:practices)
+              AND EXISTS (
+                  SELECT 1 FROM userstatus us_active
+                  WHERE us_active.useruuid = u.uuid
+                    AND us_active.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = u.uuid)
+                    AND us_active.status = 'ACTIVE' AND us_active.type = 'CONSULTANT'
+              )
             """);
 
         if (hasCompanies) {
@@ -555,5 +557,18 @@ public class ConsultantInsightsService {
      */
     private Set<String> effectivePractices(Set<String> practices) {
         return (practices != null && !practices.isEmpty()) ? practices : DEFAULT_PRACTICES;
+    }
+
+    /**
+     * Safely converts a Tuple date value to LocalDate.
+     * Hibernate 6 / MariaDB may return java.sql.Date, java.time.LocalDate, or java.sql.Timestamp.
+     */
+    private LocalDate toLocalDate(Object value) {
+        if (value == null) return null;
+        if (value instanceof LocalDate ld) return ld;
+        if (value instanceof java.sql.Date sd) return sd.toLocalDate();
+        if (value instanceof java.sql.Timestamp ts) return ts.toLocalDateTime().toLocalDate();
+        if (value instanceof java.util.Date d) return d.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+        return null;
     }
 }
