@@ -172,6 +172,7 @@ public class ConsultantInsightsService {
                 HAVING MIN(us.statusdate) >= :cutoffDate
             ) sub
             LEFT JOIN contract_consultants cc ON cc.useruuid = sub.user_id
+                AND cc.activefrom >= sub.hire_date
             GROUP BY sub.user_id, sub.firstname, sub.lastname, sub.practice, sub.hire_date
             ORDER BY sub.hire_date ASC
             """);
