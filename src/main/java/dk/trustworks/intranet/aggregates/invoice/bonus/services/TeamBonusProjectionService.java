@@ -53,10 +53,10 @@ public class TeamBonusProjectionService {
     RequestHeaderHolder requestHeaderHolder;
 
     /**
-     * Validates that the requesting user is a LEADER of the specified team.
+     * Validates that the requesting user is a LEADER or SPONSOR of the specified team.
      *
      * @param teamId the team UUID to check
-     * @throws ForbiddenException if the requester is not a leader of the team
+     * @throws ForbiddenException if the requester is not a leader or sponsor of the team
      * @throws NotFoundException  if the team does not exist
      */
     public void validateTeamAccess(String teamId) {
@@ -71,13 +71,13 @@ public class TeamBonusProjectionService {
         }
 
         LocalDate today = LocalDate.now();
-        long leaderCount = TeamRole.count(
-                "teamuuid = ?1 AND useruuid = ?2 AND teammembertype = ?3 " +
-                        "AND startdate <= ?4 AND (enddate > ?4 OR enddate IS NULL)",
-                teamId, requestedBy, TeamMemberType.LEADER, today
+        long accessCount = TeamRole.count(
+                "teamuuid = ?1 AND useruuid = ?2 AND teammembertype IN (?3, ?4) " +
+                        "AND startdate <= ?5 AND (enddate > ?5 OR enddate IS NULL)",
+                teamId, requestedBy, TeamMemberType.LEADER, TeamMemberType.SPONSOR, today
         );
-        if (leaderCount == 0) {
-            throw new ForbiddenException("User is not a leader of team " + teamId);
+        if (accessCount == 0) {
+            throw new ForbiddenException("User is not a leader or sponsor of team " + teamId);
         }
     }
 

@@ -98,7 +98,7 @@ public class TeamDashboardService {
     }
 
     /**
-     * Validates that the requesting user is a LEADER of the specified team.
+     * Validates that the requesting user is a LEADER or SPONSOR of the specified team.
      * Throws 403 if not.
      */
     public void validateTeamAccess(String teamId, String requestedByUuid) {
@@ -106,7 +106,7 @@ public class TeamDashboardService {
                 SELECT COUNT(*) FROM teamroles tr
                 WHERE tr.teamuuid = :teamId
                   AND tr.useruuid = :userId
-                  AND tr.membertype = 'LEADER'
+                  AND tr.membertype IN ('LEADER', 'SPONSOR')
                   AND tr.startdate <= CURDATE()
                   AND (tr.enddate IS NULL OR tr.enddate > CURDATE())
                 """)
@@ -115,7 +115,7 @@ public class TeamDashboardService {
                 .getSingleResult();
         if (count == 0) {
             throw new WebApplicationException(
-                    "User is not a leader of the requested team",
+                    "User is not a leader or sponsor of the requested team",
                     Response.Status.FORBIDDEN);
         }
     }
