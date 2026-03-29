@@ -374,24 +374,14 @@ public class ConsultantInsightsService {
                 totalOpex, headcount, sharedOverheadPerConsultant);
 
         // Step 3: Per-user revenue and salary
-        // Revenue: SUM(registered_amount) from daily rows
-        // Salary: SUM of MAX(salary) per month — computed in a subquery to avoid
-        //         re-joining daily rows which would multiply salary by ~20 working days
+        // Revenue: from invoiceitems (actual invoiced revenue per consultant)
+        // Salary: SUM of MAX(salary) per month from fact_user_day
         StringBuilder userSql = new StringBuilder();
         userSql.append("""
-            SELECT rev.useruuid AS user_id, u.firstname, u.lastname, u.practice,
-                   rev.ttm_revenue,
-                   COALESCE(sal.ttm_salary, 0) AS ttm_salary
+            SELECT sal.useruuid AS user_id, u.firstname, u.lastname, u.practice,
+                   COALESCE(rev.ttm_revenue, 0) AS ttm_revenue,
+                   sal.ttm_salary
             FROM (
-                SELECT fud.useruuid, SUM(fud.registered_amount) AS ttm_revenue
-                FROM fact_user_day fud
-                WHERE fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
-                  AND fud.document_date >= :ttmFrom AND fud.document_date < :ttmTo
-                GROUP BY fud.useruuid
-            ) rev
-            JOIN user u ON u.uuid = rev.useruuid
-            LEFT JOIN (
                 SELECT useruuid, SUM(max_salary) AS ttm_salary FROM (
                     SELECT useruuid, MAX(salary) AS max_salary
                     FROM fact_user_day
@@ -401,7 +391,25 @@ public class ConsultantInsightsService {
                       AND document_date >= :ttmFrom AND document_date < :ttmTo
                     GROUP BY useruuid, year, month
                 ) ms GROUP BY useruuid
-            ) sal ON sal.useruuid = rev.useruuid
+            ) sal
+            JOIN user u ON u.uuid = sal.useruuid
+            LEFT JOIN (
+                SELECT ii.consultantuuid AS useruuid,
+                       SUM(ii.rate * ii.hours
+                           * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
+                           * CASE WHEN i.currency = 'DKK' THEN 1
+                                  ELSE COALESCE(cur.conversion, 1) END) AS ttm_revenue
+                FROM invoiceitems ii
+                JOIN invoices i ON ii.invoiceuuid = i.uuid
+                LEFT JOIN currences cur ON cur.currency = i.currency
+                    AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m')
+                WHERE i.status = 'CREATED'
+                  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
+                  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL
+                  AND ii.consultantuuid IS NOT NULL
+                  AND i.invoicedate >= :ttmFrom AND i.invoicedate < :ttmTo
+                GROUP BY ii.consultantuuid
+            ) rev ON rev.useruuid = sal.useruuid
             WHERE u.practice IN (:practices)
               AND EXISTS (
                   SELECT 1 FROM userstatus us_active
