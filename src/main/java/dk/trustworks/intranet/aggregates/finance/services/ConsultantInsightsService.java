@@ -369,35 +369,43 @@ public class ConsultantInsightsService {
                 totalOpex, headcount, sharedOverheadPerConsultant);
 
         // Step 3: Per-user revenue and salary
-        // Salary: sum of monthly max salary (one max salary per user per month)
+        // Revenue: SUM(registered_amount) from daily rows
+        // Salary: SUM of MAX(salary) per month — computed in a subquery to avoid
+        //         re-joining daily rows which would multiply salary by ~20 working days
         StringBuilder userSql = new StringBuilder();
         userSql.append("""
-            SELECT fud.useruuid AS user_id, u.firstname, u.lastname, u.practice,
-                   SUM(fud.registered_amount) AS ttm_revenue,
-                   SUM(monthly_salary.max_salary) AS ttm_salary
-            FROM fact_user_day fud
-            JOIN user u ON u.uuid = fud.useruuid
-            JOIN (
-                SELECT useruuid, year, month, MAX(salary) AS max_salary
-                FROM fact_user_day
-                WHERE consultant_type = 'CONSULTANT'
-                  AND status_type = 'ACTIVE'
-                  AND document_date >= :ttmFrom AND document_date < :ttmTo
-                GROUP BY useruuid, year, month
-            ) monthly_salary ON monthly_salary.useruuid = fud.useruuid
-                AND monthly_salary.year = fud.year AND monthly_salary.month = fud.month
+            SELECT rev.useruuid AS user_id, u.firstname, u.lastname, u.practice,
+                   rev.ttm_revenue,
+                   COALESCE(sal.ttm_salary, 0) AS ttm_salary
+            FROM (
+                SELECT fud.useruuid, SUM(fud.registered_amount) AS ttm_revenue
+                FROM fact_user_day fud
+                WHERE fud.consultant_type = 'CONSULTANT'
+                  AND fud.status_type = 'ACTIVE'
+                  AND fud.document_date >= :ttmFrom AND fud.document_date < :ttmTo
+                GROUP BY fud.useruuid
+            ) rev
+            JOIN user u ON u.uuid = rev.useruuid
+            LEFT JOIN (
+                SELECT useruuid, SUM(max_salary) AS ttm_salary FROM (
+                    SELECT useruuid, MAX(salary) AS max_salary
+                    FROM fact_user_day
+                    WHERE consultant_type = 'CONSULTANT'
+                      AND status_type = 'ACTIVE'
+                      AND salary > 0
+                      AND document_date >= :ttmFrom AND document_date < :ttmTo
+                    GROUP BY useruuid, year, month
+                ) ms GROUP BY useruuid
+            ) sal ON sal.useruuid = rev.useruuid
             WHERE u.practice IN (:practices)
-              AND fud.consultant_type = 'CONSULTANT'
-              AND fud.status_type = 'ACTIVE'
-              AND fud.document_date >= :ttmFrom AND fud.document_date < :ttmTo
             """);
 
         if (hasCompanies) {
-            userSql.append("  AND fud.companyuuid IN (:companyIds) ");
+            userSql.append("  AND rev.useruuid IN (SELECT DISTINCT us.useruuid FROM userstatus us WHERE us.companyuuid IN (:companyIds)) ");
         }
 
         userSql.append("""
-            GROUP BY fud.useruuid, u.firstname, u.lastname, u.practice
+            ORDER BY ttm_salary DESC
             """);
 
         var userQuery = em.createNativeQuery(userSql.toString(), Tuple.class);
