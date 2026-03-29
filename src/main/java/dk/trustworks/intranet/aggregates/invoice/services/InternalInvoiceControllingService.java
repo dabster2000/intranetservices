@@ -1145,7 +1145,7 @@ public class InternalInvoiceControllingService {
             ),
             pairs AS (
                 SELECT c.uuid AS client_uuid, i.uuid AS internal_uuid
-                FROM clients c
+                FROM client c
                 JOIN internals i ON i.invoice_ref_uuid = c.uuid
             ),
             dup_clients AS (

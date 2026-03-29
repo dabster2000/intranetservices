@@ -506,8 +506,8 @@ public class TeamBonusProjectionService {
             String uuid = (String) row[0];
             String firstName = (String) row[1];
             String lastName = (String) row[2];
-            LocalDate roleStart = ((java.sql.Date) row[3]).toLocalDate();
-            LocalDate roleEnd = row[4] != null ? ((java.sql.Date) row[4]).toLocalDate() : fyEnd;
+            LocalDate roleStart = toLocalDate(row[3]);
+            LocalDate roleEnd = row[4] != null ? toLocalDate(row[4]) : fyEnd;
 
             // Clip to FY boundaries
             LocalDate effectiveStart = roleStart.isBefore(fyStart) ? fyStart : roleStart;
@@ -568,6 +568,15 @@ public class TeamBonusProjectionService {
             current = current.plusMonths(1);
         }
         return count;
+    }
+
+    // ---- Helpers ----
+
+    private static LocalDate toLocalDate(Object value) {
+        if (value == null) return null;
+        if (value instanceof LocalDate ld) return ld;
+        if (value instanceof java.sql.Date d) return d.toLocalDate();
+        return LocalDate.parse(value.toString());
     }
 
     // ---- Value types ----

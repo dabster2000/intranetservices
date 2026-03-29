@@ -491,7 +491,7 @@ public class TeamDashboardService {
                        cc.activefrom, cc.activeto, cc.rate, c.status
                 FROM contract_consultants cc
                 JOIN contracts c ON c.uuid = cc.contractuuid
-                JOIN clients cl ON cl.uuid = c.clientuuid
+                JOIN client cl ON cl.uuid = c.clientuuid
                 JOIN user u ON u.uuid = cc.useruuid
                 WHERE cc.useruuid IN (:memberUuids)
                   AND cc.activeto >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
@@ -508,7 +508,7 @@ public class TeamDashboardService {
                        sl.description, sl.status, sl.closedate, sl.allocation, sl.rate
                 FROM sales_lead_consultant slc
                 JOIN sales_lead sl ON sl.uuid = slc.leaduuid
-                JOIN clients cl ON cl.uuid = sl.clientuuid
+                JOIN client cl ON cl.uuid = sl.clientuuid
                 WHERE slc.useruuid IN (:memberUuids)
                   AND sl.status NOT IN ('LOST', 'ABANDONED')
                 ORDER BY sl.closedate
@@ -690,7 +690,7 @@ public class TeamDashboardService {
                        ) AS has_extension_lead
                 FROM contract_consultants cc
                 JOIN contracts c ON c.uuid = cc.contractuuid
-                JOIN clients cl ON cl.uuid = c.clientuuid
+                JOIN client cl ON cl.uuid = c.clientuuid
                 JOIN user u ON u.uuid = cc.useruuid
                 WHERE cc.useruuid IN (:memberUuids)
                   AND cc.activeto >= CURDATE()
@@ -1022,7 +1022,7 @@ public class TeamDashboardService {
         // Allocated OPEX: team's share based on headcount ratio
         // Total company OPEX and headcount
         var opexRow = querySingleRow("""
-                SELECT COALESCE(SUM(fo.amount), 0) AS total_opex
+                SELECT COALESCE(SUM(fo.opex_amount_dkk), 0) AS total_opex
                 FROM fact_opex fo
                 WHERE fo.month_key >= :fromKey AND fo.month_key <= :toKey
                 """,
@@ -1071,7 +1071,7 @@ public class TeamDashboardService {
                 SELECT fud.clientuuid, cl.name AS client_name,
                        COALESCE(SUM(fud.registered_amount), 0) AS revenue
                 FROM fact_user_day fud
-                JOIN clients cl ON cl.uuid = fud.clientuuid
+                JOIN client cl ON cl.uuid = fud.clientuuid
                 WHERE fud.useruuid IN (:memberUuids)
                   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
                   AND fud.consultant_type = 'CONSULTANT'
