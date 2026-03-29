@@ -1066,18 +1066,21 @@ public class TeamDashboardService {
             return List.of();
         }
 
+        // fact_user_day has no client column; join through work → contract → client
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
-                SELECT fud.clientuuid, cl.name AS client_name,
-                       COALESCE(SUM(fud.registered_amount), 0) AS revenue
-                FROM fact_user_day fud
-                JOIN client cl ON cl.uuid = fud.clientuuid
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                  AND fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
-                  AND fud.registered_amount > 0
-                GROUP BY fud.clientuuid, cl.name
+                SELECT c_client.uuid AS client_uuid, c_client.name AS client_name,
+                       COALESCE(SUM(w.workduration * cc.rate), 0) AS revenue
+                FROM work w
+                JOIN contract_consultants cc ON cc.contractuuid = w.contractuuid
+                    AND cc.useruuid = w.useruuid
+                    AND w.registered >= cc.activefrom AND w.registered <= cc.activeto
+                JOIN contracts c ON c.uuid = w.contractuuid
+                JOIN client c_client ON c_client.uuid = c.clientuuid
+                WHERE w.useruuid IN (:memberUuids)
+                  AND w.registered >= :fromDate AND w.registered <= :toDate
+                  AND w.workduration > 0
+                GROUP BY c_client.uuid, c_client.name
                 ORDER BY revenue DESC
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
@@ -1094,7 +1097,7 @@ public class TeamDashboardService {
             double rev = numVal(row, "revenue");
             double share = totalRevenue > 0 ? (rev / totalRevenue) * 100.0 : 0.0;
             result.add(new TeamClientConcentrationDTO(
-                    (String) row.get("clientuuid"),
+                    (String) row.get("client_uuid"),
                     (String) row.get("client_name"),
                     rev, share));
         }
