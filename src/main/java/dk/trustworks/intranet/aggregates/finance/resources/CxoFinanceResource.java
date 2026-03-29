@@ -2,7 +2,12 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.BacklogCoverageDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4WeeksDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.BudgetActualGapDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ConsultantUtilizationRankingDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ConsultantWithoutContractDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeToFirstContractDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.UnprofitableConsultantDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ForecastUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.GrossMarginTTMDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAccumulatedEbitdaDTO;
@@ -29,6 +34,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
+import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsService;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import dk.trustworks.intranet.aggregates.finance.usecases.CareerLevelEconomicsUseCase;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -69,6 +75,9 @@ public class CxoFinanceResource {
 
     @Inject
     CxoFinanceService cxoFinanceService;
+
+    @Inject
+    ConsultantInsightsService consultantInsightsService;
 
     @Inject
     CareerLevelEconomicsUseCase careerLevelEconomicsUseCase;
@@ -1421,6 +1430,136 @@ public class CxoFinanceResource {
         bonus.persist();
 
         return Response.ok(new CareerLevelBonusDTO(bonus.careerLevel, bonus.bonusPct.doubleValue())).build();
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Consultant Insights tab endpoints
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns consultants ranked by highest net utilization over trailing 12 months.
+     * Only includes consultants with > 100 net available hours.
+     *
+     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @param order      Sort order: "DESC" for highest first (default), "ASC" for lowest first
+     * @param limit      Maximum number of results (default 10)
+     * @return List of consultant utilization rankings
+     */
+    @GET
+    @Path("/consultant-utilization-rankings")
+    public List<ConsultantUtilizationRankingDTO> getConsultantUtilizationRankings(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("order") @DefaultValue("DESC") String order,
+            @QueryParam("limit") @DefaultValue("10") int limit) {
+
+        log.debugf("GET /finance/cxo/consultant-utilization-rankings: practices=%s, companyIds=%s, order=%s, limit=%d",
+                practices, companyIds, order, limit);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        boolean ascending = "ASC".equalsIgnoreCase(order);
+
+        return consultantInsightsService.getUtilizationRankings(practiceSet, companyIdSet, ascending, limit);
+    }
+
+    /**
+     * Returns time-to-first-contract data for consultants hired within the last N months.
+     * Shows hire date, first contract start date, and days between them.
+     *
+     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @param months     How many months back to look for hires (default 24)
+     * @return List of hire-to-contract DTOs ordered by hire date ascending
+     */
+    @GET
+    @Path("/time-to-first-contract")
+    public List<TimeToFirstContractDTO> getTimeToFirstContract(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("months") @DefaultValue("24") int months) {
+
+        log.debugf("GET /finance/cxo/time-to-first-contract: practices=%s, companyIds=%s, months=%d",
+                practices, companyIds, months);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        return consultantInsightsService.getTimeToFirstContract(practiceSet, companyIdSet, months);
+    }
+
+    /**
+     * Returns consultants who have had no active contract for at least the specified number of months.
+     * Only includes currently active consultants.
+     *
+     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @param minMonths  Minimum months without a contract (default 3)
+     * @return List of bench consultant DTOs ordered by days since contract descending
+     */
+    @GET
+    @Path("/consultants-without-contract")
+    public List<ConsultantWithoutContractDTO> getConsultantsWithoutContract(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("minMonths") @DefaultValue("3") int minMonths) {
+
+        log.debugf("GET /finance/cxo/consultants-without-contract: practices=%s, companyIds=%s, minMonths=%d",
+                practices, companyIds, minMonths);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        return consultantInsightsService.getConsultantsWithoutContract(practiceSet, companyIdSet, minMonths);
+    }
+
+    /**
+     * Returns consultants whose trailing 12-month net profit is negative.
+     * Net Profit = Revenue - Salary - (Total OPEX / headcount).
+     *
+     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @return List of unprofitable consultant DTOs ordered by net profit ascending (worst first)
+     */
+    @GET
+    @Path("/unprofitable-consultants")
+    public List<UnprofitableConsultantDTO> getUnprofitableConsultants(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /finance/cxo/unprofitable-consultants: practices=%s, companyIds=%s",
+                practices, companyIds);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        return consultantInsightsService.getUnprofitableConsultants(practiceSet, companyIdSet);
+    }
+
+    /**
+     * Returns per-consultant gap between budgeted hours and actual billable hours over TTM.
+     * Identifies consultants driving the largest budget-actual discrepancy.
+     *
+     * @param practices  Comma-separated practice codes (default: PM,BA,SA,CYB,DEV)
+     * @param companyIds Comma-separated company UUIDs (optional)
+     * @param limit      Maximum number of results (default 15)
+     * @return List of budget-actual gap DTOs ordered by gap descending (largest gap first)
+     */
+    @GET
+    @Path("/budget-actual-gap")
+    public List<BudgetActualGapDTO> getBudgetActualGap(
+            @QueryParam("practices") String practices,
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("limit") @DefaultValue("15") int limit) {
+
+        log.debugf("GET /finance/cxo/budget-actual-gap: practices=%s, companyIds=%s, limit=%d",
+                practices, companyIds, limit);
+
+        Set<String> practiceSet = parseCommaSeparated(practices);
+        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+
+        return consultantInsightsService.getBudgetActualGap(practiceSet, companyIdSet, limit);
     }
 
     /**
