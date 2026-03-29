@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 import dk.trustworks.intranet.aggregates.finance.dto.BacklogCoverageDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BillableUtilizationLast4WeeksDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetActualGapDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.BudgetActualGapMonthlyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantUtilizationRankingDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantWithoutContractDTO;
@@ -1560,6 +1561,23 @@ public class CxoFinanceResource {
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return consultantInsightsService.getBudgetActualGap(practiceSet, companyIdSet, limit);
+    }
+
+    /**
+     * Returns 12 monthly rows (TTM, excluding current month) with budget hours and actual hours
+     * for a specific consultant. Used for the per-consultant drill-down chart.
+     *
+     * @param userId the consultant's user UUID
+     * @return List of monthly budget-vs-actual DTOs ordered by month ascending
+     */
+    @GET
+    @Path("/budget-actual-gap/{userId}/monthly")
+    public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(
+            @PathParam("userId") String userId) {
+
+        log.debugf("GET /finance/cxo/budget-actual-gap/%s/monthly", userId);
+
+        return consultantInsightsService.getBudgetActualGapMonthly(userId);
     }
 
     /**
