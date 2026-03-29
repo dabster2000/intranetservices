@@ -75,7 +75,8 @@ public class ConsultantInsightsService {
             JOIN user u ON u.uuid = fum.user_id
             JOIN userstatus us ON us.useruuid = u.uuid
                  AND us.statusdate = (
-                     SELECT MAX(us2.statusdate) FROM userstatus us2 WHERE us2.useruuid = u.uuid
+                     SELECT MAX(us2.statusdate) FROM userstatus us2
+                     WHERE us2.useruuid = u.uuid AND us2.statusdate <= CURDATE()
                  )
                  AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
             WHERE u.practice IN (:practices)
@@ -240,7 +241,8 @@ public class ConsultantInsightsService {
             FROM user u
             JOIN userstatus us ON us.useruuid = u.uuid
                  AND us.statusdate = (
-                     SELECT MAX(us2.statusdate) FROM userstatus us2 WHERE us2.useruuid = u.uuid
+                     SELECT MAX(us2.statusdate) FROM userstatus us2
+                     WHERE us2.useruuid = u.uuid AND us2.statusdate <= CURDATE()
                  )
                  AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
             LEFT JOIN contract_consultants cc ON cc.useruuid = u.uuid
@@ -404,7 +406,7 @@ public class ConsultantInsightsService {
               AND EXISTS (
                   SELECT 1 FROM userstatus us_active
                   WHERE us_active.useruuid = u.uuid
-                    AND us_active.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = u.uuid)
+                    AND us_active.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = u.uuid AND us3.statusdate <= CURDATE())
                     AND us_active.status NOT IN ('TERMINATED', 'PREBOARDING') AND us_active.type = 'CONSULTANT'
               )
             """);
