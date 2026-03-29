@@ -480,7 +480,8 @@ public class ConsultantInsightsService {
         String fromKey = String.format("%04d%02d", ttmFrom.getYear(), ttmFrom.getMonthValue());
         String toKey = String.format("%04d%02d", now.getYear(), now.getMonthValue());
 
-        // Budget subquery from fact_budget_day
+        // Budget subquery from fact_budget_day — only include periods where user was a CONSULTANT
+        // (excludes student periods for people who transitioned from STUDENT to CONSULTANT)
         StringBuilder budgetSub = new StringBuilder();
         budgetSub.append("""
             SELECT bd.useruuid, SUM(bd.budgetHours) AS total_budget
@@ -488,6 +489,9 @@ public class ConsultantInsightsService {
             JOIN user ub ON ub.uuid = bd.useruuid
             WHERE ub.practice IN (:practices)
               AND bd.document_date >= :ttmFrom AND bd.document_date < :ttmTo
+              AND (SELECT us_type.type FROM userstatus us_type
+                   WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
+                   ORDER BY us_type.statusdate DESC LIMIT 1) = 'CONSULTANT'
             """);
         if (hasCompanies) {
             budgetSub.append("  AND bd.companyuuid IN (:companyIds) ");
@@ -594,6 +598,9 @@ public class ConsultantInsightsService {
             FROM fact_budget_day bd
             WHERE bd.useruuid = :userId
               AND bd.document_date >= :ttmFrom AND bd.document_date < :ttmTo
+              AND (SELECT us_type.type FROM userstatus us_type
+                   WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
+                   ORDER BY us_type.statusdate DESC LIMIT 1) = 'CONSULTANT'
             GROUP BY bd.year, bd.month
             ORDER BY month_key
             """;
