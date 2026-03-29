@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetActualGapDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.BudgetActualGapMonthlyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantUtilizationRankingDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantWithoutContractDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TimeToFirstContractDTO;
@@ -12,9 +13,14 @@ import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.Month;
+import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -548,6 +554,103 @@ public class ConsultantInsightsService {
                     fulfillmentPct
             ));
         }
+
+        return results;
+    }
+
+    /**
+     * Returns 12 monthly rows (TTM, excluding current month) with budget hours and actual hours
+     * for a specific consultant. Each row includes utilization percentages.
+     *
+     * @param userId the consultant's user UUID
+     * @return list of monthly budget-vs-actual DTOs, ordered by month ascending
+     */
+    public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(String userId) {
+
+        // TTM boundaries: 12 months back from start of current month
+        LocalDate now = LocalDate.now();
+        LocalDate ttmFrom = now.minusMonths(12).withDayOfMonth(1);
+        LocalDate ttmTo = now.withDayOfMonth(1);
+        String fromKey = String.format("%04d%02d", ttmFrom.getYear(), ttmFrom.getMonthValue());
+        String toKey = String.format("%04d%02d", ttmTo.getYear(), ttmTo.getMonthValue());
+
+        // Build skeleton map for all 12 months so we return rows even when data is missing
+        Map<String, BudgetActualGapMonthlyDTO> monthMap = new LinkedHashMap<>();
+        for (int i = 0; i < 12; i++) {
+            LocalDate month = ttmFrom.plusMonths(i);
+            String key = String.format("%04d%02d", month.getYear(), month.getMonthValue());
+            String label = Month.of(month.getMonthValue())
+                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + month.getYear();
+            monthMap.put(key, new BudgetActualGapMonthlyDTO(
+                    key, month.getYear(), month.getMonthValue(), label,
+                    0.0, 0.0, 0.0, 0.0, 0.0));
+        }
+
+        // Budget hours per month from fact_budget_day
+        String budgetSql = """
+            SELECT CONCAT(LPAD(bd.year, 4, '0'), LPAD(bd.month, 2, '0')) AS month_key,
+                   bd.year, bd.month AS month_number,
+                   SUM(bd.budgetHours) AS budget_hours
+            FROM fact_budget_day bd
+            WHERE bd.useruuid = :userId
+              AND bd.document_date >= :ttmFrom AND bd.document_date < :ttmTo
+            GROUP BY bd.year, bd.month
+            ORDER BY month_key
+            """;
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> budgetRows = em.createNativeQuery(budgetSql, Tuple.class)
+                .setParameter("userId", userId)
+                .setParameter("ttmFrom", ttmFrom)
+                .setParameter("ttmTo", ttmTo)
+                .getResultList();
+
+        for (Tuple row : budgetRows) {
+            String key = (String) row.get("month_key");
+            var dto = monthMap.get(key);
+            if (dto != null) {
+                dto.setBudgetHours(((Number) row.get("budget_hours")).doubleValue());
+            }
+        }
+
+        // Actual hours and net available from fact_user_utilization_mat
+        String actualSql = """
+            SELECT fum.month_key, fum.year, fum.month_number,
+                   fum.billable_hours AS actual_hours,
+                   fum.net_available_hours
+            FROM fact_user_utilization_mat fum
+            WHERE fum.user_id = :userId
+              AND fum.month_key >= :fromKey AND fum.month_key < :toKey
+            ORDER BY fum.month_key
+            """;
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> actualRows = em.createNativeQuery(actualSql, Tuple.class)
+                .setParameter("userId", userId)
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
+                .getResultList();
+
+        for (Tuple row : actualRows) {
+            String key = (String) row.get("month_key");
+            var dto = monthMap.get(key);
+            if (dto != null) {
+                dto.setActualHours(((Number) row.get("actual_hours")).doubleValue());
+                dto.setNetAvailableHours(((Number) row.get("net_available_hours")).doubleValue());
+            }
+        }
+
+        // Compute utilization percentages
+        List<BudgetActualGapMonthlyDTO> results = new ArrayList<>(monthMap.values());
+        for (var dto : results) {
+            double net = dto.getNetAvailableHours();
+            if (net > 0) {
+                dto.setBudgetUtilizationPct(dto.getBudgetHours() / net * 100.0);
+                dto.setActualUtilizationPct(dto.getActualHours() / net * 100.0);
+            }
+        }
+
+        log.debugf("getBudgetActualGapMonthly: userId=%s, returned %s rows", userId, results.size());
 
         return results;
     }
