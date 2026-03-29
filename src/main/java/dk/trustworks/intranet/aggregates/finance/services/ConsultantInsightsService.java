@@ -67,6 +67,11 @@ public class ConsultantInsightsService {
                    SUM(fum.net_available_hours) AS net_available
             FROM fact_user_utilization_mat fum
             JOIN user u ON u.uuid = fum.user_id
+            JOIN userstatus us ON us.useruuid = u.uuid
+                 AND us.statusdate = (
+                     SELECT MAX(us2.statusdate) FROM userstatus us2 WHERE us2.useruuid = u.uuid
+                 )
+                 AND us.status = 'ACTIVE' AND us.type = 'CONSULTANT'
             WHERE u.practice IN (:practices)
               AND fum.month_key >= :fromKey
               AND fum.month_key < :toKey
@@ -140,24 +145,29 @@ public class ConsultantInsightsService {
 
         StringBuilder sql = new StringBuilder();
         sql.append("""
-            SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
-                   MIN(us.statusdate) AS hire_date,
+            SELECT sub.user_id, sub.firstname, sub.lastname, sub.practice,
+                   sub.hire_date,
                    MIN(cc.activefrom) AS first_contract_date
-            FROM user u
-            JOIN userstatus us ON us.useruuid = u.uuid
-                 AND us.status = 'ACTIVE' AND us.type = 'CONSULTANT'
-            LEFT JOIN contract_consultants cc ON cc.useruuid = u.uuid
-            WHERE u.practice IN (:practices)
+            FROM (
+                SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
+                       MIN(us.statusdate) AS hire_date
+                FROM user u
+                JOIN userstatus us ON us.useruuid = u.uuid
+                     AND us.status = 'ACTIVE' AND us.type = 'CONSULTANT'
+                WHERE u.practice IN (:practices)
             """);
 
         if (hasCompanies) {
-            sql.append("  AND us.companyuuid IN (:companyIds) ");
+            sql.append("      AND us.companyuuid IN (:companyIds) ");
         }
 
         sql.append("""
-            GROUP BY u.uuid, u.firstname, u.lastname, u.practice
-            HAVING hire_date >= :cutoffDate
-            ORDER BY hire_date ASC
+                GROUP BY u.uuid, u.firstname, u.lastname, u.practice
+                HAVING MIN(us.statusdate) >= :cutoffDate
+            ) sub
+            LEFT JOIN contract_consultants cc ON cc.useruuid = sub.user_id
+            GROUP BY sub.user_id, sub.firstname, sub.lastname, sub.practice, sub.hire_date
+            ORDER BY sub.hire_date ASC
             """);
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
@@ -238,7 +248,7 @@ public class ConsultantInsightsService {
 
         sql.append("""
             GROUP BY u.uuid, u.firstname, u.lastname, u.practice
-            HAVING last_contract_end IS NULL OR last_contract_end < :cutoffDate
+            HAVING MAX(cc.activeto) IS NULL OR MAX(cc.activeto) < :cutoffDate
             ORDER BY days_since DESC
             """);
 
