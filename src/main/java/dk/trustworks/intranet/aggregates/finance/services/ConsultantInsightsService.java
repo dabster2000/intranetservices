@@ -77,7 +77,7 @@ public class ConsultantInsightsService {
                  AND us.statusdate = (
                      SELECT MAX(us2.statusdate) FROM userstatus us2 WHERE us2.useruuid = u.uuid
                  )
-                 AND us.status = 'ACTIVE' AND us.type = 'CONSULTANT'
+                 AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
             WHERE u.practice IN (:practices)
               AND fum.month_key >= :fromKey
               AND fum.month_key < :toKey
@@ -159,7 +159,7 @@ public class ConsultantInsightsService {
                        MIN(us.statusdate) AS hire_date
                 FROM user u
                 JOIN userstatus us ON us.useruuid = u.uuid
-                     AND us.status = 'ACTIVE' AND us.type = 'CONSULTANT'
+                     AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
                 WHERE u.practice IN (:practices)
             """);
 
@@ -241,7 +241,7 @@ public class ConsultantInsightsService {
                  AND us.statusdate = (
                      SELECT MAX(us2.statusdate) FROM userstatus us2 WHERE us2.useruuid = u.uuid
                  )
-                 AND us.status = 'ACTIVE' AND us.type = 'CONSULTANT'
+                 AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
             LEFT JOIN contract_consultants cc ON cc.useruuid = u.uuid
             WHERE u.practice IN (:practices)
             """);
@@ -404,7 +404,7 @@ public class ConsultantInsightsService {
                   SELECT 1 FROM userstatus us_active
                   WHERE us_active.useruuid = u.uuid
                     AND us_active.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = u.uuid)
-                    AND us_active.status = 'ACTIVE' AND us_active.type = 'CONSULTANT'
+                    AND us_active.status NOT IN ('TERMINATED', 'PREBOARDING') AND us_active.type = 'CONSULTANT'
               )
             """);
 
