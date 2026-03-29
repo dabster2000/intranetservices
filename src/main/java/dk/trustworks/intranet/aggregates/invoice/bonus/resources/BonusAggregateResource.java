@@ -1,6 +1,9 @@
 package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.AllTeamsBonusRankingDTO;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.TeamBonusProjectionDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
+import dk.trustworks.intranet.aggregates.invoice.bonus.services.TeamBonusProjectionService;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -13,6 +16,7 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.ExampleObject;
@@ -42,6 +46,9 @@ public class BonusAggregateResource {
 
     @Inject
     InvoiceBonusService bonusService;
+
+    @Inject
+    TeamBonusProjectionService teamBonusProjectionService;
 
     @Inject
     TeamService teamService;
@@ -340,5 +347,96 @@ public class BonusAggregateResource {
                 eligibleLeaders,
                 eligibleLeaders.size()
         );
+    }
+
+    // ---- Team Dashboard Bonus Endpoints ----
+
+    @GET
+    @Path("/team/{teamId}/bonus-projection")
+    @RolesAllowed({"dashboard:read"})
+    @Operation(
+            summary = "Get bonus projection for a team leader",
+            description = """
+                Returns pool bonus + production bonus projection for the specified team's leader
+                in the given fiscal year. Only accessible by the team's current leader.
+                Pool bonus: MAX(team_avg_util - 0.65, 0) * 5 * team_factor * price_per_point * 100.
+                Production bonus: MAX((own_revenue - prorated_threshold) * 0.20, 0).
+                """
+    )
+    @APIResponses({
+            @APIResponse(
+                    responseCode = "200",
+                    description = "Bonus projection calculated successfully",
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = TeamBonusProjectionDTO.class))
+            ),
+            @APIResponse(responseCode = "400", description = "Bad request – invalid fiscal year"),
+            @APIResponse(responseCode = "403", description = "Forbidden – requester is not a leader of this team"),
+            @APIResponse(responseCode = "404", description = "Team not found")
+    })
+    public Response getTeamBonusProjection(
+            @Parameter(description = "Team UUID", required = true)
+            @PathParam("teamId") String teamId,
+            @Parameter(
+                    name = "fiscalYear",
+                    description = "FY starting year (FY YYYY runs from YYYY-07-01 to (YYYY+1)-06-30)",
+                    required = true
+            )
+            @QueryParam("fiscalYear") Integer fiscalYear) {
+
+        if (fiscalYear == null) {
+            throw new BadRequestException("fiscalYear parameter is required");
+        }
+        if (fiscalYear < 2000 || fiscalYear > 2999) {
+            throw new BadRequestException("fiscalYear must be between 2000 and 2999");
+        }
+
+        teamBonusProjectionService.validateTeamAccess(teamId);
+        TeamBonusProjectionDTO projection = teamBonusProjectionService.getBonusProjection(teamId, fiscalYear);
+        return Response.ok(projection).build();
+    }
+
+    @GET
+    @Path("/team/{teamId}/bonus-all-teams")
+    @RolesAllowed({"dashboard:read"})
+    @Operation(
+            summary = "Get bonus ranking for all bonus-eligible teams",
+            description = """
+                Returns bonus points and ranking data for all teams where team.teamleadbonus = true.
+                The requesting team is marked with isCurrentTeam = true. Used for the ranking comparison chart.
+                Only accessible by the team's current leader.
+                """
+    )
+    @APIResponses({
+            @APIResponse(
+                    responseCode = "200",
+                    description = "Ranking data returned successfully",
+                    content = @Content(mediaType = "application/json",
+                            schema = @Schema(implementation = AllTeamsBonusRankingDTO.class))
+            ),
+            @APIResponse(responseCode = "400", description = "Bad request – invalid fiscal year"),
+            @APIResponse(responseCode = "403", description = "Forbidden – requester is not a leader of this team"),
+            @APIResponse(responseCode = "404", description = "Team not found")
+    })
+    public Response getAllTeamsBonusRanking(
+            @Parameter(description = "Team UUID (used to mark isCurrentTeam)", required = true)
+            @PathParam("teamId") String teamId,
+            @Parameter(
+                    name = "fiscalYear",
+                    description = "FY starting year (FY YYYY runs from YYYY-07-01 to (YYYY+1)-06-30)",
+                    required = true
+            )
+            @QueryParam("fiscalYear") Integer fiscalYear) {
+
+        if (fiscalYear == null) {
+            throw new BadRequestException("fiscalYear parameter is required");
+        }
+        if (fiscalYear < 2000 || fiscalYear > 2999) {
+            throw new BadRequestException("fiscalYear must be between 2000 and 2999");
+        }
+
+        teamBonusProjectionService.validateTeamAccess(teamId);
+        List<AllTeamsBonusRankingDTO> rankings = teamBonusProjectionService.getAllTeamsBonusRanking(teamId, fiscalYear);
+        return Response.ok(rankings).build();
     }
 }
