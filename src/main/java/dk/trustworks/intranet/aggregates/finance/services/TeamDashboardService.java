@@ -1044,6 +1044,7 @@ public class TeamDashboardService {
                 SELECT COALESCE(SUM(fo.opex_amount_dkk), 0) AS total_opex
                 FROM fact_opex fo
                 WHERE fo.month_key >= :fromKey AND fo.month_key <= :toKey
+                  AND fo.cost_type = 'OPEX'
                 """,
                 Map.of("fromKey", toMonthKey(fy.start()),
                         "toKey", toMonthKey(effectiveEnd)));
