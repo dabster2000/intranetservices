@@ -375,63 +375,9 @@ public class TeamPeopleService {
             );
         }
 
-        // Get current rolling 365-day total per user from fact_user_day
-        @SuppressWarnings("unchecked")
-        List<Tuple> rollingRows = em.createNativeQuery("""
-                SELECT fud.useruuid, SUM(fud.sick_hours) / 7.4 AS rolling_365_total
-                FROM fact_user_day fud
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :lookbackStart
-                  AND fud.document_date <= :today
-                  AND fud.sick_hours > 0
-                GROUP BY fud.useruuid
-                """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
-                .setParameter("lookbackStart", lookbackStart)
-                .setParameter("today", now)
-                .getResultList();
-
-        Map<String, Double> rollingTotalByUser = new LinkedHashMap<>();
-        for (Tuple row : rollingRows) {
-            rollingTotalByUser.put(
-                    (String) row.get("useruuid"),
-                    toDouble(row.get("rolling_365_total"))
-            );
-        }
-
-        // Get monthly trend (trailing 12 months, grouped by user and year-month)
-        @SuppressWarnings("unchecked")
-        List<Tuple> trendRows = em.createNativeQuery("""
-                SELECT fud.useruuid,
-                       YEAR(fud.document_date) AS yr,
-                       MONTH(fud.document_date) AS mo,
-                       SUM(fud.sick_hours) / 7.4 AS sick_days
-                FROM fact_user_day fud
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :lookbackStart
-                  AND fud.document_date <= :today
-                  AND fud.sick_hours > 0
-                GROUP BY fud.useruuid, YEAR(fud.document_date), MONTH(fud.document_date)
-                ORDER BY fud.useruuid, yr, mo
-                """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
-                .setParameter("lookbackStart", lookbackStart)
-                .setParameter("today", now)
-                .getResultList();
-
-        Map<String, List<MonthlySickDays>> trendByUser = new LinkedHashMap<>();
-        for (Tuple row : trendRows) {
-            String userId = (String) row.get("useruuid");
-            int yr = ((Number) row.get("yr")).intValue();
-            int mo = ((Number) row.get("mo")).intValue();
-            String monthKey = String.format("%d-%02d", yr, mo);
-            double sickDays = toDouble(row.get("sick_days"));
-
-            trendByUser.computeIfAbsent(userId, k -> new ArrayList<>())
-                    .add(new MonthlySickDays(monthKey, sickDays));
-        }
-
-        // Get daily sick hours for period detection
+        // Get daily sick hours for period detection (rolling totals and trends
+        // are computed from detected periods to include bridged weekends/holidays
+        // per Danish Funktionærloven 120-day rule)
         @SuppressWarnings("unchecked")
         List<Tuple> dailyRows = em.createNativeQuery("""
                 SELECT fud.useruuid, fud.document_date, fud.sick_hours / 7.4 AS effective_sick_day
@@ -449,6 +395,35 @@ public class TeamPeopleService {
 
         // Group daily rows by user, then compute consecutive periods
         Map<String, List<SickPeriod>> periodsByUser = computeSickPeriods(dailyRows);
+
+        // Compute rolling totals from period calendar days (includes bridged weekends/holidays)
+        Map<String, Double> rollingTotalByUser = new LinkedHashMap<>();
+        for (var entry : periodsByUser.entrySet()) {
+            double total = entry.getValue().stream()
+                    .mapToDouble(SickPeriod::totalDays)
+                    .sum();
+            rollingTotalByUser.put(entry.getKey(), total);
+        }
+
+        // Compute monthly trend from periods (distribute calendar days across months)
+        Map<String, List<MonthlySickDays>> trendByUser = new LinkedHashMap<>();
+        for (var entry : periodsByUser.entrySet()) {
+            String periodUserId = entry.getKey();
+            Map<String, Double> monthlyDays = new LinkedHashMap<>();
+            for (SickPeriod period : entry.getValue()) {
+                LocalDate d = period.startDate();
+                while (!d.isAfter(period.endDate())) {
+                    String monthKey = String.format("%d-%02d", d.getYear(), d.getMonthValue());
+                    monthlyDays.merge(monthKey, 1.0, Double::sum);
+                    d = d.plusDays(1);
+                }
+            }
+            List<MonthlySickDays> trend = monthlyDays.entrySet().stream()
+                    .map(e -> new MonthlySickDays(e.getKey(), e.getValue()))
+                    .sorted(Comparator.comparing(MonthlySickDays::month))
+                    .toList();
+            trendByUser.put(periodUserId, trend);
+        }
 
         // Assemble results
         List<TeamSickLeaveTrackingDTO> result = new ArrayList<>();
@@ -483,8 +458,14 @@ public class TeamPeopleService {
     }
 
     /**
-     * Groups daily sick day rows into consecutive periods.
-     * Days are considered consecutive if they follow each other by calendar date.
+     * Groups daily sick day rows into consecutive periods, bridging across weekends and holidays.
+     *
+     * <p>Per the Danish Funktionærloven 120-day rule, weekends and holidays between consecutive
+     * sick working days count as sick days. A gap of up to 3 calendar days is bridged, which
+     * covers Friday→Monday (2-day gap) and Thursday→Monday when Friday is a holiday (3-day gap).
+     *
+     * <p>Each period's totalDays is counted as calendar days (startDate to endDate inclusive),
+     * not just the working days with recorded sick hours.
      */
     private Map<String, List<SickPeriod>> computeSickPeriods(List<Tuple> dailyRows) {
         Map<String, List<SickPeriod>> result = new LinkedHashMap<>();
@@ -502,11 +483,9 @@ public class TeamPeopleService {
 
             LocalDate periodStart = null;
             LocalDate periodEnd = null;
-            double periodTotal = 0;
 
             for (Tuple day : days) {
                 LocalDate date = toLocalDate(day.get("document_date"));
-                double effectiveSickDay = toDouble(day.get("effective_sick_day"));
 
                 if (date == null) continue;
 
@@ -514,23 +493,23 @@ public class TeamPeopleService {
                     // Start new period
                     periodStart = date;
                     periodEnd = date;
-                    periodTotal = effectiveSickDay;
-                } else if (ChronoUnit.DAYS.between(periodEnd, date) <= 1) {
-                    // Extend current period (consecutive day)
+                } else if (ChronoUnit.DAYS.between(periodEnd, date) <= 3) {
+                    // Extend current period — bridges weekends (2-day gap) and
+                    // holiday+weekend combos (3-day gap, e.g. Thu→Mon with Fri holiday)
                     periodEnd = date;
-                    periodTotal += effectiveSickDay;
                 } else {
-                    // Gap detected — close current period and start new one
-                    periods.add(new SickPeriod(periodStart, periodEnd, periodTotal));
+                    // Gap too large — close current period and start new one
+                    long calendarDays = ChronoUnit.DAYS.between(periodStart, periodEnd) + 1;
+                    periods.add(new SickPeriod(periodStart, periodEnd, (double) calendarDays));
                     periodStart = date;
                     periodEnd = date;
-                    periodTotal = effectiveSickDay;
                 }
             }
 
             // Close last period
             if (periodStart != null) {
-                periods.add(new SickPeriod(periodStart, periodEnd, periodTotal));
+                long calendarDays = ChronoUnit.DAYS.between(periodStart, periodEnd) + 1;
+                periods.add(new SickPeriod(periodStart, periodEnd, (double) calendarDays));
             }
 
             result.put(entry.getKey(), periods);
