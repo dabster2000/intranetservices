@@ -512,7 +512,7 @@ public class TeamDashboardService {
         List<Tuple> leadRows = em.createNativeQuery("""
                 SELECT slc.useruuid AS user_id,
                        sl.uuid AS lead_uuid, cl.name AS client_name,
-                       sl.description, sl.status, sl.closedate, sl.allocation, sl.rate,
+                       sl.description, sl.status, sl.closedate, sl.allocation, sl.rate, sl.period,
                        EXISTS (
                            SELECT 1 FROM contract_consultants cc2
                            JOIN contracts c2 ON c2.uuid = cc2.contractuuid
@@ -575,6 +575,7 @@ public class TeamDashboardService {
                     toLocalDate(row.get("closedate")),
                     row.get("allocation") != null ? ((Number) row.get("allocation")).intValue() : 0,
                     numVal(row, "rate"),
+                    row.get("period") != null ? ((Number) row.get("period")).intValue() : 3,
                     ((Number) row.get("is_extension")).intValue() > 0));
         }
 
