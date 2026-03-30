@@ -35,6 +35,8 @@ public record TeamContractTimelineDTO(
             String status,
             LocalDate closeDate,
             int allocationPercent,
-            double rate
+            double rate,
+            /** True if the lead's client matches an active contract for this consultant */
+            boolean isExtension
     ) {}
 }

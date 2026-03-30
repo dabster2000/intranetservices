@@ -379,10 +379,13 @@ public class TeamDashboardService {
             return List.of();
         }
 
-        // Current month boundaries
-        YearMonth currentMonth = YearMonth.now();
-        LocalDate monthStart = currentMonth.atDay(1);
-        LocalDate monthEnd = currentMonth.atEndOfMonth();
+        // FY-to-date through previous month (completed months only)
+        LocalDate fyStart = getFiscalYearBounds(fiscalYear).start();
+        LocalDate prevMonthEnd = YearMonth.now().minusMonths(1).atEndOfMonth();
+        // If the FY hasn't started yet, there's nothing to show
+        if (fyStart.isAfter(prevMonthEnd)) {
+            return List.of();
+        }
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
@@ -394,14 +397,14 @@ public class TeamDashboardService {
                     SELECT bd.useruuid, SUM(bd.budgetHours) AS total_budget
                     FROM fact_budget_day bd
                     WHERE bd.useruuid IN (:memberUuids)
-                      AND bd.document_date >= :monthStart AND bd.document_date <= :monthEnd
+                      AND bd.document_date >= :fyStart AND bd.document_date <= :prevMonthEnd
                     GROUP BY bd.useruuid
                 ) budget ON budget.useruuid = u.uuid
                 LEFT JOIN (
                     SELECT fud.useruuid, SUM(fud.registered_billable_hours) AS total_actual
                     FROM fact_user_day fud
                     WHERE fud.useruuid IN (:memberUuids)
-                      AND fud.document_date >= :monthStart AND fud.document_date <= :monthEnd
+                      AND fud.document_date >= :fyStart AND fud.document_date <= :prevMonthEnd
                       AND fud.consultant_type = 'CONSULTANT'
                     GROUP BY fud.useruuid
                 ) actual ON actual.useruuid = u.uuid
@@ -409,8 +412,8 @@ public class TeamDashboardService {
                 ORDER BY u.lastname, u.firstname
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
-                .setParameter("monthStart", monthStart)
-                .setParameter("monthEnd", monthEnd)
+                .setParameter("fyStart", fyStart)
+                .setParameter("prevMonthEnd", prevMonthEnd)
                 .getResultList();
 
         List<TeamBudgetFulfillmentDTO> result = new ArrayList<>();
@@ -434,7 +437,9 @@ public class TeamDashboardService {
 
     public List<AllTeamsUtilizationDTO> getAllTeamsUtilization(String currentTeamId, int fiscalYear) {
         var fy = getFiscalYearBounds(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Cap to last day of previous month (only include completed months)
+        LocalDate prevMonthEnd = YearMonth.now().minusMonths(1).atEndOfMonth();
+        LocalDate effectiveEnd = fy.end().isBefore(prevMonthEnd) ? fy.end() : prevMonthEnd;
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
@@ -502,12 +507,21 @@ public class TeamDashboardService {
                 .setParameter("memberUuids", memberUuids)
                 .getResultList();
 
-        // Sales leads for team members
+        // Sales leads for team members (with extension detection)
         @SuppressWarnings("unchecked")
         List<Tuple> leadRows = em.createNativeQuery("""
                 SELECT slc.useruuid AS user_id,
                        sl.uuid AS lead_uuid, cl.name AS client_name,
-                       sl.description, sl.status, sl.closedate, sl.allocation, sl.rate
+                       sl.description, sl.status, sl.closedate, sl.allocation, sl.rate,
+                       EXISTS (
+                           SELECT 1 FROM contract_consultants cc2
+                           JOIN contracts c2 ON c2.uuid = cc2.contractuuid
+                           WHERE cc2.useruuid = slc.useruuid
+                             AND c2.clientuuid = sl.clientuuid
+                             AND cc2.activefrom <= CURDATE()
+                             AND cc2.activeto > CURDATE()
+                             AND c2.status IN ('SIGNED', 'TIME')
+                       ) AS is_extension
                 FROM sales_lead_consultant slc
                 JOIN sales_lead sl ON sl.uuid = slc.leaduuid
                 JOIN client cl ON cl.uuid = sl.clientuuid
@@ -560,7 +574,8 @@ public class TeamDashboardService {
                     row.get("status") != null ? row.get("status").toString() : null,
                     toLocalDate(row.get("closedate")),
                     row.get("allocation") != null ? ((Number) row.get("allocation")).intValue() : 0,
-                    numVal(row, "rate")));
+                    numVal(row, "rate"),
+                    ((Number) row.get("is_extension")).intValue() > 0));
         }
 
         return new TeamContractTimelineDTO(new ArrayList<>(byUser.values()));
@@ -681,7 +696,7 @@ public class TeamDashboardService {
                 SELECT cc.contractuuid, cc.useruuid AS user_id,
                        u.firstname, u.lastname,
                        cl.name AS client_name, c.name AS contract_name,
-                       cc.activefrom, cc.activeto, cc.rate,
+                       cc.activefrom, cc.activeto, cc.rate, cc.hours,
                        DATEDIFF(cc.activeto, CURDATE()) AS days_until_expiry,
                        EXISTS (
                            SELECT 1 FROM sales_lead sl
@@ -716,6 +731,7 @@ public class TeamDashboardService {
                     toLocalDate(row.get("activefrom")),
                     toLocalDate(row.get("activeto")),
                     numVal(row, "rate"),
+                    numVal(row, "hours"),
                     ((Number) row.get("days_until_expiry")).intValue(),
                     ((Number) row.get("has_extension_lead")).intValue() > 0));
         }

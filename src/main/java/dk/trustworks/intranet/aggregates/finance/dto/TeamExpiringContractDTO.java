@@ -15,6 +15,8 @@ public record TeamExpiringContractDTO(
         LocalDate activeFrom,
         LocalDate activeTo,
         double rate,
+        /** Weekly contracted hours for this consultant on the contract */
+        double hours,
         /** Days until expiry (0 or negative if already expired) */
         int daysUntilExpiry,
         /** Whether there is a sales lead that could extend this contract */
