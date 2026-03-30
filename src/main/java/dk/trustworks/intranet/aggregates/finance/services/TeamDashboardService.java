@@ -14,6 +14,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.TeamExpiringContractDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamForwardAllocationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamForwardAllocationDTO.MemberAllocation;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamOverviewDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamOverviewDTO.RosterContract;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamOverviewDTO.TeamAttentionItemDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamOverviewDTO.TeamRosterMemberDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamRevenueCostTrendDTO;
@@ -36,6 +37,7 @@ import java.time.YearMonth;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -1173,21 +1175,94 @@ public class TeamDashboardService {
                 .setParameter("toKey", toMonthKey(effectiveEnd))
                 .getResultList();
 
+        // Query career levels: latest active career level per member
+        Map<String, String[]> careerByUser = queryCareerLevels(memberUuids);
+
+        // Query active contracts with client info
+        Map<String, List<RosterContract>> contractsByUser = queryActiveContracts(memberUuids);
+
         List<TeamRosterMemberDTO> roster = new ArrayList<>();
         for (Tuple row : rows) {
             double b = numVal(row, "billable");
             double n = numVal(row, "net_available");
             Double pct = n > 0 ? (b / n) * 100.0 : null;
+            String userId = (String) row.get("user_id");
+            String[] career = careerByUser.getOrDefault(userId, new String[]{null, null});
             roster.add(new TeamRosterMemberDTO(
-                    (String) row.get("user_id"),
+                    userId,
                     (String) row.get("firstname"),
                     (String) row.get("lastname"),
                     (String) row.get("practice"),
                     (String) row.get("status"),
                     pct,
-                    ((Number) row.get("has_active_contract")).intValue() > 0));
+                    ((Number) row.get("has_active_contract")).intValue() > 0,
+                    career[0],
+                    career[1],
+                    contractsByUser.getOrDefault(userId, List.of())));
         }
         return roster;
+    }
+
+    /**
+     * Returns a map of userId → [careerLevel, careerTrack] for the latest active career level per user.
+     */
+    private Map<String, String[]> queryCareerLevels(Set<String> memberUuids) {
+        @SuppressWarnings("unchecked")
+        List<Tuple> careerRows = em.createNativeQuery("""
+                SELECT ucl.useruuid, ucl.career_level, ucl.career_track
+                FROM user_career_level ucl
+                INNER JOIN (
+                    SELECT useruuid, MAX(active_from) AS max_from
+                    FROM user_career_level
+                    WHERE useruuid IN (:memberUuids) AND active_from <= CURDATE()
+                    GROUP BY useruuid
+                ) latest ON ucl.useruuid = latest.useruuid AND ucl.active_from = latest.max_from
+                WHERE ucl.useruuid IN (:memberUuids)
+                """, Tuple.class)
+                .setParameter("memberUuids", memberUuids)
+                .getResultList();
+
+        Map<String, String[]> careerByUser = new HashMap<>();
+        for (Tuple cr : careerRows) {
+            careerByUser.put(
+                    (String) cr.get("useruuid"),
+                    new String[]{(String) cr.get("career_level"), (String) cr.get("career_track")});
+        }
+        return careerByUser;
+    }
+
+    /**
+     * Returns a map of userId → list of active RosterContracts (sorted by activeTo ASC).
+     */
+    private Map<String, List<RosterContract>> queryActiveContracts(Set<String> memberUuids) {
+        @SuppressWarnings("unchecked")
+        List<Tuple> contractRows = em.createNativeQuery("""
+                SELECT cc.useruuid AS user_id, cl.name AS client_name, c.name AS contract_name,
+                       cc.activeto, cc.hours
+                FROM contract_consultants cc
+                JOIN contracts c ON c.uuid = cc.contractuuid
+                JOIN client cl ON cl.uuid = c.clientuuid
+                WHERE cc.useruuid IN (:memberUuids)
+                  AND cc.activefrom <= CURDATE()
+                  AND cc.activeto > CURDATE()
+                  AND c.status IN ('SIGNED', 'TIME')
+                ORDER BY cc.activeto ASC
+                """, Tuple.class)
+                .setParameter("memberUuids", memberUuids)
+                .getResultList();
+
+        Map<String, List<RosterContract>> contractsByUser = new HashMap<>();
+        for (Tuple cr : contractRows) {
+            String userId = (String) cr.get("user_id");
+            contractsByUser
+                    .computeIfAbsent(userId, k -> new ArrayList<>())
+                    .add(new RosterContract(
+                            (String) cr.get("client_name"),
+                            (String) cr.get("contract_name"),
+                            toLocalDate(cr.get("activeto")),
+                            numVal(cr, "hours")));
+        }
+        return contractsByUser;
     }
 
     private List<TeamAttentionItemDTO> buildAttentionItems(List<TeamBenchConsultantDTO> bench) {

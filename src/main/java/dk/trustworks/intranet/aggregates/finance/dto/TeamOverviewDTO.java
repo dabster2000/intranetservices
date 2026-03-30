@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.finance.dto;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -28,7 +29,17 @@ public record TeamOverviewDTO(
             String practice,
             String status,
             Double utilizationPercent,
-            boolean hasActiveContract
+            boolean hasActiveContract,
+            String careerLevel,
+            String careerTrack,
+            List<RosterContract> activeContracts
+    ) {}
+
+    public record RosterContract(
+            String clientName,
+            String contractName,
+            LocalDate activeTo,
+            double weeklyHours
     ) {}
 
     public record TeamAttentionItemDTO(
