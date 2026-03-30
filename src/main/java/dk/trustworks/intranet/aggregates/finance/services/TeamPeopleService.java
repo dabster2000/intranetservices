@@ -340,7 +340,7 @@ public class TeamPeopleService {
 
     /**
      * Returns sick leave tracking data for each team member.
-     * Reads from {@code fact_sick_day_rolling_mat} to provide:
+     * Reads from {@code fact_user_day.sick_hours} to provide:
      * <ul>
      *   <li>Current rolling 365-day total</li>
      *   <li>Threshold status (OK/WARNING/CRITICAL)</li>
@@ -375,19 +375,20 @@ public class TeamPeopleService {
             );
         }
 
-        // Get current rolling total per user (latest entry)
+        // Get current rolling 365-day total per user from fact_user_day
         @SuppressWarnings("unchecked")
         List<Tuple> rollingRows = em.createNativeQuery("""
-                SELECT sr.useruuid, sr.rolling_365_total
-                FROM fact_sick_day_rolling_mat sr
-                WHERE sr.useruuid IN (:memberUuids)
-                  AND sr.document_date = (
-                      SELECT MAX(sr2.document_date)
-                      FROM fact_sick_day_rolling_mat sr2
-                      WHERE sr2.useruuid = sr.useruuid
-                  )
+                SELECT fud.useruuid, SUM(fud.sick_hours) / 7.4 AS rolling_365_total
+                FROM fact_user_day fud
+                WHERE fud.useruuid IN (:memberUuids)
+                  AND fud.document_date >= :lookbackStart
+                  AND fud.document_date <= :today
+                  AND fud.sick_hours > 0
+                GROUP BY fud.useruuid
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
+                .setParameter("lookbackStart", lookbackStart)
+                .setParameter("today", now)
                 .getResultList();
 
         Map<String, Double> rollingTotalByUser = new LinkedHashMap<>();
@@ -401,16 +402,17 @@ public class TeamPeopleService {
         // Get monthly trend (trailing 12 months, grouped by user and year-month)
         @SuppressWarnings("unchecked")
         List<Tuple> trendRows = em.createNativeQuery("""
-                SELECT sr.useruuid,
-                       YEAR(sr.document_date) AS yr,
-                       MONTH(sr.document_date) AS mo,
-                       SUM(sr.effective_sick_day) AS sick_days
-                FROM fact_sick_day_rolling_mat sr
-                WHERE sr.useruuid IN (:memberUuids)
-                  AND sr.document_date >= :lookbackStart
-                  AND sr.document_date <= :today
-                GROUP BY sr.useruuid, YEAR(sr.document_date), MONTH(sr.document_date)
-                ORDER BY sr.useruuid, yr, mo
+                SELECT fud.useruuid,
+                       YEAR(fud.document_date) AS yr,
+                       MONTH(fud.document_date) AS mo,
+                       SUM(fud.sick_hours) / 7.4 AS sick_days
+                FROM fact_user_day fud
+                WHERE fud.useruuid IN (:memberUuids)
+                  AND fud.document_date >= :lookbackStart
+                  AND fud.document_date <= :today
+                  AND fud.sick_hours > 0
+                GROUP BY fud.useruuid, YEAR(fud.document_date), MONTH(fud.document_date)
+                ORDER BY fud.useruuid, yr, mo
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("lookbackStart", lookbackStart)
@@ -429,16 +431,16 @@ public class TeamPeopleService {
                     .add(new MonthlySickDays(monthKey, sickDays));
         }
 
-        // Get daily effective_sick_day for period detection
+        // Get daily sick hours for period detection
         @SuppressWarnings("unchecked")
         List<Tuple> dailyRows = em.createNativeQuery("""
-                SELECT sr.useruuid, sr.document_date, sr.effective_sick_day
-                FROM fact_sick_day_rolling_mat sr
-                WHERE sr.useruuid IN (:memberUuids)
-                  AND sr.document_date >= :lookbackStart
-                  AND sr.document_date <= :today
-                  AND sr.effective_sick_day > 0
-                ORDER BY sr.useruuid, sr.document_date
+                SELECT fud.useruuid, fud.document_date, fud.sick_hours / 7.4 AS effective_sick_day
+                FROM fact_user_day fud
+                WHERE fud.useruuid IN (:memberUuids)
+                  AND fud.document_date >= :lookbackStart
+                  AND fud.document_date <= :today
+                  AND fud.sick_hours > 0
+                ORDER BY fud.useruuid, fud.document_date
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("lookbackStart", lookbackStart)
@@ -482,8 +484,7 @@ public class TeamPeopleService {
 
     /**
      * Groups daily sick day rows into consecutive periods.
-     * Days are considered consecutive if they follow each other by calendar date
-     * (weekends and bridged days are already included in the data from the materialized table).
+     * Days are considered consecutive if they follow each other by calendar date.
      */
     private Map<String, List<SickPeriod>> computeSickPeriods(List<Tuple> dailyRows) {
         Map<String, List<SickPeriod>> result = new LinkedHashMap<>();
