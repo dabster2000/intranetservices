@@ -937,13 +937,53 @@ public class TeamDashboardService {
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
 
-        // Break-even rates: per-user salary / net available hours
-        // Break-even = monthly salary cost / (monthly net available hours * target utilization 0.75)
+        // Compute per-consultant monthly overhead from company non-salary OPEX
+        // Same approach as ConsultantInsightsService.getUnprofitableConsultants()
+        String fromKey = toMonthKey(fy.start());
+        String toKey = toMonthKey(effectiveEnd);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> opexRows = em.createNativeQuery("""
+                SELECT COALESCE(SUM(opex_amount_dkk), 0) AS total_opex
+                FROM fact_opex_mat
+                WHERE cost_type = 'OPEX'
+                  AND month_key >= :fromKey AND month_key < :toKey
+                """, Tuple.class)
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
+                .getResultList();
+        double totalOpex = opexRows.isEmpty() ? 0.0
+                : ((Number) opexRows.get(0).get("total_opex")).doubleValue();
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> hcRows = em.createNativeQuery("""
+                SELECT COUNT(DISTINCT fud.useruuid) AS headcount
+                FROM fact_user_day fud
+                WHERE fud.consultant_type = 'CONSULTANT'
+                  AND fud.status_type = 'ACTIVE'
+                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                """, Tuple.class)
+                .setParameter("fromDate", fy.start())
+                .setParameter("toDate", effectiveEnd)
+                .getResultList();
+        long headcount = hcRows.isEmpty() ? 1L
+                : ((Number) hcRows.get(0).get("headcount")).longValue();
+        if (headcount == 0) headcount = 1; // avoid division by zero
+
+        long monthsInRange = ChronoUnit.MONTHS.between(
+                YearMonth.from(fy.start()), YearMonth.from(effectiveEnd)) + 1;
+        if (monthsInRange <= 0) monthsInRange = 1;
+        double overheadPerConsultantMonthly = totalOpex / headcount / monthsInRange;
+
+        log.debugf("getBillingRateAnalysis: totalOpex=%.2f, headcount=%d, months=%d, overheadPerMonth=%.2f",
+                totalOpex, headcount, monthsInRange, overheadPerConsultantMonthly);
+
+        // Break-even rates: (monthly salary + monthly overhead) / (net available hours * 0.75)
         @SuppressWarnings("unchecked")
         List<Tuple> breakEvenRows = em.createNativeQuery("""
                 SELECT sal.useruuid AS user_id,
                        CASE WHEN COALESCE(avail.net_hours, 0) * 0.75 > 0
-                            THEN sal.monthly_salary / (avail.net_hours * 0.75)
+                            THEN (sal.monthly_salary + :overheadPerMonth) / (avail.net_hours * 0.75)
                             ELSE NULL
                        END AS break_even_rate
                 FROM (
@@ -966,11 +1006,12 @@ public class TeamDashboardService {
                     GROUP BY user_id
                 ) avail ON avail.useruuid = sal.useruuid
                 """, Tuple.class)
+                .setParameter("overheadPerMonth", overheadPerConsultantMonthly)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
-                .setParameter("fromKey", toMonthKey(fy.start()))
-                .setParameter("toKey", toMonthKey(effectiveEnd))
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
                 .getResultList();
 
         Map<String, Double> breakEvenMap = new LinkedHashMap<>();
@@ -1042,7 +1083,7 @@ public class TeamDashboardService {
         // Total company OPEX and headcount
         var opexRow = querySingleRow("""
                 SELECT COALESCE(SUM(fo.opex_amount_dkk), 0) AS total_opex
-                FROM fact_opex fo
+                FROM fact_opex_mat fo
                 WHERE fo.month_key >= :fromKey AND fo.month_key <= :toKey
                   AND fo.cost_type = 'OPEX'
                 """,
