@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.finance.dto.ConsultantAbsenceDayDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamAbsenceOverviewDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamCareerDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamSalaryBandDTO;
@@ -192,9 +193,16 @@ public class TeamResource {
     @GET
     @Path("/{teamuuid}/dashboard/absence-overview")
     @RolesAllowed({"dashboard:read"})
-    public List<TeamAbsenceOverviewDTO> getAbsenceOverview(@PathParam("teamuuid") String teamuuid) {
+    public jakarta.ws.rs.core.Response getAbsenceOverview(
+            @PathParam("teamuuid") String teamuuid,
+            @QueryParam("consultantUuid") String consultantUuid) {
         teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
-        return teamPeopleService.getAbsenceOverview(teamuuid);
+        if (consultantUuid != null && !consultantUuid.isBlank()) {
+            List<ConsultantAbsenceDayDTO> result = teamPeopleService.getConsultantAbsenceOverview(teamuuid, consultantUuid);
+            return jakarta.ws.rs.core.Response.ok(result).build();
+        }
+        List<TeamAbsenceOverviewDTO> result = teamPeopleService.getAbsenceOverview(teamuuid);
+        return jakarta.ws.rs.core.Response.ok(result).build();
     }
 
     @GET

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
+import dk.trustworks.intranet.aggregates.finance.dto.ConsultantAbsenceDayDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamAbsenceOverviewDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamCareerDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamSalaryBandDTO;
@@ -231,6 +232,61 @@ public class TeamPeopleService {
                     toDouble(row.get("sick_hours")),
                     toDouble(row.get("maternity_hours")),
                     toDouble(row.get("other_leave_hours"))
+            ));
+        }
+
+        return result;
+    }
+
+    /**
+     * Returns daily absence records for a single consultant over a 15-month window
+     * (12 months back from today to 3 months forward). Only days with at least one
+     * non-zero absence column are returned.
+     *
+     * <p>Used by the KPC tab's Leave Timeline.
+     */
+    public List<ConsultantAbsenceDayDTO> getConsultantAbsenceOverview(String teamId, String consultantUuid) {
+        // Validate the consultant is a member of the team
+        Set<String> memberUuids = teamDashboardService.getTeamMemberUuids(teamId, LocalDate.now());
+        if (!memberUuids.contains(consultantUuid)) {
+            return List.of();
+        }
+
+        LocalDate now = LocalDate.now();
+        LocalDate startDate = now.minusMonths(12);
+        LocalDate endDate = now.plusMonths(3);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT fud.document_date,
+                       COALESCE(fud.vacation_hours, 0)         AS vacation_hours,
+                       COALESCE(fud.sick_hours, 0)             AS sick_hours,
+                       COALESCE(fud.maternity_leave_hours, 0)  AS maternity_hours,
+                       COALESCE(fud.paid_leave_hours, 0)       AS paid_leave_hours,
+                       COALESCE(fud.non_payd_leave_hours, 0)   AS non_paid_leave_hours
+                FROM fact_user_day fud
+                WHERE fud.useruuid = :consultantUuid
+                  AND fud.document_date >= :startDate
+                  AND fud.document_date <= :endDate
+                  AND (fud.vacation_hours > 0 OR fud.sick_hours > 0
+                       OR fud.maternity_leave_hours > 0 OR fud.paid_leave_hours > 0
+                       OR fud.non_payd_leave_hours > 0)
+                ORDER BY fud.document_date
+                """, Tuple.class)
+                .setParameter("consultantUuid", consultantUuid)
+                .setParameter("startDate", startDate)
+                .setParameter("endDate", endDate)
+                .getResultList();
+
+        List<ConsultantAbsenceDayDTO> result = new ArrayList<>();
+        for (Tuple row : rows) {
+            result.add(new ConsultantAbsenceDayDTO(
+                    toLocalDate(row.get("document_date")),
+                    toDouble(row.get("vacation_hours")),
+                    toDouble(row.get("sick_hours")),
+                    toDouble(row.get("maternity_hours")),
+                    toDouble(row.get("paid_leave_hours")),
+                    toDouble(row.get("non_paid_leave_hours"))
             ));
         }
 
