@@ -353,6 +353,7 @@ public class TeamDashboardService {
             return new TeamUtilizationHeatmapDTO(List.of(), List.of());
         }
 
+        // Temporal join: only include data for months the consultant was on this team
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT fum.user_id, u.firstname, u.lastname, fum.month_key,
@@ -360,12 +361,16 @@ public class TeamDashboardService {
                        COALESCE(SUM(fum.net_available_hours), 0) AS net_available
                 FROM fact_user_utilization_mat fum
                 JOIN user u ON u.uuid = fum.user_id
-                WHERE fum.user_id IN (:memberUuids)
-                  AND fum.month_key >= :fromKey AND fum.month_key <= :toKey
+                JOIN teamroles tr ON tr.useruuid = fum.user_id
+                    AND tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= CONCAT(fum.year, '-', LPAD(fum.month_number, 2, '0'), '-01')
+                    AND (tr.enddate > CONCAT(fum.year, '-', LPAD(fum.month_number, 2, '0'), '-01') OR tr.enddate IS NULL)
+                WHERE fum.month_key >= :fromKey AND fum.month_key <= :toKey
                 GROUP BY fum.user_id, u.firstname, u.lastname, fum.month_key
                 ORDER BY u.lastname, u.firstname, fum.month_key
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromKey", toMonthKey(sixMonthsBack))
                 .setParameter("toKey", toMonthKey(effectiveEnd))
                 .getResultList();
@@ -853,21 +858,25 @@ public class TeamDashboardService {
             return List.of();
         }
 
-        // Revenue by month from fact_user_day
+        // Revenue by month — temporal: only include revenue for months the consultant was on this team
         @SuppressWarnings("unchecked")
         List<Tuple> revenueRows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
                        fud.year, fud.month AS month_number,
                        COALESCE(SUM(fud.registered_amount), 0) AS revenue
                 FROM fact_user_day fud
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                JOIN teamroles tr ON tr.useruuid = fud.useruuid
+                    AND tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= fud.document_date
+                    AND (tr.enddate > fud.document_date OR tr.enddate IS NULL)
+                WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate
                   AND fud.consultant_type = 'CONSULTANT'
                   AND fud.status_type = 'ACTIVE'
                 GROUP BY fud.year, fud.month
                 ORDER BY fud.year, fud.month
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
