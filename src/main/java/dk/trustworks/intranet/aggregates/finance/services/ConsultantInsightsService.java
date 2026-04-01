@@ -307,14 +307,44 @@ public class ConsultantInsightsService {
     public List<UnprofitableConsultantDTO> getUnprofitableConsultants(
             Set<String> practices,
             Set<String> companyIds) {
+        // Backward-compatible: return only unprofitable consultants (netProfit < 0)
+        return getConsultantProfitability(practices, companyIds, "ttm").stream()
+                .filter(dto -> dto.getNetProfit() < 0)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Returns consultant profitability data for the specified period.
+     * Net Profit = Revenue - Salary - (Total OPEX / headcount).
+     *
+     * <p>Unlike {@link #getUnprofitableConsultants}, this method returns ALL consultants
+     * regardless of whether they are profitable or not, allowing callers to filter as needed.
+     *
+     * @param practices  practice filter
+     * @param companyIds optional company filter
+     * @param period     "ttm" for trailing 12 months, "fytd" for fiscal-year-to-date (July 1 → today)
+     * @return list of ALL consultant profitability DTOs, ordered by net profit ascending
+     */
+    public List<UnprofitableConsultantDTO> getConsultantProfitability(
+            Set<String> practices,
+            Set<String> companyIds,
+            String period) {
 
         Set<String> effectivePractices = effectivePractices(practices);
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // TTM boundaries
+        // Compute date range based on period
         LocalDate now = LocalDate.now();
-        LocalDate ttmFrom = now.minusMonths(12).withDayOfMonth(1);
-        String fromKey = String.format("%04d%02d", ttmFrom.getYear(), ttmFrom.getMonthValue());
+        LocalDate periodFrom;
+        if ("fytd".equalsIgnoreCase(period)) {
+            // Fiscal year starts July 1. If current month >= July, use this year; else previous year.
+            int fyStartYear = now.getMonthValue() >= 7 ? now.getYear() : now.getYear() - 1;
+            periodFrom = LocalDate.of(fyStartYear, 7, 1);
+        } else {
+            // Default: TTM — 12 months back from start of current month
+            periodFrom = now.minusMonths(12).withDayOfMonth(1);
+        }
+        String fromKey = String.format("%04d%02d", periodFrom.getYear(), periodFrom.getMonthValue());
         String toKey = String.format("%04d%02d", now.getYear(), now.getMonthValue());
 
         // Step 1: Get total non-salary OPEX for TTM period
@@ -340,7 +370,7 @@ public class ConsultantInsightsService {
         List<Tuple> opexRows = opexQuery.getResultList();
         double totalOpex = opexRows.isEmpty() ? 0.0 : ((Number) opexRows.get(0).get("total_opex")).doubleValue();
 
-        // Step 2: Get headcount of active consultants in the practices (distinct users with data in TTM)
+        // Step 2: Get headcount of active consultants in the practices (distinct users with data in period)
         StringBuilder headcountSql = new StringBuilder();
         headcountSql.append("""
             SELECT COUNT(DISTINCT fud.useruuid) AS headcount
@@ -349,7 +379,7 @@ public class ConsultantInsightsService {
             WHERE u.practice IN (:practices)
               AND fud.consultant_type = 'CONSULTANT'
               AND fud.status_type = 'ACTIVE'
-              AND fud.document_date >= :ttmFrom AND fud.document_date < :ttmTo
+              AND fud.document_date >= :periodFrom AND fud.document_date < :periodTo
             """);
         if (hasCompanies) {
             headcountSql.append("  AND fud.companyuuid IN (:companyIds) ");
@@ -357,8 +387,8 @@ public class ConsultantInsightsService {
 
         var headcountQuery = em.createNativeQuery(headcountSql.toString(), Tuple.class);
         headcountQuery.setParameter("practices", effectivePractices);
-        headcountQuery.setParameter("ttmFrom", ttmFrom);
-        headcountQuery.setParameter("ttmTo", now.withDayOfMonth(1));
+        headcountQuery.setParameter("periodFrom", periodFrom);
+        headcountQuery.setParameter("periodTo", now.withDayOfMonth(1));
         if (hasCompanies) {
             headcountQuery.setParameter("companyIds", companyIds);
         }
@@ -388,7 +418,7 @@ public class ConsultantInsightsService {
                     WHERE consultant_type = 'CONSULTANT'
                       AND status_type = 'ACTIVE'
                       AND salary > 0
-                      AND document_date >= :ttmFrom AND document_date < :ttmTo
+                      AND document_date >= :periodFrom AND document_date < :periodTo
                     GROUP BY useruuid, year, month
                 ) ms GROUP BY useruuid
             ) sal
@@ -407,7 +437,7 @@ public class ConsultantInsightsService {
                   AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
                   AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL
                   AND ii.consultantuuid IS NOT NULL
-                  AND i.invoicedate >= :ttmFrom AND i.invoicedate < :ttmTo
+                  AND i.invoicedate >= :periodFrom AND i.invoicedate < :periodTo
                 GROUP BY ii.consultantuuid
             ) rev ON rev.useruuid = sal.useruuid
             WHERE u.practice IN (:practices)
@@ -429,8 +459,8 @@ public class ConsultantInsightsService {
 
         var userQuery = em.createNativeQuery(userSql.toString(), Tuple.class);
         userQuery.setParameter("practices", effectivePractices);
-        userQuery.setParameter("ttmFrom", ttmFrom);
-        userQuery.setParameter("ttmTo", now.withDayOfMonth(1));
+        userQuery.setParameter("periodFrom", periodFrom);
+        userQuery.setParameter("periodTo", now.withDayOfMonth(1));
         if (hasCompanies) {
             userQuery.setParameter("companyIds", companyIds);
         }
@@ -448,18 +478,16 @@ public class ConsultantInsightsService {
                     ? ((Number) row.get("ttm_salary")).doubleValue() : 0.0;
             double netProfit = revenue - salary - sharedOverheadPerConsultant;
 
-            if (netProfit < 0) {
-                results.add(new UnprofitableConsultantDTO(
-                        (String) row.get("user_id"),
-                        (String) row.get("firstname"),
-                        (String) row.get("lastname"),
-                        (String) row.get("practice"),
-                        revenue,
-                        salary,
-                        sharedOverheadPerConsultant,
-                        netProfit
-                ));
-            }
+            results.add(new UnprofitableConsultantDTO(
+                    (String) row.get("user_id"),
+                    (String) row.get("firstname"),
+                    (String) row.get("lastname"),
+                    (String) row.get("practice"),
+                    revenue,
+                    salary,
+                    sharedOverheadPerConsultant,
+                    netProfit
+            ));
         }
 
         // Sort by net profit ascending (most unprofitable first)

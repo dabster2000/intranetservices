@@ -1337,19 +1337,33 @@ public class TeamDashboardService {
     // 15. Consultant Profitability (reuses ConsultantInsightsService)
     // -----------------------------------------------------------------------
 
-    public List<UnprofitableConsultantDTO> getConsultantProfitability(String teamId, int fiscalYear) {
-        // Get all unprofitable consultants company-wide, then filter to team members
+    public List<UnprofitableConsultantDTO> getConsultantProfitability(
+            String teamId, int fiscalYear, String userId, String period) {
+
+        String effectivePeriod = (period != null && !period.isBlank()) ? period : "ttm";
+
+        // Single-consultant lookup: return profitability for that user regardless of profit/loss
+        if (userId != null && !userId.isBlank()) {
+            List<UnprofitableConsultantDTO> all = consultantInsightsService
+                    .getConsultantProfitability(null, null, effectivePeriod);
+            return all.stream()
+                    .filter(dto -> userId.equals(dto.getUserId()))
+                    .collect(Collectors.toList());
+        }
+
+        // Team-wide lookup: return only unprofitable consultants (existing behavior)
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
 
-        // Reuse existing service method (company-wide), filter by team membership
-        List<UnprofitableConsultantDTO> all = consultantInsightsService.getUnprofitableConsultants(
-                null, null);
+        // Get all consultant profitability, then filter to team members with negative profit
+        List<UnprofitableConsultantDTO> all = consultantInsightsService
+                .getConsultantProfitability(null, null, effectivePeriod);
 
         return all.stream()
                 .filter(dto -> memberUuids.contains(dto.getUserId()))
+                .filter(dto -> dto.getNetProfit() < 0)
                 .collect(Collectors.toList());
     }
 

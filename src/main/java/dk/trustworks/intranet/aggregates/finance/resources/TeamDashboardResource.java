@@ -270,11 +270,14 @@ public class TeamDashboardResource {
     @Path("/{teamId}/consultant-profitability")
     public List<UnprofitableConsultantDTO> getConsultantProfitability(
             @PathParam("teamId") String teamId,
-            @QueryParam("fiscalYear") Integer fiscalYear) {
+            @QueryParam("fiscalYear") Integer fiscalYear,
+            @QueryParam("userId") String userId,
+            @QueryParam("period") @DefaultValue("ttm") String period) {
         int fy = effectiveFiscalYear(fiscalYear);
-        log.debugf("GET /finance/team/%s/consultant-profitability?fiscalYear=%d", teamId, fy);
+        log.debugf("GET /finance/team/%s/consultant-profitability?fiscalYear=%d&userId=%s&period=%s",
+                teamId, fy, userId, period);
         teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
-        return teamDashboardService.getConsultantProfitability(teamId, fy);
+        return teamDashboardService.getConsultantProfitability(teamId, fy, userId, period);
     }
 
     // -----------------------------------------------------------------------
