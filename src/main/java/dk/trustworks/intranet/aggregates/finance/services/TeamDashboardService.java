@@ -22,6 +22,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.TeamRevenuePerMemberDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationHeatmapDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationHeatmapDTO.MemberUtilizationRow;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationTrendDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeRegistrationComplianceDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeRegistrationComplianceDTO.MonthlyCompliance;
 import dk.trustworks.intranet.aggregates.finance.dto.UnprofitableConsultantDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -1511,6 +1513,85 @@ public class TeamDashboardService {
         }
         return items;
     }
+
+    // -----------------------------------------------------------------------
+    // 16. Time Registration Compliance
+    // -----------------------------------------------------------------------
+
+    /**
+     * Calculates time registration compliance for a consultant over the last 6 months.
+     * A work day is "compliant" if it was registered within 7 calendar days of the work date
+     * (i.e., DATEDIFF(updated_at, registered) <= 7).
+     */
+    public TimeRegistrationComplianceDTO getConsultantCompliance(String teamId, String userId) {
+        LocalDate now = LocalDate.now();
+        Set<String> memberUuids = getTeamMemberUuids(teamId, now);
+        if (!memberUuids.contains(userId)) {
+            throw new WebApplicationException(
+                    "User is not a member of the specified team",
+                    Response.Status.BAD_REQUEST);
+        }
+
+        LocalDate startDate = now.minusMonths(6).withDayOfMonth(1);
+        LocalDate endDate = now;
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT
+                    YEAR(w.registered) AS yr,
+                    MONTH(w.registered) AS mo,
+                    COUNT(DISTINCT w.registered) AS total_days,
+                    COUNT(DISTINCT CASE
+                        WHEN DATEDIFF(w.updated_at, w.registered) <= 7 THEN w.registered
+                    END) AS compliant_days
+                FROM work w
+                WHERE w.useruuid = :userId
+                  AND w.registered >= :startDate
+                  AND w.registered <= :endDate
+                  AND w.workduration > 0
+                GROUP BY YEAR(w.registered), MONTH(w.registered)
+                ORDER BY YEAR(w.registered), MONTH(w.registered)
+                """)
+                .setParameter("userId", userId)
+                .setParameter("startDate", startDate)
+                .setParameter("endDate", endDate)
+                .getResultList();
+
+        String[] monthNames = {"", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+        List<MonthlyCompliance> months = new ArrayList<>();
+        double totalComplianceSum = 0.0;
+
+        for (Object[] row : rows) {
+            int yr = ((Number) row[0]).intValue();
+            int mo = ((Number) row[1]).intValue();
+            int totalDays = ((Number) row[2]).intValue();
+            int compliantDays = ((Number) row[3]).intValue();
+
+            String monthKey = String.format("%04d%02d", yr, mo);
+            String label = monthNames[mo];
+            double compliancePct = totalDays > 0
+                    ? Math.round((compliantDays * 100.0 / totalDays) * 10.0) / 10.0
+                    : 0.0;
+
+            months.add(new MonthlyCompliance(monthKey, label, compliancePct, totalDays, compliantDays));
+            totalComplianceSum += compliancePct;
+        }
+
+        double averagePct = months.isEmpty() ? 0.0
+                : Math.round((totalComplianceSum / months.size()) * 10.0) / 10.0;
+
+        var dto = new TimeRegistrationComplianceDTO();
+        dto.setUserId(userId);
+        dto.setMonths(months);
+        dto.setAveragePct(averagePct);
+        return dto;
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
 
     private TeamOverviewDTO emptyOverview(String teamId) {
         return new TeamOverviewDTO(

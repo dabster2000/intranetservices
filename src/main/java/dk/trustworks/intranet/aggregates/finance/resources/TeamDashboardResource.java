@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 import dk.trustworks.intranet.aggregates.finance.dto.AllTeamsUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBenchConsultantDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBillingRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeRegistrationComplianceDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBudgetFulfillmentDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamClientConcentrationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamContractTimelineDTO;
@@ -274,6 +275,23 @@ public class TeamDashboardResource {
         log.debugf("GET /finance/team/%s/consultant-profitability?fiscalYear=%d", teamId, fy);
         teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
         return teamDashboardService.getConsultantProfitability(teamId, fy);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. Time Registration Compliance
+    // -----------------------------------------------------------------------
+
+    @GET
+    @Path("/{teamId}/consultant-compliance")
+    public TimeRegistrationComplianceDTO getConsultantCompliance(
+            @PathParam("teamId") String teamId,
+            @QueryParam("userId") String userId) {
+        log.debugf("GET /finance/team/%s/consultant-compliance?userId=%s", teamId, userId);
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        if (userId == null || userId.isBlank()) {
+            throw new jakarta.ws.rs.BadRequestException("userId query parameter is required");
+        }
+        return teamDashboardService.getConsultantCompliance(teamId, userId);
     }
 
     // -----------------------------------------------------------------------
