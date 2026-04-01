@@ -377,10 +377,13 @@ public class TeamPeopleService {
 
         // Get daily sick hours for period detection (rolling totals and trends
         // are computed from detected periods to include bridged weekends/holidays
-        // per Danish Funktionærloven 120-day rule)
+        // per Danish Funktionærloven 120-day rule).
+        // We also select sick_hours raw to determine full-day (7.4h) bridging eligibility.
         @SuppressWarnings("unchecked")
         List<Tuple> dailyRows = em.createNativeQuery("""
-                SELECT fud.useruuid, fud.document_date, fud.sick_hours / 7.4 AS effective_sick_day
+                SELECT fud.useruuid, fud.document_date,
+                       fud.sick_hours / 7.4 AS effective_sick_day,
+                       fud.sick_hours
                 FROM fact_user_day fud
                 WHERE fud.useruuid IN (:memberUuids)
                   AND fud.document_date >= :lookbackStart
@@ -393,37 +396,14 @@ public class TeamPeopleService {
                 .setParameter("today", now)
                 .getResultList();
 
-        // Group daily rows by user, then compute consecutive periods
-        Map<String, List<SickPeriod>> periodsByUser = computeSickPeriods(dailyRows);
-
-        // Compute rolling totals from period calendar days (includes bridged weekends/holidays)
-        Map<String, Double> rollingTotalByUser = new LinkedHashMap<>();
-        for (var entry : periodsByUser.entrySet()) {
-            double total = entry.getValue().stream()
-                    .mapToDouble(SickPeriod::totalDays)
-                    .sum();
-            rollingTotalByUser.put(entry.getKey(), total);
-        }
-
-        // Compute monthly trend from periods (distribute calendar days across months)
-        Map<String, List<MonthlySickDays>> trendByUser = new LinkedHashMap<>();
-        for (var entry : periodsByUser.entrySet()) {
-            String periodUserId = entry.getKey();
-            Map<String, Double> monthlyDays = new LinkedHashMap<>();
-            for (SickPeriod period : entry.getValue()) {
-                LocalDate d = period.startDate();
-                while (!d.isAfter(period.endDate())) {
-                    String monthKey = String.format("%d-%02d", d.getYear(), d.getMonthValue());
-                    monthlyDays.merge(monthKey, 1.0, Double::sum);
-                    d = d.plusDays(1);
-                }
-            }
-            List<MonthlySickDays> trend = monthlyDays.entrySet().stream()
-                    .map(e -> new MonthlySickDays(e.getKey(), e.getValue()))
-                    .sorted(Comparator.comparing(MonthlySickDays::month))
-                    .toList();
-            trendByUser.put(periodUserId, trend);
-        }
+        // Group daily rows by user, then compute sick day counts with bridging rules.
+        // Each working day with sick_hours > 0 counts as 1 sick day.
+        // Non-working days (weekends) between two sick entries count as sick days
+        // ONLY IF both adjacent working sick days have full sick_hours (7.4h).
+        var sickDayResult = computeSickDays(dailyRows);
+        Map<String, List<SickPeriod>> periodsByUser = sickDayResult.periods();
+        Map<String, Double> rollingTotalByUser = sickDayResult.rollingTotals();
+        Map<String, List<MonthlySickDays>> trendByUser = sickDayResult.monthlyTrends();
 
         // Assemble results
         List<TeamSickLeaveTrackingDTO> result = new ArrayList<>();
@@ -458,17 +438,34 @@ public class TeamPeopleService {
     }
 
     /**
-     * Groups daily sick day rows into consecutive periods, bridging across weekends and holidays.
-     *
-     * <p>Per the Danish Funktionærloven 120-day rule, weekends and holidays between consecutive
-     * sick working days count as sick days. A gap of up to 3 calendar days is bridged, which
-     * covers Friday→Monday (2-day gap) and Thursday→Monday when Friday is a holiday (3-day gap).
-     *
-     * <p>Each period's totalDays is counted as calendar days (startDate to endDate inclusive),
-     * not just the working days with recorded sick hours.
+     * Result of the sick day computation: periods, rolling totals, and monthly trends.
      */
-    private Map<String, List<SickPeriod>> computeSickPeriods(List<Tuple> dailyRows) {
-        Map<String, List<SickPeriod>> result = new LinkedHashMap<>();
+    private record SickDayResult(
+            Map<String, List<SickPeriod>> periods,
+            Map<String, Double> rollingTotals,
+            Map<String, List<MonthlySickDays>> monthlyTrends
+    ) {}
+
+    /**
+     * Computes sick day counts per the Danish Funktionærloven 120-day rule with
+     * corrected weekend bridging.
+     *
+     * <p>Rules:
+     * <ol>
+     *   <li>Each working day with {@code sick_hours > 0} counts as 1 sick day.</li>
+     *   <li>Non-working days (weekends/holidays) between two consecutive sick working days
+     *       count as sick days ONLY IF both adjacent working days have full sick hours (7.4h).</li>
+     *   <li>Partial sick days ({@code < 7.4h}) do NOT bridge weekends.</li>
+     * </ol>
+     *
+     * <p>The rolling total = working sick days + bridged non-working days.
+     * Monthly trend distributes working sick days to their actual month,
+     * and bridged gap days to the month they fall in.
+     */
+    private SickDayResult computeSickDays(List<Tuple> dailyRows) {
+        Map<String, List<SickPeriod>> periodsByUser = new LinkedHashMap<>();
+        Map<String, Double> rollingTotalByUser = new LinkedHashMap<>();
+        Map<String, List<MonthlySickDays>> trendByUser = new LinkedHashMap<>();
 
         // Group by user
         Map<String, List<Tuple>> byUser = new LinkedHashMap<>();
@@ -478,44 +475,100 @@ public class TeamPeopleService {
         }
 
         for (var entry : byUser.entrySet()) {
-            List<SickPeriod> periods = new ArrayList<>();
             List<Tuple> days = entry.getValue();
+            List<SickPeriod> periods = new ArrayList<>();
+            Map<String, Double> monthlyDays = new LinkedHashMap<>();
+            double totalSickDays = 0;
 
+            // Track current period
             LocalDate periodStart = null;
             LocalDate periodEnd = null;
+            double periodDays = 0;
 
-            for (Tuple day : days) {
+            for (int i = 0; i < days.size(); i++) {
+                Tuple day = days.get(i);
                 LocalDate date = toLocalDate(day.get("document_date"));
-
+                double sickHours = toDouble(day.get("sick_hours"));
                 if (date == null) continue;
 
                 if (periodStart == null) {
                     // Start new period
                     periodStart = date;
                     periodEnd = date;
-                } else if (ChronoUnit.DAYS.between(periodEnd, date) <= 3) {
-                    // Extend current period — bridges weekends (2-day gap) and
-                    // holiday+weekend combos (3-day gap, e.g. Thu→Mon with Fri holiday)
+                    periodDays = 1;
+                    String monthKey = String.format("%d-%02d", date.getYear(), date.getMonthValue());
+                    monthlyDays.merge(monthKey, 1.0, Double::sum);
+                    totalSickDays++;
+                    continue;
+                }
+
+                long gapDays = ChronoUnit.DAYS.between(periodEnd, date) - 1;
+
+                if (gapDays <= 0) {
+                    // Consecutive working day (no gap) — extend period
                     periodEnd = date;
+                    periodDays++;
+                    String monthKey = String.format("%d-%02d", date.getYear(), date.getMonthValue());
+                    monthlyDays.merge(monthKey, 1.0, Double::sum);
+                    totalSickDays++;
+                } else if (gapDays <= 3) {
+                    // There are gap days (weekends/holidays) between the previous sick day
+                    // and this one. Bridge ONLY if both boundary days are full (7.4h).
+                    Tuple prevDay = days.get(i - 1);
+                    double prevSickHours = toDouble(prevDay.get("sick_hours"));
+                    boolean bothFull = Math.abs(prevSickHours - 7.4) < 0.01
+                            && Math.abs(sickHours - 7.4) < 0.01;
+
+                    if (bothFull) {
+                        // Bridge: count the gap days as sick days
+                        for (long g = 1; g <= gapDays; g++) {
+                            LocalDate gapDate = periodEnd.plusDays(g);
+                            String monthKey = String.format("%d-%02d", gapDate.getYear(), gapDate.getMonthValue());
+                            monthlyDays.merge(monthKey, 1.0, Double::sum);
+                        }
+                        totalSickDays += gapDays;
+                        periodDays += gapDays;
+                    } else {
+                        // No bridging — close previous period and start a new one
+                        periods.add(new SickPeriod(periodStart, periodEnd, periodDays));
+                        periodStart = date;
+                        periodDays = 0;
+                    }
+
+                    // Either way, this working day itself counts
+                    periodEnd = date;
+                    periodDays++;
+                    String monthKey = String.format("%d-%02d", date.getYear(), date.getMonthValue());
+                    monthlyDays.merge(monthKey, 1.0, Double::sum);
+                    totalSickDays++;
                 } else {
                     // Gap too large — close current period and start new one
-                    long calendarDays = ChronoUnit.DAYS.between(periodStart, periodEnd) + 1;
-                    periods.add(new SickPeriod(periodStart, periodEnd, (double) calendarDays));
+                    periods.add(new SickPeriod(periodStart, periodEnd, periodDays));
                     periodStart = date;
                     periodEnd = date;
+                    periodDays = 1;
+                    String monthKey = String.format("%d-%02d", date.getYear(), date.getMonthValue());
+                    monthlyDays.merge(monthKey, 1.0, Double::sum);
+                    totalSickDays++;
                 }
             }
 
             // Close last period
             if (periodStart != null) {
-                long calendarDays = ChronoUnit.DAYS.between(periodStart, periodEnd) + 1;
-                periods.add(new SickPeriod(periodStart, periodEnd, (double) calendarDays));
+                periods.add(new SickPeriod(periodStart, periodEnd, periodDays));
             }
 
-            result.put(entry.getKey(), periods);
+            periodsByUser.put(entry.getKey(), periods);
+            rollingTotalByUser.put(entry.getKey(), totalSickDays);
+
+            List<MonthlySickDays> trend = monthlyDays.entrySet().stream()
+                    .map(e -> new MonthlySickDays(e.getKey(), e.getValue()))
+                    .sorted(Comparator.comparing(MonthlySickDays::month))
+                    .toList();
+            trendByUser.put(entry.getKey(), trend);
         }
 
-        return result;
+        return new SickDayResult(periodsByUser, rollingTotalByUser, trendByUser);
     }
 
     // -----------------------------------------------------------------------

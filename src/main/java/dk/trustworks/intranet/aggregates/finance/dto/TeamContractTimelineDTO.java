@@ -25,6 +25,7 @@ public record TeamContractTimelineDTO(
             LocalDate activeFrom,
             LocalDate activeTo,
             double rate,
+            double hours,
             String status
     ) {}
 
