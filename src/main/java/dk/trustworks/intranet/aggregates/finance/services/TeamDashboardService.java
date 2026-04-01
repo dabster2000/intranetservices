@@ -239,7 +239,7 @@ public class TeamDashboardService {
         String fromKey = toMonthKey(extendedStart);
         String toKey = toMonthKey(effectiveEnd);
 
-        // Team data — include gross_available_hours for gross utilization
+        // Team data — temporal join: only include consultant's data for months they were on this team
         @SuppressWarnings("unchecked")
         List<Tuple> teamRows = em.createNativeQuery("""
                 SELECT fum.month_key,
@@ -247,12 +247,16 @@ public class TeamDashboardService {
                        COALESCE(SUM(fum.net_available_hours), 0) AS net_available,
                        COALESCE(SUM(fum.gross_available_hours), 0) AS gross_available
                 FROM fact_user_utilization_mat fum
-                WHERE fum.user_id IN (:memberUuids)
-                  AND fum.month_key >= :fromKey AND fum.month_key <= :toKey
+                JOIN teamroles tr ON tr.useruuid = fum.user_id
+                    AND tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= CONCAT(fum.year, '-', LPAD(fum.month_number, 2, '0'), '-01')
+                    AND (tr.enddate > CONCAT(fum.year, '-', LPAD(fum.month_number, 2, '0'), '-01') OR tr.enddate IS NULL)
+                WHERE fum.month_key >= :fromKey AND fum.month_key <= :toKey
                 GROUP BY fum.month_key
                 ORDER BY fum.month_key
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromKey", fromKey)
                 .setParameter("toKey", toKey)
                 .getResultList();
