@@ -19,8 +19,10 @@ public class KeyPurpose extends PanacheEntityBase {
 
     private int num;
 
-    @Column(length = 255)
     private String description;
+
+    @Column(name = "meeting_notes")
+    private String meetingNotes;
 
     public KeyPurpose() {
     }
@@ -53,6 +55,14 @@ public class KeyPurpose extends PanacheEntityBase {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getMeetingNotes() {
+        return meetingNotes;
+    }
+
+    public void setMeetingNotes(String meetingNotes) {
+        this.meetingNotes = meetingNotes;
     }
 
     @Override

@@ -41,7 +41,8 @@ public class KeyPurposeService {
 
     @Transactional
     public void update(KeyPurpose keyPurpose) {
-        KeyPurpose.update("description = ?1 where useruuid like ?2 and num = ?3", keyPurpose.getDescription(), keyPurpose.getUseruuid(), keyPurpose.getNum());
+        KeyPurpose.update("description = ?1, meetingNotes = ?2 where useruuid like ?3 and num = ?4",
+            keyPurpose.getDescription(), keyPurpose.getMeetingNotes(), keyPurpose.getUseruuid(), keyPurpose.getNum());
     }
 
 }
