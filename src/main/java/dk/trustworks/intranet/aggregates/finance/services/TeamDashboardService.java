@@ -582,8 +582,29 @@ public class TeamDashboardService {
                 .setParameter("memberUuids", memberUuids)
                 .getResultList();
 
-        // Group by consultant
+        // Pre-populate byUser with ALL team members so that consultants with
+        // no contracts and no leads still appear in the timeline.
         Map<String, ConsultantContracts> byUser = new LinkedHashMap<>();
+        if (!memberUuids.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            List<Tuple> memberNameRows = em.createNativeQuery("""
+                    SELECT u.uuid AS user_id, u.firstname, u.lastname
+                    FROM user u
+                    WHERE u.uuid IN (:memberUuids)
+                    ORDER BY u.lastname, u.firstname
+                    """, Tuple.class)
+                    .setParameter("memberUuids", memberUuids)
+                    .getResultList();
+            for (Tuple nameRow : memberNameRows) {
+                String uid = (String) nameRow.get("user_id");
+                byUser.put(uid, new ConsultantContracts(
+                        uid,
+                        (String) nameRow.get("firstname"),
+                        (String) nameRow.get("lastname"),
+                        new ArrayList<>(),
+                        new ArrayList<>()));
+            }
+        }
 
         for (Tuple row : contractRows) {
             String uid = (String) row.get("user_id");
@@ -831,12 +852,22 @@ public class TeamDashboardService {
                 .getResultList();
 
         LocalDate today = LocalDate.now();
+
+        // Compute maternity leave days for each bench consultant during their bench period.
+        // The userstatus table has rows (useruuid, statusdate, status) where each row marks
+        // the START of a new status. We find MATERNITY_LEAVE entries and compute their
+        // overlap with the bench period (lastContractEnd to today).
+        Map<String, Integer> maternityDaysByUser = computeMaternityDaysDuringBench(rows, today);
+
         List<TeamBenchConsultantDTO> result = new ArrayList<>();
         for (Tuple row : rows) {
+            String userId = (String) row.get("user_id");
             LocalDate lastEnd = toLocalDate(row.get("last_contract_end"));
-            int daysSince = lastEnd != null ? (int) ChronoUnit.DAYS.between(lastEnd, today) : -1;
+            int rawDaysSince = lastEnd != null ? (int) ChronoUnit.DAYS.between(lastEnd, today) : -1;
+            int maternityDays = maternityDaysByUser.getOrDefault(userId, 0);
+            int daysSince = rawDaysSince >= 0 ? Math.max(0, rawDaysSince - maternityDays) : -1;
             result.add(new TeamBenchConsultantDTO(
-                    (String) row.get("user_id"),
+                    userId,
                     (String) row.get("firstname"),
                     (String) row.get("lastname"),
                     (String) row.get("practice"),
@@ -844,6 +875,85 @@ public class TeamDashboardService {
                     daysSince,
                     ((Number) row.get("active_leads")).intValue()));
         }
+        return result;
+    }
+
+    /**
+     * Computes the number of maternity leave days each bench consultant had
+     * during their bench period (from last contract end to today).
+     *
+     * <p>Uses the {@code userstatus} table where each row marks the START of a new status.
+     * A MATERNITY_LEAVE period runs from its {@code statusdate} until the next status change.
+     * Only the overlap with the bench period is counted.
+     */
+    private Map<String, Integer> computeMaternityDaysDuringBench(List<Tuple> benchRows, LocalDate today) {
+        // Collect user IDs and their bench start dates
+        Map<String, LocalDate> benchStartByUser = new LinkedHashMap<>();
+        for (Tuple row : benchRows) {
+            String userId = (String) row.get("user_id");
+            LocalDate lastEnd = toLocalDate(row.get("last_contract_end"));
+            if (lastEnd != null) {
+                benchStartByUser.put(userId, lastEnd);
+            }
+        }
+
+        if (benchStartByUser.isEmpty()) {
+            return Map.of();
+        }
+
+        // Query all status changes for these users, ordered by date
+        @SuppressWarnings("unchecked")
+        List<Tuple> statusRows = em.createNativeQuery("""
+                SELECT us.useruuid, us.statusdate, us.status
+                FROM userstatus us
+                WHERE us.useruuid IN (:userIds)
+                ORDER BY us.useruuid, us.statusdate
+                """, Tuple.class)
+                .setParameter("userIds", benchStartByUser.keySet())
+                .getResultList();
+
+        // Group status entries by user
+        Map<String, List<Tuple>> statusByUser = new LinkedHashMap<>();
+        for (Tuple row : statusRows) {
+            String userId = (String) row.get("useruuid");
+            statusByUser.computeIfAbsent(userId, k -> new ArrayList<>()).add(row);
+        }
+
+        // Compute overlap for each user
+        Map<String, Integer> result = new LinkedHashMap<>();
+        for (var entry : benchStartByUser.entrySet()) {
+            String userId = entry.getKey();
+            LocalDate benchStart = entry.getValue();
+            List<Tuple> statuses = statusByUser.getOrDefault(userId, List.of());
+            int maternityDays = 0;
+
+            for (int i = 0; i < statuses.size(); i++) {
+                Tuple status = statuses.get(i);
+                String statusType = (String) status.get("status");
+                if (!"MATERNITY_LEAVE".equals(statusType)) {
+                    continue;
+                }
+
+                LocalDate leaveStart = toLocalDate(status.get("statusdate"));
+                // Leave ends at the next status change, or today if no subsequent change
+                LocalDate leaveEnd = (i + 1 < statuses.size())
+                        ? toLocalDate(statuses.get(i + 1).get("statusdate"))
+                        : today;
+
+                // Compute overlap between [leaveStart, leaveEnd) and [benchStart, today]
+                LocalDate overlapStart = leaveStart.isBefore(benchStart) ? benchStart : leaveStart;
+                LocalDate overlapEnd = leaveEnd.isAfter(today) ? today : leaveEnd;
+
+                if (!overlapStart.isAfter(overlapEnd)) {
+                    maternityDays += (int) ChronoUnit.DAYS.between(overlapStart, overlapEnd);
+                }
+            }
+
+            if (maternityDays > 0) {
+                result.put(userId, maternityDays);
+            }
+        }
+
         return result;
     }
 
