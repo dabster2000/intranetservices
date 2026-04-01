@@ -534,7 +534,7 @@ public class TeamDashboardService {
     // 6. Contract Timeline
     // -----------------------------------------------------------------------
 
-    public TeamContractTimelineDTO getContractTimeline(String teamId) {
+    public TeamContractTimelineDTO getContractTimeline(String teamId, int lookbackMonths) {
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return new TeamContractTimelineDTO(List.of());
@@ -551,10 +551,11 @@ public class TeamDashboardService {
                 JOIN client cl ON cl.uuid = c.clientuuid
                 JOIN user u ON u.uuid = cc.useruuid
                 WHERE cc.useruuid IN (:memberUuids)
-                  AND cc.activeto >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                  AND cc.activeto >= DATE_SUB(CURDATE(), INTERVAL :lookbackMonths MONTH)
                 ORDER BY u.lastname, u.firstname, cc.activefrom
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
+                .setParameter("lookbackMonths", lookbackMonths)
                 .getResultList();
 
         // Sales leads for team members (with extension detection)

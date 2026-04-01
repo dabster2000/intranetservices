@@ -138,10 +138,13 @@ public class TeamDashboardResource {
 
     @GET
     @Path("/{teamId}/contract-timeline")
-    public TeamContractTimelineDTO getContractTimeline(@PathParam("teamId") String teamId) {
-        log.debugf("GET /finance/team/%s/contract-timeline", teamId);
+    public TeamContractTimelineDTO getContractTimeline(
+            @PathParam("teamId") String teamId,
+            @QueryParam("lookbackMonths") @DefaultValue("6") int lookbackMonths) {
+        log.debugf("GET /finance/team/%s/contract-timeline?lookbackMonths=%d", teamId, lookbackMonths);
         teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
-        return teamDashboardService.getContractTimeline(teamId);
+        int capped = Math.min(Math.max(lookbackMonths, 1), 36);
+        return teamDashboardService.getContractTimeline(teamId, capped);
     }
 
     // -----------------------------------------------------------------------
