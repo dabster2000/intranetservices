@@ -545,7 +545,7 @@ public class TeamDashboardService {
         List<Tuple> contractRows = em.createNativeQuery("""
                 SELECT cc.useruuid AS user_id, u.firstname, u.lastname,
                        cc.contractuuid, cl.name AS client_name, c.name AS contract_name,
-                       cc.activefrom, cc.activeto, cc.rate, c.status
+                       cc.activefrom, cc.activeto, cc.rate, cc.hours, c.status
                 FROM contract_consultants cc
                 JOIN contracts c ON c.uuid = cc.contractuuid
                 JOIN client cl ON cl.uuid = c.clientuuid
@@ -600,6 +600,7 @@ public class TeamDashboardService {
                     toLocalDate(row.get("activefrom")),
                     toLocalDate(row.get("activeto")),
                     numVal(row, "rate"),
+                    numVal(row, "hours"),
                     row.get("status") != null ? row.get("status").toString() : null));
         }
 
