@@ -236,12 +236,16 @@ public class TeamDashboardService {
             return List.of();
         }
 
-        // Team data
+        String fromKey = toMonthKey(extendedStart);
+        String toKey = toMonthKey(effectiveEnd);
+
+        // Team data — include gross_available_hours for gross utilization
         @SuppressWarnings("unchecked")
         List<Tuple> teamRows = em.createNativeQuery("""
                 SELECT fum.month_key,
                        COALESCE(SUM(fum.billable_hours), 0) AS billable,
-                       COALESCE(SUM(fum.net_available_hours), 0) AS net_available
+                       COALESCE(SUM(fum.net_available_hours), 0) AS net_available,
+                       COALESCE(SUM(fum.gross_available_hours), 0) AS gross_available
                 FROM fact_user_utilization_mat fum
                 WHERE fum.user_id IN (:memberUuids)
                   AND fum.month_key >= :fromKey AND fum.month_key <= :toKey
@@ -249,8 +253,8 @@ public class TeamDashboardService {
                 ORDER BY fum.month_key
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
-                .setParameter("fromKey", toMonthKey(extendedStart))
-                .setParameter("toKey", toMonthKey(effectiveEnd))
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
                 .getResultList();
 
         // Company-wide data for same period
@@ -264,9 +268,34 @@ public class TeamDashboardService {
                 GROUP BY fum.month_key
                 ORDER BY fum.month_key
                 """, Tuple.class)
-                .setParameter("fromKey", toMonthKey(extendedStart))
-                .setParameter("toKey", toMonthKey(effectiveEnd))
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
                 .getResultList();
+
+        // Budget hours per month from fact_budget_day for team members
+        LocalDate budgetFromDate = extendedStart.withDayOfMonth(1);
+        LocalDate budgetToDate = YearMonth.from(effectiveEnd).atEndOfMonth();
+        @SuppressWarnings("unchecked")
+        List<Tuple> budgetRows = em.createNativeQuery("""
+                SELECT CONCAT(LPAD(YEAR(bd.document_date), 4, '0'),
+                              LPAD(MONTH(bd.document_date), 2, '0')) AS month_key,
+                       SUM(bd.budgetHours) AS budget_hours
+                FROM fact_budget_day bd
+                WHERE bd.useruuid IN (:memberUuids)
+                  AND bd.document_date >= :fromDate AND bd.document_date <= :toDate
+                GROUP BY YEAR(bd.document_date), MONTH(bd.document_date)
+                """, Tuple.class)
+                .setParameter("memberUuids", memberUuids)
+                .setParameter("fromDate", budgetFromDate)
+                .setParameter("toDate", budgetToDate)
+                .getResultList();
+
+        Map<String, Double> budgetMap = new LinkedHashMap<>();
+        for (Tuple row : budgetRows) {
+            String mk = (String) row.get("month_key");
+            double budgetHrs = numVal(row, "budget_hours");
+            budgetMap.put(mk, budgetHrs);
+        }
 
         Map<String, Double> companyUtilMap = new LinkedHashMap<>();
         for (Tuple row : companyRows) {
@@ -281,14 +310,26 @@ public class TeamDashboardService {
             String mk = (String) row.get("month_key");
             double b = numVal(row, "billable");
             double n = numVal(row, "net_available");
+            double g = numVal(row, "gross_available");
+            Double grossPct = g > 0 ? (b / g) * 100.0 : null;
             Double teamPct = n > 0 ? (b / n) * 100.0 : null;
+
+            Double budgetHrs = budgetMap.get(mk);
+            Double budgetPct = null;
+            Double fulfillmentPct = null;
+            if (budgetHrs != null && budgetHrs > 0) {
+                budgetPct = n > 0 ? (budgetHrs / n) * 100.0 : null;
+                fulfillmentPct = (b / budgetHrs) * 100.0;
+            }
+
             int year = Integer.parseInt(mk.substring(0, 4));
             int month = Integer.parseInt(mk.substring(4, 6));
             String label = Month.of(month).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year;
 
             result.add(new TeamUtilizationTrendDTO(
                     mk, year, month, label,
-                    b, n, teamPct,
+                    b, n, grossPct, teamPct,
+                    budgetPct, fulfillmentPct,
                     companyUtilMap.get(mk)));
         }
         return result;

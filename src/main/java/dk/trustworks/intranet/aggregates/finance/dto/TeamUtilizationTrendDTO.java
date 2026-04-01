@@ -14,8 +14,14 @@ public record TeamUtilizationTrendDTO(
         double billableHours,
         /** Team net available hours for the month */
         double netAvailableHours,
-        /** Team utilization: billable / netAvailable * 100; null if no available hours */
+        /** Gross utilization: billable / grossAvailable * 100; null if no gross available hours */
+        Double grossUtilizationPercent,
+        /** Net/actual utilization: billable / netAvailable * 100; null if no net available hours */
         Double teamUtilizationPercent,
+        /** Budget utilization: budgetHours / netAvailable * 100; null if no budget data */
+        Double budgetUtilizationPercent,
+        /** Contract fulfillment: billable / budgetHours * 100; null if no budget data */
+        Double contractFulfillmentPercent,
         /** Company-wide utilization for same month; null if no data */
         Double companyUtilizationPercent
 ) {}
