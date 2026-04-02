@@ -1,40 +1,24 @@
 package dk.trustworks.intranet.config.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import dk.trustworks.intranet.config.model.PageMigration;
+import dk.trustworks.intranet.config.model.PageRegistry;
 
-import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 
-/**
- * DTO for page migration data returned to frontend applications.
- *
- * This record represents a page's migration status and is consumed by
- * both Vaadin and React frontends to render navigation menus.
- */
-public record PageMigrationDto(
+public record PageRegistryDto(
         String pageKey,
         String pageLabel,
-        boolean migrated,
+        boolean visible,
         String reactRoute,
-        String vaadinRoute,
-        String vaadinViewClass,
         List<String> requiredRoles,
         int displayOrder,
         String section,
         String iconName,
         @JsonProperty("isExternal") boolean isExternal,
-        String externalUrl,
-        LocalDateTime migratedAt
+        String externalUrl
 ) {
-    /**
-     * Create DTO from entity.
-     *
-     * @param entity the page migration entity
-     * @return the DTO
-     */
-    public static PageMigrationDto fromEntity(PageMigration entity) {
+    public static PageRegistryDto fromEntity(PageRegistry entity) {
         List<String> roles = entity.getRequiredRoles() != null
                 ? Arrays.stream(entity.getRequiredRoles().split(","))
                         .map(String::trim)
@@ -43,20 +27,17 @@ public record PageMigrationDto(
                         .toList()
                 : List.of("USER");
 
-        return new PageMigrationDto(
+        return new PageRegistryDto(
                 entity.getPageKey(),
                 entity.getPageLabel(),
-                entity.isMigrated(),
+                entity.isVisible(),
                 entity.getReactRoute(),
-                entity.getVaadinRoute(),
-                entity.getVaadinViewClass(),
                 roles,
                 entity.getDisplayOrder(),
                 entity.getSection(),
                 entity.getIconName(),
                 entity.isExternal(),
-                entity.getExternalUrl(),
-                entity.getMigratedAt()
+                entity.getExternalUrl()
         );
     }
 }
