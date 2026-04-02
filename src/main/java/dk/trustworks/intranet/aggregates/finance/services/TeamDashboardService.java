@@ -839,6 +839,7 @@ public class TeamDashboardService {
                 FROM user u
                 LEFT JOIN contract_consultants cc ON cc.useruuid = u.uuid
                     AND cc.activeto IS NOT NULL
+                    AND cc.activefrom <= CURDATE()
                 WHERE u.uuid IN (:memberUuids)
                   AND NOT EXISTS (
                       SELECT 1 FROM contract_consultants cc2
