@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 import dk.trustworks.intranet.aggregates.finance.dto.AllTeamsUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBenchConsultantDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBillingRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeRegistrationComplianceDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBudgetFulfillmentDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamClientConcentrationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamContractTimelineDTO;
@@ -138,10 +139,13 @@ public class TeamDashboardResource {
 
     @GET
     @Path("/{teamId}/contract-timeline")
-    public TeamContractTimelineDTO getContractTimeline(@PathParam("teamId") String teamId) {
-        log.debugf("GET /finance/team/%s/contract-timeline", teamId);
+    public TeamContractTimelineDTO getContractTimeline(
+            @PathParam("teamId") String teamId,
+            @QueryParam("lookbackMonths") @DefaultValue("6") int lookbackMonths) {
+        log.debugf("GET /finance/team/%s/contract-timeline?lookbackMonths=%d", teamId, lookbackMonths);
         teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
-        return teamDashboardService.getContractTimeline(teamId);
+        int capped = Math.min(Math.max(lookbackMonths, 1), 36);
+        return teamDashboardService.getContractTimeline(teamId, capped);
     }
 
     // -----------------------------------------------------------------------
@@ -266,11 +270,31 @@ public class TeamDashboardResource {
     @Path("/{teamId}/consultant-profitability")
     public List<UnprofitableConsultantDTO> getConsultantProfitability(
             @PathParam("teamId") String teamId,
-            @QueryParam("fiscalYear") Integer fiscalYear) {
+            @QueryParam("fiscalYear") Integer fiscalYear,
+            @QueryParam("userId") String userId,
+            @QueryParam("period") @DefaultValue("ttm") String period) {
         int fy = effectiveFiscalYear(fiscalYear);
-        log.debugf("GET /finance/team/%s/consultant-profitability?fiscalYear=%d", teamId, fy);
+        log.debugf("GET /finance/team/%s/consultant-profitability?fiscalYear=%d&userId=%s&period=%s",
+                teamId, fy, userId, period);
         teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
-        return teamDashboardService.getConsultantProfitability(teamId, fy);
+        return teamDashboardService.getConsultantProfitability(teamId, fy, userId, period);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. Time Registration Compliance
+    // -----------------------------------------------------------------------
+
+    @GET
+    @Path("/{teamId}/consultant-compliance")
+    public TimeRegistrationComplianceDTO getConsultantCompliance(
+            @PathParam("teamId") String teamId,
+            @QueryParam("userId") String userId) {
+        log.debugf("GET /finance/team/%s/consultant-compliance?userId=%s", teamId, userId);
+        teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
+        if (userId == null || userId.isBlank()) {
+            throw new jakarta.ws.rs.BadRequestException("userId query parameter is required");
+        }
+        return teamDashboardService.getConsultantCompliance(teamId, userId);
     }
 
     // -----------------------------------------------------------------------

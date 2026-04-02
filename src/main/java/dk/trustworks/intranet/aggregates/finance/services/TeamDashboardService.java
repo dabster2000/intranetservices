@@ -22,6 +22,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.TeamRevenuePerMemberDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationHeatmapDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationHeatmapDTO.MemberUtilizationRow;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamUtilizationTrendDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeRegistrationComplianceDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TimeRegistrationComplianceDTO.MonthlyCompliance;
 import dk.trustworks.intranet.aggregates.finance.dto.UnprofitableConsultantDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -534,7 +536,7 @@ public class TeamDashboardService {
     // 6. Contract Timeline
     // -----------------------------------------------------------------------
 
-    public TeamContractTimelineDTO getContractTimeline(String teamId) {
+    public TeamContractTimelineDTO getContractTimeline(String teamId, int lookbackMonths) {
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return new TeamContractTimelineDTO(List.of());
@@ -551,10 +553,11 @@ public class TeamDashboardService {
                 JOIN client cl ON cl.uuid = c.clientuuid
                 JOIN user u ON u.uuid = cc.useruuid
                 WHERE cc.useruuid IN (:memberUuids)
-                  AND cc.activeto >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                  AND cc.activeto >= DATE_SUB(CURDATE(), INTERVAL :lookbackMonths MONTH)
                 ORDER BY u.lastname, u.firstname, cc.activefrom
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
+                .setParameter("lookbackMonths", lookbackMonths)
                 .getResultList();
 
         // Sales leads for team members (with extension detection)
@@ -1334,19 +1337,33 @@ public class TeamDashboardService {
     // 15. Consultant Profitability (reuses ConsultantInsightsService)
     // -----------------------------------------------------------------------
 
-    public List<UnprofitableConsultantDTO> getConsultantProfitability(String teamId, int fiscalYear) {
-        // Get all unprofitable consultants company-wide, then filter to team members
+    public List<UnprofitableConsultantDTO> getConsultantProfitability(
+            String teamId, int fiscalYear, String userId, String period) {
+
+        String effectivePeriod = (period != null && !period.isBlank()) ? period : "ttm";
+
+        // Single-consultant lookup: return profitability for that user regardless of profit/loss
+        if (userId != null && !userId.isBlank()) {
+            List<UnprofitableConsultantDTO> all = consultantInsightsService
+                    .getConsultantProfitability(null, null, effectivePeriod);
+            return all.stream()
+                    .filter(dto -> userId.equals(dto.getUserId()))
+                    .collect(Collectors.toList());
+        }
+
+        // Team-wide lookup: return only unprofitable consultants (existing behavior)
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
 
-        // Reuse existing service method (company-wide), filter by team membership
-        List<UnprofitableConsultantDTO> all = consultantInsightsService.getUnprofitableConsultants(
-                null, null);
+        // Get all consultant profitability, then filter to team members with negative profit
+        List<UnprofitableConsultantDTO> all = consultantInsightsService
+                .getConsultantProfitability(null, null, effectivePeriod);
 
         return all.stream()
                 .filter(dto -> memberUuids.contains(dto.getUserId()))
+                .filter(dto -> dto.getNetProfit() < 0)
                 .collect(Collectors.toList());
     }
 
@@ -1510,6 +1527,85 @@ public class TeamDashboardService {
         }
         return items;
     }
+
+    // -----------------------------------------------------------------------
+    // 16. Time Registration Compliance
+    // -----------------------------------------------------------------------
+
+    /**
+     * Calculates time registration compliance for a consultant over the last 6 months.
+     * A work day is "compliant" if it was registered within 7 calendar days of the work date
+     * (i.e., DATEDIFF(updated_at, registered) <= 7).
+     */
+    public TimeRegistrationComplianceDTO getConsultantCompliance(String teamId, String userId) {
+        LocalDate now = LocalDate.now();
+        Set<String> memberUuids = getTeamMemberUuids(teamId, now);
+        if (!memberUuids.contains(userId)) {
+            throw new WebApplicationException(
+                    "User is not a member of the specified team",
+                    Response.Status.BAD_REQUEST);
+        }
+
+        LocalDate startDate = now.minusMonths(6).withDayOfMonth(1);
+        LocalDate endDate = now;
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT
+                    YEAR(w.registered) AS yr,
+                    MONTH(w.registered) AS mo,
+                    COUNT(DISTINCT w.registered) AS total_days,
+                    COUNT(DISTINCT CASE
+                        WHEN DATEDIFF(w.updated_at, w.registered) <= 7 THEN w.registered
+                    END) AS compliant_days
+                FROM work w
+                WHERE w.useruuid = :userId
+                  AND w.registered >= :startDate
+                  AND w.registered <= :endDate
+                  AND w.workduration > 0
+                GROUP BY YEAR(w.registered), MONTH(w.registered)
+                ORDER BY YEAR(w.registered), MONTH(w.registered)
+                """)
+                .setParameter("userId", userId)
+                .setParameter("startDate", startDate)
+                .setParameter("endDate", endDate)
+                .getResultList();
+
+        String[] monthNames = {"", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+        List<MonthlyCompliance> months = new ArrayList<>();
+        double totalComplianceSum = 0.0;
+
+        for (Object[] row : rows) {
+            int yr = ((Number) row[0]).intValue();
+            int mo = ((Number) row[1]).intValue();
+            int totalDays = ((Number) row[2]).intValue();
+            int compliantDays = ((Number) row[3]).intValue();
+
+            String monthKey = String.format("%04d%02d", yr, mo);
+            String label = monthNames[mo];
+            double compliancePct = totalDays > 0
+                    ? Math.round((compliantDays * 100.0 / totalDays) * 10.0) / 10.0
+                    : 0.0;
+
+            months.add(new MonthlyCompliance(monthKey, label, compliancePct, totalDays, compliantDays));
+            totalComplianceSum += compliancePct;
+        }
+
+        double averagePct = months.isEmpty() ? 0.0
+                : Math.round((totalComplianceSum / months.size()) * 10.0) / 10.0;
+
+        var dto = new TimeRegistrationComplianceDTO();
+        dto.setUserId(userId);
+        dto.setMonths(months);
+        dto.setAveragePct(averagePct);
+        return dto;
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
 
     private TeamOverviewDTO emptyOverview(String teamId) {
         return new TeamOverviewDTO(
