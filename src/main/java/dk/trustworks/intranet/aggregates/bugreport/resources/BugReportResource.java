@@ -153,6 +153,25 @@ public class BugReportResource {
         }
     }
 
+    // ---- 6b. DELETE /bug-reports/{uuid}/admin — Admin: hard delete any report ----
+    @DELETE
+    @Path("/{uuid}/admin")
+    @RolesAllowed({"bugreports:admin"})
+    public Response adminDelete(@PathParam("uuid") String uuid) {
+        try {
+            bugReportService.adminDelete(uuid);
+            return Response.noContent().build();
+        } catch (jakarta.ws.rs.NotFoundException e) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        } catch (IllegalStateException e) {
+            return Response.status(409)
+                    .entity("{\"error\":\"%s\"}".formatted(e.getMessage()))
+                    .build();
+        }
+    }
+
     // ---- 7. PUT /bug-reports/{uuid}/assign — Admin: assign ----
     @PUT
     @Path("/{uuid}/assign")
@@ -175,7 +194,7 @@ public class BugReportResource {
         String actorUuid = requestHeaderHolder.getUserUuid();
         LocalDateTime ifMatch = parseIfMatch(ifMatchHeader);
         try {
-            var updated = bugReportService.changeStatus(uuid, request.status(), actorUuid, ifMatch);
+            var updated = bugReportService.changeStatus(uuid, request.status(), actorUuid, ifMatch, request.reason());
             return Response.ok(updated).build();
         } catch (IllegalStateException e) {
             return Response.status(409)

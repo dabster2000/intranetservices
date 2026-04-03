@@ -43,6 +43,9 @@ public class BugReportService {
             Only analyze the visual state of the application.""";
 
     @Inject
+    jakarta.persistence.EntityManager em;
+
+    @Inject
     BugReportS3Service s3Service;
 
     @Inject
@@ -192,6 +195,11 @@ public class BugReportService {
 
     @Transactional
     public BugReportDTO changeStatus(String uuid, String newStatus, String actorUuid, LocalDateTime ifMatch) {
+        return changeStatus(uuid, newStatus, actorUuid, ifMatch, null);
+    }
+
+    @Transactional
+    public BugReportDTO changeStatus(String uuid, String newStatus, String actorUuid, LocalDateTime ifMatch, String reason) {
         var report = findOrThrow(uuid);
         checkOptimisticLock(report, ifMatch);
 
@@ -201,6 +209,12 @@ public class BugReportService {
 
         addSystemComment(report, actorUuid, oldStatus, targetStatus.name());
         createStatusChangeNotification(report, oldStatus, targetStatus.name());
+
+        // Add rejection reason as a system comment if provided
+        if (reason != null && !reason.isBlank()) {
+            var reasonComment = report.addComment(actorUuid, "Rejection reason: " + reason, true);
+            reasonComment.persist();
+        }
 
         return toDTO(report);
     }
@@ -221,6 +235,29 @@ public class BugReportService {
             s3Service.deleteScreenshot(report.getUuid());
         }
         // Hard delete from DB (comments and notifications cascade)
+        report.delete();
+    }
+
+    @Transactional
+    public void adminDelete(String uuid) {
+        var report = findOrThrow(uuid);
+
+        // Only DRAFT and SUBMITTED reports can be deleted
+        if (report.getStatus() != BugReportStatus.DRAFT && report.getStatus() != BugReportStatus.SUBMITTED) {
+            throw new IllegalStateException("Only DRAFT or SUBMITTED reports can be deleted");
+        }
+
+        // 1. Delete autofix_tasks (FK is ON DELETE RESTRICT)
+        em.createNativeQuery("DELETE FROM autofix_tasks WHERE bug_report_uuid = :uuid")
+            .setParameter("uuid", uuid)
+            .executeUpdate();
+
+        // 2. Delete S3 screenshot
+        if (report.getScreenshotS3Key() != null) {
+            s3Service.deleteScreenshot(report.getUuid());
+        }
+
+        // 3. Hard delete report (comments + notifications cascade via ON DELETE CASCADE)
         report.delete();
     }
 
@@ -737,6 +774,8 @@ public class BugReportService {
         String message;
         if ("CLOSED".equals(newStatus)) {
             message = "Your bug report '%s' was closed by an admin".formatted(title);
+        } else if ("REJECTED".equals(newStatus)) {
+            message = "Your bug report '%s' was rejected".formatted(title);
         } else {
             message = "Your bug report '%s' is now %s".formatted(title, newStatus);
         }

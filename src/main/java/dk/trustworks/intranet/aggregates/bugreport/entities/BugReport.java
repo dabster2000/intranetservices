@@ -130,11 +130,13 @@ public class BugReport extends PanacheEntityBase {
 
     /**
      * Checks whether the given status transition is valid for this report.
-     * Admin force-close (any non-CLOSED -> CLOSED) is always allowed.
+     * Admin force-close (any non-CLOSED -> CLOSED) and force-reject
+     * (any non-REJECTED -> REJECTED) are always allowed.
      */
     public boolean canTransitionTo(BugReportStatus target) {
         if (this.status == target) return false;
         if (target == BugReportStatus.CLOSED && this.status != BugReportStatus.CLOSED) return true;
+        if (target == BugReportStatus.REJECTED && this.status != BugReportStatus.REJECTED) return true;
         return this.status.allowedTransitions().contains(target);
     }
 
