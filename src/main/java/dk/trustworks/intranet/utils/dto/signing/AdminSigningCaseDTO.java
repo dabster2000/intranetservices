@@ -27,6 +27,10 @@ import java.util.List;
  * @param processingStatus Async processing status: PENDING_FETCH, FETCHING, COMPLETED, FAILED
  * @param retryCount Number of failed fetch attempts
  * @param lastStatusFetch Timestamp when status was last fetched from NextSign
+ * @param title Case title from NextSign (may differ from documentName)
+ * @param folder NextSign folder/category
+ * @param availabilityDays Number of days the case is available for signing (nullable)
+ * @param availabilityUnlimited Whether the case has unlimited availability (no expiry)
  */
 public record AdminSigningCaseDTO(
     String caseKey,
@@ -46,5 +50,10 @@ public record AdminSigningCaseDTO(
     String templateName,
     String processingStatus,
     Integer retryCount,
-    LocalDateTime lastStatusFetch
+    LocalDateTime lastStatusFetch,
+    // New fields for enhanced admin view:
+    String title,
+    String folder,
+    Integer availabilityDays,
+    Boolean availabilityUnlimited
 ) {}

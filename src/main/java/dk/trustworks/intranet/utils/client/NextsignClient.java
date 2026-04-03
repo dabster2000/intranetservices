@@ -81,4 +81,22 @@ public interface NextsignClient {
         @QueryParam("limit") @DefaultValue("50") int limit,
         @QueryParam("index") @DefaultValue("0") int index
     );
+
+    /**
+     * Deletes a signing case from NextSign.
+     * Note: NextSign uses GET for deletion (not DELETE).
+     *
+     * @param company Company identifier
+     * @param bearerToken Authorization token (format: "Bearer {token}")
+     * @param caseId The NextSign case _id to delete
+     * @return JSON response with deletion confirmation
+     */
+    @GET
+    @Path("/{company}/case/{caseId}/delete")
+    @Produces(MediaType.APPLICATION_JSON)
+    jakarta.json.JsonObject deleteCase(
+        @PathParam("company") String company,
+        @HeaderParam("Authorization") String bearerToken,
+        @PathParam("caseId") String caseId
+    );
 }

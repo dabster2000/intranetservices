@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.utils.resources;
 
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
+import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.AdminSigningCaseDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
@@ -899,6 +900,110 @@ public class SigningResource {
         } catch (Exception e) {
             log.errorf(e, "Bulk retry failed");
             return serverError("BULK_RETRY_FAILED", "Bulk retry failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gets full case detail from NextSign for the admin detail view.
+     * Includes settings, signer audit trail, identity verification, and documents.
+     */
+    @GET
+    @Path("/cases/{caseKey}/detail")
+    @RolesAllowed({"admin:read"})
+    @Operation(
+        summary = "Get full case detail from NextSign",
+        description = "Fetches the complete case including settings, signer audit trail, identity verification, and documents."
+    )
+    @APIResponses({
+        @APIResponse(
+            responseCode = "200",
+            description = "Case detail retrieved successfully",
+            content = @Content(schema = @Schema(implementation = NextSignCaseDetailDTO.class))
+        ),
+        @APIResponse(responseCode = "404", description = "Case not found"),
+        @APIResponse(responseCode = "500", description = "Server error")
+    })
+    public Response getCaseDetail(@PathParam("caseKey") String caseKey) {
+        log.infof("GET /utils/signing/cases/%s/detail", caseKey);
+        try {
+            var detail = signingService.getCaseDetail(caseKey);
+            return Response.ok(detail).build();
+        } catch (SigningService.SigningException e) {
+            log.warnf("Case detail not found: %s - %s", caseKey, e.getMessage());
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("error", "CASE_NOT_FOUND", "message", e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            log.errorf(e, "Failed to fetch case detail for %s", caseKey);
+            return serverError("DETAIL_FAILED", "Failed to fetch case detail: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Permanently deletes a signing case from NextSign and removes the local tracking record.
+     */
+    @DELETE
+    @Path("/cases/{caseKey}")
+    @RolesAllowed({"signing:write"})
+    @Operation(
+        summary = "Delete a signing case",
+        description = "Permanently deletes the case from NextSign and removes the local tracking record."
+    )
+    @APIResponses({
+        @APIResponse(responseCode = "200", description = "Case deleted successfully"),
+        @APIResponse(responseCode = "404", description = "Case not found or delete failed"),
+        @APIResponse(responseCode = "500", description = "Server error")
+    })
+    public Response deleteCase(@PathParam("caseKey") String caseKey) {
+        log.infof("DELETE /utils/signing/cases/%s", caseKey);
+        try {
+            signingService.deleteCase(caseKey);
+            return Response.ok(Map.of("status", "deleted", "message", "Case deleted successfully")).build();
+        } catch (SigningService.SigningException e) {
+            log.warnf("Delete failed for case %s: %s", caseKey, e.getMessage());
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("error", "DELETE_FAILED", "message", e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            log.errorf(e, "Failed to delete case %s", caseKey);
+            return serverError("DELETE_FAILED", "Failed to delete case: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Returns a temporary presigned URL to download a signed document.
+     */
+    @POST
+    @Path("/cases/{caseKey}/documents/{index}/download-url")
+    @RolesAllowed({"admin:read"})
+    @Operation(
+        summary = "Get signed document download URL",
+        description = "Returns a temporary presigned URL (valid ~1 hour) to download the signed document."
+    )
+    @APIResponses({
+        @APIResponse(responseCode = "200", description = "Download URL generated successfully"),
+        @APIResponse(responseCode = "404", description = "Case or document not found"),
+        @APIResponse(responseCode = "500", description = "Server error")
+    })
+    public Response getDownloadUrl(
+        @PathParam("caseKey") String caseKey,
+        @PathParam("index") int index
+    ) {
+        log.infof("POST /utils/signing/cases/%s/documents/%d/download-url", caseKey, index);
+        try {
+            var response = signingService.getSignedDocumentDownloadUrl(caseKey, index);
+            return Response.ok(Map.of(
+                "signedUrl", response.signedUrl(),
+                "type", response.type() != null ? response.type() : "application/pdf"
+            )).build();
+        } catch (SigningService.SigningException e) {
+            log.warnf("Download URL failed for case %s doc %d: %s", caseKey, index, e.getMessage());
+            return Response.status(Response.Status.NOT_FOUND)
+                .entity(Map.of("error", "DOCUMENT_NOT_FOUND", "message", e.getMessage()))
+                .build();
+        } catch (Exception e) {
+            log.errorf(e, "Failed to get download URL for case %s doc %d", caseKey, index);
+            return serverError("DOWNLOAD_URL_FAILED", "Failed to get download URL: " + e.getMessage());
         }
     }
 

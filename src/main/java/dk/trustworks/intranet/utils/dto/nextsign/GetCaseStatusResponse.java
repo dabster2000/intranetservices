@@ -30,12 +30,18 @@ public record GetCaseStatusResponse(
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record CaseDetails(
+        @JsonProperty("_id") String id,
         String nextSignKey,
         String title,
         String referenceId,
         @JsonProperty("case_status") String caseStatus,
-        @JsonProperty("created_at") String createdAt,
-        @JsonProperty("updated_at") String updatedAt,
+        String type,
+        String folder,
+        @JsonProperty("user_email") String userEmail,
+        CaseSettings settings,
+        List<String> signingSchemas,
+        String createdAt,
+        String updatedAt,
         List<RecipientStatus> recipients,
         List<DocumentInfo> documents,
         @JsonProperty("signedDocuments") List<SignedDocumentInfo> signedDocuments
@@ -52,13 +58,13 @@ public record GetCaseStatusResponse(
         String name,
         String email,
         int order,
+        int group,
         boolean signing,
         @JsonProperty("signed") String status,
         @JsonProperty("signedDateAndTime") String signedAt,
-        @JsonProperty("rejected_at") String rejectedAt,
-        String role,
         boolean needsCpr,
-        SignerIdentityWrapper signer
+        SignerIdentityWrapper signer,
+        List<AuditLogEntry> log
     ) {
         /**
          * Checks if this recipient has signed.
@@ -93,10 +99,55 @@ public record GetCaseStatusResponse(
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record SignerIdentity(
+        VerifiedIdentity identity,
         Boolean cprIsMatch,
         Boolean confirmed,
         String lastConfirmation,
         String session
+    ) {}
+
+    /**
+     * Case-level settings from NextSign.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record CaseSettings(
+        ReminderSettings reminders,
+        DeletionSettings deletion,
+        AvailabilitySettings availability,
+        @JsonProperty("allowAPI") boolean allowAPI,
+        List<String> allowedRoles
+    ) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ReminderSettings(boolean send, int amount, int daysBetween) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record DeletionSettings(boolean autoDelete, int days) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AvailabilitySettings(boolean unlimited, int days, boolean isExpired) {}
+
+    /**
+     * Audit log entry from a recipient's signing activity.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AuditLogEntry(
+        String type,
+        String value,
+        String createdAt,
+        @JsonProperty("_id") String id
+    ) {}
+
+    /**
+     * Verified identity information from MitID or similar identity provider.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record VerifiedIdentity(
+        @JsonProperty("id") String identityId,
+        String name,
+        String firstName,
+        String lastName,
+        String dateOfBirth
     ) {}
 
     /**

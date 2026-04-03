@@ -400,6 +400,76 @@ public class NextsignSigningService {
     }
 
     /**
+     * Deletes a signing case from NextSign.
+     *
+     * @param caseId The NextSign MongoDB _id of the case to delete
+     * @throws NextsignException if the deletion request fails
+     */
+    public void deleteCase(String caseId) {
+        log.infof("Deleting case from NextSign: %s", caseId);
+
+        try {
+            String authHeader = "Bearer " + bearerToken;
+            nextsignClient.deleteCase(company, authHeader, caseId);
+            log.infof("Successfully deleted case from NextSign: %s", caseId);
+
+        } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
+            log.errorf("Nextsign API error deleting case: status=%d, body=%s",
+                e.getStatusCode(), e.getResponseBody());
+            throw new NextsignException(String.format(
+                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+
+        } catch (NextsignException e) {
+            throw e;
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error deleting case %s: %s",
+                caseId, e.getMessage());
+            throw new NextsignException("Failed to delete case: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Gets a presigned URL for downloading a signed document.
+     *
+     * @param documentUrl Document URL from signedDocuments[].document_id in case status response
+     * @return Response containing presigned download URL
+     * @throws NextsignException if the presigned URL request fails
+     */
+    public GetPresignedUrlResponse getPresignedUrl(String documentUrl) {
+        log.infof("Getting presigned URL for document: %s", documentUrl);
+
+        try {
+            String authHeader = "Bearer " + bearerToken;
+            GetPresignedUrlRequest request = new GetPresignedUrlRequest(documentUrl);
+
+            GetPresignedUrlResponse response = documentClient.getPresignedUrl(
+                company, authHeader, request
+            );
+
+            if (response == null || response.signedUrl() == null || response.signedUrl().isBlank()) {
+                throw new NextsignException("Failed to get presigned URL: empty response");
+            }
+
+            log.infof("Got presigned URL (expires in 1 hour) for document");
+            return response;
+
+        } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
+            log.errorf("NextSign API error getting presigned URL: status=%d, body=%s",
+                e.getStatusCode(), e.getResponseBody());
+            throw new NextsignException(String.format(
+                "NextSign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+
+        } catch (NextsignException e) {
+            throw e;
+
+        } catch (Exception e) {
+            log.errorf(e, "Unexpected error getting presigned URL: %s", e.getMessage());
+            throw new NextsignException("Failed to get presigned URL: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Downloads a file from a URL using standard HTTP client.
      *
      * @param url Pre-signed URL from NextSign

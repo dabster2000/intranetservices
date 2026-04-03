@@ -147,6 +147,26 @@ public class SigningCase {
     @Column(name = "folder", length = 255)
     private String folder;
 
+    /**
+     * Case title from NextSign (may differ from documentName).
+     */
+    @Column(name = "title", length = 500)
+    private String title;
+
+    /**
+     * Number of days the case is available for signing.
+     * Null if not yet fetched from NextSign.
+     */
+    @Column(name = "availability_days")
+    private Integer availabilityDays;
+
+    /**
+     * Whether the case has unlimited availability (no expiry).
+     */
+    @Column(name = "availability_unlimited", nullable = false)
+    @Builder.Default
+    private Boolean availabilityUnlimited = false;
+
     // --- SharePoint Auto-Upload Fields ---
 
     /**

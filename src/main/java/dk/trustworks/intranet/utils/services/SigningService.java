@@ -6,6 +6,8 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import dk.trustworks.intranet.utils.NextsignSigningService;
 import dk.trustworks.intranet.utils.dto.nextsign.GetCaseStatusResponse;
+import dk.trustworks.intranet.utils.dto.nextsign.GetPresignedUrlResponse;
+import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.AdminSigningCaseDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
 import dk.trustworks.intranet.utils.dto.signing.CreateSigningCaseRequest;
@@ -755,7 +757,7 @@ public class SigningService {
                 r.order() + 1,  // Convert 0-based order to 1-based group
                 r.name(),
                 r.email(),
-                r.role() != null ? r.role() : "signer",
+                r.signing() ? "signer" : "viewer",
                 r.status() != null ? r.status() : "pending",
                 parseDateTime(r.signedAt()),
                 r.getCprIsMatch()  // CPR validation result from NextSign
@@ -1166,9 +1168,78 @@ public class SigningService {
                 sc.getSigningStoreUuid() != null ? templateNameCache.get(sc.getSigningStoreUuid()) : null,
                 sc.getProcessingStatus(),
                 sc.getRetryCount(),
-                sc.getLastStatusFetch()
+                sc.getLastStatusFetch(),
+                sc.getTitle(),
+                sc.getFolder(),
+                sc.getAvailabilityDays(),
+                sc.getAvailabilityUnlimited()
             ))
             .toList();
+    }
+
+    /**
+     * Fetches full case detail from NextSign API for the admin detail view.
+     *
+     * @param caseKey NextSign case key (MongoDB _id)
+     * @return Rich case detail DTO with settings, recipients, audit trail, and documents
+     * @throws SigningException if case not found or API error
+     */
+    public NextSignCaseDetailDTO getCaseDetail(String caseKey) {
+        log.infof("Fetching case detail from NextSign for: %s", caseKey);
+
+        GetCaseStatusResponse response = nextsignService.getCaseStatus(caseKey);
+
+        if (!response.isSuccess() || response.caseDetails() == null) {
+            throw new SigningException("Case not found or error from NextSign: " + response.message());
+        }
+
+        return NextSignCaseDetailDTO.fromCaseDetails(response.caseDetails());
+    }
+
+    /**
+     * Deletes a case from NextSign and removes the local tracking record.
+     *
+     * @param caseKey NextSign case key (MongoDB _id)
+     * @throws SigningException if deletion fails
+     */
+    @Transactional
+    public void deleteCase(String caseKey) {
+        log.infof("Deleting case from NextSign: %s", caseKey);
+
+        // Delete from NextSign
+        nextsignService.deleteCase(caseKey);
+
+        // Remove local tracking record
+        signingCaseRepository.findByCaseKey(caseKey).ifPresent(signingCase -> {
+            signingCaseRepository.delete(signingCase);
+            log.infof("Removed local tracking record for deleted case: %s", caseKey);
+        });
+    }
+
+    /**
+     * Gets a presigned download URL for a signed document.
+     *
+     * @param caseKey NextSign case key (MongoDB _id)
+     * @param documentIndex Index in the signedDocuments array (0-based)
+     * @return Presigned URL response with temporary download URL
+     * @throws SigningException if case not found or document index out of range
+     */
+    public GetPresignedUrlResponse getSignedDocumentDownloadUrl(String caseKey, int documentIndex) {
+        log.infof("Getting download URL for case %s, document index %d", caseKey, documentIndex);
+
+        GetCaseStatusResponse response = nextsignService.getCaseStatus(caseKey);
+
+        if (!response.isSuccess() || response.caseDetails() == null) {
+            throw new SigningException("Case not found: " + caseKey);
+        }
+
+        var signedDocs = response.caseDetails().signedDocuments();
+        if (signedDocs == null || documentIndex < 0 || documentIndex >= signedDocs.size()) {
+            throw new SigningException("Document index " + documentIndex + " out of range for case " + caseKey);
+        }
+
+        String documentId = signedDocs.get(documentIndex).documentId();
+        return nextsignService.getPresignedUrl(documentId);
     }
 
     /**
