@@ -727,9 +727,9 @@ public class SigningService {
         // Check for rejections
         if (contract.recipients() != null) {
             boolean hasRejected = contract.recipients().stream()
-                .anyMatch(r -> "rejected".equalsIgnoreCase(r.status()));
+                .anyMatch(r -> "rejected".equalsIgnoreCase(r.status()) || "denied".equalsIgnoreCase(r.status()));
             if (hasRejected) {
-                return "rejected";
+                return "denied";
             }
         }
 
