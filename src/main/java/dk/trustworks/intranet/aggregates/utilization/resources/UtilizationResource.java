@@ -22,6 +22,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import java.time.LocalDate;
 import java.util.List;
 
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.getFiscalYearRange;
 import static dk.trustworks.intranet.utils.DateUtils.dateIt;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -53,11 +54,6 @@ public class UtilizationResource {
     public List<DateValueDTO> getBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
-        // Bug fix: Adjust toDate to the first day of next month to properly include the current month
-        // The SQL uses < operator, so to include month M, we need to pass M+1's first day
-        if (toDate != null) {
-            toDate = toDate.withDayOfMonth(1).plusMonths(1);
-        }
         if (companyuuid.equals("all")) {
             return utilizationService.calculateAllCompaniesBudgetUtilizationByMonth(fromDate, toDate);
         }
@@ -85,10 +81,6 @@ public class UtilizationResource {
             @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
-        // Bug fix: Adjust toDate to the first day of next month to properly include the current month
-        if (toDate != null) {
-            toDate = toDate.withDayOfMonth(1).plusMonths(1);
-        }
         return utilizationService.calculateTeamBudgetUtilization(teamuuid, fromDate, toDate);
     }
 
@@ -97,10 +89,6 @@ public class UtilizationResource {
     public List<KeyDateValueListDTO> getEmployeeBudgetUtilizationPerMonth(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate fromDate = dateIt(fromdate);
         LocalDate toDate = dateIt(todate);
-        // Bug fix: Adjust toDate to the first day of next month to properly include the current month
-        if (toDate != null) {
-            toDate = toDate.withDayOfMonth(1).plusMonths(1);
-        }
         return utilizationService.calculateEmployeeBudgetUtilization(companyuuid, fromDate, toDate);
     }
 
@@ -139,9 +127,12 @@ public class UtilizationResource {
     @GET
     @Path("/actual/fiscalyear/{fiscalYear}")
     public DateValueDTO getActualUtilizationPerFiscalYear(@PathParam("fiscalYear") int fiscalYear) {
-        LocalDate currentFiscalStartDate = LocalDate.of(fiscalYear, 7, 1);
-        LocalDate currentFiscalEndDate = LocalDate.of(fiscalYear + 1, 7, 1);
-        if (currentFiscalEndDate.isAfter(LocalDate.now())) currentFiscalEndDate = LocalDate.now().withDayOfMonth(1);
+        var fyRange = getFiscalYearRange(fiscalYear);
+        LocalDate currentFiscalStartDate = fyRange.start();
+        LocalDate currentFiscalEndDate = fyRange.end(); // June 30 (inclusive)
+        if (currentFiscalEndDate.isAfter(LocalDate.now())) {
+            currentFiscalEndDate = LocalDate.now().withDayOfMonth(1).minusDays(1); // Last day of previous month
+        }
         return new DateValueDTO(currentFiscalStartDate, utilizationService.calculateCompanyActualUtilizationByPeriod(companyuuid, currentFiscalStartDate, currentFiscalEndDate));
     }
 
