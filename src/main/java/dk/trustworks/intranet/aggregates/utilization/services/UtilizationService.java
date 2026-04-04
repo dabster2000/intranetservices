@@ -15,6 +15,8 @@ import jakarta.persistence.Tuple;
 import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
+
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.calcPercent;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,7 +57,7 @@ public class UtilizationService {
                             "SUM(b.net_available_hours)) AS utilization " +
                             "FROM fact_user_day b " +
                             "WHERE b.document_date >= :startDate " +
-                            "AND b.document_date < :endDate " +
+                            "AND b.document_date <= :endDate " +
                             "AND b.consultant_type = 'CONSULTANT' " +
                             "AND b.status_type = 'ACTIVE' " +
                             (companyuuid.equals("all") ? "" : "AND b.companyuuid = :companyuuid")
@@ -90,7 +92,7 @@ public class UtilizationService {
                 JOIN fact_user_day bdd
                     ON bdd.useruuid = tr.useruuid
                     AND bdd.document_date >= :fromDate
-                    AND bdd.document_date < :toDate
+                    AND bdd.document_date <= :toDate
                     AND bdd.status_type = 'ACTIVE'
                     AND bdd.consultant_type = 'CONSULTANT'
                 LEFT JOIN (
@@ -119,7 +121,7 @@ public class UtilizationService {
                     double available = ((Number) t.get("available_hours")).doubleValue();
                     return new DateValueDTO(
                             LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
-                            available > 0 ? budget / available : 0.0
+                            calcPercent(budget, available) / 100.0
                     );
                 })
                 .toList();
@@ -143,7 +145,7 @@ public class UtilizationService {
                         useruuid, year, month, document_date, net_available_hours
                     FROM fact_user_day
                     WHERE document_date >= :fromDate
-                        AND document_date < :toDate
+                        AND document_date <= :toDate
                         AND status_type = 'ACTIVE'
                         AND consultant_type = 'CONSULTANT'
                 ) DISTINCT_BDD
@@ -171,7 +173,7 @@ public class UtilizationService {
                     double available = ((Number) t.get("available_hours")).doubleValue();
                     return new DateValueDTO(
                             LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
-                            available > 0 ? billable / available : 0.0
+                            calcPercent(billable, available) / 100.0
                     );
                 })
                 .toList();
@@ -194,14 +196,14 @@ public class UtilizationService {
                 LEFT JOIN (
                     SELECT useruuid, year, month, SUM(budgetHours) AS budgetHours
                     FROM fact_budget_day
-                    WHERE document_date >= :fromDate AND document_date < :toDate
+                    WHERE document_date >= :fromDate AND document_date <= :toDate
                     GROUP BY useruuid, year, month
                 ) budget ON bdd.useruuid = budget.useruuid
                     AND bdd.year = budget.year
                     AND bdd.month = budget.month
                 WHERE bdd.companyuuid = :companyuuid
                     AND bdd.document_date >= :fromDate
-                    AND bdd.document_date < :toDate
+                    AND bdd.document_date <= :toDate
                     AND bdd.consultant_type = 'CONSULTANT'
                     AND bdd.status_type = 'ACTIVE'
                 GROUP BY bdd.useruuid, bdd.year, bdd.month
@@ -221,7 +223,7 @@ public class UtilizationService {
             double budget = ((Number) t.get("budget_hours")).doubleValue();
             double available = ((Number) t.get("available_hours")).doubleValue();
             LocalDate monthDate = LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1);
-            double utilization = available > 0 ? budget / available : 0.0;
+            double utilization = calcPercent(budget, available) / 100.0;
 
             userMap.computeIfAbsent(useruuid, k -> new ArrayList<>())
                     .add(new DateValueDTO(monthDate, utilization));
@@ -251,7 +253,7 @@ public class UtilizationService {
                 JOIN user u ON u.uuid = bdd.useruuid
                 WHERE bdd.companyuuid = :companyuuid
                     AND bdd.document_date >= :fromDate
-                    AND bdd.document_date < :toDate
+                    AND bdd.document_date <= :toDate
                     AND bdd.consultant_type = 'CONSULTANT'
                     AND bdd.status_type = 'ACTIVE'
                 GROUP BY bdd.useruuid, u.firstname, u.lastname, bdd.year, bdd.month
@@ -273,7 +275,7 @@ public class UtilizationService {
             double billable = ((Number) t.get("billable_hours")).doubleValue();
             double available = ((Number) t.get("available_hours")).doubleValue();
             LocalDate monthDate = LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1);
-            double utilization = available > 0 ? billable / available : 0.0;
+            double utilization = calcPercent(billable, available) / 100.0;
 
             userMap.computeIfAbsent(fullname, k -> new ArrayList<>())
                     .add(new DateValueDTO(monthDate, utilization));
@@ -298,7 +300,7 @@ public class UtilizationService {
                     GREATEST(0.0, SUM(bdd.net_available_hours)) AS available_hours
                 FROM fact_user_day bdd
                 WHERE bdd.document_date >= :fromDate
-                    AND bdd.document_date < :toDate
+                    AND bdd.document_date <= :toDate
                     AND bdd.consultant_type = 'CONSULTANT'
                     AND bdd.status_type = 'ACTIVE'
                 GROUP BY bdd.year, bdd.month
@@ -316,7 +318,7 @@ public class UtilizationService {
                     double available = ((Number) t.get("available_hours")).doubleValue();
                     return new DateValueDTO(
                             LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
-                            available > 0 ? billable / available : 0.0
+                            calcPercent(billable, available) / 100.0
                     );
                 })
                 .toList();
@@ -342,7 +344,7 @@ public class UtilizationService {
                 ) b ON b.useruuid = bdd.useruuid
                     AND b.document_date = bdd.document_date
                 WHERE bdd.document_date >= :fromDate
-                    AND bdd.document_date < :toDate
+                    AND bdd.document_date <= :toDate
                     AND bdd.consultant_type = 'CONSULTANT'
                     AND bdd.status_type = 'ACTIVE'
                 GROUP BY bdd.year, bdd.month
@@ -360,7 +362,7 @@ public class UtilizationService {
                     double available = ((Number) t.get("available_hours")).doubleValue();
                     return new DateValueDTO(
                             LocalDate.of(((Number) t.get("year")).intValue(), ((Number) t.get("month")).intValue(), 1),
-                            available > 0 ? budget / available : 0.0
+                            calcPercent(budget, available) / 100.0
                     );
                 })
                 .toList();
@@ -385,14 +387,14 @@ public class UtilizationService {
                 "    FROM fact_budget_day " +
                 "    WHERE useruuid = :useruuid " +
                 "        AND document_date >= :startDate " +
-                "        AND document_date < :endDate " +
+                "        AND document_date <= :endDate " +
                 "    GROUP BY useruuid, year, month " +
                 ") budget ON bdd.useruuid = budget.useruuid " +
                 "    AND bdd.year = budget.year " +
                 "    AND bdd.month = budget.month " +
                 "WHERE bdd.useruuid = :useruuid " +
                 "    AND bdd.document_date >= :startDate " +
-                "    AND bdd.document_date < :endDate " +
+                "    AND bdd.document_date <= :endDate " +
                 "GROUP BY bdd.year, bdd.month " +
                 "ORDER BY bdd.year, bdd.month";
 
