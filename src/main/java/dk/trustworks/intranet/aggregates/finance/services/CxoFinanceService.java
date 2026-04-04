@@ -32,6 +32,9 @@ import dk.trustworks.intranet.aggregates.finance.dto.OpexRowExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.utils.TwConstants;
+
+import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
+import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.FiscalYearRange;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -41,7 +44,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
-import java.time.format.DateTimeFormatter;
+
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -111,8 +114,8 @@ public class CxoFinanceService {
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1).plusMonths(1).minusDays(1) : LocalDate.now();
 
         // Convert to YYYYMM month keys for efficient filtering
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        String fromMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedFromDate);
+        String toMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedToDate);
 
         log.debugf("getRevenueMarginTrend: fromDate=%s (%s), toDate=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
@@ -266,7 +269,7 @@ public class CxoFinanceService {
         // practices, use those; otherwise default to all 5 known practices.
         Set<String> effectivePractices = (practices != null && !practices.isEmpty())
                 ? practices
-                : Set.of("PM", "BA", "CYB", "DEV", "SA");
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
         StringBuilder sql = new StringBuilder();
@@ -326,10 +329,9 @@ public class CxoFinanceService {
 
             // Utilization: billable / net_available * 100
             // Consistent with /dashboard: net_available_hours already deducts all absence
-            Double utilizationPercent = null;
-            if (netAvailableHours > 0) {
-                utilizationPercent = (billableHours / netAvailableHours) * 100.0;
-            }
+            Double utilizationPercent = netAvailableHours > 0
+                    ? UtilizationCalculationHelper.calcPercent(billableHours, netAvailableHours)
+                    : null;
 
             String monthLabel = formatMonthLabel(year, monthNumber);
 
@@ -377,21 +379,20 @@ public class CxoFinanceService {
         LocalDate normalizedAsOfDate = (asOfDate != null) ? asOfDate : LocalDate.now();
 
         // 1. Calculate fiscal year boundaries (Trustworks fiscal year: July 1 - June 30)
-        int currentFiscalYear = normalizedAsOfDate.getMonthValue() >= 7
-                ? normalizedAsOfDate.getYear()
-                : normalizedAsOfDate.getYear() - 1;
-        LocalDate fiscalYearStart = LocalDate.of(currentFiscalYear, 7, 1);  // July 1
+        FiscalYearRange currentFY = UtilizationCalculationHelper.getFiscalYearRange(
+                normalizedAsOfDate.getMonthValue() >= 7 ? normalizedAsOfDate.getYear() : normalizedAsOfDate.getYear() - 1);
+        LocalDate fiscalYearStart = currentFY.start();
         LocalDate ytdEnd = normalizedAsOfDate;
 
         // Prior fiscal year - same duration
-        int priorFiscalYear = currentFiscalYear - 1;
-        LocalDate priorYearStart = LocalDate.of(priorFiscalYear, 7, 1);
+        FiscalYearRange priorFY = UtilizationCalculationHelper.getFiscalYearRange(currentFY.fiscalYear() - 1);
+        LocalDate priorYearStart = priorFY.start();
         long monthsBetween = ChronoUnit.MONTHS.between(fiscalYearStart, ytdEnd);
         LocalDate priorYearEnd = priorYearStart.plusMonths(monthsBetween);
 
         log.debugf("Revenue YTD calculation: Current FY=%d (%s to %s), Prior FY=%d (%s to %s)",
-                currentFiscalYear, fiscalYearStart, ytdEnd,
-                priorFiscalYear, priorYearStart, priorYearEnd);
+                currentFY.fiscalYear(), fiscalYearStart, ytdEnd,
+                priorFY.fiscalYear(), priorYearStart, priorYearEnd);
 
         // 2. Query actual revenue YTD (current fiscal year).
         // Revenue KPIs use fact_company_revenue_mat — company-total, no dimension filters.
@@ -540,10 +541,10 @@ public class CxoFinanceService {
         log.debugf("Gross Margin TTM calculation: Current TTM (%s to %s), Prior TTM (%s to %s)",
                 currentTTMStart, currentTTMEnd, priorTTMStart, priorTTMEnd);
 
-        String currentFromKey = currentTTMStart.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String currentToKey   = currentTTMEnd.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String priorFromKey   = priorTTMStart.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String priorToKey     = priorTTMEnd.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String currentFromKey = UtilizationCalculationHelper.toMonthKey(currentTTMStart);
+        String currentToKey   = UtilizationCalculationHelper.toMonthKey(currentTTMEnd);
+        String priorFromKey   = UtilizationCalculationHelper.toMonthKey(priorTTMStart);
+        String priorToKey     = UtilizationCalculationHelper.toMonthKey(priorTTMEnd);
 
         // 4. Query current TTM revenue (company-total from fact_company_revenue_mat)
         // and costs (from fact_project_financials_mat with dimension filters).
@@ -696,7 +697,7 @@ public class CxoFinanceService {
             Set<String> companyIds) {
 
         // Query backlog for future months only (delivery_month_key >= current month)
-        String currentMonthKey = String.format("%04d%02d", asOfDate.getYear(), asOfDate.getMonthValue());
+        String currentMonthKey = UtilizationCalculationHelper.toMonthKey(asOfDate);
 
         StringBuilder sql = new StringBuilder(
                 "SELECT COALESCE(SUM(backlog_revenue_dkk), 0.0) AS total_backlog " +
@@ -997,13 +998,8 @@ public class CxoFinanceService {
         double priorAvailableHours = priorPeriodData[1];
 
         // 4. Calculate utilization percentages
-        double currentUtilizationPercent = (currentAvailableHours > 0)
-                ? (currentBillableHours / currentAvailableHours) * 100.0
-                : 0.0;
-
-        double priorUtilizationPercent = (priorAvailableHours > 0)
-                ? (priorBillableHours / priorAvailableHours) * 100.0
-                : 0.0;
+        double currentUtilizationPercent = UtilizationCalculationHelper.calcPercent(currentBillableHours, currentAvailableHours);
+        double priorUtilizationPercent = UtilizationCalculationHelper.calcPercent(priorBillableHours, priorAvailableHours);
 
         // 5. Calculate percentage point change (not percentage change!)
         // Example: 82% → 85% = +3.0 percentage points
@@ -1159,8 +1155,8 @@ public class CxoFinanceService {
 
         // Execute query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("fromKey", UtilizationCalculationHelper.toMonthKey(fromDate));
+        query.setParameter("toKey", UtilizationCalculationHelper.toMonthKey(toDate));
 
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
@@ -1207,8 +1203,8 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
 
         StringBuilder sql = new StringBuilder(
                 "SELECT COALESCE(SUM(ABS(fd.amount)), 0.0) " +
@@ -1256,8 +1252,8 @@ public class CxoFinanceService {
             LocalDate fromDate, LocalDate toDate,
             Set<String> companyIds) {
 
-        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
 
         StringBuilder sql = new StringBuilder(
                 "SELECT COALESCE(SUM(r.net_revenue_dkk), 0.0) " +
@@ -1294,8 +1290,8 @@ public class CxoFinanceService {
             LocalDate fromDate, LocalDate toDate,
             Set<String> companyIds, int expectedMonths) {
 
-        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
 
         StringBuilder sql = new StringBuilder(
                 "SELECT r.month_key, COALESCE(SUM(r.net_revenue_dkk), 0.0) AS monthly_revenue " +
@@ -1630,8 +1626,8 @@ public class CxoFinanceService {
 
         // Execute query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("fromKey", UtilizationCalculationHelper.toMonthKey(fromDate));
+        query.setParameter("toKey", UtilizationCalculationHelper.toMonthKey(toDate));
         query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -1883,8 +1879,8 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", toDate);
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("fromKey", UtilizationCalculationHelper.toMonthKey(fromDate));
+        query.setParameter("toKey", UtilizationCalculationHelper.toMonthKey(toDate));
         query.setParameter("excludedClientIds", TwConstants.EXCLUDED_CLIENT_IDS);
 
         if (companyIds != null && !companyIds.isEmpty()) query.setParameter("companyIds", companyIds);
@@ -1982,8 +1978,8 @@ public class CxoFinanceService {
 
         // Execute query
         Query query = em.createNativeQuery(sql.toString());
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("fromKey", UtilizationCalculationHelper.toMonthKey(fromDate));
+        query.setParameter("toKey", UtilizationCalculationHelper.toMonthKey(toDate));
 
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
@@ -2014,8 +2010,8 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String toKey   = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
 
         // Revenue: fact_company_revenue_mat (company-total, companyIds filter only).
         // Revenue KPIs always show company-total — dimension filters do not apply.
@@ -2135,8 +2131,8 @@ public class CxoFinanceService {
 
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fiscalYear", fiscalYear);
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("fromKey", UtilizationCalculationHelper.toMonthKey(fromDate));
+        query.setParameter("toKey", UtilizationCalculationHelper.toMonthKey(toDate));
 
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
@@ -2190,8 +2186,8 @@ public class CxoFinanceService {
         sql.append("GROUP BY f.month_key ORDER BY f.month_key ASC");
 
         Query query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromKey", fromDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
-        query.setParameter("toKey", toDate.format(DateTimeFormatter.ofPattern("yyyyMM")));
+        query.setParameter("fromKey", UtilizationCalculationHelper.toMonthKey(fromDate));
+        query.setParameter("toKey", UtilizationCalculationHelper.toMonthKey(toDate));
 
         // Set parameters (same pattern as actual revenue)
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -2253,8 +2249,8 @@ public class CxoFinanceService {
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1).plusMonths(1).minusDays(1)
                 : LocalDate.now().plusMonths(6).withDayOfMonth(1).minusDays(1);
 
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        String fromMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedFromDate);
+        String toMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedToDate);
 
         log.debugf("getPipelineBacklogTrend: from=%s (%s), to=%s (%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 normalizedFromDate, fromMonthKey, normalizedToDate, toMonthKey, sectors, serviceLines, contractTypes, clientId, companyIds);
@@ -2605,8 +2601,8 @@ public class CxoFinanceService {
             String clientId,
             Set<String> companyIds) {
 
-        String fromKey = String.format("%04d%02d", fromDate.getYear(), fromDate.getMonthValue());
-        String toKey = String.format("%04d%02d", toDate.getYear(), toDate.getMonthValue());
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey = UtilizationCalculationHelper.toMonthKey(toDate);
 
         // Query 1: Monthly revenue from fact_company_revenue_mat (company-total).
         // Revenue KPIs always show company-total — dimension filters do not apply.
@@ -2661,7 +2657,7 @@ public class CxoFinanceService {
         YearMonth currentMonth = YearMonth.from(fromDate);
 
         for (int i = 0; i < 12; i++) {
-            String monthKey = currentMonth.format(DateTimeFormatter.ofPattern("yyyyMM"));
+            String monthKey = UtilizationCalculationHelper.toMonthKey(currentMonth.getYear(), currentMonth.getMonthValue());
             double monthRevenue = revenueByMonth.getOrDefault(monthKey, 0.0);
             double monthFTE = fteByMonth.getOrDefault(monthKey, 0.0);
 
@@ -2767,8 +2763,8 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        String fromKey = String.format("%04d%02d", fromDate.getYear(), fromDate.getMonthValue());
-        String toKey = String.format("%04d%02d", toDate.getYear(), toDate.getMonthValue());
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey = UtilizationCalculationHelper.toMonthKey(toDate);
 
         // Query 1: Monthly expected revenue from work_full
         StringBuilder expectedSql = new StringBuilder(
@@ -2890,7 +2886,7 @@ public class CxoFinanceService {
         YearMonth currentMonth = YearMonth.from(fromDate);
 
         for (int i = 0; i < 12; i++) {
-            String monthKey = currentMonth.format(DateTimeFormatter.ofPattern("yyyyMM"));
+            String monthKey = UtilizationCalculationHelper.toMonthKey(currentMonth.getYear(), currentMonth.getMonthValue());
             double monthExpected = expectedByMonth.getOrDefault(monthKey, 0.0);
             double monthActual = actualByMonth.getOrDefault(monthKey, 0.0);
 
@@ -2987,8 +2983,8 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, Set<String> companyIds) {
 
-        String fromKey = fromDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
-        String toKey = toDate.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
+        String toKey = UtilizationCalculationHelper.toMonthKey(toDate);
 
         // Build SQL query with CTE to rank clients by revenue
         StringBuilder sql = new StringBuilder(
@@ -3114,9 +3110,7 @@ public class CxoFinanceService {
 
         double currentBillable = currentPeriodData.getOrDefault("billableHours", 0.0);
         double currentCapacity = currentPeriodData.getOrDefault("capacityHours", 0.0);
-        double currentUtilization = currentCapacity > 0
-                ? (currentBillable / currentCapacity) * 100.0
-                : 0.0;
+        double currentUtilization = UtilizationCalculationHelper.calcPercent(currentBillable, currentCapacity);
 
         // 3. Query prior period data (8 weeks historical actuals from fact_user_utilization)
         Map<String, Double> priorPeriodData = queryPriorUtilizationData(
@@ -3124,9 +3118,7 @@ public class CxoFinanceService {
 
         double priorBillable = priorPeriodData.getOrDefault("billableHours", 0.0);
         double priorCapacity = priorPeriodData.getOrDefault("capacityHours", 0.0);
-        double priorUtilization = priorCapacity > 0
-                ? (priorBillable / priorCapacity) * 100.0
-                : 0.0;
+        double priorUtilization = UtilizationCalculationHelper.calcPercent(priorBillable, priorCapacity);
 
         // 4. Calculate percentage point change
         double utilizationChange = currentUtilization - priorUtilization;
@@ -3345,7 +3337,7 @@ public class CxoFinanceService {
             Object[] row = results.get(i);
             double billable = row[1] != null ? ((Number) row[1]).doubleValue() : 0.0;
             double capacity = row[2] != null ? ((Number) row[2]).doubleValue() : 0.0;
-            sparkline[i] = capacity > 0 ? (billable / capacity) * 100.0 : 0.0;
+            sparkline[i] = UtilizationCalculationHelper.calcPercent(billable, capacity);
         }
 
         return sparkline;
@@ -3385,12 +3377,12 @@ public class CxoFinanceService {
 
         // 1. Calculate date ranges for current and prior 12-month periods
         // Current: last 12 months ending in current month
-        String currentToMonthKey = effectiveDate.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
-        String currentFromMonthKey = effectiveDate.minusMonths(11).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+        String currentToMonthKey = UtilizationCalculationHelper.toMonthKey(effectiveDate);
+        String currentFromMonthKey = UtilizationCalculationHelper.toMonthKey(effectiveDate.minusMonths(11));
 
         // Prior: 12 months before current period (months -24 to -13)
-        String priorToMonthKey = effectiveDate.minusMonths(12).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
-        String priorFromMonthKey = effectiveDate.minusMonths(23).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+        String priorToMonthKey = UtilizationCalculationHelper.toMonthKey(effectiveDate.minusMonths(12));
+        String priorFromMonthKey = UtilizationCalculationHelper.toMonthKey(effectiveDate.minusMonths(23));
 
         log.debugf("Current period: %s to %s (12 months)", currentFromMonthKey, currentToMonthKey);
         log.debugf("Prior period: %s to %s (12 months)", priorFromMonthKey, priorToMonthKey);
@@ -3452,24 +3444,18 @@ public class CxoFinanceService {
         LocalDate normalizedAsOfDate = (asOfDate != null) ? asOfDate : LocalDate.now();
 
         // Calculate fiscal year boundaries (July 1 - June 30)
-        int currentFiscalYear = normalizedAsOfDate.getMonthValue() >= 7
-                ? normalizedAsOfDate.getYear()
-                : normalizedAsOfDate.getYear() - 1;
-        LocalDate currentFYStart = LocalDate.of(currentFiscalYear, 7, 1);
-        LocalDate currentFYEnd = LocalDate.of(currentFiscalYear + 1, 6, 30);
+        FiscalYearRange currentFYRange = UtilizationCalculationHelper.getFiscalYearRange(
+                normalizedAsOfDate.getMonthValue() >= 7 ? normalizedAsOfDate.getYear() : normalizedAsOfDate.getYear() - 1);
+        FiscalYearRange priorFYRange = UtilizationCalculationHelper.getFiscalYearRange(currentFYRange.fiscalYear() - 1);
 
-        int priorFiscalYear = currentFiscalYear - 1;
-        LocalDate priorFYStart = LocalDate.of(priorFiscalYear, 7, 1);
-        LocalDate priorFYEnd = LocalDate.of(priorFiscalYear + 1, 6, 30);
-
-        String currentFromMonthKey = String.format("%04d%02d", currentFYStart.getYear(), currentFYStart.getMonthValue());
-        String currentToMonthKey = String.format("%04d%02d", currentFYEnd.getYear(), currentFYEnd.getMonthValue());
-        String priorFromMonthKey = String.format("%04d%02d", priorFYStart.getYear(), priorFYStart.getMonthValue());
-        String priorToMonthKey = String.format("%04d%02d", priorFYEnd.getYear(), priorFYEnd.getMonthValue());
+        String currentFromMonthKey = currentFYRange.startKey();
+        String currentToMonthKey = currentFYRange.endKey();
+        String priorFromMonthKey = priorFYRange.startKey();
+        String priorToMonthKey = priorFYRange.endKey();
 
         log.debugf("OPEX Bridge: Current FY%d/%d (%s to %s), Prior FY%d/%d (%s to %s)",
-                currentFiscalYear, currentFiscalYear + 1, currentFromMonthKey, currentToMonthKey,
-                priorFiscalYear, priorFiscalYear + 1, priorFromMonthKey, priorToMonthKey);
+                currentFYRange.fiscalYear(), currentFYRange.fiscalYear() + 1, currentFromMonthKey, currentToMonthKey,
+                priorFYRange.fiscalYear(), priorFYRange.fiscalYear() + 1, priorFromMonthKey, priorToMonthKey);
 
         // Query both fiscal years via the distribution-aware provider.
         // Current FY uses distribution algorithm; prior FY uses raw GL (provider decides per month).
@@ -3527,8 +3513,8 @@ public class CxoFinanceService {
                 salesMarketingChange,
                 otherOpexChange,
                 currentFYOpex,
-                priorFiscalYear,
-                currentFiscalYear,
+                priorFYRange.fiscalYear(),
+                currentFYRange.fiscalYear(),
                 yoyChangePercent
         );
     }
@@ -3546,8 +3532,8 @@ public class CxoFinanceService {
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
 
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        String fromMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedFromDate);
+        String toMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedToDate);
 
         log.debugf("Expense Mix by Category: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
                 fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
@@ -3607,8 +3593,8 @@ public class CxoFinanceService {
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
 
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        String fromMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedFromDate);
+        String toMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedToDate);
 
         log.debugf("Expense Mix by Cost Center: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
                 fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
@@ -3678,8 +3664,8 @@ public class CxoFinanceService {
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
 
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        String fromMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedFromDate);
+        String toMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedToDate);
 
         log.debugf("Payroll Headcount Structure: from=%s, to=%s, practices=%s, companies=%s",
                 fromMonthKey, toMonthKey, practices, companyIds);
@@ -3880,8 +3866,8 @@ public class CxoFinanceService {
         // then call the provider once (cache hits apply per month inside provider).
         LocalDate overallTtmStart = start.atEndOfMonth().minusMonths(11).withDayOfMonth(1);
         LocalDate overallTtmEnd   = end.atEndOfMonth();
-        String overallFromKey = String.format("%04d%02d", overallTtmStart.getYear(), overallTtmStart.getMonthValue());
-        String overallToKey   = String.format("%04d%02d", overallTtmEnd.getYear(), overallTtmEnd.getMonthValue());
+        String overallFromKey = UtilizationCalculationHelper.toMonthKey(overallTtmStart);
+        String overallToKey   = UtilizationCalculationHelper.toMonthKey(overallTtmEnd);
 
         // Load all non-payroll OPEX for the full range in one provider call
         List<OpexRow> allOpexRows = opexProvider.getDistributionAwareOpex(
@@ -3901,8 +3887,8 @@ public class CxoFinanceService {
             LocalDate monthEnd = current.atEndOfMonth();
             LocalDate ttmStart = monthEnd.minusMonths(11).withDayOfMonth(1);
 
-            String ttmStartKey = String.format("%04d%02d", ttmStart.getYear(), ttmStart.getMonthValue());
-            String ttmEndKey   = String.format("%04d%02d", monthEnd.getYear(), monthEnd.getMonthValue());
+            String ttmStartKey = UtilizationCalculationHelper.toMonthKey(ttmStart);
+            String ttmEndKey   = UtilizationCalculationHelper.toMonthKey(monthEnd);
 
             // Sum non-payroll OPEX over the TTM window from the in-memory map
             double ttmNonPayrollOpex = nonPayrollByMonth.entrySet().stream()
@@ -3935,7 +3921,7 @@ public class CxoFinanceService {
             double overheadPerFTE = ttmAvgTotalFTE > 0 ? ttmNonPayrollOpex / ttmAvgTotalFTE : 0.0;
             double overheadPerBillableFTE = ttmAvgBillableFTE > 0 ? ttmNonPayrollOpex / ttmAvgBillableFTE : 0.0;
 
-            String monthKey = String.format("%04d%02d", current.getYear(), current.getMonthValue());
+            String monthKey = UtilizationCalculationHelper.toMonthKey(current.getYear(), current.getMonthValue());
             String monthLabel = formatMonthLabel(current.getYear(), current.getMonthValue());
 
             resultList.add(new MonthlyOverheadPerFTEDTO(
@@ -3964,8 +3950,8 @@ public class CxoFinanceService {
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
 
-        String fromMonthKey = String.format("%04d%02d", normalizedFromDate.getYear(), normalizedFromDate.getMonthValue());
-        String toMonthKey = String.format("%04d%02d", normalizedToDate.getYear(), normalizedToDate.getMonthValue());
+        String fromMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedFromDate);
+        String toMonthKey = UtilizationCalculationHelper.toMonthKey(normalizedToDate);
 
         log.debugf("Expense Detail: from=%s, to=%s, costCenters=%s, categories=%s, companies=%s",
                 fromMonthKey, toMonthKey, costCenters, expenseCategories, companyIds);
@@ -4138,8 +4124,8 @@ public class CxoFinanceService {
         // For each of the last 12 months, calculate the rolling 12-month attrition as of that month
         for (int i = 0; i < 12; i++) {
             LocalDate monthEnd = endDate.minusMonths(11 - i);
-            String toMonthKey = monthEnd.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
-            String fromMonthKey = monthEnd.minusMonths(11).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+            String toMonthKey = UtilizationCalculationHelper.toMonthKey(monthEnd);
+            String fromMonthKey = UtilizationCalculationHelper.toMonthKey(monthEnd.minusMonths(11));
 
             Map<String, Object> data = queryAttritionData(fromMonthKey, toMonthKey, serviceLines, companyIds);
             int leavers = ((Number) data.get("totalLeavers")).intValue();
@@ -4182,12 +4168,12 @@ public class CxoFinanceService {
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
 
         // Fiscal year: July 1 → June 30
-        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
-        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);   // Jul 1
-        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30); // Jun 30
+        FiscalYearRange fy = UtilizationCalculationHelper.getFiscalYearRange(
+                today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
+        int fiscalYear = fy.fiscalYear();
 
-        String fromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
-        String toKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+        String fromKey = fy.startKey();
+        String toKey   = fy.endKey();
 
         log.debugf("getAccumulatedRevenue: FY=%d (%s → %s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 fiscalYear, fromKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds);
@@ -4200,7 +4186,7 @@ public class CxoFinanceService {
         java.util.Map<String, Double> budgetByMonth = queryBudgetRevenueByMonth(fiscalYear, fromKey, toKey, companyIds);
 
         // Build 12 data points from Jul to Jun, accumulating running sum
-        String currentMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+        String currentMonthKey = UtilizationCalculationHelper.toMonthKey(today);
 
         // Backlog + weighted pipeline for projecting future (non-actual) months
         java.util.Map<String, Double> backlogByMonth = queryBacklogByMonth(
@@ -4215,7 +4201,7 @@ public class CxoFinanceService {
             // Map fiscal month (1=Jul…12=Jun) to calendar year/month
             int calMonth = (fiscalMonth <= 6) ? fiscalMonth + 6 : fiscalMonth - 6;
             int calYear  = (fiscalMonth <= 6) ? fiscalYear : fiscalYear + 1;
-            String monthKey = String.format("%04d%02d", calYear, calMonth);
+            String monthKey = UtilizationCalculationHelper.toMonthKey(calYear, calMonth);
 
             boolean isActual = monthKey.compareTo(currentMonthKey) <= 0
                     && revenueByMonth.containsKey(monthKey);
@@ -4284,12 +4270,14 @@ public class CxoFinanceService {
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
 
         // Fiscal year: July 1 → June 30
-        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
-        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
-        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30);
+        FiscalYearRange fyRange = UtilizationCalculationHelper.getFiscalYearRange(
+                today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
+        int fiscalYear = fyRange.fiscalYear();
+        LocalDate fyStart = fyRange.start();
+        LocalDate fyEnd   = fyRange.end();
 
-        String fromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
-        String toKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+        String fromKey = fyRange.startKey();
+        String toKey   = fyRange.endKey();
 
         log.debugf("getAccumulatedRevenueSourceData: FY=%d (%s → %s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 fiscalYear, fromKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds);
@@ -4479,21 +4467,23 @@ public class CxoFinanceService {
             Set<String> companyIds) {
 
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
-        String currentMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+        String currentMonthKey = UtilizationCalculationHelper.toMonthKey(today);
 
         // Fiscal year: July 1 → June 30
-        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
-        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
-        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30);
+        FiscalYearRange fyRange = UtilizationCalculationHelper.getFiscalYearRange(
+                today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
+        int fiscalYear = fyRange.fiscalYear();
+        LocalDate fyStart = fyRange.start();
+        LocalDate fyEnd   = fyRange.end();
 
-        String fyFromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
-        String fyToKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+        String fyFromKey = fyRange.startKey();
+        String fyToKey   = fyRange.endKey();
 
         // TTM window (trailing 12 months ending at end of previous month)
         LocalDate ttmEnd   = today.withDayOfMonth(1).minusDays(1); // last day of previous month
         LocalDate ttmStart = ttmEnd.minusMonths(11).withDayOfMonth(1);
-        String ttmFromKey  = String.format("%04d%02d", ttmStart.getYear(), ttmStart.getMonthValue());
-        String ttmToKey    = String.format("%04d%02d", ttmEnd.getYear(), ttmEnd.getMonthValue());
+        String ttmFromKey  = UtilizationCalculationHelper.toMonthKey(ttmStart);
+        String ttmToKey    = UtilizationCalculationHelper.toMonthKey(ttmEnd);
 
         log.debugf("getExpectedAccumulatedEBITDA: FY=%d (%s→%s), TTM (%s→%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 fiscalYear, fyFromKey, fyToKey, ttmFromKey, ttmToKey,
@@ -4547,7 +4537,7 @@ public class CxoFinanceService {
         for (int fiscalMonth = 1; fiscalMonth <= 12; fiscalMonth++) {
             int calMonth = (fiscalMonth <= 6) ? fiscalMonth + 6 : fiscalMonth - 6;
             int calYear  = (fiscalMonth <= 6) ? fiscalYear : fiscalYear + 1;
-            String monthKey = String.format("%04d%02d", calYear, calMonth);
+            String monthKey = UtilizationCalculationHelper.toMonthKey(calYear, calMonth);
 
             boolean isActual = monthKey.compareTo(currentMonthKey) < 0
                     && actualByMonth.containsKey(monthKey);
@@ -4640,12 +4630,14 @@ public class CxoFinanceService {
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
 
         // Fiscal year: July 1 → June 30
-        int fiscalYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
-        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
-        LocalDate fyEnd   = LocalDate.of(fiscalYear + 1, 6, 30);
+        FiscalYearRange fyRange = UtilizationCalculationHelper.getFiscalYearRange(
+                today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
+        int fiscalYear = fyRange.fiscalYear();
+        LocalDate fyStart = fyRange.start();
+        LocalDate fyEnd   = fyRange.end();
 
-        String fyFromKey = String.format("%04d%02d", fyStart.getYear(), fyStart.getMonthValue());
-        String fyToKey   = String.format("%04d%02d", fyEnd.getYear(), fyEnd.getMonthValue());
+        String fyFromKey = fyRange.startKey();
+        String fyToKey   = fyRange.endKey();
 
         log.debugf("getEbitdaSourceData: FY=%d (%s→%s), sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 fiscalYear, fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
