@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.analytics.*;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.CareerBandMapper;
+import dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.SalaryAnalyticsProvider;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -37,6 +38,9 @@ public class CostAnalyticsResource {
 
     @Inject
     SalaryAnalyticsProvider salaryAnalyticsProvider;
+
+    @Inject
+    ProfitabilityProvider profitabilityProvider;
 
     @Inject
     EntityManager em;
@@ -392,6 +396,24 @@ public class CostAnalyticsResource {
                 bandCase, bandCase, latestKey, companyIds);
 
         return new SalaryEqualityDTO(byPractice, byCareerBand, latestKey);
+    }
+
+    /**
+     * Monthly cost per billable FTE (salary + OPEX components).
+     * Replaces BFF route: /api/cxo/cost/cost-per-consultant
+     */
+    @GET
+    @Path("/cost-per-fte")
+    public List<CostPerFteDTO> getCostPerFte(
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
+            @QueryParam("companyIds") Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
+        LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
+
+        return profitabilityProvider.getCostPerFte(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
     }
 
     private List<SalaryEqualityDTO.SalaryEqualityGroupDTO> querySalaryEqualityGroups(
