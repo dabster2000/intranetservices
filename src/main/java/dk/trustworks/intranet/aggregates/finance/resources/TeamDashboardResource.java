@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.getCurrentFiscalYearRange;
+
 import dk.trustworks.intranet.aggregates.finance.dto.AllTeamsUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBenchConsultantDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBillingRateDTO;
@@ -302,6 +304,6 @@ public class TeamDashboardResource {
     // -----------------------------------------------------------------------
 
     private int effectiveFiscalYear(Integer fiscalYear) {
-        return fiscalYear != null ? fiscalYear : teamDashboardService.currentFiscalYear();
+        return fiscalYear != null ? fiscalYear : getCurrentFiscalYearRange().fiscalYear();
     }
 }
