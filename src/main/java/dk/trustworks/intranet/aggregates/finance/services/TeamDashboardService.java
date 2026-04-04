@@ -270,7 +270,7 @@ public class TeamDashboardService {
                 .setParameter("toDate", toDate)
                 .getResultList();
 
-        // Budget hours per month from fact_budget_day for team members
+        // Budget hours per month — temporal team membership (same as billable query)
         LocalDate budgetFromDate = extendedStart.withDayOfMonth(1);
         LocalDate budgetToDate = YearMonth.from(effectiveEnd).atEndOfMonth();
         @SuppressWarnings("unchecked")
@@ -279,11 +279,15 @@ public class TeamDashboardService {
                               LPAD(MONTH(bd.document_date), 2, '0')) AS month_key,
                        SUM(bd.budgetHours) AS budget_hours
                 FROM fact_budget_day bd
-                WHERE bd.useruuid IN (:memberUuids)
-                  AND bd.document_date >= :fromDate AND bd.document_date <= :toDate
+                JOIN teamroles tr ON tr.useruuid = bd.useruuid
+                    AND tr.teamuuid = :teamId
+                    AND tr.membertype = 'MEMBER'
+                    AND tr.startdate <= bd.document_date
+                    AND (tr.enddate IS NULL OR tr.enddate > bd.document_date)
+                WHERE bd.document_date >= :fromDate AND bd.document_date <= :toDate
                 GROUP BY YEAR(bd.document_date), MONTH(bd.document_date)
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", budgetFromDate)
                 .setParameter("toDate", budgetToDate)
                 .getResultList();
