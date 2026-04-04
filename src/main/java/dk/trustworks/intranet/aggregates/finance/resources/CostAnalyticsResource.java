@@ -16,6 +16,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.toMonthKey;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -415,6 +416,510 @@ public class CostAnalyticsResource {
 
         return profitabilityProvider.getCostPerFte(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Revenue-Cost Forecast (Charts 1.2 / 1.3)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Revenue vs. cost trend with TTM actuals and forward-looking forecast.
+     * Replaces BFF route: /api/executive/revenue-cost-trend
+     *
+     * <p>Returns:
+     * <ul>
+     *   <li>12 completed months of actual data (registered revenue, invoice revenue, total cost)</li>
+     *   <li>Forecast months from current month through fiscal year end
+     *       (budget revenue + weighted pipeline vs. flat TTM average cost)</li>
+     * </ul>
+     */
+    @GET
+    @Path("/revenue-cost-forecast")
+    public List<RevenueCostForecastDTO> getRevenueCostForecast(
+            @QueryParam("companyIds") Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        String ttmStartKey = toMonthKey(today.minusMonths(12));
+        String currentMonthKey = toMonthKey(today);
+
+        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+
+        // ── TTM actual data (12 completed months) ────────────────────────
+
+        // Q1: Registered revenue from fact_user_day
+        String registeredRevenueSql = buildRegisteredRevenueSql(companies);
+        var regQuery = em.createNativeQuery(registeredRevenueSql, Tuple.class);
+        regQuery.setParameter("ttmStart", ttmStartKey);
+        regQuery.setParameter("currentMonth", currentMonthKey);
+        if (companies != null) regQuery.setParameter("companyIds", companies);
+
+        // Q2: Invoice revenue from fact_company_revenue_mat
+        String invoiceRevenueSql = buildInvoiceRevenueSql(companies);
+        var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
+        invQuery.setParameter("ttmStart", ttmStartKey);
+        invQuery.setParameter("currentMonth", currentMonthKey);
+        if (companies != null) invQuery.setParameter("companyIds", companies);
+
+        // Q3: Total cost (OPEX + SALARIES) from fact_opex_mat
+        String costSql = buildTotalCostSql(companies);
+        var costQuery = em.createNativeQuery(costSql, Tuple.class);
+        costQuery.setParameter("ttmStart", ttmStartKey);
+        costQuery.setParameter("currentMonth", currentMonthKey);
+        if (companies != null) costQuery.setParameter("companyIds", companies);
+
+        @SuppressWarnings("unchecked") List<Tuple> regRows = regQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> invRows = invQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> costRows = costQuery.getResultList();
+
+        // Index by month_key
+        Map<String, Tuple> regMap = indexByMonthKey(regRows);
+        Map<String, Tuple> invMap = indexByMonthKey(invRows);
+        Map<String, Tuple> costMap = indexByMonthKey(costRows);
+
+        // Collect all month keys
+        Set<String> allKeys = new TreeSet<>();
+        allKeys.addAll(regMap.keySet());
+        allKeys.addAll(invMap.keySet());
+        allKeys.addAll(costMap.keySet());
+
+        // Build actual months
+        List<RevenueCostForecastDTO> result = new ArrayList<>();
+        double totalCostSum = 0;
+
+        for (String key : allKeys) {
+            int year = resolveYear(regMap.get(key), invMap.get(key), costMap.get(key));
+            int month = resolveMonth(regMap.get(key), invMap.get(key), costMap.get(key));
+            double regRev = numericValue(regMap.get(key), "registered_revenue");
+            double invRev = numericValue(invMap.get(key), "net_revenue");
+            double cost = numericValue(costMap.get(key), "total_cost");
+            totalCostSum += Math.round(cost);
+
+            result.add(new RevenueCostForecastDTO(
+                    key, year, month,
+                    SalaryAnalyticsProvider.formatMonthLabel(year, month),
+                    Math.round(regRev), Math.round(invRev), Math.round(cost),
+                    null, false));
+        }
+
+        // Flat TTM average cost
+        Double flatAvgCost = !result.isEmpty() ? Math.round(totalCostSum / result.size()) * 1.0 : null;
+        List<RevenueCostForecastDTO> withAvg = result.stream()
+                .map(r -> new RevenueCostForecastDTO(r.monthKey(), r.year(), r.monthNumber(),
+                        r.monthLabel(), r.registeredRevenueDkk(), r.invoiceRevenueDkk(),
+                        r.totalCostDkk(), flatAvgCost, false))
+                .collect(Collectors.toCollection(ArrayList::new));
+
+        // ── Forecast months (current through FY end) ─────────────────────
+
+        int currentYear = today.getYear();
+        int currentMonth = today.getMonthValue();
+        int fyEndYear = currentMonth >= 7 ? currentYear + 1 : currentYear;
+        String fyEndKey = toMonthKey(fyEndYear, 6);
+
+        if (currentMonthKey.compareTo(fyEndKey) <= 0) {
+            double forecastMonthlyCost = flatAvgCost != null ? flatAvgCost : 0;
+
+            // Q4: Budget revenue
+            String budgetSql = buildBudgetRevenueSql(companies);
+            var budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
+            budgetQuery.setParameter("fromKey", currentMonthKey);
+            budgetQuery.setParameter("toKey", fyEndKey);
+            if (companies != null) budgetQuery.setParameter("companyIds", companies);
+
+            // Q5: Pipeline (excl. WON)
+            String pipelineSql = buildPipelineSql(companies);
+            var pipelineQuery = em.createNativeQuery(pipelineSql, Tuple.class);
+            pipelineQuery.setParameter("fromKey", currentMonthKey);
+            pipelineQuery.setParameter("toKey", fyEndKey);
+            if (companies != null) pipelineQuery.setParameter("companyIds", companies);
+
+            @SuppressWarnings("unchecked") List<Tuple> budgetRows = budgetQuery.getResultList();
+            @SuppressWarnings("unchecked") List<Tuple> pipelineRows = pipelineQuery.getResultList();
+
+            Map<String, Double> budgetMap = new HashMap<>();
+            for (Tuple row : budgetRows) {
+                budgetMap.put((String) row.get("month_key"), numericValue(row, "budget_revenue"));
+            }
+            Map<String, Double> pipelineMap = new HashMap<>();
+            for (Tuple row : pipelineRows) {
+                pipelineMap.put((String) row.get("expected_revenue_month_key"), numericValue(row, "weighted_pipeline"));
+            }
+
+            // Generate forecast month keys
+            int fYear = currentYear;
+            int fMonth = currentMonth;
+            while (toMonthKey(fYear, fMonth).compareTo(fyEndKey) <= 0) {
+                String fKey = toMonthKey(fYear, fMonth);
+                double budgetRev = budgetMap.getOrDefault(fKey, 0.0);
+                double pipelineRev = pipelineMap.getOrDefault(fKey, 0.0);
+                double forecastRevenue = Math.round(budgetRev + pipelineRev);
+
+                withAvg.add(new RevenueCostForecastDTO(
+                        fKey, fYear, fMonth,
+                        SalaryAnalyticsProvider.formatMonthLabel(fYear, fMonth),
+                        forecastRevenue, forecastRevenue, forecastMonthlyCost,
+                        flatAvgCost, true));
+
+                fMonth++;
+                if (fMonth > 12) { fMonth = 1; fYear++; }
+            }
+        }
+
+        return withAvg;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // EBITDA Forecast (Chart 1.4)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Full fiscal year EBITDA forecast with actuals and projections.
+     * Replaces BFF route: /api/executive/ebitda-forecast
+     *
+     * <p>Methodology:
+     * <ul>
+     *   <li>Past months: actual revenue, delivery cost, OPEX</li>
+     *   <li>Future months: budget + pipeline revenue, TTM delivery cost ratio, TTM avg OPEX</li>
+     *   <li>EBITDA = revenue - delivery cost - OPEX, accumulated across FY</li>
+     * </ul>
+     */
+    @GET
+    @Path("/ebitda-forecast")
+    public List<EbitdaForecastDTO> getEbitdaForecast(
+            @QueryParam("companyIds") Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        int currentYear = today.getYear();
+        int currentMonth = today.getMonthValue();
+        String currentMonthKey = toMonthKey(today);
+
+        // Fiscal year boundaries (July 1 - June 30)
+        int fyStartYear = currentMonth >= 7 ? currentYear : currentYear - 1;
+        String fyStartKey = toMonthKey(fyStartYear, 7);
+        String fyEndKey = toMonthKey(fyStartYear + 1, 6);
+
+        // TTM start (12 months before current month)
+        String ttmStartKey = toMonthKey(today.minusMonths(12));
+
+        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+
+        // ── Actual data queries ──────────────────────────────────────────
+
+        // Q1: Actual revenue from fact_company_revenue_mat (FY start to current)
+        String actualRevSql = buildActualRevenueSql(companies);
+        var actualRevQuery = em.createNativeQuery(actualRevSql, Tuple.class);
+        actualRevQuery.setParameter("fromKey", fyStartKey);
+        actualRevQuery.setParameter("toKey", currentMonthKey);
+        if (companies != null) actualRevQuery.setParameter("companyIds", companies);
+
+        // Q2: Actual delivery cost from fact_project_financials_mat
+        String actualDelCostSql = buildActualDeliveryCostSql(companies);
+        var actualDelCostQuery = em.createNativeQuery(actualDelCostSql, Tuple.class);
+        actualDelCostQuery.setParameter("fromKey", fyStartKey);
+        actualDelCostQuery.setParameter("toKey", currentMonthKey);
+        if (companies != null) actualDelCostQuery.setParameter("companyIds", companies);
+
+        // Q3: Actual OPEX from fact_opex_mat (cost_type = 'OPEX' only)
+        String actualOpexSql = buildActualOpexSql(companies);
+        var actualOpexQuery = em.createNativeQuery(actualOpexSql, Tuple.class);
+        actualOpexQuery.setParameter("fromKey", fyStartKey);
+        actualOpexQuery.setParameter("toKey", currentMonthKey);
+        if (companies != null) actualOpexQuery.setParameter("companyIds", companies);
+
+        // ── TTM ratio queries ────────────────────────────────────────────
+
+        // Q4: TTM delivery cost ratio
+        String ttmDelCostSql = buildTtmDeliveryCostRatioSql(companies);
+        var ttmDelCostQuery = em.createNativeQuery(ttmDelCostSql, Tuple.class);
+        ttmDelCostQuery.setParameter("ttmStart", ttmStartKey);
+        ttmDelCostQuery.setParameter("currentMonth", currentMonthKey);
+        if (companies != null) ttmDelCostQuery.setParameter("companyIds", companies);
+
+        // Q5: TTM average monthly OPEX
+        String ttmOpexSql = buildTtmOpexSql(companies);
+        var ttmOpexQuery = em.createNativeQuery(ttmOpexSql, Tuple.class);
+        ttmOpexQuery.setParameter("ttmStart", ttmStartKey);
+        ttmOpexQuery.setParameter("currentMonth", currentMonthKey);
+        if (companies != null) ttmOpexQuery.setParameter("companyIds", companies);
+
+        // ── Forecast data queries ────────────────────────────────────────
+
+        // Q6: Budget revenue
+        String budgetSql = buildBudgetRevenueSql(companies);
+        var budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
+        budgetQuery.setParameter("fromKey", currentMonthKey);
+        budgetQuery.setParameter("toKey", fyEndKey);
+        if (companies != null) budgetQuery.setParameter("companyIds", companies);
+
+        // Q7: Pipeline (excl. WON)
+        String pipelineSql = buildPipelineSql(companies);
+        var pipelineQuery = em.createNativeQuery(pipelineSql, Tuple.class);
+        pipelineQuery.setParameter("fromKey", currentMonthKey);
+        pipelineQuery.setParameter("toKey", fyEndKey);
+        if (companies != null) pipelineQuery.setParameter("companyIds", companies);
+
+        // Execute all queries
+        @SuppressWarnings("unchecked") List<Tuple> actualRevRows = actualRevQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> actualDelCostRows = actualDelCostQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> actualOpexRows = actualOpexQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> ttmDelCostRows = ttmDelCostQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> ttmOpexRows = ttmOpexQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> budgetRows = budgetQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> pipelineRows = pipelineQuery.getResultList();
+
+        // ── Compute TTM ratios ───────────────────────────────────────────
+
+        double ttmDeliveryCostRatio = 0.5; // fallback
+        if (!ttmDelCostRows.isEmpty()) {
+            Tuple ttmDC = ttmDelCostRows.get(0);
+            double totalRev = numericValue(ttmDC, "total_revenue");
+            if (totalRev > 0) {
+                ttmDeliveryCostRatio = numericValue(ttmDC, "total_delivery_cost") / totalRev;
+            }
+        }
+
+        double ttmAvgMonthlyOpex = 0;
+        if (!ttmOpexRows.isEmpty()) {
+            Tuple ttmOp = ttmOpexRows.get(0);
+            int monthsCount = (int) numericValue(ttmOp, "months_count");
+            if (monthsCount > 0) {
+                ttmAvgMonthlyOpex = numericValue(ttmOp, "total_opex") / monthsCount;
+            }
+        }
+
+        // ── Index data by month_key ──────────────────────────────────────
+
+        Map<String, Double> actualRevMap = new HashMap<>();
+        for (Tuple row : actualRevRows) actualRevMap.put((String) row.get("month_key"), numericValue(row, "net_revenue"));
+
+        Map<String, Double> actualDelCostMap = new HashMap<>();
+        for (Tuple row : actualDelCostRows) actualDelCostMap.put((String) row.get("month_key"), numericValue(row, "delivery_cost"));
+
+        Map<String, Double> actualOpexMap = new HashMap<>();
+        for (Tuple row : actualOpexRows) actualOpexMap.put((String) row.get("month_key"), numericValue(row, "opex_amount"));
+
+        Map<String, Double> budgetMap = new HashMap<>();
+        for (Tuple row : budgetRows) budgetMap.put((String) row.get("month_key"), numericValue(row, "budget_revenue"));
+
+        Map<String, Double> pipelineMap = new HashMap<>();
+        for (Tuple row : pipelineRows) pipelineMap.put((String) row.get("expected_revenue_month_key"), numericValue(row, "weighted_pipeline"));
+
+        // ── Build result: 12 fiscal months ───────────────────────────────
+
+        List<EbitdaForecastDTO> result = new ArrayList<>();
+        double accumulatedEbitda = 0;
+
+        for (var fm : generateFiscalMonthKeys(fyStartYear)) {
+            boolean isActual = fm.monthKey().compareTo(currentMonthKey) < 0;
+
+            double revenueDkk;
+            double directDeliveryCostDkk;
+            double opexDkk;
+
+            if (isActual) {
+                revenueDkk = actualRevMap.getOrDefault(fm.monthKey(), 0.0);
+                directDeliveryCostDkk = actualDelCostMap.getOrDefault(fm.monthKey(), 0.0);
+                opexDkk = actualOpexMap.getOrDefault(fm.monthKey(), 0.0);
+            } else {
+                double budgetRev = budgetMap.getOrDefault(fm.monthKey(), 0.0);
+                double pipelineRev = pipelineMap.getOrDefault(fm.monthKey(), 0.0);
+                revenueDkk = budgetRev + pipelineRev;
+                directDeliveryCostDkk = revenueDkk * ttmDeliveryCostRatio;
+                opexDkk = ttmAvgMonthlyOpex;
+            }
+
+            double ebitdaDkk = revenueDkk - directDeliveryCostDkk - opexDkk;
+            accumulatedEbitda += ebitdaDkk;
+
+            int fiscalMonthNum = fm.calendarMonth() >= 7 ? fm.calendarMonth() - 6 : fm.calendarMonth() + 6;
+
+            result.add(new EbitdaForecastDTO(
+                    fm.monthKey(), fm.year(), fm.calendarMonth(),
+                    SalaryAnalyticsProvider.formatMonthLabel(fm.year(), fm.calendarMonth()),
+                    fiscalMonthNum,
+                    Math.round(revenueDkk), Math.round(directDeliveryCostDkk),
+                    Math.round(opexDkk), Math.round(ebitdaDkk),
+                    Math.round(accumulatedEbitda), isActual));
+        }
+
+        return result;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // SQL builders (shared across forecast endpoints)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /** Registered revenue from fact_user_day (TTM window). */
+    private static String buildRegisteredRevenueSql(Set<String> companies) {
+        String filter = companies != null ? "AND d.companyuuid IN (:companyIds) " : "";
+        return "SELECT CONCAT(d.year, LPAD(d.month, 2, '0')) AS month_key, " +
+                "d.year, d.month AS month_number, " +
+                "SUM(d.registered_amount) AS registered_revenue " +
+                "FROM fact_user_day d " +
+                "WHERE d.consultant_type = 'CONSULTANT' " +
+                "AND d.status_type NOT IN ('TERMINATED', 'NON_PAY_LEAVE') " +
+                "AND CONCAT(d.year, LPAD(d.month, 2, '0')) >= :ttmStart " +
+                "AND CONCAT(d.year, LPAD(d.month, 2, '0')) < :currentMonth " +
+                filter +
+                "GROUP BY month_key, d.year, d.month ORDER BY month_key";
+    }
+
+    /** Invoice revenue from fact_company_revenue_mat (TTM window). */
+    private static String buildInvoiceRevenueSql(Set<String> companies) {
+        String filter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
+        return "SELECT r.month_key, r.year, r.month_number, " +
+                "SUM(r.net_revenue_dkk) AS net_revenue " +
+                "FROM fact_company_revenue_mat r " +
+                "WHERE r.month_key >= :ttmStart AND r.month_key < :currentMonth " +
+                filter +
+                "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
+    }
+
+    /** Total cost (OPEX + SALARIES) from fact_opex_mat (TTM window). */
+    private static String buildTotalCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND o.company_id IN (:companyIds) " : "";
+        return "SELECT o.month_key, o.year, o.month_number, " +
+                "SUM(o.opex_amount_dkk) AS total_cost " +
+                "FROM fact_opex_mat o " +
+                "WHERE o.cost_type IN ('OPEX', 'SALARIES') " +
+                "AND o.month_key >= :ttmStart AND o.month_key < :currentMonth " +
+                filter +
+                "GROUP BY o.month_key, o.year, o.month_number ORDER BY o.month_key";
+    }
+
+    /** Actual revenue from fact_company_revenue_mat (FY window). */
+    private static String buildActualRevenueSql(Set<String> companies) {
+        String filter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
+        return "SELECT r.month_key, r.year, r.month_number, " +
+                "SUM(r.net_revenue_dkk) AS net_revenue " +
+                "FROM fact_company_revenue_mat r " +
+                "WHERE r.month_key >= :fromKey AND r.month_key < :toKey " +
+                filter +
+                "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
+    }
+
+    /** Actual delivery cost from fact_project_financials_mat (FY window). */
+    private static String buildActualDeliveryCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND p.companyuuid IN (:companyIds) " : "";
+        return "SELECT p.month_key, p.year, p.month_number, " +
+                "SUM(p.direct_delivery_cost_dkk) AS delivery_cost " +
+                "FROM fact_project_financials_mat p " +
+                "WHERE p.month_key >= :fromKey AND p.month_key < :toKey " +
+                filter +
+                "GROUP BY p.month_key, p.year, p.month_number ORDER BY p.month_key";
+    }
+
+    /** Actual OPEX from fact_opex_mat (cost_type='OPEX' only, FY window). */
+    private static String buildActualOpexSql(Set<String> companies) {
+        String filter = companies != null ? "AND o.company_id IN (:companyIds) " : "";
+        return "SELECT o.month_key, o.year, o.month_number, " +
+                "SUM(o.opex_amount_dkk) AS opex_amount " +
+                "FROM fact_opex_mat o " +
+                "WHERE o.cost_type = 'OPEX' " +
+                "AND o.month_key >= :fromKey AND o.month_key < :toKey " +
+                filter +
+                "GROUP BY o.month_key, o.year, o.month_number ORDER BY o.month_key";
+    }
+
+    /** TTM delivery cost ratio (trailing 12 months). */
+    private static String buildTtmDeliveryCostRatioSql(Set<String> companies) {
+        String filter = companies != null ? "AND p.companyuuid IN (:companyIds) " : "";
+        return "SELECT SUM(p.direct_delivery_cost_dkk) AS total_delivery_cost, " +
+                "SUM(p.recognized_revenue_dkk) AS total_revenue " +
+                "FROM fact_project_financials_mat p " +
+                "WHERE p.month_key >= :ttmStart AND p.month_key < :currentMonth " +
+                filter;
+    }
+
+    /** TTM average monthly OPEX (trailing 12 months). */
+    private static String buildTtmOpexSql(Set<String> companies) {
+        String filter = companies != null ? "AND o.company_id IN (:companyIds) " : "";
+        return "SELECT COUNT(DISTINCT o.month_key) AS months_count, " +
+                "SUM(o.opex_amount_dkk) AS total_opex " +
+                "FROM fact_opex_mat o " +
+                "WHERE o.cost_type = 'OPEX' " +
+                "AND o.month_key >= :ttmStart AND o.month_key < :currentMonth " +
+                filter;
+    }
+
+    /** Budget revenue from fact_revenue_budget_mat (forecast window). */
+    private static String buildBudgetRevenueSql(Set<String> companies) {
+        String filter = companies != null ? "AND b.company_id IN (:companyIds) " : "";
+        return "SELECT b.month_key, b.year, b.month_number, " +
+                "SUM(b.budget_revenue_dkk) AS budget_revenue " +
+                "FROM fact_revenue_budget_mat b " +
+                "WHERE b.month_key >= :fromKey AND b.month_key <= :toKey " +
+                filter +
+                "GROUP BY b.month_key, b.year, b.month_number ORDER BY b.month_key";
+    }
+
+    /** Weighted pipeline (excl. WON) from fact_pipeline (forecast window). */
+    private static String buildPipelineSql(Set<String> companies) {
+        String filter = companies != null ? "AND pl.company_id IN (:companyIds) " : "";
+        return "SELECT pl.expected_revenue_month_key, pl.year, pl.month_number, " +
+                "SUM(pl.weighted_pipeline_dkk) AS weighted_pipeline " +
+                "FROM fact_pipeline pl " +
+                "WHERE pl.stage_id NOT IN ('WON') " +
+                "AND pl.expected_revenue_month_key >= :fromKey " +
+                "AND pl.expected_revenue_month_key <= :toKey " +
+                filter +
+                "GROUP BY pl.expected_revenue_month_key, pl.year, pl.month_number " +
+                "ORDER BY pl.expected_revenue_month_key";
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Fiscal year helpers
+    // ═════════════════════════════════════════════════════════════════════
+
+    /** Value object for a month within a fiscal year. */
+    private record FiscalMonth(String monthKey, int year, int calendarMonth) {}
+
+    /**
+     * Generate all 12 month keys for a fiscal year (Jul through Jun).
+     * @param fyStartYear the calendar year in which July falls
+     */
+    private static List<FiscalMonth> generateFiscalMonthKeys(int fyStartYear) {
+        List<FiscalMonth> months = new ArrayList<>(12);
+        for (int fmn = 1; fmn <= 12; fmn++) {
+            int calMonth = fmn <= 6 ? fmn + 6 : fmn - 6;
+            int calYear = fmn <= 6 ? fyStartYear : fyStartYear + 1;
+            months.add(new FiscalMonth(toMonthKey(calYear, calMonth), calYear, calMonth));
+        }
+        return months;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Tuple extraction helpers
+    // ═════════════════════════════════════════════════════════════════════
+
+    private static Map<String, Tuple> indexByMonthKey(List<Tuple> rows) {
+        Map<String, Tuple> map = new LinkedHashMap<>();
+        for (Tuple row : rows) map.put((String) row.get("month_key"), row);
+        return map;
+    }
+
+    private static double numericValue(Tuple row, String column) {
+        if (row == null) return 0;
+        Object val = row.get(column);
+        return val instanceof Number n ? n.doubleValue() : 0;
+    }
+
+    private static int resolveYear(Tuple... sources) {
+        for (Tuple t : sources) {
+            if (t != null && t.get("year") != null) return ((Number) t.get("year")).intValue();
+        }
+        return 0;
+    }
+
+    private static int resolveMonth(Tuple... sources) {
+        for (Tuple t : sources) {
+            if (t != null && t.get("month_number") != null) return ((Number) t.get("month_number")).intValue();
+        }
+        return 0;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Salary equality helpers
+    // ═════════════════════════════════════════════════════════════════════
 
     private List<SalaryEqualityDTO.SalaryEqualityGroupDTO> querySalaryEqualityGroups(
             String groupExpr, String labelExpr, String monthKey, Set<String> companyIds) {
