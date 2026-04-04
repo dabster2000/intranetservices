@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.services.analytics;
 
 import dk.trustworks.intranet.aggregates.finance.dto.analytics.SalaryByBandDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.analytics.SalaryCostRatioDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -50,6 +51,75 @@ public class SalaryAnalyticsProvider {
      */
     public List<SalaryByBandDTO> getTotalSalaryByBand(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
         return querySalaryByBand("SUM", fromDate, toDate, companyIds);
+    }
+
+    /**
+     * Monthly salary-to-revenue ratio (trailing 18 months).
+     * Formula: (SUM(consultant salaries) / net_revenue) * 100
+     *
+     * Revenue source: fact_company_revenue_mat (canonical invoice-based).
+     */
+    public List<SalaryCostRatioDTO> getSalaryCostRatio(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
+        String fromKey = toMonthKey(fromDate);
+        String toKey = toMonthKey(toDate);
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT r.month_key, ");
+        sql.append("  COALESCE(sal.total_salary, 0) AS total_salary, ");
+        sql.append("  COALESCE(SUM(r.net_revenue_dkk), 0) AS total_revenue ");
+        sql.append("FROM fact_company_revenue_mat r ");
+        sql.append("LEFT JOIN ( ");
+        sql.append("  SELECT CONCAT(LPAD(yr, 4, '0'), LPAD(mn, 2, '0')) AS month_key, ");
+        sql.append("    SUM(monthly_sal) AS total_salary ");
+        sql.append("  FROM ( ");
+        sql.append("    SELECT fud.year AS yr, fud.month AS mn, ");
+        sql.append("      MAX(fud.salary) AS monthly_sal ");
+        sql.append("    FROM fact_user_day fud ");
+        sql.append("    WHERE fud.consultant_type = 'CONSULTANT' ");
+        sql.append("      AND fud.status_type = 'ACTIVE' ");
+        sql.append("      AND fud.salary > 0 ");
+        sql.append("      AND fud.document_date >= :fromDate ");
+        sql.append("      AND fud.document_date <= :toDate ");
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("      AND fud.companyuuid IN (:companyIds) ");
+        }
+        sql.append("    GROUP BY fud.useruuid, fud.year, fud.month ");
+        sql.append("  ) per_user GROUP BY yr, mn ");
+        sql.append(") sal ON sal.month_key = r.month_key ");
+        sql.append("WHERE r.month_key >= :fromKey AND r.month_key <= :toKey ");
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND r.company_id IN (:companyIds) ");
+        }
+        sql.append("GROUP BY r.month_key, sal.total_salary ");
+        sql.append("ORDER BY r.month_key");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<SalaryCostRatioDTO> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            String monthKey = (String) row.get("month_key");
+            int year = Integer.parseInt(monthKey.substring(0, 4));
+            int month = Integer.parseInt(monthKey.substring(4));
+            double salary = ((Number) row.get("total_salary")).doubleValue();
+            double revenue = ((Number) row.get("total_revenue")).doubleValue();
+            Double ratio = revenue > 0 ? (salary / revenue) * 100.0 : null;
+
+            result.add(new SalaryCostRatioDTO(
+                    monthKey, year, month, formatMonthLabel(year, month),
+                    Math.round(salary), Math.round(revenue), ratio
+            ));
+        }
+        return result;
     }
 
     // ========================================================================
@@ -118,7 +188,7 @@ public class SalaryAnalyticsProvider {
         return result;
     }
 
-    static String formatMonthLabel(int year, int month) {
+    public static String formatMonthLabel(int year, int month) {
         return Month.of(month).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year;
     }
 }
