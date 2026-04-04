@@ -9,5 +9,4 @@
 -- Impact: ~370K CONSULTANT rows in fact_user_day. Index size ~15MB.
 
 ALTER TABLE fact_user_day
-    ADD INDEX idx_fact_user_day_util_monthly (consultant_type, status_type, year, month, useruuid)
-    ALGORITHM=INPLACE, LOCK=NONE;
+    ADD INDEX idx_fact_user_day_util_monthly (consultant_type, status_type, year, month, useruuid);
