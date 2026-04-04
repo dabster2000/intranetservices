@@ -23,6 +23,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.*;
+
 /**
  * Service for Consultant Insights tab on the CxO Executive Dashboard.
  *
@@ -35,8 +37,6 @@ import java.util.Set;
 @JBossLog
 @ApplicationScoped
 public class ConsultantInsightsService {
-
-    private static final Set<String> DEFAULT_PRACTICES = Set.of("PM", "BA", "SA", "CYB", "DEV");
 
     @Inject
     EntityManager em;
@@ -60,47 +60,45 @@ public class ConsultantInsightsService {
         Set<String> effectivePractices = effectivePractices(practices);
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // TTM boundaries: 12 months back from start of current month
-        LocalDate now = LocalDate.now();
-        String toKey = String.format("%04d%02d", now.getYear(), now.getMonthValue());
-        LocalDate from = now.minusMonths(12).withDayOfMonth(1);
-        String fromKey = String.format("%04d%02d", from.getYear(), from.getMonthValue());
+        // TTM boundaries: 12 complete months (exclusive of current month)
+        LocalDate fromDate = ttmStart();
+        LocalDate toDate = LocalDate.now().withDayOfMonth(1).minusDays(1); // last day of previous month
 
         StringBuilder sql = new StringBuilder();
         sql.append("""
-            SELECT fum.user_id, u.firstname, u.lastname, u.practice,
-                   SUM(fum.billable_hours) AS billable,
-                   SUM(fum.net_available_hours) AS net_available
-            FROM fact_user_utilization_mat fum
-            JOIN user u ON u.uuid = fum.user_id
+            SELECT fud.useruuid AS user_id, u.firstname, u.lastname, u.practice,
+                   SUM(fud.registered_billable_hours) AS billable,
+                   SUM(fud.net_available_hours) AS net_available
+            FROM fact_user_day fud
+            JOIN `user` u ON u.uuid = fud.useruuid
             JOIN userstatus us ON us.useruuid = u.uuid
                  AND us.statusdate = (
                      SELECT MAX(us2.statusdate) FROM userstatus us2
                      WHERE us2.useruuid = u.uuid AND us2.statusdate <= CURDATE()
                  )
                  AND us.status NOT IN ('TERMINATED', 'PREBOARDING') AND us.type = 'CONSULTANT'
-            WHERE u.practice IN (:practices)
-              AND fum.month_key >= :fromKey
-              AND fum.month_key < :toKey
+            WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+              AND u.practice IN (:practices)
+              AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
             """);
 
         if (hasCompanies) {
-            sql.append("  AND fum.companyuuid IN (:companyIds) ");
+            sql.append("  AND fud.companyuuid IN (:companyIds) ");
         }
 
         sql.append("""
-            GROUP BY fum.user_id, u.firstname, u.lastname, u.practice
-            HAVING SUM(fum.net_available_hours) > 100
+            GROUP BY fud.useruuid, u.firstname, u.lastname, u.practice
+            HAVING SUM(fud.net_available_hours) > 100
             """);
 
-        sql.append("ORDER BY (SUM(fum.billable_hours) / SUM(fum.net_available_hours)) ");
+        sql.append("ORDER BY (SUM(fud.registered_billable_hours) / SUM(fud.net_available_hours)) ");
         sql.append(ascending ? "ASC" : "DESC");
         sql.append(" LIMIT :resultLimit");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("practices", effectivePractices);
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
+        query.setParameter("fromDate", fromDate);
+        query.setParameter("toDate", toDate);
         query.setParameter("resultLimit", limit);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -515,9 +513,8 @@ public class ConsultantInsightsService {
 
         // TTM boundaries
         LocalDate now = LocalDate.now();
-        LocalDate ttmFrom = now.minusMonths(12).withDayOfMonth(1);
-        String fromKey = String.format("%04d%02d", ttmFrom.getYear(), ttmFrom.getMonthValue());
-        String toKey = String.format("%04d%02d", now.getYear(), now.getMonthValue());
+        LocalDate ttmFrom = ttmStart();
+        LocalDate ttmTo = now.withDayOfMonth(1).minusDays(1); // last day of previous month
 
         // Budget subquery from fact_budget_day — only include periods where user was a CONSULTANT
         // (excludes student periods for people who transitioned from STUDENT to CONSULTANT)
@@ -527,7 +524,7 @@ public class ConsultantInsightsService {
             FROM fact_budget_day bd
             JOIN user ub ON ub.uuid = bd.useruuid
             WHERE ub.practice IN (:practices)
-              AND bd.document_date >= :ttmFrom AND bd.document_date < :ttmTo
+              AND bd.document_date >= :ttmFrom AND bd.document_date <= :ttmTo
               AND (SELECT us_type.type FROM userstatus us_type
                    WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
                    ORDER BY us_type.statusdate DESC LIMIT 1) = 'CONSULTANT'
@@ -537,19 +534,20 @@ public class ConsultantInsightsService {
         }
         budgetSub.append("GROUP BY bd.useruuid HAVING SUM(bd.budgetHours) > 100");
 
-        // Actual subquery from fact_user_utilization_mat
+        // Actual subquery from fact_user_day
         StringBuilder actualSub = new StringBuilder();
         actualSub.append("""
-            SELECT fum.user_id AS useruuid, SUM(fum.billable_hours) AS total_billable
-            FROM fact_user_utilization_mat fum
-            JOIN user ua ON ua.uuid = fum.user_id
-            WHERE ua.practice IN (:practices)
-              AND fum.month_key >= :fromKey AND fum.month_key < :toKey
+            SELECT fud.useruuid, SUM(fud.registered_billable_hours) AS total_billable
+            FROM fact_user_day fud
+            JOIN `user` ua ON ua.uuid = fud.useruuid
+            WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+              AND ua.practice IN (:practices)
+              AND fud.document_date >= :ttmFrom AND fud.document_date <= :ttmTo
             """);
         if (hasCompanies) {
-            actualSub.append("  AND fum.companyuuid IN (:companyIds) ");
+            actualSub.append("  AND fud.companyuuid IN (:companyIds) ");
         }
-        actualSub.append("GROUP BY fum.user_id");
+        actualSub.append("GROUP BY fud.useruuid");
 
         // Main query joining budget and actual
         String sql = """
@@ -568,9 +566,7 @@ public class ConsultantInsightsService {
         var query = em.createNativeQuery(sql, Tuple.class);
         query.setParameter("practices", effectivePractices);
         query.setParameter("ttmFrom", ttmFrom);
-        query.setParameter("ttmTo", now.withDayOfMonth(1));
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
+        query.setParameter("ttmTo", ttmTo);
         query.setParameter("resultLimit", limit);
         if (hasCompanies) {
             query.setParameter("companyIds", companyIds);
@@ -610,12 +606,10 @@ public class ConsultantInsightsService {
      */
     public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(String userId) {
 
-        // TTM boundaries: 12 months back from start of current month
+        // TTM boundaries: 12 complete months (exclusive of current month)
         LocalDate now = LocalDate.now();
-        LocalDate ttmFrom = now.minusMonths(12).withDayOfMonth(1);
-        LocalDate ttmTo = now.withDayOfMonth(1);
-        String fromKey = String.format("%04d%02d", ttmFrom.getYear(), ttmFrom.getMonthValue());
-        String toKey = String.format("%04d%02d", ttmTo.getYear(), ttmTo.getMonthValue());
+        LocalDate ttmFrom = ttmStart();
+        LocalDate ttmTo = now.withDayOfMonth(1).minusDays(1); // last day of previous month
 
         // Build skeleton map for all 12 months so we return rows even when data is missing
         Map<String, BudgetActualGapMonthlyDTO> monthMap = new LinkedHashMap<>();
@@ -636,7 +630,7 @@ public class ConsultantInsightsService {
                    SUM(bd.budgetHours) AS budget_hours
             FROM fact_budget_day bd
             WHERE bd.useruuid = :userId
-              AND bd.document_date >= :ttmFrom AND bd.document_date < :ttmTo
+              AND bd.document_date >= :ttmFrom AND bd.document_date <= :ttmTo
               AND (SELECT us_type.type FROM userstatus us_type
                    WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
                    ORDER BY us_type.statusdate DESC LIMIT 1) = 'CONSULTANT'
@@ -659,22 +653,25 @@ public class ConsultantInsightsService {
             }
         }
 
-        // Actual hours and net available from fact_user_utilization_mat
+        // Actual hours and net available from fact_user_day
         String actualSql = """
-            SELECT fum.month_key, fum.year, fum.month_number,
-                   fum.billable_hours AS actual_hours,
-                   fum.net_available_hours
-            FROM fact_user_utilization_mat fum
-            WHERE fum.user_id = :userId
-              AND fum.month_key >= :fromKey AND fum.month_key < :toKey
-            ORDER BY fum.month_key
+            SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
+                   fud.year, fud.month AS month_number,
+                   SUM(fud.registered_billable_hours) AS actual_hours,
+                   SUM(fud.net_available_hours) AS net_available_hours
+            FROM fact_user_day fud
+            WHERE fud.useruuid = :userId
+              AND fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+              AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+            GROUP BY fud.year, fud.month
+            ORDER BY fud.year, fud.month
             """;
 
         @SuppressWarnings("unchecked")
         List<Tuple> actualRows = em.createNativeQuery(actualSql, Tuple.class)
                 .setParameter("userId", userId)
-                .setParameter("fromKey", fromKey)
-                .setParameter("toKey", toKey)
+                .setParameter("fromDate", ttmFrom)
+                .setParameter("toDate", ttmTo)
                 .getResultList();
 
         for (Tuple row : actualRows) {
@@ -705,7 +702,7 @@ public class ConsultantInsightsService {
      * Returns effective practices set, defaulting to all 5 core practices if null/empty.
      */
     private Set<String> effectivePractices(Set<String> practices) {
-        return (practices != null && !practices.isEmpty()) ? practices : DEFAULT_PRACTICES;
+        return (practices != null && !practices.isEmpty()) ? practices : BILLABLE_PRACTICES;
     }
 
     /**

@@ -211,7 +211,7 @@ public class TeamBonusProjectionService {
 
     /**
      * Calculates monthly utilization for a team across the considered months.
-     * Uses fact_user_utilization_mat joined with teamroles.
+     * Uses fact_user_day joined with teamroles.
      * Returns billable_hours / net_available_hours per month (never averaged).
      */
     private List<MonthlyUtilization> calculateMonthlyUtilization(String teamId, List<YearMonth> months) {
@@ -224,19 +224,20 @@ public class TeamBonusProjectionService {
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
-                SELECT fum.month_key,
-                       SUM(fum.billable_hours) AS total_billable,
-                       SUM(fum.net_available_hours) AS total_available,
-                       COUNT(DISTINCT fum.user_id) AS member_count
-                FROM fact_user_utilization_mat fum
-                JOIN teamroles tr ON tr.useruuid = fum.user_id
+                SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
+                       SUM(fud.registered_billable_hours) AS total_billable,
+                       SUM(fud.net_available_hours) AS total_available,
+                       COUNT(DISTINCT fud.useruuid) AS member_count
+                FROM fact_user_day fud
+                JOIN teamroles tr ON tr.useruuid = fud.useruuid
                     AND tr.teamuuid = :teamId
                     AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= CONCAT(fum.year, '-', LPAD(fum.month_number, 2, '0'), '-01')
-                    AND (tr.enddate > CONCAT(fum.year, '-', LPAD(fum.month_number, 2, '0'), '-01') OR tr.enddate IS NULL)
-                WHERE fum.month_key IN (:monthKeys)
-                GROUP BY fum.month_key
-                ORDER BY fum.month_key
+                    AND tr.startdate <= fud.document_date
+                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                  AND CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) IN (:monthKeys)
+                GROUP BY fud.year, fud.month
+                ORDER BY fud.year, fud.month
                 """)
                 .setParameter("teamId", teamId)
                 .setParameter("monthKeys", monthKeys)
