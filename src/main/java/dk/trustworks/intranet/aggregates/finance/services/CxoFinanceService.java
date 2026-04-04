@@ -5670,30 +5670,37 @@ public class CxoFinanceService {
         // Count consultants whose budget utilization < 10% per practice per month.
         // Budget utilization = SUM(budget_hours) / net_available_hours.
         // Consultants with no budget rows have 0 budget hours -> 0% -> on bench.
+        // Uses fact_user_day aggregated to monthly grain per user.
         StringBuilder sql = new StringBuilder();
-        sql.append("SELECT ");
-        sql.append("  u.practice_id, ");
-        sql.append("  u.month_key, ");
-        sql.append("  COUNT(DISTINCT u.user_id) AS bench_fte ");
-        sql.append("FROM fact_user_utilization_mat u ");
+        sql.append("SELECT usr.practice AS practice_id, ");
+        sql.append("  CONCAT(LPAD(ma.year, 4, '0'), LPAD(ma.month, 2, '0')) AS month_key, ");
+        sql.append("  COUNT(DISTINCT ma.useruuid) AS bench_fte ");
+        sql.append("FROM ( ");
+        sql.append("  SELECT useruuid, year, month, ");
+        sql.append("    SUM(net_available_hours) AS net_available_hours ");
+        sql.append("  FROM fact_user_day ");
+        sql.append("  WHERE consultant_type = 'CONSULTANT' AND status_type = 'ACTIVE' ");
+        sql.append("    AND CONCAT(LPAD(year, 4, '0'), LPAD(month, 2, '0')) IN (:currentMonthKey, :priorMonthKey) ");
+        sql.append("  GROUP BY useruuid, year, month ");
+        sql.append("  HAVING SUM(net_available_hours) > 0 ");
+        sql.append(") ma ");
+        sql.append("JOIN `user` usr ON usr.uuid = ma.useruuid ");
         sql.append("LEFT JOIN ( ");
-        sql.append("  SELECT ");
-        sql.append("    useruuid, ");
+        sql.append("  SELECT useruuid, ");
         sql.append("    CONCAT(LPAD(YEAR(document_date), 4, '0'), LPAD(MONTH(document_date), 2, '0')) AS month_key, ");
         sql.append("    SUM(budgetHours) AS total_budget_hours ");
         sql.append("  FROM fact_budget_day ");
         sql.append("  WHERE document_date >= :priorStart AND document_date < :currentNextStart ");
         sql.append("  GROUP BY useruuid, YEAR(document_date), MONTH(document_date) ");
-        sql.append(") b ON b.useruuid = u.user_id AND b.month_key = u.month_key ");
-        sql.append("WHERE u.month_key IN (:currentMonthKey, :priorMonthKey) ");
-        sql.append("  AND u.practice_id IN (:practices) ");
-        sql.append("  AND u.net_available_hours > 0 ");
-        sql.append("  AND (COALESCE(b.total_budget_hours, 0) / u.net_available_hours) < 0.10 ");
+        sql.append(") b ON b.useruuid = ma.useruuid ");
+        sql.append("  AND b.month_key = CONCAT(LPAD(ma.year, 4, '0'), LPAD(ma.month, 2, '0')) ");
+        sql.append("WHERE usr.practice IN (:practices) ");
+        sql.append("  AND (COALESCE(b.total_budget_hours, 0) / ma.net_available_hours) < 0.10 ");
         if (hasCompanies) {
-            sql.append("  AND u.companyuuid IN (:companyIds) ");
+            sql.append("  AND ma.useruuid IN (SELECT uuid FROM `user` WHERE companyuuid IN (:companyIds)) ");
         }
-        sql.append("GROUP BY u.practice_id, u.month_key ");
-        sql.append("ORDER BY u.practice_id, u.month_key");
+        sql.append("GROUP BY usr.practice, ma.year, ma.month ");
+        sql.append("ORDER BY usr.practice, ma.year, ma.month");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("priorStart", priorStart);
