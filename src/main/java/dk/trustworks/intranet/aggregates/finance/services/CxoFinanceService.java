@@ -31,6 +31,13 @@ import dk.trustworks.intranet.aggregates.finance.dto.InvoiceItemExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRowExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.PracticeUtilizationMonthDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.BudgetHoursByMonthDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.FutureNetAvailableDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.UtilizationConsultantDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.PracticeBenchFteDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAbsenceWaterfallDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.PracticeForecastMonthDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
@@ -5367,6 +5374,621 @@ public class CxoFinanceService {
         for (Tuple row : rows) {
             result.put((String) row.get("month_key"), ((Number) row.get("backlog")).doubleValue());
         }
+        return result;
+    }
+
+    // =========================================================================
+    // Endpoints replacing BFF direct SQL queries (Task 8)
+    // =========================================================================
+
+    /**
+     * Practice utilization history: monthly utilization per practice for a date range.
+     * Replaces BFF route /api/cxo/practices/utilization-history which queried
+     * fact_user_utilization_mat. Uses fact_user_day as the canonical source.
+     *
+     * @param fromDate Start date (inclusive)
+     * @param toDate   End date (inclusive)
+     * @param practices Practice codes to include (defaults to all 5 billable practices)
+     * @param companyIds Optional company filter
+     * @return List of monthly per-practice utilization data points
+     */
+    public List<PracticeUtilizationMonthDTO> getPracticeUtilizationHistory(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFrom = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(12).withDayOfMonth(1);
+        LocalDate normalizedTo = (toDate != null) ? toDate : LocalDate.now();
+
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  u.practice AS practice_id, ");
+        sql.append("  CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key, ");
+        sql.append("  fud.year, ");
+        sql.append("  fud.month AS month_number, ");
+        sql.append("  COALESCE(SUM(fud.net_available_hours), 0) AS net_available_hours, ");
+        sql.append("  COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours ");
+        sql.append("FROM fact_user_day fud ");
+        sql.append("JOIN `user` u ON u.uuid = fud.useruuid ");
+        sql.append("WHERE fud.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND fud.status_type = 'ACTIVE' ");
+        sql.append("  AND u.practice IN (:practices) ");
+        sql.append("  AND fud.document_date >= :fromDate ");
+        sql.append("  AND fud.document_date <= :toDate ");
+        if (hasCompanies) {
+            sql.append("  AND fud.companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY u.practice, fud.year, fud.month ");
+        sql.append("ORDER BY u.practice, fud.year, fud.month");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("practices", effectivePractices);
+        query.setParameter("fromDate", normalizedFrom);
+        query.setParameter("toDate", normalizedTo);
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<PracticeUtilizationMonthDTO> result = new ArrayList<>();
+        for (Tuple row : rows) {
+            String practiceId = (String) row.get("practice_id");
+            String monthKey = (String) row.get("month_key");
+            int year = ((Number) row.get("year")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double netHours = ((Number) row.get("net_available_hours")).doubleValue();
+            double billHours = ((Number) row.get("billable_hours")).doubleValue();
+            Double utilizationPct = netHours > 0
+                    ? UtilizationCalculationHelper.calcPercent(billHours, netHours)
+                    : null;
+
+            result.add(new PracticeUtilizationMonthDTO(
+                    practiceId, monthKey, year, monthNumber,
+                    formatMonthLabel(year, monthNumber),
+                    netHours, billHours, utilizationPct
+            ));
+        }
+
+        log.debugf("getPracticeUtilizationHistory: returned %d rows", result.size());
+        return result;
+    }
+
+    /**
+     * Budget hours by month: aggregated from fact_revenue_budget_mat.
+     * Replaces BFF direct SQL in /api/executive/utilization-trend.
+     *
+     * @param fromMonthKey Start month key YYYYMM (inclusive)
+     * @param toMonthKey   End month key YYYYMM (exclusive)
+     * @param practices    Practice/service line codes (defaults to all 5)
+     * @param companyIds   Optional company filter
+     * @return List of monthly budget hour totals
+     */
+    public List<BudgetHoursByMonthDTO> getBudgetHoursByMonth(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT b.month_key, SUM(b.budget_hours) AS total_budget ");
+        sql.append("FROM fact_revenue_budget_mat b ");
+        sql.append("WHERE b.month_key >= :fromKey ");
+        sql.append("  AND b.month_key < :toKey ");
+        sql.append("  AND b.service_line_id IN (:practices) ");
+        if (hasCompanies) {
+            sql.append("  AND b.company_id IN (:companyIds) ");
+        }
+        sql.append("GROUP BY b.month_key ");
+        sql.append("ORDER BY b.month_key");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        query.setParameter("practices", effectivePractices);
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<BudgetHoursByMonthDTO> result = new ArrayList<>();
+        for (Tuple row : rows) {
+            String monthKey = (String) row.get("month_key");
+            double totalBudget = row.get("total_budget") != null
+                    ? ((Number) row.get("total_budget")).doubleValue() : 0.0;
+            result.add(new BudgetHoursByMonthDTO(monthKey, totalBudget));
+        }
+
+        log.debugf("getBudgetHoursByMonth: returned %d rows", result.size());
+        return result;
+    }
+
+    /**
+     * Future net available hours by month from fact_user_day.
+     * Replaces BFF direct SQL in /api/executive/utilization-trend.
+     *
+     * @param fromMonthKey Start month key YYYYMM (inclusive)
+     * @param toMonthKey   End month key YYYYMM (exclusive)
+     * @param practices    Practice codes (defaults to all 5)
+     * @param companyIds   Optional company filter
+     * @return List of monthly net available hour totals
+     */
+    public List<FutureNetAvailableDTO> getFutureNetAvailable(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  CONCAT(d.year, LPAD(d.month, 2, '0')) AS month_key, ");
+        sql.append("  d.year, ");
+        sql.append("  d.month AS month_number, ");
+        sql.append("  SUM(d.net_available_hours) AS total_net ");
+        sql.append("FROM fact_user_day d ");
+        sql.append("JOIN `user` u ON u.uuid = d.useruuid ");
+        sql.append("WHERE d.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND d.status_type = 'ACTIVE' ");
+        sql.append("  AND u.practice IN (:practices) ");
+        sql.append("  AND CONCAT(d.year, LPAD(d.month, 2, '0')) >= :fromKey ");
+        sql.append("  AND CONCAT(d.year, LPAD(d.month, 2, '0')) < :toKey ");
+        if (hasCompanies) {
+            sql.append("  AND d.companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY month_key, d.year, d.month ");
+        sql.append("ORDER BY month_key");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("practices", effectivePractices);
+        query.setParameter("fromKey", fromMonthKey);
+        query.setParameter("toKey", toMonthKey);
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<FutureNetAvailableDTO> result = new ArrayList<>();
+        for (Tuple row : rows) {
+            String monthKey = (String) row.get("month_key");
+            int year = ((Number) row.get("year")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double totalNet = row.get("total_net") != null
+                    ? ((Number) row.get("total_net")).doubleValue() : 0.0;
+            result.add(new FutureNetAvailableDTO(monthKey, year, monthNumber, totalNet));
+        }
+
+        log.debugf("getFutureNetAvailable: returned %d rows", result.size());
+        return result;
+    }
+
+    /**
+     * Utilization consultants: distinct active consultants for a given year/month.
+     * Replaces BFF route /api/executive/utilization-consultants.
+     *
+     * @param year       Year (e.g. 2026)
+     * @param month      Month number (1-12)
+     * @param practices  Practice codes (defaults to all 5)
+     * @param companyIds Optional company filter
+     * @return List of consultant DTOs (uuid, firstname, lastname, practice)
+     */
+    public List<UtilizationConsultantDTO> getUtilizationConsultants(
+            int year,
+            int month,
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT DISTINCT u.uuid, u.firstname, u.lastname, u.practice ");
+        sql.append("FROM fact_user_day bdd ");
+        sql.append("JOIN `user` u ON u.uuid = bdd.useruuid ");
+        sql.append("WHERE bdd.year = :year AND bdd.month = :month ");
+        sql.append("  AND bdd.consultant_type = 'CONSULTANT' ");
+        sql.append("  AND bdd.status_type = 'ACTIVE' ");
+        sql.append("  AND u.practice IN (:practices) ");
+        if (hasCompanies) {
+            sql.append("  AND bdd.companyuuid IN (:companyIds) ");
+        }
+        sql.append("ORDER BY u.practice, u.firstname, u.lastname");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("year", year);
+        query.setParameter("month", month);
+        query.setParameter("practices", effectivePractices);
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<UtilizationConsultantDTO> result = new ArrayList<>();
+        for (Tuple row : rows) {
+            result.add(new UtilizationConsultantDTO(
+                    (String) row.get("uuid"),
+                    (String) row.get("firstname"),
+                    (String) row.get("lastname"),
+                    (String) row.get("practice")
+            ));
+        }
+
+        log.debugf("getUtilizationConsultants: year=%d, month=%d, returned %d consultants",
+                year, month, result.size());
+        return result;
+    }
+
+    /**
+     * Bench FTE count per practice for current and prior month.
+     * "Bench" = consultant whose budget utilization is below 10%.
+     * Replaces BFF route /api/cxo/practices/bench-fte.
+     *
+     * @param practices  Practice codes (defaults to all 5)
+     * @param companyIds Optional company filter
+     * @return List of bench FTE DTOs, one per practice
+     */
+    public List<PracticeBenchFteDTO> getBenchFte(
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        LocalDate today = LocalDate.now();
+        String currentMonthKey = UtilizationCalculationHelper.toMonthKey(today.getYear(), today.getMonthValue());
+        YearMonth priorYm = YearMonth.from(today).minusMonths(1);
+        String priorMonthKey = UtilizationCalculationHelper.toMonthKey(priorYm.getYear(), priorYm.getMonthValue());
+        LocalDate priorStart = priorYm.atDay(1);
+        LocalDate currentNextStart = YearMonth.from(today).plusMonths(1).atDay(1);
+
+        // Count consultants whose budget utilization < 10% per practice per month.
+        // Budget utilization = SUM(budget_hours) / net_available_hours.
+        // Consultants with no budget rows have 0 budget hours -> 0% -> on bench.
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  u.practice_id, ");
+        sql.append("  u.month_key, ");
+        sql.append("  COUNT(DISTINCT u.user_id) AS bench_fte ");
+        sql.append("FROM fact_user_utilization_mat u ");
+        sql.append("LEFT JOIN ( ");
+        sql.append("  SELECT ");
+        sql.append("    useruuid, ");
+        sql.append("    CONCAT(LPAD(YEAR(document_date), 4, '0'), LPAD(MONTH(document_date), 2, '0')) AS month_key, ");
+        sql.append("    SUM(budgetHours) AS total_budget_hours ");
+        sql.append("  FROM fact_budget_day ");
+        sql.append("  WHERE document_date >= :priorStart AND document_date < :currentNextStart ");
+        sql.append("  GROUP BY useruuid, YEAR(document_date), MONTH(document_date) ");
+        sql.append(") b ON b.useruuid = u.user_id AND b.month_key = u.month_key ");
+        sql.append("WHERE u.month_key IN (:currentMonthKey, :priorMonthKey) ");
+        sql.append("  AND u.practice_id IN (:practices) ");
+        sql.append("  AND u.net_available_hours > 0 ");
+        sql.append("  AND (COALESCE(b.total_budget_hours, 0) / u.net_available_hours) < 0.10 ");
+        if (hasCompanies) {
+            sql.append("  AND u.companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY u.practice_id, u.month_key ");
+        sql.append("ORDER BY u.practice_id, u.month_key");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("priorStart", priorStart);
+        query.setParameter("currentNextStart", currentNextStart);
+        query.setParameter("currentMonthKey", currentMonthKey);
+        query.setParameter("priorMonthKey", priorMonthKey);
+        query.setParameter("practices", effectivePractices);
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        // Index by practice_id:month_key
+        Map<String, Integer> byKey = new LinkedHashMap<>();
+        for (Tuple row : rows) {
+            String key = row.get("practice_id") + ":" + row.get("month_key");
+            byKey.put(key, ((Number) row.get("bench_fte")).intValue());
+        }
+
+        // Build result for each practice
+        List<String> practiceList = effectivePractices.stream().sorted().collect(Collectors.toList());
+        List<PracticeBenchFteDTO> result = new ArrayList<>();
+        for (String practiceId : practiceList) {
+            int currentBench = byKey.getOrDefault(practiceId + ":" + currentMonthKey, 0);
+            int priorBench = byKey.getOrDefault(practiceId + ":" + priorMonthKey, 0);
+            result.add(new PracticeBenchFteDTO(practiceId, currentBench, priorBench, currentBench - priorBench));
+        }
+
+        log.debugf("getBenchFte: returned %d practices", result.size());
+        return result;
+    }
+
+    /**
+     * Absence waterfall: monthly breakdown of how gross capacity is reduced.
+     * Replaces BFF route /api/cxo/delivery/absence-waterfall.
+     * Queries fact_user_utilization view which aggregates from bi_data_per_day.
+     *
+     * @param fromDate   Start date (inclusive, uses year/month for filtering)
+     * @param toDate     End date (inclusive, uses year/month for filtering)
+     * @param companyIds Optional company filter
+     * @return List of monthly absence waterfall DTOs
+     */
+    public List<MonthlyAbsenceWaterfallDTO> getAbsenceWaterfall(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> companyIds) {
+
+        LocalDate normalizedFrom = (fromDate != null) ? fromDate : LocalDate.now().minusMonths(11).withDayOfMonth(1);
+        LocalDate normalizedTo = (toDate != null) ? toDate : LocalDate.now();
+
+        int fromYear = normalizedFrom.getYear();
+        int fromMonth = normalizedFrom.getMonthValue();
+        int toYear = normalizedTo.getYear();
+        int toMonth = normalizedTo.getMonthValue();
+
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ");
+        sql.append("  month_key, ");
+        sql.append("  year AS year_num, ");
+        sql.append("  month_number, ");
+        sql.append("  SUM(gross_available_hours) AS gross_available_hours, ");
+        sql.append("  SUM(vacation_hours) AS vacation_hours, ");
+        sql.append("  SUM(sick_hours) AS sick_hours, ");
+        sql.append("  SUM(maternity_leave_hours) AS maternity_leave_hours, ");
+        sql.append("  SUM(non_payd_leave_hours) AS non_payd_leave_hours, ");
+        sql.append("  SUM(paid_leave_hours) AS paid_leave_hours, ");
+        sql.append("  SUM(unavailable_hours) AS unavailable_hours, ");
+        sql.append("  SUM(net_available_hours) AS net_available_hours, ");
+        sql.append("  SUM(billable_hours) AS billable_hours ");
+        sql.append("FROM fact_user_utilization ");
+        sql.append("WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) ");
+        sql.append("  AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth)) ");
+        if (hasCompanies) {
+            sql.append("  AND companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY month_key, year, month_number ");
+        sql.append("ORDER BY month_key");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromYear", fromYear);
+        query.setParameter("fromMonth", fromMonth);
+        query.setParameter("toYear", toYear);
+        query.setParameter("toMonth", toMonth);
+        if (hasCompanies) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<MonthlyAbsenceWaterfallDTO> result = new ArrayList<>();
+        for (Tuple row : rows) {
+            String monthKey = (String) row.get("month_key");
+            int year = ((Number) row.get("year_num")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double gross = ((Number) row.get("gross_available_hours")).doubleValue();
+            double vacation = ((Number) row.get("vacation_hours")).doubleValue();
+            double sick = ((Number) row.get("sick_hours")).doubleValue();
+            double maternity = ((Number) row.get("maternity_leave_hours")).doubleValue();
+            double nonPaidLeave = ((Number) row.get("non_payd_leave_hours")).doubleValue();
+            double paidLeave = ((Number) row.get("paid_leave_hours")).doubleValue();
+            double unavailable = ((Number) row.get("unavailable_hours")).doubleValue();
+            double netAvailable = ((Number) row.get("net_available_hours")).doubleValue();
+            double billable = ((Number) row.get("billable_hours")).doubleValue();
+            double nonBillable = Math.max(0, netAvailable - billable);
+            Double utilizationPct = netAvailable > 0
+                    ? UtilizationCalculationHelper.calcPercent(billable, netAvailable)
+                    : null;
+
+            result.add(new MonthlyAbsenceWaterfallDTO(
+                    monthKey, year, monthNumber, formatMonthLabel(year, monthNumber),
+                    gross, vacation, sick, maternity, nonPaidLeave, paidLeave,
+                    unavailable, netAvailable, billable, nonBillable, utilizationPct
+            ));
+        }
+
+        log.debugf("getAbsenceWaterfall: returned %d rows", result.size());
+        return result;
+    }
+
+    /**
+     * Practice utilization forecast: mixed 12-month window with actual + budget utilization.
+     * 6 trailing months (actual from fact_user_day) + 6 forward months (budget from fact_revenue_budget_mat).
+     * Replaces BFF route /api/cxo/practices/utilization-forecast.
+     *
+     * @param practices  Practice codes (defaults to all 5)
+     * @param companyIds Optional company filter
+     * @return List of forecast DTOs, one per practice per month (12 months x N practices)
+     */
+    public List<PracticeForecastMonthDTO> getPracticeUtilizationForecast(
+            Set<String> practices,
+            Set<String> companyIds) {
+
+        final double TARGET_UTILIZATION_PCT = 80.0;
+
+        Set<String> effectivePractices = (practices != null && !practices.isEmpty())
+                ? practices
+                : UtilizationCalculationHelper.BILLABLE_PRACTICES;
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
+        LocalDate today = LocalDate.now();
+        YearMonth currentMonth = YearMonth.from(today);
+        YearMonth windowStart = currentMonth.minusMonths(6);
+        YearMonth windowEnd = currentMonth.plusMonths(6);
+
+        String startKey = UtilizationCalculationHelper.toMonthKey(windowStart.getYear(), windowStart.getMonthValue());
+        String endKey = UtilizationCalculationHelper.toMonthKey(windowEnd.getYear(), windowEnd.getMonthValue());
+        String currentKey = UtilizationCalculationHelper.toMonthKey(currentMonth.getYear(), currentMonth.getMonthValue());
+
+        LocalDate startDate = windowStart.atDay(1);
+        LocalDate endDate = windowEnd.atDay(1).minusDays(1);
+
+        log.debugf("getPracticeUtilizationForecast: window %s-%s (current: %s)", startKey, endKey, currentKey);
+
+        // Query A: Actual utilization from fact_user_day (trailing + current months)
+        StringBuilder actualSql = new StringBuilder();
+        actualSql.append("SELECT ");
+        actualSql.append("  u.practice AS practice_id, ");
+        actualSql.append("  CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key, ");
+        actualSql.append("  fud.year, ");
+        actualSql.append("  fud.month AS month_number, ");
+        actualSql.append("  COALESCE(SUM(fud.net_available_hours), 0) AS net_available_hours, ");
+        actualSql.append("  COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours ");
+        actualSql.append("FROM fact_user_day fud ");
+        actualSql.append("JOIN `user` u ON u.uuid = fud.useruuid ");
+        actualSql.append("WHERE fud.consultant_type = 'CONSULTANT' ");
+        actualSql.append("  AND fud.status_type = 'ACTIVE' ");
+        actualSql.append("  AND u.practice IN (:practices) ");
+        actualSql.append("  AND fud.document_date >= :startDate ");
+        actualSql.append("  AND fud.document_date <= :endDate ");
+        if (hasCompanies) {
+            actualSql.append("  AND fud.companyuuid IN (:companyIds) ");
+        }
+        actualSql.append("GROUP BY u.practice, fud.year, fud.month ");
+        actualSql.append("ORDER BY u.practice, fud.year, fud.month");
+
+        var actualQuery = em.createNativeQuery(actualSql.toString(), Tuple.class);
+        actualQuery.setParameter("practices", effectivePractices);
+        actualQuery.setParameter("startDate", startDate);
+        actualQuery.setParameter("endDate", endDate);
+        if (hasCompanies) {
+            actualQuery.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> actualRows = actualQuery.getResultList();
+
+        // Query B: Budget utilization from fact_revenue_budget_mat, joined with capacity from fact_user_day
+        StringBuilder budgetSql = new StringBuilder();
+        budgetSql.append("SELECT ");
+        budgetSql.append("  rb.service_line_id AS practice_id, ");
+        budgetSql.append("  rb.month_key, ");
+        budgetSql.append("  rb.year, ");
+        budgetSql.append("  rb.month_number, ");
+        budgetSql.append("  COALESCE(SUM(rb.budget_hours), 0) AS budget_hours, ");
+        budgetSql.append("  COALESCE(cap.net_available_hours, 0) AS net_available_hours ");
+        budgetSql.append("FROM fact_revenue_budget_mat rb ");
+        budgetSql.append("LEFT JOIN ( ");
+        budgetSql.append("  SELECT ");
+        budgetSql.append("    u2.practice AS practice_id, ");
+        budgetSql.append("    CONCAT(LPAD(fud2.year, 4, '0'), LPAD(fud2.month, 2, '0')) AS month_key, ");
+        budgetSql.append("    SUM(fud2.net_available_hours) AS net_available_hours ");
+        budgetSql.append("  FROM fact_user_day fud2 ");
+        budgetSql.append("  JOIN `user` u2 ON u2.uuid = fud2.useruuid ");
+        budgetSql.append("  WHERE fud2.consultant_type = 'CONSULTANT' ");
+        budgetSql.append("    AND fud2.status_type = 'ACTIVE' ");
+        budgetSql.append("    AND u2.practice IN (:practices) ");
+        budgetSql.append("    AND fud2.document_date >= :startDate ");
+        budgetSql.append("    AND fud2.document_date <= :endDate ");
+        if (hasCompanies) {
+            budgetSql.append("    AND fud2.companyuuid IN (:companyIds) ");
+        }
+        budgetSql.append("  GROUP BY u2.practice, fud2.year, fud2.month ");
+        budgetSql.append(") cap ON cap.practice_id = rb.service_line_id AND cap.month_key = rb.month_key ");
+        budgetSql.append("WHERE rb.month_key >= :startKey ");
+        budgetSql.append("  AND rb.month_key < :endKey ");
+        budgetSql.append("  AND rb.service_line_id IN (:practices) ");
+        if (hasCompanies) {
+            budgetSql.append("  AND rb.company_id IN (:companyIds) ");
+        }
+        budgetSql.append("GROUP BY rb.service_line_id, rb.month_key, rb.year, rb.month_number, cap.net_available_hours ");
+        budgetSql.append("ORDER BY rb.service_line_id, rb.month_key");
+
+        var budgetQuery = em.createNativeQuery(budgetSql.toString(), Tuple.class);
+        budgetQuery.setParameter("practices", effectivePractices);
+        budgetQuery.setParameter("startDate", startDate);
+        budgetQuery.setParameter("endDate", endDate);
+        budgetQuery.setParameter("startKey", startKey);
+        budgetQuery.setParameter("endKey", endKey);
+        if (hasCompanies) {
+            budgetQuery.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> budgetRows = budgetQuery.getResultList();
+
+        // Build lookup maps: practiceId:monthKey -> row data
+        Map<String, double[]> actualMap = new LinkedHashMap<>();
+        for (Tuple row : actualRows) {
+            String key = row.get("practice_id") + ":" + row.get("month_key");
+            double netHours = ((Number) row.get("net_available_hours")).doubleValue();
+            double billHours = ((Number) row.get("billable_hours")).doubleValue();
+            actualMap.put(key, new double[]{netHours, billHours});
+        }
+
+        Map<String, double[]> budgetMap = new LinkedHashMap<>();
+        for (Tuple row : budgetRows) {
+            String key = row.get("practice_id") + ":" + row.get("month_key");
+            double budgetHours = ((Number) row.get("budget_hours")).doubleValue();
+            double netHours = ((Number) row.get("net_available_hours")).doubleValue();
+            budgetMap.put(key, new double[]{budgetHours, netHours});
+        }
+
+        // Generate all 12 months x practices
+        List<String> practiceList = effectivePractices.stream().sorted().collect(Collectors.toList());
+        List<PracticeForecastMonthDTO> result = new ArrayList<>();
+
+        for (String practiceId : practiceList) {
+            for (int i = 0; i < 12; i++) {
+                YearMonth ym = windowStart.plusMonths(i);
+                String monthKey = UtilizationCalculationHelper.toMonthKey(ym.getYear(), ym.getMonthValue());
+                int year = ym.getYear();
+                int monthNumber = ym.getMonthValue();
+                String mapKey = practiceId + ":" + monthKey;
+
+                // Actual utilization: only for months up to and including current month
+                Double actualUtilizationPct = null;
+                if (monthKey.compareTo(currentKey) <= 0) {
+                    double[] actual = actualMap.get(mapKey);
+                    if (actual != null && actual[0] > 0) {
+                        actualUtilizationPct = (actual[1] / actual[0]) * 100.0;
+                    }
+                }
+
+                // Budget utilization: available across the whole window
+                Double budgetUtilizationPct = null;
+                double[] budget = budgetMap.get(mapKey);
+                if (budget != null && budget[1] > 0) {
+                    budgetUtilizationPct = (budget[0] / budget[1]) * 100.0;
+                }
+
+                result.add(new PracticeForecastMonthDTO(
+                        practiceId, monthKey, year, monthNumber,
+                        formatMonthLabel(year, monthNumber),
+                        actualUtilizationPct, budgetUtilizationPct,
+                        TARGET_UTILIZATION_PCT
+                ));
+            }
+        }
+
+        log.debugf("getPracticeUtilizationForecast: returned %d entries", result.size());
         return result;
     }
 }
