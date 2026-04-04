@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.aggregates.finance.services.analytics;
 
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamBillingRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.TeamContributionMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.analytics.CostPerFteDTO;
 import dk.trustworks.intranet.aggregates.finance.services.DistributionAwareOpexProvider;
+import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -136,5 +139,154 @@ public class ProfitabilityProvider {
             ));
         }
         return result;
+    }
+
+    // -----------------------------------------------------------------------
+    // Contribution Margin
+    // -----------------------------------------------------------------------
+
+    /**
+     * Team contribution margin: revenue - salary - allocated OPEX.
+     * Uses FY-aware OPEX via OpexAnalyticsProvider (consistency fix).
+     */
+    public TeamContributionMarginDTO getContributionMargin(String teamId, int fiscalYear) {
+        var fyRange = UtilizationCalculationHelper.getFiscalYearRange(fiscalYear);
+        String fromKey = fyRange.startKey();
+        String toKey = fyRange.endKey();
+        LocalDate fromDate = fyRange.start();
+        LocalDate toDate = fyRange.end();
+
+        List<String> memberUuids = getTeamMemberUuids(teamId);
+        if (memberUuids.isEmpty()) {
+            return new TeamContributionMarginDTO(teamId, "", fiscalYear, 0, 0, 0, 0, 0, null, null);
+        }
+
+        // Revenue (time-registration based for team)
+        double revenue = revenueProvider.getTeamRevenue(memberUuids, fromDate, toDate);
+
+        // Salary cost from fact_salary_monthly_teamroles
+        String salSql = "SELECT COALESCE(SUM(fsmt.salary_sum), 0) FROM fact_salary_monthly_teamroles fsmt " +
+                "WHERE fsmt.teamuuid = :teamId AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey";
+        double salaryCost = ((Number) em.createNativeQuery(salSql)
+                .setParameter("teamId", teamId)
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
+                .getSingleResult()).doubleValue();
+
+        // Allocated OPEX (FY-aware, consistent denominator)
+        double allocatedOpex = opexProvider.getTeamAllocatedOpex(teamId, fromKey, toKey, null);
+
+        double grossMargin = revenue - salaryCost;
+        double contributionMargin = grossMargin - allocatedOpex;
+        Double grossMarginPct = revenue > 0 ? (grossMargin / revenue) * 100.0 : null;
+        Double contributionMarginPct = revenue > 0 ? (contributionMargin / revenue) * 100.0 : null;
+
+        String teamName = getTeamName(teamId);
+
+        return new TeamContributionMarginDTO(teamId, teamName, fiscalYear,
+                revenue, salaryCost, allocatedOpex, grossMargin, contributionMargin,
+                grossMarginPct, contributionMarginPct);
+    }
+
+    // -----------------------------------------------------------------------
+    // Break-Even Rates
+    // -----------------------------------------------------------------------
+
+    /**
+     * Break-even billing rate per consultant.
+     * Formula: (monthly_salary + monthly_overhead) / (net_available_hours * 0.75)
+     */
+    public List<TeamBillingRateDTO> getBreakEvenRates(List<String> memberUuids, LocalDate fromDate, LocalDate toDate) {
+        if (memberUuids == null || memberUuids.isEmpty()) return List.of();
+
+        String fromKey = toMonthKey(fromDate);
+        String toKey = toMonthKey(toDate);
+
+        // Monthly overhead per consultant (FY-aware)
+        double monthlyOverhead = opexProvider.getOverheadPerConsultant(fromKey, toKey, null);
+
+        // Actual effective rates
+        String actualSql = "SELECT fud.useruuid AS user_id, u.firstname, u.lastname, " +
+                "  COALESCE(SUM(fud.registered_amount), 0) AS revenue, " +
+                "  COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours " +
+                "FROM fact_user_day fud JOIN user u ON u.uuid = fud.useruuid " +
+                "WHERE fud.useruuid IN (:memberUuids) " +
+                "  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
+                "  AND fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE' " +
+                "GROUP BY fud.useruuid, u.firstname, u.lastname";
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> actualRows = em.createNativeQuery(actualSql, Tuple.class)
+                .setParameter("memberUuids", memberUuids)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
+
+        // Break-even rates: salary + overhead / (net_hours * 0.75)
+        String beSql = "SELECT sal.useruuid AS user_id, " +
+                "  CASE WHEN COALESCE(avail.net_hours, 0) * 0.75 > 0 " +
+                "    THEN (sal.monthly_salary + :overhead) / (avail.net_hours * 0.75) ELSE NULL END AS break_even " +
+                "FROM (SELECT useruuid, AVG(max_sal) AS monthly_salary FROM " +
+                "  (SELECT useruuid, MAX(salary) AS max_sal FROM fact_user_day " +
+                "   WHERE useruuid IN (:memberUuids) AND consultant_type = 'CONSULTANT' AND salary > 0 " +
+                "   AND document_date >= :fromDate AND document_date <= :toDate " +
+                "   GROUP BY useruuid, year, month) ms GROUP BY useruuid) sal " +
+                "LEFT JOIN (SELECT useruuid, AVG(mn) AS net_hours FROM " +
+                "  (SELECT useruuid, SUM(net_available_hours) AS mn FROM fact_user_day " +
+                "   WHERE useruuid IN (:memberUuids) AND consultant_type = 'CONSULTANT' AND status_type = 'ACTIVE' " +
+                "   AND document_date >= :fromDate AND document_date <= :toDate " +
+                "   GROUP BY useruuid, year, month) ma GROUP BY useruuid) avail ON avail.useruuid = sal.useruuid";
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> beRows = em.createNativeQuery(beSql, Tuple.class)
+                .setParameter("memberUuids", memberUuids)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .setParameter("overhead", monthlyOverhead)
+                .getResultList();
+
+        Map<String, Double> breakEvenByUser = new HashMap<>();
+        for (Tuple row : beRows) {
+            String userId = (String) row.get("user_id");
+            Double be = row.get("break_even") != null ? ((Number) row.get("break_even")).doubleValue() : null;
+            if (be != null) breakEvenByUser.put(userId, be);
+        }
+
+        List<TeamBillingRateDTO> result = new ArrayList<>();
+        for (Tuple row : actualRows) {
+            String userId = (String) row.get("user_id");
+            double revenue = ((Number) row.get("revenue")).doubleValue();
+            double hours = ((Number) row.get("billable_hours")).doubleValue();
+            Double actualRate = hours > 0 ? revenue / hours : null;
+            Double breakEven = breakEvenByUser.get(userId);
+            Double margin = (actualRate != null && breakEven != null) ? actualRate - breakEven : null;
+
+            result.add(new TeamBillingRateDTO(userId,
+                    (String) row.get("firstname"), (String) row.get("lastname"),
+                    actualRate, breakEven, margin));
+        }
+        return result;
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    private List<String> getTeamMemberUuids(String teamId) {
+        String sql = "SELECT DISTINCT tr.useruuid FROM teamroles tr " +
+                "WHERE tr.teamuuid = :teamId AND tr.membertype = 'MEMBER' " +
+                "AND tr.startdate <= CURDATE() AND (tr.enddate IS NULL OR tr.enddate > CURDATE())";
+        @SuppressWarnings("unchecked")
+        List<String> uuids = em.createNativeQuery(sql).setParameter("teamId", teamId).getResultList();
+        return uuids;
+    }
+
+    private String getTeamName(String teamId) {
+        try {
+            return (String) em.createNativeQuery("SELECT name FROM team WHERE uuid = :id")
+                    .setParameter("id", teamId).getSingleResult();
+        } catch (Exception e) {
+            return "";
+        }
     }
 }

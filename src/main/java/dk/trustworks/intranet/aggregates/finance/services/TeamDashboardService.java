@@ -73,6 +73,9 @@ public class TeamDashboardService {
     @Inject
     DistributionAwareOpexProvider opexProvider;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider profitabilityProvider;
+
     // -----------------------------------------------------------------------
     // Shared helpers
     // -----------------------------------------------------------------------
@@ -1078,134 +1081,10 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     public List<TeamBillingRateDTO> getBillingRateAnalysis(String teamId, int fiscalYear) {
-        var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        var fyRange = getFiscalYearRange(fiscalYear);
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
-        if (memberUuids.isEmpty()) {
-            return List.of();
-        }
-
-        // Actual effective rates
-        @SuppressWarnings("unchecked")
-        List<Tuple> actualRows = em.createNativeQuery("""
-                SELECT fud.useruuid AS user_id, u.firstname, u.lastname,
-                       COALESCE(SUM(fud.registered_amount), 0) AS revenue,
-                       COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours
-                FROM fact_user_day fud
-                JOIN user u ON u.uuid = fud.useruuid
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                  AND fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
-                GROUP BY fud.useruuid, u.firstname, u.lastname
-                """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
-                .setParameter("fromDate", fy.start())
-                .setParameter("toDate", effectiveEnd)
-                .getResultList();
-
-        // Compute per-consultant monthly overhead from company non-salary OPEX
-        // Same approach as ConsultantInsightsService.getUnprofitableConsultants()
-        String opexFromKey = toMonthKey(fy.start());
-        String opexToKey = toMonthKey(effectiveEnd);
-
-        @SuppressWarnings("unchecked")
-        List<Tuple> opexRows = em.createNativeQuery("""
-                SELECT COALESCE(SUM(opex_amount_dkk), 0) AS total_opex
-                FROM fact_opex_mat
-                WHERE cost_type = 'OPEX'
-                  AND month_key >= :fromKey AND month_key < :toKey
-                """, Tuple.class)
-                .setParameter("fromKey", opexFromKey)
-                .setParameter("toKey", opexToKey)
-                .getResultList();
-        double totalOpex = opexRows.isEmpty() ? 0.0
-                : ((Number) opexRows.get(0).get("total_opex")).doubleValue();
-
-        @SuppressWarnings("unchecked")
-        List<Tuple> hcRows = em.createNativeQuery("""
-                SELECT COUNT(DISTINCT fud.useruuid) AS headcount
-                FROM fact_user_day fud
-                WHERE fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                """, Tuple.class)
-                .setParameter("fromDate", fy.start())
-                .setParameter("toDate", effectiveEnd)
-                .getResultList();
-        long headcount = hcRows.isEmpty() ? 1L
-                : ((Number) hcRows.get(0).get("headcount")).longValue();
-        if (headcount == 0) headcount = 1; // avoid division by zero
-
-        long monthsInRange = ChronoUnit.MONTHS.between(
-                YearMonth.from(fy.start()), YearMonth.from(effectiveEnd)) + 1;
-        if (monthsInRange <= 0) monthsInRange = 1;
-        double overheadPerConsultantMonthly = totalOpex / headcount / monthsInRange;
-
-        log.debugf("getBillingRateAnalysis: totalOpex=%.2f, headcount=%d, months=%d, overheadPerMonth=%.2f",
-                totalOpex, headcount, monthsInRange, overheadPerConsultantMonthly);
-
-        // Break-even rates: (monthly salary + monthly overhead) / (net available hours * 0.75)
-        @SuppressWarnings("unchecked")
-        List<Tuple> breakEvenRows = em.createNativeQuery("""
-                SELECT sal.useruuid AS user_id,
-                       CASE WHEN COALESCE(avail.net_hours, 0) * 0.75 > 0
-                            THEN (sal.monthly_salary + :overheadPerMonth) / (avail.net_hours * 0.75)
-                            ELSE NULL
-                       END AS break_even_rate
-                FROM (
-                    SELECT useruuid, AVG(max_salary) AS monthly_salary FROM (
-                        SELECT useruuid, MAX(salary) AS max_salary
-                        FROM fact_user_day
-                        WHERE useruuid IN (:memberUuids)
-                          AND consultant_type = 'CONSULTANT'
-                          AND salary > 0
-                          AND document_date >= :fromDate AND document_date <= :toDate
-                        GROUP BY useruuid, year, month
-                    ) ms GROUP BY useruuid
-                ) sal
-                LEFT JOIN (
-                    SELECT useruuid,
-                           AVG(monthly_net) AS net_hours
-                    FROM (
-                        SELECT useruuid, SUM(net_available_hours) AS monthly_net
-                        FROM fact_user_day
-                        WHERE useruuid IN (:memberUuids)
-                          AND consultant_type = 'CONSULTANT' AND status_type = 'ACTIVE'
-                          AND document_date >= :fromDate AND document_date <= :toDate
-                        GROUP BY useruuid, year, month
-                    ) monthly_avail
-                    GROUP BY useruuid
-                ) avail ON avail.useruuid = sal.useruuid
-                """, Tuple.class)
-                .setParameter("overheadPerMonth", overheadPerConsultantMonthly)
-                .setParameter("memberUuids", memberUuids)
-                .setParameter("fromDate", fy.start())
-                .setParameter("toDate", effectiveEnd)
-                .getResultList();
-
-        Map<String, Double> breakEvenMap = new LinkedHashMap<>();
-        for (Tuple row : breakEvenRows) {
-            Object beVal = row.get("break_even_rate");
-            breakEvenMap.put((String) row.get("user_id"),
-                    beVal != null ? ((Number) beVal).doubleValue() : null);
-        }
-
-        List<TeamBillingRateDTO> result = new ArrayList<>();
-        for (Tuple row : actualRows) {
-            String uid = (String) row.get("user_id");
-            double revenue = numVal(row, "revenue");
-            double hours = numVal(row, "billable_hours");
-            Double actualRate = hours > 0 ? revenue / hours : null;
-            Double breakEven = breakEvenMap.get(uid);
-            Double margin = (actualRate != null && breakEven != null) ? actualRate - breakEven : null;
-            result.add(new TeamBillingRateDTO(
-                    uid,
-                    (String) row.get("firstname"),
-                    (String) row.get("lastname"),
-                    actualRate, breakEven, margin));
-        }
-        return result;
+        return profitabilityProvider.getBreakEvenRates(
+                new ArrayList<>(memberUuids), fyRange.start(), fyRange.end());
     }
 
     // -----------------------------------------------------------------------
@@ -1213,76 +1092,7 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     public TeamContributionMarginDTO getContributionMargin(String teamId, int fiscalYear) {
-        var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
-        String teamName = getTeamName(teamId);
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
-
-        double revenue = 0;
-        double salaryCost = 0;
-
-        if (!memberUuids.isEmpty()) {
-            // Revenue
-            var revRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fud.registered_amount), 0) AS revenue
-                    FROM fact_user_day fud
-                    WHERE fud.useruuid IN (:memberUuids)
-                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                      AND fud.consultant_type = 'CONSULTANT'
-                      AND fud.status_type = 'ACTIVE'
-                    """,
-                    Map.of("memberUuids", memberUuids,
-                            "fromDate", fy.start(),
-                            "toDate", effectiveEnd));
-            revenue = numVal(revRow, "revenue");
-
-            // Salary cost
-            var salRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
-                    FROM fact_salary_monthly_teamroles fsmt
-                    WHERE fsmt.teamuuid = :teamId
-                      AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
-                    """,
-                    Map.of("teamId", teamId,
-                            "fromKey", toMonthKey(fy.start()),
-                            "toKey", toMonthKey(effectiveEnd)));
-            salaryCost = numVal(salRow, "salary_cost");
-        }
-
-        // Allocated OPEX: team's share based on headcount ratio
-        // Total company OPEX and headcount
-        var opexRow = querySingleRow("""
-                SELECT COALESCE(SUM(fo.opex_amount_dkk), 0) AS total_opex
-                FROM fact_opex_mat fo
-                WHERE fo.month_key >= :fromKey AND fo.month_key <= :toKey
-                  AND fo.cost_type = 'OPEX'
-                """,
-                Map.of("fromKey", toMonthKey(fy.start()),
-                        "toKey", toMonthKey(effectiveEnd)));
-        double totalOpex = numVal(opexRow, "total_opex");
-
-        var hcRow = querySingleRow("""
-                SELECT COUNT(DISTINCT tr.useruuid) AS total_members
-                FROM teamroles tr
-                WHERE tr.membertype = 'MEMBER'
-                  AND tr.startdate <= CURDATE()
-                  AND (tr.enddate IS NULL OR tr.enddate > CURDATE())
-                """,
-                Map.of());
-        long totalMembers = hcRow != null ? ((Number) hcRow.get("total_members")).longValue() : 1;
-        if (totalMembers == 0) totalMembers = 1;
-
-        double allocatedOpex = totalOpex * ((double) memberUuids.size() / totalMembers);
-        double grossMargin = revenue - salaryCost;
-        double contributionMargin = grossMargin - allocatedOpex;
-        Double grossMarginPct = revenue > 0 ? (grossMargin / revenue) * 100.0 : null;
-        Double contributionMarginPct = revenue > 0 ? (contributionMargin / revenue) * 100.0 : null;
-
-        return new TeamContributionMarginDTO(
-                teamId, teamName, fiscalYear,
-                revenue, salaryCost, allocatedOpex,
-                grossMargin, contributionMargin,
-                grossMarginPct, contributionMarginPct);
+        return profitabilityProvider.getContributionMargin(teamId, fiscalYear);
     }
 
     // -----------------------------------------------------------------------
