@@ -367,6 +367,142 @@ public class CostAnalyticsResource {
         return new BonusPoolProjectionDTO(months, fy, Math.round(projectedTotal));
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    // Revenue vs Budget (Monthly, Trailing 12 Months)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Monthly actual revenue vs budget revenue for trailing 12 months.
+     * Used by the Revenue Forecast (Actual vs Budget) chart.
+     */
+    @GET
+    @Path("/revenue-vs-budget")
+    public List<RevenueVsBudgetMonthDTO> getRevenueVsBudget(
+            @QueryParam("companyIds") Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        String ttmStartKey = toMonthKey(today.minusMonths(11));
+        String toKey = toMonthKey(today.getYear(), today.getMonthValue() + 1 > 12 ? 1 : today.getMonthValue() + 1);
+        // Use next month as exclusive upper bound to include current month
+        String currentMonthKey = toMonthKey(today);
+
+        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+
+        // Actual revenue (grouped by month)
+        String actualSql = buildActualRevenueSql(companies);
+        // Reuse existing helper but with inclusive upper bound
+        String actualSqlInclusive = actualSql.replace("r.month_key < :toKey", "r.month_key <= :toKey");
+        var actualQuery = em.createNativeQuery(actualSqlInclusive, Tuple.class);
+        actualQuery.setParameter("fromKey", ttmStartKey);
+        actualQuery.setParameter("toKey", currentMonthKey);
+        if (companies != null) actualQuery.setParameter("companyIds", companies);
+
+        // Budget revenue (grouped by month)
+        String budgetSql = buildBudgetRevenueSql(companies);
+        var budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
+        budgetQuery.setParameter("fromKey", ttmStartKey);
+        budgetQuery.setParameter("toKey", currentMonthKey);
+        if (companies != null) budgetQuery.setParameter("companyIds", companies);
+
+        @SuppressWarnings("unchecked") List<Tuple> actualRows = actualQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> budgetRows = budgetQuery.getResultList();
+
+        Map<String, Tuple> actualMap = indexByMonthKey(actualRows);
+        Map<String, Tuple> budgetMap = new LinkedHashMap<>();
+        for (Tuple t : budgetRows) budgetMap.put(t.get("month_key").toString(), t);
+
+        // Merge all month keys
+        Set<String> allKeys = new TreeSet<>();
+        allKeys.addAll(actualMap.keySet());
+        allKeys.addAll(budgetMap.keySet());
+
+        List<RevenueVsBudgetMonthDTO> result = new ArrayList<>();
+        for (String key : allKeys) {
+            Tuple a = actualMap.get(key);
+            Tuple b = budgetMap.get(key);
+            int year = a != null ? ((Number) a.get("year")).intValue() : ((Number) b.get("year")).intValue();
+            int month = a != null ? ((Number) a.get("month_number")).intValue() : ((Number) b.get("month_number")).intValue();
+            Double actualRev = a != null ? ((Number) a.get("net_revenue")).doubleValue() : null;
+            Double budgetRev = b != null ? ((Number) b.get("budget_revenue")).doubleValue() : null;
+            result.add(new RevenueVsBudgetMonthDTO(key, year, month,
+                    SalaryAnalyticsProvider.formatMonthLabel(year, month), actualRev, budgetRev));
+        }
+        return result;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Revenue per FTE (Monthly, Trailing 18 Months)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Monthly revenue per FTE for trailing 18 months.
+     * Revenue per FTE = total net revenue / average headcount.
+     */
+    @GET
+    @Path("/revenue-per-fte")
+    public List<RevenuePerFteMonthDTO> getRevenuePerFteMonthly(
+            @QueryParam("companyIds") Set<String> companyIds) {
+
+        LocalDate today = LocalDate.now();
+        String fromKey = toMonthKey(today.minusMonths(17));
+        String toKey = toMonthKey(today);
+
+        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+
+        // Revenue per month (grouped, no cross-product)
+        String revFilter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
+        String revSql = "SELECT r.month_key, r.year, r.month_number, " +
+                "SUM(r.net_revenue_dkk) AS total_revenue " +
+                "FROM fact_company_revenue_mat r " +
+                "WHERE r.month_key >= :fromKey AND r.month_key <= :toKey " +
+                revFilter +
+                "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
+
+        var revQuery = em.createNativeQuery(revSql, Tuple.class);
+        revQuery.setParameter("fromKey", fromKey);
+        revQuery.setParameter("toKey", toKey);
+        if (companies != null) revQuery.setParameter("companyIds", companies);
+
+        // Headcount per month (grouped, no cross-product)
+        String empFilter = companies != null ? "AND e.company_id IN (:companyIds) " : "";
+        String empSql = "SELECT e.month_key, SUM(e.average_headcount) AS total_headcount " +
+                "FROM fact_employee_monthly_mat e " +
+                "WHERE e.month_key >= :fromKey AND e.month_key <= :toKey " +
+                empFilter +
+                "GROUP BY e.month_key ORDER BY e.month_key";
+
+        var empQuery = em.createNativeQuery(empSql, Tuple.class);
+        empQuery.setParameter("fromKey", fromKey);
+        empQuery.setParameter("toKey", toKey);
+        if (companies != null) empQuery.setParameter("companyIds", companies);
+
+        @SuppressWarnings("unchecked") List<Tuple> revRows = revQuery.getResultList();
+        @SuppressWarnings("unchecked") List<Tuple> empRows = empQuery.getResultList();
+
+        Map<String, Double> empMap = new LinkedHashMap<>();
+        for (Tuple t : empRows) {
+            empMap.put(t.get("month_key").toString(), ((Number) t.get("total_headcount")).doubleValue());
+        }
+
+        List<RevenuePerFteMonthDTO> result = new ArrayList<>();
+        for (Tuple rev : revRows) {
+            String key = rev.get("month_key").toString();
+            int year = ((Number) rev.get("year")).intValue();
+            int month = ((Number) rev.get("month_number")).intValue();
+            double totalRev = ((Number) rev.get("total_revenue")).doubleValue();
+            double headcount = empMap.getOrDefault(key, 0.0);
+            Double revPerFte = headcount > 0 ? (double) Math.round(totalRev / headcount) : null;
+            result.add(new RevenuePerFteMonthDTO(key, year, month,
+                    SalaryAnalyticsProvider.formatMonthLabel(year, month),
+                    totalRev, headcount, revPerFte));
+        }
+        return result;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Salary Equality (Chart 2.5)
+    // ═════════════════════════════════════════════════════════════════════
+
     /**
      * Gender pay equality analysis by practice and career band.
      * Replaces BFF route: /api/executive/salary-equality
@@ -389,12 +525,15 @@ public class CostAnalyticsResource {
 
         // By practice
         List<SalaryEqualityDTO.SalaryEqualityGroupDTO> byPractice = querySalaryEqualityGroups(
-                "fsm.practice_id", "fsm.practice_id", latestKey, companyIds);
+                "fsm.practice_id", "fsm.practice_id", latestKey, companyIds, null);
 
-        // By career band
-        String bandCase = CareerBandMapper.toSqlCase("fsm.career_band");
+        // By career band — requires JOIN with user_career_level since fact_salary_monthly has no career_band column
+        String careerLevelJoin = "JOIN user_career_level ucl ON ucl.useruuid = fsm.useruuid "
+                + "AND ucl.active_from = (SELECT MAX(ucl2.active_from) FROM user_career_level ucl2 "
+                + "WHERE ucl2.useruuid = fsm.useruuid AND ucl2.active_from <= LAST_DAY(STR_TO_DATE(CONCAT(fsm.month_key, '01'), '%Y%m%d'))) ";
+        String bandCase = CareerBandMapper.toSqlCase("ucl.career_level");
         List<SalaryEqualityDTO.SalaryEqualityGroupDTO> byCareerBand = querySalaryEqualityGroups(
-                bandCase, bandCase, latestKey, companyIds);
+                bandCase, bandCase, latestKey, companyIds, careerLevelJoin);
 
         return new SalaryEqualityDTO(byPractice, byCareerBand, latestKey);
     }
@@ -922,7 +1061,8 @@ public class CostAnalyticsResource {
     // ═════════════════════════════════════════════════════════════════════
 
     private List<SalaryEqualityDTO.SalaryEqualityGroupDTO> querySalaryEqualityGroups(
-            String groupExpr, String labelExpr, String monthKey, Set<String> companyIds) {
+            String groupExpr, String labelExpr, String monthKey, Set<String> companyIds,
+            String extraJoin) {
 
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT ").append(groupExpr).append(" AS group_id, ");
@@ -933,10 +1073,13 @@ public class CostAnalyticsResource {
         sql.append("  COUNT(CASE WHEN u.gender = 'FEMALE' THEN 1 END) AS female_count ");
         sql.append("FROM fact_salary_monthly fsm ");
         sql.append("JOIN user u ON u.uuid = fsm.useruuid ");
+        if (extraJoin != null) {
+            sql.append(extraJoin);
+        }
         sql.append("WHERE fsm.month_key = :monthKey ");
         sql.append("  AND u.gender IN ('MALE', 'FEMALE') ");
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("  AND fsm.company_id IN (:companyIds) ");
+            sql.append("  AND fsm.companyuuid IN (:companyIds) ");
         }
         sql.append("GROUP BY group_id, group_label ");
         sql.append("ORDER BY group_label");
