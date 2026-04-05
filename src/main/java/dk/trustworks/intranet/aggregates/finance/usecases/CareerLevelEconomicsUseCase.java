@@ -252,7 +252,7 @@ public class CareerLevelEconomicsUseCase {
                     SUM(staff_allocation_dkk * consultant_count) / SUM(consultant_count) AS staff_allocation_dkk,
                     SUM(overhead_allocation_dkk * consultant_count) / SUM(consultant_count) AS overhead_allocation_dkk,
                     SUM(total_monthly_cost_dkk * consultant_count) / SUM(consultant_count) AS total_monthly_cost_dkk,
-                    SUM(actual_utilization_ratio * consultant_count) / SUM(consultant_count) AS actual_utilization_ratio,
+                    SUM(utilization_post_first_billing * consultant_count) / SUM(consultant_count) AS actual_utilization_ratio,
                     SUM(avg_actual_billing_rate * consultant_count) / SUM(consultant_count) AS avg_actual_billing_rate,
                     CASE WHEN SUM(CASE WHEN break_even_rate_target IS NOT NULL THEN consultant_count ELSE 0 END) > 0
                         THEN SUM(COALESCE(break_even_rate_target, 0) * consultant_count) / SUM(CASE WHEN break_even_rate_target IS NOT NULL THEN consultant_count ELSE 0 END)
