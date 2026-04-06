@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
+import dk.trustworks.intranet.dao.workservice.services.WeekSubmissionService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.dto.work.LightweightWork;
@@ -57,6 +58,9 @@ public class WorkResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    @Inject
+    WeekSubmissionService weekSubmissionService;
+
     @GET
     @Path("/work")
     public List<WorkFull> listAll(@QueryParam("page") Integer page) {
@@ -107,6 +111,15 @@ public class WorkResource {
         log.infof("Work save requested: userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f, requestedBy=%s",
                 work.getUseruuid(), work.getTaskuuid(), work.getRegistered(),
                 work.getWorkduration(), work.getRate(), requestHeaderHolder.getUserUuid());
+
+        // Check if the week is submitted (locked)
+        if (weekSubmissionService.isDateLocked(work.getUseruuid(), work.getRegistered())) {
+            int isoYear = work.getRegistered().get(java.time.temporal.IsoFields.WEEK_BASED_YEAR);
+            int isoWeek = work.getRegistered().get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+            throw new WebApplicationException(
+                    "Week " + isoWeek + " of " + isoYear + " is submitted. Request an unlock to make changes.",
+                    jakarta.ws.rs.core.Response.Status.CONFLICT);
+        }
 
         workAPI.persistOrUpdate(work);
 
