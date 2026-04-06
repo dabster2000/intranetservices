@@ -123,11 +123,14 @@ public class WeekSubmissionResource {
                         s -> s.getUseruuid() + ":" + s.getYear() + ":" + s.getWeekNumber(),
                         s -> s, (a, b) -> a));
 
-        Map<String, String> userNames = new HashMap<>();
+        List<User> users = User.find("uuid IN ?1", userUuids).list();
+        Map<String, String> userNames = users.stream()
+                .collect(Collectors.toMap(User::getUuid,
+                        u -> u.getFirstname() + " " + u.getLastname(),
+                        (a, b) -> a));
+        // Fallback for any UUID not found in users table
         for (String uuid : userUuids) {
-            User user = User.findById(uuid);
-            userNames.put(uuid, user != null
-                    ? (user.getFirstname() + " " + user.getLastname()) : uuid);
+            userNames.putIfAbsent(uuid, uuid);
         }
 
         boolean allConsultantsSubmitted = true;
