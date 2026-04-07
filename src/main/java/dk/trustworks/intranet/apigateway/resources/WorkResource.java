@@ -4,7 +4,7 @@ import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.aggregates.work.events.UpdateWorkEvent;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
-import dk.trustworks.intranet.dao.workservice.services.WeekSubmissionService;
+import dk.trustworks.intranet.dao.workservice.services.MonthSubmissionService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.KeyValueDTO;
 import dk.trustworks.intranet.dto.work.LightweightWork;
@@ -59,7 +59,7 @@ public class WorkResource {
     RequestHeaderHolder requestHeaderHolder;
 
     @Inject
-    WeekSubmissionService weekSubmissionService;
+    MonthSubmissionService monthSubmissionService;
 
     @GET
     @Path("/work")
@@ -112,12 +112,12 @@ public class WorkResource {
                 work.getUseruuid(), work.getTaskuuid(), work.getRegistered(),
                 work.getWorkduration(), work.getRate(), requestHeaderHolder.getUserUuid());
 
-        // Check if the week is submitted (locked)
-        if (weekSubmissionService.isDateLocked(work.getUseruuid(), work.getRegistered())) {
-            int isoYear = work.getRegistered().get(java.time.temporal.IsoFields.WEEK_BASED_YEAR);
-            int isoWeek = work.getRegistered().get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+        // Check if the month is submitted (locked)
+        if (monthSubmissionService.isMonthLocked(work.getUseruuid(),
+                work.getRegistered().getYear(), work.getRegistered().getMonthValue())) {
             throw new WebApplicationException(
-                    "Week " + isoWeek + " of " + isoYear + " is submitted. Request an unlock to make changes.",
+                    work.getRegistered().getMonth() + " " + work.getRegistered().getYear() +
+                    " is submitted. Request an unlock to make changes.",
                     jakarta.ws.rs.core.Response.Status.CONFLICT);
         }
 
