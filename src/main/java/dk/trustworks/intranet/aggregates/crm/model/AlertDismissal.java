@@ -33,6 +33,9 @@ public class AlertDismissal extends PanacheEntityBase {
     @Column(name = "dismissed_at", nullable = false)
     public LocalDateTime dismissedAt;
 
+    @Column(name = "expires_at")
+    public LocalDateTime expiresAt;
+
     public AlertDismissal(String uuid, String userUuid, String alertId, LocalDateTime dismissedAt) {
         this.uuid = uuid;
         this.userUuid = userUuid;
@@ -40,8 +43,28 @@ public class AlertDismissal extends PanacheEntityBase {
         this.dismissedAt = dismissedAt;
     }
 
+    public AlertDismissal(String uuid, String userUuid, String alertId, LocalDateTime dismissedAt, LocalDateTime expiresAt) {
+        this.uuid = uuid;
+        this.userUuid = userUuid;
+        this.alertId = alertId;
+        this.dismissedAt = dismissedAt;
+        this.expiresAt = expiresAt;
+    }
+
+    /**
+     * Returns active (non-expired) dismissals for a user.
+     * A dismissal is active if expiresAt is NULL (permanent) or expiresAt is in the future.
+     */
     public static List<AlertDismissal> findByUserUuid(String userUuid) {
-        return find("userUuid", userUuid).list();
+        return find("userUuid = ?1 and (expiresAt is null or expiresAt > ?2)", userUuid, LocalDateTime.now()).list();
+    }
+
+    /**
+     * Finds a specific dismissal by user and alert, regardless of expiry status.
+     * Used for upsert logic where we may need to update an existing row.
+     */
+    public static AlertDismissal findByUserUuidAndAlertId(String userUuid, String alertId) {
+        return find("userUuid = ?1 and alertId = ?2", userUuid, alertId).firstResult();
     }
 
     public static boolean existsByUserUuidAndAlertId(String userUuid, String alertId) {

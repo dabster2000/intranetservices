@@ -43,12 +43,17 @@ public class AlertDismissalResource {
         if (request == null || request.userUuid() == null || request.alertId() == null) {
             throw new BadRequestException("userUuid and alertId are required");
         }
-        if (!AlertDismissal.existsByUserUuidAndAlertId(request.userUuid(), request.alertId())) {
+        var existing = AlertDismissal.findByUserUuidAndAlertId(request.userUuid(), request.alertId());
+        if (existing != null) {
+            existing.expiresAt = request.expiresAt();
+            existing.dismissedAt = LocalDateTime.now();
+        } else {
             var dismissal = new AlertDismissal(
                     UUID.randomUUID().toString(),
                     request.userUuid(),
                     request.alertId(),
-                    LocalDateTime.now()
+                    LocalDateTime.now(),
+                    request.expiresAt()
             );
             dismissal.persist();
         }
@@ -68,5 +73,5 @@ public class AlertDismissalResource {
         return Response.noContent().build();
     }
 
-    public record DismissalRequest(String userUuid, String alertId) {}
+    public record DismissalRequest(String userUuid, String alertId, LocalDateTime expiresAt) {}
 }
