@@ -95,6 +95,11 @@ public class ClientService {
                 client.getUuid());
     }
 
+    @Transactional
+    public void updateActiveStatus(String uuid, boolean active) {
+        Client.update("active = ?1 WHERE uuid = ?2", active, uuid);
+    }
+
     public Client findByCvr(String cvr) {
         return Client.find("cvr", cvr).firstResult();
     }

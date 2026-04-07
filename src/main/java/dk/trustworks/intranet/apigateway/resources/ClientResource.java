@@ -303,6 +303,38 @@ public class ClientResource {
         return Response.ok().build();
     }
 
+    @PATCH
+    @Path("/{uuid}/active")
+    @RolesAllowed({"crm:write"})
+    @Operation(summary = "Toggle client active status",
+            description = "Updates only the active flag without full client validation.")
+    @APIResponses({
+            @APIResponse(responseCode = "200", description = "Status updated"),
+            @APIResponse(responseCode = "404", description = "Client not found")
+    })
+    public Response updateActiveStatus(@PathParam("uuid") String uuid, Map<String, Object> body) {
+        String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
+        boolean active = Boolean.TRUE.equals(body.get("active"));
+        log.infof("Updating client active status uuid=%s, active=%s, user=%s", uuid, active, userUuid);
+
+        Client existing = clientAPI.findByUuid(uuid);
+        if (existing == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("error", "Client not found"))
+                    .build();
+        }
+
+        boolean oldActive = existing.isActive();
+        clientAPI.updateActiveStatus(uuid, active);
+
+        if (oldActive != active) {
+            activityLogService.logFieldChange(uuid, ClientActivityLog.TYPE_CLIENT, uuid, existing.getName(),
+                    "active", String.valueOf(oldActive), String.valueOf(active));
+        }
+
+        return Response.ok(Map.of("uuid", uuid, "active", active)).build();
+    }
+
     @GET
     @Path("/{clientuuid}/activity")
     public List<ClientActivityLogDTO> getClientActivity(
