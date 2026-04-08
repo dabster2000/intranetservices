@@ -98,7 +98,8 @@
 
 # Use Eclipse Temurin JDK 21 (Ubuntu-based) for LibreOffice compatibility
 # Previously: amazoncorretto:21 (Amazon Linux 2023 doesn't have LibreOffice in repos)
-FROM eclipse-temurin:21-jdk
+# Pinned to jammy (22.04 LTS) — noble (24.04) update on 2026-04-07 broke App Runner health checks
+FROM eclipse-temurin:21-jdk-jammy
 
 ENV LANGUAGE='en_US:en'
 ENV DEBIAN_FRONTEND=noninteractive
