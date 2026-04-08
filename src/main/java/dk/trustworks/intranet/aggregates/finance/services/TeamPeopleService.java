@@ -58,7 +58,7 @@ public class TeamPeopleService {
      * Uses each member's current (most recent) career level assignment.
      */
     public List<TeamCareerDistributionDTO> getCareerDistribution(String teamId) {
-        Set<String> memberUuids = teamDashboardService.getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
@@ -115,7 +115,7 @@ public class TeamPeopleService {
      * <p>Tenure is computed from the earliest non-TERMINATED, non-PREBOARDING status date.
      */
     public List<TeamTenureDistributionDTO> getTenureDistribution(String teamId) {
-        Set<String> memberUuids = teamDashboardService.getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
@@ -126,7 +126,6 @@ public class TeamPeopleService {
                 FROM userstatus us
                 WHERE us.useruuid IN (:memberUuids)
                   AND us.status NOT IN ('TERMINATED', 'PREBOARDING')
-                  AND us.type = 'CONSULTANT'
                 GROUP BY us.useruuid
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
@@ -183,7 +182,7 @@ public class TeamPeopleService {
      * vacation_hours, sick_hours, maternity_leave_hours, non_payd_leave_hours + paid_leave_hours.
      */
     public List<TeamAbsenceOverviewDTO> getAbsenceOverview(String teamId) {
-        Set<String> memberUuids = teamDashboardService.getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
@@ -246,8 +245,8 @@ public class TeamPeopleService {
      * <p>Used by the KPC tab's Leave Timeline.
      */
     public List<ConsultantAbsenceDayDTO> getConsultantAbsenceOverview(String teamId, String consultantUuid) {
-        // Validate the consultant is a member of the team
-        Set<String> memberUuids = teamDashboardService.getTeamMemberUuids(teamId, LocalDate.now());
+        // Validate the member belongs to the team (any type: CONSULTANT, STAFF, etc.)
+        Set<String> memberUuids = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
         if (!memberUuids.contains(consultantUuid)) {
             return List.of();
         }
@@ -405,7 +404,7 @@ public class TeamPeopleService {
      * </ul>
      */
     public List<TeamSickLeaveTrackingDTO> getSickLeaveTracking(String teamId) {
-        Set<String> memberUuids = teamDashboardService.getTeamMemberUuids(teamId, LocalDate.now());
+        Set<String> memberUuids = teamDashboardService.getAllTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
