@@ -18,8 +18,6 @@ public record TeamOverviewDTO(
         double salaryCostFY,
         /** Average days since last contract end for bench consultants; null if none on bench */
         Double avgBenchDays,
-        /** Number of CONSULTANT-type members currently on bench (no active contract) */
-        int benchCount,
         List<TeamRosterMemberDTO> roster,
         List<TeamAttentionItemDTO> attentionItems
 ) {
