@@ -28,6 +28,7 @@ public record TeamOverviewDTO(
             String lastname,
             String practice,
             String status,
+            String consultantType,
             Double utilizationPercent,
             boolean hasActiveContract,
             String careerLevel,

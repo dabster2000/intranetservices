@@ -81,7 +81,9 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     /**
-     * Returns UUIDs of active MEMBER-type team members for the given team at the given date.
+     * Returns UUIDs of active CONSULTANT-type team members for the given team at the given date.
+     * Use for financial KPI queries (utilization, revenue, bench, etc.).
+     * For roster/people queries where all member types should be visible, use {@link #getAllTeamMemberUuids}.
      */
     public Set<String> getTeamMemberUuids(String teamId, LocalDate date) {
         @SuppressWarnings("unchecked")
@@ -95,6 +97,33 @@ public class TeamDashboardService {
                      )
                      AND us.status NOT IN ('TERMINATED', 'PREBOARDING')
                      AND us.type = 'CONSULTANT'
+                WHERE tr.teamuuid = :teamId
+                  AND tr.membertype = 'MEMBER'
+                  AND tr.startdate <= :date
+                  AND (tr.enddate IS NULL OR tr.enddate > :date)
+                """)
+                .setParameter("teamId", teamId)
+                .setParameter("date", date)
+                .getResultList();
+        return Set.copyOf(uuids);
+    }
+
+    /**
+     * Returns UUIDs of ALL active team members (any consultant type: CONSULTANT, STAFF, STUDENT, EXTERNAL)
+     * for the given team at the given date.
+     * Use for roster/people queries where all member types should be visible.
+     */
+    public Set<String> getAllTeamMemberUuids(String teamId, LocalDate date) {
+        @SuppressWarnings("unchecked")
+        List<String> uuids = em.createNativeQuery("""
+                SELECT tr.useruuid
+                FROM teamroles tr
+                JOIN userstatus us ON us.useruuid = tr.useruuid
+                     AND us.statusdate = (
+                         SELECT MAX(us2.statusdate) FROM userstatus us2
+                         WHERE us2.useruuid = tr.useruuid AND us2.statusdate <= :date
+                     )
+                     AND us.status NOT IN ('TERMINATED', 'PREBOARDING')
                 WHERE tr.teamuuid = :teamId
                   AND tr.membertype = 'MEMBER'
                   AND tr.startdate <= :date
@@ -138,10 +167,11 @@ public class TeamDashboardService {
 
     public TeamOverviewDTO getOverview(String teamId) {
         LocalDate now = LocalDate.now();
-        Set<String> memberUuids = getTeamMemberUuids(teamId, now);
-        if (memberUuids.isEmpty()) {
+        Set<String> allMemberUuids = getAllTeamMemberUuids(teamId, now);
+        if (allMemberUuids.isEmpty()) {
             return emptyOverview(teamId);
         }
+        Set<String> consultantUuids = getTeamMemberUuids(teamId, now);
 
         var fy = getCurrentFiscalYearRange();
         // Cap end date to today so we don't include future months
@@ -151,57 +181,64 @@ public class TeamDashboardService {
         String teamName = getTeamName(teamId);
 
         // KPI: utilization — temporal team membership via fact_user_day
-        var utilRow = querySingleRow("""
-                SELECT COALESCE(SUM(fud.registered_billable_hours), 0) AS billable,
-                       COALESCE(SUM(fud.net_available_hours), 0) AS net_available
-                FROM fact_user_day fud
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
-                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                """,
-                Map.of("teamId", teamId,
-                        "fromDate", fy.start(),
-                        "toDate", effectiveEnd));
+        Double utilPct = null;
+        double revenue = 0;
+        double salaryCost = 0;
+        if (!consultantUuids.isEmpty()) {
+            var utilRow = querySingleRow("""
+                    SELECT COALESCE(SUM(fud.registered_billable_hours), 0) AS billable,
+                           COALESCE(SUM(fud.net_available_hours), 0) AS net_available
+                    FROM fact_user_day fud
+                    JOIN teamroles tr ON tr.useruuid = fud.useruuid
+                        AND tr.teamuuid = :teamId
+                        AND tr.membertype = 'MEMBER'
+                        AND tr.startdate <= fud.document_date
+                        AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                    WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                    """,
+                    Map.of("teamId", teamId,
+                            "fromDate", fy.start(),
+                            "toDate", effectiveEnd));
 
-        double billable = numVal(utilRow, "billable");
-        double netAvail = numVal(utilRow, "net_available");
-        Double utilPct = netAvail > 0 ? (billable / netAvail) * 100.0 : null;
+            double billable = numVal(utilRow, "billable");
+            double netAvail = numVal(utilRow, "net_available");
+            utilPct = netAvail > 0 ? (billable / netAvail) * 100.0 : null;
 
-        // KPI: revenue
-        var revRow = querySingleRow("""
-                SELECT COALESCE(SUM(fud.registered_amount), 0) AS revenue
-                FROM fact_user_day fud
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                  AND fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
-                """,
-                Map.of("memberUuids", memberUuids,
-                        "fromDate", fy.start(),
-                        "toDate", effectiveEnd));
-        double revenue = numVal(revRow, "revenue");
+            // KPI: revenue
+            var revRow = querySingleRow("""
+                    SELECT COALESCE(SUM(fud.registered_amount), 0) AS revenue
+                    FROM fact_user_day fud
+                    WHERE fud.useruuid IN (:memberUuids)
+                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                      AND fud.consultant_type = 'CONSULTANT'
+                      AND fud.status_type = 'ACTIVE'
+                    """,
+                    Map.of("memberUuids", consultantUuids,
+                            "fromDate", fy.start(),
+                            "toDate", effectiveEnd));
+            revenue = numVal(revRow, "revenue");
 
-        // KPI: salary cost
-        var salaryRow = querySingleRow("""
-                SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
-                FROM fact_salary_monthly_teamroles fsmt
-                WHERE fsmt.teamuuid = :teamId
-                  AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
-                """,
-                Map.of("teamId", teamId,
-                        "fromKey", toMonthKey(fy.start()),
-                        "toKey", toMonthKey(effectiveEnd)));
-        double salaryCost = numVal(salaryRow, "salary_cost");
+            // KPI: salary cost
+            var salaryRow = querySingleRow("""
+                    SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
+                    FROM fact_salary_monthly_teamroles fsmt
+                    WHERE fsmt.teamuuid = :teamId
+                      AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
+                    """,
+                    Map.of("teamId", teamId,
+                            "fromKey", toMonthKey(fy.start()),
+                            "toKey", toMonthKey(effectiveEnd)));
+            salaryCost = numVal(salaryRow, "salary_cost");
+        }
 
-        // Roster
-        List<TeamRosterMemberDTO> roster = buildRoster(memberUuids, fy, effectiveEnd);
+        // Roster — includes all member types (CONSULTANT, STAFF, etc.)
+        List<TeamRosterMemberDTO> roster = buildRoster(allMemberUuids, fy, effectiveEnd);
 
-        // Bench / attention items
-        List<TeamBenchConsultantDTO> bench = getBenchConsultants(teamId, memberUuids);
+        // Bench / attention items — consultant-only
+        List<TeamBenchConsultantDTO> bench = consultantUuids.isEmpty()
+                ? List.of()
+                : getBenchConsultants(teamId, consultantUuids);
         Double avgBenchDays = bench.isEmpty() ? null :
                 bench.stream()
                         .mapToInt(TeamBenchConsultantDTO::daysSinceContract)
@@ -212,7 +249,7 @@ public class TeamDashboardService {
         List<TeamAttentionItemDTO> attentionItems = buildAttentionItems(bench);
 
         return new TeamOverviewDTO(
-                teamId, teamName, memberUuids.size(),
+                teamId, teamName, consultantUuids.size(),
                 utilPct, revenue, salaryCost, avgBenchDays,
                 roster, attentionItems);
     }
@@ -1195,7 +1232,7 @@ public class TeamDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
-                       us.status,
+                       us.status, us.type AS consultant_type,
                        COALESCE(util.billable, 0) AS billable,
                        COALESCE(util.net_available, 0) AS net_available,
                        CASE WHEN EXISTS (
@@ -1248,6 +1285,7 @@ public class TeamDashboardService {
                     (String) row.get("lastname"),
                     (String) row.get("practice"),
                     (String) row.get("status"),
+                    (String) row.get("consultant_type"),
                     pct,
                     ((Number) row.get("has_active_contract")).intValue() > 0,
                     career[0],
@@ -1352,7 +1390,7 @@ public class TeamDashboardService {
      */
     public TimeRegistrationComplianceDTO getConsultantCompliance(String teamId, String userId) {
         LocalDate now = LocalDate.now();
-        Set<String> memberUuids = getTeamMemberUuids(teamId, now);
+        Set<String> memberUuids = getAllTeamMemberUuids(teamId, now);
         if (!memberUuids.contains(userId)) {
             throw new WebApplicationException(
                     "User is not a member of the specified team",
