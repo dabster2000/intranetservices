@@ -251,6 +251,7 @@ public class TeamDashboardService {
         return new TeamOverviewDTO(
                 teamId, teamName, consultantUuids.size(),
                 utilPct, revenue, salaryCost, avgBenchDays,
+                bench.size(),
                 roster, attentionItems);
     }
 
@@ -1232,7 +1233,7 @@ public class TeamDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
-                       us.status, us.type AS consultant_type,
+                       us.status,
                        COALESCE(util.billable, 0) AS billable,
                        COALESCE(util.net_available, 0) AS net_available,
                        CASE WHEN EXISTS (
@@ -1285,7 +1286,6 @@ public class TeamDashboardService {
                     (String) row.get("lastname"),
                     (String) row.get("practice"),
                     (String) row.get("status"),
-                    (String) row.get("consultant_type"),
                     pct,
                     ((Number) row.get("has_active_contract")).intValue() > 0,
                     career[0],
@@ -1462,6 +1462,7 @@ public class TeamDashboardService {
         return new TeamOverviewDTO(
                 teamId, getTeamName(teamId), 0,
                 null, 0, 0, null,
+                0,
                 List.of(), List.of());
     }
 
