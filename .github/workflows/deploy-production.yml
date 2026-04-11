@@ -1,4 +1,4 @@
-name: Deploy Quarkus to Production App Runner
+name: Deploy Quarkus to Production ECS Express
 
 on:
   push:
@@ -44,6 +44,58 @@ jobs:
           ECR_REPO: ${{ vars.ECR_REPO }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -f src/main/docker/Dockerfile.jvm -t $ECR_REPO:$IMAGE_TAG -t $ECR_REPO:latest .
+          docker build -f src/main/docker/Dockerfile.jvm -t $ECR_REPO:$IMAGE_TAG .
           docker push $ECR_REPO:$IMAGE_TAG
-          docker push $ECR_REPO:latest
+
+      - name: Deploy to ECS Express
+        uses: aws-actions/amazon-ecs-deploy-express-service@v1
+        with:
+          service-name: tw-quarkus-production
+          image: ${{ vars.ECR_REPO }}:${{ github.sha }}
+          execution-role-arn: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+          infrastructure-role-arn: ${{ vars.ECS_INFRA_ROLE_ARN }}
+          task-role-arn: ${{ vars.ECS_TASK_ROLE_QUARKUS_ARN }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          container-port: 9093
+          subnets: ${{ vars.PUBLIC_SUBNET_A }},${{ vars.PUBLIC_SUBNET_B }}
+          security-groups: ${{ vars.ECS_TASK_SG }}
+          cpu: '2048'
+          memory: '4096'
+          health-check-path: /health
+          min-task-count: 1
+          max-task-count: 5
+          environment-variables: |
+            [
+              {"name":"LOGLEVEL_Q","value":"INFO"},
+              {"name":"APPLICATION_BASE_URL","value":"https://intra.trustworks.dk"},
+              {"name":"SMTPSERVER","value":"mail.smtp2go.com"},
+              {"name":"MAILUSERNAME","value":"trustworks.dk"},
+              {"name":"JOURNALNUMBER","value":"7"},
+              {"name":"EXPENSEJOURNALNUMBER","value":"16"},
+              {"name":"INVOICE_S3","value":"invoicefiles-new"},
+              {"name":"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT","value":"http://localhost:4317"},
+              {"name":"OTEL_EXPORTER_OTLP_TRACES_ENABLED","value":"false"},
+              {"name":"CLOUDWATCH_LOG_GROUP_BACKEND","value":"/ecs/tw-quarkus-production"},
+              {"name":"CLOUDWATCH_LOG_GROUP_FRONTEND","value":"/ecs/tw-nextjs-production"}
+            ]
+          secrets: |
+            [
+              {"name":"URL","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:URL::"},
+              {"name":"USERNAME","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:USERNAME::"},
+              {"name":"PASSWORD","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:PASSWORD::"},
+              {"name":"MOTHERSLACKBOTTOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:MOTHERSLACKBOTTOKEN::"},
+              {"name":"ADMINSLACKBOTTOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:ADMINSLACKBOTTOKEN::"},
+              {"name":"MAILPASSWORD","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:MAILPASSWORD::"},
+              {"name":"XAPPSERCREETTOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:XAPPSERCREETTOKEN::"},
+              {"name":"XAGREEMENTGRANTTOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:XAGREEMENTGRANTTOKEN::"},
+              {"name":"API_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:API_KEY::"},
+              {"name":"INV_GENERATOR","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:INV_GENERATOR::"},
+              {"name":"EDENAI_APIKEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:EDENAI_APIKEY::"},
+              {"name":"OPENAI_APIKEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:OPENAI_APIKEY::"},
+              {"name":"AZURE_CLIENT_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_CLIENT_ID::"},
+              {"name":"AZURE_CLIENT_SECRET","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_CLIENT_SECRET::"},
+              {"name":"AZURE_TENANT_ID","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:AZURE_TENANT_ID::"},
+              {"name":"CVTOOL_USERNAME","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_USERNAME::"},
+              {"name":"CVTOOL_PASSWORD","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:CVTOOL_PASSWORD::"},
+              {"name":"GH_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:GH_TOKEN::"}
+            ]
