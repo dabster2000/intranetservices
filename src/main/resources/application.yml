@@ -171,10 +171,11 @@ quarkus:
     aws:
       region: eu-west-1
       credentials:
-        type: STATIC
-        static-provider:
-          access-key-id: ${AWS_ACCESS_KEY_ID:xx}
-          secret-access-key: ${AWS_SECRET_ACCESS_KEY:xx}
+        # DEFAULT uses the AWS SDK DefaultCredentialsProvider chain.
+        # On App Runner this resolves task-role creds from the container
+        # metadata endpoint; on ECS the same chain reads from
+        # $AWS_CONTAINER_CREDENTIALS_RELATIVE_URI. No static keys.
+        type: DEFAULT
   native:
     additional-build-args:
       - -H:IncludeResources=.*\\.pem
