@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceLedgerService;
 import dk.trustworks.intranet.security.ScopeContext;
@@ -71,6 +73,9 @@ public class InvoiceResource {
 
     @Inject
     ScopeContext scopeContext;
+
+    @Inject
+    InvoiceAttributionService invoiceAttributionService;
 
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
@@ -973,6 +978,64 @@ public class InvoiceResource {
                 "uuid", invoice.uuid,
                 "internalInvoiceSkip", false
         )).build();
+    }
+
+    // ── Attribution endpoints ─────────────────────────────────────────────
+
+    @GET
+    @Path("/{invoiceuuid}/attributions")
+    public List<InvoiceItemAttribution> getInvoiceAttributions(@PathParam("invoiceuuid") String invoiceuuid) {
+        return invoiceAttributionService.getInvoiceAttributions(invoiceuuid);
+    }
+
+    @GET
+    @Path("/{invoiceuuid}/items/{itemuuid}/attributions")
+    public List<InvoiceItemAttribution> getItemAttributions(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @PathParam("itemuuid") String itemuuid) {
+        return invoiceAttributionService.getAttributions(itemuuid);
+    }
+
+    @PUT
+    @Path("/{invoiceuuid}/items/{itemuuid}/attributions")
+    @RolesAllowed({"invoices:write"})
+    public void setItemAttributions(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @PathParam("itemuuid") String itemuuid,
+            List<InvoiceAttributionService.ManualAttributionInput> attributions) {
+        invoiceAttributionService.setManualAttribution(itemuuid, attributions);
+    }
+
+    @POST
+    @Path("/{invoiceuuid}/items/{itemuuid}/attributions/reset")
+    @RolesAllowed({"invoices:write"})
+    public void resetItemAttributions(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @PathParam("itemuuid") String itemuuid) {
+        invoiceAttributionService.resetToAuto(itemuuid);
+    }
+
+    @POST
+    @Path("/attributions/backfill")
+    @RolesAllowed({"admin:full"})
+    public Map<String, Object> backfillAttributions(
+            @QueryParam("from") String from,
+            @QueryParam("to") String to) {
+        LocalDate fromDate = LocalDate.parse(from);
+        LocalDate toDate = LocalDate.parse(to);
+        int count = invoiceAttributionService.backfillRange(fromDate, toDate);
+        return Map.of("processed", count);
+    }
+
+    @GET
+    @Path("/attributions/unattributed")
+    @RolesAllowed({"invoices:read"})
+    public List<Map<String, Object>> getUnattributedItems(
+            @QueryParam("from") String from,
+            @QueryParam("to") String to) {
+        LocalDate fromDate = LocalDate.parse(from);
+        LocalDate toDate = LocalDate.parse(to);
+        return invoiceAttributionService.findUnattributedItems(fromDate, toDate);
     }
 
     // ──────────────────────────────────────────────────────────────
