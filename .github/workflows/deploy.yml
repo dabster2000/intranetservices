@@ -26,7 +26,7 @@ jobs:
           cache: maven
 
       - name: Build with Maven
-        run: ./mvnw package -DskipTests -B
+        run: ./mvnw package -DskipTests -B -T 1C
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -42,9 +42,16 @@ jobs:
         env:
           ECR_REPO: ${{ vars.ECR_REPO }}
           IMAGE_TAG: ${{ github.sha }}
+          DOCKER_BUILDKIT: '1'
         run: |
-          docker build -f src/main/docker/Dockerfile.jvm -t $ECR_REPO:$IMAGE_TAG .
+          docker pull $ECR_REPO:latest || true
+          docker build -f src/main/docker/Dockerfile.jvm \
+            --cache-from $ECR_REPO:latest \
+            -t $ECR_REPO:$IMAGE_TAG \
+            -t $ECR_REPO:latest \
+            .
           docker push $ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REPO:latest
 
       - name: Deploy to ECS Express
         uses: aws-actions/amazon-ecs-deploy-express-service@v1
