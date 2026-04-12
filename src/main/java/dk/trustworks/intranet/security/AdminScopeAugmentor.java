@@ -29,7 +29,7 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
     static final String ADMIN_WILDCARD = "admin:*";
 
     /**
-     * All 69 scopes in the system. When a client holds {@code admin:*},
+     * All 71 scopes in the system. When a client holds {@code admin:*},
      * every scope below is added to its identity so that fine-grained
      * {@code @RolesAllowed} annotations pass without modification.
      */
@@ -128,6 +128,9 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
 
             // Guest
             "guest:read", "guest:write",
+
+            // Questionnaires
+            "questionnaires:read", "questionnaires:write",
 
             // Bug Reports
             "bugreports:read", "bugreports:write", "bugreports:admin",
