@@ -31,6 +31,21 @@ public class Questionnaire extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     private QuestionnaireStatus status;
 
+    @Column(name = "start_date")
+    private LocalDate startDate;
+
+    @Column(name = "reminder_enabled")
+    private boolean reminderEnabled;
+
+    @Column(name = "reminder_cooldown_days")
+    private int reminderCooldownDays;
+
+    @Column(name = "target_practices", columnDefinition = "TEXT")
+    private String targetPractices;
+
+    @Column(name = "target_teams", columnDefinition = "TEXT")
+    private String targetTeams;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -54,7 +69,9 @@ public class Questionnaire extends PanacheEntityBase {
     }
 
     public boolean isOpen() {
+        LocalDate today = LocalDate.now();
         return status == QuestionnaireStatus.ACTIVE
-                && (deadline == null || !LocalDate.now().isAfter(deadline));
+                && (startDate == null || !today.isBefore(startDate))
+                && (deadline == null || !today.isAfter(deadline));
     }
 }
