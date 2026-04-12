@@ -1,6 +1,10 @@
 package dk.trustworks.intranet.questionnaireservice.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.questionnaireservice.dto.CreateQuestionRequest;
+import dk.trustworks.intranet.questionnaireservice.dto.CreateQuestionnaireRequest;
 import dk.trustworks.intranet.questionnaireservice.dto.CreateSubmissionRequest;
 import dk.trustworks.intranet.questionnaireservice.dto.QuestionnaireStatsResponse;
 import dk.trustworks.intranet.questionnaireservice.dto.SubmissionAnswerRequest;
@@ -8,7 +12,10 @@ import dk.trustworks.intranet.questionnaireservice.model.Questionnaire;
 import dk.trustworks.intranet.questionnaireservice.model.QuestionnaireAnswer;
 import dk.trustworks.intranet.questionnaireservice.model.QuestionnaireQuestion;
 import dk.trustworks.intranet.questionnaireservice.model.QuestionnaireSubmission;
+import dk.trustworks.intranet.userservice.model.TeamRole;
+import dk.trustworks.intranet.userservice.services.TeamRoleService;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.WebApplicationException;
@@ -24,6 +31,9 @@ import java.util.UUID;
 @JBossLog
 @ApplicationScoped
 public class QuestionnaireService {
+
+    @Inject
+    TeamRoleService teamRoleService;
 
     public List<Questionnaire> listAll() {
         return Questionnaire.listAll();
@@ -132,5 +142,118 @@ public class QuestionnaireService {
                 questionnaireUuid, request.getClientUuid(), userUuid);
 
         return QuestionnaireSubmission.findById(submission.getUuid());
+    }
+
+    @Transactional
+    public Questionnaire createQuestionnaire(CreateQuestionnaireRequest request) {
+        if (request.getTitle() == null || request.getTitle().isBlank()) {
+            throw new BadRequestException("Title is required");
+        }
+        if (request.getQuestions() == null || request.getQuestions().isEmpty()) {
+            throw new BadRequestException("At least one question is required");
+        }
+
+        Questionnaire q = new Questionnaire();
+        q.setUuid(UUID.randomUUID().toString());
+        q.setTitle(request.getTitle().trim());
+        q.setDescription(request.getDescription());
+        q.setStartDate(request.getStartDate());
+        q.setDeadline(request.getDeadline());
+        q.setStatus(Questionnaire.QuestionnaireStatus.ACTIVE);
+        q.setReminderEnabled(request.isReminderEnabled());
+        q.setReminderCooldownDays(request.getReminderCooldownDays() > 0 ? request.getReminderCooldownDays() : 3);
+        q.setCreatedAt(LocalDateTime.now());
+        q.setUpdatedAt(LocalDateTime.now());
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            if (request.getTargetPractices() != null && !request.getTargetPractices().isEmpty()) {
+                q.setTargetPractices(mapper.writeValueAsString(request.getTargetPractices()));
+            }
+            if (request.getTargetTeams() != null && !request.getTargetTeams().isEmpty()) {
+                q.setTargetTeams(mapper.writeValueAsString(request.getTargetTeams()));
+            }
+        } catch (Exception e) {
+            throw new BadRequestException("Invalid practices or teams format");
+        }
+
+        q.persist();
+
+        for (CreateQuestionRequest qr : request.getQuestions()) {
+            QuestionnaireQuestion question = new QuestionnaireQuestion();
+            question.setUuid(UUID.randomUUID().toString());
+            question.setQuestionnaire(q);
+            question.setQuestionText(qr.getQuestionText());
+            question.setQuestionType(QuestionnaireQuestion.QuestionType.valueOf(qr.getQuestionType()));
+            question.setSortOrder(qr.getSortOrder());
+            question.setConfigJson(qr.getConfigJson());
+            question.setCreatedAt(LocalDateTime.now());
+            question.persist();
+        }
+
+        log.infof("Questionnaire created: uuid=%s, title=%s, questions=%d",
+                q.getUuid(), q.getTitle(), request.getQuestions().size());
+
+        return Questionnaire.findByUuid(q.getUuid());
+    }
+
+    public List<Questionnaire> getActiveReminders(String userUuid) {
+        LocalDate today = LocalDate.now();
+
+        // Get user's practice
+        User user = User.findById(userUuid);
+        String userPractice = user != null && user.getPractice() != null
+                ? user.getPractice().name() : null;
+
+        // Get user's current team UUIDs
+        List<TeamRole> teamRoles = teamRoleService.listAll(userUuid);
+        List<String> userTeamUuids = teamRoles.stream()
+                .filter(tr -> (tr.getEnddate() == null || !tr.getEnddate().isBefore(today))
+                        && (tr.getStartdate() == null || !tr.getStartdate().isAfter(today)))
+                .map(TeamRole::getTeamuuid)
+                .distinct()
+                .toList();
+
+        // Get user's existing submission questionnaire UUIDs
+        List<String> submittedQuestionnaireUuids = QuestionnaireSubmission
+                .find("userUuid", userUuid)
+                .stream()
+                .map(s -> ((QuestionnaireSubmission) s).getQuestionnaireUuid())
+                .distinct()
+                .toList();
+
+        ObjectMapper mapper = new ObjectMapper();
+
+        return Questionnaire.findAllActive().stream()
+                .filter(q -> q.isOpen() && q.isReminderEnabled())
+                .filter(q -> !submittedQuestionnaireUuids.contains(q.getUuid()))
+                .filter(q -> {
+                    if (q.getTargetPractices() == null || q.getTargetPractices().isBlank()) {
+                        return true;
+                    }
+                    if (userPractice == null) return false;
+                    try {
+                        List<String> practices = mapper.readValue(q.getTargetPractices(),
+                                mapper.getTypeFactory().constructCollectionType(List.class, String.class));
+                        return practices.contains(userPractice);
+                    } catch (Exception e) {
+                        log.warnf("Invalid target_practices JSON for questionnaire %s", q.getUuid());
+                        return false;
+                    }
+                })
+                .filter(q -> {
+                    if (q.getTargetTeams() == null || q.getTargetTeams().isBlank()) {
+                        return true;
+                    }
+                    try {
+                        List<String> targetTeams = mapper.readValue(q.getTargetTeams(),
+                                mapper.getTypeFactory().constructCollectionType(List.class, String.class));
+                        return userTeamUuids.stream().anyMatch(targetTeams::contains);
+                    } catch (Exception e) {
+                        log.warnf("Invalid target_teams JSON for questionnaire %s", q.getUuid());
+                        return false;
+                    }
+                })
+                .toList();
     }
 }
