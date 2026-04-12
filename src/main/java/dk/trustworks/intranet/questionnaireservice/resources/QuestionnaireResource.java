@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.questionnaireservice.resources;
 
+import dk.trustworks.intranet.questionnaireservice.dto.CreateQuestionnaireRequest;
 import dk.trustworks.intranet.questionnaireservice.dto.CreateSubmissionRequest;
 import dk.trustworks.intranet.questionnaireservice.dto.QuestionnaireStatsResponse;
 import dk.trustworks.intranet.questionnaireservice.model.Questionnaire;
@@ -36,6 +37,17 @@ public class QuestionnaireResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    @POST
+    @RolesAllowed({"admin:*"})
+    public Response createQuestionnaire(CreateQuestionnaireRequest request) {
+        String userUuid = requestHeaderHolder.getUserUuid();
+        log.infof("Create questionnaire requested by user=%s, title=%s", userUuid, request.getTitle());
+        Questionnaire q = questionnaireService.createQuestionnaire(request);
+        return Response.created(URI.create("/questionnaires/" + q.getUuid()))
+                .entity(q)
+                .build();
+    }
+
     @GET
     public List<Questionnaire> listAll() {
         return questionnaireService.listAll();
@@ -65,6 +77,13 @@ public class QuestionnaireResource {
         String userUuid = requestHeaderHolder.getUserUuid();
         log.infof("Get my submissions: questionnaire=%s, user=%s", uuid, userUuid);
         return questionnaireService.getMySubmissions(uuid, userUuid);
+    }
+
+    @GET
+    @Path("/active-reminders")
+    public List<Questionnaire> getActiveReminders() {
+        String userUuid = requestHeaderHolder.getUserUuid();
+        return questionnaireService.getActiveReminders(userUuid);
     }
 
     @POST
