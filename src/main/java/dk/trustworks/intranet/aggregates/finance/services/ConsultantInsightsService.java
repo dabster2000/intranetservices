@@ -422,21 +422,20 @@ public class ConsultantInsightsService {
             ) sal
             JOIN user u ON u.uuid = sal.useruuid
             LEFT JOIN (
-                SELECT ii.consultantuuid AS useruuid,
-                       SUM(ii.rate * ii.hours
+                SELECT iia.consultant_uuid AS useruuid,
+                       SUM(iia.attributed_amount
                            * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
                            * CASE WHEN i.currency = 'DKK' THEN 1
                                   ELSE COALESCE(cur.conversion, 1) END) AS ttm_revenue
-                FROM invoiceitems ii
+                FROM invoice_item_attributions iia
+                JOIN invoiceitems ii ON iia.invoiceitem_uuid = ii.uuid
                 JOIN invoices i ON ii.invoiceuuid = i.uuid
                 LEFT JOIN currences cur ON cur.currency = i.currency
                     AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m')
                 WHERE i.status = 'CREATED'
                   AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
-                  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL
-                  AND ii.consultantuuid IS NOT NULL
                   AND i.invoicedate >= :periodFrom AND i.invoicedate < :periodTo
-                GROUP BY ii.consultantuuid
+                GROUP BY iia.consultant_uuid
             ) rev ON rev.useruuid = sal.useruuid
             WHERE u.practice IN (:practices)
               AND EXISTS (
