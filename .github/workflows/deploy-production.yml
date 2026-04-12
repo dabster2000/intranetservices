@@ -3,6 +3,10 @@ name: Deploy Quarkus to Production ECS Express
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/ISSUE_TEMPLATE/**'
 
 permissions:
   id-token: write
@@ -39,20 +43,20 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Docker image
-        env:
-          ECR_REPO: ${{ vars.ECR_REPO }}
-          IMAGE_TAG: ${{ github.sha }}
-          DOCKER_BUILDKIT: '1'
-        run: |
-          docker pull $ECR_REPO:latest || true
-          docker build -f src/main/docker/Dockerfile.jvm \
-            --cache-from $ECR_REPO:latest \
-            -t $ECR_REPO:$IMAGE_TAG \
-            -t $ECR_REPO:latest \
-            .
-          docker push $ECR_REPO:$IMAGE_TAG
-          docker push $ECR_REPO:latest
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/main/docker/Dockerfile.jvm
+          push: true
+          tags: |
+            ${{ vars.ECR_REPO }}:${{ github.sha }}
+            ${{ vars.ECR_REPO }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Deploy to ECS Express
         uses: aws-actions/amazon-ecs-deploy-express-service@v1
