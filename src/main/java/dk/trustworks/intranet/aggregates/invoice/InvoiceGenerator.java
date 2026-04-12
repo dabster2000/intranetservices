@@ -21,6 +21,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -62,6 +63,9 @@ public class InvoiceGenerator {
 
     @Inject
     TaskService taskService;
+
+    @Inject
+    InvoiceAttributionService invoiceAttributionService;
 
     @Inject
     WorkService workService;
@@ -298,6 +302,7 @@ public class InvoiceGenerator {
         // Invoke pricing to add CALCULATED lines immediately
         Invoice priced = invoiceService.updateDraftInvoice(created);
         log.info("Priced draft invoice: " + priced.getUuid());
+        invoiceAttributionService.computeAttributions(priced.uuid);
         return created;
     }
 

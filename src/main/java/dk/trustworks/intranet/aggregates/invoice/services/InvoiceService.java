@@ -78,6 +78,9 @@ public class InvoiceService {
     @Inject IntercompanyCalcService calcService;
 
     @Inject
+    InvoiceAttributionService invoiceAttributionService;
+
+    @Inject
     PricingEngine pricingEngine;
 
     @Inject
@@ -381,6 +384,7 @@ public class InvoiceService {
         if (invoice.getType() != InvoiceType.INTERNAL) {
             bonusService.recalcForInvoice(invoice.getUuid());
         }
+        invoiceAttributionService.computeAttributions(invoice.getUuid());
         return invoice;
     }
 
@@ -962,6 +966,11 @@ public class InvoiceService {
 
     @Transactional
     public void deleteDraftInvoice(String invoiceuuid) {
+        // Clean up attribution rows for all items on this invoice
+        em.createNativeQuery("""
+                DELETE FROM invoice_item_attributions
+                WHERE invoiceitem_uuid IN (SELECT uuid FROM invoiceitems WHERE invoiceuuid = :uuid)
+                """).setParameter("uuid", invoiceuuid).executeUpdate();
         if(isDraftOrPhantom(invoiceuuid)) Invoice.deleteById(invoiceuuid);
     }
 
