@@ -19,14 +19,17 @@ class InvoiceAttributionServiceTest {
     /**
      * Test profile that disables S3/LocalStack dev services so that
      * @QuarkusTest can start without Docker being available.
+     * Also provides non-empty placeholder values for config properties that
+     * reject empty strings (cvtool credentials).
      * The datasource connects to the local/staging MariaDB via application.yml defaults.
      */
     public static class NoDevServicesProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
             return Map.of(
-                    "quarkus.amazon.s3.devservices.enabled", "false",
-                    "quarkus.amazon.devservices.enabled", "false"
+                    "quarkus.s3.devservices.enabled", "false",
+                    "cvtool.username", "test-placeholder",
+                    "cvtool.password", "test-placeholder"
             );
         }
     }
