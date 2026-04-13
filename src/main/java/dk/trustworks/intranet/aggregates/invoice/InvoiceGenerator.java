@@ -302,7 +302,7 @@ public class InvoiceGenerator {
         // Invoke pricing to add CALCULATED lines immediately
         Invoice priced = invoiceService.updateDraftInvoice(created);
         log.info("Priced draft invoice: " + priced.getUuid());
-        invoiceAttributionService.computeAttributions(priced.uuid);
+        // Attribution computed inside updateDraftInvoice after flush+refresh
         return created;
     }
 
