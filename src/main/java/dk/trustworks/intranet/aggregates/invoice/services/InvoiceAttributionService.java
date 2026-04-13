@@ -598,6 +598,22 @@ public class InvoiceAttributionService {
         return left.add(right);
     }
 
+    // ── Private: consultant name lookup ────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> lookupConsultantNames(Set<String> userUuids) {
+        if (userUuids.isEmpty()) return Map.of();
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT uuid, CONCAT(firstname, ' ', lastname) FROM user WHERE uuid IN (:uuids)")
+            .setParameter("uuids", userUuids)
+            .getResultList();
+        Map<String, String> names = new HashMap<>();
+        for (Object[] row : rows) {
+            names.put((String) row[0], (String) row[1]);
+        }
+        return names;
+    }
+
     // ── Resolve pipeline ────────────────────────────────────────────────
 
     /**
@@ -654,6 +670,23 @@ public class InvoiceAttributionService {
         List<ResolvedItem> allItems = new ArrayList<>(resolvedItems);
         allItems.addAll(flaggedItems);
 
+        // Phase 5: Enrich with consultant names (single bulk query)
+        Set<String> allUuids = allItems.stream()
+            .flatMap(ri -> ri.attributions().stream())
+            .map(ResolvedAttribution::consultantUuid)
+            .collect(Collectors.toSet());
+        Map<String, String> nameMap = lookupConsultantNames(allUuids);
+
+        allItems = allItems.stream().map(item -> new ResolvedItem(
+            item.itemUuid(), item.description(), item.hours(), item.amount(),
+            item.attributions().stream().map(a -> new ResolvedAttribution(
+                a.consultantUuid(),
+                a.consultantName() != null ? a.consultantName() : nameMap.getOrDefault(a.consultantUuid(), null),
+                a.sharePct(), a.attributedAmount(), a.attributedHours()
+            )).toList(),
+            item.confidence(), item.reasoning()
+        )).toList();
+
         return new AttributionResolution(
             allItems,
             flaggedItems.isEmpty(),
@@ -667,6 +700,7 @@ public class InvoiceAttributionService {
      */
     private ResolvedItem resolveItem(InvoiceItem item, Map<String, BigDecimal> workShares) {
         BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
+        BigDecimal itemHours = BigDecimal.valueOf(item.hours);
 
         // Case 1: Item has a consultant UUID — check work data
         if (item.consultantuuid != null && !item.consultantuuid.isBlank()) {
@@ -674,13 +708,14 @@ public class InvoiceAttributionService {
                 return new ResolvedItem(
                     item.uuid,
                     item.itemname,
-                    BigDecimal.valueOf(item.hours),
+                    itemHours,
                     itemTotal,
                     List.of(new ResolvedAttribution(
                         item.consultantuuid,
                         null,
                         BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
-                        itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP)
+                        itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP),
+                        itemHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
                     )),
                     "HIGH",
                     "Single consultant with matching work data"
@@ -693,7 +728,8 @@ public class InvoiceAttributionService {
                     e.getKey(),
                     null,
                     e.getValue().setScale(PCT_SCALE, RoundingMode.HALF_UP),
-                    itemTotal.multiply(e.getValue()).divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP)
+                    itemTotal.multiply(e.getValue()).divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP),
+                    itemHours.multiply(e.getValue()).divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP)
                 ))
                 .toList();
 

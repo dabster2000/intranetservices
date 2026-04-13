@@ -233,16 +233,20 @@ public class InvoiceAttributionAIService {
                 JsonNode attrsNode = itemNode.get("attributions");
                 if (attrsNode != null && attrsNode.isArray()) {
                     BigDecimal itemTotal = original.amount();
+                    BigDecimal itemHours = original.hours();
                     for (JsonNode attrNode : attrsNode) {
                         BigDecimal pct = BigDecimal.valueOf(attrNode.get("sharePct").asDouble())
                             .setScale(4, RoundingMode.HALF_UP);
                         BigDecimal amt = itemTotal.multiply(pct)
                             .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+                        BigDecimal hrs = itemHours != null
+                            ? itemHours.multiply(pct).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP)
+                            : null;
                         attributions.add(new ResolvedAttribution(
                             attrNode.get("consultantUuid").asText(),
                             attrNode.has("consultantName")
                                 ? attrNode.get("consultantName").asText() : null,
-                            pct, amt
+                            pct, amt, hrs
                         ));
                     }
                 }

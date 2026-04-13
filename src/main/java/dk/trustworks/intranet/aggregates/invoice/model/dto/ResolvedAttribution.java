@@ -6,5 +6,6 @@ public record ResolvedAttribution(
     String consultantUuid,
     String consultantName,
     BigDecimal sharePct,
-    BigDecimal attributedAmount
+    BigDecimal attributedAmount,
+    BigDecimal attributedHours
 ) {}
