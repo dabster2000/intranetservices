@@ -75,10 +75,8 @@ public class InvoiceAttributionService {
         attr.originalHours   = row[5] != null ? (BigDecimal) row[5] : null;
         attr.source          = row[6] != null
                 ? AttributionSource.valueOf((String) row[6]) : null;
-        attr.createdAt       = row[7] != null
-                ? ((java.sql.Timestamp) row[7]).toLocalDateTime() : null;
-        attr.updatedAt       = row[8] != null
-                ? ((java.sql.Timestamp) row[8]).toLocalDateTime() : null;
+        attr.createdAt       = row[7] != null ? (LocalDateTime) row[7] : null;
+        attr.updatedAt       = row[8] != null ? (LocalDateTime) row[8] : null;
         attr.consultantName  = (String) row[9];
         return attr;
     }
