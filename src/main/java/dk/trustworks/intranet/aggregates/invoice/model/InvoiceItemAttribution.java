@@ -44,6 +44,9 @@ public class InvoiceItemAttribution extends PanacheEntityBase {
     @Column(name = "updated_at")
     public LocalDateTime updatedAt;
 
+    @Transient
+    public String consultantName;
+
     public InvoiceItemAttribution() {
     }
 

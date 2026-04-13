@@ -30,20 +30,57 @@ public class InvoiceAttributionService {
 
     // ── Public query methods ──────────────────────────────────────────
 
+    @SuppressWarnings("unchecked")
     public List<InvoiceItemAttribution> getAttributions(String invoiceItemUuid) {
-        return InvoiceItemAttribution.list("invoiceitemUuid", invoiceItemUuid);
+        List<Object[]> rows = em.createNativeQuery("""
+                        SELECT iia.uuid, iia.invoiceitem_uuid, iia.consultant_uuid,
+                               iia.share_pct, iia.attributed_amount, iia.original_hours,
+                               iia.source, iia.created_at, iia.updated_at,
+                               CONCAT(u.firstname, ' ', u.lastname) AS consultant_name
+                        FROM invoice_item_attributions iia
+                        LEFT JOIN user u ON iia.consultant_uuid = u.uuid
+                        WHERE iia.invoiceitem_uuid = :invoiceItemUuid
+                        ORDER BY iia.share_pct DESC
+                        """)
+                .setParameter("invoiceItemUuid", invoiceItemUuid)
+                .getResultList();
+        return rows.stream().map(this::mapRowToAttribution).toList();
     }
 
     @SuppressWarnings("unchecked")
     public List<InvoiceItemAttribution> getInvoiceAttributions(String invoiceUuid) {
-        return em.createNativeQuery("""
-                        SELECT iia.* FROM invoice_item_attributions iia
+        List<Object[]> rows = em.createNativeQuery("""
+                        SELECT iia.uuid, iia.invoiceitem_uuid, iia.consultant_uuid,
+                               iia.share_pct, iia.attributed_amount, iia.original_hours,
+                               iia.source, iia.created_at, iia.updated_at,
+                               CONCAT(u.firstname, ' ', u.lastname) AS consultant_name
+                        FROM invoice_item_attributions iia
                         JOIN invoiceitems ii ON iia.invoiceitem_uuid = ii.uuid
+                        LEFT JOIN user u ON iia.consultant_uuid = u.uuid
                         WHERE ii.invoiceuuid = :invoiceUuid
-                        ORDER BY ii.position, iia.share_pct DESC
-                        """, InvoiceItemAttribution.class)
+                        ORDER BY iia.invoiceitem_uuid, iia.share_pct DESC
+                        """)
                 .setParameter("invoiceUuid", invoiceUuid)
                 .getResultList();
+        return rows.stream().map(this::mapRowToAttribution).toList();
+    }
+
+    private InvoiceItemAttribution mapRowToAttribution(Object[] row) {
+        var attr = new InvoiceItemAttribution();
+        attr.uuid            = (String) row[0];
+        attr.invoiceitemUuid = (String) row[1];
+        attr.consultantUuid  = (String) row[2];
+        attr.sharePct        = row[3] != null ? (BigDecimal) row[3] : null;
+        attr.attributedAmount = row[4] != null ? (BigDecimal) row[4] : null;
+        attr.originalHours   = row[5] != null ? (BigDecimal) row[5] : null;
+        attr.source          = row[6] != null
+                ? AttributionSource.valueOf((String) row[6]) : null;
+        attr.createdAt       = row[7] != null
+                ? ((java.sql.Timestamp) row[7]).toLocalDateTime() : null;
+        attr.updatedAt       = row[8] != null
+                ? ((java.sql.Timestamp) row[8]).toLocalDateTime() : null;
+        attr.consultantName  = (String) row[9];
+        return attr;
     }
 
     // ── Core attribution computation ──────────────────────────────────
@@ -127,6 +164,7 @@ public class InvoiceAttributionService {
         for (InvoiceItemAttribution attr : attributions) {
             attr.recalculateAmount(itemTotal);
             attr.updatedAt = java.time.LocalDateTime.now();
+            em.merge(attr);
         }
 
         log.infof("recomputeItem: recalculated %d attributions for item uuid=%s, total=%.2f",
@@ -342,7 +380,7 @@ public class InvoiceAttributionService {
         double itemTotal = item.rate * item.hours;
 
         if (item.consultantuuid != null && !item.consultantuuid.isBlank()) {
-            createSingleAttribution(item.uuid, item.consultantuuid, itemTotal);
+            createSingleAttribution(item.uuid, item.consultantuuid, itemTotal, item.hours);
             return;
         }
 
@@ -530,13 +568,13 @@ public class InvoiceAttributionService {
 
     // ── Private: attribution creation helpers ─────────────────────────
 
-    private void createSingleAttribution(String invoiceItemUuid, String consultantUuid, double itemTotal) {
+    private void createSingleAttribution(String invoiceItemUuid, String consultantUuid, double itemTotal, double hours) {
         var attribution = new InvoiceItemAttribution(
                 invoiceItemUuid,
                 consultantUuid,
                 BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
                 BigDecimal.valueOf(itemTotal).setScale(AMT_SCALE, RoundingMode.HALF_UP),
-                null,
+                BigDecimal.valueOf(hours),
                 AttributionSource.AUTO
         );
         attribution.persist();
@@ -589,6 +627,7 @@ public class InvoiceAttributionService {
                     .divide(totalHours, PCT_SCALE, RoundingMode.HALF_UP);
             attr.recalculateAmount(itemTotal);
             attr.updatedAt = java.time.LocalDateTime.now();
+            em.merge(attr);
         }
     }
 
