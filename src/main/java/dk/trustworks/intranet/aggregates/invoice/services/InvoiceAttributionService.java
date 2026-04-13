@@ -214,6 +214,73 @@ public class InvoiceAttributionService {
                 sourceItemUuid, targetItemUuid, targetByConsultant.size());
     }
 
+    /**
+     * Merges multiple invoice line items into a single target item.
+     * Updates the target item's hours/rate/name, merges attributions from all source items,
+     * deletes source items, and returns the updated invoice.
+     */
+    @Transactional
+    public Invoice mergeItems(String invoiceUuid, String targetItemUuid, List<String> sourceItemUuids,
+                              String displayName, double rate) {
+        Invoice invoice = Invoice.findById(invoiceUuid);
+        if (invoice == null) {
+            throw new jakarta.ws.rs.WebApplicationException("Invoice not found: " + invoiceUuid,
+                    jakarta.ws.rs.core.Response.Status.NOT_FOUND);
+        }
+
+        InvoiceItem targetItem = InvoiceItem.findById(targetItemUuid);
+        if (targetItem == null) {
+            throw new jakarta.ws.rs.WebApplicationException("Target item not found: " + targetItemUuid,
+                    jakarta.ws.rs.core.Response.Status.NOT_FOUND);
+        }
+
+        // Ensure target has attributions before merging
+        List<InvoiceItemAttribution> targetAttrs = getAttributions(targetItemUuid);
+        if (targetAttrs.isEmpty() && targetItem.consultantuuid != null) {
+            createSingleAttribution(targetItemUuid, targetItem.consultantuuid,
+                    targetItem.rate * targetItem.hours, targetItem.hours);
+        }
+
+        // Sum hours from all source items and merge attributions
+        double totalHours = targetItem.hours;
+        for (String sourceUuid : sourceItemUuids) {
+            InvoiceItem sourceItem = InvoiceItem.findById(sourceUuid);
+            if (sourceItem == null) {
+                log.warnf("mergeItems: source item not found uuid=%s, skipping", sourceUuid);
+                continue;
+            }
+
+            // Ensure source has attributions before merging
+            List<InvoiceItemAttribution> sourceAttrs = getAttributions(sourceUuid);
+            if (sourceAttrs.isEmpty() && sourceItem.consultantuuid != null) {
+                createSingleAttribution(sourceUuid, sourceItem.consultantuuid,
+                        sourceItem.rate * sourceItem.hours, sourceItem.hours);
+            }
+
+            totalHours += sourceItem.hours;
+            mergeAttributions(targetItemUuid, sourceUuid);
+            InvoiceItem.deleteById(sourceUuid);
+        }
+
+        // Update target item
+        targetItem.hours = totalHours;
+        targetItem.rate = rate;
+        targetItem.itemname = displayName;
+        targetItem.persist();
+
+        // Recalculate attribution amounts with new total
+        recomputeItem(targetItemUuid);
+
+        // Remove deleted items from invoice's collection and refresh
+        invoice.invoiceitems.removeIf(ii -> sourceItemUuids.contains(ii.uuid));
+        em.flush();
+
+        log.infof("mergeItems: merged %d items into target=%s on invoice=%s, newHours=%.2f",
+                sourceItemUuids.size(), targetItemUuid, invoiceUuid, totalHours);
+
+        return invoice;
+    }
+
     // ── Manual attribution override ───────────────────────────────────
 
     public record ManualAttributionInput(String consultantUuid, BigDecimal sharePct) {}

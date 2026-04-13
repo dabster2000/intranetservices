@@ -1025,6 +1025,21 @@ public class InvoiceResource {
     }
 
     @POST
+    @Path("/{invoiceuuid}/merge-items")
+    @RolesAllowed({"invoices:write"})
+    public Invoice mergeInvoiceItems(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            MergeItemsRequest request) {
+        return invoiceAttributionService.mergeItems(
+                invoiceuuid,
+                request.targetItemUuid(),
+                request.sourceItemUuids(),
+                request.displayName(),
+                request.rate()
+        );
+    }
+
+    @POST
     @Path("/attributions/backfill")
     @RolesAllowed({"admin:full"})
     public Map<String, Object> backfillAttributions(
