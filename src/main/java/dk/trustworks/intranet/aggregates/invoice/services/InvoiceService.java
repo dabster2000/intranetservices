@@ -384,10 +384,9 @@ public class InvoiceService {
         if (invoice.getType() != InvoiceType.INTERNAL) {
             bonusService.recalcForInvoice(invoice.getUuid());
         }
-        // Flush pending item changes so attributions can see them, then clear L1 cache
+        // Flush pending item changes so attributions can see them via fresh DB read
         em.flush();
-        em.refresh(invoice);
-        invoiceAttributionService.computeAttributions(invoice.getUuid());
+        invoiceAttributionService.computeAttributionsFromItems(invoice.getUuid(), invoice.invoiceitems);
         return invoice;
     }
 

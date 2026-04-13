@@ -78,6 +78,40 @@ public class InvoiceAttributionService {
                 invoiceUuid, invoice.invoiceitems.size());
     }
 
+    /**
+     * Computes attributions using a provided items list (avoids stale L1 cache).
+     * Called from updateDraftInvoice where the invoice entity may be detached.
+     */
+    @Transactional
+    public void computeAttributionsFromItems(String invoiceUuid, List<InvoiceItem> items) {
+        Invoice invoice = Invoice.findById(invoiceUuid);
+        if (invoice == null) {
+            log.warnf("computeAttributionsFromItems: invoice not found uuid=%s", invoiceUuid);
+            return;
+        }
+
+        List<InvoiceItem> baseItems = items.stream()
+                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .toList();
+        List<InvoiceItem> calculatedItems = items.stream()
+                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .toList();
+
+        for (InvoiceItem item : baseItems) {
+            computeBaseItemAttribution(item, invoice);
+        }
+
+        if (!calculatedItems.isEmpty()) {
+            Map<String, BigDecimal> baseDistribution = computeBaseDistribution(invoiceUuid);
+            for (InvoiceItem item : calculatedItems) {
+                computeCalculatedItemAttribution(item, baseDistribution);
+            }
+        }
+
+        log.infof("computeAttributionsFromItems: completed for invoice uuid=%s, items=%d",
+                invoiceUuid, items.size());
+    }
+
     // ── Recompute amounts from stable shares ──────────────────────────
 
     @Transactional
