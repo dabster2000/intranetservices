@@ -15,6 +15,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -283,8 +284,7 @@ public class InvoiceAttributionService {
         @SuppressWarnings("unchecked")
         List<String> invoiceUuids = em.createNativeQuery("""
                         SELECT i.uuid FROM invoices i
-                        WHERE i.status = :status
-                          AND i.invoicedate >= :fromDate
+                        WHERE i.invoicedate >= :fromDate
                           AND i.invoicedate < :toDate
                           AND NOT EXISTS (
                             SELECT 1 FROM invoice_item_attributions iia
@@ -293,7 +293,6 @@ public class InvoiceAttributionService {
                           )
                         ORDER BY i.invoicedate
                         """)
-                .setParameter("status", InvoiceStatus.CREATED.name())
                 .setParameter("fromDate", from)
                 .setParameter("toDate", to)
                 .getResultList();
@@ -326,8 +325,7 @@ public class InvoiceAttributionService {
                                (ii.rate * ii.hours) AS amount
                         FROM invoiceitems ii
                         JOIN invoices i ON ii.invoiceuuid = i.uuid
-                        WHERE i.status = :status
-                          AND i.invoicedate >= :fromDate
+                        WHERE i.invoicedate >= :fromDate
                           AND i.invoicedate < :toDate
                           AND NOT EXISTS (
                             SELECT 1 FROM invoice_item_attributions iia
@@ -335,7 +333,6 @@ public class InvoiceAttributionService {
                           )
                         ORDER BY i.invoicedate, ii.position
                         """)
-                .setParameter("status", InvoiceStatus.CREATED.name())
                 .setParameter("fromDate", from)
                 .setParameter("toDate", to)
                 .getResultList();

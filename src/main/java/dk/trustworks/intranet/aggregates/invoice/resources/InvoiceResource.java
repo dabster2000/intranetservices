@@ -1016,6 +1016,15 @@ public class InvoiceResource {
     }
 
     @POST
+    @Path("/{invoiceuuid}/attributions/compute")
+    @RolesAllowed({"invoices:write"})
+    public List<InvoiceItemAttribution> computeInvoiceAttributions(
+            @PathParam("invoiceuuid") String invoiceuuid) {
+        invoiceAttributionService.computeAttributions(invoiceuuid);
+        return invoiceAttributionService.getInvoiceAttributions(invoiceuuid);
+    }
+
+    @POST
     @Path("/attributions/backfill")
     @RolesAllowed({"admin:full"})
     public Map<String, Object> backfillAttributions(
