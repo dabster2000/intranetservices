@@ -2,10 +2,13 @@ package dk.trustworks.intranet.aggregates.invoice.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
+import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsRequest;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
@@ -1025,18 +1028,29 @@ public class InvoiceResource {
     }
 
     @POST
-    @Path("/{invoiceuuid}/merge-items")
+    @Path("/{invoiceuuid}/attributions/resolve")
     @RolesAllowed({"invoices:write"})
-    public Invoice mergeInvoiceItems(
+    public AttributionResolution resolveInvoiceAttributions(
+            @PathParam("invoiceuuid") String invoiceuuid) {
+        return invoiceAttributionService.resolveAttributions(invoiceuuid);
+    }
+
+    @POST
+    @Path("/{invoiceuuid}/attributions/accept")
+    @RolesAllowed({"invoices:write"})
+    public Invoice acceptInvoiceAttributions(
             @PathParam("invoiceuuid") String invoiceuuid,
-            MergeItemsRequest request) {
-        return invoiceAttributionService.mergeItems(
-                invoiceuuid,
-                request.targetItemUuid(),
-                request.sourceItemUuids(),
-                request.displayName(),
-                request.rate()
-        );
+            AcceptAttributionsRequest request,
+            @HeaderParam("X-Requested-By") String requestedBy) {
+        return invoiceAttributionService.acceptAndFinalize(invoiceuuid, request, requestedBy);
+    }
+
+    @GET
+    @Path("/{invoiceuuid}/attributions/audit-log")
+    @RolesAllowed({"invoices:read"})
+    public List<AttributionAuditLog> getAttributionAuditLog(
+            @PathParam("invoiceuuid") String invoiceuuid) {
+        return AttributionAuditLog.findByInvoice(invoiceuuid);
     }
 
     @POST

@@ -1,8 +1,13 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsRequest;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedAttribution;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
@@ -28,6 +33,12 @@ public class InvoiceAttributionService {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    InvoiceAttributionAIService aiService;
+
+    @Inject
+    com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     // ── Public query methods ──────────────────────────────────────────
 
@@ -168,117 +179,6 @@ public class InvoiceAttributionService {
 
         log.infof("recomputeItem: recalculated %d attributions for item uuid=%s, total=%.2f",
                 attributions.size(), invoiceItemUuid, itemTotal);
-    }
-
-    // ── Merge attributions ────────────────────────────────────────────
-
-    @Transactional
-    public void mergeAttributions(String targetItemUuid, String sourceItemUuid) {
-        InvoiceItem targetItem = InvoiceItem.findById(targetItemUuid);
-        if (targetItem == null) {
-            log.warnf("mergeAttributions: target item not found uuid=%s", targetItemUuid);
-            return;
-        }
-
-        List<InvoiceItemAttribution> targetAttrs = getAttributions(targetItemUuid);
-        List<InvoiceItemAttribution> sourceAttrs = getAttributions(sourceItemUuid);
-
-        Map<String, InvoiceItemAttribution> targetByConsultant = targetAttrs.stream()
-                .collect(Collectors.toMap(a -> a.consultantUuid, a -> a));
-
-        for (InvoiceItemAttribution sourceAttr : sourceAttrs) {
-            InvoiceItemAttribution existing = targetByConsultant.get(sourceAttr.consultantUuid);
-            if (existing != null) {
-                BigDecimal combinedHours = safeAdd(existing.originalHours, sourceAttr.originalHours);
-                existing.originalHours = combinedHours;
-            } else {
-                var merged = new InvoiceItemAttribution(
-                        targetItemUuid,
-                        sourceAttr.consultantUuid,
-                        BigDecimal.ZERO,
-                        BigDecimal.ZERO,
-                        sourceAttr.originalHours,
-                        AttributionSource.AUTO
-                );
-                merged.persist();
-                targetByConsultant.put(sourceAttr.consultantUuid, merged);
-            }
-        }
-
-        double itemTotal = targetItem.rate * targetItem.hours;
-        recalculateSharesFromHours(targetByConsultant.values(), itemTotal);
-
-        InvoiceItemAttribution.delete("invoiceitemUuid", sourceItemUuid);
-
-        log.infof("mergeAttributions: merged source=%s into target=%s, consultants=%d",
-                sourceItemUuid, targetItemUuid, targetByConsultant.size());
-    }
-
-    /**
-     * Merges multiple invoice line items into a single target item.
-     * Updates the target item's hours/rate/name, merges attributions from all source items,
-     * deletes source items, and returns the updated invoice.
-     */
-    @Transactional
-    public Invoice mergeItems(String invoiceUuid, String targetItemUuid, List<String> sourceItemUuids,
-                              String displayName, double rate) {
-        Invoice invoice = Invoice.findById(invoiceUuid);
-        if (invoice == null) {
-            throw new jakarta.ws.rs.WebApplicationException("Invoice not found: " + invoiceUuid,
-                    jakarta.ws.rs.core.Response.Status.NOT_FOUND);
-        }
-
-        InvoiceItem targetItem = InvoiceItem.findById(targetItemUuid);
-        if (targetItem == null) {
-            throw new jakarta.ws.rs.WebApplicationException("Target item not found: " + targetItemUuid,
-                    jakarta.ws.rs.core.Response.Status.NOT_FOUND);
-        }
-
-        // Ensure target has attributions before merging
-        List<InvoiceItemAttribution> targetAttrs = getAttributions(targetItemUuid);
-        if (targetAttrs.isEmpty() && targetItem.consultantuuid != null) {
-            createSingleAttribution(targetItemUuid, targetItem.consultantuuid,
-                    targetItem.rate * targetItem.hours, targetItem.hours);
-        }
-
-        // Sum hours from all source items and merge attributions
-        double totalHours = targetItem.hours;
-        for (String sourceUuid : sourceItemUuids) {
-            InvoiceItem sourceItem = InvoiceItem.findById(sourceUuid);
-            if (sourceItem == null) {
-                log.warnf("mergeItems: source item not found uuid=%s, skipping", sourceUuid);
-                continue;
-            }
-
-            // Ensure source has attributions before merging
-            List<InvoiceItemAttribution> sourceAttrs = getAttributions(sourceUuid);
-            if (sourceAttrs.isEmpty() && sourceItem.consultantuuid != null) {
-                createSingleAttribution(sourceUuid, sourceItem.consultantuuid,
-                        sourceItem.rate * sourceItem.hours, sourceItem.hours);
-            }
-
-            totalHours += sourceItem.hours;
-            mergeAttributions(targetItemUuid, sourceUuid);
-            InvoiceItem.deleteById(sourceUuid);
-        }
-
-        // Update target item
-        targetItem.hours = totalHours;
-        targetItem.rate = rate;
-        targetItem.itemname = displayName;
-        targetItem.persist();
-
-        // Recalculate attribution amounts with new total
-        recomputeItem(targetItemUuid);
-
-        // Remove deleted items from invoice's collection and refresh
-        invoice.invoiceitems.removeIf(ii -> sourceItemUuids.contains(ii.uuid));
-        em.flush();
-
-        log.infof("mergeItems: merged %d items into target=%s on invoice=%s, newHours=%.2f",
-                sourceItemUuids.size(), targetItemUuid, invoiceUuid, totalHours);
-
-        return invoice;
     }
 
     // ── Manual attribution override ───────────────────────────────────
@@ -454,7 +354,7 @@ public class InvoiceAttributionService {
 
         Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, invoice.invoicedate);
         if (!workShares.isEmpty()) {
-            createAttributionsFromShares(item.uuid, workShares, itemTotal, true);
+            createAttributionsFromShares(item.uuid, workShares, itemTotal, item.hours, true);
             return;
         }
 
@@ -647,49 +547,36 @@ public class InvoiceAttributionService {
             Map<String, BigDecimal> shares,
             double itemTotal,
             boolean includeHours) {
+        createAttributionsFromShares(invoiceItemUuid, shares, itemTotal, 0, includeHours);
+    }
+
+    private void createAttributionsFromShares(
+            String invoiceItemUuid,
+            Map<String, BigDecimal> shares,
+            double itemTotal,
+            double totalHours,
+            boolean includeHours) {
         for (var entry : shares.entrySet()) {
             BigDecimal amount = entry.getValue()
                     .multiply(BigDecimal.valueOf(itemTotal))
                     .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+
+            BigDecimal originalHours = null;
+            if (includeHours && totalHours > 0) {
+                originalHours = entry.getValue()
+                        .multiply(BigDecimal.valueOf(totalHours))
+                        .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+            }
 
             var attribution = new InvoiceItemAttribution(
                     invoiceItemUuid,
                     entry.getKey(),
                     entry.getValue().setScale(PCT_SCALE, RoundingMode.HALF_UP),
                     amount,
-                    null,
+                    originalHours,
                     AttributionSource.AUTO
             );
             attribution.persist();
-        }
-    }
-
-    // ── Private: recalculate from hours after merge ───────────────────
-
-    private void recalculateSharesFromHours(Collection<InvoiceItemAttribution> attributions, double itemTotal) {
-        BigDecimal totalHours = attributions.stream()
-                .map(a -> a.originalHours != null ? a.originalHours : BigDecimal.ZERO)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        if (totalHours.compareTo(BigDecimal.ZERO) == 0) {
-            BigDecimal equalShare = BigDecimal.valueOf(100)
-                    .divide(BigDecimal.valueOf(attributions.size()), PCT_SCALE, RoundingMode.HALF_UP);
-            for (InvoiceItemAttribution attr : attributions) {
-                attr.sharePct = equalShare;
-                attr.recalculateAmount(itemTotal);
-                attr.updatedAt = java.time.LocalDateTime.now();
-            }
-            return;
-        }
-
-        for (InvoiceItemAttribution attr : attributions) {
-            BigDecimal hours = attr.originalHours != null ? attr.originalHours : BigDecimal.ZERO;
-            attr.sharePct = hours
-                    .multiply(BigDecimal.valueOf(100))
-                    .divide(totalHours, PCT_SCALE, RoundingMode.HALF_UP);
-            attr.recalculateAmount(itemTotal);
-            attr.updatedAt = java.time.LocalDateTime.now();
-            em.merge(attr);
         }
     }
 
@@ -709,5 +596,217 @@ public class InvoiceAttributionService {
         BigDecimal left = a != null ? a : BigDecimal.ZERO;
         BigDecimal right = b != null ? b : BigDecimal.ZERO;
         return left.add(right);
+    }
+
+    // ── Resolve pipeline ────────────────────────────────────────────────
+
+    /**
+     * Phase 1-4 pipeline: Resolve attributions for all line items on an invoice.
+     * Deterministic logic handles straightforward cases (HIGH confidence).
+     * Ambiguous items are flagged for AI resolution or user review.
+     */
+    @Transactional
+    public AttributionResolution resolveAttributions(String invoiceUuid) {
+        Invoice invoice = Invoice.findById(invoiceUuid);
+        if (invoice == null) throw new IllegalArgumentException("Invoice not found: " + invoiceUuid);
+
+        List<InvoiceItem> currentItems = invoice.invoiceitems.stream()
+            .filter(i -> "BASE".equals(i.origin.name()))
+            .toList();
+
+        // Compute work shares once for the entire invoice (avoids N+1 queries)
+        Map<String, BigDecimal> workShares = Map.of();
+        if (invoice.contractuuid != null) {
+            try {
+                workShares = computeWorkShares(invoice.contractuuid,
+                    invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now());
+            } catch (Exception e) {
+                log.warnf("resolveAttributions: failed to compute work shares for contract=%s", invoice.contractuuid);
+            }
+        }
+
+        // Phase 1-2: Deterministic resolution with confidence scoring
+        List<ResolvedItem> resolvedItems = new ArrayList<>();
+        List<ResolvedItem> flaggedItems = new ArrayList<>();
+
+        for (InvoiceItem item : currentItems) {
+            ResolvedItem resolved = resolveItem(item, workShares);
+            if ("HIGH".equals(resolved.confidence())) {
+                resolvedItems.add(resolved);
+            } else {
+                flaggedItems.add(resolved);
+            }
+        }
+
+        // Phase 3: AI fallback for flagged items
+        if (!flaggedItems.isEmpty()) {
+            try {
+                List<ResolvedItem> aiResults = aiService.analyzeAttributions(
+                    buildAnalysisContext(invoice, currentItems, resolvedItems, flaggedItems, workShares)
+                );
+                flaggedItems = aiResults;
+            } catch (Exception e) {
+                log.warn("AI attribution analysis failed — items will require manual resolution", e);
+            }
+        }
+
+        // Phase 4: Merge results
+        List<ResolvedItem> allItems = new ArrayList<>(resolvedItems);
+        allItems.addAll(flaggedItems);
+
+        return new AttributionResolution(
+            allItems,
+            flaggedItems.isEmpty(),
+            flaggedItems.size()
+        );
+    }
+
+    /**
+     * Resolve a single item deterministically using pre-computed work shares.
+     * Returns HIGH confidence if the item has a consultant UUID. Otherwise LOW.
+     */
+    private ResolvedItem resolveItem(InvoiceItem item, Map<String, BigDecimal> workShares) {
+        BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
+
+        // Case 1: Item has a consultant UUID — check work data
+        if (item.consultantuuid != null && !item.consultantuuid.isBlank()) {
+            if (workShares.isEmpty() || workShares.size() == 1) {
+                return new ResolvedItem(
+                    item.uuid,
+                    item.itemname,
+                    BigDecimal.valueOf(item.hours),
+                    itemTotal,
+                    List.of(new ResolvedAttribution(
+                        item.consultantuuid,
+                        null,
+                        BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
+                        itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP)
+                    )),
+                    "HIGH",
+                    "Single consultant with matching work data"
+                );
+            }
+
+            // Multiple consultants worked on this contract — use work shares
+            List<ResolvedAttribution> attributions = workShares.entrySet().stream()
+                .map(e -> new ResolvedAttribution(
+                    e.getKey(),
+                    null,
+                    e.getValue().setScale(PCT_SCALE, RoundingMode.HALF_UP),
+                    itemTotal.multiply(e.getValue()).divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP)
+                ))
+                .toList();
+
+            return new ResolvedItem(
+                item.uuid, item.itemname,
+                BigDecimal.valueOf(item.hours), itemTotal,
+                attributions, "HIGH",
+                "Work data shows " + workShares.size() + " consultants on this contract"
+            );
+        }
+
+        // Case 2: No consultant UUID — flag as LOW confidence
+        return new ResolvedItem(
+            item.uuid, item.itemname,
+            BigDecimal.valueOf(item.hours), itemTotal,
+            List.of(),
+            "LOW",
+            "No consultant assigned to this line item. May be a consolidated line."
+        );
+    }
+
+    private InvoiceAttributionAIService.AnalysisContext buildAnalysisContext(
+            Invoice invoice, List<InvoiceItem> currentItems,
+            List<ResolvedItem> resolved, List<ResolvedItem> flagged,
+            Map<String, BigDecimal> cachedWorkShares) {
+        List<InvoiceAttributionAIService.ItemSnapshot> currentSnapshots = currentItems.stream()
+            .map(i -> new InvoiceAttributionAIService.ItemSnapshot(
+                i.uuid, i.itemname, i.hours, i.rate, i.consultantuuid, null))
+            .toList();
+
+        Map<String, InvoiceAttributionAIService.ConsultantWork> workData = cachedWorkShares.entrySet().stream()
+            .collect(Collectors.toMap(
+                Map.Entry::getKey,
+                e -> new InvoiceAttributionAIService.ConsultantWork(
+                    e.getKey(), null, e.getValue().doubleValue(), "")
+            ));
+
+        return new InvoiceAttributionAIService.AnalysisContext(
+            currentSnapshots,
+            currentSnapshots,
+            List.of(),
+            workData,
+            resolved,
+            flagged
+        );
+    }
+
+    // ── Accept and finalize ─────────────────────────────────────────────
+
+    /**
+     * Atomically: save resolved attributions + transition DRAFT → CREATED.
+     * Called by the wizard's "Create Invoice" button.
+     */
+    @Transactional
+    public Invoice acceptAndFinalize(String invoiceUuid, AcceptAttributionsRequest request, String changedByUuid) {
+        Invoice invoice = Invoice.findById(invoiceUuid);
+        if (invoice == null) throw new IllegalArgumentException("Invoice not found: " + invoiceUuid);
+        if (invoice.status != InvoiceStatus.DRAFT) {
+            throw new IllegalStateException("Can only finalize DRAFT invoices, current status: " + invoice.status);
+        }
+
+        for (AcceptAttributionsRequest.ItemAttribution itemAttr : request.items()) {
+            List<InvoiceItemAttribution> oldAttrs = getAttributions(itemAttr.itemUuid());
+            String oldState = serializeAttributions(oldAttrs);
+
+            InvoiceItemAttribution.delete("invoiceitemUuid", itemAttr.itemUuid());
+
+            InvoiceItem item = InvoiceItem.findById(itemAttr.itemUuid());
+            if (item == null) continue;
+            BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
+
+            List<InvoiceItemAttribution> newAttrs = new ArrayList<>();
+            for (AcceptAttributionsRequest.ConsultantShare share : itemAttr.attributions()) {
+                BigDecimal amount = itemTotal.multiply(share.sharePct())
+                    .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+
+                InvoiceItemAttribution attr = new InvoiceItemAttribution(
+                    itemAttr.itemUuid(),
+                    share.consultantUuid(),
+                    share.sharePct().setScale(PCT_SCALE, RoundingMode.HALF_UP),
+                    amount,
+                    BigDecimal.valueOf(item.hours),
+                    AttributionSource.AUTO
+                );
+                attr.persist();
+                newAttrs.add(attr);
+            }
+
+            String newState = serializeAttributions(newAttrs);
+            new AttributionAuditLog(
+                invoiceUuid, itemAttr.itemUuid(), changedByUuid,
+                "AUTO_COMPUTED", oldState, newState, null
+            ).persist();
+        }
+
+        // Transition DRAFT → CREATED
+        invoice.status = InvoiceStatus.CREATED;
+        invoice.persist();
+
+        return invoice;
+    }
+
+    private String serializeAttributions(List<InvoiceItemAttribution> attrs) {
+        try {
+            return objectMapper.writeValueAsString(
+                attrs.stream().map(a -> Map.of(
+                    "consultantUuid", a.consultantUuid,
+                    "sharePct", a.sharePct,
+                    "attributedAmount", a.attributedAmount
+                )).toList()
+            );
+        } catch (Exception e) {
+            return "[]";
+        }
     }
 }

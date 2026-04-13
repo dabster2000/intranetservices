@@ -311,6 +311,13 @@
     </dependency>
 
 
+    <!-- OpenAI Java SDK (official) — used by InvoiceAttributionAIService -->
+    <dependency>
+      <groupId>com.openai</groupId>
+      <artifactId>openai-java</artifactId>
+      <version>0.30.0</version>
+    </dependency>
+
     <!-- UTILS -->
     <dependency>
       <groupId>io.quarkus</groupId>
