@@ -451,6 +451,50 @@ public class InvoiceAttributionService {
         return shares;
     }
 
+    // ── Private: project-level work hours (matches InvoiceGenerator logic) ──
+
+    /**
+     * Compute actual hours logged per consultant for a specific project+month.
+     * This matches the data used by InvoiceGenerator when creating draft items,
+     * so the returned hours correspond to the original line item amounts.
+     *
+     * @return Map of consultant UUID → total hours logged on the project in the period
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, BigDecimal> computeProjectWorkHours(String projectUuid, LocalDate invoiceDate) {
+        if (projectUuid == null || projectUuid.isBlank()) {
+            return Map.of();
+        }
+        LocalDate periodStart = invoiceDate.withDayOfMonth(1);
+        LocalDate periodEnd = periodStart.plusMonths(1);
+
+        List<Object[]> rows = em.createNativeQuery("""
+                        SELECT w.useruuid, SUM(w.workduration) AS total_hours
+                        FROM work w
+                        WHERE w.projectuuid = :projectUuid
+                          AND w.registered >= :periodStart
+                          AND w.registered < :periodEnd
+                          AND w.workduration > 0
+                        GROUP BY w.useruuid
+                        """)
+                .setParameter("projectUuid", projectUuid)
+                .setParameter("periodStart", periodStart)
+                .setParameter("periodEnd", periodEnd)
+                .getResultList();
+
+        if (rows.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<String, BigDecimal> hoursByConsultant = new LinkedHashMap<>();
+        for (Object[] row : rows) {
+            String useruuid = (String) row[0];
+            BigDecimal hours = toBigDecimal(row[1]);
+            hoursByConsultant.put(useruuid, hours);
+        }
+        return hoursByConsultant;
+    }
+
     // ── Private: contract consultant fallback ─────────────────────────
 
     @SuppressWarnings("unchecked")
@@ -630,23 +674,48 @@ public class InvoiceAttributionService {
             .filter(i -> "BASE".equals(i.origin.name()))
             .toList();
 
-        // Compute work shares once for the entire invoice (avoids N+1 queries)
-        Map<String, BigDecimal> workShares = Map.of();
-        if (invoice.contractuuid != null) {
+        // Compute project-level work hours (matches InvoiceGenerator's data source)
+        LocalDate effectiveDate = invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now();
+        Map<String, BigDecimal> projectWorkHours = Map.of();
+        if (invoice.projectuuid != null) {
             try {
-                workShares = computeWorkShares(invoice.contractuuid,
-                    invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now());
+                projectWorkHours = computeProjectWorkHours(invoice.projectuuid, effectiveDate);
+            } catch (Exception e) {
+                log.warnf("resolveAttributions: failed to compute project work hours for project=%s", invoice.projectuuid);
+            }
+        }
+        // Fallback to contract-level work shares if no project data
+        if (projectWorkHours.isEmpty() && invoice.contractuuid != null) {
+            try {
+                Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, effectiveDate);
+                // Convert percentages back to approximate hours using total invoice hours
+                double totalInvoiceHours = currentItems.stream().mapToDouble(i -> i.hours).sum();
+                if (!workShares.isEmpty() && totalInvoiceHours > 0) {
+                    Map<String, BigDecimal> approxHours = new LinkedHashMap<>();
+                    for (var entry : workShares.entrySet()) {
+                        approxHours.put(entry.getKey(),
+                            entry.getValue().multiply(BigDecimal.valueOf(totalInvoiceHours))
+                                .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP));
+                    }
+                    projectWorkHours = approxHours;
+                }
             } catch (Exception e) {
                 log.warnf("resolveAttributions: failed to compute work shares for contract=%s", invoice.contractuuid);
             }
         }
+
+        // Build represented consultants set (those with line items)
+        Set<String> representedConsultants = currentItems.stream()
+            .map(i -> i.consultantuuid)
+            .filter(uuid -> uuid != null && !uuid.isBlank())
+            .collect(Collectors.toSet());
 
         // Phase 1-2: Deterministic resolution with confidence scoring
         List<ResolvedItem> resolvedItems = new ArrayList<>();
         List<ResolvedItem> flaggedItems = new ArrayList<>();
 
         for (InvoiceItem item : currentItems) {
-            ResolvedItem resolved = resolveItem(item, workShares);
+            ResolvedItem resolved = resolveItem(item, projectWorkHours, representedConsultants);
             if ("HIGH".equals(resolved.confidence())) {
                 resolvedItems.add(resolved);
             } else {
@@ -658,7 +727,8 @@ public class InvoiceAttributionService {
         if (!flaggedItems.isEmpty()) {
             try {
                 List<ResolvedItem> aiResults = aiService.analyzeAttributions(
-                    buildAnalysisContext(invoice, currentItems, resolvedItems, flaggedItems, workShares)
+                    buildAnalysisContext(invoice, currentItems, resolvedItems, flaggedItems,
+                        projectWorkHours, representedConsultants)
                 );
                 flaggedItems = aiResults;
             } catch (Exception e) {
@@ -695,49 +765,111 @@ public class InvoiceAttributionService {
     }
 
     /**
-     * Resolve a single item deterministically using pre-computed work shares.
-     * Returns HIGH confidence if the item has a consultant UUID. Otherwise LOW.
+     * Resolve a single item deterministically.
+     *
+     * When the item has a consultantuuid:
+     *   - That consultant gets their project work hours attributed directly
+     *   - Any excess hours (item hours minus consultant's work) are distributed
+     *     to consultants who logged work but have no line item (unrepresented)
+     *   - If no unrepresented consultants exist, 100% goes to the named consultant
+     *
+     * When the item has no consultantuuid: flagged as LOW confidence for AI/manual review.
      */
-    private ResolvedItem resolveItem(InvoiceItem item, Map<String, BigDecimal> workShares) {
+    private ResolvedItem resolveItem(InvoiceItem item,
+                                     Map<String, BigDecimal> projectWorkHours,
+                                     Set<String> representedConsultants) {
         BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
         BigDecimal itemHours = BigDecimal.valueOf(item.hours);
 
-        // Case 1: Item has a consultant UUID — check work data
+        // Case 1: Item has a consultant UUID — attribute to that consultant
         if (item.consultantuuid != null && !item.consultantuuid.isBlank()) {
-            if (workShares.isEmpty() || workShares.size() == 1) {
+
+            // Find unrepresented consultants (logged work but no line item)
+            Map<String, BigDecimal> unrepresented = projectWorkHours.entrySet().stream()
+                .filter(e -> !representedConsultants.contains(e.getKey()))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                    (a, b) -> a, LinkedHashMap::new));
+
+            BigDecimal consultantWorkHours = projectWorkHours.getOrDefault(
+                item.consultantuuid, BigDecimal.ZERO);
+
+            // If no unrepresented consultants or no work data, 100% to item's consultant
+            if (unrepresented.isEmpty() || projectWorkHours.isEmpty()) {
                 return new ResolvedItem(
-                    item.uuid,
-                    item.itemname,
-                    itemHours,
-                    itemTotal,
+                    item.uuid, item.itemname, itemHours, itemTotal,
                     List.of(new ResolvedAttribution(
-                        item.consultantuuid,
-                        null,
+                        item.consultantuuid, null,
                         BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
                         itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP),
                         itemHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
                     )),
                     "HIGH",
-                    "Single consultant with matching work data"
+                    "Line item assigned to specific consultant"
                 );
             }
 
-            // Multiple consultants worked on this contract — use work shares
-            List<ResolvedAttribution> attributions = workShares.entrySet().stream()
-                .map(e -> new ResolvedAttribution(
-                    e.getKey(),
-                    null,
-                    e.getValue().setScale(PCT_SCALE, RoundingMode.HALF_UP),
-                    itemTotal.multiply(e.getValue()).divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP),
-                    itemHours.multiply(e.getValue()).divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP)
-                ))
-                .toList();
+            // There are unrepresented consultants — distribute excess hours to them.
+            // The primary consultant gets at least their logged work hours.
+            // Excess = item hours - consultant's work hours (clamped to >= 0).
+            BigDecimal excess = itemHours.subtract(consultantWorkHours).max(BigDecimal.ZERO);
+
+            // If no excess, 100% to the primary consultant
+            if (excess.compareTo(BigDecimal.ZERO) == 0) {
+                return new ResolvedItem(
+                    item.uuid, item.itemname, itemHours, itemTotal,
+                    List.of(new ResolvedAttribution(
+                        item.consultantuuid, null,
+                        BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
+                        itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP),
+                        itemHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
+                    )),
+                    "HIGH",
+                    "Line item assigned to specific consultant"
+                );
+            }
+
+            // Distribute excess proportionally among unrepresented consultants
+            BigDecimal totalUnrepHours = unrepresented.values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            // Cap excess to unrepresented total (don't attribute more than they worked)
+            BigDecimal distributableExcess = excess.min(totalUnrepHours);
+            BigDecimal primaryHours = itemHours.subtract(distributableExcess);
+
+            BigDecimal primaryPct = primaryHours.multiply(BigDecimal.valueOf(100))
+                .divide(itemHours, PCT_SCALE, RoundingMode.HALF_UP);
+            BigDecimal primaryAmount = itemTotal.multiply(primaryPct)
+                .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+
+            List<ResolvedAttribution> attributions = new ArrayList<>();
+            attributions.add(new ResolvedAttribution(
+                item.consultantuuid, null,
+                primaryPct,
+                primaryAmount,
+                primaryHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
+            ));
+
+            for (var entry : unrepresented.entrySet()) {
+                BigDecimal unrepHours = entry.getValue();
+                BigDecimal share = unrepHours.divide(totalUnrepHours, PCT_SCALE + 2, RoundingMode.HALF_UP);
+                BigDecimal attrHours = distributableExcess.multiply(share)
+                    .setScale(AMT_SCALE, RoundingMode.HALF_UP);
+                BigDecimal attrPct = attrHours.multiply(BigDecimal.valueOf(100))
+                    .divide(itemHours, PCT_SCALE, RoundingMode.HALF_UP);
+                BigDecimal attrAmount = itemTotal.multiply(attrPct)
+                    .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+
+                attributions.add(new ResolvedAttribution(
+                    entry.getKey(), null, attrPct, attrAmount, attrHours
+                ));
+            }
 
             return new ResolvedItem(
-                item.uuid, item.itemname,
-                BigDecimal.valueOf(item.hours), itemTotal,
+                item.uuid, item.itemname, itemHours, itemTotal,
                 attributions, "HIGH",
-                "Work data shows " + workShares.size() + " consultants on this contract"
+                "Consultant's work: " + consultantWorkHours.setScale(1, RoundingMode.HALF_UP) +
+                "h, excess " + distributableExcess.setScale(1, RoundingMode.HALF_UP) +
+                "h redistributed to " + unrepresented.size() + " unrepresented consultant(s)"
             );
         }
 
@@ -754,23 +886,60 @@ public class InvoiceAttributionService {
     private InvoiceAttributionAIService.AnalysisContext buildAnalysisContext(
             Invoice invoice, List<InvoiceItem> currentItems,
             List<ResolvedItem> resolved, List<ResolvedItem> flagged,
-            Map<String, BigDecimal> cachedWorkShares) {
+            Map<String, BigDecimal> projectWorkHours,
+            Set<String> representedConsultants) {
+
+        // Consultant name lookup for snapshots
+        Set<String> allUuids = new HashSet<>(projectWorkHours.keySet());
+        currentItems.forEach(i -> { if (i.consultantuuid != null) allUuids.add(i.consultantuuid); });
+        Map<String, String> nameMap = lookupConsultantNames(allUuids);
+
+        // Current item snapshots
         List<InvoiceAttributionAIService.ItemSnapshot> currentSnapshots = currentItems.stream()
             .map(i -> new InvoiceAttributionAIService.ItemSnapshot(
-                i.uuid, i.itemname, i.hours, i.rate, i.consultantuuid, null))
+                i.uuid, i.itemname, i.hours, i.rate, i.consultantuuid,
+                nameMap.getOrDefault(i.consultantuuid, null)))
             .toList();
 
-        Map<String, InvoiceAttributionAIService.ConsultantWork> workData = cachedWorkShares.entrySet().stream()
+        // Reconstruct original items from project work data
+        // Each consultant who logged work would have had their own line item in the original draft
+        List<InvoiceAttributionAIService.ItemSnapshot> originalSnapshots = projectWorkHours.entrySet().stream()
+            .map(e -> new InvoiceAttributionAIService.ItemSnapshot(
+                "original-" + e.getKey(),
+                nameMap.getOrDefault(e.getKey(), e.getKey()),
+                e.getValue().doubleValue(),
+                0.0,
+                e.getKey(),
+                nameMap.getOrDefault(e.getKey(), null)))
+            .toList();
+
+        // Deleted items = consultants who logged work but no longer have a line item
+        List<InvoiceAttributionAIService.ItemSnapshot> deletedSnapshots = projectWorkHours.entrySet().stream()
+            .filter(e -> !representedConsultants.contains(e.getKey()))
+            .map(e -> new InvoiceAttributionAIService.ItemSnapshot(
+                "deleted-" + e.getKey(),
+                nameMap.getOrDefault(e.getKey(), e.getKey()),
+                e.getValue().doubleValue(),
+                0.0,
+                e.getKey(),
+                nameMap.getOrDefault(e.getKey(), null)))
+            .toList();
+
+        // Work data with actual hours (not percentages)
+        Map<String, InvoiceAttributionAIService.ConsultantWork> workData = projectWorkHours.entrySet().stream()
             .collect(Collectors.toMap(
                 Map.Entry::getKey,
                 e -> new InvoiceAttributionAIService.ConsultantWork(
-                    e.getKey(), null, e.getValue().doubleValue(), "")
+                    e.getKey(),
+                    nameMap.getOrDefault(e.getKey(), null),
+                    e.getValue().doubleValue(),
+                    "")
             ));
 
         return new InvoiceAttributionAIService.AnalysisContext(
+            originalSnapshots,
             currentSnapshots,
-            currentSnapshots,
-            List.of(),
+            deletedSnapshots,
             workData,
             resolved,
             flagged
