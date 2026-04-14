@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
@@ -36,6 +37,9 @@ public class InvoiceAttributionService {
 
     @Inject
     InvoiceAttributionAIService aiService;
+
+    @Inject
+    InvoiceService invoiceService;
 
     @Inject
     com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -994,11 +998,15 @@ public class InvoiceAttributionService {
             ).persist();
         }
 
-        // Transition DRAFT → CREATED
-        invoice.status = InvoiceStatus.CREATED;
-        invoice.persist();
-
-        return invoice;
+        // Delegate finalization to InvoiceService.createInvoice so this path
+        // reuses the canonical logic: locked invoice-number assignment, item
+        // recalculation, bonus recalc, PDF + S3 upload, e-conomics queueing,
+        // and work-hour paid-out registration. Runs in the same transaction.
+        try {
+            return invoiceService.createInvoice(invoice);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to finalize invoice " + invoiceUuid, e);
+        }
     }
 
     private String serializeAttributions(List<InvoiceItemAttribution> attrs) {
