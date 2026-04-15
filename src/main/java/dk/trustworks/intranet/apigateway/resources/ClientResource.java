@@ -93,8 +93,13 @@ public class ClientResource {
 
     @GET
     @Path("/active")
-    public List<Client> findByActiveTrue() {
-        return clientAPI.findByActiveTrue();
+    @Operation(summary = "List active clients filtered by type (default CLIENT)",
+            description = "Backward-compatible endpoint that now also applies the CLIENT/PARTNER " +
+                    "filter. Defaults to CLIENT so legacy callers see only end-customers. " +
+                    "SPEC-INV-001 §3.4, §8.8.")
+    public List<Client> findByActiveTrue(
+            @QueryParam("type") @DefaultValue("CLIENT") ClientType type) {
+        return clientAPI.listByTypeAndActive(type, true);
     }
 
     @GET
