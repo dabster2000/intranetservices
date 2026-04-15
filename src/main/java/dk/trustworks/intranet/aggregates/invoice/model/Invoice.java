@@ -116,6 +116,15 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "economics_voucher_number")
     public int economicsVoucherNumber;
 
+    @Column(name = "billing_client_uuid", length = 36)
+    public String billingClientUuid;
+
+    @Column(name = "economics_draft_number")
+    public Integer economicsDraftNumber;
+
+    @Column(name = "economics_booked_number")
+    public Integer economicsBookedNumber;
+
     @Column(name = "creditnote_for_uuid")
     public String creditnoteForUuid;
 
