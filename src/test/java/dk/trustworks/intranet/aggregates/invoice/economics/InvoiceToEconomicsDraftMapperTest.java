@@ -13,10 +13,12 @@ import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.model.Company;
-import io.quarkus.test.InjectMock;
-import io.quarkus.test.junit.QuarkusTest;
-import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -28,17 +30,17 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.when;
 
 /**
- * Failing TDD tests for {@link InvoiceToEconomicsDraftMapper} (H4).
- * These tests will not compile until H5 adds InvoiceToEconomicsDraftMapper and DraftContext.
+ * TDD tests for {@link InvoiceToEconomicsDraftMapper} (H5).
+ * Uses plain Mockito to avoid the need for a running MariaDB instance.
  * SPEC-INV-001 §6.4, §6.5, §6.7.
  */
-@QuarkusTest
+@ExtendWith(MockitoExtension.class)
 class InvoiceToEconomicsDraftMapperTest {
 
-    @Inject InvoiceToEconomicsDraftMapper mapper;
+    @InjectMocks InvoiceToEconomicsDraftMapper mapper;
 
-    @InjectMock ClientEconomicsCustomerRepository customerRepo;
-    @InjectMock ClientEconomicsContactRepository contactRepo;
+    @Mock ClientEconomicsCustomerRepository customerRepo;
+    @Mock ClientEconomicsContactRepository contactRepo;
 
     // ── test 1: standard invoice maps all flat fields ──────────────────────────
 
@@ -136,9 +138,7 @@ class InvoiceToEconomicsDraftMapperTest {
         inv.setInvoiceitems(List.of(
                 makeItem("Ole", "Dev hours", new BigDecimal("10"), new BigDecimal("1200"))));
 
-        when(customerRepo.findByClientAndCompany("bc", "co-1"))
-                .thenReturn(Optional.of(makeMapping("bc", "co-1", 101)));
-
+        // toLines() does not call customerRepo — no stub needed
         DraftContext ctx = new DraftContext(inv, contract, billing, 22, 5, 1, "42");
         List<EconomicsDraftLine> lines = mapper.toLines(ctx);
 
@@ -163,9 +163,7 @@ class InvoiceToEconomicsDraftMapperTest {
         inv.setInvoiceitems(List.of(
                 makeItem("Ole", "Dev hours", new BigDecimal("10"), new BigDecimal("1200"))));
 
-        when(customerRepo.findByClientAndCompany("bc", "co-1"))
-                .thenReturn(Optional.of(makeMapping("bc", "co-1", 101)));
-
+        // toLines() does not call customerRepo — no stub needed
         DraftContext ctx = new DraftContext(inv, contract, billing, 22, 5, 1, "42");
         List<EconomicsDraftLine> lines = mapper.toLines(ctx);
 
