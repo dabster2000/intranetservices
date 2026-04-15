@@ -47,6 +47,8 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock InvoiceItemRecalculator           recalc;
     @Mock BonusService                      bonus;
     @Mock InvoiceWorkService                work;
+    @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
+    @Mock DebtorCompanyLookup               debtorCompanyLookup;
 
     // ── test 1: createDraft happy path ────────────────────────────────────────
 

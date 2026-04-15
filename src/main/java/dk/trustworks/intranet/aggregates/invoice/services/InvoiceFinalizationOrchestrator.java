@@ -11,6 +11,8 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
+import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -69,6 +71,12 @@ public class InvoiceFinalizationOrchestrator {
 
     @Inject
     InvoiceWorkService work;
+
+    @Inject
+    EconomicsInvoiceService economicsInvoiceService;
+
+    @Inject
+    DebtorCompanyLookup debtorCompanyLookup;
 
     /**
      * Step 1: Creates the e-conomic draft invoice.
@@ -205,9 +213,70 @@ public class InvoiceFinalizationOrchestrator {
         // already recorded before work is marked as paid out
         work.registerAsPaidout(inv);
 
+        // DEBTOR-side voucher for internal invoices (SPEC-INV-001 §4.5, §4.7, §10).
+        // The issuer side already went through the standard Q2C path above.  Now post
+        // a supplier-invoice entry to the debtor company's e-conomic journal so their
+        // books reflect the inter-company purchase.
+        //
+        // Negative grandTotal values (credit notes) flow through unchanged — the mapper
+        // already produces negative amounts on the issuer side (H5), and
+        // EconomicsInvoiceService.sendVoucherToCompany uses getGrandTotal() directly,
+        // producing a supplier credit on the debtor side.
+        //
+        // A failure here sets economics_status = PARTIALLY_UPLOADED rather than
+        // propagating the exception; the retry batchlet (H12) will re-attempt.
+        if (inv.getType() == InvoiceType.INTERNAL
+                || inv.getType() == InvoiceType.INTERNAL_SERVICE) {
+            postDebtorSideVoucher(inv);
+        }
+
         log.infof("bookDraft: invoiceUuid=%s bookedNumber=%d",
                 invoiceUuid, booked.getBookedInvoiceNumber());
         return inv;
+    }
+
+    /**
+     * Posts a supplier-invoice entry to the debtor company's e-conomic journal.
+     *
+     * <p>Failures are caught and demoted to a {@code PARTIALLY_UPLOADED} status so
+     * the caller's transaction can still commit and the retry batchlet can recover.
+     *
+     * <p>Uses {@link DebtorCompanyLookup} and {@link EconomicsAgreementResolver} instead of
+     * Panache static methods so this path is fully unit-testable without a live DB session.
+     *
+     * @param inv the internal invoice that was just booked on the issuer side
+     */
+    private void postDebtorSideVoucher(Invoice inv) {
+        if (inv.getDebtorCompanyuuid() == null || inv.getDebtorCompanyuuid().isBlank()) {
+            log.warnf("bookDraft: INTERNAL invoice %s has no debtorCompanyuuid — "
+                    + "skipping DEBTOR-side voucher post", inv.getUuid());
+            return;
+        }
+
+        try {
+            Company debtorCompany = debtorCompanyLookup.findByUuid(inv.getDebtorCompanyuuid())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Debtor company not found: " + inv.getDebtorCompanyuuid()));
+
+            int journalNumber = agreements.internalJournalNumber(inv.getDebtorCompanyuuid());
+
+            try (jakarta.ws.rs.core.Response response =
+                         economicsInvoiceService.sendVoucherToCompany(inv, debtorCompany, journalNumber)) {
+                if (response.getStatus() < 200 || response.getStatus() >= 300) {
+                    String body = response.readEntity(String.class);
+                    throw new RuntimeException(
+                            "DEBTOR-side voucher post returned HTTP " + response.getStatus()
+                            + " for invoice " + inv.getUuid() + ": " + body);
+                }
+            }
+            log.infof("bookDraft: DEBTOR-side voucher posted for internal invoice %s to company %s",
+                    inv.getUuid(), debtorCompany.getName());
+        } catch (Exception e) {
+            log.warnf(e, "bookDraft: DEBTOR-side voucher post failed for internal invoice %s — "
+                    + "setting PARTIALLY_UPLOADED for retry", inv.getUuid());
+            inv.setEconomicsStatus(EconomicsInvoiceStatus.PARTIALLY_UPLOADED);
+            invoices.persist(inv);
+        }
     }
 
     /**

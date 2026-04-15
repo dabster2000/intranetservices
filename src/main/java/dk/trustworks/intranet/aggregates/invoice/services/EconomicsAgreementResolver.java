@@ -110,6 +110,22 @@ public class EconomicsAgreementResolver {
     }
 
     /**
+     * Returns the internal journal number used for inter-company (supplier) voucher posting
+     * to the debtor company's e-conomic agreement.
+     *
+     * @param companyUuid the UUID of the debtor company
+     * @throws IllegalStateException when no integration keys are configured for the company
+     */
+    public int internalJournalNumber(String companyUuid) {
+        Company company = em.find(Company.class, companyUuid);
+        if (company == null) {
+            throw new IllegalStateException("Debtor company not found: " + companyUuid);
+        }
+        IntegrationKey.IntegrationKeyValue kv = IntegrationKey.getIntegrationKeyValue(company);
+        return kv.internalJournalNumber();
+    }
+
+    /**
      * Returns the e-conomic VAT zone number for the given currency and company.
      * Falls back to the global default row when no company-specific row exists.
      *
