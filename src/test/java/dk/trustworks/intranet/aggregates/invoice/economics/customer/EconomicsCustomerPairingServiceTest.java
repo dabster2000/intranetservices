@@ -273,10 +273,7 @@ class EconomicsCustomerPairingServiceTest {
         created.setCvrNo("12345678");
         when(api.createCustomer(any(EconomicsCustomerDto.class))).thenReturn(created);
 
-        EconomicsCustomerDto updated = new EconomicsCustomerDto();
-        updated.setCustomerNumber(12345678);
-        updated.setAccess(true);
-        when(api.updateCustomer(eq(12345678), any(EconomicsCustomerDto.class))).thenReturn(updated);
+        // updateCustomer is void — Mockito default does nothing. No stub needed.
 
         PairingRowDto row = svc.createAndPair(CLIENT_UUID, COMPANY_UUID);
 

@@ -36,9 +36,17 @@ public interface EconomicsCustomerApiClient {
     @Path("/customers")
     EconomicsCustomerDto createCustomer(EconomicsCustomerDto body);
 
+    /**
+     * PUT returns HTTP 200 with an EMPTY body (content-length: 0, no
+     * content-type) on success — verified 2026-04-15. Declaring a non-void
+     * return type would trigger RESTEasy
+     * "Unable to find a MessageBodyReader of content-type application/
+     * octet-stream" 500s. Callers that need the fresh objectVersion must
+     * re-GET after the PUT.
+     */
     @PUT
     @Path("/customers/{customerNumber}")
-    EconomicsCustomerDto updateCustomer(
+    void updateCustomer(
             @PathParam("customerNumber") int customerNumber,
             EconomicsCustomerDto body
     );

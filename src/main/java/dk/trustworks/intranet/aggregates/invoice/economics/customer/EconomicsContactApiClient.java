@@ -41,9 +41,15 @@ public interface EconomicsContactApiClient {
     @Path("/Contacts")
     EconomicsContactDto createContact(EconomicsContactDto body);
 
+    /**
+     * PUT returns HTTP 200 with an EMPTY body (same pattern as
+     * {@code EconomicsCustomerApiClient.updateCustomer}). Declaring a
+     * non-void return triggers RESTEasy deserialisation 500s. Callers
+     * needing the fresh objectVersion must re-GET after the PUT.
+     */
     @PUT
     @Path("/Contacts/{number}")
-    EconomicsContactDto updateContact(
+    void updateContact(
             @PathParam("number") int customerContactNumber,
             EconomicsContactDto body
     );

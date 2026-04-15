@@ -212,9 +212,11 @@ public class EconomicsCustomerSyncService {
             body.setCustomerNumber(existing.getCustomerNumber());
             body.setObjectVersion(remote.getObjectVersion());
             try {
-                EconomicsCustomerDto updated = api.updateCustomer(existing.getCustomerNumber(), body);
+                api.updateCustomer(existing.getCustomerNumber(), body);
+                // PUT returns empty body — re-GET to pick up the fresh objectVersion.
+                EconomicsCustomerDto after = api.getCustomer(existing.getCustomerNumber());
                 upsertMapping(client.getUuid(), companyUuid, existing.getCustomerNumber(),
-                        updated.getObjectVersion(), existing.getPairingSource());
+                        after.getObjectVersion(), existing.getPairingSource());
                 return;
             } catch (WebApplicationException e) {
                 int status = e.getResponse() == null ? 0 : e.getResponse().getStatus();

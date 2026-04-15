@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -109,19 +110,20 @@ class EconomicsCustomerContactSyncServiceTest {
         when(contactRepo.findByClientCompanyAndName("c-uuid", COMPANY, "Thomas"))
                 .thenReturn(Optional.of(existing));
 
+        // Two GETs: one to build the PUT body, a second after the PUT to pick up
+        // the new objectVersion (e-conomic's PUT /Contacts response has empty body).
         EconomicsContactDto fresh = new EconomicsContactDto();
         fresh.setCustomerContactNumber(777);
         fresh.setObjectVersion("v-fresh");
-        when(api.getContact(777)).thenReturn(fresh);
-
-        EconomicsContactDto updated = new EconomicsContactDto();
-        updated.setCustomerContactNumber(777);
-        updated.setObjectVersion("v-new");
-        when(api.updateContact(eq(777), any())).thenReturn(updated);
+        EconomicsContactDto afterPut = new EconomicsContactDto();
+        afterPut.setCustomerContactNumber(777);
+        afterPut.setObjectVersion("v-new");
+        when(api.getContact(777)).thenReturn(fresh).thenReturn(afterPut);
+        // updateContact is void — default mock behavior is "do nothing".
 
         service.syncContactToCompany(ct, billing, COMPANY);
 
-        verify(api).getContact(777);
+        verify(api, times(2)).getContact(777);
         ArgumentCaptor<EconomicsContactDto> body = ArgumentCaptor.forClass(EconomicsContactDto.class);
         verify(api).updateContact(eq(777), body.capture());
         assertEquals("v-fresh", body.getValue().getObjectVersion());
@@ -150,24 +152,30 @@ class EconomicsCustomerContactSyncServiceTest {
         when(contactRepo.findByClientCompanyAndName("c-uuid", COMPANY, "Thomas"))
                 .thenReturn(Optional.of(existing));
 
+        // Three GETs after void updateContact:
+        //   1st: body for PUT#1 (fails 409)
+        //   2nd: body for PUT#2 (succeeds)
+        //   3rd: re-GET after successful PUT for fresh objectVersion
         EconomicsContactDto fresh1 = new EconomicsContactDto();
         fresh1.setCustomerContactNumber(777);
         fresh1.setObjectVersion("v1");
         EconomicsContactDto fresh2 = new EconomicsContactDto();
         fresh2.setCustomerContactNumber(777);
         fresh2.setObjectVersion("v2");
-        when(api.getContact(777)).thenReturn(fresh1).thenReturn(fresh2);
-
-        EconomicsContactDto updated = new EconomicsContactDto();
-        updated.setCustomerContactNumber(777);
-        updated.setObjectVersion("v-new");
-        when(api.updateContact(eq(777), any()))
-                .thenThrow(new WebApplicationException(Response.status(409).build()))
-                .thenReturn(updated);
+        EconomicsContactDto afterPut = new EconomicsContactDto();
+        afterPut.setCustomerContactNumber(777);
+        afterPut.setObjectVersion("v-new");
+        when(api.getContact(777))
+                .thenReturn(fresh1)
+                .thenReturn(fresh2)
+                .thenReturn(afterPut);
+        doThrow(new WebApplicationException(Response.status(409).build()))
+                .doNothing()
+                .when(api).updateContact(eq(777), any());
 
         service.syncContactToCompany(ct, billing, COMPANY);
 
-        verify(api, times(2)).getContact(777);
+        verify(api, times(3)).getContact(777);
         verify(api, times(2)).updateContact(eq(777), any());
     }
 

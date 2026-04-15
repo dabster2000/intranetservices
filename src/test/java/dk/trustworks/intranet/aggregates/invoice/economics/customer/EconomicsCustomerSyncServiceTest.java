@@ -15,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -64,19 +66,22 @@ class EconomicsCustomerSyncServiceTest {
         ClientEconomicsCustomer existing = makeMapping("c-uuid", COMPANY, 101, "obj-v-old");
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.of(existing));
 
-        EconomicsCustomerDto remote = makeRemote(101, "obj-v-fresh");
-        when(api.getCustomer(101)).thenReturn(remote);
-        when(api.updateCustomer(eq(101), any())).thenReturn(makeRemote(101, "obj-v-new"));
+        // Two GETs: one to build the PUT body, a second after the PUT to pick up
+        // the new objectVersion (e-conomic's PUT response has an empty body).
+        when(api.getCustomer(101))
+                .thenReturn(makeRemote(101, "obj-v-fresh"))
+                .thenReturn(makeRemote(101, "obj-v-new"));
+        // updateCustomer is void — Mockito's default is "do nothing", no stub needed.
 
         service.syncToCompany(c, COMPANY);
 
-        verify(api).getCustomer(101);
+        verify(api, times(2)).getCustomer(101);
         ArgumentCaptor<EconomicsCustomerDto> body = ArgumentCaptor.forClass(EconomicsCustomerDto.class);
         verify(api).updateCustomer(eq(101), body.capture());
         assertEquals("obj-v-fresh", body.getValue().getObjectVersion());
         assertEquals(101, body.getValue().getCustomerNumber());
 
-        // Persisted mapping should carry the updated objectVersion returned from PUT.
+        // Persisted mapping should carry the post-PUT objectVersion from the re-GET.
         ArgumentCaptor<ClientEconomicsCustomer> row = ArgumentCaptor.forClass(ClientEconomicsCustomer.class);
         verify(repo).persist(row.capture());
         assertEquals("obj-v-new", row.getValue().getObjectVersion());
@@ -116,16 +121,21 @@ class EconomicsCustomerSyncServiceTest {
         ClientEconomicsCustomer existing = makeMapping("c-uuid", COMPANY, 101, "obj-v-old");
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.of(existing));
 
+        // GET ordering after void updateCustomer:
+        //   1st: build body for first PUT (fails 409)
+        //   2nd: build body for retry PUT (succeeds)
+        //   3rd: re-GET after successful PUT to pick up new objectVersion
         when(api.getCustomer(101))
                 .thenReturn(makeRemote(101, "obj-v-1"))
-                .thenReturn(makeRemote(101, "obj-v-2"));
-        when(api.updateCustomer(eq(101), any()))
-                .thenThrow(new WebApplicationException(Response.status(409).build()))
+                .thenReturn(makeRemote(101, "obj-v-2"))
                 .thenReturn(makeRemote(101, "obj-v-2-after-put"));
+        doThrow(new WebApplicationException(Response.status(409).build()))
+                .doNothing()
+                .when(api).updateCustomer(eq(101), any());
 
         service.syncToCompany(c, COMPANY);
 
-        verify(api, times(2)).getCustomer(101);
+        verify(api, times(3)).getCustomer(101);
         verify(api, times(2)).updateCustomer(eq(101), any());
     }
 
