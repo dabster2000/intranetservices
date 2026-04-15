@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.draft;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Getter; import lombok.Setter;
 
 import java.time.LocalDate;
@@ -11,6 +12,7 @@ import java.time.LocalDate;
  */
 @Getter @Setter
 @JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class EconomicsDraftInvoice {
     private Integer  draftInvoiceNumber;   // returned by POST
     private Integer  customerNumber;
