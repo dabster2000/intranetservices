@@ -44,6 +44,7 @@ class EconomicsCustomerPairingServiceTest {
     private EconomicsCustomerApiClient api;
     private ClientLookup clientLookup;
     private AgreementResolver agreementResolver;
+    private AgreementDefaultsRegistry agreementDefaults;
 
     private EconomicsCustomerPairingService svc;
 
@@ -54,8 +55,9 @@ class EconomicsCustomerPairingServiceTest {
         api = mock(EconomicsCustomerApiClient.class);
         clientLookup = mock(ClientLookup.class);
         agreementResolver = mock(AgreementResolver.class);
+        agreementDefaults = new AgreementDefaultsRegistry();
 
-        svc = new EconomicsCustomerPairingService(repo, cache, clientLookup, agreementResolver);
+        svc = new EconomicsCustomerPairingService(repo, cache, clientLookup, agreementResolver, agreementDefaults);
     }
 
     // ----------------------- listPairingRows -----------------------

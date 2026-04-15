@@ -5,19 +5,15 @@ import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingC
 import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingRequestDto;
 import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingRowDto;
 import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
-import jakarta.ws.rs.WebApplicationException;
-import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,16 +42,19 @@ public class EconomicsCustomerPairingService {
     private final EconomicsCustomerIndexCache cache;
     private final ClientLookup clientLookup;
     private final AgreementResolver agreementResolver;
+    private final AgreementDefaultsRegistry agreementDefaults;
 
     @Inject
     public EconomicsCustomerPairingService(ClientEconomicsCustomerRepository repo,
                                            EconomicsCustomerIndexCache cache,
                                            ClientLookup clientLookup,
-                                           AgreementResolver agreementResolver) {
+                                           AgreementResolver agreementResolver,
+                                           AgreementDefaultsRegistry agreementDefaults) {
         this.repo = repo;
         this.cache = cache;
         this.clientLookup = clientLookup;
         this.agreementResolver = agreementResolver;
+        this.agreementDefaults = agreementDefaults;
     }
 
     // --------------------------------------------------- GET /pairing
@@ -241,7 +240,7 @@ public class EconomicsCustomerPairingService {
         EconomicsCustomerApiClient api = agreementResolver.apiFor(company);
         EconomicsCustomerIndex idx = cache.getIndex(company);
 
-        AgreementDefaults defaults = defaultsFor(company);
+        AgreementDefaults defaults = agreementDefaults.requireFor(company);
         EconomicsCustomerDto body = toCreateBody(c, idx, defaults);
         EconomicsCustomerDto created = api.createCustomer(body);
         int customerNumber = Objects.requireNonNull(created.getCustomerNumber(),
@@ -345,57 +344,6 @@ public class EconomicsCustomerPairingService {
                 .max()
                 .orElse(1000);
         return max + 1;
-    }
-
-    // --------------------------------------------------- per-agreement defaults
-
-    /**
-     * Customer-create defaults per e-conomic agreement. These are configured
-     * manually in the e-conomic UI by the accountant (see §13.1 prerequisite
-     * checklist) and pinned here by companyUuid until Phase G2 replaces this
-     * lookup with config-driven values from {@code integration_keys}.
-     *
-     * <p>Only Trustworks A/S is fully configured today — see
-     * {@code docs/finalized/infrastructure/economics-config.md}. Other
-     * agreements throw a 409 so the UI can render a clear error message.
-     */
-    private AgreementDefaults defaultsFor(String companyUuid) {
-        AgreementDefaults d = AGREEMENT_DEFAULTS.get(companyUuid);
-        if (d == null) {
-            throw new WebApplicationException(
-                    "Agreement for company " + companyUuid + " has no customer-create defaults "
-                            + "configured. Create CLIENT/PARTNER customer groups in e-conomic and "
-                            + "register them in economics-config.md before using the Create flow.",
-                    Response.Status.CONFLICT);
-        }
-        return d;
-    }
-
-    /**
-     * Hardcoded per-agreement defaults. Verified 2026-04-15 during Phase G1.1.
-     * - Trustworks A/S (1119008, companyuuid d8894494-...): CLIENT group 1,
-     *   PARTNER group 2, currency DKK, VAT zone 1 (Domestic),
-     *   paymentTermId 2 (Lb. md. 30 dage).
-     * - Trustworks Technology (1675389) + Cyber Security (1785188) do NOT
-     *   have CLIENT/PARTNER groups yet → createAndPair is blocked for them
-     *   until the accountant configures the groups.
-     */
-    private static final Map<String, AgreementDefaults> AGREEMENT_DEFAULTS = Map.of(
-            "d8894494-2fb4-4f72-9e05-e6032e6dd691",
-            new AgreementDefaults(1, 2, "DKK", 1, 2)
-    );
-
-    /** Immutable bundle of per-agreement create defaults. */
-    private record AgreementDefaults(
-            int clientGroupNumber,
-            int partnerGroupNumber,
-            String currency,
-            int vatZoneNumber,
-            int paymentTermId) {
-        int groupNumberFor(ClientType type) {
-            if (type == ClientType.PARTNER) return partnerGroupNumber;
-            return clientGroupNumber;
-        }
     }
 
 }
