@@ -12,6 +12,7 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
 import dk.trustworks.intranet.dao.crm.model.Clientdata;
 import dk.trustworks.intranet.dao.crm.model.Project;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
@@ -72,8 +73,16 @@ public class ClientResource {
     private static final java.util.regex.Pattern COUNTRY_PATTERN = java.util.regex.Pattern.compile("^[A-Z]{2}$");
 
     @GET
-    public List<Client> findAll() {
-        return clientAPI.listAllClients();
+    @Operation(summary = "List clients filtered by type",
+            description = "Lists clients filtered by `type` (default CLIENT). " +
+                    "PARTNERs are excluded unless explicitly requested via ?type=PARTNER — " +
+                    "this hard-filter applies defense-in-depth at the resource layer. " +
+                    "Optional `active` filter: omit for both active and inactive (preserves prior default), " +
+                    "or pass true/false to filter. SPEC-INV-001 §3.4, §8.8.")
+    public List<Client> findAll(
+            @QueryParam("type")   @DefaultValue("CLIENT") ClientType type,
+            @QueryParam("active")                         Boolean active) {
+        return clientAPI.listByTypeAndActive(type, active);
     }
 
     @GET

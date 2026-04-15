@@ -2,6 +2,7 @@ package dk.trustworks.intranet.dao.crm.services;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Clientdata;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,6 +39,18 @@ public class ClientService {
 
     public List<Client> findByActiveTrue() {
         return Client.list("active = ?1", Sort.ascending("name"), true);
+    }
+
+    /**
+     * Lists clients filtered by type, and optionally by active state.
+     * When {@code active} is null, both active and inactive clients are returned
+     * (preserves the prior {@code /clients} default). When non-null, filters by value.
+     */
+    public List<Client> listByTypeAndActive(ClientType type, Boolean active) {
+        if (active == null) {
+            return Client.list("type = ?1", Sort.ascending("name"), type);
+        }
+        return Client.list("type = ?1 and active = ?2", Sort.ascending("name"), type, active);
     }
 
     @Transactional
