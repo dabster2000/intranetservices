@@ -97,6 +97,11 @@ quarkus:
       scope: jakarta.inject.Singleton
       connect-timeout: 10000
       read-timeout: 30000
+    economics-legacy-rest:
+      url: https://restapi.e-conomic.com
+      scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     cvtool:
       url: https://tw-cvtool-backend.azurewebsites.net
       scope: jakarta.inject.Singleton
