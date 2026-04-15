@@ -46,4 +46,19 @@ public class EconomicsCustomersApiClientFactory {
                 .register(new EconomicsDynamicHeaderFilter(keys.appSecretToken(), keys.agreementGrantToken()))
                 .build(EconomicsCustomerApiClient.class);
     }
+
+    /**
+     * Builds a Contacts API client authenticated for the given agreement. Shares
+     * the Customers v3.1.0 base URL and auth-header filter with {@link #build}.
+     *
+     * @param keys non-null integration keys for the target Trustworks company
+     * @return a configured {@link EconomicsContactApiClient}
+     */
+    public EconomicsContactApiClient buildContactClient(IntegrationKeyValue keys) {
+        Objects.requireNonNull(keys, "integration keys must not be null");
+        return RestClientBuilder.newBuilder()
+                .baseUri(URI.create(baseUrl))
+                .register(new EconomicsDynamicHeaderFilter(keys.appSecretToken(), keys.agreementGrantToken()))
+                .build(EconomicsContactApiClient.class);
+    }
 }
