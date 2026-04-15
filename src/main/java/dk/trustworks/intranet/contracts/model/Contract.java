@@ -65,6 +65,21 @@ public class Contract extends PanacheEntityBase {
 
     private String clientdatauuid;
 
+    @Column(name = "billing_client_uuid", length = 36)
+    private String billingClientUuid;
+
+    @Column(name = "billing_attention", length = 150)
+    private String billingAttention;
+
+    @Column(name = "billing_email", length = 255)
+    private String billingEmail;
+
+    @Column(name = "billing_ref", length = 500)
+    private String billingRef;
+
+    @Column(name = "payment_terms_uuid", length = 36)
+    private String paymentTermsUuid;
+
     private String note;
 
     @JsonProperty("salesconsultant")
