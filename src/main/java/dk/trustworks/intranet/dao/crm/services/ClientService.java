@@ -71,8 +71,9 @@ public class ClientService {
     @Transactional
     public void updateOne(Client client) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
-        log.infof("Updating client uuid=%s, name=%s, active=%s, user=%s",
-                client.getUuid(), client.getName(), client.isActive(), userUuid);
+        ClientType incomingType = client.getType() != null ? client.getType() : ClientType.CLIENT;
+        log.infof("Updating client uuid=%s, name=%s, active=%s, type=%s, user=%s",
+                client.getUuid(), client.getName(), client.isActive(), incomingType, userUuid);
         Client.update("active = ?1, " +
                         "contactname = ?2, " +
                         "name = ?3, " +
@@ -92,8 +93,11 @@ public class ClientService {
                         "industryCode = ?17, " +
                         "industryDesc = ?18, " +
                         "companyCode = ?19, " +
-                        "companyDesc = ?20 " +
-                        "WHERE uuid like ?21 ",
+                        "companyDesc = ?20, " +
+                        "type = ?21, " +
+                        "defaultBillingAttention = ?22, " +
+                        "defaultBillingEmail = ?23 " +
+                        "WHERE uuid like ?24 ",
                 client.isActive(), client.getContactname(),
                 client.getName(), client.getAccountmanager(),
                 client.getCrmid(), client.getSegment(),
@@ -105,6 +109,9 @@ public class ClientService {
                 client.getPhone(), client.getIndustryCode(),
                 client.getIndustryDesc(), client.getCompanyCode(),
                 client.getCompanyDesc(),
+                incomingType,
+                client.getDefaultBillingAttention(),
+                client.getDefaultBillingEmail(),
                 client.getUuid());
     }
 
