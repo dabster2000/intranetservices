@@ -16,6 +16,13 @@
 --   company (with global fallback when no per-company mapping exists).
 --
 -- Idempotency: WHERE payment_terms_uuid IS NULL.
+--
+-- MariaDB does NOT support referencing outer-query aliases through a derived
+-- table (the inner `SELECT pd FROM (SELECT ... FROM payment_terms_mapping ...)
+-- candidates` pattern). The prior version used that shape and failed fast with
+-- `ERROR 1054 (42S22): Unknown column 'c.companyuuid' in 'WHERE'`, leaving a
+-- success=0 row in flyway_schema_history. Rewritten as a plain correlated
+-- subquery (no derived-table wrapper) so `c` and `avg_dd` stay visible.
 -- =============================================================================
 
 UPDATE contracts c
@@ -31,19 +38,18 @@ JOIN (
 ) avg_dd ON avg_dd.contractuuid = c.uuid
 JOIN payment_terms_mapping ptm
   ON ptm.payment_terms_type = 'NET'
+ AND (ptm.company_uuid = c.companyuuid OR ptm.company_uuid IS NULL)
  AND ptm.payment_days = (
-        -- Pick the closest matching payment_days from available mappings.
-        SELECT pd
-        FROM (
-            SELECT payment_days AS pd
-            FROM payment_terms_mapping
-            WHERE payment_terms_type = 'NET'
-              AND payment_days IS NOT NULL
-              AND (company_uuid = c.companyuuid OR company_uuid IS NULL)
-        ) candidates
-        ORDER BY ABS(candidates.pd - avg_dd.avg_days), candidates.pd
+        -- Closest payment_days available for this contract's company
+        -- (company-scoped mappings preferred; global mappings accepted as
+        -- fallback). Distance tie-broken by smaller payment_days.
+        SELECT inner_ptm.payment_days
+        FROM payment_terms_mapping inner_ptm
+        WHERE inner_ptm.payment_terms_type = 'NET'
+          AND inner_ptm.payment_days IS NOT NULL
+          AND (inner_ptm.company_uuid = c.companyuuid OR inner_ptm.company_uuid IS NULL)
+        ORDER BY ABS(inner_ptm.payment_days - avg_dd.avg_days), inner_ptm.payment_days
         LIMIT 1
     )
- AND (ptm.company_uuid = c.companyuuid OR ptm.company_uuid IS NULL)
 SET c.payment_terms_uuid = ptm.uuid
 WHERE c.payment_terms_uuid IS NULL;
