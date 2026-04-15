@@ -26,10 +26,32 @@ public final class EconomicsCustomerIndex {
 
     private final Map<String, List<Integer>> byCvr;
     private final Map<String, List<Integer>> byName;
+    private final Map<Integer, EconomicsCustomerDto> byNumber;
+    private final List<EconomicsCustomerDto> all;
 
     public EconomicsCustomerIndex(List<EconomicsCustomerDto> customers) {
-        this.byCvr  = groupByCvr(customers);
-        this.byName = groupNormalised(customers);
+        this.byCvr    = groupByCvr(customers);
+        this.byName   = groupNormalised(customers);
+        this.byNumber = mapByNumber(customers);
+        this.all      = List.copyOf(customers);
+    }
+
+    private static Map<Integer, EconomicsCustomerDto> mapByNumber(List<EconomicsCustomerDto> src) {
+        Map<Integer, EconomicsCustomerDto> acc = new HashMap<>();
+        for (EconomicsCustomerDto c : src) {
+            if (c.getCustomerNumber() != null) acc.put(c.getCustomerNumber(), c);
+        }
+        return acc;
+    }
+
+    /** Unordered view of every e-conomic customer loaded into the index. */
+    public List<EconomicsCustomerDto> allCustomers() {
+        return all;
+    }
+
+    /** Looks up a customer by its e-conomic customer number. */
+    public Optional<EconomicsCustomerDto> getByCustomerNumber(int customerNumber) {
+        return Optional.ofNullable(byNumber.get(customerNumber));
     }
 
     private static Map<String, List<Integer>> groupByCvr(List<EconomicsCustomerDto> src) {
