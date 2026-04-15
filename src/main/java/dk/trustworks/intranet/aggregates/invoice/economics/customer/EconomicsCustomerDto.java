@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -13,10 +14,18 @@ import lombok.Setter;
  * payload (§6.3): address1/address2, postCode, city, country, email,
  * eanLocationNumber, nemHandelReceiverType, defaultDisableEInvoicing.
  *
+ * <p><b>NON_NULL</b> serialisation is required: the e-conomic API rejects
+ * explicit {@code "field": null} on typed Boolean/Integer fields with
+ * {@code "Invalid value provided."} (verified 2026-04-15). Omitting the
+ * property is accepted. Without this annotation, Jackson writes nulls and
+ * POST /Customers responds 400 on e.g. {@code access} and
+ * {@code defaultDisableEInvoicing}.
+ *
  * SPEC-INV-001 §6.3.
  */
 @Getter @Setter
 @JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class EconomicsCustomerDto {
     private Integer customerNumber;
     private String name;

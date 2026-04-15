@@ -8,6 +8,8 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
 import java.time.LocalDateTime;
@@ -242,7 +244,15 @@ public class EconomicsCustomerPairingService {
 
         AgreementDefaults defaults = agreementDefaults.requireFor(company);
         EconomicsCustomerDto body = toCreateBody(c, idx, defaults);
-        EconomicsCustomerDto created = api.createCustomer(body);
+        int targetNumber = Objects.requireNonNull(body.getCustomerNumber(),
+                "toCreateBody did not assign a customerNumber");
+
+        // Idempotency guard: if we're retrying after a previous partial failure,
+        // the customer with our chosen customerNumber may already exist from the
+        // earlier POST that succeeded server-side but whose PUT access=true step
+        // threw. GET-first means we skip POST and go straight to PUT.
+        EconomicsCustomerDto created = getIfExists(api, targetNumber)
+                .orElseGet(() -> api.createCustomer(body));
         int customerNumber = Objects.requireNonNull(created.getCustomerNumber(),
                 "e-conomic returned no customerNumber for client " + client);
 
@@ -266,6 +276,19 @@ public class EconomicsCustomerPairingService {
                 c.getUuid(), c.getName(), c.getCvr(),
                 c.getType() == null ? null : c.getType().name(),
                 "PAIRED", PairingSource.CREATED, customerNumber, List.of());
+    }
+
+    private Optional<EconomicsCustomerDto> getIfExists(EconomicsCustomerApiClient api,
+                                                       int customerNumber) {
+        try {
+            return Optional.ofNullable(api.getCustomer(customerNumber));
+        } catch (WebApplicationException notFound) {
+            if (notFound.getResponse() != null
+                    && notFound.getResponse().getStatus() == Response.Status.NOT_FOUND.getStatusCode()) {
+                return Optional.empty();
+            }
+            throw notFound;
+        }
     }
 
     // --------------------------------------------------- helpers
