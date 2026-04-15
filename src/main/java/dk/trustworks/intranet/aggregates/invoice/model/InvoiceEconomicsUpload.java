@@ -62,6 +62,12 @@ public class InvoiceEconomicsUpload extends PanacheEntityBase {
     @Column(name = "voucher_number")
     private Integer voucherNumber;
 
+    @Column(name = "economics_draft_number")
+    private Integer economicsDraftNumber;
+
+    @Column(name = "economics_booked_number")
+    private Integer economicsBookedNumber;
+
     @Column(name = "attempt_count", nullable = false)
     private int attemptCount = 0;
 
@@ -96,6 +102,12 @@ public class InvoiceEconomicsUpload extends PanacheEntityBase {
     public enum UploadStatus {
         /** Upload queued but not yet attempted */
         PENDING,
+        /** Draft invoice created in e-conomics; awaiting booking */
+        DRAFT_CREATED,
+        /** Booking request submitted to e-conomics; awaiting confirmation */
+        BOOK_PENDING,
+        /** Invoice booked in e-conomics */
+        BOOKED,
         /** Upload succeeded */
         SUCCESS,
         /** Upload failed (may be retried if attempt_count < max_attempts) */
