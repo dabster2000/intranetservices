@@ -19,4 +19,16 @@ public class EconomicsCustomerDto {
     private String cvrNo;
     private Boolean access;
     private String objectVersion;
+
+    /** Customer group number (required by POST /Customers; flat in e-conomic JSON). */
+    private Integer customerGroupNumber;
+
+    /** VAT zone number (e-conomic calls this "zone" in Customers v3.1.0). */
+    private Integer zone;
+
+    /** ISO-4217 currency code used as default for invoices against this customer. */
+    private String currency;
+
+    /** Payment terms number as configured in e-conomic (paymentTermId in v3.1.0). */
+    private Integer paymentTermId;
 }

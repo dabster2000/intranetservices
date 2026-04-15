@@ -32,7 +32,10 @@ import static org.mockito.Mockito.when;
  */
 class EconomicsCustomerPairingServiceTest {
 
-    private static final UUID COMPANY_UUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    // Matches Trustworks A/S companyuuid so the service's hardcoded
+    // AgreementDefaults map (Phase G1.1) returns a non-null bundle during
+    // createAndPair. Other tests here don't care about the specific UUID.
+    private static final UUID COMPANY_UUID = UUID.fromString("d8894494-2fb4-4f72-9e05-e6032e6dd691");
     private static final String COMPANY = COMPANY_UUID.toString();
     private static final UUID CLIENT_UUID = UUID.fromString("00000000-0000-0000-0000-00000000000c");
 
