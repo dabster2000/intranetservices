@@ -37,14 +37,14 @@ public class EconomicsCustomerPairingResource {
 
     @GET
     @Path("/pairing")
-    @RolesAllowed({"accountants:read", "accountants:write"})
+    @RolesAllowed({"invoices:read", "invoices:write"})
     public List<PairingRowDto> listPairing(@QueryParam("companyUuid") UUID companyUuid) {
         return service.listPairingRows(companyUuid);
     }
 
     @POST
     @Path("/pair")
-    @RolesAllowed("accountants:write")
+    @RolesAllowed("invoices:write")
     public Response pairManually(@Valid PairingRequestDto request) {
         service.pairManually(request);
         return Response.noContent().build();
@@ -52,7 +52,7 @@ public class EconomicsCustomerPairingResource {
 
     @DELETE
     @Path("/pair")
-    @RolesAllowed("accountants:write")
+    @RolesAllowed("invoices:write")
     public Response unpair(@QueryParam("clientUuid") UUID clientUuid,
                            @QueryParam("companyUuid") UUID companyUuid) {
         service.unpair(clientUuid, companyUuid);
@@ -61,14 +61,14 @@ public class EconomicsCustomerPairingResource {
 
     @POST
     @Path("/pair/auto-run")
-    @RolesAllowed("accountants:write")
+    @RolesAllowed("invoices:write")
     public AutoRunResultDto autoRun(@QueryParam("companyUuid") UUID companyUuid) {
         return service.autoRun(companyUuid);
     }
 
     @GET
     @Path("/search")
-    @RolesAllowed({"accountants:read", "accountants:write"})
+    @RolesAllowed({"invoices:read", "invoices:write"})
     public List<PairingCandidateDto> search(@QueryParam("companyUuid") UUID companyUuid,
                                             @QueryParam("q") String query) {
         return service.searchEconomicsCustomers(companyUuid, query);
@@ -76,7 +76,7 @@ public class EconomicsCustomerPairingResource {
 
     @POST
     @Path("/pair/{clientUuid}/{companyUuid}/create")
-    @RolesAllowed("accountants:write")
+    @RolesAllowed("invoices:write")
     public Response createAndPair(@PathParam("clientUuid") UUID clientUuid,
                                   @PathParam("companyUuid") UUID companyUuid) {
         PairingRowDto row = service.createAndPair(clientUuid, companyUuid);

@@ -36,7 +36,7 @@ class EconomicsCustomerPairingResourceTest {
     // --------------------------------------------------- GET /pairing
 
     @Test
-    @TestSecurity(user = "admin", roles = {"accountants:read"})
+    @TestSecurity(user = "admin", roles = {"invoices:read"})
     void get_pairing_returns_rows() {
         when(service.listPairingRows(COMPANY_UUID)).thenReturn(List.of(
                 new PairingRowDto(CLIENT_UUID.toString(), "Acme A/S", "12345678",
@@ -61,7 +61,7 @@ class EconomicsCustomerPairingResourceTest {
     // --------------------------------------------------- POST /pair
 
     @Test
-    @TestSecurity(user = "admin", roles = {"accountants:write"})
+    @TestSecurity(user = "admin", roles = {"invoices:write"})
     void post_pair_delegates_to_service() {
         String body = """
                 {
@@ -80,7 +80,7 @@ class EconomicsCustomerPairingResourceTest {
     }
 
     @Test
-    @TestSecurity(user = "reader", roles = {"accountants:read"})
+    @TestSecurity(user = "reader", roles = {"invoices:read"})
     void post_pair_as_read_only_is_forbidden() {
         String body = """
                 {"clientUuid":"%s","companyUuid":"%s","economicsCustomerNumber":42,"pairingSource":"MANUAL"}
@@ -94,7 +94,7 @@ class EconomicsCustomerPairingResourceTest {
     // --------------------------------------------------- DELETE /pair
 
     @Test
-    @TestSecurity(user = "admin", roles = {"accountants:write"})
+    @TestSecurity(user = "admin", roles = {"invoices:write"})
     void delete_pair_delegates_to_service() {
         given().queryParam("clientUuid", CLIENT_UUID.toString())
                 .queryParam("companyUuid", COMPANY_UUID.toString())
@@ -107,7 +107,7 @@ class EconomicsCustomerPairingResourceTest {
     // --------------------------------------------------- POST /pair/auto-run
 
     @Test
-    @TestSecurity(user = "admin", roles = {"accountants:write"})
+    @TestSecurity(user = "admin", roles = {"invoices:write"})
     void auto_run_returns_result_dto() {
         when(service.autoRun(COMPANY_UUID)).thenReturn(new AutoRunResultDto(3, 2, 1, 4, List.of()));
 
@@ -123,7 +123,7 @@ class EconomicsCustomerPairingResourceTest {
     // --------------------------------------------------- GET /search
 
     @Test
-    @TestSecurity(user = "admin", roles = {"accountants:read"})
+    @TestSecurity(user = "admin", roles = {"invoices:read"})
     void search_returns_candidates() {
         when(service.searchEconomicsCustomers(eq(COMPANY_UUID), eq("acme"))).thenReturn(List.of(
                 new PairingCandidateDto(101, "Acme A/S", "12345678", "NAME")));
@@ -140,7 +140,7 @@ class EconomicsCustomerPairingResourceTest {
     // --------------------------------------------------- POST /pair/{c}/{co}/create
 
     @Test
-    @TestSecurity(user = "admin", roles = {"accountants:write"})
+    @TestSecurity(user = "admin", roles = {"invoices:write"})
     void create_and_pair_returns_pairing_row() {
         when(service.createAndPair(eq(CLIENT_UUID), eq(COMPANY_UUID))).thenReturn(
                 new PairingRowDto(CLIENT_UUID.toString(), "Acme A/S", "12345678",
