@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.invoice.resources;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
@@ -11,6 +12,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsReq
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.*;
+import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceControllingService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceLedgerService;
@@ -70,6 +72,13 @@ public class InvoiceResource {
 
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service invoicePdfS3Service;
+
+    @Inject
+    EconomicsAgreementResolver agreementResolver;
+
+    @Inject
+    @org.eclipse.microprofile.rest.client.inject.RestClient
+    EconomicsBookingApiClient bookApi;
 
     @Inject
     InvoiceLedgerService invoiceLedgerService;
@@ -1134,5 +1143,93 @@ public class InvoiceResource {
                 "invoiceuuid", invoiceuuid,
                 "insertedCount", inserted
         )).build();
+    }
+
+    // ── New finalization endpoints (SPEC-INV-001 §7.2) ────────────────────────
+
+    /**
+     * Step 2 of the two-step finalization flow: books the e-conomic draft and sets
+     * status to CREATED with the e-conomic-assigned invoice number.
+     *
+     * @param uuid   invoice UUID (must be PENDING_REVIEW with an economicsDraftNumber set)
+     * @param sendBy optional delivery method — null | "ean" | "Email"
+     */
+    @POST
+    @Path("/{invoiceuuid}/book")
+    @RolesAllowed({"invoices:write"})
+    public Invoice book(
+            @PathParam("invoiceuuid") String uuid,
+            @QueryParam("sendBy") String sendBy) {
+        return invoiceService.bookInvoice(uuid, sendBy);
+    }
+
+    /**
+     * Cancels in-progress finalization (reverses step 1): deletes the e-conomic draft
+     * and reverts the invoice to DRAFT status.
+     *
+     * @param uuid invoice UUID (must be PENDING_REVIEW)
+     */
+    @POST
+    @Path("/{invoiceuuid}/cancel-finalization")
+    @RolesAllowed({"invoices:write"})
+    public Invoice cancelFinalization(@PathParam("invoiceuuid") String uuid) {
+        return invoiceService.cancelFinalization(uuid);
+    }
+
+    /**
+     * Streams the PDF for an invoice from e-conomic (draft or booked), falling back
+     * to the legacy S3 PDF for invoices that predate the orchestrator flow.
+     *
+     * <ul>
+     *   <li>PENDING_REVIEW — fetch draft PDF from e-conomic via draft number.</li>
+     *   <li>CREATED with an economics booked number — fetch booked PDF from e-conomic.</li>
+     *   <li>Legacy (no economics numbers) — stream bytes from S3 / DB as before.</li>
+     * </ul>
+     */
+    @GET
+    @Path("/{invoiceuuid}/economics-pdf")
+    @Produces("application/pdf")
+    @RolesAllowed({"invoices:read"})
+    public Response economicsPdf(@PathParam("invoiceuuid") String uuid) {
+        Invoice inv = invoiceService.findOneByUuid(uuid);
+        if (inv == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity("Invoice not found: " + uuid)
+                    .type(MediaType.TEXT_PLAIN)
+                    .build();
+        }
+
+        try {
+            if (inv.getStatus() == InvoiceStatus.PENDING_REVIEW && inv.getEconomicsDraftNumber() != null) {
+                var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
+                java.io.InputStream pdf = bookApi.getDraftPdf(
+                        tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsDraftNumber());
+                return Response.ok(pdf, "application/pdf").build();
+            }
+
+            if (inv.getEconomicsBookedNumber() != null) {
+                var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
+                java.io.InputStream pdf = bookApi.getBookedPdf(
+                        tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsBookedNumber());
+                return Response.ok(pdf, "application/pdf").build();
+            }
+
+            // Legacy: retrieve from S3 / DB via existing service
+            byte[] pdfBytes = invoiceService.getInvoicePdfBytes(uuid);
+            if (pdfBytes == null || pdfBytes.length == 0) {
+                return Response.status(Response.Status.NOT_FOUND)
+                        .entity("No PDF available for invoice: " + uuid)
+                        .type(MediaType.TEXT_PLAIN)
+                        .build();
+            }
+            return Response.ok(pdfBytes, "application/pdf").build();
+
+        } catch (Exception e) {
+            log.errorf("Failed to retrieve economics PDF for invoice %s: %s", uuid, e.getMessage());
+            return Response.serverError()
+                    .entity("Failed to retrieve PDF for invoice: " + uuid)
+                    .type(MediaType.TEXT_PLAIN)
+                    .build();
+        }
     }
 }

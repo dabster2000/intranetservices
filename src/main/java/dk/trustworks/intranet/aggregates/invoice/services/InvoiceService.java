@@ -105,6 +105,9 @@ public class InvoiceService {
     InvoicePdfS3Service invoicePdfS3Service;
 
     @Inject
+    InvoiceFinalizationOrchestrator orchestrator;
+
+    @Inject
     JPAStreamer jpaStreamer;
     @Inject
     WorkService workService;
@@ -468,37 +471,16 @@ public class InvoiceService {
         return invoice;
     }
 
+    /**
+     * Finalizes a non-PHANTOM draft invoice by creating an e-conomic draft (step 1 of 2).
+     * All business logic (item recalc, bonus, PDF, invoice numbering, e-conomic upload)
+     * is now owned by {@link InvoiceFinalizationOrchestrator#createDraft(String)}.
+     *
+     * SPEC-INV-001 §7.2.
+     */
     @Transactional
-    public Invoice createInvoice(Invoice draftInvoice) throws JsonProcessingException {
-        if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
-        draftInvoice.invoicenumber = getMaxInvoiceNumber(draftInvoice);
-        if(draftInvoice.getType() == InvoiceType.CREDIT_NOTE) {
-            Invoice parentInvoice = Invoice.findById(draftInvoice.getCreditnoteForUuid());
-            clearBonusFields(parentInvoice);
-            clearBonusFields(draftInvoice);
-            updateInvoiceBonusStatus(parentInvoice);
-        }
-
-        if (draftInvoice.getType() != InvoiceType.CREDIT_NOTE) {
-            recalculateInvoiceItems(draftInvoice);
-            // Bonus calculation only for non-internal invoices
-            if (draftInvoice.getType() != InvoiceType.INTERNAL) {
-                bonusService.recalcForInvoice(draftInvoice.getUuid());
-            }
-        }
-        draftInvoice.setStatus(CREATED);
-        createInvoicePdf(draftInvoice); // Uploads to S3 and sets pdfStorageKey
-        log.debug("Saving invoice...");
-        saveInvoice(draftInvoice);
-        log.debug("Invoice saved: "+draftInvoice.getUuid());
-        log.debug("Queued invoice for economics upload (will process in background)");
-        uploadService.queueUploads(draftInvoice);
-        log.infof("Invoice %s queued for e-conomics upload with status PENDING", draftInvoice.getUuid());
-        String contractuuid = draftInvoice.getContractuuid();
-        String projectuuid = draftInvoice.getProjectuuid();
-        workService.registerAsPaidout(contractuuid, projectuuid, draftInvoice.getMonth(), draftInvoice.getYear());
-
-        return draftInvoice;
+    public Invoice createInvoice(Invoice draftInvoice) {
+        return orchestrator.createDraft(draftInvoice.getUuid());
     }
 
     private static void clearBonusFields(Invoice parentInvoice) {
@@ -522,6 +504,11 @@ public class InvoiceService {
                 invoice.getUuid());
     }
 
+    /**
+     * Finalizes a PHANTOM draft invoice: recalculates items, generates a PDF (stored in S3
+     * for UI display), and persists as CREATED. PHANTOM invoices do not interact with
+     * e-conomic and therefore no upload is queued. SPEC-INV-001 §9.5.
+     */
     @Transactional
     public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
@@ -532,14 +519,26 @@ public class InvoiceService {
         draftInvoice.setType(InvoiceType.PHANTOM);
         createInvoicePdf(draftInvoice); // Uploads to S3 and sets pdfStorageKey
         saveInvoice(draftInvoice);
-        if(!"dev".equals(LaunchMode.current().getProfileKey())) {
-            uploadService.queueUploads(draftInvoice);
-            log.infof("Queued phantom invoice %s for e-conomics upload (will process in background)", draftInvoice.getUuid());
-        } else {
-            log.warn("The invoice is not uploaded to e-conomics in Dev environment");
-        }
-        //createEmitter.send(draftInvoice);
+        log.infof("Phantom invoice %s finalized (no e-conomic upload per §9.5)", draftInvoice.getUuid());
         return draftInvoice;
+    }
+
+    /**
+     * Step 2 of the new finalization flow: books the e-conomic draft invoice and sets
+     * status to CREATED with the e-conomic-assigned invoice number. SPEC-INV-001 §7.2.
+     */
+    @Transactional
+    public Invoice bookInvoice(String invoiceUuid, String sendBy) {
+        return orchestrator.bookDraft(invoiceUuid, sendBy);
+    }
+
+    /**
+     * Cancels an in-progress finalization (step 1 reversal): deletes the e-conomic draft
+     * and reverts the invoice to DRAFT. SPEC-INV-001 §7.2.
+     */
+    @Transactional
+    public Invoice cancelFinalization(String invoiceUuid) {
+        return orchestrator.cancelFinalization(invoiceUuid);
     }
 
     private void saveInvoice(Invoice invoice) {
