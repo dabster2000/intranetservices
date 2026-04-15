@@ -31,10 +31,19 @@ public class IntegrationKey extends PanacheEntityBase {
         int invoiceJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("invoice-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
         int invoiceAccountNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("invoice-account-number")).findFirst().orElse(new IntegrationKey()).getValue());
         int internalJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("internal-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
-        IntegrationKeyValue result = new IntegrationKeyValue(url, appSecretToken, agreementGrantToken, expenseJournalNumber, invoiceJournalNumber, invoiceAccountNumber, internalJournalNumber);
+        // invoice-product-number is optional; default 0 so existing agreements without the key keep working
+        // until the admin configures it. Phase G2/H mappers validate the presence where required.
+        int invoiceProductNumber = integrationKeys.stream()
+                .filter(i -> i.getKey().equals("invoice-product-number"))
+                .findFirst()
+                .map(IntegrationKey::getValue)
+                .filter(v -> v != null && !v.isBlank())
+                .map(Integer::parseInt)
+                .orElse(0);
+        IntegrationKeyValue result = new IntegrationKeyValue(url, appSecretToken, agreementGrantToken, expenseJournalNumber, invoiceJournalNumber, invoiceAccountNumber, internalJournalNumber, invoiceProductNumber);
         return result;
     }
 
-    public record IntegrationKeyValue(String url, String appSecretToken, String agreementGrantToken, int expenseJournalNumber, int invoiceJournalNumber, int invoiceAccountNumber, int internalJournalNumber) {
+    public record IntegrationKeyValue(String url, String appSecretToken, String agreementGrantToken, int expenseJournalNumber, int invoiceJournalNumber, int invoiceAccountNumber, int internalJournalNumber, int invoiceProductNumber) {
     }
 }
