@@ -92,6 +92,9 @@ quarkus:
     economics-customers-api:
       url: https://apis.e-conomic.com/customersapi/v3.1.0
       scope: jakarta.inject.Singleton
+    economics-q2c-api:
+      url: https://apis.e-conomic.com/q2capi/v5.1.0
+      scope: jakarta.inject.Singleton
     cvtool:
       url: https://tw-cvtool-backend.azurewebsites.net
       scope: jakarta.inject.Singleton
