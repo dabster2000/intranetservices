@@ -5,6 +5,6 @@ package dk.trustworks.intranet.aggregates.invoice.model.enums;
  */
 public enum InvoiceStatus {
 
-    DRAFT, QUEUED, CREATED
+    DRAFT, PENDING_REVIEW, QUEUED, CREATED
 
 }
