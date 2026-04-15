@@ -8,6 +8,15 @@ on:
       - '*.md'
       - '.github/ISSUE_TEMPLATE/**'
 
+# Serialize ECS deploys: if a deploy is already running when a new push
+# arrives, queue the new one until the in-flight deploy finishes. Prevents
+# ECS "ServiceUpdateInProgress" failures when rapid pushes stack up.
+# cancel-in-progress: false — let the in-flight deploy finish, then run the
+# next one with the latest commit.
+concurrency:
+  group: staging-quarkus-deploy
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
