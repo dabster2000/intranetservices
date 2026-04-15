@@ -4,8 +4,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
-import dk.trustworks.intranet.aggregates.invoice.services.InvoiceEconomicsUploadService;
-import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
@@ -18,29 +17,21 @@ import java.time.LocalDate;
 import java.util.List;
 
 /**
- * Processes queued INTERNAL invoices, creating them automatically when their
- * referenced external invoice has been PAID in e-conomics.
+ * Processes queued INTERNAL invoices, creating them automatically (no review step) when
+ * their referenced external invoice has been PAID in e-conomics.
  *
  * <p>This batch job runs nightly and:
  * <ol>
  *   <li>Finds all INTERNAL invoices with status QUEUED</li>
- *   <li>Checks if their referenced invoice (via invoice_ref) has economics_status = PAID</li>
- *   <li>For each eligible invoice:
- *     <ul>
- *       <li>Sets invoicedate to today and duedate to tomorrow</li>
- *       <li>Creates the invoice (assigns number, generates PDF)</li>
- *       <li>Queues uploads to e-conomics for tracking and retry</li>
- *       <li>Attempts uploads to both issuing company and debtor company</li>
- *     </ul>
- *   </li>
+ *   <li>Checks if their referenced invoice has economics_status = PAID</li>
+ *   <li>For each eligible invoice: delegates to
+ *       {@link InternalInvoiceOrchestrator#finalizeAutomatically(String)} which creates the
+ *       e-conomics draft and immediately books it in a single transaction (SPEC-INV-001 §9.1).</li>
  * </ol>
  *
- * <p>Upload failures are tracked in invoice_economics_uploads table and automatically
- * retried by EconomicsUploadRetryBatchlet with exponential backoff.
+ * <p>Individual failures are logged as warnings and do not stop processing of remaining invoices.
  *
- * @see InvoiceService#queueInternalInvoice(String)
- * @see InvoiceService#createQueuedInvoiceWithoutUpload(Invoice)
- * @see InvoiceEconomicsUploadService
+ * SPEC-INV-001 §9.1, §9.2.
  */
 @JBossLog
 @Named("queuedInternalInvoiceProcessorBatchlet")
@@ -49,10 +40,7 @@ import java.util.List;
 public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
 
     @Inject
-    InvoiceService invoiceService;
-
-    @Inject
-    InvoiceEconomicsUploadService uploadService;
+    InternalInvoiceOrchestrator internalOrchestrator;
 
     @Override
     @Transactional
@@ -80,71 +68,44 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
                 ).firstResult();
 
                 if (referencedInvoice == null) {
-                    log.warnf("Queued invoice %s references non-existent invoice number %d - skipping",
-                            queuedInvoice.getUuid(), queuedInvoice.getInvoiceref());
+                    log.warnf("Queued invoice %s references non-existent invoice %s - skipping",
+                            queuedInvoice.getUuid(), queuedInvoice.getInvoiceRefUuid());
                     skipped++;
                     continue;
                 }
 
-                // Check if referenced invoice is PAID in e-conomics
+                // Only proceed when the referenced invoice is confirmed PAID
                 if (referencedInvoice.getEconomicsStatus() != EconomicsInvoiceStatus.PAID) {
-                    log.debugf("Queued invoice %s waiting for invoice %d to be PAID (current status: %s)",
+                    log.debugf("Queued invoice %s waiting for invoice %s to be PAID (current: %s)",
                             queuedInvoice.getUuid(),
-                            referencedInvoice.getInvoicenumber(),
+                            referencedInvoice.getUuid(),
                             referencedInvoice.getEconomicsStatus());
                     skipped++;
                     continue;
                 }
 
-                // Referenced invoice is PAID - process this queued invoice
-                log.infof("Processing queued invoice %s (references paid invoice %d)",
-                        queuedInvoice.getUuid(), referencedInvoice.getInvoicenumber());
-
-                // Set dates: invoicedate = today, duedate = tomorrow
+                // Set dates before auto-finalization: invoicedate = today, duedate = tomorrow
                 queuedInvoice.setInvoicedate(LocalDate.now());
                 queuedInvoice.setDuedate(LocalDate.now().plusDays(1));
 
-                // Create the invoice (assigns number, generates PDF - NO upload yet)
-                Invoice createdInvoice = invoiceService.createQueuedInvoiceWithoutUpload(queuedInvoice);
+                log.infof("Auto-finalizing queued invoice %s (references paid invoice %s)",
+                        queuedInvoice.getUuid(), referencedInvoice.getUuid());
 
-                log.infof("Created queued invoice %s with number %d - now queuing uploads",
-                        createdInvoice.getUuid(), createdInvoice.getInvoicenumber());
+                // Auto-finalize: create draft + book immediately, no review step (SPEC-INV-001 §9.1)
+                internalOrchestrator.finalizeAutomatically(queuedInvoice.getUuid());
 
-                // Queue uploads for both issuing and debtor companies
-                uploadService.queueUploads(createdInvoice);
-
-                // Process uploads immediately (failures will be retried by separate job)
-                InvoiceEconomicsUploadService.UploadResult result = uploadService.processUploads(createdInvoice.getUuid());
-
-                log.infof("Invoice %d upload result: %d succeeded, %d failed (total: %d)",
-                        createdInvoice.getInvoicenumber(),
-                        result.successCount(), result.failedCount(), result.totalCount());
-
-                if (result.allSucceeded()) {
-                    log.infof("Successfully created and uploaded invoice %d to all companies",
-                            createdInvoice.getInvoicenumber());
-                } else if (result.partialSuccess()) {
-                    log.warnf("Invoice %d partially uploaded (%d of %d succeeded) - failures will be retried",
-                            createdInvoice.getInvoicenumber(), result.successCount(), result.totalCount());
-                } else if (result.allFailed()) {
-                    log.errorf("Invoice %d creation succeeded but all uploads failed - will retry automatically",
-                            createdInvoice.getInvoicenumber());
-                }
-
+                log.infof("Successfully auto-finalized queued invoice %s", queuedInvoice.getUuid());
                 processed++;
 
             } catch (Exception e) {
-                log.errorf(e, "Failed to process queued invoice %s", queuedInvoice.getUuid());
+                log.warnf(e, "Auto-finalize failed for queued internal invoice %s", queuedInvoice.getUuid());
                 failed++;
-                // Continue processing other invoices
+                // Continue processing remaining invoices
             }
         }
 
-        String summary = String.format(
-                "QueuedInternalInvoiceProcessorBatchlet completed: total=%d, processed=%d, skipped=%d, failed=%d",
-                queuedInvoices.size(), processed, skipped, failed
-        );
-        log.info(summary);
+        log.infof("QueuedInternalInvoiceProcessorBatchlet completed: total=%d, processed=%d, skipped=%d, failed=%d",
+                queuedInvoices.size(), processed, skipped, failed);
 
         return "COMPLETED";
     }
