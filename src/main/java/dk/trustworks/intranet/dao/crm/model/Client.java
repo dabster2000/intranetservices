@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.dao.crm.model;
 
 import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
+import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.*;
@@ -32,6 +33,16 @@ public class Client extends PanacheEntityBase {
     @Column(name = "segment")
     @Enumerated(EnumType.STRING)
     private ClientSegment segment;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "type", length = 10, nullable = false)
+    private ClientType type;
+
+    @Column(name = "default_billing_attention", length = 150)
+    private String defaultBillingAttention;
+
+    @Column(name = "default_billing_email", length = 255)
+    private String defaultBillingEmail;
 
     // Billing fields
     @Column(name = "cvr", length = 20)
@@ -85,6 +96,7 @@ public class Client extends PanacheEntityBase {
         this.managed = "INTRA";
         this.billingCountry = "DK";
         this.currency = "DKK";
+        this.type = ClientType.CLIENT;
     }
 
     public Client(String contactname, String name) {
@@ -100,6 +112,7 @@ public class Client extends PanacheEntityBase {
         this.managed = "INTRA";
         this.billingCountry = "DK";
         this.currency = "DKK";
+        this.type = ClientType.CLIENT;
     }
 
     @Override
