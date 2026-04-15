@@ -95,6 +95,8 @@ quarkus:
     economics-q2c-api:
       url: https://apis.e-conomic.com/q2capi/v5.1.0
       scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     cvtool:
       url: https://tw-cvtool-backend.azurewebsites.net
       scope: jakarta.inject.Singleton
