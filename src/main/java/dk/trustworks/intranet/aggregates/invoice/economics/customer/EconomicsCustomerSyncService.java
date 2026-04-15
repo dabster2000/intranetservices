@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.ClientSyncStatusDto;
 import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -9,6 +11,8 @@ import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -121,6 +125,65 @@ public class EconomicsCustomerSyncService {
             recordFailure(client.getUuid(), companyUuid, e.getClass().getSimpleName() + ": " + safeMessage(e));
             throw new SyncFailedException("Customer sync failed for "
                     + client.getUuid() + "/" + companyUuid, e);
+        }
+    }
+
+    /**
+     * Returns one {@link ClientSyncStatusDto} per configured Trustworks company
+     * for the given client, joining the pairing row and any outstanding failure
+     * row. Intended for the {@code GET /economics/sync-status} endpoint and the
+     * client-detail sync badge. SPEC-INV-001 §7.1 Phase G2, §8.6.
+     *
+     * <p>Status resolution (most specific wins):
+     * <ol>
+     *   <li>Failure row with status {@code ABANDONED} → {@code ABANDONED}</li>
+     *   <li>Failure row with status {@code PENDING} → {@code PENDING}</li>
+     *   <li>Pairing row exists → {@code OK}</li>
+     *   <li>No pairing and no failure → {@code UNPAIRED}</li>
+     * </ol>
+     */
+    public List<ClientSyncStatusDto> statusFor(String clientUuid) {
+        Objects.requireNonNull(clientUuid, "clientUuid must not be null");
+        List<ClientSyncStatusDto> rows = new ArrayList<>();
+        for (String companyUuid : agreementDefaults.listConfiguredCompanies()) {
+            Optional<ClientEconomicsCustomer> pairing = repo.findByClientAndCompany(clientUuid, companyUuid);
+            Optional<ClientEconomicsSyncFailure> failure = failures.findByClientAndCompany(clientUuid, companyUuid);
+
+            String status;
+            if (failure.isPresent() && "ABANDONED".equals(failure.get().getStatus())) {
+                status = ClientSyncStatusDto.STATUS_ABANDONED;
+            } else if (failure.isPresent()) {
+                status = ClientSyncStatusDto.STATUS_PENDING;
+            } else if (pairing.isPresent()) {
+                status = ClientSyncStatusDto.STATUS_OK;
+            } else {
+                status = ClientSyncStatusDto.STATUS_UNPAIRED;
+            }
+
+            String companyName = lookupCompanyName(companyUuid);
+            int attemptCount = failure.map(ClientEconomicsSyncFailure::getAttemptCount).orElse(0);
+            String lastError = failure.map(ClientEconomicsSyncFailure::getLastError).orElse(null);
+            LocalDateTime nextRetryAt = failure
+                    .filter(f -> ClientSyncStatusDto.STATUS_PENDING.equals(status))
+                    .map(ClientEconomicsSyncFailure::getNextRetryAt).orElse(null);
+            LocalDateTime lastAttemptedAt = failure
+                    .map(ClientEconomicsSyncFailure::getLastAttemptedAt).orElse(null);
+
+            rows.add(new ClientSyncStatusDto(
+                    clientUuid, companyUuid, companyName, status,
+                    attemptCount, lastError, nextRetryAt, lastAttemptedAt));
+        }
+        return rows;
+    }
+
+    /** Looks up the company display name; tolerates missing rows. */
+    private String lookupCompanyName(String companyUuid) {
+        try {
+            Company c = Company.findById(companyUuid);
+            return c == null ? companyUuid : c.getName();
+        } catch (RuntimeException e) {
+            LOG.debugf("Could not resolve company name for %s: %s", companyUuid, e.getMessage());
+            return companyUuid;
         }
     }
 
