@@ -45,6 +45,7 @@ class EconomicsCustomerPairingServiceTest {
     private ClientLookup clientLookup;
     private AgreementResolver agreementResolver;
     private AgreementDefaultsRegistry agreementDefaults;
+    private ClientToEconomicsCustomerMapper customerMapper;
 
     private EconomicsCustomerPairingService svc;
 
@@ -56,8 +57,12 @@ class EconomicsCustomerPairingServiceTest {
         clientLookup = mock(ClientLookup.class);
         agreementResolver = mock(AgreementResolver.class);
         agreementDefaults = new AgreementDefaultsRegistry();
+        // Real mapper (pure logic, no collaborators) so createAndPair emits
+        // the full §6.3 payload — matching production behaviour.
+        customerMapper = new ClientToEconomicsCustomerMapper();
 
-        svc = new EconomicsCustomerPairingService(repo, cache, clientLookup, agreementResolver, agreementDefaults);
+        svc = new EconomicsCustomerPairingService(repo, cache, clientLookup,
+                agreementResolver, agreementDefaults, customerMapper);
     }
 
     // ----------------------- listPairingRows -----------------------

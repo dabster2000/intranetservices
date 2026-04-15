@@ -45,18 +45,21 @@ public class EconomicsCustomerPairingService {
     private final ClientLookup clientLookup;
     private final AgreementResolver agreementResolver;
     private final AgreementDefaultsRegistry agreementDefaults;
+    private final ClientToEconomicsCustomerMapper customerMapper;
 
     @Inject
     public EconomicsCustomerPairingService(ClientEconomicsCustomerRepository repo,
                                            EconomicsCustomerIndexCache cache,
                                            ClientLookup clientLookup,
                                            AgreementResolver agreementResolver,
-                                           AgreementDefaultsRegistry agreementDefaults) {
+                                           AgreementDefaultsRegistry agreementDefaults,
+                                           ClientToEconomicsCustomerMapper customerMapper) {
         this.repo = repo;
         this.cache = cache;
         this.clientLookup = clientLookup;
         this.agreementResolver = agreementResolver;
         this.agreementDefaults = agreementDefaults;
+        this.customerMapper = customerMapper;
     }
 
     // --------------------------------------------------- GET /pairing
@@ -326,10 +329,18 @@ public class EconomicsCustomerPairingService {
                 reason);
     }
 
-    private static EconomicsCustomerDto toCreateBody(Client c,
-                                                     EconomicsCustomerIndex idx,
-                                                     AgreementDefaults defaults) {
-        EconomicsCustomerDto body = new EconomicsCustomerDto();
+    private EconomicsCustomerDto toCreateBody(Client c,
+                                              EconomicsCustomerIndex idx,
+                                              AgreementDefaults defaults) {
+        // Build the full §6.3 payload (address, email, EAN, NemHandel, etc.)
+        // rather than the old 6-field minimum. This means customers get their
+        // full data on first POST instead of waiting for a later edit/sync.
+        EconomicsCustomerDto body = customerMapper.toFullUpsertBody(
+                c,
+                defaults.groupNumberFor(c.getType()),
+                defaults.paymentTermId(),
+                defaults.vatZoneNumber());
+
         // Phase G0 §6.8 finding: use CVR as customerNumber where available so
         // POST /Customers can reuse the natural key rather than rely on
         // e-conomic's auto-assign (which it doesn't actually do — missing
@@ -347,15 +358,10 @@ public class EconomicsCustomerPairingService {
             customerNumber = nextCustomerNumber(idx);
         }
         body.setCustomerNumber(customerNumber);
-        body.setName(c.getName());
-        body.setCvrNo(c.getCvr());
 
-        // Required by POST /Customers: customerGroupNumber. Map from Trustworks
-        // client type to the configured e-conomic group per agreement.
-        body.setCustomerGroupNumber(defaults.groupNumberFor(c.getType()));
-        body.setZone(defaults.vatZoneNumber());
+        // AgreementDefaults.currency wins over any mapper default — the per-
+        // agreement override (e.g. DKK on Trustworks A/S) is authoritative.
         body.setCurrency(defaults.currency());
-        body.setPaymentTermId(defaults.paymentTermId());
         return body;
     }
 

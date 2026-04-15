@@ -105,6 +105,13 @@ public class ClientToEconomicsCustomerMapper {
             body.setDefaultDisableEInvoicing(true);     // fall back to email delivery
         }
 
+        // PUT /customers/{n} is a full-resource replace — any absent field
+        // gets reset to its default. 'access' defaults to false for
+        // API-created customers (Phase G0 §6.8), which would hide the
+        // customer from the e-conomic UI on every sync-on-save. Explicitly
+        // keep access=true on every upsert so the customer stays usable.
+        body.setAccess(Boolean.TRUE);
+
         return body;
     }
 
