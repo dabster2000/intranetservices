@@ -1,0 +1,298 @@
+package dk.trustworks.intranet.aggregates.invoice.services;
+
+import dk.trustworks.intranet.aggregates.invoice.economics.DraftContext;
+import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingRequest;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
+
+/**
+ * Owns the two-step e-conomic invoice finalization flow.
+ *
+ * <ol>
+ *   <li>{@link #createDraft(String)} — posts the draft to Q2C v5.1.0, captures the
+ *       draft number, sets status to PENDING_REVIEW. All step-1 side effects are
+ *       reversible via {@link #cancelFinalization(String)}.</li>
+ *   <li>{@link #bookDraft(String, String)} — books the draft via the legacy REST API,
+ *       captures the booked invoice number, sets status to CREATED and
+ *       economics_status to BOOKED. Calls registerAsPaidout (irreversible).</li>
+ *   <li>{@link #cancelFinalization(String)} — deletes the draft (swallows 404), reverts
+ *       status back to DRAFT, and reverses step-1 side effects.</li>
+ * </ol>
+ *
+ * PHANTOM invoices are always rejected — they do not interact with e-conomic.
+ * Breaks the bidirectional dependency between InvoiceService and
+ * InvoiceAttributionService.
+ *
+ * SPEC-INV-001 §7.1, §7.2.
+ */
+@JBossLog
+@ApplicationScoped
+public class InvoiceFinalizationOrchestrator {
+
+    @Inject
+    InvoiceRepository invoices;
+
+    @Inject
+    BillingContextResolver billingResolver;
+
+    @Inject
+    EconomicsAgreementResolver agreements;
+
+    @Inject
+    InvoiceToEconomicsDraftMapper mapper;
+
+    @Inject
+    @RestClient
+    EconomicsDraftInvoiceApiClient draftApi;
+
+    @Inject
+    @RestClient
+    EconomicsBookingApiClient bookApi;
+
+    @Inject
+    InvoiceItemRecalculator recalc;
+
+    @Inject
+    BonusService bonus;
+
+    @Inject
+    InvoiceWorkService work;
+
+    /**
+     * Step 1: Creates the e-conomic draft invoice.
+     *
+     * <p>Preconditions: invoice must be DRAFT or QUEUED; PHANTOM invoices are rejected.
+     *
+     * <p>Side effects (all reversible via cancelFinalization):
+     * <ul>
+     *   <li>Recalculates invoice items via PricingEngine.</li>
+     *   <li>Recalculates bonus lines (skipped for INTERNAL / INTERNAL_SERVICE).</li>
+     *   <li>Clears parent bonus fields for CREDIT_NOTE invoices.</li>
+     *   <li>Sets economicsDraftNumber, billingClientUuid snapshot, status = PENDING_REVIEW.</li>
+     * </ul>
+     *
+     * @param invoiceUuid the invoice to create a draft for.
+     * @return the updated invoice entity.
+     */
+    @Transactional
+    public Invoice createDraft(String invoiceUuid) {
+        Invoice inv = requireEditableInvoice(invoiceUuid);
+
+        if (inv.getType() == InvoiceType.PHANTOM) {
+            throw new IllegalArgumentException(
+                    "PHANTOM invoices do not interact with e-conomic: " + invoiceUuid);
+        }
+
+        // Step-1 reversible side effects — before the API call so a failure doesn't
+        // leave the invoice in a partially mutated state
+        recalc.recalculateInvoiceItems(inv);
+
+        if (inv.getType() != InvoiceType.INTERNAL
+                && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
+            bonus.recalcForInvoice(inv);
+        }
+
+        if (inv.getType() == InvoiceType.CREDIT_NOTE) {
+            bonus.clearBonusFieldsOnParent(inv);
+        }
+
+        // Resolve billing context (contract + billing client)
+        BillingContext bc = billingResolver.resolve(inv);
+        String companyUuid = inv.getCompany().getUuid();
+        EconomicsAgreementResolver.Tokens tokens = agreements.tokens(companyUuid);
+
+        DraftContext ctx = new DraftContext(
+                inv,
+                bc.contract(),
+                bc.billingClient(),
+                agreements.layoutNumber(companyUuid),
+                agreements.paymentTermFor(bc.contract()),
+                agreements.vatZoneFor(inv.getCurrency(), companyUuid),
+                agreements.productNumber(companyUuid)
+        );
+
+        // Build header payload and embed tw:uuid in otherReference for retry
+        // reconciliation (SPEC-INV-001 §6.9)
+        EconomicsDraftInvoice body = mapper.toDraft(ctx);
+        body.setOtherReference(appendTwUuid(body.getOtherReference(), invoiceUuid));
+
+        EconomicsDraftInvoice created = draftApi.create(
+                tokens.appSecret(),
+                tokens.agreementGrant(),
+                "draft-" + invoiceUuid,
+                body);
+
+        draftApi.createLinesBulk(
+                tokens.appSecret(),
+                tokens.agreementGrant(),
+                created.getDraftInvoiceNumber(),
+                mapper.toLines(ctx));
+
+        // Persist step-1 state
+        inv.setEconomicsDraftNumber(created.getDraftInvoiceNumber());
+        inv.setBillingClientUuid(bc.billingClient().getUuid());
+        inv.setStatus(InvoiceStatus.PENDING_REVIEW);
+        invoices.persist(inv);
+
+        log.infof("createDraft: invoiceUuid=%s draftNumber=%d",
+                invoiceUuid, created.getDraftInvoiceNumber());
+        return inv;
+    }
+
+    /**
+     * Step 2: Books the e-conomic draft invoice.
+     *
+     * <p>Preconditions: invoice must be PENDING_REVIEW with a draft number set.
+     *
+     * <p>Side effects (irreversible after persist):
+     * <ul>
+     *   <li>Sets economicsBookedNumber, invoicenumber, status = CREATED,
+     *       economicsStatus = BOOKED.</li>
+     *   <li>Calls registerAsPaidout on all work items (irreversible).</li>
+     * </ul>
+     *
+     * @param invoiceUuid the invoice to book.
+     * @param sendBy      optional delivery method — null | "ean" | "Email".
+     * @return the updated invoice entity.
+     */
+    @Transactional
+    public Invoice bookDraft(String invoiceUuid, String sendBy) {
+        Invoice inv = invoices.findByUuid(invoiceUuid)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Invoice not found: " + invoiceUuid));
+
+        if (inv.getStatus() != InvoiceStatus.PENDING_REVIEW) {
+            throw new IllegalStateException(
+                    "Invoice " + invoiceUuid + " is not in PENDING_REVIEW (status="
+                    + inv.getStatus() + ")");
+        }
+        if (inv.getEconomicsDraftNumber() == null) {
+            throw new IllegalStateException(
+                    "Invoice " + invoiceUuid + " has no economicsDraftNumber — cannot book");
+        }
+
+        String companyUuid = inv.getCompany().getUuid();
+        EconomicsAgreementResolver.Tokens tokens = agreements.tokens(companyUuid);
+
+        EconomicsBookingRequest req = EconomicsBookingRequest.of(
+                inv.getEconomicsDraftNumber(), sendBy);
+
+        EconomicsBookedInvoice booked = bookApi.book(
+                tokens.appSecret(),
+                tokens.agreementGrant(),
+                "book-" + invoiceUuid,
+                req);
+
+        inv.setEconomicsBookedNumber(booked.getBookedInvoiceNumber());
+        inv.setInvoicenumber(booked.getBookedInvoiceNumber());
+        inv.setStatus(InvoiceStatus.CREATED);
+        inv.setEconomicsStatus(EconomicsInvoiceStatus.BOOKED);
+        invoices.persist(inv);
+
+        // Irreversible step-2 side effect — after persist so the invoice number is
+        // already recorded before work is marked as paid out
+        work.registerAsPaidout(inv);
+
+        log.infof("bookDraft: invoiceUuid=%s bookedNumber=%d",
+                invoiceUuid, booked.getBookedInvoiceNumber());
+        return inv;
+    }
+
+    /**
+     * Cancels step 1: deletes the draft from e-conomic and reverts the invoice to DRAFT.
+     *
+     * <p>Precondition: invoice must be PENDING_REVIEW.
+     *
+     * <p>404 responses from the draft DELETE are swallowed (idempotent cancel).
+     * Any other error propagates.
+     *
+     * <p>Reverses step-1 side effects:
+     * <ul>
+     *   <li>Clears economicsDraftNumber, reverts status to DRAFT.</li>
+     *   <li>Calls restoreParentBonusFields for CREDIT_NOTE invoices.</li>
+     * </ul>
+     *
+     * @param invoiceUuid the invoice to cancel finalization for.
+     * @return the updated invoice entity.
+     */
+    @Transactional
+    public Invoice cancelFinalization(String invoiceUuid) {
+        Invoice inv = invoices.findByUuid(invoiceUuid)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Invoice not found: " + invoiceUuid));
+
+        if (inv.getStatus() != InvoiceStatus.PENDING_REVIEW) {
+            throw new IllegalStateException(
+                    "Invoice " + invoiceUuid + " is not in PENDING_REVIEW (status="
+                    + inv.getStatus() + ")");
+        }
+
+        if (inv.getEconomicsDraftNumber() != null) {
+            String companyUuid = inv.getCompany().getUuid();
+            EconomicsAgreementResolver.Tokens tokens = agreements.tokens(companyUuid);
+            try {
+                draftApi.delete(
+                        tokens.appSecret(),
+                        tokens.agreementGrant(),
+                        inv.getEconomicsDraftNumber());
+            } catch (Exception e) {
+                if (!isNotFound(e)) {
+                    throw e;
+                }
+                log.infof("cancelFinalization: draft %d already deleted (404 swallowed) for invoice=%s",
+                        inv.getEconomicsDraftNumber(), invoiceUuid);
+            }
+        }
+
+        inv.setEconomicsDraftNumber(null);
+        inv.setStatus(InvoiceStatus.DRAFT);
+        invoices.persist(inv);
+
+        // Reverse step-1 reversible side effects
+        if (inv.getType() == InvoiceType.CREDIT_NOTE) {
+            bonus.restoreParentBonusFields(inv);
+        }
+
+        log.infof("cancelFinalization: invoiceUuid=%s reverted to DRAFT", invoiceUuid);
+        return inv;
+    }
+
+    // ── private helpers ────────────────────────────────────────────────────────
+
+    private Invoice requireEditableInvoice(String uuid) {
+        Invoice inv = invoices.findByUuid(uuid)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Invoice not found: " + uuid));
+        if (inv.getStatus() != InvoiceStatus.DRAFT
+                && inv.getStatus() != InvoiceStatus.QUEUED) {
+            throw new IllegalStateException(
+                    "Invoice " + uuid + " is not DRAFT/QUEUED (status=" + inv.getStatus() + ")");
+        }
+        return inv;
+    }
+
+    private static String appendTwUuid(String currentRef, String invoiceUuid) {
+        String tag = "tw:" + invoiceUuid;
+        if (currentRef == null || currentRef.isBlank()) {
+            return tag;
+        }
+        return currentRef + " | " + tag;
+    }
+
+    private static boolean isNotFound(Throwable e) {
+        // MicroProfile REST client wraps HTTP errors; 404 is identifiable via message
+        return e.getMessage() != null && e.getMessage().contains("404");
+    }
+}
