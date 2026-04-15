@@ -353,11 +353,20 @@ public class ContractService {
                         "clientdatauuid = ?4, " +
                         "refid = ?5, " +
                         "company = ?6, " +
-                        "salesconsultant = ?7 " +
-                        "WHERE uuid like ?8 ",
+                        "salesconsultant = ?7, " +
+                        "billingClientUuid = ?8, " +
+                        "billingAttention = ?9, " +
+                        "billingEmail = ?10, " +
+                        "billingRef = ?11, " +
+                        "paymentTermsUuid = ?12 " +
+                        "WHERE uuid like ?13 ",
                 contract.getAmount(), contract.getStatus(),
                 contract.getNote(), contract.getClientdatauuid(),
-                contract.getRefid(), contract.getCompany(), contract.getSalesconsultant(), contract.getUuid());
+                contract.getRefid(), contract.getCompany(), contract.getSalesconsultant(),
+                contract.getBillingClientUuid(), contract.getBillingAttention(),
+                contract.getBillingEmail(), contract.getBillingRef(),
+                contract.getPaymentTermsUuid(),
+                contract.getUuid());
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
 
         // Log field-level changes
