@@ -4,6 +4,7 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonth;
 import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.aggregates.client.events.CreateClientEvent;
+import dk.trustworks.intranet.aggregates.invoice.economics.customer.EconomicsCustomerSyncService;
 import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.contracts.model.Contract;
@@ -67,6 +68,9 @@ public class ClientResource {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    EconomicsCustomerSyncService economicsCustomerSyncService;
 
     private static final Set<String> VALID_CURRENCIES = Set.of("DKK", "EUR", "NOK", "SEK", "USD", "GBP");
     private static final java.util.regex.Pattern CVR_PATTERN = java.util.regex.Pattern.compile("^\\d{8}$");
@@ -196,6 +200,12 @@ public class ClientResource {
 
         log.infof("Created client uuid=%s, name=%s, user=%s", created.getUuid(), created.getName(), userUuid);
 
+        // Fire-and-forget sync to every configured e-conomic agreement. Sync service
+        // records per-agreement failures to client_economics_sync_failures for the
+        // retry batchlet; defensively wrap so a transient error never fails the
+        // resource response. SPEC-INV-001 §3.3, §7.2.
+        syncClientToEconomicsSafe(created, "create");
+
         Response.ResponseBuilder responseBuilder = Response.status(Response.Status.CREATED).entity(created);
         if (duplicateWarningUuid != null) {
             responseBuilder.header("X-Client-Duplicate-Warning", duplicateWarningUuid);
@@ -314,7 +324,28 @@ public class ClientResource {
             }
         }
 
+        // Propagate field updates to every configured e-conomic agreement.
+        // Non-blocking — failures are captured in client_economics_sync_failures.
+        // SPEC-INV-001 §3.3, §7.2.
+        syncClientToEconomicsSafe(client, "update");
+
         return Response.ok().build();
+    }
+
+    /**
+     * Invokes {@link EconomicsCustomerSyncService#syncToAllCompanies} with a
+     * defensive try/catch so a transient sync failure never propagates to the
+     * HTTP response. The sync service already persists per-agreement failures
+     * for the retry batchlet; this wrap protects against any unexpected
+     * runtime error.
+     */
+    private void syncClientToEconomicsSafe(Client client, String op) {
+        try {
+            economicsCustomerSyncService.syncToAllCompanies(client);
+        } catch (RuntimeException e) {
+            log.warnf(e, "e-conomic customer sync failed during client %s uuid=%s; " +
+                    "retry batchlet will pick up any recorded failures", op, client.getUuid());
+        }
     }
 
     @PATCH

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.customer.EconomicsCustomerContactSyncService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
@@ -11,7 +12,9 @@ import dk.trustworks.intranet.contracts.model.ContractProject;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.contracts.services.ContractValidationService;
+import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.Project;
+import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.DateValueDTO;
@@ -60,6 +63,12 @@ public class ContractResource {
 
     @Inject
     AggregateEventSender aggregateEventSender;
+
+    @Inject
+    ClientService clientService;
+
+    @Inject
+    EconomicsCustomerContactSyncService economicsContactSyncService;
 
     @GET
     @Path("/{contractuuid}")
@@ -149,6 +158,10 @@ public class ContractResource {
     @RolesAllowed({"contracts:write"})
     public Response save(Contract contract) {
         Contract created = contractService.save(contract);
+        // Propagate the contract's billingAttention to every configured e-conomic
+        // agreement as a /Contacts row. Non-blocking — failures are recorded in
+        // client_economics_sync_failures for the retry batchlet. SPEC-INV-001 §3.3, §7.2.
+        syncContactToEconomicsSafe(created, "create");
         return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
@@ -166,6 +179,37 @@ public class ContractResource {
     @RolesAllowed({"contracts:write"})
     public void updateContract(Contract contract) {
         contractService.update(contract);
+        // Propagate updated billingAttention to every configured e-conomic
+        // agreement. SPEC-INV-001 §3.3, §7.2.
+        syncContactToEconomicsSafe(contract, "update");
+    }
+
+    /**
+     * Resolves the contract's billing client (billingClientUuid overrides
+     * clientuuid) and triggers contact sync. Wrapped in try/catch so a
+     * transient sync error never propagates to the HTTP response; the sync
+     * service itself already records per-agreement failures.
+     */
+    private void syncContactToEconomicsSafe(Contract contract, String op) {
+        try {
+            String billingClientUuid = contract.getBillingClientUuid() != null
+                    ? contract.getBillingClientUuid()
+                    : contract.getClientuuid();
+            if (billingClientUuid == null || billingClientUuid.isBlank()) {
+                log.debugf("Contract %s has no client — skipping e-conomic contact sync", contract.getUuid());
+                return;
+            }
+            Client billingClient = clientService.findByUuid(billingClientUuid);
+            if (billingClient == null) {
+                log.warnf("Contract %s references unknown client %s — skipping e-conomic contact sync",
+                        contract.getUuid(), billingClientUuid);
+                return;
+            }
+            economicsContactSyncService.syncContactToAllCompanies(contract, billingClient);
+        } catch (RuntimeException e) {
+            log.warnf(e, "e-conomic contact sync failed during contract %s uuid=%s; " +
+                    "retry batchlet will pick up any recorded failures", op, contract.getUuid());
+        }
     }
 
     @DELETE
