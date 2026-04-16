@@ -2,14 +2,12 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.http.apache.ProxyConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,20 +36,6 @@ public class InvoicePdfS3Service {
 
     private String buildKey(String invoiceUuid) {
         return "invoices/" + invoiceUuid + ".pdf";
-    }
-
-    public String savePdf(String invoiceUuid, byte[] pdfBytes) {
-        String key = buildKey(invoiceUuid);
-        log.infof("Uploading invoice PDF to S3: %s (%d bytes)", key, pdfBytes.length);
-        s3.putObject(
-                PutObjectRequest.builder()
-                        .bucket(bucketName)
-                        .key(key)
-                        .contentType("application/pdf")
-                        .build(),
-                RequestBody.fromBytes(pdfBytes));
-        log.infof("Invoice PDF uploaded to S3: %s", key);
-        return key;
     }
 
     public byte[] getPdf(String invoiceUuid) {
