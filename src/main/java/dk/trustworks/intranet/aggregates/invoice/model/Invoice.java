@@ -125,6 +125,9 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "economics_booked_number")
     public Integer economicsBookedNumber;
 
+    @Column(name = "send_by", length = 10)
+    public String sendBy;
+
     @Column(name = "creditnote_for_uuid")
     public String creditnoteForUuid;
 

@@ -70,6 +70,50 @@ class InvoiceFinalizationOrchestratorSendByTest {
         verify(bookApi).book(anyString(), anyString(), anyString(), any());
     }
 
+    // ── test 1b: sendBy="ean" persists on the invoice entity ──────────────────
+
+    @Test
+    void bookDraft_ean_persists_sendBy_on_invoice() {
+        Invoice inv = pendingReviewInvoice("i1", "co-1", 4521);
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(billingResolver.resolve(inv)).thenReturn(billingContext(inv));
+        when(eanChecker.check(any())).thenReturn(null);
+        when(agreements.tokens("co-1")).thenReturn(tokens());
+        when(bookApi.book(anyString(), anyString(), anyString(), any())).thenReturn(bookedInvoice(80123));
+
+        Invoice out = orchestrator.bookDraft("i1", "ean");
+
+        assertEquals("ean", out.getSendBy());
+    }
+
+    // ── test 1c: sendBy="Email" persists on the invoice entity ──────────────
+
+    @Test
+    void bookDraft_email_persists_sendBy_on_invoice() {
+        Invoice inv = pendingReviewInvoice("i1", "co-1", 4521);
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("co-1")).thenReturn(tokens());
+        when(bookApi.book(anyString(), anyString(), anyString(), any())).thenReturn(bookedInvoice(80123));
+
+        Invoice out = orchestrator.bookDraft("i1", "email");
+
+        assertEquals("Email", out.getSendBy());
+    }
+
+    // ── test 1d: sendBy=null persists null on the invoice entity ─────────────
+
+    @Test
+    void bookDraft_null_sendBy_persists_null_on_invoice() {
+        Invoice inv = pendingReviewInvoice("i1", "co-1", 4521);
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("co-1")).thenReturn(tokens());
+        when(bookApi.book(anyString(), anyString(), anyString(), any())).thenReturn(bookedInvoice(80123));
+
+        Invoice out = orchestrator.bookDraft("i1", null);
+
+        assertNull(out.getSendBy());
+    }
+
     // ── test 2: sendBy="ean" throws when prereqs fail ────────────────────────
 
     @Test

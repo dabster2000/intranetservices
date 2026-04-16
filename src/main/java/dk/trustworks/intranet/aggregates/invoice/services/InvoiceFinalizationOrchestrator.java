@@ -227,6 +227,7 @@ public class InvoiceFinalizationOrchestrator {
         inv.setInvoicenumber(booked.getBookedInvoiceNumber());
         inv.setStatus(InvoiceStatus.CREATED);
         inv.setEconomicsStatus(EconomicsInvoiceStatus.BOOKED);
+        inv.setSendBy(sendBy);  // persist delivery method for E-Invoicing tracking
         invoices.persist(inv);
 
         // Irreversible step-2 side effect — after persist so the invoice number is
