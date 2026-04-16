@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.dao.crm.services;
 
 import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.dao.crm.model.Clientdata;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import io.quarkus.panache.common.Sort;
@@ -206,10 +205,6 @@ public class ClientService {
         return input.replace("\\", "\\\\")
                     .replace("%", "\\%")
                     .replace("_", "\\_");
-    }
-
-    public List<Clientdata> listAllClientData(String clientuuid) {
-        return Clientdata.stream("clientuuid", Sort.ascending("contactperson"), clientuuid).map(p -> (Clientdata) p).toList();
     }
 
     @SuppressWarnings("unchecked")

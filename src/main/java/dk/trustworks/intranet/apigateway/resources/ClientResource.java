@@ -11,7 +11,6 @@ import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
-import dk.trustworks.intranet.dao.crm.model.Clientdata;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
@@ -126,12 +125,6 @@ public class ClientResource {
     }
 
  */
-
-    @GET
-    @Path("/{clientuuid}/clientdata")
-    public List<Clientdata> findClientdataByClientuuid(@PathParam("clientuuid") String clientuuid) {
-        return clientAPI.listAllClientData(clientuuid);
-    }
 
     @GET
     @Path("/{clientuuid}/contracts")

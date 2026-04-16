@@ -87,12 +87,10 @@ public class Client extends PanacheEntityBase {
     @Column(name = "company_desc", length = 100)
     private String companyDesc;
 
-    @Transient private List<Clientdata> clientdata;
     @Transient private List<Project> projects;
 
     public Client() {
         this.projects = new ArrayList<>();
-        this.clientdata = new ArrayList<>();
         this.created = LocalDateTime.now();
         this.segment = ClientSegment.OTHER;
         this.managed = "INTRA";
@@ -110,7 +108,6 @@ public class Client extends PanacheEntityBase {
         this.crmid = "";
         this.segment = ClientSegment.OTHER;
         this.projects = new ArrayList<>();
-        this.clientdata = new ArrayList<>();
         this.managed = "INTRA";
         this.billingCountry = "DK";
         this.currency = "DKK";
