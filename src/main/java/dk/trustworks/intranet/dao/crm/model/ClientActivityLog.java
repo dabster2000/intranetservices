@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * JPA Entity for the client activity log.
  * Tracks field-level changes to client-related entities (clients, contracts,
- * clientdata, contract consultants, contract projects).
+ * contract consultants, contract projects).
  *
  * <p>This entity is INSERT-ONLY from application code. No updates or deletes
  * should be performed on activity log entries.
