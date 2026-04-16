@@ -223,7 +223,9 @@ public class InvoiceGenerator {
                                 (billingClient.getBillingZipcode() != null ? billingClient.getBillingZipcode() : "") + " " + (billingClient.getBillingCity() != null ? billingClient.getBillingCity() : ""),
                                 billingClient.getEan(),
                                 billingClient.getCvr(),
-                                billingClient.getDefaultBillingAttention(),
+                                contract.getBillingAttention() != null
+                                        ? contract.getBillingAttention()
+                                        : billingClient.getDefaultBillingAttention(),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()).plusMonths(1),
                                 project.getCustomerreference(),
