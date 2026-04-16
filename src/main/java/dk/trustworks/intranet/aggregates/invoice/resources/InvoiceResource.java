@@ -340,17 +340,9 @@ public class InvoiceResource {
     }
 
     @POST
-    @Path("/regenerate/{invoiceuuid}")
-    @RolesAllowed({"invoices:write"})
-    @Transactional
-    public void regenerateInvoicePdf(@PathParam("invoiceuuid") String invoiceuuid) throws JsonProcessingException {
-        invoiceService.regenerateInvoicePdf(invoiceuuid);
-    }
-
-    @POST
     @Path("/phantoms")
     @RolesAllowed({"invoices:write"})
-    public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
+    public Invoice createPhantomInvoice(Invoice draftInvoice) {
         return invoiceService.createPhantomInvoice(draftInvoice);
     }
 

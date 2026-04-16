@@ -153,8 +153,6 @@ slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
   adminSlackBotToken: ${ADMINSLACKBOTTOKEN:xx}
-invoice-generator:
-  apikey: ${INV_GENERATOR:xx}
 e-conomics:
   xAppSecretToken: ${XAPPSERCREETTOKEN:none}
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
@@ -184,7 +182,6 @@ dk:
       aggregates:
         invoice:
           network:
-            InvoiceAPI/mp-rest/url: https://invoice-generator.com
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
 hibernate:
   jdbc:

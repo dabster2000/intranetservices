@@ -13,10 +13,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.network.CurrencyAPI;
-import dk.trustworks.intranet.aggregates.invoice.network.InvoiceAPI;
-import dk.trustworks.intranet.aggregates.invoice.network.InvoiceDynamicHeaderFilter;
 import dk.trustworks.intranet.aggregates.invoice.network.dto.CurrencyData;
-import dk.trustworks.intranet.aggregates.invoice.network.dto.InvoiceDTO;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.BonusApprovalRow;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
@@ -50,13 +47,11 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.net.URI;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -89,9 +84,6 @@ public class InvoiceService {
 
     @ConfigProperty(name = "currencyapi.key")
     String apiKey;
-
-    @ConfigProperty(name = "invoice-generator.apikey")
-    String invoiceGeneratorApiKey;
 
     @Inject
     EconomicsInvoiceService economicsInvoiceService;
@@ -505,19 +497,18 @@ public class InvoiceService {
     }
 
     /**
-     * Finalizes a PHANTOM draft invoice: recalculates items, generates a PDF (stored in S3
-     * for UI display), and persists as CREATED. PHANTOM invoices do not interact with
-     * e-conomic and therefore no upload is queued. SPEC-INV-001 §9.5.
+     * Finalizes a PHANTOM draft invoice: recalculates items and persists as CREATED.
+     * PHANTOM invoices do not interact with e-conomic and do not generate PDFs per §9.5.
      */
     @Transactional
-    public Invoice createPhantomInvoice(Invoice draftInvoice) throws JsonProcessingException {
+    public Invoice createPhantomInvoice(Invoice draftInvoice) {
         if(!isDraft(draftInvoice.getUuid())) throw new RuntimeException("Invoice is not a draft invoice: "+draftInvoice.getUuid());
         recalculateInvoiceItems(draftInvoice);
         bonusService.recalcForInvoice(draftInvoice.getUuid());
         draftInvoice.setStatus(CREATED);
         draftInvoice.invoicenumber = 0;
         draftInvoice.setType(InvoiceType.PHANTOM);
-        createInvoicePdf(draftInvoice); // Uploads to S3 and sets pdfStorageKey
+        // No PDF generated for PHANTOM invoices per §9.5 accountant sign-off
         saveInvoice(draftInvoice);
         log.infof("Phantom invoice %s finalized (no e-conomic upload per §9.5)", draftInvoice.getUuid());
         return draftInvoice;
@@ -917,28 +908,6 @@ public class InvoiceService {
         return q.page(page).list();
     }
 
-    public byte[] createInvoicePdf(Invoice invoice) throws JsonProcessingException {
-        ObjectMapper o = new ObjectMapper();
-        String json = o.writeValueAsString(new InvoiceDTO(invoice));
-        InvoiceAPI invoiceAPI = getInvoiceAPI();
-        byte[] pdfBytes = invoiceAPI.createInvoicePDF(json);
-        // Store PDF in S3 and set storage key on invoice
-        String storageKey = invoicePdfS3Service.savePdf(invoice.getUuid(), pdfBytes);
-        invoice.setPdfStorageKey(storageKey);
-        return pdfBytes;
-    }
-
-    public void regenerateInvoicePdf(String invoiceuuid) throws JsonProcessingException {
-        Invoice invoice = Invoice.findById(invoiceuuid);
-        ObjectMapper o = new ObjectMapper();
-        String json = o.writeValueAsString(new InvoiceDTO(invoice));
-        InvoiceAPI invoiceAPI = getInvoiceAPI();
-        byte[] pdfBytes = invoiceAPI.createInvoicePDF(json);
-        // Store regenerated PDF in S3 and update storage key
-        String storageKey = invoicePdfS3Service.savePdf(invoiceuuid, pdfBytes);
-        Invoice.update("pdfStorageKey = ?1 WHERE uuid = ?2", storageKey, invoiceuuid);
-    }
-
     public byte[] getInvoicePdfBytes(String invoiceuuid) {
         Invoice invoice = Invoice.findById(invoiceuuid);
         if (invoice == null) return null;
@@ -1033,13 +1002,6 @@ public class InvoiceService {
     @Transactional
     public void updateInvoiceStatus(String invoiceuuid, SalesApprovalStatus status) {
         Invoice.update("bonusConsultantApprovedStatus = ?1 WHERE uuid like ?2", status, invoiceuuid);
-    }
-
-    private InvoiceAPI getInvoiceAPI() {
-        return RestClientBuilder.newBuilder()
-                .baseUri(URI.create("https://invoice-generator.com"))
-                .register(new InvoiceDynamicHeaderFilter(invoiceGeneratorApiKey))
-                .build(InvoiceAPI.class);
     }
 
     public long countBonusApproval(List<InvoiceStatus> statuses) {
@@ -1652,13 +1614,13 @@ public class InvoiceService {
     /**
      * Creates a queued internal invoice without uploading to e-conomics.
      * Upload is handled separately by InvoiceEconomicsUploadService for robust retry support.
+     * Internal service invoices are between Trustworks companies and do not generate PDFs.
      *
      * @param queuedInvoice Invoice in QUEUED status
      * @return Created invoice
-     * @throws JsonProcessingException if PDF generation fails
      */
     @Transactional
-    public Invoice createQueuedInvoiceWithoutUpload(Invoice queuedInvoice) throws JsonProcessingException {
+    public Invoice createQueuedInvoiceWithoutUpload(Invoice queuedInvoice) {
         log.info("Creating queued invoice (without upload): " + queuedInvoice.getUuid());
 
         if (queuedInvoice.getStatus() != InvoiceStatus.QUEUED) {
@@ -1673,9 +1635,7 @@ public class InvoiceService {
             recalculateInvoiceItems(queuedInvoice);
         }
 
-        // Create PDF (uploads to S3 and sets pdfStorageKey)
         queuedInvoice.setStatus(CREATED);
-        createInvoicePdf(queuedInvoice);
 
         log.debug("Saving queued invoice...");
         saveInvoice(queuedInvoice);
@@ -1692,11 +1652,10 @@ public class InvoiceService {
      *
      * @param invoiceuuid UUID of the invoice to force-create
      * @return Created invoice
-     * @throws JsonProcessingException if PDF generation fails
      * @throws WebApplicationException if validation fails
      */
     @Transactional
-    public Invoice forceCreateQueuedInvoice(String invoiceuuid) throws JsonProcessingException {
+    public Invoice forceCreateQueuedInvoice(String invoiceuuid) {
         log.info("Force creating queued invoice (manual bypass): " + invoiceuuid);
 
         Invoice queuedInvoice = Invoice.findById(invoiceuuid);
