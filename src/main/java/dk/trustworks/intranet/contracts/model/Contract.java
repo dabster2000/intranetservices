@@ -63,8 +63,6 @@ public class Contract extends PanacheEntityBase {
 
     private String name;
 
-    private String clientdatauuid;
-
     @Column(name = "billing_client_uuid", length = 36)
     private String billingClientUuid;
 
@@ -115,7 +113,6 @@ public class Contract extends PanacheEntityBase {
         this.parentuuid = contract.getUuid();
         this.contractType = contract.getContractType();
         this.clientuuid = contract.getClientuuid();
-        this.clientdatauuid = contract.getClientdatauuid();
         this.name = contract.getName();
         this.company = contract.getCompany();
         this.billingClientUuid = contract.getBillingClientUuid();
@@ -181,7 +178,6 @@ public class Contract extends PanacheEntityBase {
                 ", leaduuid='" + leaduuid + '\'' +
                 ", created=" + created +
                 ", name='" + name + '\'' +
-                ", clientdatauuid='" + clientdatauuid + '\'' +
                 ", note='" + note + '\'' +
                 ", contractConsultants=" + contractConsultants.size() +
                 ", contractProjects=" + contractProjects.size() +

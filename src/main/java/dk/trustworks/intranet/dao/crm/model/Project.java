@@ -28,7 +28,6 @@ public class Project extends PanacheEntityBase {
     @Transient private Clientdata clientdata;
 
     private String userowneruuid;
-    private String clientdatauuid;
 
     public Project() {
     }
@@ -113,14 +112,6 @@ public class Project extends PanacheEntityBase {
 
     public void setClientdata(Clientdata clientdata) {
         this.clientdata = clientdata;
-    }
-
-    public String getClientdatauuid() {
-        return clientdatauuid;
-    }
-
-    public void setClientdatauuid(String clientdatauuid) {
-        this.clientdatauuid = clientdatauuid;
     }
 
     @Override

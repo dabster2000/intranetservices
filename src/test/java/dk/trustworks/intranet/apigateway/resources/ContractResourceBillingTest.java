@@ -25,7 +25,6 @@ class ContractResourceBillingTest {
     void copy_constructor_preserves_all_five_new_billing_fields() {
         Contract original = new Contract();
         original.setClientuuid("client-uuid");
-        original.setClientdatauuid("legacy-clientdata-uuid");
         original.setName("Original");
         original.setBillingClientUuid("partner-uuid");
         original.setBillingAttention("AP Department");

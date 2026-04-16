@@ -149,8 +149,8 @@ public class ProjectResource {
     @POST
     @RolesAllowed({"contracts:write"})
     public Project save(Project project) {
-        log.infof("Project create requested by user=%s, name=%s, clientdatauuid=%s",
-                requestHeaderHolder.getUserUuid(), project.getName(), project.getClientdatauuid());
+        log.infof("Project create requested by user=%s, name=%s",
+                requestHeaderHolder.getUserUuid(), project.getName());
         return projectAPI.save(project);
     }
 

@@ -350,18 +350,17 @@ public class ContractService {
                         "amount = ?1, " +
                         "status = ?2, " +
                         "note = ?3, " +
-                        "clientdatauuid = ?4, " +
-                        "refid = ?5, " +
-                        "company = ?6, " +
-                        "salesconsultant = ?7, " +
-                        "billingClientUuid = ?8, " +
-                        "billingAttention = ?9, " +
-                        "billingEmail = ?10, " +
-                        "billingRef = ?11, " +
-                        "paymentTermsUuid = ?12 " +
-                        "WHERE uuid like ?13 ",
+                        "refid = ?4, " +
+                        "company = ?5, " +
+                        "salesconsultant = ?6, " +
+                        "billingClientUuid = ?7, " +
+                        "billingAttention = ?8, " +
+                        "billingEmail = ?9, " +
+                        "billingRef = ?10, " +
+                        "paymentTermsUuid = ?11 " +
+                        "WHERE uuid like ?12 ",
                 contract.getAmount(), contract.getStatus(),
-                contract.getNote(), contract.getClientdatauuid(),
+                contract.getNote(),
                 contract.getRefid(), contract.getCompany(), contract.getSalesconsultant(),
                 contract.getBillingClientUuid(), contract.getBillingAttention(),
                 contract.getBillingEmail(), contract.getBillingRef(),
@@ -386,10 +385,6 @@ public class ContractService {
             if (!Objects.equals(oldContract.getNote(), contract.getNote())) {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
                         "note", oldContract.getNote(), contract.getNote());
-            }
-            if (!Objects.equals(oldContract.getClientdatauuid(), contract.getClientdatauuid())) {
-                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
-                        "clientdatauuid", oldContract.getClientdatauuid(), contract.getClientdatauuid());
             }
             if (!Objects.equals(oldContract.getRefid(), contract.getRefid())) {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,

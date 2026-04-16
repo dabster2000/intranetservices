@@ -5,10 +5,8 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
-import dk.trustworks.intranet.dao.crm.model.Clientdata;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.Task;
-import dk.trustworks.intranet.dao.crm.services.ClientDataService;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.crm.services.TaskService;
@@ -48,9 +46,6 @@ public class InvoiceGenerator {
 
     @Inject
     InvoiceService invoiceService;
-
-    @Inject
-    ClientDataService clientdataAPI;
 
     @Inject
     ContractService contractService;
@@ -178,16 +173,6 @@ public class InvoiceGenerator {
 
                     User user = userService.findById(workFull.getUseruuid(), true);
 
-                    if(contract.getClientdatauuid() == null || contract.getClientdatauuid().isEmpty()) {
-                        log.warn("No Client Data attached to contract");
-                        Response response = Response
-                                .status(Response.Status.BAD_REQUEST)
-                                .entity("No client contact information on the contract")
-                                .type(MediaType.TEXT_PLAIN) // or MediaType.APPLICATION_JSON for JSON response
-                                .build();
-                        throw new WebApplicationException(response);
-                        //throw new BadRequestException("No client contact information on the contract");
-                    }
                     if (contract.getCompany() == null) {
                         log.error("Contract '" + contract.getUuid() + "' has no company assigned");
                         Response response = Response
@@ -198,24 +183,27 @@ public class InvoiceGenerator {
                         throw new WebApplicationException(response);
                     }
 
-                    Clientdata clientdata = clientdataAPI.findByUuid(contract.getClientdatauuid());
-                    if (clientdata == null) {
-                        log.error("Client data UUID '" + contract.getClientdatauuid() + "' not found in database for contract '" + contract.getUuid() + "'");
+                    String billingClientUuid = contract.getBillingClientUuid() != null
+                            ? contract.getBillingClientUuid()
+                            : contract.getClientuuid();
+                    Client billingClient = clientService.findByUuid(billingClientUuid);
+                    if (billingClient == null) {
+                        log.error("Billing client '" + billingClientUuid + "' not found for contract '" + contract.getUuid() + "'");
                         Response response = Response
                                 .status(Response.Status.BAD_REQUEST)
-                                .entity("Contract references invalid client contact data. The client contact information could not be found. Please update the contract with valid client contact details.")
+                                .entity("Contract references invalid billing client. The billing client could not be found. Please update the contract with valid billing details.")
                                 .type(MediaType.TEXT_PLAIN)
                                 .build();
                         throw new WebApplicationException(response);
                     }
 
-                    // Validate that essential client data fields are present
-                    String validationError = validateClientdata(clientdata);
+                    // Validate that essential billing client fields are present
+                    String validationError = validateBillingClient(billingClient);
                     if (validationError != null) {
-                        log.error("Client data validation failed for contract '" + contract.getUuid() + "': " + validationError);
+                        log.error("Billing client validation failed for contract '" + contract.getUuid() + "': " + validationError);
                         Response response = Response
                                 .status(Response.Status.BAD_REQUEST)
-                                .entity("Client contact data is incomplete: " + validationError + ". Please update the contract's client contact information.")
+                                .entity("Billing client data is incomplete: " + validationError + ". Please update the contract's billing information.")
                                 .type(MediaType.TEXT_PLAIN)
                                 .build();
                         throw new WebApplicationException(response);
@@ -229,13 +217,13 @@ public class InvoiceGenerator {
                                 0.0,
                                 month.getYear(),
                                 month.getMonthValue(),
-                                clientdata.getClientname(),
-                                clientdata.getStreetnamenumber(),
-                                clientdata.getOtheraddressinfo(),
-                                clientdata.getPostalcode() + " " + clientdata.getCity(),
-                                clientdata.getEan(),
-                                clientdata.getCvr(),
-                                clientdata.getContactperson(),
+                                billingClient.getName(),
+                                billingClient.getBillingAddress(),
+                                "",
+                                (billingClient.getBillingZipcode() != null ? billingClient.getBillingZipcode() : "") + " " + (billingClient.getBillingCity() != null ? billingClient.getBillingCity() : ""),
+                                billingClient.getEan(),
+                                billingClient.getCvr(),
+                                billingClient.getDefaultBillingAttention(),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
                                 LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()).plusMonths(1),
                                 project.getCustomerreference(),
@@ -307,30 +295,26 @@ public class InvoiceGenerator {
     }
 
     /**
-     * Validates that the client data contains the minimum required fields for invoice generation.
-     * @param clientdata The client data to validate
+     * Validates that the billing client contains the minimum required fields for invoice generation.
+     * @param client The billing client to validate
      * @return null if valid, or an error message describing what's missing
      */
-    private String validateClientdata(Clientdata clientdata) {
+    private String validateBillingClient(Client client) {
         List<String> missingFields = new ArrayList<>();
 
-        if (clientdata.getClientname() == null || clientdata.getClientname().trim().isEmpty()) {
+        if (client.getName() == null || client.getName().trim().isEmpty()) {
             missingFields.add("client name");
         }
-        if (clientdata.getStreetnamenumber() == null || clientdata.getStreetnamenumber().trim().isEmpty()) {
-            missingFields.add("street address");
+        if (client.getBillingAddress() == null || client.getBillingAddress().trim().isEmpty()) {
+            missingFields.add("billing address");
         }
-        if (clientdata.getPostalcode() == null) {
+        if (client.getBillingZipcode() == null) {
             missingFields.add("postal code");
         }
-        if (clientdata.getCity() == null || clientdata.getCity().trim().isEmpty()) {
+        if (client.getBillingCity() == null || client.getBillingCity().trim().isEmpty()) {
             missingFields.add("city");
         }
 
-        if (!missingFields.isEmpty()) {
-            return "missing " + String.join(", ", missingFields);
-        }
-
-        return null; // Valid
+        return missingFields.isEmpty() ? null : String.join(", ", missingFields);
     }
 }

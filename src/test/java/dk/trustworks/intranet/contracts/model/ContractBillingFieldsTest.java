@@ -41,13 +41,6 @@ class ContractBillingFieldsTest {
         assertFieldMapping("paymentTermsUuid", "payment_terms_uuid", String.class);
     }
 
-    @Test
-    void clientdatauuid_field_preserved_for_backward_compatibility() throws Exception {
-        Field f = Contract.class.getDeclaredField("clientdatauuid");
-        assertNotNull(f, "clientdatauuid must remain until Phase J drops clientdata");
-        assertEquals(String.class, f.getType());
-    }
-
     private static void assertFieldMapping(String fieldName, String columnName, Class<?> expectedType) throws Exception {
         Field f = Contract.class.getDeclaredField(fieldName);
         assertEquals(expectedType, f.getType(),

@@ -58,8 +58,8 @@ public class ProjectService {
         project.persist();
         notify(project.getUuid());
         new Task("Ikke fakturerbar", TaskType.SO, project.getUuid()).persist();
-        log.infof("Project created: uuid=%s, name=%s, clientdatauuid=%s",
-                project.getUuid(), project.getName(), project.getClientdatauuid());
+        log.infof("Project created: uuid=%s, name=%s",
+                project.getUuid(), project.getName());
         return project;
     }
 
@@ -72,15 +72,13 @@ public class ProjectService {
                         "customerreference = ?3, " +
                         "name = ?4, " +
                         "userowneruuid = ?5, " +
-                        "clientdatauuid = ?6, " +
-                        "locked = ?7 " +
-                        "WHERE uuid like ?8 ",
+                        "locked = ?6 " +
+                        "WHERE uuid like ?7 ",
                 project.isActive(),
                 project.getBudget(),
                 project.getCustomerreference(),
                 project.getName(),
                 project.getUserowneruuid(),
-                project.getClientdatauuid(),
                 project.isLocked(),
                 project.getUuid());
         notify(project.getUuid());
