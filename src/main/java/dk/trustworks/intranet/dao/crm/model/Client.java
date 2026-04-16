@@ -2,6 +2,7 @@ package dk.trustworks.intranet.dao.crm.model;
 
 import dk.trustworks.intranet.dao.crm.model.enums.ClientSegment;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
+import dk.trustworks.intranet.utils.ValidEan;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.*;
@@ -49,6 +50,7 @@ public class Client extends PanacheEntityBase {
     private String cvr;
 
     @Column(name = "ean", length = 20)
+    @ValidEan
     private String ean;
 
     @Column(name = "billing_address", length = 510)

@@ -16,6 +16,7 @@ import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
+import dk.trustworks.intranet.utils.EanValidator;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dto.ClientActivityLogDTO;
 import dk.trustworks.intranet.dto.GraphKeyValue;
@@ -482,6 +483,14 @@ public class ClientResource {
                         .entity(Map.of("error", "CVR must be exactly 8 digits"))
                         .build();
             }
+        }
+
+        // EAN validation (GS1 Modulo 10) — optional field, but must be valid if present
+        String ean = client.getEan();
+        if (ean != null && !ean.isBlank() && !EanValidator.isValid(ean)) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "EAN must be exactly 13 digits and pass GS1 Modulo 10"))
+                    .build();
         }
 
         return null;
