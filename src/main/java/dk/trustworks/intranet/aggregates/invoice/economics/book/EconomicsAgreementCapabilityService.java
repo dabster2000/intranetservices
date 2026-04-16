@@ -51,11 +51,7 @@ public class EconomicsAgreementCapabilityService {
      * @return true if the agreement can send electronic invoices, false otherwise
      */
     public boolean canSendElectronicInvoice(String companyUuid) {
-        Entry e = cache.get(companyUuid);
-        if (e == null || e.expired()) {
-            e = load(companyUuid);
-        }
-        Boolean cap = e.self().getCanSendElectronicInvoice();
+        Boolean cap = getOrLoad(companyUuid).self().getCanSendElectronicInvoice();
         return cap != null && cap;
     }
 
@@ -67,11 +63,12 @@ public class EconomicsAgreementCapabilityService {
      * @return the cached or freshly fetched agreement self-description
      */
     public EconomicsAgreementSelf selfOf(String companyUuid) {
+        return getOrLoad(companyUuid).self();
+    }
+
+    private Entry getOrLoad(String companyUuid) {
         Entry e = cache.get(companyUuid);
-        if (e == null || e.expired()) {
-            e = load(companyUuid);
-        }
-        return e.self();
+        return (e == null || e.expired()) ? load(companyUuid) : e;
     }
 
     private synchronized Entry load(String companyUuid) {

@@ -86,15 +86,12 @@ public class EanPrerequisiteChecker {
                     "Customer is not yet configured for NemHandel in e-conomic");
         }
 
-        // 6. Billing attention
+        // 6. Billing attention + 7. Contact receiveEInvoices
         String attention = bc.contract() == null ? null : bc.contract().getBillingAttention();
         if (attention == null || attention.isBlank()) {
             fail.put("BILLING_ATTENTION_MISSING",
                     "Contract has no billing_attention — public sector invoices require a contact person");
-        }
-
-        // 7. Contact receiveEInvoices
-        if (attention != null && !attention.isBlank()) {
+        } else {
             Optional<ClientEconomicsContact> contact = contacts.findByClientCompanyAndName(
                     bc.billingClient().getUuid(), companyUuid, attention);
             if (contact.isEmpty()) {

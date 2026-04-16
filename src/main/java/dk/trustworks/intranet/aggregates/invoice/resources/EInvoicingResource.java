@@ -12,6 +12,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Lists invoices sent via EAN for the E-Invoicing tab.
@@ -43,7 +44,7 @@ public class EInvoicingResource {
 
         if (from == null || to == null) {
             return Response.status(Response.Status.BAD_REQUEST)
-                    .entity("{\"error\":\"Both 'from' and 'to' query parameters are required\"}")
+                    .entity(Map.of("error", "Both 'from' and 'to' query parameters are required"))
                     .build();
         }
 
