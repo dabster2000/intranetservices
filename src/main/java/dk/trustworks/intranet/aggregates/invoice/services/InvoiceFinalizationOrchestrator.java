@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.economics.DraftContext;
+import dk.trustworks.intranet.aggregates.invoice.economics.EanPrerequisiteErrorDto;
 import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
@@ -77,6 +78,9 @@ public class InvoiceFinalizationOrchestrator {
 
     @Inject
     DebtorCompanyLookup debtorCompanyLookup;
+
+    @Inject
+    EanPrerequisiteChecker eanChecker;
 
     /**
      * Step 1: Creates the e-conomic draft invoice.
@@ -189,6 +193,22 @@ public class InvoiceFinalizationOrchestrator {
         if (inv.getEconomicsDraftNumber() == null) {
             throw new IllegalStateException(
                     "Invoice " + invoiceUuid + " has no economicsDraftNumber — cannot book");
+        }
+
+        // Normalize and validate sendBy (SPEC-INV-001 §4.2, §4.3, §6.6)
+        if ("ean".equalsIgnoreCase(sendBy)) {
+            BillingContext bc = billingResolver.resolve(inv);
+            EanPrerequisiteErrorDto err = eanChecker.check(bc);
+            if (err != null) {
+                throw new EanPrerequisitesNotMet(err);
+            }
+            sendBy = "ean";  // canonical lowercase per SPEC §6.6
+        } else if ("email".equalsIgnoreCase(sendBy)) {
+            sendBy = "Email";  // canonical capitalised per SPEC §6.6
+        } else if (sendBy != null && !sendBy.isBlank()) {
+            throw new IllegalArgumentException("Unsupported sendBy: " + sendBy);
+        } else {
+            sendBy = null;  // omit entirely from JSON
         }
 
         String companyUuid = inv.getCompany().getUuid();
