@@ -51,26 +51,29 @@ public class EconomicsCustomerSyncService {
     /** PUT retries on 409 conflict (GET-merge-retry). Each retry re-GETs. */
     private static final int MAX_CONFLICT_RETRIES = 2;
 
-    /** After this many cumulative failure attempts, mark status=ABANDONED. §6.8. */
-    private static final int MAX_ATTEMPTS_BEFORE_ABANDON = 6;
-
     private final ClientEconomicsCustomerRepository repo;
     private final ClientEconomicsSyncFailureRepository failures;
+    private final SyncFailureRecorder failureRecorder;
     private final AgreementResolver agreementResolver;
     private final AgreementDefaultsRegistry agreementDefaults;
     private final ClientToEconomicsCustomerMapper mapper;
+    private final EconomicsCustomerIndexCache indexCache;
 
     @Inject
     public EconomicsCustomerSyncService(ClientEconomicsCustomerRepository repo,
                                         ClientEconomicsSyncFailureRepository failures,
+                                        SyncFailureRecorder failureRecorder,
                                         AgreementResolver agreementResolver,
                                         AgreementDefaultsRegistry agreementDefaults,
-                                        ClientToEconomicsCustomerMapper mapper) {
+                                        ClientToEconomicsCustomerMapper mapper,
+                                        EconomicsCustomerIndexCache indexCache) {
         this.repo = repo;
         this.failures = failures;
+        this.failureRecorder = failureRecorder;
         this.agreementResolver = agreementResolver;
         this.agreementDefaults = agreementDefaults;
         this.mapper = mapper;
+        this.indexCache = indexCache;
     }
 
     // --------------------------------------------------- public API
@@ -115,14 +118,20 @@ public class EconomicsCustomerSyncService {
             } else {
                 post(api, client, companyUuid, groupNumber, paymentTerm, vatZone);
             }
-            clearFailure(client.getUuid(), companyUuid);
+            // Success → clear failure row in its own transaction so the retry
+            // batchlet sees cleared state regardless of what the caller does.
+            failureRecorder.clear(client.getUuid(), companyUuid);
         } catch (WebApplicationException e) {
             String status = e.getResponse() == null ? "?" : Integer.toString(e.getResponse().getStatus());
-            recordFailure(client.getUuid(), companyUuid, "HTTP " + status + ": " + safeMessage(e));
+            // REQUIRES_NEW: the failure row must survive the rollback that
+            // SyncFailedException triggers in our surrounding @Transactional.
+            failureRecorder.record(client.getUuid(), companyUuid,
+                    "HTTP " + status + ": " + safeMessage(e));
             throw new SyncFailedException("Customer sync failed for "
                     + client.getUuid() + "/" + companyUuid, e);
         } catch (RuntimeException e) {
-            recordFailure(client.getUuid(), companyUuid, e.getClass().getSimpleName() + ": " + safeMessage(e));
+            failureRecorder.record(client.getUuid(), companyUuid,
+                    e.getClass().getSimpleName() + ": " + safeMessage(e));
             throw new SyncFailedException("Customer sync failed for "
                     + client.getUuid() + "/" + companyUuid, e);
         }
@@ -193,12 +202,16 @@ public class EconomicsCustomerSyncService {
                       Client client, String companyUuid,
                       int groupNumber, int paymentTerm, int vatZone) {
         EconomicsCustomerDto body = mapper.toFullUpsertBody(client, groupNumber, paymentTerm, vatZone);
-        body.setCustomerNumber(deriveCustomerNumber(client));
+        EconomicsCustomerIndex idx = indexCache.getIndex(companyUuid);
+        body.setCustomerNumber(deriveCustomerNumber(client, idx));
         EconomicsCustomerDto created = api.createCustomer(body);
         int customerNumber = Objects.requireNonNull(created.getCustomerNumber(),
                 "e-conomic returned no customerNumber for client " + client.getUuid());
         upsertMapping(client.getUuid(), companyUuid, customerNumber,
                 created.getObjectVersion(), PairingSource.CREATED);
+        // Newly-created customer must appear in the index before the next sync
+        // runs (prevents "next-available-number" from reusing this one).
+        indexCache.invalidate(companyUuid);
     }
 
     private void putWithConcurrency(EconomicsCustomerApiClient api,
@@ -232,14 +245,26 @@ public class EconomicsCustomerSyncService {
     }
 
     /**
-     * Derives the e-conomic {@code customerNumber} from the client: use CVR as
-     * signed int when it parses, otherwise fall back to a stable hash of the
-     * client UUID in the range [1, 999_999_999]. §6.3.
+     * Derives the e-conomic {@code customerNumber} for a client.
+     *
+     * <ol>
+     *   <li>Prefer CVR parsed as signed int — but only if the number is not
+     *       already taken by a DIFFERENT customer in the agreement's index
+     *       (guards against CVR collisions when two Trustworks clients share
+     *       a CVR, e.g. subsidiaries under the same PARTNER).</li>
+     *   <li>Otherwise hash the UUID into [1, 999_999_999]; if that also
+     *       collides, walk forward until a free slot is found.</li>
+     * </ol>
+     *
+     * SPEC-INV-001 §6.3.
      */
-    static int deriveCustomerNumber(Client client) {
+    static int deriveCustomerNumber(Client client, EconomicsCustomerIndex index) {
         if (client.getCvr() != null && !client.getCvr().isBlank()) {
             try {
-                return Integer.parseInt(client.getCvr().trim());
+                int parsed = Integer.parseInt(client.getCvr().trim());
+                if (index == null || index.getByCustomerNumber(parsed).isEmpty()) {
+                    return parsed;
+                }
             } catch (NumberFormatException ignore) {
                 // fall through
             }
@@ -250,7 +275,16 @@ public class EconomicsCustomerSyncService {
         }
         String hex = uuid.replace("-", "");
         long hash = Long.parseUnsignedLong(hex.substring(0, Math.min(hex.length(), 8)), 16);
-        return (int) ((hash % 999_999_999L) + 1);
+        int candidate = (int) ((hash % 999_999_999L) + 1);
+        if (index == null) return candidate;
+        // Linear probing on collision — at 999M slots, collisions are rare but
+        // not impossible, so walk forward until a free number is found.
+        int attempts = 0;
+        while (index.getByCustomerNumber(candidate).isPresent() && attempts < 1000) {
+            candidate = (candidate % 999_999_999) + 1;
+            attempts++;
+        }
+        return candidate;
     }
 
     // --------------------------------------------------- pairing / failure rows
@@ -270,36 +304,6 @@ public class EconomicsCustomerSyncService {
         row.setPairingSource(source);
         row.setSyncedAt(LocalDateTime.now());
         repo.persist(row);
-    }
-
-    private void recordFailure(String clientUuid, String companyUuid, String error) {
-        ClientEconomicsSyncFailure f = failures.findByClientAndCompany(clientUuid, companyUuid)
-                .orElseGet(() -> {
-                    ClientEconomicsSyncFailure n = new ClientEconomicsSyncFailure();
-                    n.setUuid(UUID.randomUUID().toString());
-                    n.setClientUuid(clientUuid);
-                    n.setCompanyUuid(companyUuid);
-                    return n;
-                });
-        f.setAttemptCount(f.getAttemptCount() + 1);
-        f.setLastError(error);
-        f.setLastAttemptedAt(LocalDateTime.now());
-        f.setNextRetryAt(nextRetryAfter(f.getAttemptCount()));
-        if (f.getAttemptCount() >= MAX_ATTEMPTS_BEFORE_ABANDON) {
-            f.setStatus("ABANDONED");
-        }
-        failures.persist(f);
-    }
-
-    private void clearFailure(String clientUuid, String companyUuid) {
-        failures.findByClientAndCompany(clientUuid, companyUuid).ifPresent(failures::delete);
-    }
-
-    /** Exponential backoff per §6.8: 1m, 5m, 15m, 1h, 4h, then 24h for abandoned waits. */
-    static LocalDateTime nextRetryAfter(int attempts) {
-        int[] minutes = { 1, 5, 15, 60, 240, 1440 };
-        int idx = Math.min(Math.max(attempts - 1, 0), minutes.length - 1);
-        return LocalDateTime.now().plusMinutes(minutes[idx]);
     }
 
     private static String safeMessage(Throwable t) {

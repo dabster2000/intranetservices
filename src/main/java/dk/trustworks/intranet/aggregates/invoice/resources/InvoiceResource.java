@@ -1216,8 +1216,18 @@ public class InvoiceResource {
             }
             return Response.ok(pdfBytes, "application/pdf").build();
 
+        } catch (WebApplicationException wae) {
+            // Forward e-conomic's status (esp. 404 "not ready yet") rather
+            // than collapsing everything to 500 — the UI iframe needs to
+            // distinguish "PDF not available" from actual errors.
+            int status = wae.getResponse() == null ? 502 : wae.getResponse().getStatus();
+            log.warnf("Economics PDF fetch returned HTTP %d for invoice %s", status, uuid);
+            return Response.status(status)
+                    .entity("E-conomic PDF unavailable for invoice: " + uuid)
+                    .type(MediaType.TEXT_PLAIN)
+                    .build();
         } catch (Exception e) {
-            log.errorf("Failed to retrieve economics PDF for invoice %s: %s", uuid, e.getMessage());
+            log.errorf(e, "Failed to retrieve economics PDF for invoice %s", uuid);
             return Response.serverError()
                     .entity("Failed to retrieve PDF for invoice: " + uuid)
                     .type(MediaType.TEXT_PLAIN)

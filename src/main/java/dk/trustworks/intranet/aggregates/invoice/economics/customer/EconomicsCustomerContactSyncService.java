@@ -42,6 +42,7 @@ public class EconomicsCustomerContactSyncService {
     private final ClientEconomicsCustomerRepository customerRepo;
     private final ClientEconomicsContactRepository contactRepo;
     private final ClientEconomicsSyncFailureRepository failures;
+    private final SyncFailureRecorder failureRecorder;
     private final ContactAgreementResolver agreementResolver;
     private final AgreementDefaultsRegistry agreementDefaults;
     private final ContractToEconomicsContactMapper mapper;
@@ -50,12 +51,14 @@ public class EconomicsCustomerContactSyncService {
     public EconomicsCustomerContactSyncService(ClientEconomicsCustomerRepository customerRepo,
                                                ClientEconomicsContactRepository contactRepo,
                                                ClientEconomicsSyncFailureRepository failures,
+                                               SyncFailureRecorder failureRecorder,
                                                ContactAgreementResolver agreementResolver,
                                                AgreementDefaultsRegistry agreementDefaults,
                                                ContractToEconomicsContactMapper mapper) {
         this.customerRepo = customerRepo;
         this.contactRepo = contactRepo;
         this.failures = failures;
+        this.failureRecorder = failureRecorder;
         this.agreementResolver = agreementResolver;
         this.agreementDefaults = agreementDefaults;
         this.mapper = mapper;
@@ -124,15 +127,16 @@ public class EconomicsCustomerContactSyncService {
             } else {
                 putContactWithConcurrency(api, billingClient, companyUuid, attention, existing.get(), body);
             }
-            clearFailure(billingClient.getUuid(), companyUuid);
+            // REQUIRES_NEW — see EconomicsCustomerSyncService for rationale.
+            failureRecorder.clear(billingClient.getUuid(), companyUuid);
         } catch (WebApplicationException e) {
             String status = e.getResponse() == null ? "?" : Integer.toString(e.getResponse().getStatus());
-            recordFailure(billingClient.getUuid(), companyUuid,
+            failureRecorder.record(billingClient.getUuid(), companyUuid,
                     "Contact sync HTTP " + status + ": " + safeMessage(e));
             throw new SyncFailedException("Contact sync failed for "
                     + billingClient.getUuid() + "/" + companyUuid, e);
         } catch (RuntimeException e) {
-            recordFailure(billingClient.getUuid(), companyUuid,
+            failureRecorder.record(billingClient.getUuid(), companyUuid,
                     "Contact sync " + e.getClass().getSimpleName() + ": " + safeMessage(e));
             throw new SyncFailedException("Contact sync failed for "
                     + billingClient.getUuid() + "/" + companyUuid, e);
@@ -200,29 +204,6 @@ public class EconomicsCustomerContactSyncService {
         row.setReceiveEInvoices(true);
         row.setSyncedAt(LocalDateTime.now());
         contactRepo.persist(row);
-    }
-
-    private void recordFailure(String clientUuid, String companyUuid, String error) {
-        ClientEconomicsSyncFailure f = failures.findByClientAndCompany(clientUuid, companyUuid)
-                .orElseGet(() -> {
-                    ClientEconomicsSyncFailure n = new ClientEconomicsSyncFailure();
-                    n.setUuid(UUID.randomUUID().toString());
-                    n.setClientUuid(clientUuid);
-                    n.setCompanyUuid(companyUuid);
-                    return n;
-                });
-        f.setAttemptCount(f.getAttemptCount() + 1);
-        f.setLastError(error);
-        f.setLastAttemptedAt(LocalDateTime.now());
-        f.setNextRetryAt(EconomicsCustomerSyncService.nextRetryAfter(f.getAttemptCount()));
-        if (f.getAttemptCount() >= 6) {
-            f.setStatus("ABANDONED");
-        }
-        failures.persist(f);
-    }
-
-    private void clearFailure(String clientUuid, String companyUuid) {
-        failures.findByClientAndCompany(clientUuid, companyUuid).ifPresent(failures::delete);
     }
 
     private static String safeMessage(Throwable t) {

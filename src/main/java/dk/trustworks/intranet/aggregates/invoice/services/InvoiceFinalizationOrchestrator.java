@@ -17,6 +17,8 @@ import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
@@ -230,9 +232,19 @@ public class InvoiceFinalizationOrchestrator {
         inv.setSendBy(sendBy);  // persist delivery method for E-Invoicing tracking
         invoices.persist(inv);
 
-        // Irreversible step-2 side effect — after persist so the invoice number is
-        // already recorded before work is marked as paid out
-        work.registerAsPaidout(inv);
+        // Irreversible step-2 side effect. E-conomic has already booked the
+        // invoice at this point, so a RuntimeException from registerAsPaidout
+        // MUST NOT roll back the booked/CREATED state we just persisted —
+        // doing so would leave the DB out-of-sync with e-conomic and every
+        // subsequent book attempt would fight the booking idempotency cache.
+        // Log loudly so ops can reconcile work-item payout status manually.
+        try {
+            work.registerAsPaidout(inv);
+        } catch (RuntimeException e) {
+            log.errorf(e, "bookDraft: registerAsPaidout failed AFTER e-conomic booked invoice %s "
+                    + "(bookedNumber=%d) — manual work-item reconciliation required",
+                    invoiceUuid, booked.getBookedInvoiceNumber());
+        }
 
         // DEBTOR-side voucher for internal invoices (SPEC-INV-001 §4.5, §4.7, §10).
         // The issuer side already went through the standard Q2C path above.  Now post
@@ -347,6 +359,9 @@ public class InvoiceFinalizationOrchestrator {
         }
 
         inv.setEconomicsDraftNumber(null);
+        // Snapshot was set in createDraft — clear it so cancelFinalization
+        // truly reverses every step-1 persist.
+        inv.setBillingClientUuid(null);
         inv.setStatus(InvoiceStatus.DRAFT);
         invoices.persist(inv);
 
@@ -382,7 +397,20 @@ public class InvoiceFinalizationOrchestrator {
     }
 
     private static boolean isNotFound(Throwable e) {
-        // MicroProfile REST client wraps HTTP errors; 404 is identifiable via message
-        return e.getMessage() != null && e.getMessage().contains("404");
+        // MP REST Client surfaces HTTP errors as WebApplicationException with the
+        // response attached. Read the status code — string-matching "404" in the
+        // message is fragile (see SPEC-INV-001 review findings).
+        Throwable cursor = e;
+        while (cursor != null) {
+            if (cursor instanceof WebApplicationException wae) {
+                Response response = wae.getResponse();
+                if (response != null && response.getStatus() == Response.Status.NOT_FOUND.getStatusCode()) {
+                    return true;
+                }
+            }
+            if (cursor.getCause() == cursor) break;
+            cursor = cursor.getCause();
+        }
+        return false;
     }
 }

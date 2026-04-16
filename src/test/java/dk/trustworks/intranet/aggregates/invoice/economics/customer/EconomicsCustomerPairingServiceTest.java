@@ -63,6 +63,14 @@ class EconomicsCustomerPairingServiceTest {
 
         svc = new EconomicsCustomerPairingService(repo, cache, clientLookup,
                 agreementResolver, agreementDefaults, customerMapper);
+
+        // listPairingRows / autoRun now batch-load via listByCompany instead
+        // of per-client findByClientAndCompany. Default to an empty list so
+        // tests that don't care about pairings behave as before.
+        when(repo.listByCompany(anyString())).thenReturn(List.of());
+        // createAndPair consults the index for CVR collision checks; stub a
+        // default empty index so tests that don't set one don't NPE.
+        when(cache.getIndex(anyString())).thenReturn(new EconomicsCustomerIndex(List.of()));
     }
 
     // ----------------------- listPairingRows -----------------------
@@ -72,7 +80,7 @@ class EconomicsCustomerPairingServiceTest {
         Client c = client("c1", "Acme A/S", "12345678", ClientType.CLIENT);
         when(clientLookup.listActive()).thenReturn(List.of(c));
         ClientEconomicsCustomer row = pairingRow("c1", COMPANY, 101, PairingSource.AUTO_CVR);
-        when(repo.findByClientAndCompany("c1", COMPANY)).thenReturn(Optional.of(row));
+        when(repo.listByCompany(COMPANY)).thenReturn(List.of(row));
         when(cache.getIndex(COMPANY)).thenReturn(new EconomicsCustomerIndex(List.of()));
 
         List<PairingRowDto> out = svc.listPairingRows(COMPANY_UUID);
@@ -162,8 +170,8 @@ class EconomicsCustomerPairingServiceTest {
     void autoRun_skips_already_paired() {
         Client c = client("c1", "Already Paired", "12345678", ClientType.CLIENT);
         when(clientLookup.listActive()).thenReturn(List.of(c));
-        when(repo.findByClientAndCompany("c1", COMPANY))
-                .thenReturn(Optional.of(pairingRow("c1", COMPANY, 101, PairingSource.MANUAL)));
+        when(repo.listByCompany(COMPANY))
+                .thenReturn(List.of(pairingRow("c1", COMPANY, 101, PairingSource.MANUAL)));
         when(cache.getIndex(COMPANY)).thenReturn(new EconomicsCustomerIndex(List.of()));
 
         AutoRunResultDto result = svc.autoRun(COMPANY_UUID);

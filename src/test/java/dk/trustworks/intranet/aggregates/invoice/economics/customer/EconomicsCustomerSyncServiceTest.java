@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
@@ -41,6 +42,8 @@ class EconomicsCustomerSyncServiceTest {
     private AgreementDefaultsRegistry agreementDefaults;
     private EconomicsCustomerApiClient api;
     private ClientToEconomicsCustomerMapper mapper;
+    private SyncFailureRecorder failureRecorder;
+    private EconomicsCustomerIndexCache indexCache;
 
     private EconomicsCustomerSyncService service;
 
@@ -52,10 +55,16 @@ class EconomicsCustomerSyncServiceTest {
         agreementDefaults = new AgreementDefaultsRegistry();
         api = mock(EconomicsCustomerApiClient.class);
         mapper = new ClientToEconomicsCustomerMapper();
+        failureRecorder = mock(SyncFailureRecorder.class);
+        indexCache = mock(EconomicsCustomerIndexCache.class);
 
         when(agreementResolver.apiFor(COMPANY)).thenReturn(api);
+        when(indexCache.getIndex(anyString()))
+                .thenReturn(new EconomicsCustomerIndex(java.util.List.of()));
 
-        service = new EconomicsCustomerSyncService(repo, failures, agreementResolver, agreementDefaults, mapper);
+        service = new EconomicsCustomerSyncService(
+                repo, failures, failureRecorder, agreementResolver,
+                agreementDefaults, mapper, indexCache);
     }
 
     // ----------------------- PUT (update) -----------------------
@@ -147,17 +156,12 @@ class EconomicsCustomerSyncServiceTest {
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
         when(api.createCustomer(any()))
                 .thenThrow(new WebApplicationException(Response.status(500).build()));
-        when(failures.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
 
         assertThrows(SyncFailedException.class, () -> service.syncToCompany(c, COMPANY));
 
-        ArgumentCaptor<ClientEconomicsSyncFailure> cap = ArgumentCaptor.forClass(ClientEconomicsSyncFailure.class);
-        verify(failures).persist(cap.capture());
-        ClientEconomicsSyncFailure f = cap.getValue();
-        assertEquals("c-uuid", f.getClientUuid());
-        assertEquals(COMPANY, f.getCompanyUuid());
-        assertEquals(1, f.getAttemptCount());
-        assertTrue(f.getLastError().contains("500"));
+        ArgumentCaptor<String> errorCap = ArgumentCaptor.forClass(String.class);
+        verify(failureRecorder).record(eq("c-uuid"), eq(COMPANY), errorCap.capture());
+        assertTrue(errorCap.getValue().contains("500"));
     }
 
     @Test
@@ -166,39 +170,24 @@ class EconomicsCustomerSyncServiceTest {
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
         when(api.createCustomer(any())).thenReturn(makeRemote(101, "obj-v-1"));
 
-        ClientEconomicsSyncFailure prior = new ClientEconomicsSyncFailure();
-        prior.setUuid("f");
-        prior.setClientUuid("c-uuid");
-        prior.setCompanyUuid(COMPANY);
-        prior.setAttemptCount(3);
-        when(failures.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.of(prior));
-
         service.syncToCompany(c, COMPANY);
 
-        verify(failures).delete(prior);
+        verify(failureRecorder).clear("c-uuid", COMPANY);
     }
 
     @Test
-    void attempt_count_increments_across_consecutive_failures() {
+    void failure_is_recorded_via_requires_new_recorder() {
+        // Attempt-count escalation now lives in SyncFailureRecorder. Here we
+        // assert only that the sync service delegates to the REQUIRES_NEW
+        // recorder on failure so the row survives the tx rollback.
         Client c = makeClient("c-uuid", "Acme", "12345678", ClientType.CLIENT);
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
         when(api.createCustomer(any()))
                 .thenThrow(new WebApplicationException(Response.status(500).build()));
 
-        ClientEconomicsSyncFailure prior = new ClientEconomicsSyncFailure();
-        prior.setUuid("f");
-        prior.setClientUuid("c-uuid");
-        prior.setCompanyUuid(COMPANY);
-        prior.setAttemptCount(5);
-        when(failures.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.of(prior));
-
         assertThrows(SyncFailedException.class, () -> service.syncToCompany(c, COMPANY));
 
-        ArgumentCaptor<ClientEconomicsSyncFailure> cap = ArgumentCaptor.forClass(ClientEconomicsSyncFailure.class);
-        verify(failures).persist(cap.capture());
-        // Attempt 6 crosses the threshold → status flips to ABANDONED.
-        assertEquals(6, cap.getValue().getAttemptCount());
-        assertEquals("ABANDONED", cap.getValue().getStatus());
+        verify(failureRecorder).record(eq("c-uuid"), eq(COMPANY), anyString());
     }
 
     // ----------------------- syncToAllCompanies ---------------------
@@ -210,12 +199,11 @@ class EconomicsCustomerSyncServiceTest {
         // Throws a non-409 error so it's recorded + swallowed by the outer loop.
         when(api.createCustomer(any()))
                 .thenThrow(new WebApplicationException(Response.status(500).build()));
-        when(failures.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
 
         // Must not throw — syncToAllCompanies collects failures per-agreement.
         service.syncToAllCompanies(c);
 
-        verify(failures).persist(any(ClientEconomicsSyncFailure.class));
+        verify(failureRecorder).record(eq("c-uuid"), eq(COMPANY), anyString());
     }
 
     @Test
@@ -233,13 +221,13 @@ class EconomicsCustomerSyncServiceTest {
     @Test
     void derives_customerNumber_from_cvr_when_numeric() {
         Client c = makeClient("uuid", "X", "86001519", ClientType.CLIENT);
-        assertEquals(86001519, EconomicsCustomerSyncService.deriveCustomerNumber(c));
+        assertEquals(86001519, EconomicsCustomerSyncService.deriveCustomerNumber(c, null));
     }
 
     @Test
     void derives_customerNumber_from_uuid_hash_when_cvr_missing() {
         Client c = makeClient("f47ac10b-58cc-4372-a567-0e02b2c3d479", "X", null, ClientType.CLIENT);
-        int n = EconomicsCustomerSyncService.deriveCustomerNumber(c);
+        int n = EconomicsCustomerSyncService.deriveCustomerNumber(c, null);
         assertTrue(n >= 1 && n <= 999_999_999, "customerNumber out of range: " + n);
     }
 

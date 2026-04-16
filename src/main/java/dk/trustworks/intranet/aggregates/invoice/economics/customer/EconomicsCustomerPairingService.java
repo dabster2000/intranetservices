@@ -14,11 +14,15 @@ import org.jboss.logging.Logger;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Orchestrates Trustworks client ↔ e-conomic customer pairing for a single
@@ -74,16 +78,30 @@ public class EconomicsCustomerPairingService {
         List<Client> clients = clientLookup.listActive();
         EconomicsCustomerIndex idx = cache.getIndex(company);
 
+        // Single SELECT for every pairing row in this company, then in-memory
+        // lookup per client. Previously this was N+1 — one query per client
+        // (500+ SELECTs on a fresh agreement).
+        Map<String, ClientEconomicsCustomer> pairings = pairingsByClientUuid(company);
+
         List<PairingRowDto> out = new ArrayList<>(clients.size());
         for (Client c : clients) {
-            Optional<ClientEconomicsCustomer> paired = repo.findByClientAndCompany(c.getUuid(), company);
-            if (paired.isPresent()) {
-                out.add(pairedRow(c, paired.get()));
+            ClientEconomicsCustomer paired = pairings.get(c.getUuid());
+            if (paired != null) {
+                out.add(pairedRow(c, paired));
             } else {
                 out.add(classifyUnpaired(c, idx));
             }
         }
         return out;
+    }
+
+    private Map<String, ClientEconomicsCustomer> pairingsByClientUuid(String companyUuid) {
+        return repo.listByCompany(companyUuid).stream()
+                .collect(Collectors.toMap(
+                        ClientEconomicsCustomer::getClientUuid,
+                        Function.identity(),
+                        (a, b) -> a,
+                        HashMap::new));
     }
 
     private PairingRowDto pairedRow(Client c, ClientEconomicsCustomer row) {
@@ -140,8 +158,11 @@ public class EconomicsCustomerPairingService {
         int paired = 0, unchanged = 0, ambiguous = 0, unmatched = 0;
         List<String> errors = new ArrayList<>();
 
+        // Batch-load pairing rows once; avoids N+1 across the full client list.
+        Map<String, ClientEconomicsCustomer> pairings = pairingsByClientUuid(company);
+
         for (Client c : clients) {
-            if (repo.findByClientAndCompany(c.getUuid(), company).isPresent()) {
+            if (pairings.containsKey(c.getUuid())) {
                 unchanged++;
                 continue;
             }
@@ -346,10 +367,19 @@ public class EconomicsCustomerPairingService {
         // e-conomic's auto-assign (which it doesn't actually do — missing
         // customerNumber returns 400). Non-numeric / missing CVR → next
         // available number from the pre-warmed index (max + 1).
+        //
+        // Collision guard: if the CVR-derived number is already taken in
+        // e-conomic by a DIFFERENT customer (common when two Trustworks
+        // clients share a CVR, e.g. subsidiaries under the same PARTNER),
+        // fall through to the next-available number rather than sending a
+        // POST we know will 409.
         Integer customerNumber = null;
         if (c.getCvr() != null && !c.getCvr().isBlank()) {
             try {
-                customerNumber = Integer.parseInt(c.getCvr().trim());
+                int parsed = Integer.parseInt(c.getCvr().trim());
+                if (idx.getByCustomerNumber(parsed).isEmpty()) {
+                    customerNumber = parsed;
+                }
             } catch (NumberFormatException ignore) {
                 // fall through to index-max fallback
             }

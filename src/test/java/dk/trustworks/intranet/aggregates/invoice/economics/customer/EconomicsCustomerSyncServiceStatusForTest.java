@@ -42,8 +42,11 @@ class EconomicsCustomerSyncServiceStatusForTest {
         AgreementResolver agreementResolver = mock(AgreementResolver.class);
         AgreementDefaultsRegistry defaults = new AgreementDefaultsRegistry();
         ClientToEconomicsCustomerMapper mapper = new ClientToEconomicsCustomerMapper();
+        SyncFailureRecorder failureRecorder = mock(SyncFailureRecorder.class);
+        EconomicsCustomerIndexCache indexCache = mock(EconomicsCustomerIndexCache.class);
         service = new EconomicsCustomerSyncService(
-                repo, failures, agreementResolver, defaults, mapper);
+                repo, failures, failureRecorder, agreementResolver,
+                defaults, mapper, indexCache);
     }
 
     @Test

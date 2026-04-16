@@ -11,6 +11,7 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.utils.CountryCodeMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +25,8 @@ import java.util.List;
  */
 @ApplicationScoped
 public class InvoiceToEconomicsDraftMapper {
+
+    private static final Logger LOG = Logger.getLogger(InvoiceToEconomicsDraftMapper.class);
 
     @Inject
     ClientEconomicsCustomerRepository customerRepo;
@@ -143,9 +146,14 @@ public class InvoiceToEconomicsDraftMapper {
     /**
      * Truncates {@code value} to at most {@code maxLen} characters.
      * Returns null when value is null (API fields are {@code @JsonInclude(NON_NULL)}).
+     * Logs a WARN the first time any field overruns its limit so data-quality
+     * issues surface instead of being silently corrupted in e-conomic.
      */
     private static String truncate(String value, int maxLen) {
         if (value == null) return null;
-        return value.length() <= maxLen ? value : value.substring(0, maxLen);
+        if (value.length() <= maxLen) return value;
+        LOG.warnf("Truncated draft-invoice field from %d to %d chars — review source data",
+                value.length(), maxLen);
+        return value.substring(0, maxLen);
     }
 }

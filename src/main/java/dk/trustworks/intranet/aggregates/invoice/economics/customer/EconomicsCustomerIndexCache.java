@@ -8,6 +8,7 @@ import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import org.jboss.logging.Logger;
 
 import java.time.Duration;
@@ -38,6 +39,8 @@ public class EconomicsCustomerIndexCache {
     private static final int MAX_PAGES = 100;
 
     @Inject EconomicsCustomersApiClientFactory clientFactory;
+
+    @Inject EntityManager em;
 
     private final Map<String, Entry> byAgreement = new ConcurrentHashMap<>();
 
@@ -131,13 +134,16 @@ public class EconomicsCustomerIndexCache {
         return idx;
     }
 
-    /** Returns distinct company UUIDs that have at least one {@code integration_keys} row. */
+    /**
+     * Returns distinct company UUIDs that have at least one
+     * {@code integration_keys} row. Uses a single {@code SELECT DISTINCT}
+     * rather than loading every integration_keys row into memory.
+     */
     @SuppressWarnings("unchecked")
     private List<String> listAgreementCompanyUuids() {
-        return IntegrationKey.<IntegrationKey>findAll().stream()
-                .map(ik -> ik.getCompany() == null ? null : ik.getCompany().getUuid())
-                .filter(uuid -> uuid != null && !uuid.isBlank())
-                .distinct()
-                .toList();
+        return em.createNativeQuery(
+                "SELECT DISTINCT companyuuid FROM integration_keys " +
+                "WHERE companyuuid IS NOT NULL AND companyuuid <> ''")
+                .getResultList();
     }
 }

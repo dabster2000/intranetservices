@@ -35,6 +35,7 @@ class EconomicsCustomerContactSyncServiceTest {
     private ClientEconomicsCustomerRepository customerRepo;
     private ClientEconomicsContactRepository contactRepo;
     private ClientEconomicsSyncFailureRepository failures;
+    private SyncFailureRecorder failureRecorder;
     private ContactAgreementResolver agreementResolver;
     private AgreementDefaultsRegistry agreementDefaults;
     private EconomicsContactApiClient api;
@@ -47,6 +48,7 @@ class EconomicsCustomerContactSyncServiceTest {
         customerRepo = mock(ClientEconomicsCustomerRepository.class);
         contactRepo = mock(ClientEconomicsContactRepository.class);
         failures = mock(ClientEconomicsSyncFailureRepository.class);
+        failureRecorder = mock(SyncFailureRecorder.class);
         agreementResolver = mock(ContactAgreementResolver.class);
         agreementDefaults = new AgreementDefaultsRegistry();
         api = mock(EconomicsContactApiClient.class);
@@ -55,7 +57,8 @@ class EconomicsCustomerContactSyncServiceTest {
         when(agreementResolver.apiFor(COMPANY)).thenReturn(api);
 
         service = new EconomicsCustomerContactSyncService(
-                customerRepo, contactRepo, failures, agreementResolver, agreementDefaults, mapper);
+                customerRepo, contactRepo, failures, failureRecorder,
+                agreementResolver, agreementDefaults, mapper);
     }
 
     // ----------------------- POST (create) -----------------------
@@ -222,13 +225,10 @@ class EconomicsCustomerContactSyncServiceTest {
         assertThrows(SyncFailedException.class,
                 () -> service.syncContactToCompany(ct, billing, COMPANY));
 
-        ArgumentCaptor<ClientEconomicsSyncFailure> cap =
-                ArgumentCaptor.forClass(ClientEconomicsSyncFailure.class);
-        verify(failures).persist(cap.capture());
-        assertEquals("c-uuid", cap.getValue().getClientUuid());
-        assertEquals(COMPANY, cap.getValue().getCompanyUuid());
-        assertEquals(1, cap.getValue().getAttemptCount());
-        assertTrue(cap.getValue().getLastError().contains("500"));
+        ArgumentCaptor<String> errorCap = ArgumentCaptor.forClass(String.class);
+        verify(failureRecorder).record(org.mockito.ArgumentMatchers.eq("c-uuid"),
+                org.mockito.ArgumentMatchers.eq(COMPANY), errorCap.capture());
+        assertTrue(errorCap.getValue().contains("500"));
     }
 
     @Test
@@ -245,7 +245,9 @@ class EconomicsCustomerContactSyncServiceTest {
         // Must not throw.
         service.syncContactToAllCompanies(ct, billing);
 
-        verify(failures).persist(any(ClientEconomicsSyncFailure.class));
+        verify(failureRecorder).record(org.mockito.ArgumentMatchers.eq("c-uuid"),
+                org.mockito.ArgumentMatchers.eq(COMPANY),
+                org.mockito.ArgumentMatchers.anyString());
     }
 
     // ----------------------- helpers -----------------------
