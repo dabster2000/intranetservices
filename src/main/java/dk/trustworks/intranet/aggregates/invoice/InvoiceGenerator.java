@@ -19,6 +19,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -32,6 +33,7 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -64,6 +66,9 @@ public class InvoiceGenerator {
 
     @Inject
     WorkService workService;
+
+    @Inject
+    EconomicsAgreementResolver agreements;
 
     @Transactional
     public List<ProjectSummary> loadProjectSummaryByYearAndMonth(LocalDate month) {
@@ -210,28 +215,7 @@ public class InvoiceGenerator {
                     }
 
                     if (invoice == null) {
-                        invoice = new Invoice(InvoiceType.INVOICE,
-                                contract.getUuid(),
-                                project.getUuid(),
-                                project.getName(),
-                                0.0,
-                                month.getYear(),
-                                month.getMonthValue(),
-                                billingClient.getName(),
-                                billingClient.getBillingAddress(),
-                                "",
-                                (billingClient.getBillingZipcode() != null ? billingClient.getBillingZipcode() : "") + " " + (billingClient.getBillingCity() != null ? billingClient.getBillingCity() : ""),
-                                billingClient.getEan(),
-                                billingClient.getCvr(),
-                                contract.getBillingAttention() != null
-                                        ? contract.getBillingAttention()
-                                        : billingClient.getDefaultBillingAttention(),
-                                LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()),
-                                LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth()).plusMonths(1),
-                                project.getCustomerreference(),
-                                contract.getRefid(), contract.getContractType(), contract.getCompany(),
-                                "DKK",
-                                "");
+                        invoice = buildInitialInvoice(contract, project, billingClient, YearMonth.of(month.getYear(), month.getMonthValue()));
                         log.info("Created new invoice: " + invoice);
                     }
 
@@ -294,6 +278,50 @@ public class InvoiceGenerator {
         log.info("Priced draft invoice: " + priced.getUuid());
         // Attribution computed inside updateDraftInvoice after flush+refresh
         return created;
+    }
+
+    /**
+     * Constructs the initial {@link Invoice} shell for a new draft: populates all
+     * billing-address fields, sets {@code currency} from the billing client, and
+     * resolves the VAT rate from the configured VAT zone mapping.
+     *
+     * <p>Extracted as a package-private helper so unit tests can exercise the
+     * currency + VAT logic without spinning up the full work-item loop.
+     */
+    Invoice buildInitialInvoice(Contract contract, Project project, Client billingClient, YearMonth month) {
+        LocalDate lastDayOfMonth = LocalDate.now()
+                .withYear(month.getYear())
+                .withMonth(month.getMonthValue())
+                .withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth());
+
+        Invoice invoice = new Invoice(InvoiceType.INVOICE,
+                contract.getUuid(),
+                project.getUuid(),
+                project.getName(),
+                0.0,
+                month.getYear(),
+                month.getMonthValue(),
+                billingClient.getName(),
+                billingClient.getBillingAddress(),
+                "",
+                (billingClient.getBillingZipcode() != null ? billingClient.getBillingZipcode() : "") + " " + (billingClient.getBillingCity() != null ? billingClient.getBillingCity() : ""),
+                billingClient.getEan(),
+                billingClient.getCvr(),
+                contract.getBillingAttention() != null
+                        ? contract.getBillingAttention()
+                        : billingClient.getDefaultBillingAttention(),
+                lastDayOfMonth,
+                lastDayOfMonth.plusMonths(1),
+                project.getCustomerreference(),
+                contract.getRefid(), contract.getContractType(), contract.getCompany(),
+                billingClient.getCurrency(),
+                "");
+
+        EconomicsAgreementResolver.VatZoneDetails zone = agreements.vatZoneDetailsFor(
+                billingClient.getCurrency(), contract.getCompany().getUuid());
+        invoice.setVat(zone.vatRatePercent().doubleValue());
+
+        return invoice;
     }
 
     /**
