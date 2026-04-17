@@ -5,9 +5,9 @@
 -- hardcoded currency to "DKK" when building drafts, so all existing invoices are
 -- already effectively DKK — backfilling to DKK preserves behaviour exactly.
 
-UPDATE clients
+UPDATE client
 SET currency = 'DKK'
 WHERE currency IS NULL;
 
-ALTER TABLE clients
+ALTER TABLE client
     MODIFY COLUMN currency VARCHAR(3) NOT NULL DEFAULT 'DKK';
