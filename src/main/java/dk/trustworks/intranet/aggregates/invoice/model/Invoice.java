@@ -188,8 +188,9 @@ public class Invoice extends PanacheEntityBase {
         this.type = type;
         this.contractType = contractType;
         this.currency = currency;
-        if(currency.equals("DKK")) this.vat = 25.0;
-        else this.vat = 0.0;
+        // vat is set by the caller from VatZoneMapping.vatRatePercent.
+        // See InvoiceGenerator for new drafts; credit-notes and internal invoices
+        // copy vat from the parent invoice.
         this.contractuuid = contractuuid;
         this.discount = discount;
         this.otheraddressinfo = otheraddressinfo;
