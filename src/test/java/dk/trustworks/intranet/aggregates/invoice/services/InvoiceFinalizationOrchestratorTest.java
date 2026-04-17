@@ -127,7 +127,10 @@ class InvoiceFinalizationOrchestratorTest {
     void createDraft_for_PHANTOM_invoice_is_rejected() {
         Invoice inv = phantomInvoice("i1", "co-1");
         when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
-        assertThrows(IllegalArgumentException.class, () -> orchestrator.createDraft("i1"));
+        jakarta.ws.rs.BadRequestException thrown = assertThrows(
+                jakarta.ws.rs.BadRequestException.class,
+                () -> orchestrator.createDraft("i1"));
+        assertEquals(400, thrown.getResponse().getStatus());
         verifyNoInteractions(draftApi);
     }
 

@@ -1140,6 +1140,20 @@ public class InvoiceResource {
     // ── New finalization endpoints (SPEC-INV-001 §7.2) ────────────────────────
 
     /**
+     * Step 1 of the two-step finalization flow: creates the e-conomic draft and
+     * transitions the invoice to PENDING_REVIEW. The body is intentionally absent —
+     * the orchestrator works from the persisted draft identified by {@code invoiceuuid}.
+     *
+     * @param uuid invoice UUID (must be DRAFT or QUEUED, non-PHANTOM)
+     */
+    @POST
+    @Path("/{invoiceuuid}")
+    @RolesAllowed({"invoices:write"})
+    public Invoice finalizeDraft(@PathParam("invoiceuuid") String uuid) {
+        return invoiceService.finalizeDraft(uuid);
+    }
+
+    /**
      * Step 2 of the two-step finalization flow: books the e-conomic draft and sets
      * status to CREATED with the e-conomic-assigned invoice number.
      *

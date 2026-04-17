@@ -211,14 +211,15 @@ class InvoiceFinalizationOrchestratorSendByTest {
     // ── test 5: unsupported sendBy throws ────────────────────────────────────
 
     @Test
-    void bookDraft_unsupported_sendBy_throws_IllegalArgumentException() {
+    void bookDraft_unsupported_sendBy_throws_BadRequest() {
         Invoice inv = pendingReviewInvoice("i1", "co-1", 4521);
         when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
 
-        IllegalArgumentException thrown = assertThrows(
-                IllegalArgumentException.class,
+        jakarta.ws.rs.BadRequestException thrown = assertThrows(
+                jakarta.ws.rs.BadRequestException.class,
                 () -> orchestrator.bookDraft("i1", "fax"));
 
+        assertEquals(400, thrown.getResponse().getStatus());
         assertTrue(thrown.getMessage().contains("fax"));
         verifyNoInteractions(bookApi);
         verifyNoInteractions(eanChecker);

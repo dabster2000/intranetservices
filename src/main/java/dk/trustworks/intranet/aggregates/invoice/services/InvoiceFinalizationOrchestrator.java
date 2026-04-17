@@ -17,6 +17,8 @@ import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
@@ -105,7 +107,7 @@ public class InvoiceFinalizationOrchestrator {
         Invoice inv = requireEditableInvoice(invoiceUuid);
 
         if (inv.getType() == InvoiceType.PHANTOM) {
-            throw new IllegalArgumentException(
+            throw new BadRequestException(
                     "PHANTOM invoices do not interact with e-conomic: " + invoiceUuid);
         }
 
@@ -184,16 +186,16 @@ public class InvoiceFinalizationOrchestrator {
     @Transactional
     public Invoice bookDraft(String invoiceUuid, String sendBy) {
         Invoice inv = invoices.findByUuid(invoiceUuid)
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new NotFoundException(
                         "Invoice not found: " + invoiceUuid));
 
         if (inv.getStatus() != InvoiceStatus.PENDING_REVIEW) {
-            throw new IllegalStateException(
+            throw new BadRequestException(
                     "Invoice " + invoiceUuid + " is not in PENDING_REVIEW (status="
                     + inv.getStatus() + ")");
         }
         if (inv.getEconomicsDraftNumber() == null) {
-            throw new IllegalStateException(
+            throw new BadRequestException(
                     "Invoice " + invoiceUuid + " has no economicsDraftNumber — cannot book");
         }
 
@@ -208,7 +210,7 @@ public class InvoiceFinalizationOrchestrator {
         } else if ("email".equalsIgnoreCase(sendBy)) {
             sendBy = "Email";  // canonical capitalised per SPEC §6.6
         } else if (sendBy != null && !sendBy.isBlank()) {
-            throw new IllegalArgumentException("Unsupported sendBy: " + sendBy);
+            throw new BadRequestException("Unsupported sendBy: " + sendBy);
         } else {
             sendBy = null;  // omit entirely from JSON
         }
@@ -332,11 +334,11 @@ public class InvoiceFinalizationOrchestrator {
     @Transactional
     public Invoice cancelFinalization(String invoiceUuid) {
         Invoice inv = invoices.findByUuid(invoiceUuid)
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new NotFoundException(
                         "Invoice not found: " + invoiceUuid));
 
         if (inv.getStatus() != InvoiceStatus.PENDING_REVIEW) {
-            throw new IllegalStateException(
+            throw new BadRequestException(
                     "Invoice " + invoiceUuid + " is not in PENDING_REVIEW (status="
                     + inv.getStatus() + ")");
         }
@@ -378,11 +380,11 @@ public class InvoiceFinalizationOrchestrator {
 
     private Invoice requireEditableInvoice(String uuid) {
         Invoice inv = invoices.findByUuid(uuid)
-                .orElseThrow(() -> new IllegalArgumentException(
+                .orElseThrow(() -> new NotFoundException(
                         "Invoice not found: " + uuid));
         if (inv.getStatus() != InvoiceStatus.DRAFT
                 && inv.getStatus() != InvoiceStatus.QUEUED) {
-            throw new IllegalStateException(
+            throw new BadRequestException(
                     "Invoice " + uuid + " is not DRAFT/QUEUED (status=" + inv.getStatus() + ")");
         }
         return inv;

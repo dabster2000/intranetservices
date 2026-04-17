@@ -475,6 +475,16 @@ public class InvoiceService {
         return orchestrator.createDraft(draftInvoice.getUuid());
     }
 
+    /**
+     * UUID-only finalization entry point used by {@code POST /invoices/{invoiceuuid}}.
+     * Wraps {@link InvoiceFinalizationOrchestrator#createDraft(String)} so callers
+     * can finalize without round-tripping the full draft body.
+     */
+    @Transactional
+    public Invoice finalizeDraft(String invoiceUuid) {
+        return orchestrator.createDraft(invoiceUuid);
+    }
+
     private static void clearBonusFields(Invoice parentInvoice) {
         parentInvoice.setBonusConsultant(null);
         parentInvoice.setBonusOverrideAmount(0);
