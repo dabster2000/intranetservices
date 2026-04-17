@@ -21,6 +21,7 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -52,7 +53,8 @@ public class EconomicsConfigResource {
             @NotNull String currency,
             String companyUuid,
             @NotNull Integer economicsVatZoneNumber,
-            String economicsVatZoneName
+            String economicsVatZoneName,
+            @NotNull BigDecimal vatRatePercent
     ) {}
 
     // ----- Payment Terms -----
@@ -130,6 +132,7 @@ public class EconomicsConfigResource {
         m.setCompany(resolveCompany(req.companyUuid()));
         m.setEconomicsVatZoneNumber(req.economicsVatZoneNumber());
         m.setEconomicsVatZoneName(req.economicsVatZoneName());
+        m.setVatRatePercent(req.vatRatePercent());
         vatZoneRepo.persist(m);
         return Response.status(Response.Status.CREATED).entity(m).build();
     }
@@ -145,6 +148,7 @@ public class EconomicsConfigResource {
         m.setCompany(resolveCompany(req.companyUuid()));
         m.setEconomicsVatZoneNumber(req.economicsVatZoneNumber());
         m.setEconomicsVatZoneName(req.economicsVatZoneName());
+        m.setVatRatePercent(req.vatRatePercent());
         return Response.ok(m).build();
     }
 
