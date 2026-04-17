@@ -10,6 +10,7 @@ import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.ws.rs.BadRequestException;
 
 /**
  * Thin wrapper that resolves e-conomic agreement-level configuration for a given
@@ -67,8 +68,10 @@ public class EconomicsAgreementResolver {
                         "company = ?1 and key = ?2", company, "invoice-layout-number")
                 .firstResultOptional()
                 .map(k -> Integer.parseInt(k.getValue()))
-                .orElseThrow(() -> new IllegalStateException(
-                        "invoice-layout-number not configured for company " + companyUuid));
+                .orElseThrow(() -> new BadRequestException(
+                        "e-conomic invoice layout is not configured for " + company.getName()
+                        + ". Ask an administrator to add the 'invoice-layout-number' integration key "
+                        + "for this company before creating invoices."));
     }
 
     /**
@@ -84,8 +87,10 @@ public class EconomicsAgreementResolver {
         IntegrationKey.IntegrationKeyValue kv = IntegrationKey.getIntegrationKeyValue(company);
         int productNum = kv.invoiceProductNumber();
         if (productNum == 0) {
-            throw new IllegalStateException(
-                    "invoice-product-number not configured for company " + companyUuid);
+            throw new BadRequestException(
+                    "e-conomic invoice product number is not configured for " + company.getName()
+                    + ". Ask an administrator to set the 'invoice-product-number' integration key "
+                    + "for this company before creating invoices.");
         }
         return String.valueOf(productNum);
     }
@@ -98,13 +103,16 @@ public class EconomicsAgreementResolver {
      */
     public int paymentTermFor(Contract contract) {
         if (contract.getPaymentTermsUuid() == null) {
-            throw new IllegalStateException(
-                    "Contract " + contract.getUuid() + " has no payment_terms_uuid set");
+            throw new BadRequestException(
+                    "Contract '" + contract.getName() + "' has no payment terms. "
+                    + "Open the contract, select a Payment Terms value, save, and try again.");
         }
         PaymentTermsMapping mapping = paymentTermsRepo.findById(contract.getPaymentTermsUuid());
         if (mapping == null) {
-            throw new IllegalStateException(
-                    "Payment terms mapping not found: " + contract.getPaymentTermsUuid());
+            throw new BadRequestException(
+                    "Payment terms on contract '" + contract.getName() + "' reference a missing "
+                    + "configuration. Open the contract and select a valid Payment Terms value, "
+                    + "then try again.");
         }
         return mapping.getEconomicsPaymentTermsNumber();
     }
@@ -133,9 +141,10 @@ public class EconomicsAgreementResolver {
      */
     public int vatZoneFor(String currency, String companyUuid) {
         VatZoneMapping mapping = vatZoneRepo.findByCurrency(currency, companyUuid)
-                .orElseThrow(() -> new IllegalStateException(
-                        "No VAT zone mapping for currency=" + currency
-                        + " in company=" + companyUuid));
+                .orElseThrow(() -> new BadRequestException(
+                        "No VAT zone is configured for currency '" + currency + "'. "
+                        + "Ask an administrator to add a VAT zone mapping for this currency "
+                        + "before creating invoices in it."));
         return mapping.getEconomicsVatZoneNumber();
     }
 }
