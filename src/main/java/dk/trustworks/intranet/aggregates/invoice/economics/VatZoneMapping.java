@@ -7,6 +7,8 @@ import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.math.BigDecimal;
+
 /**
  * Maps a currency to the e-conomic `vatZoneNumber` (Domestic / EU / Abroad).
  * Per-company overrides supported; NULL company means global default.
@@ -36,4 +38,8 @@ public class VatZoneMapping extends PanacheEntityBase {
 
     @Column(name = "economics_vat_zone_name", length = 50)
     private String economicsVatZoneName;
+
+    @NotNull
+    @Column(name = "vat_rate_percent", nullable = false, precision = 5, scale = 2)
+    private BigDecimal vatRatePercent;
 }

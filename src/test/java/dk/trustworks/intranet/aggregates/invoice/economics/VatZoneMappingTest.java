@@ -7,9 +7,11 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.validation.constraints.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.math.BigDecimal;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -69,5 +71,18 @@ class VatZoneMappingTest {
         Column col = f.getAnnotation(Column.class);
         assertNotNull(col);
         assertEquals("economics_vat_zone_name", col.name());
+    }
+
+    @Test
+    void vat_rate_percent_is_non_null_decimal_5_2() throws Exception {
+        Field f = VatZoneMapping.class.getDeclaredField("vatRatePercent");
+        Column col = f.getAnnotation(Column.class);
+        assertNotNull(f.getAnnotation(NotNull.class));
+        assertNotNull(col);
+        assertEquals("vat_rate_percent", col.name());
+        assertFalse(col.nullable());
+        assertEquals(5, col.precision());
+        assertEquals(2, col.scale());
+        assertEquals(BigDecimal.class, f.getType());
     }
 }
