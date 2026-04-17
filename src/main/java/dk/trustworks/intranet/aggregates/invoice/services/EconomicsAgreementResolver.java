@@ -12,6 +12,8 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.ws.rs.BadRequestException;
 
+import java.math.BigDecimal;
+
 /**
  * Thin wrapper that resolves e-conomic agreement-level configuration for a given
  * company: tokens, layout/product numbers, payment terms, and VAT zone numbers.
@@ -37,6 +39,11 @@ public class EconomicsAgreementResolver {
      * Immutable token pair for an e-conomic agreement.
      */
     public record Tokens(String appSecret, String agreementGrant) {}
+
+    /**
+     * Combined lookup: e-conomic VAT zone number + local VAT rate for UI totals.
+     */
+    public record VatZoneDetails(int economicsVatZoneNumber, BigDecimal vatRatePercent) {}
 
     /**
      * Returns the app-secret and agreement-grant tokens for the given company.
@@ -134,17 +141,30 @@ public class EconomicsAgreementResolver {
     }
 
     /**
-     * Returns the e-conomic VAT zone number for the given currency and company.
-     * Falls back to the global default row when no company-specific row exists.
+     * Returns both the e-conomic VAT zone number and the local VAT rate for the
+     * given currency and company. Falls back to the global default row when no
+     * company-specific row exists.
      *
-     * @throws IllegalStateException when no mapping exists at all.
+     * @throws BadRequestException when no mapping exists for the given currency.
      */
-    public int vatZoneFor(String currency, String companyUuid) {
+    public VatZoneDetails vatZoneDetailsFor(String currency, String companyUuid) {
         VatZoneMapping mapping = vatZoneRepo.findByCurrency(currency, companyUuid)
                 .orElseThrow(() -> new BadRequestException(
                         "No VAT zone is configured for currency '" + currency + "'. "
                         + "Ask an administrator to add a VAT zone mapping for this currency "
                         + "before creating invoices in it."));
-        return mapping.getEconomicsVatZoneNumber();
+        return new VatZoneDetails(
+                mapping.getEconomicsVatZoneNumber(),
+                mapping.getVatRatePercent());
+    }
+
+    /**
+     * Returns the e-conomic VAT zone number for the given currency and company.
+     * Falls back to the global default row when no company-specific row exists.
+     *
+     * @throws BadRequestException when no mapping exists at all.
+     */
+    public int vatZoneFor(String currency, String companyUuid) {
+        return vatZoneDetailsFor(currency, companyUuid).economicsVatZoneNumber();
     }
 }
