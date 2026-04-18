@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import dk.trustworks.intranet.aggregates.invoice.economics.DraftContext;
 import dk.trustworks.intranet.aggregates.invoice.economics.EanPrerequisiteErrorDto;
 import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
@@ -23,6 +24,8 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
+
+import java.util.Objects;
 
 /**
  * Owns the two-step e-conomic invoice finalization flow.
@@ -144,26 +147,28 @@ public class InvoiceFinalizationOrchestrator {
         EconomicsDraftInvoice body = mapper.toDraft(ctx);
         body.setOtherReference(appendTwUuid(body.getOtherReference(), invoiceUuid));
 
-        EconomicsDraftInvoice created = draftApi.create(
+        CreatedResult created = draftApi.create(
                 tokens.appSecret(),
                 tokens.agreementGrant(),
                 "draft-" + invoiceUuid,
                 body);
+        Integer draftNumber = Objects.requireNonNull(created.getNumber(),
+                "e-conomic POST /invoices/drafts returned no number");
 
         draftApi.createLinesBulk(
                 tokens.appSecret(),
                 tokens.agreementGrant(),
-                created.getDraftInvoiceNumber(),
+                draftNumber,
                 mapper.toLines(ctx));
 
         // Persist step-1 state
-        inv.setEconomicsDraftNumber(created.getDraftInvoiceNumber());
+        inv.setEconomicsDraftNumber(draftNumber);
         inv.setBillingClientUuid(bc.billingClient().getUuid());
         inv.setStatus(InvoiceStatus.PENDING_REVIEW);
         invoices.persist(inv);
 
         log.infof("createDraft: invoiceUuid=%s draftNumber=%d",
-                invoiceUuid, created.getDraftInvoiceNumber());
+                invoiceUuid, draftNumber);
         return inv;
     }
 

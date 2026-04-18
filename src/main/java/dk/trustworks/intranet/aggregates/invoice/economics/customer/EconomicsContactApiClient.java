@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
@@ -37,9 +38,14 @@ public interface EconomicsContactApiClient {
     @Path("/Contacts/{number}")
     EconomicsContactDto getContact(@PathParam("number") int customerContactNumber);
 
+    /**
+     * POST /Contacts returns {@code {"number": int}} (CreatedResult), NOT the
+     * full contact. Callers needing the contact's other fields (objectVersion,
+     * etc.) must GET /Contacts/{number} after this call.
+     */
     @POST
     @Path("/Contacts")
-    EconomicsContactDto createContact(EconomicsContactDto body);
+    CreatedResult createContact(EconomicsContactDto body);
 
     /**
      * PUT returns HTTP 200 with an EMPTY body (same pattern as

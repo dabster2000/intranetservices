@@ -148,11 +148,13 @@ public class EconomicsCustomerContactSyncService {
     private void postContact(EconomicsContactApiClient api,
                              Client billingClient, String companyUuid,
                              String attention, EconomicsContactDto body) {
-        EconomicsContactDto created = api.createContact(body);
-        int number = Objects.requireNonNull(created.getCustomerContactNumber(),
-                "e-conomic returned no customerContactNumber for contact " + attention);
+        // POST returns CreatedResult{number}; re-GET to obtain objectVersion.
+        var created = api.createContact(body);
+        int number = Objects.requireNonNull(created.getNumber(),
+                "e-conomic returned no number for contact " + attention);
+        EconomicsContactDto full = api.getContact(number);
         upsertContactMapping(billingClient.getUuid(), companyUuid, attention,
-                number, created.getObjectVersion());
+                number, full.getObjectVersion());
     }
 
     private void putContactWithConcurrency(EconomicsContactApiClient api,

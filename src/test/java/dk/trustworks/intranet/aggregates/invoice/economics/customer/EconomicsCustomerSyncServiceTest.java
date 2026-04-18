@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CustomerCreatedResult;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.model.enums.ClientType;
 import jakarta.ws.rs.WebApplicationException;
@@ -105,7 +106,10 @@ class EconomicsCustomerSyncServiceTest {
         Client c = makeClient("c-uuid", "New Co", "99999999", ClientType.CLIENT);
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
 
-        when(api.createCustomer(any())).thenReturn(makeRemote(202, "obj-v-1"));
+        CustomerCreatedResult createResult = new CustomerCreatedResult();
+        createResult.setCustomerNumber(202);
+        when(api.createCustomer(any())).thenReturn(createResult);
+        when(api.getCustomer(202)).thenReturn(makeRemote(202, "obj-v-1"));
 
         service.syncToCompany(c, COMPANY);
 
@@ -168,7 +172,10 @@ class EconomicsCustomerSyncServiceTest {
     void success_after_previous_failure_clears_failure_row() {
         Client c = makeClient("c-uuid", "Acme", "12345678", ClientType.CLIENT);
         when(repo.findByClientAndCompany("c-uuid", COMPANY)).thenReturn(Optional.empty());
-        when(api.createCustomer(any())).thenReturn(makeRemote(101, "obj-v-1"));
+        CustomerCreatedResult createResult = new CustomerCreatedResult();
+        createResult.setCustomerNumber(101);
+        when(api.createCustomer(any())).thenReturn(createResult);
+        when(api.getCustomer(101)).thenReturn(makeRemote(101, "obj-v-1"));
 
         service.syncToCompany(c, COMPANY);
 

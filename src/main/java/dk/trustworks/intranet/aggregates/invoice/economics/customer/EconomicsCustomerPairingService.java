@@ -275,8 +275,15 @@ public class EconomicsCustomerPairingService {
         // the customer with our chosen customerNumber may already exist from the
         // earlier POST that succeeded server-side but whose PUT access=true step
         // threw. GET-first means we skip POST and go straight to PUT.
+        // POST returns CustomerCreatedResult{customerNumber} only; we always GET
+        // afterwards to obtain the full DTO with objectVersion for the PUT step.
         EconomicsCustomerDto created = getIfExists(api, targetNumber)
-                .orElseGet(() -> api.createCustomer(body));
+                .orElseGet(() -> {
+                    Integer n = Objects.requireNonNull(
+                            api.createCustomer(body).getCustomerNumber(),
+                            "e-conomic returned no customerNumber for client " + client);
+                    return api.getCustomer(n);
+                });
         int customerNumber = Objects.requireNonNull(created.getCustomerNumber(),
                 "e-conomic returned no customerNumber for client " + client);
 

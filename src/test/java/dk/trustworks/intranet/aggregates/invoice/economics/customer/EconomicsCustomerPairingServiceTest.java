@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CustomerCreatedResult;
 import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.AutoRunResultDto;
 import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingCandidateDto;
 import dk.trustworks.intranet.aggregates.invoice.economics.customer.dto.PairingRequestDto;
@@ -280,11 +281,16 @@ class EconomicsCustomerPairingServiceTest {
         when(agreementResolver.apiFor(COMPANY)).thenReturn(api);
         when(repo.findByClientAndCompany(CLIENT_UUID.toString(), COMPANY)).thenReturn(Optional.empty());
 
+        CustomerCreatedResult createResult = new CustomerCreatedResult();
+        createResult.setCustomerNumber(12345678);
+        when(api.createCustomer(any(EconomicsCustomerDto.class))).thenReturn(createResult);
+
+        // After POST, service does GET to get full DTO for the access PUT.
         EconomicsCustomerDto created = new EconomicsCustomerDto();
         created.setCustomerNumber(12345678);
         created.setName("Acme A/S");
         created.setCvrNo("12345678");
-        when(api.createCustomer(any(EconomicsCustomerDto.class))).thenReturn(created);
+        when(api.getCustomer(12345678)).thenReturn(created);
 
         // updateCustomer is void — Mockito default does nothing. No stub needed.
 

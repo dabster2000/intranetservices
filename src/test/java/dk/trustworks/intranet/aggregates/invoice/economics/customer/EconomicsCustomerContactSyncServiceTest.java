@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import jakarta.ws.rs.WebApplicationException;
@@ -72,10 +73,14 @@ class EconomicsCustomerContactSyncServiceTest {
         when(contactRepo.findByClientCompanyAndName("c-uuid", COMPANY, "Thomas"))
                 .thenReturn(Optional.empty());
 
+        CreatedResult createResult = new CreatedResult();
+        createResult.setNumber(999);
+        when(api.createContact(any())).thenReturn(createResult);
+
         EconomicsContactDto created = new EconomicsContactDto();
         created.setCustomerContactNumber(999);
         created.setObjectVersion("v-1");
-        when(api.createContact(any())).thenReturn(created);
+        when(api.getContact(999)).thenReturn(created);
 
         service.syncContactToCompany(ct, billing, COMPANY);
 

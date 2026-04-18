@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.economics.draft;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
@@ -22,9 +23,14 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 public interface EconomicsDraftInvoiceApiClient {
 
+    /**
+     * POST /invoices/drafts returns the Q2C {@code CreatedResult} envelope
+     * ({@code {"number": int}}), NOT the full draft. Callers that need other
+     * fields must GET {@code /invoices/drafts/{number}}.
+     */
     @POST
     @Path("/invoices/drafts")
-    EconomicsDraftInvoice create(
+    CreatedResult create(
             @HeaderParam("X-AppSecretToken") String appSecret,
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @HeaderParam("Idempotency-Key") String idempotencyKey,
@@ -45,9 +51,14 @@ public interface EconomicsDraftInvoiceApiClient {
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @PathParam("draftInvoiceNumber") int draftInvoiceNumber);
 
+    /**
+     * POST /invoices/drafts/{id}/lines/bulk returns
+     * {@code {"numbers": [int, ...]}}, NOT the full lines. We don't currently
+     * use the line numbers — declared as {@code void} to match the spec.
+     */
     @POST
     @Path("/invoices/drafts/{documentId}/lines/bulk")
-    List<EconomicsDraftLine> createLinesBulk(
+    void createLinesBulk(
             @HeaderParam("X-AppSecretToken") String appSecret,
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @PathParam("documentId") int documentId,

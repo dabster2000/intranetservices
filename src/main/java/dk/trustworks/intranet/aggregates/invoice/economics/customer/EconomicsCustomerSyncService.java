@@ -204,9 +204,11 @@ public class EconomicsCustomerSyncService {
         EconomicsCustomerDto body = mapper.toFullUpsertBody(client, groupNumber, paymentTerm, vatZone);
         EconomicsCustomerIndex idx = indexCache.getIndex(companyUuid);
         body.setCustomerNumber(deriveCustomerNumber(client, idx));
-        EconomicsCustomerDto created = api.createCustomer(body);
-        int customerNumber = Objects.requireNonNull(created.getCustomerNumber(),
+        var createResult = api.createCustomer(body);
+        int customerNumber = Objects.requireNonNull(createResult.getCustomerNumber(),
                 "e-conomic returned no customerNumber for client " + client.getUuid());
+        // POST returns CustomerCreatedResult{customerNumber}; re-GET for objectVersion.
+        EconomicsCustomerDto created = api.getCustomer(customerNumber);
         upsertMapping(client.getUuid(), companyUuid, customerNumber,
                 created.getObjectVersion(), PairingSource.CREATED);
         // Newly-created customer must appear in the index before the next sync

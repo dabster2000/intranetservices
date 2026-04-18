@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import dk.trustworks.intranet.aggregates.invoice.economics.DraftContext;
 import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
@@ -67,7 +68,9 @@ class InvoiceFinalizationOrchestratorTest {
         draft.setDraftInvoiceNumber(4521);
         when(mapper.toDraft(any())).thenReturn(draft);
         when(mapper.toLines(any())).thenReturn(List.of(new EconomicsDraftLine()));
-        when(draftApi.create(eq("APP"), eq("GRANT"), anyString(), any())).thenReturn(draft);
+        CreatedResult createResult = new CreatedResult();
+        createResult.setNumber(4521);
+        when(draftApi.create(eq("APP"), eq("GRANT"), anyString(), any())).thenReturn(createResult);
 
         Invoice out = orchestrator.createDraft("i1");
 
