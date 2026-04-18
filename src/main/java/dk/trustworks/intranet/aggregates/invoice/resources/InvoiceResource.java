@@ -1208,17 +1208,15 @@ public class InvoiceResource {
         try {
             if (inv.getStatus() == InvoiceStatus.PENDING_REVIEW && inv.getEconomicsDraftNumber() != null) {
                 var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
-                java.io.InputStream pdf = fetchPdfWithRetry(
-                        () -> bookApi.getDraftPdf(tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsDraftNumber()),
-                        "draft", inv.getEconomicsDraftNumber(), uuid);
+                java.io.InputStream pdf = bookApi.getDraftPdf(
+                        tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsDraftNumber());
                 return Response.ok(pdf, "application/pdf").build();
             }
 
             if (inv.getEconomicsBookedNumber() != null) {
                 var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
-                java.io.InputStream pdf = fetchPdfWithRetry(
-                        () -> bookApi.getBookedPdf(tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsBookedNumber()),
-                        "booked", inv.getEconomicsBookedNumber(), uuid);
+                java.io.InputStream pdf = bookApi.getBookedPdf(
+                        tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsBookedNumber());
                 return Response.ok(pdf, "application/pdf").build();
             }
 
@@ -1249,45 +1247,5 @@ public class InvoiceResource {
                     .type(MediaType.TEXT_PLAIN)
                     .build();
         }
-    }
-
-    /**
-     * Fetches a PDF from e-conomic with bounded retry on 404. e-conomic's PDF
-     * rendering is asynchronous: the draft (or booked) document exists immediately
-     * after creation, but the rendered PDF artifact takes 1-3 seconds to become
-     * available. Without retry, the InvoiceReviewModal iframe loads ~500ms after
-     * createDraft and reliably gets 404 → blank preview.
-     *
-     * Retries up to 8 times with exponential backoff starting at 250ms,
-     * capped at 1500ms (~6 seconds total before giving up). Only 404s
-     * are retried; other status codes propagate immediately.
-     */
-    private static java.io.InputStream fetchPdfWithRetry(
-            java.util.function.Supplier<java.io.InputStream> fetch,
-            String kind, int number, String invoiceUuid) {
-        long backoffMs = 250L;
-        WebApplicationException last = null;
-        for (int attempt = 1; attempt <= 8; attempt++) {
-            try {
-                return fetch.get();
-            } catch (WebApplicationException wae) {
-                int status = wae.getResponse() == null ? -1 : wae.getResponse().getStatus();
-                if (status != 404) {
-                    throw wae;
-                }
-                last = wae;
-                if (attempt == 8) break;
-                log.infof("e-conomic %s PDF #%d not yet rendered (attempt %d/8) for invoice %s — retrying in %dms",
-                        kind, number, attempt, invoiceUuid, backoffMs);
-                try {
-                    Thread.sleep(backoffMs);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    throw wae;
-                }
-                backoffMs = Math.min((long) (backoffMs * 1.5), 1500L);
-            }
-        }
-        throw last;
     }
 }
