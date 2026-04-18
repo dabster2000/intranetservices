@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.DraftContext;
 import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.DraftInvoiceLineBatchRequest;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftLine;
@@ -75,7 +76,7 @@ class InvoiceFinalizationOrchestratorTest {
         Invoice out = orchestrator.createDraft("i1");
 
         verify(draftApi).create(eq("APP"), eq("GRANT"), startsWith("draft-i1"), any());
-        verify(draftApi).createLinesBulk(eq("APP"), eq("GRANT"), eq(4521), anyList());
+        verify(draftApi).createLinesBulk(eq("APP"), eq("GRANT"), eq(4521), any(DraftInvoiceLineBatchRequest.class));
         assertEquals(InvoiceStatus.PENDING_REVIEW, out.getStatus());
         assertEquals(Integer.valueOf(4521), out.getEconomicsDraftNumber());
         verify(recalc).recalculateInvoiceItems(inv);

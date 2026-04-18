@@ -52,9 +52,10 @@ public interface EconomicsDraftInvoiceApiClient {
             @PathParam("draftInvoiceNumber") int draftInvoiceNumber);
 
     /**
-     * POST /invoices/drafts/{id}/lines/bulk returns
-     * {@code {"numbers": [int, ...]}}, NOT the full lines. We don't currently
-     * use the line numbers — declared as {@code void} to match the spec.
+     * POST /invoices/drafts/{id}/lines/bulk requires a wrapping object
+     * ({@code {"lines": [...]}}); a bare array yields 400 InvalidInput.
+     * Returns {@code {"numbers": [int, ...]}}, NOT the full lines.
+     * We don't currently use the line numbers — declared as {@code void}.
      */
     @POST
     @Path("/invoices/drafts/{documentId}/lines/bulk")
@@ -62,7 +63,7 @@ public interface EconomicsDraftInvoiceApiClient {
             @HeaderParam("X-AppSecretToken") String appSecret,
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @PathParam("documentId") int documentId,
-            List<EconomicsDraftLine> lines);
+            DraftInvoiceLineBatchRequest body);
 
     @GET
     @Path("/invoices/drafts")

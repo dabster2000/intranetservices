@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDra
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingRequest;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.DraftInvoiceLineBatchRequest;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
@@ -159,7 +160,7 @@ public class InvoiceFinalizationOrchestrator {
                 tokens.appSecret(),
                 tokens.agreementGrant(),
                 draftNumber,
-                mapper.toLines(ctx));
+                new DraftInvoiceLineBatchRequest(mapper.toLines(ctx)));
 
         // Persist step-1 state
         inv.setEconomicsDraftNumber(draftNumber);
