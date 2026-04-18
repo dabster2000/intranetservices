@@ -77,6 +77,9 @@ public class InvoiceFinalizationOrchestrator {
     InvoiceItemRecalculator recalc;
 
     @Inject
+    InvoiceAttributionService attributionService;
+
+    @Inject
     BonusService bonus;
 
     @Inject
@@ -128,6 +131,12 @@ public class InvoiceFinalizationOrchestrator {
         if (inv.getType() == InvoiceType.CREDIT_NOTE) {
             bonus.clearBonusFieldsOnParent(inv);
         }
+
+        // Rebuild attributions from the current (persisted) invoice items so the
+        // review modal reflects the latest edits, even if a racing PUT from the
+        // editor did not land before this POST. InvoiceService.updateDraftInvoice
+        // also recomputes on every update, so this is belt-and-suspenders.
+        attributionService.computeAttributions(invoiceUuid);
 
         // Resolve billing context (contract + billing client)
         BillingContext bc = billingResolver.resolve(inv);

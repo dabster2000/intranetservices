@@ -47,6 +47,7 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock BillingContextResolver            billingResolver;
     @Mock EconomicsAgreementResolver        agreements;
     @Mock InvoiceItemRecalculator           recalc;
+    @Mock InvoiceAttributionService         attributionService;
     @Mock BonusService                      bonus;
     @Mock InvoiceWorkService                work;
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
