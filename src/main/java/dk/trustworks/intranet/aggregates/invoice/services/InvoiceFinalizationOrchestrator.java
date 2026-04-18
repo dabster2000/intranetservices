@@ -132,11 +132,17 @@ public class InvoiceFinalizationOrchestrator {
             bonus.clearBonusFieldsOnParent(inv);
         }
 
-        // Rebuild attributions from the current (persisted) invoice items so the
-        // review modal reflects the latest edits, even if a racing PUT from the
-        // editor did not land before this POST. InvoiceService.updateDraftInvoice
-        // also recomputes on every update, so this is belt-and-suspenders.
-        attributionService.computeAttributions(invoiceUuid);
+        // Rebuild attributions using the AI-powered resolve pipeline so the
+        // review modal reflects AI-refined splits. Falls back to deterministic
+        // resolution inside the pipeline when the AI path is unavailable. Runs
+        // before the e-conomic API calls so the persisted draft and the
+        // attributions are consistent.
+        try {
+            attributionService.resolveAndPersistAttributions(invoiceUuid);
+        } catch (Exception e) {
+            log.warnf(e, "createDraft: AI attribution resolve failed for %s — falling back to deterministic compute", invoiceUuid);
+            attributionService.computeAttributions(invoiceUuid);
+        }
 
         // Resolve billing context (contract + billing client)
         BillingContext bc = billingResolver.resolve(inv);

@@ -952,6 +952,51 @@ public class InvoiceAttributionService {
     // ── Accept and finalize ─────────────────────────────────────────────
 
     /**
+     * Run the AI-powered resolve pipeline and persist its results as the
+     * invoice's current attributions. Called from finalize so the review modal
+     * reflects AI-refined splits (not the deterministic stopgap).
+     *
+     * <p>Persistence mirrors {@link #acceptAndFinalize}: delete existing rows
+     * per item, then insert fresh rows derived from the resolver's shares.
+     */
+    @Transactional
+    public void resolveAndPersistAttributions(String invoiceUuid) {
+        AttributionResolution resolution = resolveAttributions(invoiceUuid);
+
+        for (ResolvedItem resolvedItem : resolution.items()) {
+            InvoiceItem item = InvoiceItem.findById(resolvedItem.itemUuid());
+            if (item == null) continue;
+
+            InvoiceItemAttribution.delete("invoiceitemUuid", resolvedItem.itemUuid());
+
+            BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
+            for (ResolvedAttribution share : resolvedItem.attributions()) {
+                if (share.consultantUuid() == null || share.consultantUuid().isBlank()) continue;
+                BigDecimal sharePct = share.sharePct() != null
+                    ? share.sharePct().setScale(PCT_SCALE, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+                BigDecimal amount = share.attributedAmount() != null
+                    ? share.attributedAmount().setScale(AMT_SCALE, RoundingMode.HALF_UP)
+                    : itemTotal.multiply(sharePct)
+                        .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+
+                InvoiceItemAttribution attr = new InvoiceItemAttribution(
+                    resolvedItem.itemUuid(),
+                    share.consultantUuid(),
+                    sharePct,
+                    amount,
+                    BigDecimal.valueOf(item.hours),
+                    AttributionSource.AUTO
+                );
+                attr.persist();
+            }
+        }
+
+        log.infof("resolveAndPersistAttributions: invoice=%s items=%d flagged=%d",
+                invoiceUuid, resolution.items().size(), resolution.flaggedCount());
+    }
+
+    /**
      * Atomically: save resolved attributions + transition DRAFT → CREATED.
      * Called by the wizard's "Create Invoice" button.
      */

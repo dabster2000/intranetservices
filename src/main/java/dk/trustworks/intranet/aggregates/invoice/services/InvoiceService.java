@@ -249,7 +249,7 @@ public class InvoiceService {
 
     @SuppressWarnings("unchecked")
     public List<Invoice> findInvoicesForSingleMonth(LocalDate month, String... status) {
-        String[] finalStatus = (status!=null && status.length>0)?status:new String[]{CREATED.name(), DRAFT.name(), QUEUED.name()};
+        String[] finalStatus = (status!=null && status.length>0)?status:new String[]{CREATED.name(), DRAFT.name(), QUEUED.name(), PENDING_REVIEW.name()};
         LocalDate date = month.withDayOfMonth(1);
         // Build parameterized IN clause — one named parameter per status value
         StringBuilder inClause = new StringBuilder();
