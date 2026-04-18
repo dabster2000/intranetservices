@@ -85,6 +85,47 @@ class InvoiceFinalizationOrchestratorTest {
         verify(work, never()).registerAsPaidout(any());
     }
 
+    // ── regression: each createDraft call uses a fresh Idempotency-Key ─────────
+    // Without this, e-conomic replays the deleted draft's response after a
+    // cancelFinalization, and createLinesBulk 404s on the recycled draft number.
+
+    @Test
+    void createDraft_uses_a_fresh_idempotency_key_per_call() {
+        Invoice inv = draftInvoice("i1", "co-1");
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(billingResolver.resolve(inv)).thenReturn(new BillingContext(inv, contract(), billingClient()));
+        when(agreements.tokens("co-1")).thenReturn(tokens("APP", "GRANT"));
+        when(agreements.productNumber("co-1")).thenReturn("1");
+        when(agreements.layoutNumber("co-1")).thenReturn(22);
+        when(agreements.paymentTermFor(any())).thenReturn(5);
+        when(agreements.vatZoneFor(any(), any())).thenReturn(1);
+
+        EconomicsDraftInvoice draft = new EconomicsDraftInvoice();
+        draft.setDraftInvoiceNumber(4521);
+        when(mapper.toDraft(any())).thenReturn(draft);
+        when(mapper.toLines(any())).thenReturn(List.of(new EconomicsDraftLine()));
+        CreatedResult createResult = new CreatedResult();
+        createResult.setNumber(4521);
+        when(draftApi.create(eq("APP"), eq("GRANT"), anyString(), any())).thenReturn(createResult);
+
+        orchestrator.createDraft("i1");
+        // Simulate a cancelFinalization between the two attempts: revert the in-memory
+        // invoice back to DRAFT so the second createDraft is allowed.
+        inv.setStatus(InvoiceStatus.DRAFT);
+        inv.setEconomicsDraftNumber(null);
+        orchestrator.createDraft("i1");
+
+        org.mockito.ArgumentCaptor<String> keyCap = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(draftApi, times(2)).create(eq("APP"), eq("GRANT"), keyCap.capture(), any());
+        List<String> keys = keyCap.getAllValues();
+        assertEquals(2, keys.size());
+        assertNotEquals(keys.get(0), keys.get(1),
+                "Two consecutive createDraft calls must use distinct Idempotency-Keys "
+                + "so e-conomic does not replay a deleted draft's response.");
+        keys.forEach(k -> assertTrue(k.startsWith("draft-i1-"),
+                "Key should remain prefixed with 'draft-{invoiceUuid}-' for support traceability"));
+    }
+
     // ── test 2: bookDraft happy path ──────────────────────────────────────────
 
     @Test
