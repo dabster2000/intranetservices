@@ -148,6 +148,12 @@ public class InvoiceFinalizationOrchestrator {
         EconomicsDraftInvoice body = mapper.toDraft(ctx);
         body.setOtherReference(appendTwUuid(body.getOtherReference(), invoiceUuid));
 
+        // DIAGNOSTIC (DRAFT-RECYCLE): log idempotency-key + otherReference sent so we can
+        // confirm whether e-conomic returns a recycled (deleted) draft number on
+        // re-finalization after cancelFinalization. Remove after root cause confirmed.
+        log.infof("createDraft DIAGNOSTIC sending: invoiceUuid=%s idempotencyKey=%s otherReference=%s",
+                invoiceUuid, "draft-" + invoiceUuid, body.getOtherReference());
+
         CreatedResult created = draftApi.create(
                 tokens.appSecret(),
                 tokens.agreementGrant(),
@@ -156,11 +162,21 @@ public class InvoiceFinalizationOrchestrator {
         Integer draftNumber = Objects.requireNonNull(created.getNumber(),
                 "e-conomic POST /invoices/drafts returned no number");
 
-        draftApi.createLinesBulk(
-                tokens.appSecret(),
-                tokens.agreementGrant(),
-                draftNumber,
-                new DraftInvoiceLineBatchRequest(mapper.toLines(ctx)));
+        log.infof("createDraft DIAGNOSTIC received: invoiceUuid=%s draftNumber=%d",
+                invoiceUuid, draftNumber);
+
+        try {
+            draftApi.createLinesBulk(
+                    tokens.appSecret(),
+                    tokens.agreementGrant(),
+                    draftNumber,
+                    new DraftInvoiceLineBatchRequest(mapper.toLines(ctx)));
+        } catch (WebApplicationException wae) {
+            int status = wae.getResponse() == null ? -1 : wae.getResponse().getStatus();
+            log.warnf("createDraft DIAGNOSTIC createLinesBulk failed: invoiceUuid=%s draftNumber=%d httpStatus=%d — likely a recycled (deleted) draft from a prior cancelFinalization. Re-throwing.",
+                    invoiceUuid, draftNumber, status);
+            throw wae;
+        }
 
         // Persist step-1 state
         inv.setEconomicsDraftNumber(draftNumber);
