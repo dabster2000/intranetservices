@@ -24,15 +24,21 @@ public interface EconomicsBookingApiClient {
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @PathParam("bookedInvoiceNumber") int bookedInvoiceNumber);
 
+    /**
+     * Legacy REST {@code /invoices/booked/{n}/pdf} returns 406 when called with
+     * {@code Accept: application/pdf}; only {@code Accept: * / *} (or omitted)
+     * yields the PDF. See {@code docs/external-apis/e-conomics-sandbox-evidence/
+     * g0-5-draft-pdf-q2c.http.json}.
+     */
     @GET @Path("/invoices/booked/{bookedInvoiceNumber}/pdf")
-    @Produces("application/pdf")
+    @Produces(MediaType.WILDCARD)
     InputStream getBookedPdf(
             @HeaderParam("X-AppSecretToken") String appSecret,
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @PathParam("bookedInvoiceNumber") int bookedInvoiceNumber);
 
     @GET @Path("/invoices/drafts/{draftInvoiceNumber}/pdf")
-    @Produces("application/pdf")
+    @Produces(MediaType.WILDCARD)
     InputStream getDraftPdf(
             @HeaderParam("X-AppSecretToken") String appSecret,
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
