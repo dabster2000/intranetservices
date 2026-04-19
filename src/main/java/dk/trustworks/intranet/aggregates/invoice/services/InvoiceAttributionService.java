@@ -979,13 +979,17 @@ public class InvoiceAttributionService {
                     ? share.attributedAmount().setScale(AMT_SCALE, RoundingMode.HALF_UP)
                     : itemTotal.multiply(sharePct)
                         .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+                BigDecimal originalHours = share.attributedHours() != null
+                    ? share.attributedHours().setScale(AMT_SCALE, RoundingMode.HALF_UP)
+                    : BigDecimal.valueOf(item.hours).multiply(sharePct)
+                        .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
 
                 InvoiceItemAttribution attr = new InvoiceItemAttribution(
                     resolvedItem.itemUuid(),
                     share.consultantUuid(),
                     sharePct,
                     amount,
-                    BigDecimal.valueOf(item.hours),
+                    originalHours,
                     AttributionSource.AUTO
                 );
                 attr.persist();
@@ -1022,13 +1026,16 @@ public class InvoiceAttributionService {
             for (AcceptAttributionsRequest.ConsultantShare share : itemAttr.attributions()) {
                 BigDecimal amount = itemTotal.multiply(share.sharePct())
                     .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+                BigDecimal originalHours = BigDecimal.valueOf(item.hours)
+                    .multiply(share.sharePct())
+                    .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
 
                 InvoiceItemAttribution attr = new InvoiceItemAttribution(
                     itemAttr.itemUuid(),
                     share.consultantUuid(),
                     share.sharePct().setScale(PCT_SCALE, RoundingMode.HALF_UP),
                     amount,
-                    BigDecimal.valueOf(item.hours),
+                    originalHours,
                     AttributionSource.AUTO
                 );
                 attr.persist();
