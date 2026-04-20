@@ -79,7 +79,7 @@ class EconomicsCustomerPairingServiceTest {
     @Test
     void listPairingRows_paired_client_returns_PAIRED_row_with_customer_number() {
         Client c = client("c1", "Acme A/S", "12345678", ClientType.CLIENT);
-        when(clientLookup.listActive()).thenReturn(List.of(c));
+        when(clientLookup.listAll()).thenReturn(List.of(c));
         ClientEconomicsCustomer row = pairingRow("c1", COMPANY, 101, PairingSource.AUTO_CVR);
         when(repo.listByCompany(COMPANY)).thenReturn(List.of(row));
         when(cache.getIndex(COMPANY)).thenReturn(new EconomicsCustomerIndex(List.of()));
@@ -98,7 +98,7 @@ class EconomicsCustomerPairingServiceTest {
     @Test
     void listPairingRows_unmatched_when_index_has_no_candidates() {
         Client c = client("c1", "Nowhere", "99999999", ClientType.CLIENT);
-        when(clientLookup.listActive()).thenReturn(List.of(c));
+        when(clientLookup.listAll()).thenReturn(List.of(c));
         when(repo.findByClientAndCompany("c1", COMPANY)).thenReturn(Optional.empty());
         when(cache.getIndex(COMPANY)).thenReturn(new EconomicsCustomerIndex(List.of()));
 
@@ -112,7 +112,7 @@ class EconomicsCustomerPairingServiceTest {
     @Test
     void listPairingRows_ambiguous_when_multiple_cvr_matches() {
         Client c = client("c1", "Double CVR", "11111111", ClientType.CLIENT);
-        when(clientLookup.listActive()).thenReturn(List.of(c));
+        when(clientLookup.listAll()).thenReturn(List.of(c));
         when(repo.findByClientAndCompany("c1", COMPANY)).thenReturn(Optional.empty());
         EconomicsCustomerIndex idx = new EconomicsCustomerIndex(List.of(
                 econCustomer(101, "Dup One", "11111111"),
@@ -133,7 +133,7 @@ class EconomicsCustomerPairingServiceTest {
         Client byCvr = client("c1", "Acme A/S", "12345678", ClientType.CLIENT);
         Client byName = client("c2", "Beta Ltd", null, ClientType.CLIENT);
         Client unmatched = client("c3", "Unknown", null, ClientType.CLIENT);
-        when(clientLookup.listActive()).thenReturn(List.of(byCvr, byName, unmatched));
+        when(clientLookup.listAll()).thenReturn(List.of(byCvr, byName, unmatched));
         when(repo.findByClientAndCompany(anyString(), eq(COMPANY))).thenReturn(Optional.empty());
 
         EconomicsCustomerIndex idx = new EconomicsCustomerIndex(List.of(
@@ -152,7 +152,7 @@ class EconomicsCustomerPairingServiceTest {
     @Test
     void autoRun_keeps_ambiguous_as_ambiguous() {
         Client c = client("c1", "Doppelganger", "22222222", ClientType.CLIENT);
-        when(clientLookup.listActive()).thenReturn(List.of(c));
+        when(clientLookup.listAll()).thenReturn(List.of(c));
         when(repo.findByClientAndCompany(anyString(), anyString())).thenReturn(Optional.empty());
 
         EconomicsCustomerIndex idx = new EconomicsCustomerIndex(List.of(
@@ -170,7 +170,7 @@ class EconomicsCustomerPairingServiceTest {
     @Test
     void autoRun_skips_already_paired() {
         Client c = client("c1", "Already Paired", "12345678", ClientType.CLIENT);
-        when(clientLookup.listActive()).thenReturn(List.of(c));
+        when(clientLookup.listAll()).thenReturn(List.of(c));
         when(repo.listByCompany(COMPANY))
                 .thenReturn(List.of(pairingRow("c1", COMPANY, 101, PairingSource.MANUAL)));
         when(cache.getIndex(COMPANY)).thenReturn(new EconomicsCustomerIndex(List.of()));

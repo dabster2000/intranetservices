@@ -12,8 +12,8 @@ import java.util.Optional;
  */
 public interface ClientLookup {
 
-    /** Active clients (CLIENT + PARTNER), sorted by name. */
-    List<Client> listActive();
+    /** All clients (CLIENT + PARTNER, active and inactive), sorted by name. */
+    List<Client> listAll();
 
     Optional<Client> findByUuid(String uuid);
 }

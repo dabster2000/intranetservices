@@ -69,13 +69,13 @@ public class EconomicsCustomerPairingService {
     // --------------------------------------------------- GET /pairing
 
     /**
-     * Returns one row per active Trustworks client (CLIENT + PARTNER types),
-     * indicating whether it is paired with an e-conomic customer for the given
-     * Trustworks company.
+     * Returns one row per Trustworks client (CLIENT + PARTNER types, active
+     * and inactive), indicating whether it is paired with an e-conomic
+     * customer for the given Trustworks company.
      */
     public List<PairingRowDto> listPairingRows(UUID companyUuid) {
         String company = companyUuid.toString();
-        List<Client> clients = clientLookup.listActive();
+        List<Client> clients = clientLookup.listAll();
         EconomicsCustomerIndex idx = cache.getIndex(company);
 
         // Single SELECT for every pairing row in this company, then in-memory
@@ -152,7 +152,7 @@ public class EconomicsCustomerPairingService {
     @Transactional
     public AutoRunResultDto autoRun(UUID companyUuid) {
         String company = companyUuid.toString();
-        List<Client> clients = clientLookup.listActive();
+        List<Client> clients = clientLookup.listAll();
         EconomicsCustomerIndex idx = cache.getIndex(company);
 
         int paired = 0, unchanged = 0, ambiguous = 0, unmatched = 0;

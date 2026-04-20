@@ -8,16 +8,17 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Default Panache-backed {@link ClientLookup}. Lists all active clients
- * regardless of {@code type} — the pairing UI shows CLIENT and PARTNER rows
- * side-by-side.
+ * Default Panache-backed {@link ClientLookup}. Lists all clients regardless
+ * of {@code type} or {@code active} — the pairing UI shows CLIENT and PARTNER
+ * rows side-by-side and includes inactive clients so admins can pair/unpair
+ * them too.
  */
 @ApplicationScoped
 public class DefaultClientLookup implements ClientLookup {
 
     @Override
-    public List<Client> listActive() {
-        return Client.list("active = ?1", Sort.ascending("name"), true);
+    public List<Client> listAll() {
+        return Client.listAll(Sort.ascending("name"));
     }
 
     @Override
