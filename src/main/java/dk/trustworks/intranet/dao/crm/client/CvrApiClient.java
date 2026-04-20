@@ -10,44 +10,34 @@ import org.eclipse.microprofile.rest.client.annotation.RegisterClientHeaders;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 /**
- * MicroProfile REST Client for the Danish CVR API (cvrapi.dk).
+ * MicroProfile REST Client for the Danish CVR registry via Virkdata
+ * (virkdata.dk).
  *
- * <p>Provides company lookup by CVR number and company name search.
- * The API is public (no authentication), but requires a custom User-Agent
- * header set by {@link CvrApiHeadersFactory}.
+ * <p>Virkdata exposes a single endpoint — the {@code search} parameter
+ * accepts either a CVR number or a company name; the API resolves both.
+ * Authentication is a per-account API key injected by
+ * {@link VirkdataHeadersFactory} as the {@code Authorization} header.
  *
- * <p>Free tier: 50 lookups/day per IP. Responses are cached in
- * {@link dk.trustworks.intranet.dao.crm.services.CvrLookupService} to
- * minimize API calls.
- *
- * @see <a href="https://cvrapi.dk/documentation">CVR API Documentation</a>
+ * @see <a href="https://virkdata.dk">Virkdata documentation</a>
  */
 @Path("/api")
-@RegisterRestClient(configKey = "cvr-api")
-@RegisterClientHeaders(CvrApiHeadersFactory.class)
+@RegisterRestClient(configKey = "virkdata")
+@RegisterClientHeaders(VirkdataHeadersFactory.class)
 public interface CvrApiClient {
 
     /**
-     * Looks up a company by its CVR number (VAT number).
+     * Queries the Virkdata API. The {@code search} value may be an 8-digit
+     * CVR number or a company name; Virkdata resolves both.
      *
-     * @param vat     the 8-digit CVR number
-     * @param country the country code (default: "dk")
-     * @return company data or an error response
+     * @param search  the search term (CVR number or company name)
+     * @param country country code ({@code dk} only for our subscription)
+     * @param format  response format; always {@code json}
+     * @return parsed response — may represent success or a soft error
      */
     @GET
+    @Path("/")
     @Produces(MediaType.APPLICATION_JSON)
-    CvrApiResponse lookupByVat(@QueryParam("vat") String vat,
-                                @QueryParam("country") @DefaultValue("dk") String country);
-
-    /**
-     * Searches for a company by name.
-     *
-     * @param name    the company name to search for
-     * @param country the country code (default: "dk")
-     * @return company data or an error response
-     */
-    @GET
-    @Produces(MediaType.APPLICATION_JSON)
-    CvrApiResponse searchByName(@QueryParam("name") String name,
-                                 @QueryParam("country") @DefaultValue("dk") String country);
+    VirkdataResponse search(@QueryParam("search") String search,
+                            @QueryParam("country") @DefaultValue("dk") String country,
+                            @QueryParam("format") @DefaultValue("json") String format);
 }

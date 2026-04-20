@@ -27,12 +27,11 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 /**
  * REST resource for CVR (Danish company registry) lookups.
  *
- * <p>Proxies requests to cvrapi.dk via {@link CvrLookupService}.
+ * <p>Proxies requests to the Virkdata API (virkdata.dk) via {@link CvrLookupService}.
  * All errors from the external API are mapped to appropriate HTTP status codes.
  * CVR API failures never block client creation — this is a convenience lookup.
  *
- * <p>Free tier limit: 50 lookups/day. Lookups by CVR number are cached
- * to conserve quota.
+ * <p>Lookups by CVR number are cached to conserve the subscription quota.
  */
 @Tag(name = "crm")
 @Path("/cvr")
@@ -50,8 +49,8 @@ public class CvrLookupResource {
     @Path("/lookup")
     @Operation(
             summary = "Look up a company by CVR number",
-            description = "Queries the Danish CVR registry (cvrapi.dk) for company data by CVR number. " +
-                    "Results are cached to conserve the 50/day free-tier quota. " +
+            description = "Queries the Danish CVR registry (virkdata.dk) for company data by CVR number. " +
+                    "Results are cached to conserve the subscription quota. " +
                     "If the CVR API is unavailable, returns 502 — the caller should allow manual entry."
     )
     @APIResponses({
@@ -81,7 +80,7 @@ public class CvrLookupResource {
     @Path("/search")
     @Operation(
             summary = "Search for a company by name",
-            description = "Queries the Danish CVR registry (cvrapi.dk) for company data by name. " +
+            description = "Queries the Danish CVR registry (virkdata.dk) for company data by name. " +
                     "Returns the best match. Not cached because name searches are non-deterministic. " +
                     "If the CVR API is unavailable, returns 502 — the caller should allow manual entry."
     )

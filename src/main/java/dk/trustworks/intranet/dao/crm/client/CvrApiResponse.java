@@ -5,65 +5,62 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
 
 /**
- * Response DTO representing a company record from the CVR API (cvrapi.dk).
+ * Response DTO representing a company record from the Danish CVR registry.
  *
- * <p>Maps all fields from the CVR API JSON response. The {@code error} field
- * is non-null when the API returns an error instead of company data.
+ * <p>Sourced from the Virkdata API (virkdata.dk). Field names and JSON shape
+ * are kept stable for the frontend: {@code vat}, {@code name}, {@code address},
+ * {@code zipcode}, {@code city}, {@code phone}, {@code email}, {@code industrycode},
+ * {@code industrydesc}, {@code companycode}, {@code companydesc}.
  *
- * <p>Note: {@code protected} is a Java reserved word, so we use
- * {@code isProtected} with {@code @JsonProperty("protected")}.
+ * <p>Note: Virkdata does not return a legal-form code (Danish "virksomhedsform").
+ * {@code companycode} is always {@code 0}; use {@code companydesc} for display.
+ * The field is kept in the response shape for frontend compatibility.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-@Schema(description = "Company data from the Danish CVR registry (cvrapi.dk)")
+@Schema(description = "Company data from the Danish CVR registry (virkdata.dk)")
 public class CvrApiResponse {
 
-    @Schema(description = "CVR number (8-digit Danish company registration number)", example = "25674114")
+    @Schema(description = "CVR number (8-digit Danish company registration number)", example = "35648941")
     public long vat;
 
-    @Schema(description = "Registered company name", example = "Trustworks A/S")
+    @Schema(description = "Registered company name", example = "TRUSTWORKS A/S")
     public String name;
 
-    @Schema(description = "Street address", example = "Borgergade 14, 3.")
+    @Schema(description = "Street address", example = "Pustervig 3 4")
     public String address;
 
-    @Schema(description = "Postal code", example = "1300")
+    @Schema(description = "Postal code", example = "1126")
     public String zipcode;
 
-    @Schema(description = "City name", example = "Copenhagen K")
+    @Schema(description = "City name", example = "København K")
     public String city;
 
-    @Schema(description = "Extended city name (API v6+)")
-    public String cityname;
-
     @JsonProperty("protected")
-    @Schema(description = "Whether the company name/address is protected")
+    @Schema(description = "Whether the company is marked as advertisement-protected in CVR")
     public boolean isProtected;
 
     @Schema(description = "Business phone number", example = "71992999")
     public String phone;
 
-    @Schema(description = "Business email address", example = "info@trustworks.dk")
+    @Schema(description = "Business email address", example = "hello@trustworks.dk")
     public String email;
 
-    @Schema(description = "Company founding date", example = "04/01 - 2014")
+    @Schema(description = "Company founding date (YYYY-MM-DD)", example = "2014-01-27")
     public String startdate;
 
-    @Schema(description = "Danish industry classification code (branchekode)", example = "620100")
+    @Schema(description = "Danish industry classification code (branchekode)", example = "622000")
     public int industrycode;
 
-    @Schema(description = "Industry classification description", example = "Computerprogrammering")
+    @Schema(description = "Industry classification description", example = "Computerkonsulentbistand og forvaltning af computerfaciliteter")
     public String industrydesc;
 
-    @Schema(description = "Legal form code (10=A/S, 80=ApS, etc.)", example = "10")
+    @Schema(description = "Legal-form code — always 0; Virkdata does not expose this. Use companydesc instead.", example = "0")
     public int companycode;
 
     @Schema(description = "Legal form description", example = "Aktieselskab")
     public String companydesc;
 
-    @Schema(description = "API response version")
-    public int version;
-
-    @Schema(description = "Error code if the lookup failed (null on success)")
+    @Schema(description = "Error code if the lookup failed (null on success). Reserved for error payloads.")
     public String error;
 
     /**

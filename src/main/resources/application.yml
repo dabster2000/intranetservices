@@ -118,8 +118,8 @@ quarkus:
       scope: jakarta.inject.Singleton
       connect-timeout: 5000       # 5 seconds for connection
       read-timeout: 90000         # 90 seconds for PDF conversion
-    cvr-api:
-      url: https://cvrapi.dk
+    virkdata:
+      url: https://virkdata.dk
       scope: jakarta.inject.Singleton
       connect-timeout: 5000       # 5 seconds for connection
       read-timeout: 10000         # 10 seconds for CVR API response
@@ -305,3 +305,8 @@ bug-report:
 
 sharepoint:
   hostname: tenant.sharepoint.com
+
+virkdata:
+  # API key for virkdata.dk CVR registry. Sourced from the Secrets Manager entry
+  # tw-quarkus-secrets-{env}:VIRKDATA_API_KEY in deployed environments.
+  api-key: ${VIRKDATA_API_KEY:}
