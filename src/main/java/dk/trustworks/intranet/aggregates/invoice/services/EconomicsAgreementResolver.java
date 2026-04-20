@@ -121,6 +121,14 @@ public class EconomicsAgreementResolver {
                     + "configuration. Open the contract and select a valid Payment Terms value, "
                     + "then try again.");
         }
+        if (contract.getCompany() == null
+                || !mapping.getCompany().getUuid().equals(contract.getCompany().getUuid())) {
+            throw new BadRequestException(
+                    "Payment terms on contract '" + contract.getName() + "' belong to "
+                    + mapping.getCompany().getName() + " but the contract is on "
+                    + (contract.getCompany() != null ? contract.getCompany().getName() : "<no company>")
+                    + ". Re-select Payment Terms from the contract's company.");
+        }
         return mapping.getEconomicsPaymentTermsNumber();
     }
 

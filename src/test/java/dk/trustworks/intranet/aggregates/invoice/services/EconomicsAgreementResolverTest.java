@@ -19,13 +19,44 @@ import static org.mockito.Mockito.*;
 class EconomicsAgreementResolverTest {
 
     private VatZoneMappingRepository vatZoneRepo;
+    private dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMappingRepository paymentTermsRepo;
     private EconomicsAgreementResolver resolver;
 
     @BeforeEach
     void setUp() {
         vatZoneRepo = mock(VatZoneMappingRepository.class);
+        paymentTermsRepo = mock(dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMappingRepository.class);
         resolver = new EconomicsAgreementResolver();
         resolver.vatZoneRepo = vatZoneRepo;
+        resolver.paymentTermsRepo = paymentTermsRepo;
+    }
+
+    @Test
+    void paymentTermFor_throwsWhenMappingCompanyMismatchesContractCompany() {
+        dk.trustworks.intranet.model.Company contractCompany = new dk.trustworks.intranet.model.Company();
+        contractCompany.setUuid("C-CONTRACT");
+        contractCompany.setName("Trustworks A/S");
+
+        dk.trustworks.intranet.model.Company otherCompany = new dk.trustworks.intranet.model.Company();
+        otherCompany.setUuid("C-OTHER");
+        otherCompany.setName("Trustworks Technology ApS");
+
+        dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMapping mapping =
+                new dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMapping();
+        mapping.setUuid("pt-1");
+        mapping.setCompany(otherCompany);
+        mapping.setEconomicsPaymentTermsNumber(5);
+        when(paymentTermsRepo.findById("pt-1")).thenReturn(mapping);
+
+        dk.trustworks.intranet.contracts.model.Contract c = new dk.trustworks.intranet.contracts.model.Contract();
+        c.setName("C1");
+        c.setCompany(contractCompany);
+        c.setPaymentTermsUuid("pt-1");
+
+        BadRequestException ex = assertThrows(BadRequestException.class, () -> resolver.paymentTermFor(c));
+        assertTrue(ex.getMessage().toLowerCase().contains("payment terms"));
+        assertTrue(ex.getMessage().contains("Trustworks A/S"));
+        assertTrue(ex.getMessage().contains("Trustworks Technology ApS"));
     }
 
     @Test
