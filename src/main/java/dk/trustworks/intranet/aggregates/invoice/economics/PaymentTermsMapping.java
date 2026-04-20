@@ -31,8 +31,9 @@ public class PaymentTermsMapping extends PanacheEntityBase {
     @Column(name = "payment_days")
     private Integer paymentDays;
 
+    @NotNull
     @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "company_uuid")
+    @JoinColumn(name = "company_uuid", nullable = false)
     private Company company;
 
     @NotNull

@@ -28,8 +28,9 @@ public class VatZoneMapping extends PanacheEntityBase {
     @Column(name = "currency", length = 10, nullable = false)
     private String currency;
 
+    @NotNull
     @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "company_uuid")
+    @JoinColumn(name = "company_uuid", nullable = false)
     private Company company;
 
     @NotNull
