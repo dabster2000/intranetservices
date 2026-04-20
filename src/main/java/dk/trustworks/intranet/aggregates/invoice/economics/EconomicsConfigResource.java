@@ -10,7 +10,6 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
-import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
@@ -44,14 +43,14 @@ public class EconomicsConfigResource {
     public record PaymentTermsRequest(
             @NotNull PaymentTermsType paymentTermsType,
             Integer paymentDays,
-            String companyUuid,
+            @NotNull String companyUuid,
             @NotNull Integer economicsPaymentTermsNumber,
             String economicsPaymentTermsName
     ) {}
 
     public record VatZoneRequest(
             @NotNull String currency,
-            String companyUuid,
+            @NotNull String companyUuid,
             @NotNull Integer economicsVatZoneNumber,
             String economicsVatZoneName,
             @NotNull BigDecimal vatRatePercent
@@ -63,8 +62,8 @@ public class EconomicsConfigResource {
     @Path("/payment-terms")
     @RolesAllowed({"invoices:read", "invoices:write"})
     public List<PaymentTermsMapping> listPaymentTerms(
-            @QueryParam("companyUuid") @DefaultValue("") String companyUuid) {
-        return paymentTermsRepo.listForCompany(companyUuid.isBlank() ? null : companyUuid);
+            @NotNull @QueryParam("companyUuid") String companyUuid) {
+        return paymentTermsRepo.listForCompany(companyUuid);
     }
 
     @POST
@@ -117,8 +116,8 @@ public class EconomicsConfigResource {
     @Path("/vat-zones")
     @RolesAllowed({"invoices:read", "invoices:write"})
     public List<VatZoneMapping> listVatZones(
-            @QueryParam("companyUuid") @DefaultValue("") String companyUuid) {
-        return vatZoneRepo.listForCompany(companyUuid.isBlank() ? null : companyUuid);
+            @NotNull @QueryParam("companyUuid") String companyUuid) {
+        return vatZoneRepo.listForCompany(companyUuid);
     }
 
     @POST
@@ -177,7 +176,10 @@ public class EconomicsConfigResource {
     }
 
     private Company resolveCompany(String companyUuid) {
-        if (companyUuid == null || companyUuid.isBlank()) return null;
-        return em.find(Company.class, companyUuid);
+        Company c = em.find(Company.class, companyUuid);
+        if (c == null) {
+            throw new BadRequestException("Unknown company: " + companyUuid);
+        }
+        return c;
     }
 }
