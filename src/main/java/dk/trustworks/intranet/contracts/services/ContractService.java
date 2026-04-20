@@ -47,6 +47,33 @@ public class ContractService {
     @Inject
     EntityManager em;
 
+    @jakarta.inject.Inject
+    dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMappingRepository paymentTermsMappingRepository;
+
+    /**
+     * Verifies that contract.paymentTermsUuid (if set) belongs to a payment-term
+     * mapping scoped to the contract's company. Throws 400 otherwise.
+     * See spec: docs/superpowers/specs/2026-04-20-economics-mappings-company-scoping-design.md §2.
+     */
+    private void validatePaymentTermsCompanyMatch(dk.trustworks.intranet.contracts.model.Contract contract) {
+        if (contract.getPaymentTermsUuid() == null) return;
+
+        var mapping = paymentTermsMappingRepository.findById(contract.getPaymentTermsUuid());
+        if (mapping == null) {
+            throw new jakarta.ws.rs.BadRequestException(
+                    "Unknown payment terms: " + contract.getPaymentTermsUuid());
+        }
+        if (contract.getCompany() == null) {
+            throw new jakarta.ws.rs.BadRequestException("Contract has no company");
+        }
+        if (!mapping.getCompany().getUuid().equals(contract.getCompany().getUuid())) {
+            throw new jakarta.ws.rs.BadRequestException(
+                    "Payment terms belong to company " + mapping.getCompany().getName()
+                    + " but contract is on " + contract.getCompany().getName()
+                    + ". Select payment terms from the contract's company.");
+        }
+    }
+
     public List<Contract> findAll() {
         return Contract.listAll();
     }
@@ -243,6 +270,7 @@ public class ContractService {
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public Contract save(Contract contract) {
         String userUuid = requestHeaderHolder.getUserUuid();
+        validatePaymentTermsCompanyMatch(contract);
         log.debugf("Saving contract uuid=%s, client=%s, status=%s, user=%s",
                 contract.getUuid(), contract.getClientuuid(), contract.getStatus(), userUuid);
 
@@ -311,6 +339,7 @@ public class ContractService {
     @Transactional
     @CacheInvalidateAll(cacheName = "employee-budgets")
     public void update(Contract contract) {
+        validatePaymentTermsCompanyMatch(contract);
         String userUuid = requestHeaderHolder.getUserUuid();
         log.debugf("Updating contract uuid=%s, status=%s, user=%s", contract.getUuid(), contract.getStatus(), userUuid);
 
