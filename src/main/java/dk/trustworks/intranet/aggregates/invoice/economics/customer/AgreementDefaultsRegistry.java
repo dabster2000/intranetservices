@@ -49,7 +49,11 @@ class AgreementDefaultsRegistry {
      * Package-visible so unit tests can assert the registry's shape.
      */
     static final Map<String, AgreementDefaults> TEMPLATES = Map.of(
-            "d8894494-2fb4-4f72-9e05-e6032e6dd691",
+            "d8894494-2fb4-4f72-9e05-e6032e6dd691",   // Trustworks A/S
+            new AgreementDefaults(1, 2, "DKK", 1, 2),
+            "44592d3b-2be5-4b29-bfaf-4fafc60b0fa3",   // Trustworks Technology ApS
+            new AgreementDefaults(1, 2, "DKK", 1, 2),
+            "e4b0a2a4-0963-4153-b0a2-a409637153a2",   // Trustworks Cyber Security ApS
             new AgreementDefaults(1, 2, "DKK", 1, 2)
     );
 
