@@ -134,6 +134,10 @@ class InvoiceFinalizationOrchestratorTest {
         Invoice inv = pendingReviewInvoice("i1", "co-1", 4521);
         when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
         when(agreements.tokens("co-1")).thenReturn(tokens("APP", "GRANT"));
+        // Q2C number 4521 resolves to draftInvoiceNumber 4525 (legacy/UI number).
+        EconomicsDraftInvoice fetched = new EconomicsDraftInvoice();
+        fetched.setDraftInvoiceNumber(4525);
+        when(draftApi.getByNumber("APP", "GRANT", 4521)).thenReturn(fetched);
         EconomicsBookedInvoice booked = new EconomicsBookedInvoice();
         booked.setBookedInvoiceNumber(80123);
         booked.setDate(LocalDate.of(2026, 4, 15));
@@ -142,13 +146,54 @@ class InvoiceFinalizationOrchestratorTest {
         Invoice out = orchestrator.bookDraft("i1", /*sendBy*/ null);
 
         verify(bookApi).book(eq("APP"), eq("GRANT"), startsWith("book-i1"),
-                argThat(req -> req.getDraftInvoice().getDraftInvoiceNumber() == 4521
+                argThat(req -> req.getDraftInvoice().getDraftInvoiceNumber() == 4525
                         && req.getSendBy() == null));
         assertEquals(InvoiceStatus.CREATED, out.getStatus());
         assertEquals(Integer.valueOf(80123), out.getEconomicsBookedNumber());
         assertEquals(80123, out.getInvoicenumber());
         assertEquals(EconomicsInvoiceStatus.BOOKED, out.getEconomicsStatus());
         verify(work).registerAsPaidout(inv);
+    }
+
+    // ── test 2b: bookDraft translates Q2C number → legacy draftInvoiceNumber ──
+    // Regression guard: the Q2C POST /invoices/drafts response (number) and the legacy
+    // /invoices/booked draftInvoiceNumber are NOT the same integer for a given draft.
+    // bookDraft() must resolve number → draftInvoiceNumber via GET /invoices/drafts/{n}
+    // before calling the legacy endpoint, otherwise e-conomic replies
+    // "DraftInvoice 'N' not found".
+
+    @Test
+    void bookDraft_resolves_q2c_number_to_legacy_draftInvoiceNumber_before_booking() {
+        Invoice inv = pendingReviewInvoice("i1", "co-1", /*q2cNumber*/ 1);
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("co-1")).thenReturn(tokens("APP", "GRANT"));
+        EconomicsDraftInvoice fetched = new EconomicsDraftInvoice();
+        fetched.setDraftInvoiceNumber(5); // legacy number differs from Q2C number
+        when(draftApi.getByNumber("APP", "GRANT", 1)).thenReturn(fetched);
+        EconomicsBookedInvoice booked = new EconomicsBookedInvoice();
+        booked.setBookedInvoiceNumber(80123);
+        booked.setDate(LocalDate.of(2026, 4, 15));
+        when(bookApi.book(eq("APP"), eq("GRANT"), anyString(), any())).thenReturn(booked);
+
+        orchestrator.bookDraft("i1", /*sendBy*/ null);
+
+        verify(bookApi).book(eq("APP"), eq("GRANT"), startsWith("book-i1"),
+                argThat(req -> req.getDraftInvoice().getDraftInvoiceNumber() == 5));
+    }
+
+    @Test
+    void bookDraft_throws_BadRequest_when_q2c_returns_no_draftInvoiceNumber() {
+        Invoice inv = pendingReviewInvoice("i1", "co-1", 1);
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(agreements.tokens("co-1")).thenReturn(tokens("APP", "GRANT"));
+        when(draftApi.getByNumber("APP", "GRANT", 1)).thenReturn(null);
+
+        jakarta.ws.rs.BadRequestException thrown = assertThrows(
+                jakarta.ws.rs.BadRequestException.class,
+                () -> orchestrator.bookDraft("i1", null));
+
+        assertEquals(400, thrown.getResponse().getStatus());
+        verifyNoInteractions(bookApi);
     }
 
     // ── test 3: cancelFinalization reverts to DRAFT ───────────────────────────

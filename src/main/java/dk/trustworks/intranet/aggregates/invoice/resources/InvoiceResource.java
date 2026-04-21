@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.invoice.resources;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import dk.trustworks.intranet.aggregates.invoice.InvoiceGenerator;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
@@ -79,6 +81,10 @@ public class InvoiceResource {
     @Inject
     @org.eclipse.microprofile.rest.client.inject.RestClient
     EconomicsBookingApiClient bookApi;
+
+    @Inject
+    @org.eclipse.microprofile.rest.client.inject.RestClient
+    EconomicsDraftInvoiceApiClient draftApi;
 
     @Inject
     InvoiceLedgerService invoiceLedgerService;
@@ -1208,8 +1214,20 @@ public class InvoiceResource {
         try {
             if (inv.getStatus() == InvoiceStatus.PENDING_REVIEW && inv.getEconomicsDraftNumber() != null) {
                 var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
-                java.io.InputStream pdf = bookApi.getDraftPdf(
+                // economicsDraftNumber stores the Q2C `number`; the legacy REST PDF
+                // endpoint `/invoices/drafts/{n}/pdf` expects `draftInvoiceNumber`.
+                // Resolve via Q2C GET before calling the legacy endpoint — see
+                // InvoiceFinalizationOrchestrator.bookDraft() for the same translation.
+                EconomicsDraftInvoice draft = draftApi.getByNumber(
                         tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsDraftNumber());
+                if (draft == null || draft.getDraftInvoiceNumber() == null) {
+                    return Response.status(Response.Status.NOT_FOUND)
+                            .entity("Draft not available in e-conomic for invoice: " + uuid)
+                            .type(MediaType.TEXT_PLAIN)
+                            .build();
+                }
+                java.io.InputStream pdf = bookApi.getDraftPdf(
+                        tokens.appSecret(), tokens.agreementGrant(), draft.getDraftInvoiceNumber());
                 return Response.ok(pdf, "application/pdf").build();
             }
 

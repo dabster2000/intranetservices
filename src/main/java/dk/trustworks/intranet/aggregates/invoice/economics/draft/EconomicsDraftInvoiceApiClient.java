@@ -36,6 +36,21 @@ public interface EconomicsDraftInvoiceApiClient {
             @HeaderParam("Idempotency-Key") String idempotencyKey,
             EconomicsDraftInvoice body);
 
+    /**
+     * GET /invoices/drafts/{number} returns the full {@link EconomicsDraftInvoice},
+     * including {@code draftInvoiceNumber} — the number displayed in the UI and
+     * required by the legacy REST booking endpoint. {@link CreatedResult#getNumber()}
+     * returned by POST is the Q2C internal identifier, which is NOT the same as
+     * {@code draftInvoiceNumber} for a given draft; callers that need to book the
+     * draft MUST resolve {@code number → draftInvoiceNumber} via this endpoint.
+     */
+    @GET
+    @Path("/invoices/drafts/{number}")
+    EconomicsDraftInvoice getByNumber(
+            @HeaderParam("X-AppSecretToken") String appSecret,
+            @HeaderParam("X-AgreementGrantToken") String agreementGrant,
+            @PathParam("number") int number);
+
     @PUT
     @Path("/invoices/drafts/{draftInvoiceNumber}")
     EconomicsDraftInvoice update(

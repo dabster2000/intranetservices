@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.EanPrerequisiteErrorD
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingRequest;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
@@ -52,6 +53,20 @@ class InvoiceFinalizationOrchestratorSendByTest {
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock EanPrerequisiteChecker            eanChecker;
+
+    /**
+     * bookDraft() now resolves Q2C {@code number} → legacy {@code draftInvoiceNumber}
+     * via {@code draftApi.getByNumber()} before calling the legacy booking endpoint.
+     * Stubbed leniently so tests that exit early (prereq failures, unsupported sendBy)
+     * don't trip on unused-stub strict checks.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void stubDraftInvoiceNumberResolution() {
+        EconomicsDraftInvoice fetched = new EconomicsDraftInvoice();
+        fetched.setDraftInvoiceNumber(4521);
+        lenient().when(draftApi.getByNumber(anyString(), anyString(), anyInt()))
+                .thenReturn(fetched);
+    }
 
     // ── test 1: sendBy="ean" invokes prerequisite check ──────────────────────
 

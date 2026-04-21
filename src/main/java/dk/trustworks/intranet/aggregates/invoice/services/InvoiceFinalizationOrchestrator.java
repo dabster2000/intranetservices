@@ -249,8 +249,24 @@ public class InvoiceFinalizationOrchestrator {
         String companyUuid = inv.getCompany().getUuid();
         EconomicsAgreementResolver.Tokens tokens = agreements.tokens(companyUuid);
 
+        // Q2C POST /invoices/drafts returns CreatedResult.number (internal identifier),
+        // but the legacy REST booking endpoint requires draftInvoiceNumber (the number
+        // shown in the UI). The two are NOT the same — e-conomic maintains separate
+        // counters per API surface. Resolve number → draftInvoiceNumber here so the
+        // legacy book call receives the identifier it actually understands.
+        EconomicsDraftInvoice draft = draftApi.getByNumber(
+                tokens.appSecret(),
+                tokens.agreementGrant(),
+                inv.getEconomicsDraftNumber());
+        if (draft == null || draft.getDraftInvoiceNumber() == null) {
+            throw new BadRequestException(
+                    "e-conomic returned no draftInvoiceNumber for draft " + inv.getEconomicsDraftNumber()
+                    + " (invoice " + invoiceUuid + "). Cancel finalization and try again.");
+        }
+        int draftInvoiceNumber = draft.getDraftInvoiceNumber();
+
         EconomicsBookingRequest req = EconomicsBookingRequest.of(
-                inv.getEconomicsDraftNumber(), sendBy);
+                draftInvoiceNumber, sendBy);
 
         EconomicsBookedInvoice booked = bookApi.book(
                 tokens.appSecret(),
