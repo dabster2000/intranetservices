@@ -95,6 +95,9 @@ public class InvoiceResource {
     @Inject
     InvoiceAttributionService invoiceAttributionService;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator internalInvoiceOrchestrator;
+
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
@@ -628,20 +631,19 @@ public class InvoiceResource {
     }
 
     /**
-     * Forces creation of a queued internal invoice immediately, bypassing the wait for referenced invoice to be PAID.
+     * Forces finalization of a QUEUED internal invoice immediately, bypassing the wait for
+     * the referenced client invoice to reach PAID.
      *
-     * This endpoint provides manual override of the normal queued invoice flow. The standard flow waits for the
-     * referenced client invoice to reach economics_status = PAID before creating the internal invoice. This endpoint
-     * allows immediate creation regardless of the referenced invoice status.
+     * <p>Delegates to {@link dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator#forceFinalizeQueued}
+     * which uses the Q2C draft+book flow — the same path the nightly
+     * {@code QueuedInternalInvoiceProcessorBatchlet} uses. The orchestrator handles:
+     * validation (QUEUED + INTERNAL/INTERNAL_SERVICE), invoicedate/duedate assignment,
+     * ISSUER-side Q2C booking, and the DEBTOR-side supplier-invoice voucher.
      *
-     * The created invoice follows the same process as the batch job:
-     * - Validates invoice is QUEUED and INTERNAL type
-     * - Sets invoice date to today and due date to tomorrow
-     * - Assigns invoice number and generates PDF
-     * - Queues uploads to e-conomics for both issuing and debtor companies
-     * - Processes uploads with automatic retry support on failure
+     * <p>On DEBTOR-side failure the orchestrator demotes {@code economics_status} to
+     * {@code PARTIALLY_UPLOADED}; {@code EconomicsUploadRetryBatchlet} re-attempts on backoff.
      *
-     * @param invoiceuuid UUID of the queued invoice to force-create
+     * @param invoiceuuid UUID of a QUEUED INTERNAL / INTERNAL_SERVICE invoice
      * @return Response with success message or error details
      */
     @POST
@@ -650,43 +652,19 @@ public class InvoiceResource {
     @Produces(MediaType.APPLICATION_JSON)
     @Transactional
     public Response forceCreateQueuedInvoice(@PathParam("invoiceuuid") String invoiceuuid) {
-        log.infof("forceCreateQueuedInvoice: invoiceuuid=%s (manual bypass)", invoiceuuid);
+        log.infof("forceCreateQueuedInvoice: invoiceuuid=%s (manual bypass, Q2C route)", invoiceuuid);
         try {
-            // Create the invoice (assigns number, generates PDF, changes status to CREATED)
-            Invoice createdInvoice = invoiceService.forceCreateQueuedInvoice(invoiceuuid);
-
-            // Queue uploads for both issuing and debtor companies (same as batch job)
-            uploadService.queueUploads(createdInvoice);
-
-            // Process uploads immediately (failures will be retried by separate job)
-            dk.trustworks.intranet.aggregates.invoice.services.InvoiceEconomicsUploadService.UploadResult result =
-                uploadService.processUploads(createdInvoice.getUuid());
-
-            log.infof("Invoice %d upload result: %d succeeded, %d failed (total: %d)",
-                    createdInvoice.getInvoicenumber(),
-                    result.successCount(), result.failedCount(), result.totalCount());
+            Invoice finalized = internalInvoiceOrchestrator.forceFinalizeQueued(invoiceuuid);
 
             String message = String.format(
-                "Invoice %d created successfully. Uploads: %d succeeded, %d failed (total: %d)",
-                createdInvoice.getInvoicenumber(),
-                result.successCount(), result.failedCount(), result.totalCount()
-            );
+                    "Invoice %d finalized. status=%s economics_status=%s booked_number=%s",
+                    finalized.getInvoicenumber(),
+                    finalized.getStatus(),
+                    finalized.getEconomicsStatus(),
+                    finalized.getEconomicsBookedNumber());
+            log.info(message);
 
-            if (result.allSucceeded()) {
-                log.infof("Successfully created and uploaded invoice %d to all companies", createdInvoice.getInvoicenumber());
-            } else if (result.partialSuccess()) {
-                log.warnf("Invoice %d partially uploaded (%d of %d succeeded) - failures will be retried",
-                        createdInvoice.getInvoicenumber(), result.successCount(), result.totalCount());
-                message += ". Failed uploads will be retried automatically.";
-            } else if (result.allFailed()) {
-                log.errorf("Invoice %d creation succeeded but all uploads failed - will retry automatically",
-                        createdInvoice.getInvoicenumber());
-                message += ". All uploads failed but will retry automatically.";
-            }
-
-            return Response.ok()
-                    .entity(Map.of("message", message))
-                    .build();
+            return Response.ok().entity(Map.of("message", message)).build();
 
         } catch (WebApplicationException wae) {
             log.warn("Failed to force-create queued invoice: " + wae.getMessage(), wae);

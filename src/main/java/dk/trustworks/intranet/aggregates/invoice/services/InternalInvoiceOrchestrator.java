@@ -2,11 +2,16 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
+
+import java.time.LocalDate;
 
 /**
  * Coordinates the two sides of an INTERNAL (or INTERNAL_SERVICE) invoice.
@@ -84,6 +89,48 @@ public class InternalInvoiceOrchestrator {
         issuerSide.createDraft(invoiceUuid);
         return issuerSide.bookDraft(invoiceUuid, null);
         // DEBTOR side fires inline in bookDraft — no additional call required.
+    }
+
+    /**
+     * Entry point for the manual "force-create-queued" REST endpoint (§9.2).
+     *
+     * <p>Validates the invoice is {@code QUEUED} and INTERNAL / INTERNAL_SERVICE, sets
+     * {@code invoicedate = today} and {@code duedate = tomorrow} (mirroring the nightly
+     * batchlet), then delegates to {@link #finalizeAutomatically(String)}.
+     *
+     * <p>Before 2026-04-21 the REST endpoint routed through the legacy
+     * {@code InvoiceEconomicsUploadService.queueUploads / processUploads} voucher flow,
+     * which broke after the 2026-04-16 PDF-refactor: both ISSUER and DEBTOR vouchers
+     * failed on "No PDF available". Routing through {@code finalizeAutomatically} books
+     * via Q2C (no local PDF needed) and the DEBTOR-side voucher fetches the PDF from
+     * e-conomic via {@code EconomicsInvoiceService.loadInvoicePdfBytes}.
+     *
+     * @param invoiceUuid the UUID of a QUEUED INTERNAL / INTERNAL_SERVICE invoice
+     * @return the finalized invoice (status = CREATED, economics_status = BOOKED
+     *         if the DEBTOR side also succeeded; PARTIALLY_UPLOADED otherwise)
+     * @throws NotFoundException   when the invoice does not exist
+     * @throws BadRequestException when the invoice is not in QUEUED status, or is not
+     *                             an INTERNAL / INTERNAL_SERVICE invoice
+     */
+    @Transactional
+    public Invoice forceFinalizeQueued(String invoiceUuid) {
+        Invoice inv = invoices.findByUuid(invoiceUuid)
+                .orElseThrow(() -> new NotFoundException("Invoice not found: " + invoiceUuid));
+        if (inv.getType() != InvoiceType.INTERNAL
+                && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
+            throw new BadRequestException(
+                    "Only INTERNAL or INTERNAL_SERVICE invoices can be force-created. "
+                    + "Current type: " + inv.getType());
+        }
+        if (inv.getStatus() != InvoiceStatus.QUEUED) {
+            throw new BadRequestException(
+                    "Invoice must be in QUEUED status. Current: " + inv.getStatus());
+        }
+        // Mirror the nightly batchlet's date handling so manually and automatically
+        // finalized invoices land on the same invoicedate/duedate convention.
+        inv.setInvoicedate(LocalDate.now());
+        inv.setDuedate(LocalDate.now().plusDays(1));
+        return finalizeAutomatically(invoiceUuid);
     }
 
     // ── private helpers ───────────────────────────────────────────────────────

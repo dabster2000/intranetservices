@@ -4,18 +4,23 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.*;
+import dk.trustworks.intranet.expenseservice.exceptions.PdfNotYetRenderedException;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
+import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
 import dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.io.ByteArrayInputStream;
@@ -32,6 +37,13 @@ public class EconomicsInvoiceService {
 
     @Inject
     InvoicePdfS3Service invoicePdfS3Service;
+
+    @Inject
+    @RestClient
+    EconomicsBookingApiClient bookingApi;
+
+    @Inject
+    EconomicsAgreementResolver agreementResolver;
 
     private IntegrationKey.IntegrationKeyValue integrationKeyValue;
 
@@ -88,15 +100,7 @@ public class EconomicsInvoiceService {
         String[] arrOfStr = year.split("/", 2);
         String urlYear = arrOfStr[0]+ "_6_" +arrOfStr[1];
 
-        // Load PDF bytes: S3 first, then fall back to DB LONGBLOB (unmigrated invoices)
-        byte[] pdfBytes;
-        if (invoice.getPdfStorageKey() != null) {
-            pdfBytes = invoicePdfS3Service.getPdfByKey(invoice.getPdfStorageKey());
-        } else if (invoice.getPdf() != null) {
-            pdfBytes = invoice.getPdf();
-        } else {
-            throw new IOException("No PDF available for invoice: " + invoice.getUuid());
-        }
+        byte[] pdfBytes = loadInvoicePdfBytes(invoice);
 
         // format file to outputstream as MultipartFormDataOutput
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
@@ -220,6 +224,53 @@ public class EconomicsInvoiceService {
             log.error("Failed to send voucher to company " + targetCompany.getName(), e);
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Resolves the PDF bytes for an invoice, trying sources in priority order:
+     *
+     * <ol>
+     *   <li>{@code pdf_storage_key} → S3 (preferred path for invoices migrated to S3).</li>
+     *   <li>{@code pdf} LONGBLOB on the invoice row (legacy, pre-S3 invoices).</li>
+     *   <li>E-conomic booked-invoice PDF via {@link EconomicsBookingApiClient#getBookedPdf}
+     *       using the <strong>ISSUER</strong> company's tokens (the only agreement that
+     *       owns the booked PDF). Used after the 2026-04-16 refactor, when neither
+     *       local source is populated for newly booked invoices.</li>
+     * </ol>
+     *
+     * <p>A 404 from e-conomic on path 3 means the PDF rendering is still in progress
+     * (typically 1-3s after booking). Surfaces as {@link PdfNotYetRenderedException}
+     * so the caller's retry mechanism re-attempts the upload on the next cycle
+     * rather than thrashing inline. Non-404 errors from e-conomic propagate as-is.
+     *
+     * <p>Package-private so unit tests in the same package can exercise the fallback
+     * matrix directly without going through the multipart upload flow.
+     */
+    byte[] loadInvoicePdfBytes(Invoice invoice) throws IOException {
+        if (invoice.getPdfStorageKey() != null) {
+            return invoicePdfS3Service.getPdfByKey(invoice.getPdfStorageKey());
+        }
+        if (invoice.getPdf() != null) {
+            return invoice.getPdf();
+        }
+        if (invoice.getEconomicsBookedNumber() != null) {
+            String issuerCompanyUuid = invoice.getCompany().getUuid();
+            EconomicsAgreementResolver.Tokens issuerTokens = agreementResolver.tokens(issuerCompanyUuid);
+            try (InputStream pdfStream = bookingApi.getBookedPdf(
+                    issuerTokens.appSecret(),
+                    issuerTokens.agreementGrant(),
+                    invoice.getEconomicsBookedNumber())) {
+                return pdfStream.readAllBytes();
+            } catch (WebApplicationException wae) {
+                int status = wae.getResponse() == null ? -1 : wae.getResponse().getStatus();
+                if (status == 404) {
+                    throw new PdfNotYetRenderedException(
+                            invoice.getUuid(), invoice.getEconomicsBookedNumber());
+                }
+                throw wae;
+            }
+        }
+        throw new IOException("No PDF available for invoice: " + invoice.getUuid());
     }
 
     private static EconomicsAPI getEconomicsAPI(IntegrationKey.IntegrationKeyValue result) {

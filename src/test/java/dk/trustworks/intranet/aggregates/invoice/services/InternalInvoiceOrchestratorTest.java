@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDraftMapper;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookedInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
@@ -87,6 +88,8 @@ class InternalInvoiceOrchestratorTest {
         Invoice inv = internalPendingReview(INV_UUID, CO_UUID, DEBTOR_UUID, DRAFT_NUMBER);
         when(invoices.findByUuid(INV_UUID)).thenReturn(Optional.of(inv));
         when(agreements.tokens(CO_UUID)).thenReturn(tokens("APP", "GRANT"));
+        when(draftApi.getByNumber("APP", "GRANT", DRAFT_NUMBER))
+                .thenReturn(legacyDraft(DRAFT_NUMBER));
 
         EconomicsBookedInvoice booked = new EconomicsBookedInvoice();
         booked.setBookedInvoiceNumber(90001);
@@ -133,6 +136,8 @@ class InternalInvoiceOrchestratorTest {
         Invoice inv = internalPendingReview(INV_UUID, CO_UUID, DEBTOR_UUID, DRAFT_NUMBER);
         when(invoices.findByUuid(INV_UUID)).thenReturn(Optional.of(inv));
         when(agreements.tokens(CO_UUID)).thenReturn(tokens("APP", "GRANT"));
+        when(draftApi.getByNumber("APP", "GRANT", DRAFT_NUMBER))
+                .thenReturn(legacyDraft(DRAFT_NUMBER));
 
         EconomicsBookedInvoice booked = new EconomicsBookedInvoice();
         booked.setBookedInvoiceNumber(90002);
@@ -171,6 +176,8 @@ class InternalInvoiceOrchestratorTest {
         Invoice inv = regularPendingReview("reg-001", CO_UUID, 5000);
         when(invoices.findByUuid("reg-001")).thenReturn(Optional.of(inv));
         when(agreements.tokens(CO_UUID)).thenReturn(tokens("APP", "GRANT"));
+        when(draftApi.getByNumber("APP", "GRANT", 5000))
+                .thenReturn(legacyDraft(5000));
 
         EconomicsBookedInvoice booked = new EconomicsBookedInvoice();
         booked.setBookedInvoiceNumber(70001);
@@ -236,5 +243,17 @@ class InternalInvoiceOrchestratorTest {
 
     private EconomicsAgreementResolver.Tokens tokens(String appSecret, String agreementGrant) {
         return new EconomicsAgreementResolver.Tokens(appSecret, agreementGrant);
+    }
+
+    /**
+     * Builds an {@link EconomicsDraftInvoice} with {@code draftInvoiceNumber} populated.
+     * {@code bookDraft} resolves the Q2C number → legacy draftInvoiceNumber before
+     * calling {@code bookApi.book}; without this stub the translation step throws
+     * BadRequestException and the rest of the flow never executes.
+     */
+    private EconomicsDraftInvoice legacyDraft(int draftInvoiceNumber) {
+        EconomicsDraftInvoice d = new EconomicsDraftInvoice();
+        d.setDraftInvoiceNumber(draftInvoiceNumber);
+        return d;
     }
 }
