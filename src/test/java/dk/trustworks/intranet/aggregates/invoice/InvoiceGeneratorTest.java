@@ -14,9 +14,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.YearMonth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
@@ -157,5 +159,24 @@ class InvoiceGeneratorTest {
         when(agreements.vatZoneDetailsFor(currency, COMPANY_UUID))
                 .thenReturn(new EconomicsAgreementResolver.VatZoneDetails(
                         1, BigDecimal.valueOf(ratePercent)));
+    }
+
+    // ── Test 3: invoice date defaults to today ───────────────────────────────────
+
+    @Test
+    void buildInitialInvoice_setsInvoicedateToToday() {
+        // Use a month that is NOT the current month to prove the default is
+        // "today" and no longer "last day of month".
+        YearMonth someOtherMonth = YearMonth.now().minusMonths(3);
+
+        when(agreements.vatZoneDetailsFor(any(), any()))
+                .thenReturn(new EconomicsAgreementResolver.VatZoneDetails(1, BigDecimal.valueOf(25)));
+
+        Invoice invoice = generator.buildInitialInvoice(contract, project, billingClient, someOtherMonth);
+
+        assertEquals(LocalDate.now(), invoice.getInvoicedate(),
+                "Invoice date should default to today, not last-day-of-invoiced-month");
+        assertEquals(LocalDate.now().plusMonths(1), invoice.getDuedate(),
+                "Due date should default to today + 1 month (will be overwritten by e-conomics)");
     }
 }
