@@ -289,10 +289,11 @@ public class InvoiceGenerator {
      * currency + VAT logic without spinning up the full work-item loop.
      */
     Invoice buildInitialInvoice(Contract contract, Project project, Client billingClient, YearMonth month) {
-        LocalDate lastDayOfMonth = LocalDate.now()
-                .withYear(month.getYear())
-                .withMonth(month.getMonthValue())
-                .withDayOfMonth(LocalDate.now().withYear(month.getYear()).withMonth(month.getMonthValue()).lengthOfMonth());
+        // Invoice date defaults to today. The due date is a placeholder —
+        // e-conomics calculates the real due date from the customer's payment
+        // term (termOfPaymentNumber) and returns it in the draft response,
+        // which the sync code persists back onto the Invoice entity.
+        LocalDate invoiceDate = LocalDate.now();
 
         Invoice invoice = new Invoice(InvoiceType.INVOICE,
                 contract.getUuid(),
@@ -310,8 +311,8 @@ public class InvoiceGenerator {
                 contract.getBillingAttention() != null
                         ? contract.getBillingAttention()
                         : billingClient.getDefaultBillingAttention(),
-                lastDayOfMonth,
-                lastDayOfMonth.plusMonths(1),
+                invoiceDate,
+                invoiceDate.plusMonths(1),
                 project.getCustomerreference(),
                 contract.getRefid(), contract.getContractType(), contract.getCompany(),
                 billingClient.getCurrency(),
