@@ -161,6 +161,9 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "internal_invoice_skip_by")
     public String internalInvoiceSkipBy;
 
+    @Column(name = "baseline_snapshot", columnDefinition = "JSON")
+    public String baselineSnapshot;
+
     @Transient
     public Double sumBeforeDiscounts;
 
