@@ -78,11 +78,15 @@ public class InvoiceAttributionService {
             }
         }
         // Fallback: derive from work table (legacy drafts with no snapshot).
+        // Filter by BOTH contract and project — the same project name can belong
+        // to multiple contracts on the /invoice sidebar, and filtering by project
+        // alone pulls in work from a sibling contract that shares the project.
         // Use invoice.year/invoice.month as the billing period — NOT invoicedate,
         // which is the issue date (usually the month AFTER the work happened).
         if (invoice.projectuuid != null) {
             try {
-                return computeProjectWorkHours(invoice.projectuuid,
+                return computeProjectWorkHours(invoice.contractuuid,
+                        invoice.projectuuid,
                         invoiceBillingPeriodStart(invoice));
             } catch (Exception e) {
                 log.warnf("buildEngineBaseline: computeProjectWorkHours failed for project=%s",
@@ -560,8 +564,22 @@ public class InvoiceAttributionService {
             return;
         }
 
-        // Use the billing period (invoice.year/invoice.month), not invoicedate,
-        // to query work/contract data for the right month.
+        // Preferred fallback: attribute proportional to the OTHER BASE items'
+        // attributions on this invoice. This keeps the "eligibility" invariant
+        // (only consultants represented on the invoice get attributed) and is
+        // the right behaviour for discount-like items stored with origin=BASE
+        // and null consultantuuid, as well as for genuine consolidated lines
+        // where other BASE items already have consultant-specific attributions.
+        Map<String, BigDecimal> invoiceBaseDistribution = computeBaseDistribution(invoice.uuid);
+        if (!invoiceBaseDistribution.isEmpty()) {
+            createAttributionsFromShares(item.uuid, invoiceBaseDistribution, itemTotal, false);
+            return;
+        }
+
+        // No other BASE attributions to mirror — fall back to contract-wide work
+        // shares (legacy behaviour, used when the invoice has ONLY null-consultant
+        // items). Use the billing period (invoice.year/invoice.month), not
+        // invoicedate, to query work data for the right month.
         LocalDate billingPeriod = invoiceBillingPeriodStart(invoice);
         Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, billingPeriod);
         if (!workShares.isEmpty()) {
@@ -665,33 +683,46 @@ public class InvoiceAttributionService {
     // ── Private: project-level work hours (matches InvoiceGenerator logic) ──
 
     /**
-     * Compute actual hours logged per consultant for a specific project+month.
-     * This matches the data used by InvoiceGenerator when creating draft items,
-     * so the returned hours correspond to the original line item amounts.
+     * Compute actual hours logged per consultant for a specific contract + project
+     * in the billing period. Matches InvoiceGenerator.createDraftInvoiceFromProject
+     * which filters by BOTH contractuuid AND projectuuid (line 165) — a single
+     * project UUID can appear under multiple contracts on the /invoice sidebar,
+     * so filtering by project alone over-collects work from a different contract
+     * that happens to share the project name.
      *
-     * @return Map of consultant UUID → total hours logged on the project in the period
+     * @return Map of consultant UUID → total hours logged on (contract, project)
+     *         in the period
      */
     @SuppressWarnings("unchecked")
-    private Map<String, BigDecimal> computeProjectWorkHours(String projectUuid, LocalDate invoiceDate) {
+    private Map<String, BigDecimal> computeProjectWorkHours(String contractUuid, String projectUuid, LocalDate periodStartDate) {
         if (projectUuid == null || projectUuid.isBlank()) {
             return Map.of();
         }
-        LocalDate periodStart = invoiceDate.withDayOfMonth(1);
+        LocalDate periodStart = periodStartDate.withDayOfMonth(1);
         LocalDate periodEnd = periodStart.plusMonths(1);
 
-        List<Object[]> rows = em.createNativeQuery("""
-                        SELECT w.useruuid, SUM(w.workduration) AS total_hours
-                        FROM work w
-                        WHERE w.projectuuid = :projectUuid
-                          AND w.registered >= :periodStart
-                          AND w.registered < :periodEnd
-                          AND w.workduration > 0
-                        GROUP BY w.useruuid
-                        """)
+        StringBuilder sql = new StringBuilder("""
+                SELECT w.useruuid, SUM(w.workduration) AS total_hours
+                FROM work w
+                WHERE w.projectuuid = :projectUuid
+                  AND w.registered >= :periodStart
+                  AND w.registered < :periodEnd
+                  AND w.workduration > 0
+                """);
+        boolean hasContract = contractUuid != null && !contractUuid.isBlank();
+        if (hasContract) {
+            sql.append("  AND w.contractuuid = :contractUuid\n");
+        }
+        sql.append("GROUP BY w.useruuid");
+
+        var query = em.createNativeQuery(sql.toString())
                 .setParameter("projectUuid", projectUuid)
                 .setParameter("periodStart", periodStart)
-                .setParameter("periodEnd", periodEnd)
-                .getResultList();
+                .setParameter("periodEnd", periodEnd);
+        if (hasContract) {
+            query.setParameter("contractUuid", contractUuid);
+        }
+        List<Object[]> rows = query.getResultList();
 
         if (rows.isEmpty()) {
             return Map.of();
