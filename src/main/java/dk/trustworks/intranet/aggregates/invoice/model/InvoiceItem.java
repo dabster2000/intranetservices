@@ -108,6 +108,21 @@ public class InvoiceItem extends PanacheEntityBase {
         this.origin = origin;
     }
 
+    /**
+     * True for discount / fee / rounding items synthesized by PricingEngine.
+     * Checks both the explicit {@link InvoiceItemOrigin#CALCULATED} enum and the
+     * metadata signals PricingEngine sets ({@code calculationRef}, {@code ruleId},
+     * {@code label}) — older invoices occasionally stored such items with
+     * {@code origin=BASE} but the metadata populated, so relying on the enum
+     * alone misclassifies them.
+     */
+    public boolean isEffectivelyCalculated() {
+        return origin == InvoiceItemOrigin.CALCULATED
+                || calculationRef != null
+                || ruleId != null
+                || label != null;
+    }
+
     @Override
     public String toString() {
         return "InvoiceItem{" +

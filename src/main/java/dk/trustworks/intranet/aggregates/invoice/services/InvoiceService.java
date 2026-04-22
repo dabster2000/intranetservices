@@ -463,17 +463,7 @@ public class InvoiceService {
 
     private void recalculateInvoiceItems(Invoice invoice) {
         var baseItemData = invoice.getInvoiceitems().stream()
-                .filter(ii -> {
-                    // Explicitly exclude CALCULATED items
-                    if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) return false;
-                    // Also exclude items with CALCULATED-specific metadata (prevents
-                    // preserving CALCULATED items when origin defaults to BASE during JSON deserialization)
-                    if (ii.getCalculationRef() != null) return false;
-                    if (ii.getRuleId() != null) return false;
-                    if (ii.getLabel() != null) return false;
-                    // Keep only true BASE items
-                    return true;
-                })
+                .filter(ii -> !ii.isEffectivelyCalculated())
                 // Clone each item as a new entity to avoid Hibernate managed-entity issues.
                 // A JPQL bulk delete only removes rows from the DB, not from the persistence
                 // context, so calling persist() on the original (still-managed) instances is

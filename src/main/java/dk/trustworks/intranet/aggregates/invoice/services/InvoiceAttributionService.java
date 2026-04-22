@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
+import dk.trustworks.intranet.utils.DateUtils;
 
 @JBossLog
 @ApplicationScoped
@@ -105,7 +106,7 @@ public class InvoiceAttributionService {
      */
     private LocalDate invoiceBillingPeriodStart(Invoice invoice) {
         if (invoice.year > 0 && invoice.month > 0) {
-            return LocalDate.of(invoice.year, invoice.month, 1);
+            return DateUtils.getFirstDayOfMonth(invoice.year, invoice.month);
         }
         if (invoice.invoicedate != null) {
             return invoice.invoicedate.withDayOfMonth(1);
@@ -185,16 +186,10 @@ public class InvoiceAttributionService {
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, itemUuids);
 
-        // Split BASE vs CALCULATED. Detect CALCULATED by origin OR by the metadata
-        // signals (calculationRef/ruleId/label) that PricingEngine sets — mirrors
-        // the filter in InvoiceService.recalculateInvoiceItems. Older invoices
-        // sometimes stored discount items with origin=BASE but the metadata set.
-        List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
-                .filter(ii -> !isEffectivelyCalculated(ii))
-                .toList();
-        List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
-                .filter(this::isEffectivelyCalculated)
-                .toList();
+        Map<Boolean, List<InvoiceItem>> partitioned = invoice.invoiceitems.stream()
+                .collect(Collectors.partitioningBy(InvoiceItem::isEffectivelyCalculated));
+        List<InvoiceItem> baseItems = partitioned.get(false);
+        List<InvoiceItem> calculatedItems = partitioned.get(true);
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
 
@@ -228,14 +223,10 @@ public class InvoiceAttributionService {
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, changedItemUuids);
 
-        // Same robust split as computeAttributions — treat items with CALCULATED
-        // metadata as CALCULATED even if origin is stored as BASE (legacy data).
-        List<InvoiceItem> baseItems = items.stream()
-                .filter(ii -> !isEffectivelyCalculated(ii))
-                .toList();
-        List<InvoiceItem> calculatedItems = items.stream()
-                .filter(this::isEffectivelyCalculated)
-                .toList();
+        Map<Boolean, List<InvoiceItem>> partitioned = items.stream()
+                .collect(Collectors.partitioningBy(InvoiceItem::isEffectivelyCalculated));
+        List<InvoiceItem> baseItems = partitioned.get(false);
+        List<InvoiceItem> calculatedItems = partitioned.get(true);
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
 
@@ -460,22 +451,6 @@ public class InvoiceAttributionService {
         for (InvoiceItem item : itemsWithoutConsultant) {
             computeBaseItemAttribution(item, invoice);
         }
-    }
-
-    /**
-     * Is this item effectively a CALCULATED (discount/fee/roundup) item?
-     * Checks both the explicit origin enum and the metadata signals
-     * (calculationRef/ruleId/label) set by PricingEngine. Older invoices
-     * occasionally stored discounts with origin=BASE but with the metadata
-     * populated — this helper catches both shapes. Mirrors the filter used
-     * in InvoiceService.recalculateInvoiceItems.
-     */
-    private boolean isEffectivelyCalculated(InvoiceItem item) {
-        if (item.origin == InvoiceItemOrigin.CALCULATED) return true;
-        if (item.getCalculationRef() != null) return true;
-        if (item.getRuleId() != null) return true;
-        if (item.getLabel() != null) return true;
-        return false;
     }
 
     /**
@@ -1266,60 +1241,29 @@ public class InvoiceAttributionService {
                     Response.Status.NOT_FOUND);
         }
 
-        // Credit notes don't go through the engine — they mirror the source invoice.
-        // Still wipe existing rows and write fresh ones via the copy helper, with audit.
+        Map<String, List<InvoiceItemAttribution>> oldByItem = snapshotByItem(invoiceUuid);
+
         if (invoice.type == InvoiceType.CREDIT_NOTE) {
-            Map<String, List<InvoiceItemAttribution>> oldByItem = new LinkedHashMap<>();
-            for (InvoiceItem item : invoice.invoiceitems) {
-                oldByItem.put(item.uuid, getAttributions(item.uuid));
-            }
-            // copyAttributionsFromSource wipes AUTO+MANUAL per item and rewrites AUTO.
             copyAttributionsFromSource(invoice);
-            for (InvoiceItem item : invoice.invoiceitems) {
-                String oldState = serializeAttributions(oldByItem.getOrDefault(item.uuid, List.of()));
-                String newState = serializeAttributions(getAttributions(item.uuid));
-                new AttributionAuditLog(
-                        invoice.uuid, item.uuid, changedByUuid,
-                        "ADMIN_FORCE_RECOMPUTE", oldState, newState, null
-                ).persist();
-            }
+            writeAdminAuditLog(invoice, oldByItem, changedByUuid);
             log.infof("adminForceRecomputeAttributions (CN): invoice=%s by=%s items=%d",
                     invoice.uuid, changedByUuid, invoice.invoiceitems.size());
             return getInvoiceAttributions(invoice.uuid);
         }
 
-        // Frozen-internals guard: same check as regular compute path.
         Set<String> itemUuids = invoice.invoiceitems.stream()
                 .map(ii -> ii.uuid)
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, itemUuids);
 
-        // Snapshot old state for audit BEFORE wiping, grouped by item UUID.
-        Map<String, List<InvoiceItemAttribution>> oldByItem = new LinkedHashMap<>();
-        for (InvoiceItem item : invoice.invoiceitems) {
-            oldByItem.put(item.uuid, getAttributions(item.uuid));
-        }
-
-        // Wipe MANUAL and AUTO for every item on this invoice.
-        // Per-item delete keeps the operation scoped; bulk delete by invoice would
-        // also work but this is explicit.
         for (InvoiceItem item : invoice.invoiceitems) {
             InvoiceItemAttribution.delete("invoiceitemUuid", item.uuid);
         }
 
-        // Run the canonical persistence path. Since all rows are gone, the engine
-        // output is written cleanly; the MANUAL-preservation branch inside
-        // persistItemFromEngineResult never fires.
-        // Split BASE vs CALCULATED. Detect CALCULATED by origin OR by the metadata
-        // signals (calculationRef/ruleId/label) that PricingEngine sets — mirrors
-        // the filter in InvoiceService.recalculateInvoiceItems. Older invoices
-        // sometimes stored discount items with origin=BASE but the metadata set.
-        List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
-                .filter(ii -> !isEffectivelyCalculated(ii))
-                .toList();
-        List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
-                .filter(this::isEffectivelyCalculated)
-                .toList();
+        Map<Boolean, List<InvoiceItem>> partitioned = invoice.invoiceitems.stream()
+                .collect(Collectors.partitioningBy(InvoiceItem::isEffectivelyCalculated));
+        List<InvoiceItem> baseItems = partitioned.get(false);
+        List<InvoiceItem> calculatedItems = partitioned.get(true);
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
 
@@ -1330,23 +1274,34 @@ public class InvoiceAttributionService {
             }
         }
 
-        // Audit log entry per item: one row per item showing old -> new state.
-        for (InvoiceItem item : invoice.invoiceitems) {
-            String oldState = serializeAttributions(oldByItem.getOrDefault(item.uuid, List.of()));
-            String newState = serializeAttributions(getAttributions(item.uuid));
-            new AttributionAuditLog(
-                    invoiceUuid, item.uuid, changedByUuid,
-                    "ADMIN_FORCE_RECOMPUTE", oldState, newState, null
-            ).persist();
-        }
-
-        // Cascade to DRAFT/QUEUED linked internals exactly like the regular path.
+        writeAdminAuditLog(invoice, oldByItem, changedByUuid);
         cascadeToLinkedInternals(invoiceUuid, itemUuids);
 
         log.infof("adminForceRecomputeAttributions: invoice=%s by=%s items=%d",
                 invoiceUuid, changedByUuid, invoice.invoiceitems.size());
 
         return getInvoiceAttributions(invoiceUuid);
+    }
+
+    /** Fetch every attribution on the invoice in one query and index by item UUID. */
+    private Map<String, List<InvoiceItemAttribution>> snapshotByItem(String invoiceUuid) {
+        return getInvoiceAttributions(invoiceUuid).stream()
+                .collect(Collectors.groupingBy(a -> a.invoiceitemUuid, LinkedHashMap::new, Collectors.toList()));
+    }
+
+    /** Write one ADMIN_FORCE_RECOMPUTE audit row per item, diffing against the prior snapshot. */
+    private void writeAdminAuditLog(Invoice invoice,
+                                    Map<String, List<InvoiceItemAttribution>> oldByItem,
+                                    String changedByUuid) {
+        Map<String, List<InvoiceItemAttribution>> newByItem = snapshotByItem(invoice.uuid);
+        for (InvoiceItem item : invoice.invoiceitems) {
+            String oldState = serializeAttributions(oldByItem.getOrDefault(item.uuid, List.of()));
+            String newState = serializeAttributions(newByItem.getOrDefault(item.uuid, List.of()));
+            new AttributionAuditLog(
+                    invoice.uuid, item.uuid, changedByUuid,
+                    "ADMIN_FORCE_RECOMPUTE", oldState, newState, null
+            ).persist();
+        }
     }
 
     private String serializeAttributions(List<InvoiceItemAttribution> attrs) {
