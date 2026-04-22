@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsRequest;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.DeltaAbsorptionResult;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
@@ -697,8 +698,8 @@ public class InvoiceAttributionService {
 
     /**
      * Phase 1-4 pipeline: Resolve attributions for all line items on an invoice.
-     * Deterministic logic handles straightforward cases (HIGH confidence).
-     * Ambiguous items are flagged for AI resolution or user review.
+     * Uses DeltaAbsorptionEngine for deterministic HIGH-confidence resolution.
+     * Ambiguous items (no consultantuuid, no baseline) are flagged for AI resolution or user review.
      */
     @Transactional
     public AttributionResolution resolveAttributions(String invoiceUuid) {
@@ -709,73 +710,69 @@ public class InvoiceAttributionService {
             .filter(i -> "BASE".equals(i.origin.name()))
             .toList();
 
-        // Compute project-level work hours (matches InvoiceGenerator's data source)
         LocalDate effectiveDate = invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now();
-        Map<String, BigDecimal> projectWorkHours = Map.of();
+
+        // 1. Build baseline (logged-work hours per consultant for this contract/project)
+        Map<String, BigDecimal> baseline = Map.of();
         if (invoice.projectuuid != null) {
             try {
-                projectWorkHours = computeProjectWorkHours(invoice.projectuuid, effectiveDate);
+                baseline = computeProjectWorkHours(invoice.projectuuid, effectiveDate);
             } catch (Exception e) {
-                log.warnf("resolveAttributions: failed to compute project work hours for project=%s", invoice.projectuuid);
-            }
-        }
-        // Fallback to contract-level work shares if no project data
-        if (projectWorkHours.isEmpty() && invoice.contractuuid != null) {
-            try {
-                Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, effectiveDate);
-                // Convert percentages back to approximate hours using total invoice hours
-                double totalInvoiceHours = currentItems.stream().mapToDouble(i -> i.hours).sum();
-                if (!workShares.isEmpty() && totalInvoiceHours > 0) {
-                    Map<String, BigDecimal> approxHours = new LinkedHashMap<>();
-                    for (var entry : workShares.entrySet()) {
-                        approxHours.put(entry.getKey(),
-                            entry.getValue().multiply(BigDecimal.valueOf(totalInvoiceHours))
-                                .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP));
-                    }
-                    projectWorkHours = approxHours;
-                }
-            } catch (Exception e) {
-                log.warnf("resolveAttributions: failed to compute work shares for contract=%s", invoice.contractuuid);
+                log.warnf("resolveAttributions: failed to compute project work hours for project=%s",
+                    invoice.projectuuid);
             }
         }
 
-        // Build represented consultants set (those with line items)
-        Set<String> representedConsultants = currentItems.stream()
-            .map(i -> i.consultantuuid)
-            .filter(uuid -> uuid != null && !uuid.isBlank())
-            .collect(Collectors.toSet());
-
-        // Phase 1-2: Deterministic resolution with confidence scoring
-        List<ResolvedItem> resolvedItems = new ArrayList<>();
-        List<ResolvedItem> flaggedItems = new ArrayList<>();
+        // 2. Partition items: those with a consultantuuid feed the engine;
+        //    those without are flagged LOW for AI/manual resolution.
+        List<DeltaAbsorptionEngine.CurrentLine> engineInput = new ArrayList<>();
+        List<InvoiceItem> itemsWithConsultant = new ArrayList<>();
+        List<ResolvedItem> unresolved = new ArrayList<>();
 
         for (InvoiceItem item : currentItems) {
-            ResolvedItem resolved = resolveItem(item, projectWorkHours, representedConsultants);
-            if ("HIGH".equals(resolved.confidence())) {
-                resolvedItems.add(resolved);
-            } else {
-                flaggedItems.add(resolved);
+            if (item.consultantuuid == null || item.consultantuuid.isBlank()) {
+                unresolved.add(new ResolvedItem(
+                    item.uuid, item.itemname,
+                    BigDecimal.valueOf(item.hours),
+                    BigDecimal.valueOf(item.rate * item.hours),
+                    List.of(), "LOW",
+                    "No consultant assigned to this line item. May be a consolidated line."
+                ));
+                continue;
             }
+            itemsWithConsultant.add(item);
+            engineInput.add(new DeltaAbsorptionEngine.CurrentLine(
+                item.uuid, item.consultantuuid, BigDecimal.valueOf(item.hours)));
         }
 
-        // Phase 3: AI fallback for flagged items
-        if (!flaggedItems.isEmpty()) {
+        // 3. Run the engine
+        DeltaAbsorptionResult engineResult = DeltaAbsorptionEngine.resolve(baseline, engineInput);
+
+        // 4. Convert engine output to ResolvedItem (per-line)
+        List<ResolvedItem> resolvedItems = new ArrayList<>();
+        for (InvoiceItem item : itemsWithConsultant) {
+            resolvedItems.add(buildResolvedItem(item, engineResult, baseline));
+        }
+
+        // 5. If deterministic produced nothing (no consultant items or empty baseline with nulls), fall back to AI
+        Set<String> representedConsultants = itemsWithConsultant.stream()
+            .map(i -> i.consultantuuid).collect(Collectors.toSet());
+
+        List<ResolvedItem> flagged = unresolved;
+        if ((resolvedItems.isEmpty() && !currentItems.isEmpty()) || !unresolved.isEmpty()) {
             try {
                 List<ResolvedItem> aiResults = aiService.analyzeAttributions(
-                    buildAnalysisContext(invoice, currentItems, resolvedItems, flaggedItems,
-                        projectWorkHours, representedConsultants)
-                );
-                flaggedItems = aiResults;
+                    buildAnalysisContext(invoice, currentItems, resolvedItems, unresolved,
+                        baseline, representedConsultants));
+                flagged = aiResults;
             } catch (Exception e) {
                 log.warn("AI attribution analysis failed — items will require manual resolution", e);
             }
         }
 
-        // Phase 4: Merge results
+        // 6. Enrich with consultant names (single bulk query)
         List<ResolvedItem> allItems = new ArrayList<>(resolvedItems);
-        allItems.addAll(flaggedItems);
-
-        // Phase 5: Enrich with consultant names (single bulk query)
+        allItems.addAll(flagged);
         Set<String> allUuids = allItems.stream()
             .flatMap(ri -> ri.attributions().stream())
             .map(ResolvedAttribution::consultantUuid)
@@ -789,133 +786,48 @@ public class InvoiceAttributionService {
                 a.consultantName() != null ? a.consultantName() : nameMap.getOrDefault(a.consultantUuid(), null),
                 a.sharePct(), a.attributedAmount(), a.attributedHours()
             )).toList(),
-            item.confidence(), item.reasoning()
+            item.confidence(), item.reasoning(),
+            item.baselineHours(), item.delta()
         )).toList();
 
-        return new AttributionResolution(
-            allItems,
-            flaggedItems.isEmpty(),
-            flaggedItems.size()
-        );
+        return new AttributionResolution(allItems, flagged.isEmpty(), flagged.size());
     }
 
     /**
-     * Resolve a single item deterministically.
-     *
-     * When the item has a consultantuuid:
-     *   - That consultant gets their project work hours attributed directly
-     *   - Any excess hours (item hours minus consultant's work) are distributed
-     *     to consultants who logged work but have no line item (unrepresented)
-     *   - If no unrepresented consultants exist, 100% goes to the named consultant
-     *
-     * When the item has no consultantuuid: flagged as LOW confidence for AI/manual review.
+     * Convert a DeltaAbsorptionResult line into a ResolvedItem. The engine
+     * produced consultant shares in hours; we convert to sharePct + attributedAmount
+     * based on the line's total value. Also populates baselineHours and delta for UI display.
      */
-    private ResolvedItem resolveItem(InvoiceItem item,
-                                     Map<String, BigDecimal> projectWorkHours,
-                                     Set<String> representedConsultants) {
-        BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
+    private ResolvedItem buildResolvedItem(InvoiceItem item,
+                                           DeltaAbsorptionResult engineResult,
+                                           Map<String, BigDecimal> baseline) {
         BigDecimal itemHours = BigDecimal.valueOf(item.hours);
+        BigDecimal itemTotal = BigDecimal.valueOf(item.rate * item.hours);
+        BigDecimal baselineForConsultant = baseline.getOrDefault(item.consultantuuid, BigDecimal.ZERO);
+        BigDecimal delta = itemHours.subtract(baselineForConsultant);
 
-        // Case 1: Item has a consultant UUID — attribute to that consultant
-        if (item.consultantuuid != null && !item.consultantuuid.isBlank()) {
+        List<DeltaAbsorptionResult.ConsultantShare> shares =
+            engineResult.attributionsByLine().getOrDefault(item.uuid, List.of());
 
-            // Find unrepresented consultants (logged work but no line item)
-            Map<String, BigDecimal> unrepresented = projectWorkHours.entrySet().stream()
-                .filter(e -> !representedConsultants.contains(e.getKey()))
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                    (a, b) -> a, LinkedHashMap::new));
-
-            BigDecimal consultantWorkHours = projectWorkHours.getOrDefault(
-                item.consultantuuid, BigDecimal.ZERO);
-
-            // If no unrepresented consultants or no work data, 100% to item's consultant
-            if (unrepresented.isEmpty() || projectWorkHours.isEmpty()) {
-                return new ResolvedItem(
-                    item.uuid, item.itemname, itemHours, itemTotal,
-                    List.of(new ResolvedAttribution(
-                        item.consultantuuid, null,
-                        BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
-                        itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP),
-                        itemHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
-                    )),
-                    "HIGH",
-                    "Line item assigned to specific consultant"
-                );
-            }
-
-            // There are unrepresented consultants — distribute excess hours to them.
-            // The primary consultant gets at least their logged work hours.
-            // Excess = item hours - consultant's work hours (clamped to >= 0).
-            BigDecimal excess = itemHours.subtract(consultantWorkHours).max(BigDecimal.ZERO);
-
-            // If no excess, 100% to the primary consultant
-            if (excess.compareTo(BigDecimal.ZERO) == 0) {
-                return new ResolvedItem(
-                    item.uuid, item.itemname, itemHours, itemTotal,
-                    List.of(new ResolvedAttribution(
-                        item.consultantuuid, null,
-                        BigDecimal.valueOf(100).setScale(PCT_SCALE, RoundingMode.HALF_UP),
-                        itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP),
-                        itemHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
-                    )),
-                    "HIGH",
-                    "Line item assigned to specific consultant"
-                );
-            }
-
-            // Distribute excess proportionally among unrepresented consultants
-            BigDecimal totalUnrepHours = unrepresented.values().stream()
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-            // Cap excess to unrepresented total (don't attribute more than they worked)
-            BigDecimal distributableExcess = excess.min(totalUnrepHours);
-            BigDecimal primaryHours = itemHours.subtract(distributableExcess);
-
-            BigDecimal primaryPct = primaryHours.multiply(BigDecimal.valueOf(100))
+        List<ResolvedAttribution> atts = new ArrayList<>();
+        for (DeltaAbsorptionResult.ConsultantShare share : shares) {
+            BigDecimal sharePct = share.hours()
+                .multiply(BigDecimal.valueOf(100))
                 .divide(itemHours, PCT_SCALE, RoundingMode.HALF_UP);
-            BigDecimal primaryAmount = itemTotal.multiply(primaryPct)
+            BigDecimal amount = itemTotal.multiply(sharePct)
                 .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
-
-            List<ResolvedAttribution> attributions = new ArrayList<>();
-            attributions.add(new ResolvedAttribution(
-                item.consultantuuid, null,
-                primaryPct,
-                primaryAmount,
-                primaryHours.setScale(AMT_SCALE, RoundingMode.HALF_UP)
-            ));
-
-            for (var entry : unrepresented.entrySet()) {
-                BigDecimal unrepHours = entry.getValue();
-                BigDecimal share = unrepHours.divide(totalUnrepHours, PCT_SCALE + 2, RoundingMode.HALF_UP);
-                BigDecimal attrHours = distributableExcess.multiply(share)
-                    .setScale(AMT_SCALE, RoundingMode.HALF_UP);
-                BigDecimal attrPct = attrHours.multiply(BigDecimal.valueOf(100))
-                    .divide(itemHours, PCT_SCALE, RoundingMode.HALF_UP);
-                BigDecimal attrAmount = itemTotal.multiply(attrPct)
-                    .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
-
-                attributions.add(new ResolvedAttribution(
-                    entry.getKey(), null, attrPct, attrAmount, attrHours
-                ));
-            }
-
-            return new ResolvedItem(
-                item.uuid, item.itemname, itemHours, itemTotal,
-                attributions, "HIGH",
-                "Consultant's work: " + consultantWorkHours.setScale(1, RoundingMode.HALF_UP) +
-                "h, excess " + distributableExcess.setScale(1, RoundingMode.HALF_UP) +
-                "h redistributed to " + unrepresented.size() + " unrepresented consultant(s)"
-            );
+            atts.add(new ResolvedAttribution(share.consultantUuid(), null,
+                sharePct, amount,
+                share.hours().setScale(AMT_SCALE, RoundingMode.HALF_UP)));
         }
 
-        // Case 2: No consultant UUID — flag as LOW confidence
-        return new ResolvedItem(
-            item.uuid, item.itemname,
-            BigDecimal.valueOf(item.hours), itemTotal,
-            List.of(),
-            "LOW",
-            "No consultant assigned to this line item. May be a consolidated line."
-        );
+        String reasoning = atts.size() <= 1
+            ? "Line attributed 100% to its consultant (untouched or no deleted pool)"
+            : "Delta-based absorption: line absorbed from deleted-consultant pool";
+        return new ResolvedItem(item.uuid, item.itemname, itemHours,
+                                itemTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP),
+                                atts, "HIGH", reasoning,
+                                baselineForConsultant, delta);
     }
 
     private InvoiceAttributionAIService.AnalysisContext buildAnalysisContext(
