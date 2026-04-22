@@ -34,6 +34,39 @@ public class InvoiceAttributionAIService {
     private static final Logger LOG = Logger.getLogger(InvoiceAttributionAIService.class);
     private static final String MODEL = "gpt-4.1";
 
+    private static final String STRICT_RULES = """
+        STRICT RULES (must obey without exception):
+
+        1. ELIGIBILITY: The ONLY consultants allowed in your output are those
+           whose UUIDs appear in the provided `ELIGIBLE CONSULTANTS` list. This
+           list = baseline consultants ∪ current line consultants. Any other
+           UUID — even if they logged work on this project — MUST NOT appear.
+
+        2. UNTOUCHED LINES ARE IMMUTABLE: If a current line's hours equal the
+           line consultant's baseline hours, that line's attribution is 100%
+           to its own consultant. Do not split it with anyone.
+
+        3. ABSORPTION IS DELTA-BASED: Only positive-delta lines (current hours
+           > baseline hours) can absorb from deleted-consultant pools. Never
+           absorb on decreased or untouched lines.
+
+        4. CAP BY DELTA: A line's absorbed hours never exceed its positive
+           delta. Surplus pool beyond absorption capacity is left unattributed.
+
+        5. CAP BY POOL: A line's absorbed hours never exceed its share of the
+           deleted pool. Surplus delta beyond the pool goes back to the line's
+           own consultant.
+
+        6. NEW LINES DON'T ABSORB: A line for a consultant not in baseline is
+           100% their own. It cannot absorb deleted pools.
+
+        7. CONSERVATION: For each output line, the sum of attributed hours
+           must equal the current line's hours exactly.
+
+        8. NO SPECULATION: If the data doesn't support a rule-compliant split,
+           confidence = LOW and attributions = [] so the user resolves manually.
+        """;
+
     @ConfigProperty(name = "openai.api.key", defaultValue = "")
     String apiKey;
 
@@ -55,6 +88,8 @@ public class InvoiceAttributionAIService {
 
     /**
      * Full context passed to the AI for attribution analysis.
+     * Extended with eligibility and delta data so the AI prompt can enforce
+     * the strict rules of the delta-based absorption engine.
      */
     public record AnalysisContext(
         List<ItemSnapshot> originalItems,
@@ -62,8 +97,27 @@ public class InvoiceAttributionAIService {
         List<ItemSnapshot> deletedItems,
         Map<String, ConsultantWork> workData,
         List<ResolvedItem> alreadyResolved,
-        List<ResolvedItem> needsResolution
-    ) {}
+        List<ResolvedItem> needsResolution,
+        List<EligibleConsultant> eligibleConsultants,
+        Map<String, BigDecimal> baselineHoursByLine,
+        Map<String, BigDecimal> deltaByLine
+    ) {
+        /** A 6-arg constructor for backward compat with any caller that hasn't been updated yet. */
+        public AnalysisContext(
+            List<ItemSnapshot> originalItems,
+            List<ItemSnapshot> currentItems,
+            List<ItemSnapshot> deletedItems,
+            Map<String, ConsultantWork> workData,
+            List<ResolvedItem> alreadyResolved,
+            List<ResolvedItem> needsResolution
+        ) {
+            this(originalItems, currentItems, deletedItems, workData, alreadyResolved, needsResolution,
+                 List.of(), Map.of(), Map.of());
+        }
+    }
+
+    /** A consultant allowed to appear in AI output — baseline ∪ current line consultants. */
+    public record EligibleConsultant(String uuid, String name, BigDecimal baselineHours) {}
 
     /**
      * Snapshot of an invoice line item at a point in time.
@@ -105,7 +159,30 @@ public class InvoiceAttributionAIService {
             String response = client.chat().completions().create(params)
                 .choices().get(0).message().content().orElse("");
 
-            return parseResponse(response, context.needsResolution());
+            List<ResolvedItem> parsed = parseResponse(response, context.needsResolution());
+            // Validate each AI proposal; on rule violation, fall back to the original input item
+            // with confidence=MEDIUM and a note about the violation.
+            Map<String, ResolvedItem> originalsByUuid = context.needsResolution().stream()
+                .collect(Collectors.toMap(ResolvedItem::itemUuid, ri -> ri, (a, b) -> a));
+            List<ResolvedItem> validated = new ArrayList<>();
+            for (ResolvedItem p : parsed) {
+                if (validateAgainstRules(p, context)) {
+                    validated.add(p);
+                } else {
+                    ResolvedItem fallback = originalsByUuid.get(p.itemUuid());
+                    if (fallback != null) {
+                        LOG.warnf("AI proposal for %s violated strict rules; falling back to original",
+                            p.itemUuid());
+                        validated.add(new ResolvedItem(
+                            fallback.itemUuid(), fallback.description(), fallback.hours(), fallback.amount(),
+                            fallback.attributions(), "MEDIUM",
+                            "AI proposal violated strict rules — manual review recommended",
+                            fallback.baselineHours(), fallback.delta()
+                        ));
+                    }
+                }
+            }
+            return validated;
 
         } catch (Exception e) {
             LOG.error("OpenAI attribution analysis failed -- falling back to manual", e);
@@ -123,6 +200,8 @@ public class InvoiceAttributionAIService {
         sb.append("- Invoice line items represent billable work\n");
         sb.append("- Each line item's revenue must be attributed to the consultants who did the work\n");
         sb.append("- When users edit invoices, they often consolidate, split, or restructure lines\n\n");
+
+        sb.append(STRICT_RULES).append("\n");
 
         sb.append("ORIGINAL STATE (before user edits):\n");
         for (ItemSnapshot item : ctx.originalItems()) {
@@ -174,6 +253,14 @@ public class InvoiceAttributionAIService {
                 item.itemUuid(), item.description(), hours, rate, amount));
         }
 
+        sb.append("\nELIGIBLE CONSULTANTS (only these UUIDs may appear in output):\n");
+        for (EligibleConsultant ec : ctx.eligibleConsultants()) {
+            sb.append(String.format("- %s | %s | baseline %.2fh\n",
+                ec.uuid(),
+                ec.name() != null ? ec.name() : "(unknown)",
+                ec.baselineHours() != null ? ec.baselineHours() : BigDecimal.ZERO));
+        }
+
         sb.append("\nTASK: For each item needing attribution, determine which consultants ");
         sb.append("should receive what percentage of the revenue. Consider:\n");
         sb.append("1. The original work data (who actually worked)\n");
@@ -194,6 +281,44 @@ public class InvoiceAttributionAIService {
             }""");
 
         return sb.toString();
+    }
+
+    // ── Rule validation ──────────────────────────────────────────────
+
+    /**
+     * Check an AI proposal against the strict rules. Returns true if the proposal
+     * is rule-compliant. Used as a post-call safety net — any violation causes the
+     * caller to discard the AI output and fall back to deterministic default.
+     */
+    public static boolean validateAgainstRules(ResolvedItem proposal, AnalysisContext ctx) {
+        if (proposal == null || proposal.attributions() == null) return false;
+
+        Set<String> eligibleUuids = ctx.eligibleConsultants().stream()
+            .map(EligibleConsultant::uuid)
+            .collect(Collectors.toSet());
+
+        BigDecimal sumHours = BigDecimal.ZERO;
+        for (ResolvedAttribution a : proposal.attributions()) {
+            // Rule 1: eligibility
+            if (!eligibleUuids.contains(a.consultantUuid())) return false;
+            if (a.attributedHours() != null) {
+                sumHours = sumHours.add(a.attributedHours());
+            }
+        }
+
+        // Rule 7: conservation (±0.01h tolerance)
+        if (proposal.hours() != null) {
+            BigDecimal diff = sumHours.subtract(proposal.hours()).abs();
+            if (diff.compareTo(new BigDecimal("0.01")) > 0) return false;
+        }
+
+        // Rule 2/3: untouched or decreased lines must be 100% their own consultant
+        BigDecimal delta = proposal.delta();
+        if (delta != null && delta.signum() <= 0 && proposal.attributions().size() > 1) {
+            return false;
+        }
+
+        return true;
     }
 
     // ── Response parsing ─────────────────────────────────────────────

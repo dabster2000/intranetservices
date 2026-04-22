@@ -883,13 +883,45 @@ public class InvoiceAttributionService {
                     "")
             ));
 
+        // Eligibility set = baseline consultants ∪ current line consultants (with non-null consultantuuid)
+        List<InvoiceAttributionAIService.EligibleConsultant> eligible = new ArrayList<>();
+        Set<String> eligibleSeen = new HashSet<>();
+        for (var e : projectWorkHours.entrySet()) {
+            if (e.getValue() != null && e.getValue().signum() > 0 && eligibleSeen.add(e.getKey())) {
+                eligible.add(new InvoiceAttributionAIService.EligibleConsultant(
+                    e.getKey(), nameMap.get(e.getKey()), e.getValue()));
+            }
+        }
+        for (InvoiceItem i : currentItems) {
+            if (i.consultantuuid != null && !i.consultantuuid.isBlank() && eligibleSeen.add(i.consultantuuid)) {
+                eligible.add(new InvoiceAttributionAIService.EligibleConsultant(
+                    i.consultantuuid, nameMap.get(i.consultantuuid),
+                    projectWorkHours.getOrDefault(i.consultantuuid, BigDecimal.ZERO)));
+            }
+        }
+
+        // Per-line baseline + delta
+        Map<String, BigDecimal> baselineByLine = new LinkedHashMap<>();
+        Map<String, BigDecimal> deltaByLine = new LinkedHashMap<>();
+        for (InvoiceItem i : currentItems) {
+            BigDecimal baseline = i.consultantuuid != null
+                ? projectWorkHours.getOrDefault(i.consultantuuid, BigDecimal.ZERO)
+                : BigDecimal.ZERO;
+            BigDecimal current = BigDecimal.valueOf(i.hours);
+            baselineByLine.put(i.uuid, baseline);
+            deltaByLine.put(i.uuid, current.subtract(baseline));
+        }
+
         return new InvoiceAttributionAIService.AnalysisContext(
             originalSnapshots,
             currentSnapshots,
             deletedSnapshots,
             workData,
             resolved,
-            flagged
+            flagged,
+            eligible,
+            baselineByLine,
+            deltaByLine
         );
     }
 
