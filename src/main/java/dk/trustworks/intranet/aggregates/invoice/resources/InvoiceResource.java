@@ -1014,7 +1014,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/{invoiceuuid}/attributions/admin-recompute")
-    @RolesAllowed({"admin:full"})
+    @RolesAllowed({"admin:*"})
     public List<InvoiceItemAttribution> adminForceRecomputeAttributions(
             @PathParam("invoiceuuid") String invoiceuuid,
             @HeaderParam("X-Requested-By") String requestedBy) {
@@ -1049,7 +1049,7 @@ public class InvoiceResource {
 
     @POST
     @Path("/attributions/backfill")
-    @RolesAllowed({"admin:full"})
+    @RolesAllowed({"admin:*"})
     public Map<String, Object> backfillAttributions(
             @QueryParam("from") String from,
             @QueryParam("to") String to) {

@@ -1192,6 +1192,28 @@ public class InvoiceAttributionService {
                     Response.Status.NOT_FOUND);
         }
 
+        // Credit notes don't go through the engine — they mirror the source invoice.
+        // Still wipe existing rows and write fresh ones via the copy helper, with audit.
+        if (invoice.type == InvoiceType.CREDIT_NOTE) {
+            Map<String, List<InvoiceItemAttribution>> oldByItem = new LinkedHashMap<>();
+            for (InvoiceItem item : invoice.invoiceitems) {
+                oldByItem.put(item.uuid, getAttributions(item.uuid));
+            }
+            // copyAttributionsFromSource wipes AUTO+MANUAL per item and rewrites AUTO.
+            copyAttributionsFromSource(invoice);
+            for (InvoiceItem item : invoice.invoiceitems) {
+                String oldState = serializeAttributions(oldByItem.getOrDefault(item.uuid, List.of()));
+                String newState = serializeAttributions(getAttributions(item.uuid));
+                new AttributionAuditLog(
+                        invoice.uuid, item.uuid, changedByUuid,
+                        "ADMIN_FORCE_RECOMPUTE", oldState, newState, null
+                ).persist();
+            }
+            log.infof("adminForceRecomputeAttributions (CN): invoice=%s by=%s items=%d",
+                    invoice.uuid, changedByUuid, invoice.invoiceitems.size());
+            return getInvoiceAttributions(invoice.uuid);
+        }
+
         // Frozen-internals guard: same check as regular compute path.
         Set<String> itemUuids = invoice.invoiceitems.stream()
                 .map(ii -> ii.uuid)
@@ -1261,6 +1283,100 @@ public class InvoiceAttributionService {
         } catch (Exception e) {
             return "[]";
         }
+    }
+
+    // ── Credit note attribution copy ──────────────────────────────────────
+
+    /**
+     * Copy attribution rows from a source invoice to its credit note, one-to-one
+     * per line item. Used both at CN creation time and at admin-triggered recompute.
+     *
+     * Matching strategy:
+     *   1. Prefer {@code cnItem.sourceItemUuid} (set on new CNs by createCreditNote).
+     *   2. Fall back to fuzzy match on (consultantuuid, itemname, description, rate, hours)
+     *      for older CNs that predate V300 and don't have sourceItemUuid set.
+     *
+     * The CN attribution mirrors the source's per-consultant shares; amounts stay
+     * positive and the CN's type flag handles sign inversion at read time.
+     * Writes {@link AttributionSource#AUTO} rows. MANUAL rows are NOT preserved here —
+     * callers that need preservation should handle it before calling.
+     */
+    @Transactional
+    public void copyAttributionsFromSource(Invoice creditNote) {
+        if (creditNote == null || creditNote.type != InvoiceType.CREDIT_NOTE) {
+            return;
+        }
+        String sourceUuid = creditNote.getCreditnoteForUuid();
+        if (sourceUuid == null || sourceUuid.isBlank()) {
+            log.warnf("copyAttributionsFromSource: CN %s has no creditnoteForUuid; skipping",
+                    creditNote.uuid);
+            return;
+        }
+        Invoice source = Invoice.findById(sourceUuid);
+        if (source == null) {
+            log.warnf("copyAttributionsFromSource: CN %s references missing source %s",
+                    creditNote.uuid, sourceUuid);
+            return;
+        }
+
+        int matched = 0;
+        int unmatched = 0;
+        for (InvoiceItem cnItem : creditNote.invoiceitems) {
+            InvoiceItem sourceItem = findMatchingSourceItem(cnItem, source);
+            if (sourceItem == null) {
+                log.warnf("copyAttributionsFromSource: CN %s item %s has no source match",
+                        creditNote.uuid, cnItem.uuid);
+                unmatched++;
+                continue;
+            }
+
+            List<InvoiceItemAttribution> sourceAttrs = getAttributions(sourceItem.uuid);
+            InvoiceItemAttribution.delete("invoiceitemUuid", cnItem.uuid);
+
+            BigDecimal cnItemHours = BigDecimal.valueOf(cnItem.hours);
+            BigDecimal cnItemTotal = BigDecimal.valueOf(cnItem.rate * cnItem.hours);
+            for (InvoiceItemAttribution src : sourceAttrs) {
+                BigDecimal sharePct = src.sharePct;
+                BigDecimal amount = cnItemTotal.multiply(sharePct)
+                        .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+                BigDecimal originalHours = cnItemHours.multiply(sharePct)
+                        .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+                InvoiceItemAttribution newAttr = new InvoiceItemAttribution(
+                        cnItem.uuid,
+                        src.consultantUuid,
+                        sharePct,
+                        amount,
+                        originalHours,
+                        AttributionSource.AUTO);
+                newAttr.persist();
+            }
+            matched++;
+        }
+        log.infof("copyAttributionsFromSource: creditNote=%s source=%s matched=%d unmatched=%d",
+                creditNote.uuid, sourceUuid, matched, unmatched);
+    }
+
+    /**
+     * Find the source invoice item that corresponds to a CN item.
+     * Prefers explicit {@code sourceItemUuid} linkage; falls back to fuzzy match on
+     * (consultantuuid, itemname, description, rate, hours).
+     */
+    private InvoiceItem findMatchingSourceItem(InvoiceItem cnItem, Invoice source) {
+        if (cnItem.sourceItemUuid != null && !cnItem.sourceItemUuid.isBlank()) {
+            for (InvoiceItem s : source.invoiceitems) {
+                if (cnItem.sourceItemUuid.equals(s.uuid)) return s;
+            }
+            // fall through to fuzzy match if explicit link didn't resolve
+        }
+        for (InvoiceItem s : source.invoiceitems) {
+            if (!java.util.Objects.equals(cnItem.consultantuuid, s.consultantuuid)) continue;
+            if (!java.util.Objects.equals(cnItem.itemname, s.itemname)) continue;
+            if (!java.util.Objects.equals(cnItem.description, s.description)) continue;
+            if (cnItem.rate != s.rate) continue;
+            if (cnItem.hours != s.hours) continue;
+            return s;
+        }
+        return null;
     }
 
     // ── Cascade to linked internal invoices (spec §5.3) ───────────────────

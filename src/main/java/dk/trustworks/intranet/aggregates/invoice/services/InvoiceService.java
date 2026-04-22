@@ -536,6 +536,9 @@ public class InvoiceService {
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
         invoice.getInvoiceitems().forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
         InvoiceItem.persist(invoice.getInvoiceitems());
+        if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
+            invoiceAttributionService.copyAttributionsFromSource(invoice);
+        }
         return invoice;
     }
 
@@ -662,6 +665,8 @@ public class InvoiceService {
                 creditNote.uuid,
                 invoiceitem.getOrigin()
             );
+            // Link CN item back to its source for precise attribution matching.
+            newItem.sourceItemUuid = invoiceitem.uuid;
             // Preserve additional fields for CALCULATED items
             if (invoiceitem.getOrigin() == InvoiceItemOrigin.CALCULATED) {
                 newItem.setCalculationRef(invoiceitem.getCalculationRef());
@@ -684,6 +689,7 @@ public class InvoiceService {
             }
             throw e;
         }
+        invoiceAttributionService.copyAttributionsFromSource(creditNote);
         return creditNote;
     }
 
