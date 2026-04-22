@@ -560,8 +560,22 @@ public class InvoiceAttributionService {
             return;
         }
 
-        // Use the billing period (invoice.year/invoice.month), not invoicedate,
-        // to query work/contract data for the right month.
+        // Preferred fallback: attribute proportional to the OTHER BASE items'
+        // attributions on this invoice. This keeps the "eligibility" invariant
+        // (only consultants represented on the invoice get attributed) and is
+        // the right behaviour for discount-like items stored with origin=BASE
+        // and null consultantuuid, as well as for genuine consolidated lines
+        // where other BASE items already have consultant-specific attributions.
+        Map<String, BigDecimal> invoiceBaseDistribution = computeBaseDistribution(invoice.uuid);
+        if (!invoiceBaseDistribution.isEmpty()) {
+            createAttributionsFromShares(item.uuid, invoiceBaseDistribution, itemTotal, false);
+            return;
+        }
+
+        // No other BASE attributions to mirror — fall back to contract-wide work
+        // shares (legacy behaviour, used when the invoice has ONLY null-consultant
+        // items). Use the billing period (invoice.year/invoice.month), not
+        // invoicedate, to query work data for the right month.
         LocalDate billingPeriod = invoiceBillingPeriodStart(invoice);
         Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, billingPeriod);
         if (!workShares.isEmpty()) {
