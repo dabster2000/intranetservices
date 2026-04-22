@@ -1169,6 +1169,86 @@ public class InvoiceAttributionService {
         return invoiceService.createInvoice(invoice);
     }
 
+    /**
+     * Admin-only: force recompute attributions on ANY-status invoice. Wipes both
+     * MANUAL and AUTO rows, regenerates via the engine, writes an audit log entry.
+     * Still respects the frozen-internals guard: if any linked internal invoice is
+     * CREATED or PENDING_REVIEW, throws 409 Conflict.
+     *
+     * Unlike {@link #computeAttributions(String)}, this bypasses any status gate
+     * and deliberately overwrites MANUAL attributions. Caller is responsible for
+     * ensuring the request is authorized (admin scope).
+     *
+     * @param invoiceUuid    the invoice to recompute
+     * @param changedByUuid  the admin user UUID (from X-Requested-By), used in audit log
+     * @return fresh attribution rows after recompute
+     */
+    @Transactional
+    public List<InvoiceItemAttribution> adminForceRecomputeAttributions(
+            String invoiceUuid, String changedByUuid) {
+        Invoice invoice = Invoice.findById(invoiceUuid);
+        if (invoice == null) {
+            throw new WebApplicationException("Invoice not found: " + invoiceUuid,
+                    Response.Status.NOT_FOUND);
+        }
+
+        // Frozen-internals guard: same check as regular compute path.
+        Set<String> itemUuids = invoice.invoiceitems.stream()
+                .map(ii -> ii.uuid)
+                .collect(Collectors.toSet());
+        assertNoFrozenInternalReferences(invoiceUuid, itemUuids);
+
+        // Snapshot old state for audit BEFORE wiping, grouped by item UUID.
+        Map<String, List<InvoiceItemAttribution>> oldByItem = new LinkedHashMap<>();
+        for (InvoiceItem item : invoice.invoiceitems) {
+            oldByItem.put(item.uuid, getAttributions(item.uuid));
+        }
+
+        // Wipe MANUAL and AUTO for every item on this invoice.
+        // Per-item delete keeps the operation scoped; bulk delete by invoice would
+        // also work but this is explicit.
+        for (InvoiceItem item : invoice.invoiceitems) {
+            InvoiceItemAttribution.delete("invoiceitemUuid", item.uuid);
+        }
+
+        // Run the canonical persistence path. Since all rows are gone, the engine
+        // output is written cleanly; the MANUAL-preservation branch inside
+        // persistItemFromEngineResult never fires.
+        List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
+                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .toList();
+        List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
+                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .toList();
+
+        persistBaseAttributionsViaEngine(invoice, baseItems);
+
+        if (!calculatedItems.isEmpty()) {
+            Map<String, BigDecimal> baseDistribution = computeBaseDistribution(invoiceUuid);
+            for (InvoiceItem item : calculatedItems) {
+                computeCalculatedItemAttribution(item, baseDistribution);
+            }
+        }
+
+        // Audit log entry per item: one row per item showing old -> new state.
+        for (InvoiceItem item : invoice.invoiceitems) {
+            String oldState = serializeAttributions(oldByItem.getOrDefault(item.uuid, List.of()));
+            String newState = serializeAttributions(getAttributions(item.uuid));
+            new AttributionAuditLog(
+                    invoiceUuid, item.uuid, changedByUuid,
+                    "ADMIN_FORCE_RECOMPUTE", oldState, newState, null
+            ).persist();
+        }
+
+        // Cascade to DRAFT/QUEUED linked internals exactly like the regular path.
+        cascadeToLinkedInternals(invoiceUuid, itemUuids);
+
+        log.infof("adminForceRecomputeAttributions: invoice=%s by=%s items=%d",
+                invoiceUuid, changedByUuid, invoice.invoiceitems.size());
+
+        return getInvoiceAttributions(invoiceUuid);
+    }
+
     private String serializeAttributions(List<InvoiceItemAttribution> attrs) {
         try {
             return objectMapper.writeValueAsString(
