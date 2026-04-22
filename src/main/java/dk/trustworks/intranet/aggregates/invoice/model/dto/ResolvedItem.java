@@ -9,6 +9,15 @@ public record ResolvedItem(
     BigDecimal hours,
     BigDecimal amount,
     List<ResolvedAttribution> attributions,
-    String confidence,  // HIGH, MEDIUM, LOW
-    String reasoning
-) {}
+    String confidence,
+    String reasoning,
+    BigDecimal baselineHours,
+    BigDecimal delta
+) {
+    public ResolvedItem(
+        String itemUuid, String description, BigDecimal hours, BigDecimal amount,
+        List<ResolvedAttribution> attributions, String confidence, String reasoning
+    ) {
+        this(itemUuid, description, hours, amount, attributions, confidence, reasoning, null, null);
+    }
+}
