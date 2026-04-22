@@ -211,7 +211,9 @@ feature:
   # flip to false only as an emergency rollback.
   invoicing:
     internal:
-      attribution-driven: ${feature.invoicing.internal.attribution-driven:true}
+      # Override via env var FEATURE_INVOICING_INTERNAL_ATTRIBUTION_DRIVEN or
+      # the Quarkus config key `feature.invoicing.internal.attribution-driven`.
+      attribution-driven: true
   # Contract Rule Override System feature flags
   contract:
     overrides:
