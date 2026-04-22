@@ -738,6 +738,7 @@ public class InvoiceService {
                 "Intern faktura knyttet til " + invoice.getInvoicenumber(),
                 legacyDebtorCompanyUuid);
         internalInvoice.setBillingClientUuid(intercompanyClient.getUuid());
+        internalInvoice.setVat(invoice.getVat());
         int position = 1;
         for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
             if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
@@ -873,6 +874,7 @@ public class InvoiceService {
                 "Intern faktura knyttet til " + clientInvoice.getInvoicenumber(),
                 debtorCompanyUuid);
         internalInvoice.setBillingClientUuid(intercompanyClient.getUuid());
+        internalInvoice.setVat(clientInvoice.getVat());
 
         // 5. Filter items: keep BASE items for issuer's consultants + all CALCULATED items
         int position = 1;
@@ -1173,6 +1175,7 @@ public class InvoiceService {
                 "Intern faktura knyttet til " + source.getInvoicenumber(),
                 debtorCompanyUuid);
         internalInvoice.setBillingClientUuid(intercompanyClient.getUuid());
+        internalInvoice.setVat(source.getVat());
 
         int position = 1;
         for (InvoiceItem line : generatedLines) {
@@ -1299,6 +1302,9 @@ public class InvoiceService {
                 "Intern faktura knyttet til " + month.getMonth().name() + " " + month.getYear() + " fra " + fromCompany.getName() + " til " + toCompany.getName());
         invoice.setDebtorCompanyuuid(toCompanyuuid);
         invoice.setBillingClientUuid(intercompanyClient.getUuid());
+        // No source invoice — use the old currency→VAT default (DKK=25, others=0)
+        // since commit 6d89c3e removed that hardcode from the Invoice constructor.
+        invoice.setVat("DKK".equals(invoice.getCurrency()) ? 25.0 : 0.0);
 
         invoice.persistAndFlush();
 
