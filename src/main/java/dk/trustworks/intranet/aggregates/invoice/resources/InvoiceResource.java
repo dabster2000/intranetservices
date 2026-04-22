@@ -1061,6 +1061,51 @@ public class InvoiceResource {
         return invoiceAttributionService.findUnattributedItems(fromDate, toDate);
     }
 
+    // ── Attribution-driven internal invoice endpoints (spec 2026-04-21) ───
+
+    /**
+     * Preview the internal invoices that would be created from a source invoice's
+     * current attribution state — no persistence. Consumed by the
+     * {@code CreateInternalInvoicesModal} on the Next.js frontend.
+     *
+     * @return 200 with the projected groupings, 400 for PHANTOM sources, 404 when
+     *         the source invoice does not exist.
+     */
+    @GET
+    @Path("/{invoiceuuid}/internal-preview")
+    @RolesAllowed({"invoices:read"})
+    public dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview previewInternal(
+            @PathParam("invoiceuuid") String invoiceuuid) {
+        return invoiceService.previewInternal(invoiceuuid);
+    }
+
+    /**
+     * Materialize internal invoice DRAFTs for all detected issuers (or a requested
+     * subset). When {@code queue == true} the newly-created DRAFTs are transitioned
+     * to QUEUED in the same transaction.
+     *
+     * <p>Idempotent per-issuer: issuers that already have a linked internal invoice
+     * (any status) are skipped.
+     *
+     * @return 200 with the list of created invoice UUIDs. 400 for PHANTOM sources.
+     *         404 when the source invoice does not exist.
+     */
+    @POST
+    @Path("/{invoiceuuid}/create-all-internal")
+    @RolesAllowed({"invoices:write"})
+    public dk.trustworks.intranet.aggregates.invoice.dto.CreateAllInternalResponse createAllInternal(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            dk.trustworks.intranet.aggregates.invoice.dto.CreateAllInternalRequest request) {
+        java.util.Set<String> issuerFilter = (request != null && request.issuerCompanyUuids() != null
+                && !request.issuerCompanyUuids().isEmpty())
+                ? new java.util.HashSet<>(request.issuerCompanyUuids())
+                : null;
+        boolean queue = request != null && request.queue();
+        List<String> created = invoiceService.createAllInternalFromAttribution(
+                invoiceuuid, issuerFilter, queue);
+        return new dk.trustworks.intranet.aggregates.invoice.dto.CreateAllInternalResponse(created);
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Data boundary: cross-company consultant detail masking
     // ──────────────────────────────────────────────────────────────
