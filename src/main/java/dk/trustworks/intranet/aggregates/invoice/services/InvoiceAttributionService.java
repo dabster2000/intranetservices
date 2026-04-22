@@ -77,18 +77,36 @@ public class InvoiceAttributionService {
                         invoice.uuid);
             }
         }
-        // Fallback: derive from work table (legacy drafts with no snapshot)
+        // Fallback: derive from work table (legacy drafts with no snapshot).
+        // Use invoice.year/invoice.month as the billing period — NOT invoicedate,
+        // which is the issue date (usually the month AFTER the work happened).
         if (invoice.projectuuid != null) {
             try {
-                LocalDate effectiveDate = invoice.invoicedate != null
-                        ? invoice.invoicedate : LocalDate.now();
-                return computeProjectWorkHours(invoice.projectuuid, effectiveDate);
+                return computeProjectWorkHours(invoice.projectuuid,
+                        invoiceBillingPeriodStart(invoice));
             } catch (Exception e) {
                 log.warnf("buildEngineBaseline: computeProjectWorkHours failed for project=%s",
                         invoice.projectuuid);
             }
         }
         return Map.of();
+    }
+
+    /**
+     * The start of the invoice's billing period (first day of the month the
+     * invoice covers). Uses invoice.year/invoice.month when populated —
+     * these reflect the work period the invoice bills for (e.g. March) and
+     * differ from invoicedate (the issue date, typically the following month).
+     * Falls back to invoicedate, then today, for extremely old/malformed rows.
+     */
+    private LocalDate invoiceBillingPeriodStart(Invoice invoice) {
+        if (invoice.year > 0 && invoice.month > 0) {
+            return LocalDate.of(invoice.year, invoice.month, 1);
+        }
+        if (invoice.invoicedate != null) {
+            return invoice.invoicedate.withDayOfMonth(1);
+        }
+        return LocalDate.now().withDayOfMonth(1);
     }
 
     // ── Public query methods ──────────────────────────────────────────
@@ -163,11 +181,15 @@ public class InvoiceAttributionService {
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, itemUuids);
 
+        // Split BASE vs CALCULATED. Detect CALCULATED by origin OR by the metadata
+        // signals (calculationRef/ruleId/label) that PricingEngine sets — mirrors
+        // the filter in InvoiceService.recalculateInvoiceItems. Older invoices
+        // sometimes stored discount items with origin=BASE but the metadata set.
         List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .filter(ii -> !isEffectivelyCalculated(ii))
                 .toList();
         List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .filter(this::isEffectivelyCalculated)
                 .toList();
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
@@ -202,11 +224,13 @@ public class InvoiceAttributionService {
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, changedItemUuids);
 
+        // Same robust split as computeAttributions — treat items with CALCULATED
+        // metadata as CALCULATED even if origin is stored as BASE (legacy data).
         List<InvoiceItem> baseItems = items.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .filter(ii -> !isEffectivelyCalculated(ii))
                 .toList();
         List<InvoiceItem> calculatedItems = items.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .filter(this::isEffectivelyCalculated)
                 .toList();
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
@@ -435,6 +459,22 @@ public class InvoiceAttributionService {
     }
 
     /**
+     * Is this item effectively a CALCULATED (discount/fee/roundup) item?
+     * Checks both the explicit origin enum and the metadata signals
+     * (calculationRef/ruleId/label) set by PricingEngine. Older invoices
+     * occasionally stored discounts with origin=BASE but with the metadata
+     * populated — this helper catches both shapes. Mirrors the filter used
+     * in InvoiceService.recalculateInvoiceItems.
+     */
+    private boolean isEffectivelyCalculated(InvoiceItem item) {
+        if (item.origin == InvoiceItemOrigin.CALCULATED) return true;
+        if (item.getCalculationRef() != null) return true;
+        if (item.getRuleId() != null) return true;
+        if (item.getLabel() != null) return true;
+        return false;
+    }
+
+    /**
      * Persist the engine's per-line shares for a single BASE item.
      * Preserves MANUAL attributions. Falls back to 100% line-consultant when
      * the engine produced no shares for this item.
@@ -520,14 +560,17 @@ public class InvoiceAttributionService {
             return;
         }
 
-        Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, invoice.invoicedate);
+        // Use the billing period (invoice.year/invoice.month), not invoicedate,
+        // to query work/contract data for the right month.
+        LocalDate billingPeriod = invoiceBillingPeriodStart(invoice);
+        Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, billingPeriod);
         if (!workShares.isEmpty()) {
             createAttributionsFromShares(item.uuid, workShares, itemTotal, item.hours, true);
             return;
         }
 
         Map<String, BigDecimal> consultantShares = computeContractConsultantShares(
-                invoice.contractuuid, invoice.invoicedate);
+                invoice.contractuuid, billingPeriod);
         if (!consultantShares.isEmpty()) {
             createAttributionsFromShares(item.uuid, consultantShares, itemTotal, false);
             return;
@@ -1236,11 +1279,15 @@ public class InvoiceAttributionService {
         // Run the canonical persistence path. Since all rows are gone, the engine
         // output is written cleanly; the MANUAL-preservation branch inside
         // persistItemFromEngineResult never fires.
+        // Split BASE vs CALCULATED. Detect CALCULATED by origin OR by the metadata
+        // signals (calculationRef/ruleId/label) that PricingEngine sets — mirrors
+        // the filter in InvoiceService.recalculateInvoiceItems. Older invoices
+        // sometimes stored discount items with origin=BASE but the metadata set.
         List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .filter(ii -> !isEffectivelyCalculated(ii))
                 .toList();
         List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .filter(this::isEffectivelyCalculated)
                 .toList();
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
