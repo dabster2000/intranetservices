@@ -205,6 +205,19 @@ mp:
       publickey:
         location: META-INF/resources/publicKey.pem
 feature:
+  # Attribution-driven internal invoice line generation (spec 2026-04-21).
+  # When true, internal-invoice creation and cascade regeneration derive lines
+  # from invoice_item_attributions × source items. Defaults on in every env;
+  # flip to false only as an emergency rollback.
+  invoicing:
+    internal:
+      attribution-driven: ${feature.invoicing.internal.attribution-driven:true}
+invoicing:
+  internal:
+    # Contact-person name stamped on generated internal invoices. Externalized so
+    # no individual's name is embedded in source code. Default is a generic label;
+    # override per-environment if a specific contact is desired.
+    default-contact-name: ${INVOICING_INTERNAL_DEFAULT_CONTACT_NAME:Trustworks Finance}
   # Contract Rule Override System feature flags
   contract:
     overrides:

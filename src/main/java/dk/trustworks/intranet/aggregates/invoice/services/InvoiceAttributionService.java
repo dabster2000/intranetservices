@@ -11,10 +11,14 @@ import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.math.BigDecimal;
@@ -39,6 +43,12 @@ public class InvoiceAttributionService {
 
     @Inject
     InvoiceService invoiceService;
+
+    @Inject
+    UserCompanyResolver userCompanyResolver;
+
+    @Inject
+    RequestHeaderHolder requestHeaderHolder;
 
     @Inject
     com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -106,6 +116,15 @@ public class InvoiceAttributionService {
             return;
         }
 
+        // Invoice-level 409 guard: if ANY item on this source is referenced by a
+        // finalized (CREATED/PENDING_REVIEW) linked internal invoice, we cannot
+        // recompute at the invoice level — it would regenerate around frozen rows.
+        // Per-item mutations still allow editing items that aren't frozen.
+        Set<String> itemUuids = invoice.invoiceitems.stream()
+                .map(ii -> ii.uuid)
+                .collect(Collectors.toSet());
+        assertNoFrozenInternalReferences(invoiceUuid, itemUuids);
+
         List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
                 .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
                 .toList();
@@ -126,6 +145,8 @@ public class InvoiceAttributionService {
 
         log.infof("computeAttributions: completed for invoice uuid=%s, items=%d",
                 invoiceUuid, invoice.invoiceitems.size());
+
+        cascadeToLinkedInternals(invoiceUuid, itemUuids);
     }
 
     /**
@@ -139,6 +160,11 @@ public class InvoiceAttributionService {
             log.warnf("computeAttributionsFromItems: invoice not found uuid=%s", invoiceUuid);
             return;
         }
+
+        Set<String> changedItemUuids = items.stream()
+                .map(ii -> ii.uuid)
+                .collect(Collectors.toSet());
+        assertNoFrozenInternalReferences(invoiceUuid, changedItemUuids);
 
         List<InvoiceItem> baseItems = items.stream()
                 .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
@@ -160,6 +186,8 @@ public class InvoiceAttributionService {
 
         log.infof("computeAttributionsFromItems: completed for invoice uuid=%s, items=%d",
                 invoiceUuid, items.size());
+
+        cascadeToLinkedInternals(invoiceUuid, changedItemUuids);
     }
 
     // ── Recompute amounts from stable shares ──────────────────────────
@@ -216,6 +244,8 @@ public class InvoiceAttributionService {
 
         log.infof("setManualAttribution: set %d manual attributions for item uuid=%s",
                 inputs.size(), invoiceItemUuid);
+
+        cascadeToLinkedInternals(item.invoiceuuid, Set.of(invoiceItemUuid));
     }
 
     // ── Reset to auto ─────────────────────────────────────────────────
@@ -245,6 +275,8 @@ public class InvoiceAttributionService {
         }
 
         log.infof("resetToAuto: recomputed auto attributions for item uuid=%s", invoiceItemUuid);
+
+        cascadeToLinkedInternals(invoiceUuid, Set.of(invoiceItemUuid));
     }
 
     // ── Batch backfill ────────────────────────────────────────────────
@@ -1049,6 +1081,22 @@ public class InvoiceAttributionService {
             ).persist();
         }
 
+        // Defensive guard: finalization intentionally skips cascadeToLinkedInternals
+        // (spec §5.3 — finalized sources are immutable). But if a DRAFT/QUEUED linked
+        // internal invoice already exists against this source, it won't be regenerated
+        // with the finalization-time attribution and may be stale. WARN only — do not
+        // block finalization (per QA-review fix 2, 2026-04-22).
+        List<Invoice> linkedInternals = Invoice.find(
+                "invoiceRefUuid = ?1 and type = ?2",
+                invoiceUuid, InvoiceType.INTERNAL).list();
+        for (Invoice linkedInvoice : linkedInternals) {
+            if (linkedInvoice.status == InvoiceStatus.DRAFT
+                    || linkedInvoice.status == InvoiceStatus.QUEUED) {
+                log.warnf("Cascade skipped for finalized source %s but DRAFT/QUEUED internal %s exists — possibly stale",
+                        invoiceUuid, linkedInvoice.uuid);
+            }
+        }
+
         // Delegate finalization to InvoiceService.createInvoice so this path
         // reuses the canonical logic: item recalculation, bonus recalc, e-conomic
         // draft creation (step 1), and PENDING_REVIEW status. Runs in the same transaction.
@@ -1067,5 +1115,164 @@ public class InvoiceAttributionService {
         } catch (Exception e) {
             return "[]";
         }
+    }
+
+    // ── Cascade to linked internal invoices (spec §5.3) ───────────────────
+
+    /**
+     * Throw 409 Conflict if any of {@code itemUuids} is referenced via
+     * {@code source_item_uuid} on a line of a CREATED or PENDING_REVIEW linked
+     * internal invoice. Called from {@code computeAttributions} for the invoice-level
+     * guard; per-item mutations use {@link #cascadeToLinkedInternals} which performs
+     * the same check with per-item granularity.
+     */
+    private void assertNoFrozenInternalReferences(String sourceInvoiceUuid, Set<String> itemUuids) {
+        if (itemUuids == null || itemUuids.isEmpty()) return;
+
+        List<Invoice> linked = Invoice.find(
+                "invoiceRefUuid = ?1 and type = ?2",
+                sourceInvoiceUuid, InvoiceType.INTERNAL).list();
+        for (Invoice linkedInvoice : linked) {
+            if (linkedInvoice.status != InvoiceStatus.CREATED
+                    && linkedInvoice.status != InvoiceStatus.PENDING_REVIEW) {
+                continue;
+            }
+            boolean conflicts = linkedInvoice.invoiceitems.stream()
+                    .anyMatch(li -> li.sourceItemUuid != null
+                            && itemUuids.contains(li.sourceItemUuid));
+            if (conflicts) {
+                throw new WebApplicationException(
+                        "Attribution cannot be modified: item contributed to finalized internal invoice "
+                                + linkedInvoice.invoicenumber
+                                + ". Use a credit note to correct.",
+                        Response.Status.CONFLICT);
+            }
+        }
+    }
+
+    /**
+     * After persisting attribution changes on a source invoice's items, propagate
+     * those changes to any linked INTERNAL invoice in DRAFT or QUEUED status:
+     * delete current items and regenerate from {@link InternalInvoiceLineGenerator}
+     * filtered to the linked invoice's issuer company. Skip CREATED/PENDING_REVIEW
+     * invoices that don't reference any of the changed items; throw 409 Conflict
+     * if they DO reference a changed item (frozen invoices cannot be edited).
+     *
+     * <p>Audit: writes one {@link AttributionAuditLog} row per changed item with
+     * {@code changeType = "INTERNAL_INVOICE_REGEN"} and {@code changedBy} resolved
+     * from the request's {@code X-Requested-By} header (fallback
+     * {@code "system-cascade"} when no request context, e.g. during batch jobs).
+     *
+     * @param sourceInvoiceUuid the source invoice whose attribution was mutated
+     * @param changedItemUuids  the subset of source-item UUIDs whose attribution changed
+     */
+    private void cascadeToLinkedInternals(String sourceInvoiceUuid, Set<String> changedItemUuids) {
+        if (changedItemUuids == null || changedItemUuids.isEmpty()) return;
+
+        List<Invoice> linkedInternals = Invoice.find(
+                "invoiceRefUuid = ?1 and type = ?2",
+                sourceInvoiceUuid, InvoiceType.INTERNAL).list();
+        if (linkedInternals.isEmpty()) return;
+
+        // Phase 1: check for frozen invoices that reference changed items → 409.
+        for (Invoice linkedInvoice : linkedInternals) {
+            if (linkedInvoice.status != InvoiceStatus.CREATED
+                    && linkedInvoice.status != InvoiceStatus.PENDING_REVIEW) {
+                continue;
+            }
+            boolean conflicts = linkedInvoice.invoiceitems.stream()
+                    .anyMatch(li -> li.sourceItemUuid != null
+                            && changedItemUuids.contains(li.sourceItemUuid));
+            if (conflicts) {
+                throw new WebApplicationException(
+                        "Attribution cannot be modified: item contributed to finalized internal invoice "
+                                + linkedInvoice.invoicenumber
+                                + ". Use a credit note to correct.",
+                        Response.Status.CONFLICT);
+            }
+        }
+
+        // Phase 2: regenerate DRAFT/QUEUED linked internals from current attribution.
+        Invoice source = Invoice.findById(sourceInvoiceUuid);
+        if (source == null) {
+            log.warnf("cascadeToLinkedInternals: source invoice not found uuid=%s", sourceInvoiceUuid);
+            return;
+        }
+
+        List<InvoiceItemAttribution> attributions = getInvoiceAttributions(sourceInvoiceUuid);
+        Set<String> consultantUuids = attributions.stream()
+                .map(a -> a.consultantUuid)
+                .filter(u -> u != null && !u.isBlank())
+                .collect(Collectors.toSet());
+        LocalDate asOf = source.invoicedate != null ? source.invoicedate : LocalDate.now();
+        Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
+        String sourceCompanyUuid = source.company != null ? source.company.getUuid() : null;
+
+        Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
+                sourceCompanyUuid, source.invoiceitems, attributions, userCompanies);
+
+        for (Invoice linkedInvoice : linkedInternals) {
+            if (linkedInvoice.status != InvoiceStatus.DRAFT
+                    && linkedInvoice.status != InvoiceStatus.QUEUED) {
+                continue;
+            }
+
+            String issuerUuid = linkedInvoice.company != null ? linkedInvoice.company.getUuid() : null;
+            if (issuerUuid == null) continue;
+
+            List<InvoiceItem> newLines = grouped.getOrDefault(issuerUuid, List.of());
+
+            // Snapshot old state for audit log BEFORE deleting.
+            long previousCount = linkedInvoice.invoiceitems.size();
+
+            // Delete existing items and persist regenerated ones.
+            InvoiceItem.delete("invoiceuuid", linkedInvoice.uuid);
+            linkedInvoice.invoiceitems.clear();
+
+            int position = 1;
+            for (InvoiceItem line : newLines) {
+                line.invoiceuuid = linkedInvoice.uuid;
+                line.position = position++;
+                InvoiceItem.persist(line);
+                linkedInvoice.invoiceitems.add(line);
+            }
+
+            log.infof("cascadeToLinkedInternals: invoice=%s issuer=%s items %d -> %d",
+                    linkedInvoice.uuid, issuerUuid, previousCount, newLines.size());
+        }
+
+        // Phase 3: audit log — one row per changed item with INTERNAL_INVOICE_REGEN.
+        String changedBy = resolveChangedBy();
+        for (String itemUuid : changedItemUuids) {
+            List<InvoiceItemAttribution> current = getAttributions(itemUuid);
+            String stateJson = serializeAttributions(current);
+            new AttributionAuditLog(
+                    sourceInvoiceUuid,
+                    itemUuid,
+                    changedBy,
+                    "INTERNAL_INVOICE_REGEN",
+                    stateJson,
+                    stateJson,
+                    "cascade regenerated linked internal invoices"
+            ).persist();
+        }
+    }
+
+    /**
+     * Resolve the {@code changedBy} UUID for audit logging. Uses the request-scoped
+     * {@code X-Requested-By} header when available. Falls back to {@code "system-cascade"}
+     * when invoked outside a request context (batch jobs). {@code changedBy} is a
+     * NOT NULL column so the fallback is required.
+     */
+    private String resolveChangedBy() {
+        try {
+            String fromHeader = requestHeaderHolder.getUserUuid();
+            if (fromHeader != null && !fromHeader.isBlank()) {
+                return fromHeader;
+            }
+        } catch (Exception e) {
+            // Request scope not active — fall through to the default.
+        }
+        return "system-cascade";
     }
 }

@@ -1,0 +1,162 @@
+-- =============================================================================
+-- Migration V300: Add source-reference columns to invoiceitems
+--
+-- Spec: docs/superpowers/specs/2026-04-21-internal-invoice-attribution-design.md
+-- Plan: docs/superpowers/plans/2026-04-21-internal-invoice-attribution.md
+-- Plan anchor: § 4.1 invoiceitems (two new nullable columns); § 8 Migration
+--              strategy (zero backfill; columns NULL for all existing rows).
+--
+-- Purpose:
+--   Internal (transfer-pricing) invoice line generation becomes attribution-
+--   driven: `InternalInvoiceLineGenerator` maps `invoice_item_attributions`
+--   x source `invoiceitems` into one internal-invoice line per
+--   (source-item, cross-company consultant). Each generated line needs to
+--   point back at (a) the source `invoiceitems.uuid` it was derived from and
+--   (b) the exact `invoice_item_attributions.uuid` that produced it, so that
+--   the cascade-regen flow (`InvoiceAttributionService.cascadeToLinkedInternals`)
+--   can locate affected internal-invoice lines in O(1) via index lookup and
+--   the 409-Conflict guard can detect "source item already referenced by a
+--   CREATED/PENDING_REVIEW internal" in a single join.
+--
+-- New columns (both nullable, both added AFTER calculation_ref to keep the
+-- source-reference columns adjacent in the physical schema per plan §
+-- "Patterns to copy"):
+--
+--   source_item_uuid         VARCHAR(40) NULL
+--     UUID of the source `invoiceitems` row this internal-invoice line was
+--     derived from. NULL for all legacy/non-generated items (i.e. everything
+--     except internal invoice lines produced by `InternalInvoiceLineGenerator`).
+--     Width matches the existing `invoice_item_attributions.invoiceitem_uuid`
+--     column (VARCHAR(40)) to allow direct join with no width coercion.
+--     Note: VARCHAR(40) - not VARCHAR(36) - is the project-wide convention
+--     for `invoiceitems.uuid` (several legacy invoiceitems have a 40-char
+--     identifier). Matching the source-column width here is intentional.
+--
+--   source_attribution_uuid  VARCHAR(36) NULL
+--     UUID of the `invoice_item_attributions` row (the consultant/share
+--     pairing) this generated line was derived from. NULL for all legacy
+--     items. Width matches `invoice_item_attributions.uuid` (VARCHAR(36)).
+--     This is the unique pointer from a generated internal-invoice line back
+--     to the exact attribution that drove its rate/hours values.
+--
+-- Soft-FK convention (project-wide):
+--   No `CONSTRAINT ... FOREIGN KEY` is declared. The project uses soft
+--   (logical) foreign keys stored as plain VARCHARs across every cross-
+--   service boundary (see V212 comment, V242 comment, V284/V285 for the
+--   adjacent attribution tables). Indexes below give the same lookup
+--   performance as an enforced FK without the cross-module coupling.
+--
+-- Backwards compatibility:
+--   100% additive. No existing column is altered or dropped. Existing
+--   invoiceitems rows remain untouched - both new columns will be NULL for
+--   every pre-existing row. No backfill is performed (spec § 8 confirms
+--   zero backfill is required - legacy internal invoices created prior to
+--   the attribution-driven flow simply lack pointers, which is the intended
+--   signal that they are pre-feature and not subject to cascade-regen).
+--
+-- Affected entity / code changes (owned by backend-quarkus, not this task):
+--   dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem
+--     - Add JPA fields `sourceItemUuid` (@Column(name = "source_item_uuid"))
+--       and `sourceAttributionUuid` (@Column(name = "source_attribution_uuid"))
+--       with the class's chosen accessor style (Lombok / explicit - follow
+--       existing field convention on that class).
+--
+-- Idempotency:
+--   Flyway's version-control prevents re-execution of this script in any
+--   environment that has already passed V300. The script itself is NOT
+--   idempotent at the statement level (MariaDB 10 `ALTER TABLE ADD COLUMN`
+--   without `IF NOT EXISTS` will fail if the column already exists). If a
+--   repair/replay is ever needed, use the MariaDB-supported `ADD COLUMN IF
+--   NOT EXISTS` clause manually (see V76 for precedent) - but prefer a new
+--   versioned repair migration (V297 precedent) over editing V300 in place.
+--
+-- Rollback:
+--   ALTER TABLE invoiceitems
+--       DROP INDEX idx_invoiceitems_source_item,
+--       DROP INDEX idx_invoiceitems_source_attribution,
+--       DROP COLUMN source_item_uuid,
+--       DROP COLUMN source_attribution_uuid;
+--   (Run manually if a rollback is required; Flyway does not auto-rollback DDL.
+--    Safe to run because no production code reads these columns until the
+--    backend-quarkus deployment that consumes them - if rollback happens
+--    before that deployment, no data is lost.)
+-- =============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1. Add source-reference columns to invoiceitems
+--    Placed AFTER calculation_ref to group all "origin metadata" columns
+--    (origin / calculation_ref / rule_id / label / source_item_uuid /
+--    source_attribution_uuid) together in the physical schema.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE invoiceitems
+    ADD COLUMN source_item_uuid        VARCHAR(40) NULL AFTER calculation_ref,
+    ADD COLUMN source_attribution_uuid VARCHAR(36) NULL AFTER source_item_uuid;
+
+
+-- ---------------------------------------------------------------------------
+-- 2. Indexes
+--
+--    idx_invoiceitems_source_item
+--      Supports the cascade-regen and 409-guard paths which query
+--        SELECT * FROM invoiceitems
+--         WHERE source_item_uuid IN (<changed source item uuids>)
+--      and also the batchlet regeneration join from the source invoice's
+--      items to every linked internal invoice's items.
+--
+--    idx_invoiceitems_source_attribution
+--      Supports the tight-loop lookup in
+--        `InternalInvoiceLineGenerator.generate(...)` / cascade-regen when
+--      we need to locate exactly the generated line(s) that came from one
+--      attribution (e.g. when a single consultant's share changed). Lower
+--      cardinality than source_item_uuid but still selective.
+--
+--    Both columns are NULLABLE and the great majority of existing rows are
+--    NULL. In MariaDB/InnoDB, NULL rows ARE stored in the B-tree index, so
+--    the index size scales with the total row count, not just the non-NULL
+--    subset. This is acceptable for `invoiceitems` at current scale.
+-- ---------------------------------------------------------------------------
+
+CREATE INDEX idx_invoiceitems_source_item
+    ON invoiceitems (source_item_uuid);
+
+CREATE INDEX idx_invoiceitems_source_attribution
+    ON invoiceitems (source_attribution_uuid);
+
+
+-- ---------------------------------------------------------------------------
+-- 3. Validation queries
+--    Run these after applying the migration to confirm correctness:
+--
+--    -- Both columns exist with expected types/nullability:
+--    SELECT column_name, column_type, is_nullable, column_default
+--    FROM information_schema.columns
+--    WHERE table_schema = DATABASE()
+--      AND table_name   = 'invoiceitems'
+--      AND column_name IN ('source_item_uuid', 'source_attribution_uuid')
+--    ORDER BY column_name;
+--    -- Expected: 2 rows, both is_nullable = 'YES', column_default = NULL,
+--    --          source_item_uuid        type = varchar(40),
+--    --          source_attribution_uuid type = varchar(36).
+--
+--    -- Both indexes exist:
+--    SHOW INDEX FROM invoiceitems
+--    WHERE Key_name IN ('idx_invoiceitems_source_item',
+--                       'idx_invoiceitems_source_attribution');
+--    -- Expected: 2 rows (one per index, non-unique).
+--
+--    -- No FK constraint on the new columns (project soft-FK convention):
+--    SELECT constraint_name
+--    FROM information_schema.referential_constraints
+--    WHERE constraint_schema = DATABASE()
+--      AND table_name = 'invoiceitems'
+--      AND constraint_name LIKE 'fk_invoiceitems_source%';
+--    -- Expected: 0 rows.
+--
+--    -- All existing rows remain NULL for both columns (zero-backfill):
+--    SELECT
+--        SUM(source_item_uuid        IS NOT NULL) AS non_null_item,
+--        SUM(source_attribution_uuid IS NOT NULL) AS non_null_attr
+--    FROM invoiceitems;
+--    -- Expected: 0, 0.
+-- ---------------------------------------------------------------------------
