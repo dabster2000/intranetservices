@@ -211,13 +211,9 @@ feature:
   # flip to false only as an emergency rollback.
   invoicing:
     internal:
-      attribution-driven: ${feature.invoicing.internal.attribution-driven:true}
-invoicing:
-  internal:
-    # Contact-person name stamped on generated internal invoices. Externalized so
-    # no individual's name is embedded in source code. Default is a generic label;
-    # override per-environment if a specific contact is desired.
-    default-contact-name: ${INVOICING_INTERNAL_DEFAULT_CONTACT_NAME:Trustworks Finance}
+      # Override via env var FEATURE_INVOICING_INTERNAL_ATTRIBUTION_DRIVEN or
+      # the Quarkus config key `feature.invoicing.internal.attribution-driven`.
+      attribution-driven: true
   # Contract Rule Override System feature flags
   contract:
     overrides:
@@ -243,6 +239,12 @@ invoicing:
       cache:
         ttl-seconds: 3600  # 1 hour cache (matching spec)
         max-size: 10000    # Max cached rule sets
+invoicing:
+  internal:
+    # Contact-person name stamped on generated internal invoices. Externalized so
+    # no individual's name is embedded in source code. Default is a generic label;
+    # override per-environment if a specific contact is desired.
+    default-contact-name: ${INVOICING_INTERNAL_DEFAULT_CONTACT_NAME:Trustworks Finance}
 slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
