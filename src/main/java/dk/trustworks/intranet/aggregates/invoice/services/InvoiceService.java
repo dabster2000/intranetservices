@@ -115,6 +115,9 @@ public class InvoiceService {
     @Inject
     IntercompanyClientResolver intercompanyClientResolver;
 
+    @Inject
+    com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+
     /**
      * Feature flag controlling the attribution-driven internal invoice line generator.
      * When {@code true} (default), {@code createInternalInvoiceDraft} and
@@ -376,6 +379,26 @@ public class InvoiceService {
         invoice.setStatus(InvoiceStatus.DRAFT);
         invoice.setUuid(UUID.randomUUID().toString());
         invoice.getInvoiceitems().forEach(invoiceItem -> invoiceItem.setInvoiceuuid(invoice.uuid));
+
+        // Capture baseline snapshot: {consultantUuid -> totalHours} from initial items.
+        // DeltaAbsorptionEngine uses this as the reference point for detecting
+        // deleted/increased consultants on subsequent edits. Only BASE items with
+        // a consultantuuid are included; consolidated lines (null consultantuuid)
+        // don't contribute to the baseline.
+        Map<String, Double> snapshot = new LinkedHashMap<>();
+        for (dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem item : invoice.getInvoiceitems()) {
+            if (item.origin != dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE) continue;
+            if (item.consultantuuid == null || item.consultantuuid.isBlank()) continue;
+            snapshot.merge(item.consultantuuid, item.hours, Double::sum);
+        }
+        try {
+            invoice.baselineSnapshot = objectMapper.writeValueAsString(snapshot);
+        } catch (JsonProcessingException e) {
+            log.warnf("createDraftInvoice: failed to serialize baseline snapshot for invoice=%s",
+                    invoice.uuid);
+            invoice.baselineSnapshot = null;
+        }
+
         Invoice.persist(invoice);
         log.debug("Draft invoice persisted: " + invoice.getUuid());
         return invoice;

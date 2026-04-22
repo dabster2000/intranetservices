@@ -54,6 +54,43 @@ public class InvoiceAttributionService {
     @Inject
     com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
+    // ── Engine baseline helper ────────────────────────────────────────
+
+    /**
+     * Build the DeltaAbsorptionEngine baseline for an invoice. Prefers the
+     * persisted {@code baseline_snapshot} (stable reference captured at draft creation).
+     * Falls back to computeProjectWorkHours for legacy drafts without a snapshot.
+     */
+    private Map<String, BigDecimal> buildEngineBaseline(Invoice invoice) {
+        if (invoice.baselineSnapshot != null && !invoice.baselineSnapshot.isBlank()) {
+            try {
+                Map<String, Double> snapshot = objectMapper.readValue(
+                        invoice.baselineSnapshot,
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Double>>() {});
+                Map<String, BigDecimal> result = new LinkedHashMap<>();
+                for (var e : snapshot.entrySet()) {
+                    result.put(e.getKey(), BigDecimal.valueOf(e.getValue()));
+                }
+                return result;
+            } catch (Exception e) {
+                log.warnf("buildEngineBaseline: failed to parse snapshot for invoice=%s, falling back",
+                        invoice.uuid);
+            }
+        }
+        // Fallback: derive from work table (legacy drafts with no snapshot)
+        if (invoice.projectuuid != null) {
+            try {
+                LocalDate effectiveDate = invoice.invoicedate != null
+                        ? invoice.invoicedate : LocalDate.now();
+                return computeProjectWorkHours(invoice.projectuuid, effectiveDate);
+            } catch (Exception e) {
+                log.warnf("buildEngineBaseline: computeProjectWorkHours failed for project=%s",
+                        invoice.projectuuid);
+            }
+        }
+        return Map.of();
+    }
+
     // ── Public query methods ──────────────────────────────────────────
 
     @SuppressWarnings("unchecked")
@@ -373,16 +410,7 @@ public class InvoiceAttributionService {
             }
         }
 
-        LocalDate effectiveDate = invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now();
-        Map<String, BigDecimal> baseline = Map.of();
-        if (invoice.projectuuid != null) {
-            try {
-                baseline = computeProjectWorkHours(invoice.projectuuid, effectiveDate);
-            } catch (Exception e) {
-                log.warnf("persistBaseAttributionsViaEngine: failed to compute project work hours for project=%s",
-                        invoice.projectuuid);
-            }
-        }
+        Map<String, BigDecimal> baseline = buildEngineBaseline(invoice);
 
         List<DeltaAbsorptionEngine.CurrentLine> engineInput = itemsWithConsultant.stream()
                 .map(i -> new DeltaAbsorptionEngine.CurrentLine(
@@ -814,18 +842,8 @@ public class InvoiceAttributionService {
             .filter(i -> "BASE".equals(i.origin.name()))
             .toList();
 
-        LocalDate effectiveDate = invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now();
-
-        // 1. Build baseline (logged-work hours per consultant for this contract/project)
-        Map<String, BigDecimal> baseline = Map.of();
-        if (invoice.projectuuid != null) {
-            try {
-                baseline = computeProjectWorkHours(invoice.projectuuid, effectiveDate);
-            } catch (Exception e) {
-                log.warnf("resolveAttributions: failed to compute project work hours for project=%s",
-                    invoice.projectuuid);
-            }
-        }
+        // 1. Build baseline (snapshot if present, else logged-work hours per consultant for this contract/project)
+        Map<String, BigDecimal> baseline = buildEngineBaseline(invoice);
 
         // 2. Partition items: those with a consultantuuid feed the engine;
         //    those without are flagged LOW for AI/manual resolution.
