@@ -1013,6 +1013,15 @@ public class InvoiceResource {
     }
 
     @POST
+    @Path("/{invoiceuuid}/attributions/admin-recompute")
+    @RolesAllowed({"admin:full"})
+    public List<InvoiceItemAttribution> adminForceRecomputeAttributions(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @HeaderParam("X-Requested-By") String requestedBy) {
+        return invoiceAttributionService.adminForceRecomputeAttributions(invoiceuuid, requestedBy);
+    }
+
+    @POST
     @Path("/{invoiceuuid}/attributions/resolve")
     @RolesAllowed({"invoices:write"})
     public AttributionResolution resolveInvoiceAttributions(
