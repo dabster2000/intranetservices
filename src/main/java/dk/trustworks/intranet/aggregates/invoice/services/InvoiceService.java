@@ -8,6 +8,7 @@ import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
@@ -106,6 +107,29 @@ public class InvoiceService {
 
     @Inject
     UserService userService;
+
+    @Inject
+    UserCompanyResolver userCompanyResolver;
+
+    /**
+     * Feature flag controlling the attribution-driven internal invoice line generator.
+     * When {@code true} (default), {@code createInternalInvoiceDraft} and
+     * {@code autoCreateAndQueueInternal} delegate to
+     * {@link #createAllInternalFromAttribution(String, java.util.Set, boolean)}, which
+     * uses {@code invoice_item_attributions} as the source of truth. When {@code false},
+     * the legacy consultantuuid-based logic runs — used only as a rollback safety net.
+     */
+    @ConfigProperty(name = "feature.invoicing.internal.attribution-driven", defaultValue = "true")
+    boolean attributionDrivenInternalInvoices;
+
+    /**
+     * Default contact-person name stamped on generated internal invoices. Externalized so
+     * no specific individual's name is embedded in source code. Override per-environment
+     * via {@code invoicing.internal.default-contact-name} in config or the
+     * {@code INVOICING_INTERNAL_DEFAULT_CONTACT_NAME} environment variable.
+     */
+    @ConfigProperty(name = "invoicing.internal.default-contact-name", defaultValue = "Trustworks Finance")
+    String internalInvoiceDefaultContactName;
 
     private static DateValueDTO apply(Invoice invoice, double exchangeRate) {
         double sum = switch (invoice.getType()) {
@@ -613,6 +637,19 @@ public class InvoiceService {
 
     @Transactional
     public void createInternalInvoiceDraft(String companyuuid, Invoice invoice) {
+        // Attribution-driven flow: delegate to the new generator. The caller selected a
+        // single issuer company (companyuuid) so we filter to just that issuer and do NOT
+        // queue — matches the legacy contract ("create DRAFT only").
+        if (attributionDrivenInternalInvoices) {
+            createAllInternalFromAttribution(invoice.getUuid(), Set.of(companyuuid), false);
+            return;
+        }
+
+        // Legacy path — kept as a rollback safety net only. This is deliberately minimal:
+        // it creates a single internal invoice that copies every item from the source,
+        // regardless of attribution. It is preserved verbatim (minus the inline
+        // CALCULATED-copy loop moved into the generator) so operations can disable the
+        // new flow with a flag flip if an emergency arises.
         Invoice internalInvoice = new Invoice(
                 invoice.getUuid(),
                 invoice.getInvoicenumber(),
@@ -652,12 +689,6 @@ public class InvoiceService {
                 internalInvoice.getUuid(),
                 invoiceitem.getOrigin()
             );
-            // Preserve additional fields for CALCULATED items
-            if (invoiceitem.getOrigin() == InvoiceItemOrigin.CALCULATED) {
-                newItem.setCalculationRef(invoiceitem.getCalculationRef());
-                newItem.setRuleId(invoiceitem.getRuleId());
-                newItem.setLabel(invoiceitem.getLabel());
-            }
             internalInvoice.getInvoiceitems().add(newItem);
         }
         Invoice.persist(internalInvoice);
@@ -677,6 +708,24 @@ public class InvoiceService {
     @Transactional
     public Invoice autoCreateAndQueueInternal(String clientInvoiceUuid, String issuerCompanyUuid) {
         log.info("Auto-creating internal invoice for client=" + clientInvoiceUuid + ", issuer company=" + issuerCompanyUuid);
+
+        // Attribution-driven flow: delegate to the attribution generator filtered to the
+        // requested issuer, with queue=true. Returns the single created internal invoice
+        // (or throws if no cross-company work is detected for the requested issuer).
+        if (attributionDrivenInternalInvoices) {
+            List<String> created = createAllInternalFromAttribution(
+                    clientInvoiceUuid,
+                    Set.of(issuerCompanyUuid),
+                    true);
+            if (created.isEmpty()) {
+                Company issuerForError = Company.findById(issuerCompanyUuid);
+                throw new WebApplicationException(
+                        "No cross-company attribution found for company "
+                                + (issuerForError != null ? issuerForError.getName() : issuerCompanyUuid),
+                        Response.Status.BAD_REQUEST);
+            }
+            return Invoice.findById(created.get(0));
+        }
 
         // 1. Load and validate client invoice
         Invoice clientInvoice = Invoice.findById(clientInvoiceUuid);
@@ -788,11 +837,9 @@ public class InvoiceService {
                         internalInvoice.getUuid(),
                         item.getOrigin()
                 );
-                if (item.getOrigin() == InvoiceItemOrigin.CALCULATED) {
-                    newItem.setCalculationRef(item.getCalculationRef());
-                    newItem.setRuleId(item.getRuleId());
-                    newItem.setLabel(item.getLabel());
-                }
+                // CALCULATED passthrough now handled by InternalInvoiceLineGenerator
+                // (attribution-driven path). Legacy fallback keeps a bare copy — the flag
+                // should never be flipped back except in emergencies.
                 internalInvoice.getInvoiceitems().add(newItem);
             }
         }
@@ -816,6 +863,294 @@ public class InvoiceService {
 
         return internalInvoice;
     }
+
+    // ── Attribution-driven internal invoice (spec 2026-04-21) ──────────────
+
+    /**
+     * Compute the projected internal invoices that would be created from the source
+     * invoice's current attribution state — WITHOUT persisting anything. Used by the
+     * {@code GET /invoices/{uuid}/internal-preview} endpoint and consumed by the
+     * frontend's {@code CreateInternalInvoicesModal}.
+     *
+     * <p>If the source invoice has no attribution rows yet (common for newly-created
+     * invoices that haven't been through the finalization wizard), attributions are
+     * computed lazily inside the same transaction.
+     *
+     * @throws WebApplicationException 404 if the source invoice does not exist,
+     *                                 400 if the source is of type PHANTOM.
+     */
+    @Transactional
+    public dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview previewInternal(String sourceInvoiceUuid) {
+        Invoice source = Invoice.findById(sourceInvoiceUuid);
+        if (source == null) {
+            throw new WebApplicationException("Invoice not found: " + sourceInvoiceUuid, Response.Status.NOT_FOUND);
+        }
+        if (source.getType() == InvoiceType.PHANTOM) {
+            throw new WebApplicationException(
+                    "Internal invoices cannot be created from PHANTOM source invoices.",
+                    Response.Status.BAD_REQUEST);
+        }
+
+        // Lazy-compute: if the source has no attributions, compute them now so the
+        // preview reflects up-to-date distribution. Cheap when already computed.
+        List<InvoiceItemAttribution> attributions =
+                invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+        if (attributions.isEmpty()) {
+            invoiceAttributionService.computeAttributions(sourceInvoiceUuid);
+            attributions = invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+        }
+
+        // Resolve all attribution consultants' companies as-of the source's invoicedate.
+        Set<String> consultantUuids = new HashSet<>();
+        for (InvoiceItemAttribution attr : attributions) {
+            if (attr.consultantUuid != null && !attr.consultantUuid.isBlank()) {
+                consultantUuids.add(attr.consultantUuid);
+            }
+        }
+        LocalDate asOf = source.getInvoicedate() != null ? source.getInvoicedate() : LocalDate.now();
+        Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
+
+        String sourceCompanyUuid = source.getCompany() != null ? source.getCompany().getUuid() : null;
+        String sourceCompanyName = source.getCompany() != null ? source.getCompany().getName() : null;
+
+        Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
+                sourceCompanyUuid, source.getInvoiceitems(), attributions, userCompanies);
+
+        // Resolve issuer company names + consultant display names (single bulk queries).
+        Map<String, String> companyNames = lookupCompanyNames(grouped.keySet());
+        Map<String, String> consultantNames = lookupConsultantNames(consultantUuids);
+
+        List<dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview.IssuerGroup> issuers =
+                new ArrayList<>(grouped.size());
+        for (var entry : grouped.entrySet()) {
+            String issuerUuid = entry.getKey();
+            List<InvoiceItem> lines = entry.getValue();
+            List<dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview.PreviewLine> previewLines =
+                    new ArrayList<>(lines.size());
+            BigDecimal total = BigDecimal.ZERO;
+            for (InvoiceItem line : lines) {
+                BigDecimal amount = BigDecimal.valueOf(line.rate)
+                        .multiply(BigDecimal.valueOf(line.hours))
+                        .setScale(2, RoundingMode.HALF_UP);
+                total = total.add(amount);
+                previewLines.add(new dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview.PreviewLine(
+                        line.consultantuuid,
+                        consultantNames.getOrDefault(line.consultantuuid, null),
+                        line.rate,
+                        line.hours,
+                        amount,
+                        line.origin,
+                        line.sourceItemUuid,
+                        line.sourceAttributionUuid));
+            }
+            issuers.add(new dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview.IssuerGroup(
+                    issuerUuid,
+                    companyNames.getOrDefault(issuerUuid, null),
+                    previewLines,
+                    total));
+        }
+
+        // allResolved = no consultant resolved to a null/missing company
+        boolean allResolved = consultantUuids.stream().allMatch(userCompanies::containsKey);
+
+        // Find already-linked internal invoices so the UI can mark "[Draft exists]"/"[Queued]"/"[Already CREATED]".
+        List<Invoice> existingLinked = Invoice.find(
+                "invoiceRefUuid = ?1 and type = ?2",
+                sourceInvoiceUuid, InvoiceType.INTERNAL).list();
+        List<dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview.CurrentDraft> currentDrafts =
+                new ArrayList<>(existingLinked.size());
+        for (Invoice existing : existingLinked) {
+            String issuerUuid = existing.getCompany() != null ? existing.getCompany().getUuid() : null;
+            currentDrafts.add(new dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview.CurrentDraft(
+                    existing.getUuid(), issuerUuid, existing.getStatus()));
+        }
+
+        return new dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview(
+                sourceInvoiceUuid,
+                sourceCompanyUuid,
+                sourceCompanyName,
+                issuers,
+                allResolved,
+                currentDrafts);
+    }
+
+    /**
+     * Materialize internal invoice DRAFTs from the source invoice's current attribution,
+     * one per distinct issuer company. Newly-created invoices follow the canonical
+     * INTERNAL invoice shape (same debtor/issuer/date/currency fields as the legacy path).
+     *
+     * <p>Idempotency: issuers that already have a linked internal invoice (any status)
+     * are skipped — only missing issuers are created. This matches the "create all
+     * drafts" UX where re-clicking should fill gaps, not duplicate rows.
+     *
+     * @param sourceInvoiceUuid the source invoice UUID. 404 if missing. 400 if PHANTOM.
+     * @param issuerFilter      optional set restricting which issuers to materialize.
+     *                          {@code null} or empty means "all detected issuers".
+     * @param queue             when {@code true}, newly-created drafts are transitioned
+     *                          to {@code QUEUED} in the same transaction.
+     * @return UUIDs of created internal invoices, in issuer iteration order.
+     */
+    @Transactional
+    public List<String> createAllInternalFromAttribution(
+            String sourceInvoiceUuid,
+            Set<String> issuerFilter,
+            boolean queue) {
+
+        Invoice source = Invoice.findById(sourceInvoiceUuid);
+        if (source == null) {
+            throw new WebApplicationException("Invoice not found: " + sourceInvoiceUuid, Response.Status.NOT_FOUND);
+        }
+        if (source.getType() == InvoiceType.PHANTOM) {
+            throw new WebApplicationException(
+                    "Internal invoices cannot be created from PHANTOM source invoices.",
+                    Response.Status.BAD_REQUEST);
+        }
+
+        // Lazy-compute attribution if missing.
+        List<InvoiceItemAttribution> attributions =
+                invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+        if (attributions.isEmpty()) {
+            invoiceAttributionService.computeAttributions(sourceInvoiceUuid);
+            attributions = invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+        }
+
+        Set<String> consultantUuids = new HashSet<>();
+        for (InvoiceItemAttribution attr : attributions) {
+            if (attr.consultantUuid != null && !attr.consultantUuid.isBlank()) {
+                consultantUuids.add(attr.consultantUuid);
+            }
+        }
+        LocalDate asOf = source.getInvoicedate() != null ? source.getInvoicedate() : LocalDate.now();
+        Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
+        String sourceCompanyUuid = source.getCompany() != null ? source.getCompany().getUuid() : null;
+
+        Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
+                sourceCompanyUuid, source.getInvoiceitems(), attributions, userCompanies);
+
+        // Skip issuers that already have a linked internal invoice (any status).
+        List<Invoice> existingLinked = Invoice.find(
+                "invoiceRefUuid = ?1 and type = ?2",
+                sourceInvoiceUuid, InvoiceType.INTERNAL).list();
+        Set<String> existingIssuerUuids = new HashSet<>();
+        for (Invoice existing : existingLinked) {
+            if (existing.getCompany() != null) {
+                existingIssuerUuids.add(existing.getCompany().getUuid());
+            }
+        }
+
+        List<String> created = new ArrayList<>();
+        for (var entry : grouped.entrySet()) {
+            String issuerUuid = entry.getKey();
+            if (issuerFilter != null && !issuerFilter.isEmpty() && !issuerFilter.contains(issuerUuid)) {
+                continue;
+            }
+            if (existingIssuerUuids.contains(issuerUuid)) {
+                log.infof("createAllInternalFromAttribution: issuer=%s already has linked internal — skipping",
+                        issuerUuid);
+                continue;
+            }
+            Invoice internalInvoice = createInternalInvoiceFromGenerated(source, issuerUuid, entry.getValue());
+            created.add(internalInvoice.getUuid());
+            if (queue) {
+                queueInternalInvoice(internalInvoice.getUuid());
+            }
+        }
+        return created;
+    }
+
+    /**
+     * Persist a single internal invoice header + its generated line items. Copies the
+     * same field-set as the legacy {@code createInternalInvoiceDraft} — uuid/number/
+     * contract/project/discount/year/month, client-side fields derived from source
+     * company, dates set to today/+1 month, debtor = source's company. The issuer
+     * {@code Company} is loaded via {@code Company.findById} to populate the
+     * {@code @ManyToOne} relation.
+     */
+    private Invoice createInternalInvoiceFromGenerated(
+            Invoice source,
+            String issuerCompanyUuid,
+            List<InvoiceItem> generatedLines) {
+
+        Company issuerCompany = Company.findById(issuerCompanyUuid);
+        if (issuerCompany == null) {
+            throw new WebApplicationException(
+                    "Issuer company not found: " + issuerCompanyUuid,
+                    Response.Status.BAD_REQUEST);
+        }
+        String debtorCompanyUuid = source.getCompany() != null ? source.getCompany().getUuid() : null;
+
+        Invoice internalInvoice = new Invoice(
+                source.getUuid(),
+                source.getInvoicenumber(),
+                InvoiceType.INTERNAL,
+                source.getContractuuid(),
+                source.getProjectuuid(),
+                source.getProjectname(),
+                source.getDiscount(),
+                source.getYear(),
+                source.getMonth(),
+                source.getCompany() != null ? source.getCompany().getName() : null,
+                source.getCompany() != null ? source.getCompany().getAddress() : null,
+                "",
+                source.getCompany() != null ? source.getCompany().getZipcode() : null,
+                "",
+                source.getCompany() != null ? source.getCompany().getCvr() : null,
+                internalInvoiceDefaultContactName,
+                LocalDate.now(),
+                LocalDate.now().plusMonths(1),
+                source.getProjectref(),
+                source.getContractref(),
+                source.contractType,
+                issuerCompany,
+                source.getCurrency(),
+                "Intern faktura knyttet til " + source.getInvoicenumber(),
+                debtorCompanyUuid);
+
+        int position = 1;
+        for (InvoiceItem line : generatedLines) {
+            line.invoiceuuid = internalInvoice.getUuid();
+            line.position = position++;
+            internalInvoice.getInvoiceitems().add(line);
+        }
+
+        Invoice.persist(internalInvoice);
+        for (InvoiceItem line : internalInvoice.getInvoiceitems()) {
+            InvoiceItem.persist(line);
+        }
+        log.infof("createInternalInvoiceFromGenerated: created invoice=%s issuer=%s items=%d",
+                internalInvoice.getUuid(), issuerCompanyUuid, internalInvoice.getInvoiceitems().size());
+        return internalInvoice;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> lookupCompanyNames(Set<String> companyUuids) {
+        if (companyUuids == null || companyUuids.isEmpty()) return Map.of();
+        List<Object[]> rows = em.createNativeQuery(
+                        "SELECT uuid, name FROM companies WHERE uuid IN (:uuids)")
+                .setParameter("uuids", companyUuids)
+                .getResultList();
+        Map<String, String> result = new HashMap<>(rows.size() * 2);
+        for (Object[] row : rows) {
+            result.put((String) row[0], (String) row[1]);
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> lookupConsultantNames(Set<String> userUuids) {
+        if (userUuids == null || userUuids.isEmpty()) return Map.of();
+        List<Object[]> rows = em.createNativeQuery(
+                        "SELECT uuid, CONCAT(firstname, ' ', lastname) FROM user WHERE uuid IN (:uuids)")
+                .setParameter("uuids", userUuids)
+                .getResultList();
+        Map<String, String> result = new HashMap<>(rows.size() * 2);
+        for (Object[] row : rows) {
+            result.put((String) row[0], (String) row[1]);
+        }
+        return result;
+    }
+
+    // ── End of attribution-driven internal invoice block ───────────────────
 
     @Transactional
     public void createInternalServiceInvoiceDraft(String fromCompanyuuid, String toCompanyuuid, LocalDate month) {
