@@ -163,11 +163,15 @@ public class InvoiceAttributionService {
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, itemUuids);
 
+        // Split BASE vs CALCULATED. Detect CALCULATED by origin OR by the metadata
+        // signals (calculationRef/ruleId/label) that PricingEngine sets — mirrors
+        // the filter in InvoiceService.recalculateInvoiceItems. Older invoices
+        // sometimes stored discount items with origin=BASE but the metadata set.
         List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .filter(ii -> !isEffectivelyCalculated(ii))
                 .toList();
         List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .filter(this::isEffectivelyCalculated)
                 .toList();
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
@@ -202,11 +206,13 @@ public class InvoiceAttributionService {
                 .collect(Collectors.toSet());
         assertNoFrozenInternalReferences(invoiceUuid, changedItemUuids);
 
+        // Same robust split as computeAttributions — treat items with CALCULATED
+        // metadata as CALCULATED even if origin is stored as BASE (legacy data).
         List<InvoiceItem> baseItems = items.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .filter(ii -> !isEffectivelyCalculated(ii))
                 .toList();
         List<InvoiceItem> calculatedItems = items.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .filter(this::isEffectivelyCalculated)
                 .toList();
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
@@ -432,6 +438,22 @@ public class InvoiceAttributionService {
         for (InvoiceItem item : itemsWithoutConsultant) {
             computeBaseItemAttribution(item, invoice);
         }
+    }
+
+    /**
+     * Is this item effectively a CALCULATED (discount/fee/roundup) item?
+     * Checks both the explicit origin enum and the metadata signals
+     * (calculationRef/ruleId/label) set by PricingEngine. Older invoices
+     * occasionally stored discounts with origin=BASE but with the metadata
+     * populated — this helper catches both shapes. Mirrors the filter used
+     * in InvoiceService.recalculateInvoiceItems.
+     */
+    private boolean isEffectivelyCalculated(InvoiceItem item) {
+        if (item.origin == InvoiceItemOrigin.CALCULATED) return true;
+        if (item.getCalculationRef() != null) return true;
+        if (item.getRuleId() != null) return true;
+        if (item.getLabel() != null) return true;
+        return false;
     }
 
     /**
@@ -1236,11 +1258,15 @@ public class InvoiceAttributionService {
         // Run the canonical persistence path. Since all rows are gone, the engine
         // output is written cleanly; the MANUAL-preservation branch inside
         // persistItemFromEngineResult never fires.
+        // Split BASE vs CALCULATED. Detect CALCULATED by origin OR by the metadata
+        // signals (calculationRef/ruleId/label) that PricingEngine sets — mirrors
+        // the filter in InvoiceService.recalculateInvoiceItems. Older invoices
+        // sometimes stored discount items with origin=BASE but the metadata set.
         List<InvoiceItem> baseItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.BASE)
+                .filter(ii -> !isEffectivelyCalculated(ii))
                 .toList();
         List<InvoiceItem> calculatedItems = invoice.invoiceitems.stream()
-                .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
+                .filter(this::isEffectivelyCalculated)
                 .toList();
 
         persistBaseAttributionsViaEngine(invoice, baseItems);
