@@ -77,18 +77,36 @@ public class InvoiceAttributionService {
                         invoice.uuid);
             }
         }
-        // Fallback: derive from work table (legacy drafts with no snapshot)
+        // Fallback: derive from work table (legacy drafts with no snapshot).
+        // Use invoice.year/invoice.month as the billing period — NOT invoicedate,
+        // which is the issue date (usually the month AFTER the work happened).
         if (invoice.projectuuid != null) {
             try {
-                LocalDate effectiveDate = invoice.invoicedate != null
-                        ? invoice.invoicedate : LocalDate.now();
-                return computeProjectWorkHours(invoice.projectuuid, effectiveDate);
+                return computeProjectWorkHours(invoice.projectuuid,
+                        invoiceBillingPeriodStart(invoice));
             } catch (Exception e) {
                 log.warnf("buildEngineBaseline: computeProjectWorkHours failed for project=%s",
                         invoice.projectuuid);
             }
         }
         return Map.of();
+    }
+
+    /**
+     * The start of the invoice's billing period (first day of the month the
+     * invoice covers). Uses invoice.year/invoice.month when populated —
+     * these reflect the work period the invoice bills for (e.g. March) and
+     * differ from invoicedate (the issue date, typically the following month).
+     * Falls back to invoicedate, then today, for extremely old/malformed rows.
+     */
+    private LocalDate invoiceBillingPeriodStart(Invoice invoice) {
+        if (invoice.year > 0 && invoice.month > 0) {
+            return LocalDate.of(invoice.year, invoice.month, 1);
+        }
+        if (invoice.invoicedate != null) {
+            return invoice.invoicedate.withDayOfMonth(1);
+        }
+        return LocalDate.now().withDayOfMonth(1);
     }
 
     // ── Public query methods ──────────────────────────────────────────
@@ -542,14 +560,17 @@ public class InvoiceAttributionService {
             return;
         }
 
-        Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, invoice.invoicedate);
+        // Use the billing period (invoice.year/invoice.month), not invoicedate,
+        // to query work/contract data for the right month.
+        LocalDate billingPeriod = invoiceBillingPeriodStart(invoice);
+        Map<String, BigDecimal> workShares = computeWorkShares(invoice.contractuuid, billingPeriod);
         if (!workShares.isEmpty()) {
             createAttributionsFromShares(item.uuid, workShares, itemTotal, item.hours, true);
             return;
         }
 
         Map<String, BigDecimal> consultantShares = computeContractConsultantShares(
-                invoice.contractuuid, invoice.invoicedate);
+                invoice.contractuuid, billingPeriod);
         if (!consultantShares.isEmpty()) {
             createAttributionsFromShares(item.uuid, consultantShares, itemTotal, false);
             return;
