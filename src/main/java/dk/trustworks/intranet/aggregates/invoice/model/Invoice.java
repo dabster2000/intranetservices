@@ -239,6 +239,29 @@ public class Invoice extends PanacheEntityBase {
         return ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid).firstResultOptional().orElse(null);
     }
 
+    /**
+     * Display name of the billing entity this invoice is addressed to in
+     * e-conomic. Populated server-side on serialization by joining the
+     * {@link dk.trustworks.intranet.dao.crm.model.Client} referenced by
+     * {@link #billingClientUuid}.
+     *
+     * <p>Null when {@code billingClientUuid} is null (regular INVOICE drafts
+     * before finalization) or when the referenced Client row has been deleted.
+     *
+     * <p>SPEC: internal-invoice-billing-client-fix § FR-5. One query per
+     * serialized invoice that has a non-null billing client — acceptable
+     * because the primary list endpoints filter by month / small windows.
+     */
+    @JsonGetter("billingClientName")
+    public String getBillingClientName() {
+        if (billingClientUuid == null || billingClientUuid.isBlank()) {
+            return null;
+        }
+        dk.trustworks.intranet.dao.crm.model.Client client =
+                dk.trustworks.intranet.dao.crm.model.Client.findById(billingClientUuid);
+        return client != null ? client.getName() : null;
+    }
+
     public double getSumNoTax() {
         return invoiceitems.stream()
                 .mapToDouble(ii -> ii.hours * ii.rate)
