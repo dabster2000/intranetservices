@@ -133,9 +133,7 @@ public class InvoiceAttributionService {
                 .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
                 .toList();
 
-        for (InvoiceItem item : baseItems) {
-            computeBaseItemAttribution(item, invoice);
-        }
+        persistBaseAttributionsViaEngine(invoice, baseItems);
 
         if (!calculatedItems.isEmpty()) {
             Map<String, BigDecimal> baseDistribution = computeBaseDistribution(invoiceUuid);
@@ -174,9 +172,7 @@ public class InvoiceAttributionService {
                 .filter(ii -> ii.origin == InvoiceItemOrigin.CALCULATED)
                 .toList();
 
-        for (InvoiceItem item : baseItems) {
-            computeBaseItemAttribution(item, invoice);
-        }
+        persistBaseAttributionsViaEngine(invoice, baseItems);
 
         if (!calculatedItems.isEmpty()) {
             Map<String, BigDecimal> baseDistribution = computeBaseDistribution(invoiceUuid);
@@ -352,6 +348,114 @@ public class InvoiceAttributionService {
                     return map;
                 })
                 .toList();
+    }
+
+    // ── Private: engine-based BASE attribution (canonical path) ──────────
+
+    /**
+     * Persist AUTO attributions for BASE items using DeltaAbsorptionEngine.
+     * This is the canonical path; replaces per-item {@link #computeBaseItemAttribution}
+     * attribution for items with a consultantuuid, because only a cross-item engine
+     * can correctly handle deleted-consultant absorption.
+     *
+     * MANUAL attributions are preserved (only amount recalculated).
+     * Items with null consultantuuid fall back to the old helper which handles
+     * work-share and contract-consultant distribution.
+     */
+    private void persistBaseAttributionsViaEngine(Invoice invoice, List<InvoiceItem> baseItems) {
+        List<InvoiceItem> itemsWithConsultant = new ArrayList<>();
+        List<InvoiceItem> itemsWithoutConsultant = new ArrayList<>();
+        for (InvoiceItem item : baseItems) {
+            if (item.consultantuuid == null || item.consultantuuid.isBlank()) {
+                itemsWithoutConsultant.add(item);
+            } else {
+                itemsWithConsultant.add(item);
+            }
+        }
+
+        LocalDate effectiveDate = invoice.invoicedate != null ? invoice.invoicedate : LocalDate.now();
+        Map<String, BigDecimal> baseline = Map.of();
+        if (invoice.projectuuid != null) {
+            try {
+                baseline = computeProjectWorkHours(invoice.projectuuid, effectiveDate);
+            } catch (Exception e) {
+                log.warnf("persistBaseAttributionsViaEngine: failed to compute project work hours for project=%s",
+                        invoice.projectuuid);
+            }
+        }
+
+        List<DeltaAbsorptionEngine.CurrentLine> engineInput = itemsWithConsultant.stream()
+                .map(i -> new DeltaAbsorptionEngine.CurrentLine(
+                        i.uuid, i.consultantuuid, BigDecimal.valueOf(i.hours)))
+                .toList();
+
+        DeltaAbsorptionResult engineResult = DeltaAbsorptionEngine.resolve(baseline, engineInput);
+
+        log.infof("persistBaseAttributionsViaEngine: invoice=%s project=%s baselineConsultants=%d " +
+                        "currentLines=%d deletedPool=%s totalDelta=%s unattributed=%s",
+                invoice.uuid, invoice.projectuuid, baseline.size(), engineInput.size(),
+                engineResult.totalDeletedPool(), engineResult.totalPositiveDelta(),
+                engineResult.unattributedPoolHours());
+
+        for (InvoiceItem item : itemsWithConsultant) {
+            persistItemFromEngineResult(item, engineResult);
+        }
+
+        for (InvoiceItem item : itemsWithoutConsultant) {
+            computeBaseItemAttribution(item, invoice);
+        }
+    }
+
+    /**
+     * Persist the engine's per-line shares for a single BASE item.
+     * Preserves MANUAL attributions. Falls back to 100% line-consultant when
+     * the engine produced no shares for this item.
+     */
+    private void persistItemFromEngineResult(InvoiceItem item, DeltaAbsorptionResult engineResult) {
+        List<InvoiceItemAttribution> existing = getAttributions(item.uuid);
+        boolean hasManual = existing.stream()
+                .anyMatch(a -> a.source == AttributionSource.MANUAL);
+
+        if (hasManual) {
+            double itemTotal = item.rate * item.hours;
+            for (InvoiceItemAttribution attr : existing) {
+                attr.recalculateAmount(itemTotal);
+                attr.updatedAt = java.time.LocalDateTime.now();
+            }
+            return;
+        }
+
+        InvoiceItemAttribution.delete(
+                "invoiceitemUuid = ?1 AND source = ?2",
+                item.uuid, AttributionSource.AUTO);
+
+        double itemTotal = item.rate * item.hours;
+        List<DeltaAbsorptionResult.ConsultantShare> shares =
+                engineResult.attributionsByLine().getOrDefault(item.uuid, List.of());
+
+        if (shares.isEmpty()) {
+            createSingleAttribution(item.uuid, item.consultantuuid, itemTotal, item.hours);
+            return;
+        }
+
+        BigDecimal itemHours = BigDecimal.valueOf(item.hours);
+        BigDecimal itemTotalBD = BigDecimal.valueOf(itemTotal);
+        for (DeltaAbsorptionResult.ConsultantShare share : shares) {
+            BigDecimal sharePct = share.hours().multiply(BigDecimal.valueOf(100))
+                    .divide(itemHours, PCT_SCALE, RoundingMode.HALF_UP);
+            BigDecimal amount = itemTotalBD.multiply(sharePct)
+                    .divide(BigDecimal.valueOf(100), AMT_SCALE, RoundingMode.HALF_UP);
+
+            InvoiceItemAttribution attr = new InvoiceItemAttribution(
+                    item.uuid,
+                    share.consultantUuid(),
+                    sharePct.setScale(PCT_SCALE, RoundingMode.HALF_UP),
+                    amount,
+                    share.hours().setScale(AMT_SCALE, RoundingMode.HALF_UP),
+                    AttributionSource.AUTO
+            );
+            attr.persist();
+        }
     }
 
     // ── Private: BASE item attribution ────────────────────────────────
