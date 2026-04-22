@@ -22,6 +22,7 @@ import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
+import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
@@ -111,6 +112,9 @@ public class InvoiceService {
     @Inject
     UserCompanyResolver userCompanyResolver;
 
+    @Inject
+    IntercompanyClientResolver intercompanyClientResolver;
+
     /**
      * Feature flag controlling the attribution-driven internal invoice line generator.
      * When {@code true} (default), {@code createInternalInvoiceDraft} and
@@ -130,6 +134,31 @@ public class InvoiceService {
      */
     @ConfigProperty(name = "invoicing.internal.default-contact-name", defaultValue = "Trustworks Finance")
     String internalInvoiceDefaultContactName;
+
+    /**
+     * Resolves the intercompany {@link Client} for the given debtor Company UUID, or
+     * fails closed with HTTP 400 when no matching Client exists.
+     *
+     * <p>SPEC: internal-invoice-billing-client-fix § FR-2 and AC-2. The error
+     * message intentionally names the debtor company and CVR (public register
+     * data) so finance can create the Client row without further digging.
+     *
+     * @param debtorCompanyUuid UUID of the debtor Company (see {@code Invoice.debtor_companyuuid}).
+     * @return the resolved intercompany Client (never null).
+     * @throws WebApplicationException HTTP 400 when the resolver returns empty.
+     */
+    private Client requireIntercompanyClient(String debtorCompanyUuid) {
+        return intercompanyClientResolver.resolveByDebtorCompanyUuid(debtorCompanyUuid)
+                .orElseThrow(() -> {
+                    Company debtor = debtorCompanyUuid != null ? Company.<Company>findById(debtorCompanyUuid) : null;
+                    String companyName = debtor != null ? debtor.getName() : debtorCompanyUuid;
+                    String cvr = debtor != null ? debtor.getCvr() : "unknown";
+                    return new WebApplicationException(
+                            "No intercompany customer configured for debtor company "
+                                    + companyName + " (CVR " + cvr + "). Create the Client row first.",
+                            Response.Status.BAD_REQUEST);
+                });
+    }
 
     private static DateValueDTO apply(Invoice invoice, double exchangeRate) {
         double sum = switch (invoice.getType()) {
@@ -650,6 +679,9 @@ public class InvoiceService {
         // regardless of attribution. It is preserved verbatim (minus the inline
         // CALCULATED-copy loop moved into the generator) so operations can disable the
         // new flow with a flag flip if an emergency arises.
+        // FR-2: resolve intercompany Client BEFORE persisting anything; fail-closed on miss.
+        String legacyDebtorCompanyUuid = invoice.getCompany().getUuid();
+        Client intercompanyClient = requireIntercompanyClient(legacyDebtorCompanyUuid);
         Invoice internalInvoice = new Invoice(
                 invoice.getUuid(),
                 invoice.getInvoicenumber(),
@@ -675,7 +707,8 @@ public class InvoiceService {
                 Company.findById(companyuuid),
                 invoice.getCurrency(),
                 "Intern faktura knyttet til " + invoice.getInvoicenumber(),
-                invoice.getCompany().getUuid());
+                legacyDebtorCompanyUuid);
+        internalInvoice.setBillingClientUuid(intercompanyClient.getUuid());
         int position = 1;
         for (InvoiceItem invoiceitem : invoice.getInvoiceitems()) {
             if(invoiceitem.getRate() == 0.0 || invoiceitem.hours == 0.0) continue;
@@ -782,6 +815,8 @@ public class InvoiceService {
         // 4. Create internal invoice draft
         // The debtor is the client invoice's company (they owe the issuer)
         String debtorCompanyUuid = clientInvoice.getCompany().getUuid();
+        // FR-2: resolve intercompany Client BEFORE persisting anything; fail-closed on miss.
+        Client intercompanyClient = requireIntercompanyClient(debtorCompanyUuid);
         Invoice internalInvoice = new Invoice(
                 clientInvoice.getUuid(),
                 clientInvoice.getInvoicenumber(),
@@ -808,6 +843,7 @@ public class InvoiceService {
                 clientInvoice.getCurrency(),
                 "Intern faktura knyttet til " + clientInvoice.getInvoicenumber(),
                 debtorCompanyUuid);
+        internalInvoice.setBillingClientUuid(intercompanyClient.getUuid());
 
         // 5. Filter items: keep BASE items for issuer's consultants + all CALCULATED items
         int position = 1;
@@ -1078,6 +1114,8 @@ public class InvoiceService {
                     Response.Status.BAD_REQUEST);
         }
         String debtorCompanyUuid = source.getCompany() != null ? source.getCompany().getUuid() : null;
+        // FR-2: resolve intercompany Client BEFORE persisting anything; fail-closed on miss.
+        Client intercompanyClient = requireIntercompanyClient(debtorCompanyUuid);
 
         Invoice internalInvoice = new Invoice(
                 source.getUuid(),
@@ -1105,6 +1143,7 @@ public class InvoiceService {
                 source.getCurrency(),
                 "Intern faktura knyttet til " + source.getInvoicenumber(),
                 debtorCompanyUuid);
+        internalInvoice.setBillingClientUuid(intercompanyClient.getUuid());
 
         int position = 1;
         for (InvoiceItem line : generatedLines) {
@@ -1213,6 +1252,9 @@ public class InvoiceService {
             }
         }
 
+        // FR-2: resolve intercompany Client for the INTERNAL_SERVICE debtor BEFORE persisting; fail-closed on miss.
+        Client intercompanyClient = requireIntercompanyClient(toCompanyuuid);
+
         // Create the invoice shell
         Invoice invoice = new Invoice(
                 InvoiceType.INTERNAL_SERVICE,
@@ -1226,6 +1268,8 @@ public class InvoiceService {
                 //month.plusMonths(1).withDayOfMonth(1).minusDays(1).plusMonths(1),
                 "", "", "PERIOD", fromCompany, "DKK",
                 "Intern faktura knyttet til " + month.getMonth().name() + " " + month.getYear() + " fra " + fromCompany.getName() + " til " + toCompany.getName());
+        invoice.setDebtorCompanyuuid(toCompanyuuid);
+        invoice.setBillingClientUuid(intercompanyClient.getUuid());
 
         invoice.persistAndFlush();
 

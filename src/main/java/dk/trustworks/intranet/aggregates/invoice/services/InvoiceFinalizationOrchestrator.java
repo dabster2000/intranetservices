@@ -189,7 +189,14 @@ public class InvoiceFinalizationOrchestrator {
 
         // Persist step-1 state
         inv.setEconomicsDraftNumber(draftNumber);
-        inv.setBillingClientUuid(bc.billingClient().getUuid());
+        // Stamp the billing client only if not already stamped at creation time.
+        // INTERNAL / INTERNAL_SERVICE invoices are stamped by InvoiceService with
+        // the intercompany Client (see IntercompanyClientResolver); overwriting
+        // here would clobber that mapping with the contract's external client.
+        // Regular INVOICE flow still gets stamped here for the first time.
+        if (inv.getBillingClientUuid() == null || inv.getBillingClientUuid().isBlank()) {
+            inv.setBillingClientUuid(bc.billingClient().getUuid());
+        }
         inv.setStatus(InvoiceStatus.PENDING_REVIEW);
         invoices.persist(inv);
 
