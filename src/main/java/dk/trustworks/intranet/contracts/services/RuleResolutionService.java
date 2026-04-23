@@ -194,6 +194,11 @@ public class RuleResolutionService {
                         break;
                     }
                     case MODIFY:
+                        if (baseRule == null) {
+                            log.warnf("MODIFY override '%s' has no matching base rule for contract %s (type '%s') — skipping orphan override",
+                                ruleId, contractUuid, contractTypeCode);
+                            break;
+                        }
                         // Merge attributes into base rule with same ruleId
                         ContractValidationRuleEntity mergedRule = override.merge(baseRule);
                         if (mergedRule != null) {
@@ -288,6 +293,11 @@ public class RuleResolutionService {
                         break;
                     }
                     case MODIFY:
+                        if (baseRule == null) {
+                            log.warnf("MODIFY rate override '%s' has no matching base rule for contract %s (type '%s') — skipping orphan override",
+                                ruleId, contractUuid, contractTypeCode);
+                            break;
+                        }
                         ContractRateAdjustmentEntity mergedRule = override.merge(baseRule);
                         if (mergedRule != null) {
                             effectiveRules.put(ruleId, mergedRule);
@@ -381,6 +391,11 @@ public class RuleResolutionService {
                         break;
                     }
                     case MODIFY:
+                        if (baseRule == null) {
+                            log.warnf("MODIFY pricing override '%s' has no matching base rule for contract %s (type '%s') — skipping orphan override",
+                                ruleId, contractUuid, contractTypeCode);
+                            break;
+                        }
                         PricingRuleStepEntity mergedRule = override.merge(baseRule);
                         if (mergedRule != null) {
                             effectiveRules.put(ruleId, mergedRule);
