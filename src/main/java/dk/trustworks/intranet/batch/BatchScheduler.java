@@ -45,14 +45,41 @@ public class BatchScheduler {
     }
 
     // Finance loads
+    //
+    // Guarded against concurrent execution: FinanceLoadJob.loadEconomicsData()
+    // first calls economicsService.clean() (deleteAll on finance_details) and
+    // then re-inserts. Two simultaneous runs can race such that the second's
+    // clean() arrives AFTER the first's inserts commit, leaving 2x rows in
+    // finance_details — the root cause of V303's dedup migration. Same pattern
+    // applied to scheduleFinanceInvoiceSync for consistency.
     @Scheduled(cron = "0 0 21 * * ?")
     void scheduleFinanceLoadEconomics() {
-        jobOperator.start("finance-load-economics", new Properties());
+        try {
+            if (jobOperator.getJobNames().contains("finance-load-economics")) {
+                if (!jobOperator.getRunningExecutions("finance-load-economics").isEmpty()) {
+                    log.info("finance-load-economics already running, skipping this cycle");
+                    return;
+                }
+            }
+            jobOperator.start("finance-load-economics", new Properties());
+        } catch (Exception e) {
+            log.warn("Could not schedule finance-load-economics: " + e.getMessage());
+        }
     }
 
     @Scheduled(cron = "0 0 22 * * ?")
     void scheduleFinanceInvoiceSync() {
-        jobOperator.start("finance-invoice-sync", new Properties());
+        try {
+            if (jobOperator.getJobNames().contains("finance-invoice-sync")) {
+                if (!jobOperator.getRunningExecutions("finance-invoice-sync").isEmpty()) {
+                    log.info("finance-invoice-sync already running, skipping this cycle");
+                    return;
+                }
+            }
+            jobOperator.start("finance-invoice-sync", new Properties());
+        } catch (Exception e) {
+            log.warn("Could not schedule finance-invoice-sync: " + e.getMessage());
+        }
     }
 
     // Slack sync
