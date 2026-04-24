@@ -296,11 +296,116 @@ public class ClientProfitabilityProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Task 5 stub
+    // Task 5: Per-client consultant drill-down
     // -----------------------------------------------------------------------
 
     public List<ClientConsultantDetailDTO> getConsultantsForClient(
             String clientId, String fromKey, String toKey, Set<String> companyIds) {
-        throw new UnsupportedOperationException("Task 5 implements this");
+
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+        java.time.LocalDate fromDate = parseMonthKey(fromKey);
+        java.time.LocalDate toDate   = parseMonthKey(toKey).plusMonths(1);
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("""
+            SELECT u.uuid AS useruuid, u.firstname, u.lastname, ucl.career_level,
+                   mvr.break_even_rate_actual AS be_rate,
+                   COALESCE(work_agg.hrs, 0)       AS hours_booked,
+                   COALESCE(work_agg.amount, 0)    AS amount_booked,
+                   COALESCE(contract_agg.hrs, 0)   AS hours_contracted,
+                   COALESCE(util_agg.billable, 0)  AS util_billable,
+                   COALESCE(util_agg.available, 0) AS util_available
+            FROM user u
+            JOIN userstatus us ON us.useruuid = u.uuid
+                AND us.statusdate = (SELECT MAX(us2.statusdate) FROM userstatus us2
+                                     WHERE us2.useruuid = u.uuid AND us2.statusdate <= CURRENT_DATE)
+            JOIN user_career_level ucl ON ucl.useruuid = u.uuid
+                AND ucl.active_from = (SELECT MAX(ucl2.active_from) FROM user_career_level ucl2
+                                       WHERE ucl2.useruuid = u.uuid AND ucl2.active_from <= CURRENT_DATE)
+            JOIN fact_minimum_viable_rate_mat mvr
+                ON mvr.career_level = ucl.career_level AND mvr.company_id = us.companyuuid
+            LEFT JOIN (
+                SELECT w.useruuid,
+                       SUM(w.workduration)             AS hrs,
+                       SUM(w.workduration * w.rate)    AS amount
+                FROM work w
+                JOIN project p ON p.uuid = w.projectuuid
+                WHERE p.clientuuid = :clientId
+                  AND w.rate > 0
+                  AND DATE_FORMAT(w.registered, '%Y%m') BETWEEN :fromKey AND :toKey
+                GROUP BY w.useruuid
+            ) work_agg ON work_agg.useruuid = u.uuid
+            LEFT JOIN (
+                SELECT cc.useruuid,
+                       SUM(cc.hours * (
+                           GREATEST(0,
+                               LEAST(DATEDIFF(:toDate, GREATEST(cc.activefrom, :fromDate)),
+                                     DATEDIFF(cc.activeto, GREATEST(cc.activefrom, :fromDate))) + 1
+                           ) / NULLIF(DATEDIFF(cc.activeto, cc.activefrom) + 1, 0)
+                       )) AS hrs
+                FROM contract_consultants cc
+                JOIN contracts c ON c.uuid = cc.contractuuid
+                WHERE c.clientuuid = :clientId
+                  AND c.status = 'SIGNED'
+                  AND cc.activeto >= :fromDate AND cc.activefrom < :toDate
+                GROUP BY cc.useruuid
+            ) contract_agg ON contract_agg.useruuid = u.uuid
+            LEFT JOIN (
+                SELECT fud.useruuid,
+                       SUM(fud.registered_billable_hours) AS billable,
+                       SUM(fud.net_available_hours)      AS available
+                FROM fact_user_day fud
+                WHERE fud.consultant_type = 'CONSULTANT'
+                  AND fud.status_type     = 'ACTIVE'
+                  AND fud.document_date >= :fromDate AND fud.document_date < :toDate
+                GROUP BY fud.useruuid
+            ) util_agg ON util_agg.useruuid = u.uuid
+            WHERE (work_agg.hrs IS NOT NULL OR contract_agg.hrs IS NOT NULL)
+            """);
+        if (hasCompanies) sql.append("  AND us.companyuuid IN (:companyIds)\n");
+        sql.append("ORDER BY hours_booked DESC\n");
+
+        var q = em.createNativeQuery(sql.toString(), Tuple.class);
+        q.setParameter("clientId", clientId);
+        q.setParameter("fromKey", fromKey);
+        q.setParameter("toKey", toKey);
+        q.setParameter("fromDate", java.sql.Date.valueOf(fromDate));
+        q.setParameter("toDate", java.sql.Date.valueOf(toDate));
+        if (hasCompanies) q.setParameter("companyIds", companyIds);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = q.getResultList();
+        List<ClientConsultantDetailDTO> out = new ArrayList<>(rows.size());
+        for (Tuple r : rows) {
+            double hoursBooked     = ((Number) r.get("hours_booked")).doubleValue();
+            double amountBooked    = ((Number) r.get("amount_booked")).doubleValue();
+            double hoursContracted = ((Number) r.get("hours_contracted")).doubleValue();
+            double beRate          = ((Number) r.get("be_rate")).doubleValue();
+            double billable        = ((Number) r.get("util_billable")).doubleValue();
+            double available       = ((Number) r.get("util_available")).doubleValue();
+
+            Double actualRate = hoursBooked > 0 ? amountBooked / hoursBooked : null;
+            Double util       = available > 0 ? billable / available : null;
+
+            // Derive unused from rounded values to keep the invariant exact:
+            // max(0, hoursContracted - hoursBooked) == unusedHours (within epsilon)
+            double rHoursBooked     = round(hoursBooked);
+            double rHoursContracted = round(hoursContracted);
+            double rUnused          = Math.max(0, rHoursContracted - rHoursBooked);
+
+            out.add(new ClientConsultantDetailDTO(
+                    (String) r.get("useruuid"),
+                    (String) r.get("firstname"),
+                    (String) r.get("lastname"),
+                    (String) r.get("career_level"),
+                    actualRate == null ? null : round(actualRate),
+                    round(beRate),
+                    rHoursBooked,
+                    rHoursContracted,
+                    rUnused,
+                    util
+            ));
+        }
+        return out;
     }
 }
