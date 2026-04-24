@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -114,5 +115,43 @@ class ClientProfitabilityProviderTest {
         List<ClientProfitabilityRowDTO> rows = provider.getClientProfitability("190001", "190002", null);
         assertNotNull(rows);
         assertTrue(rows.isEmpty(), "Ancient TTM window should return no rows");
+    }
+
+    @Test
+    void getConsultantsForClient_returnsConsultantsForKnownClient() {
+        String[] keys = ttmKeys();
+        List<ClientProfitabilityRowDTO> rows = provider.getClientProfitability(keys[0], keys[1], null);
+        assertFalse(rows.isEmpty());
+        // Pick the client with the most consultants to maximise the chance of data
+        ClientProfitabilityRowDTO target = rows.stream()
+                .max(Comparator.comparingInt(ClientProfitabilityRowDTO::consultantCount))
+                .orElseThrow();
+
+        List<ClientConsultantDetailDTO> consultants = provider.getConsultantsForClient(
+                target.clientId(), keys[0], keys[1], null);
+
+        assertNotNull(consultants);
+        if (target.consultantCount() > 0) {
+            assertFalse(consultants.isEmpty(),
+                    "Client " + target.clientName() + " has consultantCount=" + target.consultantCount() + " but detail is empty");
+        }
+        for (ClientConsultantDetailDTO c : consultants) {
+            assertNotNull(c.useruuid());
+            assertNotNull(c.careerLevel());
+            assertTrue(c.breakEvenRateDkk() >= 0);
+            assertTrue(c.hoursBooked() >= 0);
+            assertTrue(c.hoursContracted() >= 0);
+            assertTrue(c.unusedHours() >= 0);
+            assertEquals(Math.max(0, c.hoursContracted() - c.hoursBooked()), c.unusedHours(), 0.01);
+        }
+    }
+
+    @Test
+    void getConsultantsForClient_unknownClientReturnsEmpty() {
+        String[] keys = ttmKeys();
+        List<ClientConsultantDetailDTO> consultants = provider.getConsultantsForClient(
+                "00000000-0000-0000-0000-000000000000", keys[0], keys[1], null);
+        assertNotNull(consultants);
+        assertTrue(consultants.isEmpty());
     }
 }
