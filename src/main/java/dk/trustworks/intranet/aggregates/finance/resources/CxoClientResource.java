@@ -3,8 +3,10 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 import dk.trustworks.intranet.aggregates.finance.dto.ActiveClientsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.AvgEngagementLengthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.AvgRevenuePerClientDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientConsultantDetailDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientDetailTableDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientPortfolioBubbleDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientProfitabilityRowDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRevenueParetoDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConcentrationIndexDTO;
@@ -12,6 +14,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
+import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -23,6 +26,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -43,6 +47,9 @@ public class CxoClientResource {
 
     @Inject
     CxoClientService cxoClientService;
+
+    @Inject
+    ClientProfitabilityProvider clientProfitabilityProvider;
 
     /**
      * Gets Active Clients (TTM) KPI data.
@@ -352,6 +359,57 @@ public class CxoClientResource {
             }
         }
         return result.isEmpty() ? null : result;
+    }
+
+    /**
+     * Gets Client Profitability data.
+     * Returns list of clients with calculated profitability metrics including revenue, cost, and margin.
+     *
+     * @param fromKey Start period (YYYYMM format, required)
+     * @param toKey End period (YYYYMM format, required)
+     * @param companyIdsCsv Comma-separated company UUIDs (optional)
+     * @return List of ClientProfitabilityRowDTO with profitability metrics
+     */
+    @GET
+    @Path("/profitability")
+    public List<ClientProfitabilityRowDTO> getClientProfitability(
+            @QueryParam("fromKey") String fromKey,
+            @QueryParam("toKey") String toKey,
+            @QueryParam("companyIds") String companyIdsCsv) {
+        if (fromKey == null || !fromKey.matches("\\d{6}") || toKey == null || !toKey.matches("\\d{6}")) {
+            throw new BadRequestException("fromKey and toKey must be YYYYMM");
+        }
+        if (fromKey.compareTo(toKey) > 0) {
+            throw new BadRequestException("fromKey must be <= toKey");
+        }
+        return clientProfitabilityProvider.getClientProfitability(fromKey, toKey, parseCommaSeparated(companyIdsCsv));
+    }
+
+    /**
+     * Gets Consultant detail data for a specific client.
+     * Returns list of consultants assigned to the client with their billable hours and rates.
+     *
+     * @param clientId Client UUID (required)
+     * @param fromKey Start period (YYYYMM format, required)
+     * @param toKey End period (YYYYMM format, required)
+     * @param companyIdsCsv Comma-separated company UUIDs (optional)
+     * @return List of ClientConsultantDetailDTO with consultant metrics
+     */
+    @GET
+    @Path("/profitability/{clientId}/consultants")
+    public List<ClientConsultantDetailDTO> getClientConsultants(
+            @PathParam("clientId") String clientId,
+            @QueryParam("fromKey") String fromKey,
+            @QueryParam("toKey") String toKey,
+            @QueryParam("companyIds") String companyIdsCsv) {
+        if (clientId == null || !clientId.matches("[0-9a-fA-F-]{36}")) {
+            throw new BadRequestException("clientId must be a UUID");
+        }
+        if (fromKey == null || !fromKey.matches("\\d{6}") || toKey == null || !toKey.matches("\\d{6}")) {
+            throw new BadRequestException("fromKey and toKey must be YYYYMM");
+        }
+        Set<String> companyIds = parseCommaSeparated(companyIdsCsv);
+        return clientProfitabilityProvider.getConsultantsForClient(clientId, fromKey, toKey, companyIds);
     }
 
     /**
