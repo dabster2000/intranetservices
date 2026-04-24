@@ -4,21 +4,18 @@ import dk.trustworks.intranet.aggregates.finance.dto.ClientConsultantDetailDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientProfitabilityRowDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
 import dk.trustworks.intranet.aggregates.finance.services.DistributionAwareOpexProvider;
-import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Tuple;
-import org.jboss.logging.Logger;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.*;
 
+@JBossLog
 @ApplicationScoped
-@RegisterForReflection
 public class ClientProfitabilityProvider {
-
-    private static final Logger log = Logger.getLogger(ClientProfitabilityProvider.class);
     private static final String INTERNAL_CLIENT_UUID = "d58bb00b-4474-4250-84eb-d8f77548ddac";
 
     @Inject
@@ -59,12 +56,18 @@ public class ClientProfitabilityProvider {
             double actualProfit = a.revenue - a.salary - a.external - a.expenses - opexAlloc;
             double rateGap = rateGapByClient.getOrDefault(a.clientId, 0.0);
             double unused = unusedByClient.getOrDefault(a.clientId, 0.0);
-            double target = actualProfit + rateGap + unused;
+
+            // Round each component, then derive target from the rounded values so the
+            // invariant target = actualProfit + rateGap + unusedContract holds exactly.
+            double rActual   = round(actualProfit);
+            double rRateGap  = round(rateGap);
+            double rUnused   = round(unused);
+            double rTarget   = rActual + rRateGap + rUnused;
 
             out.add(new ClientProfitabilityRowDTO(
                     a.clientId, a.clientName, a.sector == null ? "OTHER" : a.sector,
                     round(a.revenue), round(a.salary), round(a.external), round(a.expenses),
-                    round(opexAlloc), round(actualProfit), round(rateGap), round(unused), round(target),
+                    round(opexAlloc), rActual, rRateGap, rUnused, rTarget,
                     a.consultantCount
             ));
         }
@@ -97,7 +100,7 @@ public class ClientProfitabilityProvider {
                 COALESCE(pf.salary, 0)      AS salary,
                 COALESCE(pf.external, 0)    AS external,
                 COALESCE(pf.expenses, 0)    AS expenses,
-                COALESCE(pf.consultant_count, 0) AS consultant_count
+                COALESCE(cc_count.n, 0)     AS consultant_count
             FROM (
                 SELECT client_id, SUM(net_revenue_dkk) AS revenue
                 FROM fact_client_revenue_mat
@@ -116,8 +119,7 @@ public class ClientProfitabilityProvider {
                     client_id,
                     SUM(employee_salary_cost_dkk)    AS salary,
                     SUM(external_consultant_cost_dkk) AS external,
-                    SUM(project_expense_cost_dkk)     AS expenses,
-                    MAX(consultant_count)             AS consultant_count
+                    SUM(project_expense_cost_dkk)     AS expenses
                 FROM fact_project_financials_mat
                 WHERE month_key BETWEEN :fromKey AND :toKey
                   AND client_id IS NOT NULL
@@ -126,6 +128,15 @@ public class ClientProfitabilityProvider {
         sql.append("""
                 GROUP BY client_id
             ) pf ON pf.client_id = rev.client_id
+            LEFT JOIN (
+                SELECT p.clientuuid AS client_id, COUNT(DISTINCT w.useruuid) AS n
+                FROM work w
+                JOIN project p ON p.uuid = w.projectuuid
+                WHERE DATE_FORMAT(w.registered, '%Y%m') BETWEEN :fromKey AND :toKey
+                  AND p.clientuuid IS NOT NULL
+                  AND w.rate > 0
+                GROUP BY p.clientuuid
+            ) cc_count ON cc_count.client_id = rev.client_id
             """);
 
         var q = em.createNativeQuery(sql.toString(), Tuple.class);
