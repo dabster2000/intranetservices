@@ -6,6 +6,7 @@ import com.speedment.jpastreamer.application.JPAStreamer;
 import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService;
 import dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService;
+import dk.trustworks.intranet.aggregates.invoice.events.InvoiceAttributionsDirtyEvent;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
@@ -42,6 +43,7 @@ import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
 import io.quarkus.runtime.LaunchMode;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
@@ -76,6 +78,15 @@ public class InvoiceService {
 
     @Inject
     InvoiceAttributionService invoiceAttributionService;
+
+    /**
+     * Post-commit signal that an invoice's line items changed and its attributions
+     * must be recomputed. Observed by {@code InvoiceAttributionDirtyObserver},
+     * which runs the computation asynchronously on a worker thread so the HTTP
+     * response returns as soon as the draft is committed.
+     */
+    @Inject
+    Event<InvoiceAttributionsDirtyEvent> attributionDirtyEvent;
 
     @Inject
     PricingEngine pricingEngine;
@@ -455,9 +466,12 @@ public class InvoiceService {
         if (invoice.getType() != InvoiceType.INTERNAL) {
             bonusService.recalcForInvoice(invoice.getUuid());
         }
-        // Flush pending item changes so attributions can see them via fresh DB read
-        em.flush();
-        invoiceAttributionService.computeAttributionsFromItems(invoice.getUuid(), invoice.invoiceitems);
+        // Attribution computation (including the cross-company cascade to linked
+        // internal invoices) is expensive and was the main contributor to slow
+        // HTTP responses on draft save. Fire a post-commit event instead; the
+        // observer runs computeAttributions on a worker thread after this tx
+        // commits, so the response returns immediately with the priced items.
+        attributionDirtyEvent.fire(new InvoiceAttributionsDirtyEvent(invoice.getUuid()));
         return invoice;
     }
 
