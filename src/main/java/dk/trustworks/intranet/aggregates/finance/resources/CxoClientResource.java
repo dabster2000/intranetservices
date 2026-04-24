@@ -44,6 +44,9 @@ public class CxoClientResource {
     @Inject
     CxoClientService cxoClientService;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider clientProfitabilityProvider;
+
     /**
      * Gets Active Clients (TTM) KPI data.
      * Returns the count of distinct clients with revenue in a trailing 12-month window,
@@ -352,6 +355,70 @@ public class CxoClientResource {
             }
         }
         return result.isEmpty() ? null : result;
+    }
+
+    /**
+     * Gets Client Profitability data.
+     * Returns list of clients with calculated profitability metrics including revenue, cost, and margin.
+     *
+     * @param fromKey Start period (YYYYMM format, required)
+     * @param toKey End period (YYYYMM format, required)
+     * @param companyIdsCsv Comma-separated company UUIDs (optional)
+     * @return List of ClientProfitabilityRowDTO with profitability metrics
+     */
+    @GET
+    @Path("/profitability")
+    @Produces(APPLICATION_JSON)
+    @RolesAllowed({"dashboard:read"})
+    public java.util.List<dk.trustworks.intranet.aggregates.finance.dto.ClientProfitabilityRowDTO> getClientProfitability(
+            @QueryParam("fromKey") String fromKey,
+            @QueryParam("toKey") String toKey,
+            @QueryParam("companyIds") String companyIdsCsv) {
+        if (fromKey == null || !fromKey.matches("\\d{6}") || toKey == null || !toKey.matches("\\d{6}")) {
+            throw new jakarta.ws.rs.BadRequestException("fromKey and toKey must be YYYYMM");
+        }
+        if (fromKey.compareTo(toKey) > 0) {
+            throw new jakarta.ws.rs.BadRequestException("fromKey must be <= toKey");
+        }
+        java.util.Set<String> companyIds = companyIdsCsv == null || companyIdsCsv.isBlank()
+                ? null
+                : java.util.Arrays.stream(companyIdsCsv.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty())
+                        .collect(java.util.stream.Collectors.toSet());
+        return clientProfitabilityProvider.getClientProfitability(fromKey, toKey, companyIds);
+    }
+
+    /**
+     * Gets Consultant detail data for a specific client.
+     * Returns list of consultants assigned to the client with their billable hours and rates.
+     *
+     * @param clientId Client UUID (required)
+     * @param fromKey Start period (YYYYMM format, required)
+     * @param toKey End period (YYYYMM format, required)
+     * @param companyIdsCsv Comma-separated company UUIDs (optional)
+     * @return List of ClientConsultantDetailDTO with consultant metrics
+     */
+    @GET
+    @Path("/profitability/{clientId}/consultants")
+    @Produces(APPLICATION_JSON)
+    @RolesAllowed({"dashboard:read"})
+    public java.util.List<dk.trustworks.intranet.aggregates.finance.dto.ClientConsultantDetailDTO> getClientConsultants(
+            @PathParam("clientId") String clientId,
+            @QueryParam("fromKey") String fromKey,
+            @QueryParam("toKey") String toKey,
+            @QueryParam("companyIds") String companyIdsCsv) {
+        if (clientId == null || !clientId.matches("[0-9a-fA-F-]{36}")) {
+            throw new jakarta.ws.rs.BadRequestException("clientId must be a UUID");
+        }
+        if (fromKey == null || !fromKey.matches("\\d{6}") || toKey == null || !toKey.matches("\\d{6}")) {
+            throw new jakarta.ws.rs.BadRequestException("fromKey and toKey must be YYYYMM");
+        }
+        java.util.Set<String> companyIds = companyIdsCsv == null || companyIdsCsv.isBlank()
+                ? null
+                : java.util.Arrays.stream(companyIdsCsv.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty())
+                        .collect(java.util.stream.Collectors.toSet());
+        return clientProfitabilityProvider.getConsultantsForClient(clientId, fromKey, toKey, companyIds);
     }
 
     /**
