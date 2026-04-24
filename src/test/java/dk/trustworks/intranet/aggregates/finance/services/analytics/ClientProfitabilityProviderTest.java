@@ -3,17 +3,32 @@ package dk.trustworks.intranet.aggregates.finance.services.analytics;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientConsultantDetailDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientProfitabilityRowDTO;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.QuarkusTestProfile;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @QuarkusTest
+@TestProfile(ClientProfitabilityProviderTest.Profile.class)
 class ClientProfitabilityProviderTest {
+
+    public static class Profile implements QuarkusTestProfile {
+        @Override
+        public Map<String, String> getConfigOverrides() {
+            return Map.of(
+                    "quarkus.s3.devservices.enabled", "false",
+                    "cvtool.username", "test-placeholder",
+                    "cvtool.password", "test-placeholder"
+            );
+        }
+    }
 
     private static final String INTERNAL_CLIENT_UUID = "d58bb00b-4474-4250-84eb-d8f77548ddac";
     private static final double EPSILON = 1.0; // DKK rounding tolerance
