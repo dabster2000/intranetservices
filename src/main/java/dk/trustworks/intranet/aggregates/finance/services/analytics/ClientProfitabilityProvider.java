@@ -167,7 +167,7 @@ public class ClientProfitabilityProvider {
                     p.clientuuid AS client_id,
                     GREATEST(0,
                         AVG(mvr.break_even_rate_actual) * SUM(w.workduration)
-                      - SUM(COALESCE(w.registered_amount, 0))
+                      - SUM(w.workduration * w.rate)
                     ) AS gap_dkk
                 FROM work w
                 JOIN project p  ON p.uuid = w.projectuuid
