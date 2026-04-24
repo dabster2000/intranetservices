@@ -3,8 +3,10 @@ package dk.trustworks.intranet.aggregates.finance.resources;
 import dk.trustworks.intranet.aggregates.finance.dto.ActiveClientsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.AvgEngagementLengthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.AvgRevenuePerClientDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientConsultantDetailDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientDetailTableDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientPortfolioBubbleDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.ClientProfitabilityRowDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRevenueParetoDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConcentrationIndexDTO;
@@ -12,6 +14,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
+import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -23,6 +26,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -45,7 +49,7 @@ public class CxoClientResource {
     CxoClientService cxoClientService;
 
     @Inject
-    dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider clientProfitabilityProvider;
+    ClientProfitabilityProvider clientProfitabilityProvider;
 
     /**
      * Gets Active Clients (TTM) KPI data.
@@ -368,24 +372,17 @@ public class CxoClientResource {
      */
     @GET
     @Path("/profitability")
-    @Produces(APPLICATION_JSON)
-    @RolesAllowed({"dashboard:read"})
-    public java.util.List<dk.trustworks.intranet.aggregates.finance.dto.ClientProfitabilityRowDTO> getClientProfitability(
+    public List<ClientProfitabilityRowDTO> getClientProfitability(
             @QueryParam("fromKey") String fromKey,
             @QueryParam("toKey") String toKey,
             @QueryParam("companyIds") String companyIdsCsv) {
         if (fromKey == null || !fromKey.matches("\\d{6}") || toKey == null || !toKey.matches("\\d{6}")) {
-            throw new jakarta.ws.rs.BadRequestException("fromKey and toKey must be YYYYMM");
+            throw new BadRequestException("fromKey and toKey must be YYYYMM");
         }
         if (fromKey.compareTo(toKey) > 0) {
-            throw new jakarta.ws.rs.BadRequestException("fromKey must be <= toKey");
+            throw new BadRequestException("fromKey must be <= toKey");
         }
-        java.util.Set<String> companyIds = companyIdsCsv == null || companyIdsCsv.isBlank()
-                ? null
-                : java.util.Arrays.stream(companyIdsCsv.split(","))
-                        .map(String::trim).filter(s -> !s.isEmpty())
-                        .collect(java.util.stream.Collectors.toSet());
-        return clientProfitabilityProvider.getClientProfitability(fromKey, toKey, companyIds);
+        return clientProfitabilityProvider.getClientProfitability(fromKey, toKey, parseCommaSeparated(companyIdsCsv));
     }
 
     /**
@@ -400,24 +397,18 @@ public class CxoClientResource {
      */
     @GET
     @Path("/profitability/{clientId}/consultants")
-    @Produces(APPLICATION_JSON)
-    @RolesAllowed({"dashboard:read"})
-    public java.util.List<dk.trustworks.intranet.aggregates.finance.dto.ClientConsultantDetailDTO> getClientConsultants(
+    public List<ClientConsultantDetailDTO> getClientConsultants(
             @PathParam("clientId") String clientId,
             @QueryParam("fromKey") String fromKey,
             @QueryParam("toKey") String toKey,
             @QueryParam("companyIds") String companyIdsCsv) {
         if (clientId == null || !clientId.matches("[0-9a-fA-F-]{36}")) {
-            throw new jakarta.ws.rs.BadRequestException("clientId must be a UUID");
+            throw new BadRequestException("clientId must be a UUID");
         }
         if (fromKey == null || !fromKey.matches("\\d{6}") || toKey == null || !toKey.matches("\\d{6}")) {
-            throw new jakarta.ws.rs.BadRequestException("fromKey and toKey must be YYYYMM");
+            throw new BadRequestException("fromKey and toKey must be YYYYMM");
         }
-        java.util.Set<String> companyIds = companyIdsCsv == null || companyIdsCsv.isBlank()
-                ? null
-                : java.util.Arrays.stream(companyIdsCsv.split(","))
-                        .map(String::trim).filter(s -> !s.isEmpty())
-                        .collect(java.util.stream.Collectors.toSet());
+        Set<String> companyIds = parseCommaSeparated(companyIdsCsv);
         return clientProfitabilityProvider.getConsultantsForClient(clientId, fromKey, toKey, companyIds);
     }
 
