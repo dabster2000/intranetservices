@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.ClientRetentionTrendDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ClientRevenueParetoDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ConcentrationIndexDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.FactFreshnessDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
@@ -50,6 +51,9 @@ public class CxoClientResource {
 
     @Inject
     ClientProfitabilityProvider clientProfitabilityProvider;
+
+    @Inject
+    jakarta.persistence.EntityManager em;
 
     /**
      * Gets Active Clients (TTM) KPI data.
@@ -410,6 +414,37 @@ public class CxoClientResource {
         }
         Set<String> companyIds = parseCommaSeparated(companyIdsCsv);
         return clientProfitabilityProvider.getConsultantsForClient(clientId, fromKey, toKey, companyIds);
+    }
+
+    /**
+     * Reports the last-refresh timestamp of the three materialised fact tables that feed the
+     * CXO client dashboards. Used by the UI to render a "Data as of …" hint so stale snapshots
+     * are obvious to the reader.
+     */
+    @GET
+    @Path("/data-freshness")
+    public FactFreshnessDTO getDataFreshness() {
+        String sql = """
+                SELECT
+                    MAX(CASE WHEN table_name = 'fact_client_revenue_mat'     THEN update_time END) AS client_rev,
+                    MAX(CASE WHEN table_name = 'fact_project_financials_mat' THEN update_time END) AS proj_fin,
+                    MAX(CASE WHEN table_name = 'fact_opex_mat'               THEN update_time END) AS opex,
+                    MAX(update_time) AS most_recent
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name IN ('fact_client_revenue_mat', 'fact_project_financials_mat', 'fact_opex_mat')
+                """;
+        Object[] row = (Object[]) em.createNativeQuery(sql).getSingleResult();
+        return new FactFreshnessDTO(
+                toIso(row[0]),
+                toIso(row[1]),
+                toIso(row[2]),
+                toIso(row[3])
+        );
+    }
+
+    private static String toIso(Object v) {
+        return v == null ? null : v.toString();
     }
 
     /**

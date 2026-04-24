@@ -154,4 +154,48 @@ class ClientProfitabilityProviderTest {
         assertNotNull(consultants);
         assertTrue(consultants.isEmpty());
     }
+
+    /**
+     * Regression guard for the {@code work.rate = 0} data problem that used to silence
+     * the rate-gap lever completely. Now driven by {@code work_full} (which resolves
+     * contract rates), the portfolio-wide rate gap must be positive as long as any
+     * consultant bills below their career-level MVR.
+     */
+    @Test
+    void getClientProfitability_rateGapIsNonZeroSomewhereInPortfolio() {
+        String[] keys = ttmKeys();
+        List<ClientProfitabilityRowDTO> rows = provider.getClientProfitability(keys[0], keys[1], null);
+        if (rows.isEmpty()) return; // empty DB — nothing to assert
+
+        double totalRateGap = rows.stream().mapToDouble(ClientProfitabilityRowDTO::rateGapDkk).sum();
+        assertTrue(totalRateGap > 0,
+                "Portfolio-wide rate gap should be > 0 when any consultant bills below MVR. " +
+                "A total of 0 suggests the provider regressed to querying work.rate (always 0) " +
+                "instead of work_full (contract-resolved rate).");
+    }
+
+    /**
+     * Regression guard for the consultant drill-down: with work_full, consultants
+     * who logged billable hours must appear with positive hoursBooked rather than
+     * the previous 0/contracted-only behaviour.
+     */
+    @Test
+    void getConsultantsForClient_hoursBookedIsPopulatedForSomeone() {
+        String[] keys = ttmKeys();
+        List<ClientProfitabilityRowDTO> rows = provider.getClientProfitability(keys[0], keys[1], null);
+        if (rows.isEmpty()) return;
+
+        // Look at the top few clients by consultant count so that at least one has billable work.
+        long anyPositive = rows.stream()
+                .sorted(Comparator.comparingInt(ClientProfitabilityRowDTO::consultantCount).reversed())
+                .limit(5)
+                .flatMap(r -> provider.getConsultantsForClient(r.clientId(), keys[0], keys[1], null).stream())
+                .filter(c -> c.hoursBooked() > 0)
+                .count();
+
+        assertTrue(anyPositive > 0,
+                "At least one consultant on a top client should have hoursBooked > 0 after the " +
+                "work_full switch. A total of 0 suggests the work_agg subquery still filters on " +
+                "work.rate (always 0).");
+    }
 }

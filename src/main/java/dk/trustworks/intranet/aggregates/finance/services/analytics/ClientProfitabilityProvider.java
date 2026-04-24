@@ -129,13 +129,12 @@ public class ClientProfitabilityProvider {
                 GROUP BY client_id
             ) pf ON pf.client_id = rev.client_id
             LEFT JOIN (
-                SELECT p.clientuuid AS client_id, COUNT(DISTINCT w.useruuid) AS n
-                FROM work w
-                JOIN project p ON p.uuid = w.projectuuid
-                WHERE DATE_FORMAT(w.registered, '%Y%m') BETWEEN :fromKey AND :toKey
-                  AND p.clientuuid IS NOT NULL
-                  AND w.rate > 0
-                GROUP BY p.clientuuid
+                SELECT wf.clientuuid AS client_id, COUNT(DISTINCT wf.useruuid) AS n
+                FROM work_full wf
+                WHERE DATE_FORMAT(wf.registered, '%Y%m') BETWEEN :fromKey AND :toKey
+                  AND wf.clientuuid IS NOT NULL
+                  AND wf.rate > 0
+                GROUP BY wf.clientuuid
             ) cc_count ON cc_count.client_id = rev.client_id
             """);
 
@@ -175,35 +174,28 @@ public class ClientProfitabilityProvider {
             SELECT client_id, SUM(gap_dkk) AS rate_gap
             FROM (
                 SELECT
-                    p.clientuuid AS client_id,
+                    wf.clientuuid AS client_id,
                     GREATEST(0,
-                        AVG(mvr.break_even_rate_actual) * SUM(w.workduration)
-                      - SUM(w.workduration * w.rate)
+                        AVG(mvr.break_even_rate_actual) * SUM(wf.workduration)
+                      - SUM(wf.workduration * wf.rate)
                     ) AS gap_dkk
-                FROM work w
-                JOIN project p  ON p.uuid = w.projectuuid
-                JOIN user u     ON u.uuid = w.useruuid
-                JOIN userstatus us ON us.useruuid = u.uuid
-                    AND us.statusdate = (
-                        SELECT MAX(us2.statusdate) FROM userstatus us2
-                        WHERE us2.useruuid = u.uuid AND us2.statusdate <= w.registered
-                    )
-                JOIN user_career_level ucl ON ucl.useruuid = u.uuid
+                FROM work_full wf
+                JOIN user_career_level ucl ON ucl.useruuid = wf.useruuid
                     AND ucl.active_from = (
                         SELECT MAX(ucl2.active_from) FROM user_career_level ucl2
-                        WHERE ucl2.useruuid = u.uuid AND ucl2.active_from <= w.registered
+                        WHERE ucl2.useruuid = wf.useruuid AND ucl2.active_from <= wf.registered
                     )
                 JOIN fact_minimum_viable_rate_mat mvr
                     ON mvr.career_level = ucl.career_level
-                   AND mvr.company_id   = us.companyuuid
-                WHERE w.rate > 0
-                  AND DATE_FORMAT(w.registered, '%Y%m') BETWEEN :fromKey AND :toKey
-                  AND p.clientuuid IS NOT NULL
-                  AND p.clientuuid <> :internalClient
+                   AND mvr.company_id   = wf.consultant_company_uuid
+                WHERE wf.rate > 0
+                  AND DATE_FORMAT(wf.registered, '%Y%m') BETWEEN :fromKey AND :toKey
+                  AND wf.clientuuid IS NOT NULL
+                  AND wf.clientuuid <> :internalClient
             """);
-        if (hasCompanies) sql.append("  AND us.companyuuid IN (:companyIds)\n");
+        if (hasCompanies) sql.append("  AND wf.consultant_company_uuid IN (:companyIds)\n");
         sql.append("""
-                GROUP BY p.clientuuid, w.useruuid, DATE_FORMAT(w.registered, '%Y%m')
+                GROUP BY wf.clientuuid, wf.useruuid, DATE_FORMAT(wf.registered, '%Y%m')
             ) per_cm
             GROUP BY client_id
             """);
@@ -325,15 +317,14 @@ public class ClientProfitabilityProvider {
             JOIN fact_minimum_viable_rate_mat mvr
                 ON mvr.career_level = ucl.career_level AND mvr.company_id = us.companyuuid
             LEFT JOIN (
-                SELECT w.useruuid,
-                       SUM(w.workduration)             AS hrs,
-                       SUM(w.workduration * w.rate)    AS amount
-                FROM work w
-                JOIN project p ON p.uuid = w.projectuuid
-                WHERE p.clientuuid = :clientId
-                  AND w.rate > 0
-                  AND DATE_FORMAT(w.registered, '%Y%m') BETWEEN :fromKey AND :toKey
-                GROUP BY w.useruuid
+                SELECT wf.useruuid,
+                       SUM(wf.workduration)             AS hrs,
+                       SUM(wf.workduration * wf.rate)   AS amount
+                FROM work_full wf
+                WHERE wf.clientuuid = :clientId
+                  AND wf.rate > 0
+                  AND DATE_FORMAT(wf.registered, '%Y%m') BETWEEN :fromKey AND :toKey
+                GROUP BY wf.useruuid
             ) work_agg ON work_agg.useruuid = u.uuid
             LEFT JOIN (
                 SELECT cc.useruuid,
