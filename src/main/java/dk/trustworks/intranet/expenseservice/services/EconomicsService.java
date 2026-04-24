@@ -25,6 +25,7 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.jboss.resteasy.plugins.providers.multipart.MultipartFormDataOutput;
 
@@ -43,6 +44,23 @@ public class  EconomicsService {
 
     @Inject
     UserService userService;
+
+    /**
+     * Environment prefix on the idempotency key — prevents the same expense UUID
+     * from colliding across environments at e-conomics' idempotency cache, which
+     * would otherwise let staging block production's POST with HTTP 400 URLChanged.
+     */
+    @ConfigProperty(name = "dk.trustworks.environment.id", defaultValue = "production")
+    String environmentId;
+
+    /** Builds the e-conomics Idempotency-Key header value for a voucher POST. */
+    String buildIdempotencyKey(Expense expense) {
+        if (expense.hasKnownCacheIssue() || Boolean.TRUE.equals(expense.getIsOrphaned())) {
+            return String.format("%s-expense-%s-retry-%d",
+                    environmentId, expense.getUuid(), expense.getSafeRetryCount());
+        }
+        return environmentId + "-expense-" + expense.getUuid();
+    }
 
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws Exception {
         log.info("Sending voucher for expense " + expense.getUuid());
@@ -67,23 +85,9 @@ public class  EconomicsService {
         try (EconomicsAPI remoteApi = getEconomicsAPI(result)) {
             Response response = null;
             try {
-                // SMART IDEMPOTENCY STRATEGY:
-                // Use deterministic key for normal operations to maintain true idempotency
-                // Only modify key when we detect orphaned/cached responses from previous attempts
-                String idempotencyKey;
-
-                if (expense.hasKnownCacheIssue() || Boolean.TRUE.equals(expense.getIsOrphaned())) {
-                    // Known cache issue: Add retry count to force fresh processing
-                    // This bypasses stale cache while maintaining determinism
-                    idempotencyKey = String.format("expense-%s-retry-%d",
-                        expense.getUuid(), expense.getSafeRetryCount());
-                    log.infof("Using retry idempotency key for orphaned/cached expense %s (retry %d)",
-                        expense.getUuid(), expense.getSafeRetryCount());
-                } else {
-                    // Normal case: Use deterministic key for true idempotency
-                    idempotencyKey = "expense-" + expense.getUuid();
-                    log.debugf("Using standard idempotency key for expense %s", expense.getUuid());
-                }
+                String idempotencyKey = buildIdempotencyKey(expense);
+                log.debugf("Posting voucher for expense %s with idempotency key %s",
+                        expense.getUuid(), idempotencyKey);
 
                 response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
             } catch (WebApplicationException e) {

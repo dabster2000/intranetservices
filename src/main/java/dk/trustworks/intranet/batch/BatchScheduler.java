@@ -7,6 +7,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import io.quarkus.scheduler.Scheduled;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDate;
 import java.util.Properties;
@@ -20,6 +21,14 @@ public class BatchScheduler {
 
     @Inject
     EntityManager em;
+
+    /**
+     * Kill switch for expense-consume — the only scheduled job that POSTs vouchers
+     * to e-conomics. Staging's deploy sets this to {@code false} so a polluted
+     * staging DB can never produce real e-conomics vouchers.
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.economics-upload.enabled", defaultValue = "true")
+    boolean expenseUploadEnabled;
 
     /**
      * Nightly BI recalculation via stored procedure.
@@ -151,6 +160,10 @@ public class BatchScheduler {
 
     @Scheduled(every = "1h")
     void scheduleExpenseConsume() {
+        if (!expenseUploadEnabled) {
+            log.debug("expense-consume skipped: dk.trustworks.expense.economics-upload.enabled=false");
+            return;
+        }
         try {
             // Only start if no expense-consume job is currently running
             if (jobOperator.getJobNames().contains("expense-consume")) {

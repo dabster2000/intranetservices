@@ -92,6 +92,8 @@ jobs:
               {"name":"MAILUSERNAME","value":"trustworks.dk"},
               {"name":"JOURNALNUMBER","value":"7"},
               {"name":"EXPENSEJOURNALNUMBER","value":"16"},
+              {"name":"EXPENSE_ECONOMICS_UPLOAD_ENABLED","value":"true"},
+              {"name":"ENVIRONMENT_ID","value":"production"},
               {"name":"INVOICE_S3","value":"invoicefiles-new"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT","value":"http://localhost:4317"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENABLED","value":"false"},
