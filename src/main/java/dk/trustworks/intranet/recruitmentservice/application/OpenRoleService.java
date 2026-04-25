@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.application;
 
+import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRolePatchRequest;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.OpenRole;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.RoleAssignment;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.RoleHistory;
@@ -48,6 +49,23 @@ public class OpenRoleService {
     public OpenRole find(String uuid) {
         OpenRole r = OpenRole.findById(uuid);
         if (r == null) throw new NotFoundException("OpenRole " + uuid);
+        return r;
+    }
+
+    @Transactional
+    public OpenRole patch(String uuid, OpenRolePatchRequest req, String actorUuid) {
+        OpenRole r = find(uuid);
+        if (req.title() != null) r.title = req.title();
+        if (req.hiringReason() != null) r.hiringReason = req.hiringReason();
+        if (req.targetStartDate() != null) r.targetStartDate = req.targetStartDate();
+        if (req.expectedAllocation() != null) r.expectedAllocation = req.expectedAllocation();
+        if (req.expectedRateBand() != null) r.expectedRateBand = req.expectedRateBand();
+        if (req.salaryMin() != null) r.salaryMin = req.salaryMin();
+        if (req.salaryMax() != null) r.salaryMax = req.salaryMax();
+        if (req.priority() != null) r.priority = req.priority();
+        if (req.advertisingStatus() != null) r.advertisingStatus = req.advertisingStatus();
+        if (req.searchStatus() != null) r.searchStatus = req.searchStatus();
+        r.updatedAt = LocalDateTime.now();
         return r;
     }
 
