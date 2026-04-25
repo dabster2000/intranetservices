@@ -337,3 +337,17 @@ virkdata:
   # API key for virkdata.dk CVR registry. Sourced from the Secrets Manager entry
   # tw-quarkus-secrets-{env}:VIRKDATA_API_KEY in deployed environments.
   api-key: ${VIRKDATA_API_KEY:}
+
+# Recruitment feature flags (Slice 1 introduces only the top-level switch; integration flags default to false)
+recruitment:
+  enabled: false
+  ai:
+    enabled: false
+  outlook:
+    enabled: false
+  slack:
+    enabled: false
+  nextsign:
+    enabled: false
+  sharepoint:
+    enabled: false
