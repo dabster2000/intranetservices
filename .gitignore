@@ -40,3 +40,6 @@ nb-configuration.xml
 .env
 .run/
 /.run/
+
+# Worktrees for isolated dev workspaces
+.worktrees/
