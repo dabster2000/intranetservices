@@ -1,0 +1,24 @@
+{
+  "endpoints": [
+    {"method": "GET",  "path": "/api/recruitment/status",                   "rolesAny": ["recruitment:read"]},
+    {"method": "PUT",  "path": "/api/recruitment/status/{scopeKind}/{scopeId}", "rolesAny": ["recruitment:write", "recruitment:admin"]},
+    {"method": "GET",  "path": "/api/recruitment/roles",                    "rolesAny": ["recruitment:read"]},
+    {"method": "POST", "path": "/api/recruitment/roles",                    "rolesAny": ["recruitment:write"]},
+    {"method": "GET",  "path": "/api/recruitment/roles/{uuid}",             "rolesAny": ["recruitment:read"]},
+    {"method": "PATCH","path": "/api/recruitment/roles/{uuid}",             "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/roles/{uuid}/transitions", "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/roles/{uuid}/assignments", "rolesAny": ["recruitment:write"]},
+    {"method": "DELETE","path":"/api/recruitment/roles/{uuid}/assignments/{userUuid}", "rolesAny": ["recruitment:write"]},
+    {"method": "GET",  "path": "/api/recruitment/roles/{uuid}/applications","rolesAny": ["recruitment:read"]},
+    {"method": "GET",  "path": "/api/recruitment/candidates",               "rolesAny": ["recruitment:read"]},
+    {"method": "POST", "path": "/api/recruitment/candidates",               "rolesAny": ["recruitment:write"]},
+    {"method": "GET",  "path": "/api/recruitment/candidates/{uuid}",        "rolesAny": ["recruitment:read"]},
+    {"method": "PATCH","path": "/api/recruitment/candidates/{uuid}",        "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/notes",  "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/applications",             "rolesAny": ["recruitment:write"]},
+    {"method": "GET",  "path": "/api/recruitment/applications/{uuid}",      "rolesAny": ["recruitment:read"]},
+    {"method": "POST", "path": "/api/recruitment/applications/{uuid}/transitions", "rolesAny": ["recruitment:write", "recruitment:offer", "recruitment:admin"]},
+    {"method": "POST", "path": "/api/recruitment/applications/{uuid}/withdraw",    "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/applications/{uuid}/screening-decision", "rolesAny": ["recruitment:write"]}
+  ]
+}
