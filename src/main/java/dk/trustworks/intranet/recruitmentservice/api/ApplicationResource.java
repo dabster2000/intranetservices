@@ -5,6 +5,8 @@ import dk.trustworks.intranet.recruitmentservice.api.dto.ApplicationResponse;
 import dk.trustworks.intranet.recruitmentservice.api.dto.ApplicationScreeningDecisionRequest;
 import dk.trustworks.intranet.recruitmentservice.api.dto.ApplicationTransitionRequest;
 import dk.trustworks.intranet.recruitmentservice.application.ApplicationService;
+import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.Application;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.ApplicationStage;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
@@ -15,6 +17,7 @@ import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -29,6 +32,7 @@ import jakarta.ws.rs.core.Response;
 public class ApplicationResource {
 
     @Inject ApplicationService service;
+    @Inject RecruitmentRecordAccessService recordAccess;
     @Inject RequestHeaderHolder header;
     @Inject ScopeContext scope;
 
@@ -43,7 +47,11 @@ public class ApplicationResource {
     @GET
     @Path("/{uuid}")
     public ApplicationResponse find(@PathParam("uuid") String uuid) {
-        return ApplicationResponse.from(service.find(uuid));
+        Application a = service.find(uuid);
+        if (!recordAccess.canSeeApplication(a, header.getUserUuid())) {
+            throw new NotFoundException("Application " + uuid);
+        }
+        return ApplicationResponse.from(a);
     }
 
     @POST

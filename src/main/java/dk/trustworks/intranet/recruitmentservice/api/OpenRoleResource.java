@@ -21,6 +21,7 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.PATCH;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
@@ -84,7 +85,11 @@ public class OpenRoleResource {
     @GET
     @Path("/{uuid}")
     public OpenRoleResponse find(@PathParam("uuid") String uuid) {
-        return OpenRoleResponse.from(service.find(uuid));
+        OpenRole role = service.find(uuid);
+        if (!recordAccess.canSeeOpenRole(role, header.getUserUuid())) {
+            throw new NotFoundException("OpenRole " + uuid);
+        }
+        return OpenRoleResponse.from(role);
     }
 
     @PATCH
@@ -122,6 +127,7 @@ public class OpenRoleResource {
     @Path("/{uuid}/applications")
     public List<ApplicationResponse> applications(@PathParam("uuid") String roleUuid) {
         return applicationService.listForRole(roleUuid).stream()
+                .filter(recordAccess.applicationPredicate(header.getUserUuid()))
                 .map(ApplicationResponse::from).toList();
     }
 }

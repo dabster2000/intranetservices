@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.api;
 
 import dk.trustworks.intranet.recruitmentservice.api.dto.*;
 import dk.trustworks.intranet.recruitmentservice.application.CandidateService;
+import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.Candidate;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.CandidateState;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -22,6 +23,7 @@ import java.util.List;
 public class CandidateResource {
 
     @Inject CandidateService service;
+    @Inject RecruitmentRecordAccessService recordAccess;
     @Inject RequestHeaderHolder header;
 
     @GET
@@ -32,6 +34,7 @@ public class CandidateResource {
             @QueryParam("page") @DefaultValue("0") int page,
             @QueryParam("size") @DefaultValue("50") int size) {
         return service.list(state, practice, q, page, size).stream()
+                .filter(recordAccess.candidatePredicate(header.getUserUuid()))
                 .map(CandidateResponse::from).toList();
     }
 
@@ -59,7 +62,11 @@ public class CandidateResource {
     @GET
     @Path("/{uuid}")
     public CandidateResponse find(@PathParam("uuid") String uuid) {
-        return CandidateResponse.from(service.find(uuid));
+        Candidate c = service.find(uuid);
+        if (!recordAccess.canSeeCandidate(c, header.getUserUuid())) {
+            throw new NotFoundException("Candidate " + uuid);
+        }
+        return CandidateResponse.from(c);
     }
 
     @PATCH
