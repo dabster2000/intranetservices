@@ -61,6 +61,10 @@ public class ApplicationResource {
     @Path("/{uuid}/transitions")
     @RolesAllowed({"recruitment:write", "recruitment:offer", "recruitment:admin"})
     public ApplicationResponse transition(@PathParam("uuid") String uuid, @Valid ApplicationTransitionRequest req) {
+        Application existing = service.find(uuid);
+        if (!recordAccess.canSeeApplication(existing, header.getUserUuid())) {
+            throw new NotFoundException("Application " + uuid);
+        }
         boolean offerTransition = req.toStage() == ApplicationStage.OFFER || req.toStage() == ApplicationStage.ACCEPTED;
         if (offerTransition && !scope.hasAnyScope("recruitment:offer", "recruitment:admin")) {
             throw new ForbiddenException("OFFER/ACCEPTED transitions require recruitment:offer or recruitment:admin");
@@ -76,6 +80,10 @@ public class ApplicationResource {
     @Path("/{uuid}/withdraw")
     @RolesAllowed({"recruitment:write"})
     public ApplicationResponse withdraw(@PathParam("uuid") String uuid, ApplicationTransitionRequest body) {
+        Application existing = service.find(uuid);
+        if (!recordAccess.canSeeApplication(existing, header.getUserUuid())) {
+            throw new NotFoundException("Application " + uuid);
+        }
         var reason = body == null ? null : body.reason();
         return ApplicationResponse.from(service.withdraw(uuid, reason, header.getUserUuid()));
     }
@@ -85,6 +93,10 @@ public class ApplicationResource {
     @RolesAllowed({"recruitment:write"})
     public ApplicationResponse screeningDecision(@PathParam("uuid") String uuid,
                                                   @Valid ApplicationScreeningDecisionRequest req) {
+        Application existing = service.find(uuid);
+        if (!recordAccess.canSeeApplication(existing, header.getUserUuid())) {
+            throw new NotFoundException("Application " + uuid);
+        }
         return ApplicationResponse.from(service.recordScreeningDecision(uuid, req.outcome(),
                 req.overrideReason(), header.getUserUuid()));
     }
@@ -100,6 +112,9 @@ public class ApplicationResource {
         } else {
             rows = List.of();
         }
-        return rows.stream().map(ApplicationResponse::from).toList();
+        return rows.stream()
+                .filter(recordAccess.applicationPredicate(header.getUserUuid()))
+                .map(ApplicationResponse::from)
+                .toList();
     }
 }

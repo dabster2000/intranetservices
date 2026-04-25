@@ -73,6 +73,10 @@ public class CandidateResource {
     @Path("/{uuid}")
     @RolesAllowed({"recruitment:write"})
     public CandidateResponse patch(@PathParam("uuid") String uuid, CandidatePatchRequest req) {
+        Candidate existing = service.find(uuid);
+        if (!recordAccess.canSeeCandidate(existing, header.getUserUuid())) {
+            throw new NotFoundException("Candidate " + uuid);
+        }
         return CandidateResponse.from(service.patch(uuid, c -> {
             if (req.firstName() != null) c.firstName = req.firstName();
             if (req.lastName() != null) c.lastName = req.lastName();
@@ -93,6 +97,10 @@ public class CandidateResource {
     @Path("/{uuid}/notes")
     @RolesAllowed({"recruitment:write"})
     public Response addNote(@PathParam("uuid") String uuid, @Valid CandidateNoteRequest req) {
+        Candidate existing = service.find(uuid);
+        if (!recordAccess.canSeeCandidate(existing, header.getUserUuid())) {
+            throw new NotFoundException("Candidate " + uuid);
+        }
         var note = service.addNote(uuid, req.body(), req.visibility(), header.getUserUuid());
         return Response.status(201).entity(CandidateNoteResponse.from(note)).build();
     }

@@ -96,6 +96,10 @@ public class OpenRoleResource {
     @Path("/{uuid}")
     @RolesAllowed({"recruitment:write"})
     public OpenRoleResponse patch(@PathParam("uuid") String uuid, OpenRolePatchRequest req) {
+        OpenRole existing = service.find(uuid);
+        if (!recordAccess.canSeeOpenRole(existing, header.getUserUuid())) {
+            throw new NotFoundException("OpenRole " + uuid);
+        }
         return OpenRoleResponse.from(service.patch(uuid, req, header.getUserUuid()));
     }
 
@@ -103,6 +107,10 @@ public class OpenRoleResource {
     @Path("/{uuid}/transitions")
     @RolesAllowed({"recruitment:write"})
     public OpenRoleResponse transition(@PathParam("uuid") String uuid, @Valid OpenRoleTransitionRequest req) {
+        OpenRole existing = service.find(uuid);
+        if (!recordAccess.canSeeOpenRole(existing, header.getUserUuid())) {
+            throw new NotFoundException("OpenRole " + uuid);
+        }
         return OpenRoleResponse.from(
                 service.transition(uuid, req.toStatus(), req.reason(), header.getUserUuid()));
     }
@@ -111,6 +119,10 @@ public class OpenRoleResource {
     @Path("/{uuid}/assignments")
     @RolesAllowed({"recruitment:write"})
     public Response assign(@PathParam("uuid") String uuid, @Valid OpenRoleAssignmentRequest req) {
+        OpenRole existing = service.find(uuid);
+        if (!recordAccess.canSeeOpenRole(existing, header.getUserUuid())) {
+            throw new NotFoundException("OpenRole " + uuid);
+        }
         var a = service.addAssignment(uuid, req.userUuid(), req.responsibilityKind(), header.getUserUuid());
         return Response.status(201).entity(RoleAssignmentResponse.from(a)).build();
     }
@@ -119,6 +131,10 @@ public class OpenRoleResource {
     @Path("/{uuid}/assignments/{userUuid}")
     @RolesAllowed({"recruitment:write"})
     public Response unassign(@PathParam("uuid") String uuid, @PathParam("userUuid") String userUuid) {
+        OpenRole existing = service.find(uuid);
+        if (!recordAccess.canSeeOpenRole(existing, header.getUserUuid())) {
+            throw new NotFoundException("OpenRole " + uuid);
+        }
         service.removeAssignment(uuid, userUuid);
         return Response.noContent().build();
     }
