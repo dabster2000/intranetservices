@@ -108,6 +108,51 @@ class SpSyncProdToStagingSafeguardTest {
                         + "`twservices4-staging`.`expenses`.");
     }
 
+    /**
+     * Regression for the V305 incident (2026-04-25).
+     *
+     * <p>V242 added a STORED GENERATED column ({@code invoicenumber_unique}) on
+     * the {@code invoices} table. The Phase 1 INSERT used to be
+     * {@code INSERT INTO staging.X SELECT * FROM prod.X}. Under the procedure's
+     * own SQL_MODE ({@code STRICT_TRANS_TABLES}), copying a generated-column
+     * value raises ERROR 1906 ("value for generated column has been ignored")
+     * which aborts the procedure mid-Phase-1, so PII anonymisation and the
+     * expense status flip never run.
+     *
+     * <p>The fix is to build an explicit, dynamic column list that excludes
+     * generated columns by checking {@code INFORMATION_SCHEMA.COLUMNS.GENERATION_EXPRESSION}.
+     * This test pins the pattern so a future edit cannot quietly revert to
+     * {@code SELECT *} on the Phase 1 INSERT.
+     */
+    @Test
+    void latest_sp_sync_prod_to_staging_excludes_generated_columns_in_phase1() throws IOException {
+        assertNotNull(latestMigration, "no migration creates sp_sync_prod_to_staging");
+
+        String body = Files.readString(latestMigration);
+
+        boolean filtersOnGenerationExpression = Pattern.compile(
+                "GENERATION_EXPRESSION", Pattern.CASE_INSENSITIVE)
+                .matcher(body).find();
+        assertTrue(filtersOnGenerationExpression,
+                latestMigration.getFileName() + " Phase 1 must consult "
+                        + "INFORMATION_SCHEMA.COLUMNS.GENERATION_EXPRESSION so it can "
+                        + "exclude STORED/VIRTUAL GENERATED columns from the INSERT. "
+                        + "Without this, ERROR 1906 (\"value for generated column has "
+                        + "been ignored\") aborts Phase 1.");
+
+        // Phase 1 INSERT must build an explicit column list — not bare SELECT *.
+        // Detect the regression by searching for any INSERT INTO staging.X
+        // followed by SELECT * FROM prod.X.
+        boolean hasSelectStarInsert = Pattern.compile(
+                "INSERT\\s+INTO\\s+`twservices4-staging`[^;]*?SELECT\\s*\\*\\s*FROM\\s+`twservices4`",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+                .matcher(body).find();
+        assertFalse(hasSelectStarInsert,
+                latestMigration.getFileName() + " Phase 1 still uses `SELECT *` to copy "
+                        + "tables from prod to staging. This re-introduces the V305 generated-"
+                        + "column abort (ERROR 1906) under STRICT_TRANS_TABLES.");
+    }
+
     private static boolean createsSpSyncProdToStaging(Path path) {
         String body;
         try {

@@ -254,16 +254,6 @@ e-conomics:
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
   journal-number: ${JOURNALNUMBER:15}
   expense-journal-number: ${EXPENSEJOURNALNUMBER:15}
-# Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
-# so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
-# does, cannot reuse production's idempotency keys.
-dk:
-  trustworks:
-    expense:
-      economics-upload:
-        enabled: ${EXPENSE_ECONOMICS_UPLOAD_ENABLED:true}
-    environment:
-      id: ${ENVIRONMENT_ID:production}
 currencyapi:
   key: ${API_KEY:xx}
 bucket:
@@ -277,8 +267,20 @@ openai:
   api:
     key: ${OPENAI_APIKEY:xx}
   model: gpt-5-nano #gpt-4o-mini
+# Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
+# so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
+# does, cannot reuse production's idempotency keys.
+# IMPORTANT: keep this single `dk:` block — SnakeYAML silently lets a later
+# duplicate top-level `dk:` mapping override earlier ones, which would drop
+# the kill-switch and environment-id properties at parse time.
+# (Regression test: ApplicationYamlNoDuplicateKeysTest.)
 dk:
   trustworks:
+    expense:
+      economics-upload:
+        enabled: ${EXPENSE_ECONOMICS_UPLOAD_ENABLED:true}
+    environment:
+      id: ${ENVIRONMENT_ID:production}
     intranet:
       expenseservice:
         remote:
