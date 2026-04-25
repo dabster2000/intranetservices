@@ -22,7 +22,10 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Response;
+
+import java.util.List;
 
 @Path("/api/recruitment/applications")
 @RequestScoped
@@ -84,5 +87,19 @@ public class ApplicationResource {
                                                   @Valid ApplicationScreeningDecisionRequest req) {
         return ApplicationResponse.from(service.recordScreeningDecision(uuid, req.outcome(),
                 req.overrideReason(), header.getUserUuid()));
+    }
+
+    @GET
+    public List<ApplicationResponse> list(@QueryParam("candidate") String candidate,
+                                          @QueryParam("role") String role) {
+        List<Application> rows;
+        if (candidate != null) {
+            rows = Application.find("candidateUuid", candidate).list();
+        } else if (role != null) {
+            rows = Application.find("roleUuid", role).list();
+        } else {
+            rows = List.of();
+        }
+        return rows.stream().map(ApplicationResponse::from).toList();
     }
 }

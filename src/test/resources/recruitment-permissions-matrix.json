@@ -16,6 +16,7 @@
     {"method": "PATCH","path": "/api/recruitment/candidates/{uuid}",        "rolesAny": ["recruitment:write"]},
     {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/notes",  "rolesAny": ["recruitment:write"]},
     {"method": "POST", "path": "/api/recruitment/applications",             "rolesAny": ["recruitment:write"]},
+    {"method": "GET",  "path": "/api/recruitment/applications",             "rolesAny": ["recruitment:read"]},
     {"method": "GET",  "path": "/api/recruitment/applications/{uuid}",      "rolesAny": ["recruitment:read"]},
     {"method": "POST", "path": "/api/recruitment/applications/{uuid}/transitions", "rolesAny": ["recruitment:write", "recruitment:offer", "recruitment:admin"]},
     {"method": "POST", "path": "/api/recruitment/applications/{uuid}/withdraw",    "rolesAny": ["recruitment:write"]},
