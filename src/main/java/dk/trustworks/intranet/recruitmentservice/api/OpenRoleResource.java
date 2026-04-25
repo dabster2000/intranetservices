@@ -1,11 +1,13 @@
 package dk.trustworks.intranet.recruitmentservice.api;
 
+import dk.trustworks.intranet.recruitmentservice.api.dto.ApplicationResponse;
 import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRoleAssignmentRequest;
 import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRoleCreateRequest;
 import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRolePatchRequest;
 import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRoleResponse;
 import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRoleTransitionRequest;
 import dk.trustworks.intranet.recruitmentservice.api.dto.RoleAssignmentResponse;
+import dk.trustworks.intranet.recruitmentservice.application.ApplicationService;
 import dk.trustworks.intranet.recruitmentservice.application.OpenRoleService;
 import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.OpenRole;
@@ -38,6 +40,7 @@ public class OpenRoleResource {
 
     @Inject OpenRoleService service;
     @Inject RecruitmentRecordAccessService recordAccess;
+    @Inject ApplicationService applicationService;
     @Inject RequestHeaderHolder header;
 
     @GET
@@ -113,5 +116,12 @@ public class OpenRoleResource {
     public Response unassign(@PathParam("uuid") String uuid, @PathParam("userUuid") String userUuid) {
         service.removeAssignment(uuid, userUuid);
         return Response.noContent().build();
+    }
+
+    @GET
+    @Path("/{uuid}/applications")
+    public List<ApplicationResponse> applications(@PathParam("uuid") String roleUuid) {
+        return applicationService.listForRole(roleUuid).stream()
+                .map(ApplicationResponse::from).toList();
     }
 }
