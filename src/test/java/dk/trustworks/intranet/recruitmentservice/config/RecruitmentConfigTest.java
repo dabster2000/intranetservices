@@ -34,6 +34,14 @@ class RecruitmentConfigTest {
         assertFalse(config.aiCandidateSummaryEnabled(), "recruitment.ai.candidate-summary.enabled defaults false");
     }
 
+    @Test
+    void slice3aFlagsDefaultDisabled() {
+        assertFalse(config.aiInterviewKitEnabled(),
+            "recruitment.ai.interview-kit.enabled defaults false");
+        assertFalse(config.aiScorecardRoundupEnabled(),
+            "recruitment.ai.scorecard-roundup.enabled defaults false");
+    }
+
     public static class EnabledProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {

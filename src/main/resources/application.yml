@@ -351,6 +351,10 @@ recruitment:
       enabled: false
     candidate-summary:
       enabled: false
+    interview-kit:
+      enabled: false
+    scorecard-roundup:
+      enabled: false
   outlook:
     enabled: false
   slack:

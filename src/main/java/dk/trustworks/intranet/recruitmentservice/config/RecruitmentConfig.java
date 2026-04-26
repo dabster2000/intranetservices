@@ -33,6 +33,12 @@ public class RecruitmentConfig {
     @ConfigProperty(name = "recruitment.ai.candidate-summary.enabled", defaultValue = "false")
     boolean aiCandidateSummaryEnabled;
 
+    @ConfigProperty(name = "recruitment.ai.interview-kit.enabled", defaultValue = "false")
+    boolean aiInterviewKitEnabled;
+
+    @ConfigProperty(name = "recruitment.ai.scorecard-roundup.enabled", defaultValue = "false")
+    boolean aiScorecardRoundupEnabled;
+
     public boolean isEnabled() { return enabled; }
     public boolean aiEnabled() { return aiEnabled; }
     public boolean outlookEnabled() { return outlookEnabled; }
@@ -42,4 +48,6 @@ public class RecruitmentConfig {
     public boolean aiCvExtractionEnabled() { return aiCvExtractionEnabled; }
     public boolean aiRoleBriefEnabled() { return aiRoleBriefEnabled; }
     public boolean aiCandidateSummaryEnabled() { return aiCandidateSummaryEnabled; }
+    public boolean aiInterviewKitEnabled() { return aiInterviewKitEnabled; }
+    public boolean aiScorecardRoundupEnabled() { return aiScorecardRoundupEnabled; }
 }
