@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "summaryParagraph": {"type": "string"},
+    "practiceMatchScore": {"type": "number", "minimum": 0, "maximum": 1},
+    "levelMatchScore": {"type": "number", "minimum": 0, "maximum": 1},
+    "consultingPotential": {"type": "number", "minimum": 0, "maximum": 1},
+    "concerns": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 5,
+      "items": {"type": "string"}
+    },
+    "evidenceCitations": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": ["summaryParagraph", "practiceMatchScore", "levelMatchScore", "consultingPotential", "evidenceCitations"]
+}

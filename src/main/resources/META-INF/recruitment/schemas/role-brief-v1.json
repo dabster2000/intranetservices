@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "responsibilities": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 6,
+      "items": {"type": "string"}
+    },
+    "mustHaves": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 8,
+      "items": {"type": "string"}
+    },
+    "niceToHaves": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {"type": "string"}
+    },
+    "adCopyDraft": {"type": "string"},
+    "risks": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 4,
+      "items": {"type": "string"}
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "snippet"],
+        "properties": {
+          "field":   {"type": "string"},
+          "snippet": {"type": "string"}
+        }
+      }
+    }
+  },
+  "required": ["responsibilities", "mustHaves", "adCopyDraft", "evidence"]
+}

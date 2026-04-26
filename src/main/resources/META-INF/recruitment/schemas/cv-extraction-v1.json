@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "firstName": {"type": ["string", "null"]},
+    "lastName": {"type": ["string", "null"]},
+    "email": {"type": ["string", "null"], "format": "email"},
+    "phone": {"type": ["string", "null"]},
+    "yearsOfExperience": {"type": "integer", "minimum": 0, "maximum": 60},
+    "workHistory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["company", "title", "startMonth"],
+        "properties": {
+          "company": {"type": "string"},
+          "title": {"type": "string"},
+          "startMonth": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}$"},
+          "endMonth": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}$"}
+        }
+      }
+    },
+    "education": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["institution", "degree"],
+        "properties": {
+          "institution": {"type": "string"},
+          "degree": {"type": "string"},
+          "year": {"type": ["integer", "null"]}
+        }
+      }
+    },
+    "skills":         {"type": "array", "items": {"type": "string"}},
+    "languages":      {"type": "array", "items": {"type": "string", "pattern": "^[a-z]{2}$"}},
+    "certifications": {"type": "array", "items": {"type": "string"}},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "snippet"],
+        "properties": {
+          "field":   {"type": "string"},
+          "snippet": {"type": "string"}
+        }
+      }
+    }
+  },
+  "required": ["evidence"]
+}
