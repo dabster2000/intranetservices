@@ -2,23 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
+  "required": ["firstName","lastName","email","phone","yearsOfExperience","workHistory","education","skills","languages","certifications","evidence"],
   "properties": {
-    "firstName": {"type": ["string", "null"]},
-    "lastName": {"type": ["string", "null"]},
-    "email": {"type": ["string", "null"], "format": "email"},
-    "phone": {"type": ["string", "null"]},
-    "yearsOfExperience": {"type": "integer", "minimum": 0, "maximum": 60},
+    "firstName": {"type": ["string","null"]},
+    "lastName":  {"type": ["string","null"]},
+    "email":     {"type": ["string","null"]},
+    "phone":     {"type": ["string","null"]},
+    "yearsOfExperience": {"type": ["integer","null"]},
     "workHistory": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["company", "title", "startMonth"],
+        "required": ["company","title","startMonth","endMonth"],
         "properties": {
-          "company": {"type": "string"},
-          "title": {"type": "string"},
-          "startMonth": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}$"},
-          "endMonth": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}$"}
+          "company":    {"type": "string"},
+          "title":      {"type": "string"},
+          "startMonth": {"type": "string"},
+          "endMonth":   {"type": ["string","null"]}
         }
       }
     },
@@ -27,29 +28,28 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["institution", "degree"],
+        "required": ["institution","degree","year"],
         "properties": {
           "institution": {"type": "string"},
-          "degree": {"type": "string"},
-          "year": {"type": ["integer", "null"]}
+          "degree":      {"type": "string"},
+          "year":        {"type": ["integer","null"]}
         }
       }
     },
     "skills":         {"type": "array", "items": {"type": "string"}},
-    "languages":      {"type": "array", "items": {"type": "string", "pattern": "^[a-z]{2}$"}},
+    "languages":      {"type": "array", "items": {"type": "string"}},
     "certifications": {"type": "array", "items": {"type": "string"}},
     "evidence": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["field", "snippet"],
+        "required": ["field","snippet"],
         "properties": {
           "field":   {"type": "string"},
           "snippet": {"type": "string"}
         }
       }
     }
-  },
-  "required": ["evidence"]
+  }
 }
