@@ -3,6 +3,8 @@ package dk.trustworks.intranet.recruitmentservice.application;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.Application;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.Candidate;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.Interview;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.InterviewParticipant;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.OpenRole;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.RoleAssignment;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.HiringCategory;
@@ -70,6 +72,18 @@ public class RecruitmentRecordAccessService {
         return role != null
                 && candidate != null
                 && ((actorUuid != null && actorUuid.equals(candidate.ownerUserUuid)) || canSeeOpenRole(role, actorUuid));
+    }
+
+    public boolean canSeeInterview(Interview iv, String actorUuid) {
+        if (iv == null) return false;
+        if (scope.hasAnyScope(ADMIN, OFFER)) return true;
+
+        long participantHits = InterviewParticipant.count(
+                "interviewUuid = ?1 and userUuid = ?2", iv.uuid, actorUuid);
+        if (participantHits > 0) return true;
+
+        Application app = Application.findById(iv.applicationUuid);
+        return app != null && canSeeApplication(app, actorUuid);
     }
 
     private Set<String> ledTeamUuids(String actorUuid) {

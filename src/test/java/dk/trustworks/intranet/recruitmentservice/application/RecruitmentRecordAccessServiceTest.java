@@ -3,6 +3,8 @@ package dk.trustworks.intranet.recruitmentservice.application;
 import dk.trustworks.intranet.domain.user.entity.Team;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.Application;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.Candidate;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.Interview;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.InterviewParticipant;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.OpenRole;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.RoleAssignment;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.ApplicationStage;
@@ -10,6 +12,9 @@ import dk.trustworks.intranet.recruitmentservice.domain.enums.ApplicationType;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.CandidateState;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.HiringCategory;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.HiringSource;
+import dk.trustworks.intranet.recruitmentservice.domain.enums.InterviewRoundType;
+import dk.trustworks.intranet.recruitmentservice.domain.enums.InterviewStatus;
+import dk.trustworks.intranet.recruitmentservice.domain.enums.ParticipantRole;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.PipelineKind;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.Practice;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.ResponsibilityKind;
@@ -155,6 +160,55 @@ class RecruitmentRecordAccessServiceTest {
         Application app = persistApplication(candidate.uuid, role.uuid);
 
         assertTrue(recordAccess.canSeeApplication(app, uuid()));
+    }
+
+    // ---- Interview visibility ----
+
+    @Test
+    @TestTransaction
+    @TestSecurity(user = "tam", roles = {"recruitment:read"})
+    void canSeeInterview_returnsTrue_ifParticipant() {
+        String actor = uuid();
+        Interview iv = persistInterview(uuid());
+        InterviewParticipant p = new InterviewParticipant();
+        p.uuid = uuid();
+        p.interviewUuid = iv.uuid;
+        p.userUuid = actor;
+        p.roleInInterview = ParticipantRole.SCORER;
+        p.isRequiredScorer = true;
+        p.persist();
+
+        assertTrue(recordAccess.canSeeInterview(iv, actor));
+    }
+
+    @Test
+    @TestTransaction
+    @TestSecurity(user = "tam", roles = {"recruitment:read"})
+    void canSeeInterview_returnsFalse_forStranger() {
+        Interview iv = persistInterview(uuid());
+        assertFalse(recordAccess.canSeeInterview(iv, uuid()));
+    }
+
+    @Test
+    @TestTransaction
+    @TestSecurity(user = "admin", roles = {"recruitment:read", "recruitment:admin"})
+    void canSeeInterview_returnsTrue_withAdminScope() {
+        Interview iv = persistInterview(uuid());
+        assertTrue(recordAccess.canSeeInterview(iv, uuid()));
+    }
+
+    private Interview persistInterview(String applicationUuid) {
+        Interview iv = new Interview();
+        iv.uuid = uuid();
+        iv.applicationUuid = applicationUuid;
+        iv.roundNumber = 1;
+        iv.roundType = InterviewRoundType.FIRST;
+        iv.scheduledAt = java.time.LocalDateTime.now().plusDays(1);
+        iv.durationMinutes = 60;
+        iv.status = InterviewStatus.SCHEDULED;
+        iv.rescheduleCount = 0;
+        iv.persist();
+        return iv;
     }
 
     // ---- Helpers ----
