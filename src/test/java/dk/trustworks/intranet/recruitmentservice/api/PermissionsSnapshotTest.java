@@ -49,7 +49,8 @@ class PermissionsSnapshotTest {
             CandidateAiResource.class,
             AiArtifactResource.class,
             InterviewResource.class,
-            ScorecardResource.class
+            ScorecardResource.class,
+            InterviewAiResource.class
     );
 
     @Test
