@@ -1,11 +1,13 @@
 package dk.trustworks.intranet.recruitmentservice.api;
 
+import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.security.TestSecurity;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 
 @QuarkusTest
@@ -62,5 +64,59 @@ class OpenRoleResourceTest {
     @TestSecurity(user = "stranger", roles = {"users:read"})
     void readWithoutScopeReturns403() {
         given().when().get("/api/recruitment/roles").then().statusCode(403);
+    }
+
+    @Test
+    @TestTransaction
+    @TestSecurity(user = "tam", roles = {"recruitment:read", "recruitment:write"})
+    void list_filtersByOwner_whenOwnerParamPresent() {
+        // Seed two roles, each with a distinct user assigned as RECRUITMENT_OWNER.
+        // The owner UUIDs are deliberately not the calling actor; the JPQL filter
+        // matches on the assignment row independently of who is asking.
+        String ownerX = "00000000-0000-0000-0000-0000000000aa";
+        String ownerY = "00000000-0000-0000-0000-0000000000bb";
+        String roleA = createRoleWithOwner(ownerX);
+        String roleB = createRoleWithOwner(ownerY);
+
+        // Filter by ownerX → only roleA should come back.
+        // We follow the same actor-identity pattern as the golden-path test (no
+        // X-Requested-By header, identity falls back to the JWT preferred_username).
+        given()
+                .queryParam("owner", ownerX)
+                .when().get("/api/recruitment/roles")
+                .then().statusCode(200)
+                .body("size()", is(1))
+                .body("[0].uuid", equalTo(roleA));
+
+        // Filter by ownerY → only roleB.
+        given()
+                .queryParam("owner", ownerY)
+                .when().get("/api/recruitment/roles")
+                .then().statusCode(200)
+                .body("size()", is(1))
+                .body("[0].uuid", equalTo(roleB));
+    }
+
+    private String createRoleWithOwner(String userUuid) {
+        String body = """
+            {
+              "title": "Senior DEV consultant",
+              "hiringCategory": "PRACTICE_CONSULTANT",
+              "practice": "DEV",
+              "teamUuid": "00000000-0000-0000-0000-000000000001",
+              "hiringSource": "CAPACITY_GAP",
+              "hiringReason": "Capacity gap"
+            }""";
+        String uuid = given().contentType("application/json").body(body)
+                .when().post("/api/recruitment/roles")
+                .then().statusCode(201)
+                .extract().path("uuid");
+
+        given().contentType("application/json")
+                .body("{\"userUuid\":\"" + userUuid + "\",\"responsibilityKind\":\"RECRUITMENT_OWNER\"}")
+                .when().post("/api/recruitment/roles/" + uuid + "/assignments")
+                .then().statusCode(201);
+
+        return uuid;
     }
 }

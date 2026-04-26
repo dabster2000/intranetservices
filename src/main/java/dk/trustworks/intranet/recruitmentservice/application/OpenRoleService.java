@@ -129,12 +129,18 @@ public class OpenRoleService {
     public List<OpenRole> list(RoleStatus status, String practice, String team, String ownerUuid,
                                String hiringCategory, int page, int size,
                                Predicate<OpenRole> recordAccess) {
-        StringBuilder q = new StringBuilder("1=1");
+        StringBuilder q = new StringBuilder("FROM OpenRole r WHERE 1=1");
         Map<String, Object> params = new HashMap<>();
-        if (status != null) { q.append(" and status = :status"); params.put("status", status); }
-        if (practice != null) { q.append(" and practice = :practice"); params.put("practice", parseEnum(Practice.class, practice, "practice")); }
-        if (team != null) { q.append(" and teamUuid = :team"); params.put("team", team); }
-        if (hiringCategory != null) { q.append(" and hiringCategory = :hc"); params.put("hc", parseEnum(HiringCategory.class, hiringCategory, "hiringCategory")); }
+        if (status != null) { q.append(" AND r.status = :status"); params.put("status", status); }
+        if (practice != null) { q.append(" AND r.practice = :practice"); params.put("practice", parseEnum(Practice.class, practice, "practice")); }
+        if (team != null) { q.append(" AND r.teamUuid = :team"); params.put("team", team); }
+        if (hiringCategory != null) { q.append(" AND r.hiringCategory = :hc"); params.put("hc", parseEnum(HiringCategory.class, hiringCategory, "hiringCategory")); }
+        if (ownerUuid != null && !ownerUuid.isBlank()) {
+            q.append(" AND EXISTS (SELECT 1 FROM RoleAssignment ra WHERE ra.roleUuid = r.uuid"
+                   + " AND ra.userUuid = :owner AND ra.responsibilityKind = :ownerKind)");
+            params.put("owner", ownerUuid);
+            params.put("ownerKind", ResponsibilityKind.RECRUITMENT_OWNER);
+        }
         List<OpenRole> rows = OpenRole.find(q.toString(), Sort.by("createdAt").descending(), params)
                 .page(Page.of(page, size))
                 .list();
