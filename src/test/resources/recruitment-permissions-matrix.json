@@ -32,6 +32,10 @@
     {"method": "POST", "path": "/api/recruitment/interviews",                      "rolesAny": ["recruitment:write"]},
     {"method": "GET",  "path": "/api/recruitment/interviews/{uuid}",               "rolesAny": ["recruitment:read", "recruitment:interview"]},
     {"method": "PATCH","path": "/api/recruitment/interviews/{uuid}",               "rolesAny": ["recruitment:write"]},
-    {"method": "POST", "path": "/api/recruitment/interviews/{uuid}/round-up",      "rolesAny": ["recruitment:write"]}
+    {"method": "POST", "path": "/api/recruitment/interviews/{uuid}/round-up",      "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/interviews/{interviewUuid}/scorecards",                                  "rolesAny": ["recruitment:interview"]},
+    {"method": "GET",  "path": "/api/recruitment/interviews/{interviewUuid}/scorecards",                                  "rolesAny": ["recruitment:interview", "recruitment:admin"]},
+    {"method": "POST", "path": "/api/recruitment/interviews/{interviewUuid}/scorecards/{scorecardUuid}/amendments",       "rolesAny": ["recruitment:interview"]},
+    {"method": "POST", "path": "/api/recruitment/interviews/{interviewUuid}/scorecards/{scorecardUuid}/reopen",           "rolesAny": ["recruitment:admin"]}
   ]
 }
