@@ -24,6 +24,7 @@
     {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/cv",            "rolesAny": ["recruitment:write"]},
     {"method": "GET",  "path": "/api/recruitment/candidates/{uuid}/cv/extraction", "rolesAny": ["recruitment:read"]},
     {"method": "POST", "path": "/api/recruitment/roles/{uuid}/ai/role-brief",      "rolesAny": ["recruitment:write"]},
-    {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/ai/summary",    "rolesAny": ["recruitment:read"]}
+    {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/ai/summary",    "rolesAny": ["recruitment:read"]},
+    {"method": "GET",  "path": "/api/recruitment/ai-artifacts/{uuid}",             "rolesAny": ["recruitment:read"]}
   ]
 }
