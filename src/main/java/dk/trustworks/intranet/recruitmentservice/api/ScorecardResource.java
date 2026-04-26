@@ -7,19 +7,21 @@ import dk.trustworks.intranet.recruitmentservice.domain.entities.*;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 @Path("/api/recruitment/interviews/{interviewUuid}/scorecards")
+@RequestScoped
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
+@RolesAllowed({"recruitment:interview"})
 public class ScorecardResource {
 
     @Inject ScorecardService scorecardService;
@@ -27,7 +29,6 @@ public class ScorecardResource {
     @Inject RequestHeaderHolder header;
 
     @POST
-    @RolesAllowed({"recruitment:interview"})
     public Response submit(@PathParam("interviewUuid") String interviewUuid,
                            @Valid SubmitScorecardRequest req) {
         String actor = header.getUserUuid();
@@ -63,16 +64,11 @@ public class ScorecardResource {
                 ScorecardAmendment.<ScorecardAmendment>list("scorecardUuid", s.uuid)
                     .stream().map(ScorecardAmendmentResponse::from).toList()))
             .toList();
-        // Use HashMap to allow null values (Map.of rejects null ownScorecard).
-        Map<String, Object> body = new HashMap<>();
-        body.put("ownScorecard", ownDto);
-        body.put("others", othersDto);
-        return Response.ok(body).build();
+        return Response.ok(new ScorecardListResponse(ownDto, othersDto)).build();
     }
 
     @POST
     @Path("/{scorecardUuid}/amendments")
-    @RolesAllowed({"recruitment:interview"})
     public Response amend(@PathParam("interviewUuid") String interviewUuid,
                           @PathParam("scorecardUuid") String scorecardUuid,
                           @Valid AmendScorecardRequest req) {

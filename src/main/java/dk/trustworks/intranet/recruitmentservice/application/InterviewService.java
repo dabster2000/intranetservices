@@ -80,6 +80,12 @@ public class InterviewService {
                     "at least one participant must be a required scorer (LEAD_INTERVIEWER or SCORER)");
         }
 
+        long distinct = cmd.participants().stream()
+                .map(p -> p.userUuid()).filter(java.util.Objects::nonNull).distinct().count();
+        if (distinct < cmd.participants().size()) {
+            throw new IllegalArgumentException("duplicate userUuid in participants list");
+        }
+
         int durationMinutes = resolveDuration(cmd, role);
         if (durationMinutes < 15 || durationMinutes > 240) {
             throw new IllegalArgumentException("durationMinutes must be 15..240");

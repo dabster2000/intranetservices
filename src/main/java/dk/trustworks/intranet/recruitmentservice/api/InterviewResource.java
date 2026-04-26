@@ -5,6 +5,7 @@ import dk.trustworks.intranet.recruitmentservice.application.*;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.*;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
@@ -14,8 +15,10 @@ import jakarta.ws.rs.core.Response;
 import java.util.List;
 
 @Path("/api/recruitment/interviews")
+@RequestScoped
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
+@RolesAllowed({"recruitment:read"})
 public class InterviewResource {
 
     @Inject InterviewService interviewService;
@@ -33,6 +36,7 @@ public class InterviewResource {
         var filter = new InterviewFilter(assignedToMe, awaitingEvaluation, upcoming,
             applicationUuid, roleUuid, candidateUuid, actor);
         List<Interview> ivs = interviewService.list(filter, actor);
+        // TODO(perf): N+1 — batch-load participants by `interviewUuid IN (...)` once list size grows.
         var responses = ivs.stream()
             .map(iv -> InterviewResponse.from(iv,
                 InterviewParticipant.<InterviewParticipant>list("interviewUuid", iv.uuid)))
@@ -73,14 +77,19 @@ public class InterviewResource {
     @RolesAllowed({"recruitment:write"})
     public Response patch(@PathParam("uuid") String uuid, @Valid UpdateInterviewRequest req) {
         String actor = header.getUserUuid();
+        boolean wantsCancel = req.cancelReason() != null && !req.cancelReason().isBlank();
+        boolean wantsReschedule = req.scheduledAt() != null;
+        if (wantsCancel && wantsReschedule) {
+            throw new BadRequestException("provide either cancelReason or scheduledAt, not both");
+        }
+        if (!wantsCancel && !wantsReschedule) {
+            throw new BadRequestException("PATCH must provide cancelReason or scheduledAt");
+        }
         Interview iv;
-        if (req.cancelReason() != null) {
+        if (wantsCancel) {
             iv = interviewService.cancel(uuid, req.cancelReason(), actor);
-        } else if (req.scheduledAt() != null) {
-            iv = interviewService.reschedule(uuid, req.scheduledAt(), req.durationMinutes(), actor);
         } else {
-            // Other fields (prepNotes, markHeld) — no-op for 3a; reserved for later patches.
-            iv = interviewService.findByIdOrThrow(uuid, actor);
+            iv = interviewService.reschedule(uuid, req.scheduledAt(), req.durationMinutes(), actor);
         }
         var resp = InterviewResponse.from(iv,
             InterviewParticipant.<InterviewParticipant>list("interviewUuid", iv.uuid));

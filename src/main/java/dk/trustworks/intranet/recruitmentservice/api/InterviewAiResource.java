@@ -3,11 +3,11 @@ package dk.trustworks.intranet.recruitmentservice.api;
 import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactResponse;
 import dk.trustworks.intranet.recruitmentservice.application.AiArtifactService;
 import dk.trustworks.intranet.recruitmentservice.application.InterviewService;
-import dk.trustworks.intranet.recruitmentservice.domain.entities.Interview;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.AiArtifactKind;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.AiSubjectKind;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -23,8 +23,10 @@ import java.util.Map;
  * the intended behaviour while the AI pipeline is gated off.
  */
 @Path("/api/recruitment/interviews/{uuid}/ai")
+@RequestScoped
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@RolesAllowed({"recruitment:read"})
 public class InterviewAiResource {
 
     @Inject AiArtifactService aiArtifactService;
@@ -36,7 +38,7 @@ public class InterviewAiResource {
     @RolesAllowed({"recruitment:read", "recruitment:interview"})
     public Response triggerKit(@PathParam("uuid") String uuid) {
         String actor = header.getUserUuid();
-        Interview iv = interviewService.findByIdOrThrow(uuid, actor); // throws 404 if not visible
+        interviewService.findByIdOrThrow(uuid, actor); // throws 404 if not visible
         var artifact = aiArtifactService.requestArtifact(
             AiSubjectKind.INTERVIEW,
             uuid,
@@ -51,7 +53,7 @@ public class InterviewAiResource {
     @RolesAllowed({"recruitment:write"})
     public Response triggerRoundUpSummary(@PathParam("uuid") String uuid) {
         String actor = header.getUserUuid();
-        Interview iv = interviewService.findByIdOrThrow(uuid, actor);
+        interviewService.findByIdOrThrow(uuid, actor); // throws 404 if not visible
         var artifact = aiArtifactService.requestArtifact(
             AiSubjectKind.INTERVIEW,
             uuid,
