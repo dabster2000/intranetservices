@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.domain.entities;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.CandidateState;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.Practice;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
@@ -7,6 +9,8 @@ import jakarta.persistence.*;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Data
@@ -58,8 +62,9 @@ public class Candidate extends PanacheEntityBase {
     @Column(name = "linkedin_url", length = 512)
     public String linkedinUrl;
 
-    @Column(columnDefinition = "JSON")
-    public String tags;  // JSON-as-string for Slice 1; structured DTO arrives in Slice 2
+    @Convert(converter = StringListJsonConverter.class)
+    @Column(name = "tags", columnDefinition = "JSON")
+    public List<String> tags = new ArrayList<>();
 
     @Column(name = "last_contact_at")
     public LocalDateTime lastContactAt;
@@ -110,5 +115,36 @@ public class Candidate extends PanacheEntityBase {
         Candidate c = new Candidate();
         c.uuid = UUID.randomUUID().toString();
         return c;
+    }
+
+    /**
+     * JSON-array converter for {@link Candidate#tags}. The DB column is {@code JSON}; Java holds a
+     * {@code List<String>}. Tolerant of legacy garbage (returns empty list on parse failure) so
+     * pre-Slice-2 rows that may contain non-array shapes do not crash reads.
+     */
+    @Converter
+    public static class StringListJsonConverter implements AttributeConverter<List<String>, String> {
+        private static final ObjectMapper MAPPER = new ObjectMapper();
+        private static final TypeReference<List<String>> TYPE = new TypeReference<>() {};
+
+        @Override
+        public String convertToDatabaseColumn(List<String> attr) {
+            if (attr == null || attr.isEmpty()) return "[]";
+            try {
+                return MAPPER.writeValueAsString(attr);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("tags serialisation failed", e);
+            }
+        }
+
+        @Override
+        public List<String> convertToEntityAttribute(String json) {
+            if (json == null || json.isBlank()) return new ArrayList<>();
+            try {
+                return MAPPER.readValue(json, TYPE);
+            } catch (Exception e) {
+                return new ArrayList<>();  // tolerate legacy garbage
+            }
+        }
     }
 }

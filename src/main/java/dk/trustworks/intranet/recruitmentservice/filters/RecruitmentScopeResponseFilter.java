@@ -61,6 +61,7 @@ public class RecruitmentScopeResponseFilter implements ContainerResponseFilter {
                     c.currentCompany(), c.desiredPractice(), c.desiredCareerLevelUuid(),
                     c.noticePeriodDays(), c.salaryExpectation(), c.salaryCurrency(),
                     c.locationPreference(), c.linkedinUrl(), c.firstContactSource(),
+                    c.tags(),
                     null, null, null,
                     c.state(), c.ownerUserUuid(),
                     c.addedToPoolAt(), c.retentionExtendedTo(),

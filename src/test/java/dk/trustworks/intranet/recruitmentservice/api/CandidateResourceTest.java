@@ -5,7 +5,9 @@ import io.quarkus.test.security.TestSecurity;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.notNullValue;
 
 @QuarkusTest
@@ -38,5 +40,28 @@ class CandidateResourceTest {
     @TestSecurity(user = "stranger", roles = {"users:read"})
     void readWithoutScopeReturns403() {
         given().when().get("/api/recruitment/candidates").then().statusCode(403);
+    }
+
+    @Test
+    @TestSecurity(user = "tam", roles = {"recruitment:read", "recruitment:write", "recruitment:admin"})
+    void createWithTags_andPatchTags() {
+        String body = "{\"firstName\":\"Alice\",\"tags\":[\"java\",\"aws\"]}";
+        String uuid = given().contentType("application/json").body(body)
+                .when().post("/api/recruitment/candidates")
+                .then().statusCode(201)
+                .body("tags", contains("java", "aws"))
+                .extract().path("uuid");
+
+        given().when().get("/api/recruitment/candidates/" + uuid)
+                .then().statusCode(200)
+                .body("tags", contains("java", "aws"));
+
+        given().contentType("application/json").body("{\"tags\":[]}")
+                .when().patch("/api/recruitment/candidates/" + uuid)
+                .then().statusCode(200);
+
+        given().when().get("/api/recruitment/candidates/" + uuid)
+                .then().statusCode(200)
+                .body("tags", hasSize(0));
     }
 }

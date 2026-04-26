@@ -5,12 +5,15 @@ import dk.trustworks.intranet.recruitmentservice.domain.enums.CandidateState;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.Practice;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 public record CandidateResponse(
         String uuid, String firstName, String lastName, String email, String phone,
         String currentCompany, Practice desiredPractice, String desiredCareerLevelUuid,
         Integer noticePeriodDays, Integer salaryExpectation, String salaryCurrency,
         String locationPreference, String linkedinUrl, String firstContactSource,
+        List<String> tags,
         String consentStatus, LocalDateTime consentGivenAt, LocalDateTime consentExpiresAt,
         CandidateState state, String ownerUserUuid,
         LocalDateTime addedToPoolAt, LocalDateTime retentionExtendedTo,
@@ -22,6 +25,7 @@ public record CandidateResponse(
                 c.currentCompany, c.desiredPractice, c.desiredCareerLevelUuid,
                 c.noticePeriodDays, c.salaryExpectation, c.salaryCurrency,
                 c.locationPreference, c.linkedinUrl, c.firstContactSource,
+                c.tags == null ? new ArrayList<>() : new ArrayList<>(c.tags),
                 c.consentStatus, c.consentGivenAt, c.consentExpiresAt,
                 c.state, c.ownerUserUuid, c.addedToPoolAt, c.retentionExtendedTo,
                 c.createdAt, c.updatedAt);

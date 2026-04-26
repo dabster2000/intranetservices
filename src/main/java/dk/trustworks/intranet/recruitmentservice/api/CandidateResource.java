@@ -13,6 +13,7 @@ import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Response;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @Path("/api/recruitment/candidates")
@@ -55,6 +56,7 @@ public class CandidateResource {
         c.locationPreference = req.locationPreference();
         c.linkedinUrl = req.linkedinUrl();
         c.firstContactSource = req.firstContactSource();
+        c.tags = req.tags() == null ? new ArrayList<>() : new ArrayList<>(req.tags());
         Candidate created = service.create(c, header.getUserUuid());
         return Response.status(201).entity(CandidateResponse.from(created)).build();
     }
@@ -90,6 +92,7 @@ public class CandidateResource {
             if (req.salaryCurrency() != null) c.salaryCurrency = req.salaryCurrency();
             if (req.locationPreference() != null) c.locationPreference = req.locationPreference();
             if (req.linkedinUrl() != null) c.linkedinUrl = req.linkedinUrl();
+            if (req.tags() != null) c.tags = new ArrayList<>(req.tags());
         }));
     }
 
