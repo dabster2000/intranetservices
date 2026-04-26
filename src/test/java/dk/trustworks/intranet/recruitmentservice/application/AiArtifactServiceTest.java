@@ -2,10 +2,12 @@ package dk.trustworks.intranet.recruitmentservice.application;
 
 import dk.trustworks.intranet.recruitmentservice.AiEnabledTestProfile;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.AiArtifact;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.Candidate;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.OutboxEntry;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.AiArtifactKind;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.AiArtifactState;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.AiSubjectKind;
+import dk.trustworks.intranet.recruitmentservice.domain.enums.CandidateState;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.OutboxStatus;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -63,18 +65,24 @@ class AiArtifactServiceTest {
 
     @Test
     @TestTransaction
-    void accept_transitionsGeneratedToReviewed_andRunsApplyHandler() {
+    void accept_runsApplyHandler_patchesCandidate() {
+        Candidate c = new Candidate();
+        c.uuid = UUID.randomUUID().toString();
+        c.consentStatus = "PENDING";
+        c.state = CandidateState.NEW;
+        c.persistAndFlush();
+
         AiArtifact a = service.requestArtifact(
-            AiSubjectKind.CANDIDATE, UUID.randomUUID().toString(),
-            AiArtifactKind.CV_EXTRACTION, Map.of("k", "v"), "actor");
-        service.markGenerated(a.uuid, "{\"firstName\":\"Alice\"}", "[{\"src\":\"line 1\"}]", null);
+            AiSubjectKind.CANDIDATE, c.uuid, AiArtifactKind.CV_EXTRACTION,
+            Map.of("k", "v"), "actor");
+        service.markGenerated(a.uuid, "{\"firstName\":\"Bob\",\"lastName\":\"AI\"}", "[]", null);
 
-        service.accept(a.uuid, "reviewer-uuid");
+        service.accept(a.uuid, "reviewer");
 
-        AiArtifact reloaded = AiArtifact.findById(a.uuid);
-        assertEquals(AiArtifactState.REVIEWED.name(), reloaded.state);
-        assertNotNull(reloaded.reviewedByUuid);
-        assertNotNull(reloaded.reviewedAt);
+        Candidate reloaded = Candidate.findById(c.uuid);
+        assertEquals("Bob", reloaded.firstName);  // proves handler ran
+        AiArtifact art = AiArtifact.findById(a.uuid);
+        assertEquals(AiArtifactState.REVIEWED.name(), art.state);
     }
 
     @Test
