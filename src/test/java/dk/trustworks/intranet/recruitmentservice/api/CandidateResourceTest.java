@@ -43,6 +43,16 @@ class CandidateResourceTest {
     }
 
     @Test
+    @TestSecurity(user = "tam", roles = {"recruitment:write"})
+    void create_withInvalidEmail_returns400() {
+        given().header("X-Requested-By", "00000000-0000-0000-0000-000000000010")
+                .contentType("application/json")
+                .body("{\"firstName\":\"X\",\"email\":\"not-an-email\"}")
+                .when().post("/api/recruitment/candidates")
+                .then().statusCode(400);
+    }
+
+    @Test
     @TestSecurity(user = "tam", roles = {"recruitment:read", "recruitment:write", "recruitment:admin"})
     void createWithTags_andPatchTags() {
         String body = "{\"firstName\":\"Alice\",\"tags\":[\"java\",\"aws\"]}";
