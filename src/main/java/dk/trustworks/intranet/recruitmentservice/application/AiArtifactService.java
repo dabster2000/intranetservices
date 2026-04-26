@@ -132,6 +132,15 @@ public class AiArtifactService {
         a.overrideJson = "{\"discarded\":true}";
     }
 
+    /**
+     * Regenerate an artifact by enqueuing a new outbox entry with a digest-busting
+     * inputs map. Note: the new inputs are intentionally sparse ({@code __regen_of},
+     * {@code __regen_at}, {@code reason}) — they do NOT carry the original CV text
+     * or candidate fields. The worker re-runs the prompt catalog with subjectKind +
+     * subjectUuid as context, so context reconstruction depends on the prompt
+     * version's behavior. Slice 6 will revisit if regeneration needs full input
+     * snapshots.
+     */
     @Transactional
     public AiArtifact regenerate(String artifactUuid, String actorUuid, String reason) {
         AiArtifact prev = AiArtifact.findById(artifactUuid);

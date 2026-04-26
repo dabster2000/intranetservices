@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.api;
 
+import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactResponse;
 import dk.trustworks.intranet.recruitmentservice.application.AiArtifactService;
 import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.AiArtifact;
@@ -32,7 +33,7 @@ import java.util.Map;
  * <ul>
  *   <li>{@code POST /api/recruitment/candidates/{uuid}/ai/summary} — enqueue a
  *       {@link AiArtifactKind#CANDIDATE_SUMMARY} generation. Returns 202 Accepted with
- *       the {@link AiArtifact} entity (state is GENERATING until the worker fulfils it).</li>
+ *       an {@link AiArtifactResponse} DTO (state is GENERATING until the worker fulfils it).</li>
  * </ul>
  *
  * <p>Spec §6.3 deliberately uses the {@code recruitment:read} scope here because the summary
@@ -104,6 +105,6 @@ public class CandidateAiResource {
 
         AiArtifact artifact = artifacts.requestArtifact(
                 AiSubjectKind.CANDIDATE, candidateUuid, AiArtifactKind.CANDIDATE_SUMMARY, inputs, actor);
-        return Response.status(Response.Status.ACCEPTED).entity(artifact).build();
+        return Response.status(Response.Status.ACCEPTED).entity(AiArtifactResponse.from(artifact)).build();
     }
 }

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.api;
 
+import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactResponse;
 import dk.trustworks.intranet.recruitmentservice.api.dto.CandidateCvResponse;
 import dk.trustworks.intranet.recruitmentservice.application.CvUploadService;
 import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
@@ -48,9 +49,9 @@ import java.nio.file.Files;
  * avoid leaking the existence of candidates the caller cannot see (per the security
  * fix in commit c388184).</p>
  *
- * <p>Note on response shape: the GET endpoint returns the {@link AiArtifact} entity
- * directly per the Slice 2 plan; Phase H (Task 33) introduces a proper response DTO.
- * This keeps the slice scope tight while the plan's snapshot tests remain stable.</p>
+ * <p>Note on response shape: the GET endpoint returns an {@link AiArtifactResponse}
+ * DTO (added in Task 33) so that the internal {@code inputDigest} idempotency key is
+ * never serialized to clients.</p>
  */
 @Path("/api/recruitment/candidates/{uuid}/cv")
 @RequestScoped
@@ -92,7 +93,7 @@ public class CandidateCvResource {
     @GET
     @Path("/extraction")
     @RolesAllowed({"recruitment:read"})
-    public AiArtifact getExtraction(@PathParam("uuid") String uuid) {
+    public AiArtifactResponse getExtraction(@PathParam("uuid") String uuid) {
         String actor = header.getUserUuid();
         Candidate candidate = Candidate.findById(uuid);
         if (candidate == null || !recordAccess.canSeeCandidate(candidate, actor)) {
@@ -114,6 +115,6 @@ public class CandidateCvResource {
                 || !AiArtifactKind.CV_EXTRACTION.name().equals(artifact.kind)) {
             throw new NotFoundException("no CV extraction for candidate " + uuid);
         }
-        return artifact;
+        return AiArtifactResponse.from(artifact);
     }
 }

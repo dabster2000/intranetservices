@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.api;
 
+import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactResponse;
 import dk.trustworks.intranet.recruitmentservice.api.dto.OpenRoleAiBriefRequest;
 import dk.trustworks.intranet.recruitmentservice.application.AiArtifactService;
 import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
@@ -29,8 +30,8 @@ import java.util.Map;
  * <p>Currently exposes a single trigger:
  * <ul>
  *   <li>{@code POST /api/recruitment/roles/{uuid}/ai/role-brief} — enqueue a
- *       {@link AiArtifactKind#ROLE_BRIEF} generation. Returns 202 Accepted with the
- *       {@link AiArtifact} entity (state is GENERATING until the worker fulfils it).</li>
+ *       {@link AiArtifactKind#ROLE_BRIEF} generation. Returns 202 Accepted with an
+ *       {@link AiArtifactResponse} DTO (state is GENERATING until the worker fulfils it).</li>
  * </ul>
  *
  * <p>Idempotency is handled by {@link AiArtifactService#requestArtifact} via the input
@@ -79,6 +80,6 @@ public class OpenRoleAiResource {
 
         AiArtifact artifact = artifacts.requestArtifact(
                 AiSubjectKind.ROLE, roleUuid, AiArtifactKind.ROLE_BRIEF, inputs, actor);
-        return Response.status(Response.Status.ACCEPTED).entity(artifact).build();
+        return Response.status(Response.Status.ACCEPTED).entity(AiArtifactResponse.from(artifact)).build();
     }
 }
