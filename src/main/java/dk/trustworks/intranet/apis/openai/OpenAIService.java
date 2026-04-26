@@ -116,6 +116,17 @@ public class OpenAIService {
             }
             return extractOutputTextOrEmpty(root);
 
+        } catch (jakarta.ws.rs.WebApplicationException wae) {
+            String errorBody = "";
+            int status = -1;
+            try {
+                if (wae.getResponse() != null) {
+                    status = wae.getResponse().getStatus();
+                    errorBody = wae.getResponse().readEntity(String.class);
+                }
+            } catch (Exception ignored) { /* response already consumed */ }
+            log.errorf("[OpenAIService] OpenAI HTTP %d (schema) body=%s", status, errorBody);
+            return "{}";
         } catch (Exception e) {
             log.error("[OpenAIService] Responses request failed (schema)", e);
             return "{}";
