@@ -194,14 +194,38 @@ public class AiArtifactService {
         }
     }
 
-    private void ensureKindEnabled(AiArtifactKind kind) {
+    /**
+     * Visible-for-test gate: throws 503 if either the master AI switch is off
+     * or the per-kind flag is off. Package-private so service tests can assert
+     * the flag wiring directly.
+     */
+    void ensureKindEnabled(AiArtifactKind kind) {
         if (!config.aiEnabled()) refuse(kind, "recruitment.ai.enabled=false");
-        switch (kind) {
-            case CV_EXTRACTION     -> { if (!config.aiCvExtractionEnabled())     refuse(kind, "cv-extraction disabled"); }
-            case ROLE_BRIEF        -> { if (!config.aiRoleBriefEnabled())        refuse(kind, "role-brief disabled"); }
-            case CANDIDATE_SUMMARY -> { if (!config.aiCandidateSummaryEnabled()) refuse(kind, "candidate-summary disabled"); }
-            default                -> refuse(kind, "kind not implemented in slice 2");
-        }
+        if (!isKindEnabled(kind)) refuse(kind, kindFlagName(kind) + " disabled");
+    }
+
+    private boolean isKindEnabled(AiArtifactKind kind) {
+        return switch (kind) {
+            case CV_EXTRACTION       -> config.aiCvExtractionEnabled();
+            case ROLE_BRIEF          -> config.aiRoleBriefEnabled();
+            case CANDIDATE_SUMMARY   -> config.aiCandidateSummaryEnabled();
+            case INTERVIEW_KIT       -> config.aiInterviewKitEnabled();
+            case SCORECARD_ROUNDUP   -> config.aiScorecardRoundupEnabled();
+            case SCREENING_RECOMMENDATION,
+                 TALENT_POOL_MATCH   -> false; // reserved for slice 6
+        };
+    }
+
+    private String kindFlagName(AiArtifactKind kind) {
+        return switch (kind) {
+            case CV_EXTRACTION       -> "cv-extraction";
+            case ROLE_BRIEF          -> "role-brief";
+            case CANDIDATE_SUMMARY   -> "candidate-summary";
+            case INTERVIEW_KIT       -> "interview-kit";
+            case SCORECARD_ROUNDUP   -> "scorecard-roundup";
+            case SCREENING_RECOMMENDATION,
+                 TALENT_POOL_MATCH   -> "kind reserved for slice 6";
+        };
     }
 
     private void refuse(AiArtifactKind kind, String why) {
@@ -211,10 +235,13 @@ public class AiArtifactService {
 
     private String promptVersionFor(AiArtifactKind kind) {
         return switch (kind) {
-            case CV_EXTRACTION     -> "cv-extraction-v1";
-            case ROLE_BRIEF        -> "role-brief-v1";
-            case CANDIDATE_SUMMARY -> "candidate-summary-v1";
-            default -> throw new IllegalArgumentException("unsupported in slice 2: " + kind);
+            case CV_EXTRACTION       -> "cv-extraction-v1";
+            case ROLE_BRIEF          -> "role-brief-v1";
+            case CANDIDATE_SUMMARY   -> "candidate-summary-v1";
+            case INTERVIEW_KIT       -> "interview-kit-v1";
+            case SCORECARD_ROUNDUP   -> "scorecard-roundup-v1";
+            case SCREENING_RECOMMENDATION,
+                 TALENT_POOL_MATCH   -> throw new IllegalArgumentException("unsupported kind: " + kind);
         };
     }
 }

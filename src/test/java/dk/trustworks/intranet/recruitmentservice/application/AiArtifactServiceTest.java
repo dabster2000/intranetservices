@@ -13,6 +13,7 @@ import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -21,6 +22,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @QuarkusTest
 @TestProfile(AiEnabledTestProfile.class)
@@ -83,6 +85,22 @@ class AiArtifactServiceTest {
         assertEquals("Bob", reloaded.firstName);  // proves handler ran
         AiArtifact art = AiArtifact.findById(a.uuid);
         assertEquals(AiArtifactState.REVIEWED.name(), art.state);
+    }
+
+    @Test
+    void interviewKit_throws503_whenFlagDisabled() {
+        // AiEnabledTestProfile flips master + cv-extraction/role-brief/candidate-summary
+        // on, but leaves the slice-3a flags off — so ensureKindEnabled must reject.
+        WebApplicationException ex = assertThrows(WebApplicationException.class, () ->
+            service.ensureKindEnabled(AiArtifactKind.INTERVIEW_KIT));
+        assertEquals(503, ex.getResponse().getStatus());
+    }
+
+    @Test
+    void scorecardRoundup_throws503_whenFlagDisabled() {
+        WebApplicationException ex = assertThrows(WebApplicationException.class, () ->
+            service.ensureKindEnabled(AiArtifactKind.SCORECARD_ROUNDUP));
+        assertEquals(503, ex.getResponse().getStatus());
     }
 
     @Test
