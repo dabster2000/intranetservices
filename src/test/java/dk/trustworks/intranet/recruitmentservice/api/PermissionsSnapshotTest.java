@@ -43,7 +43,8 @@ class PermissionsSnapshotTest {
             RecruitmentStatusResource.class,
             OpenRoleResource.class,
             CandidateResource.class,
-            ApplicationResource.class
+            ApplicationResource.class,
+            CandidateCvResource.class
     );
 
     @Test

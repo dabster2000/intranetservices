@@ -20,6 +20,8 @@
     {"method": "GET",  "path": "/api/recruitment/applications/{uuid}",      "rolesAny": ["recruitment:read"]},
     {"method": "POST", "path": "/api/recruitment/applications/{uuid}/transitions", "rolesAny": ["recruitment:write", "recruitment:offer", "recruitment:admin"]},
     {"method": "POST", "path": "/api/recruitment/applications/{uuid}/withdraw",    "rolesAny": ["recruitment:write"]},
-    {"method": "POST", "path": "/api/recruitment/applications/{uuid}/screening-decision", "rolesAny": ["recruitment:write"]}
+    {"method": "POST", "path": "/api/recruitment/applications/{uuid}/screening-decision", "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/cv",            "rolesAny": ["recruitment:write"]},
+    {"method": "GET",  "path": "/api/recruitment/candidates/{uuid}/cv/extraction", "rolesAny": ["recruitment:read"]}
   ]
 }
