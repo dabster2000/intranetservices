@@ -19,6 +19,7 @@ import jakarta.ws.rs.NotFoundException;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -98,7 +99,8 @@ public class InterviewService {
         iv.rescheduleCount = 0;
         iv.persist();
 
-        boolean creatorPresent = cmd.participants().stream().anyMatch(p -> p.userUuid().equals(actorUuid));
+        boolean creatorPresent = cmd.participants().stream()
+                .anyMatch(p -> Objects.equals(p.userUuid(), actorUuid));
         for (var p : cmd.participants()) {
             persistParticipant(iv.uuid, p.userUuid(), p.roleInInterview(), p.isRequiredScorer());
         }
@@ -192,10 +194,13 @@ public class InterviewService {
         }
         long required = InterviewParticipant.count(
                 "interviewUuid = ?1 and isRequiredScorer = true", uuid);
-        long submitted = Scorecard.count("interviewUuid = ?1 and submittedAt is not null", uuid);
-        if (required > submitted) {
+        long submittedByRequired = Scorecard.count(
+                "interviewUuid = ?1 and submittedAt is not null and interviewerUserUuid in "
+              + "(select p.userUuid from InterviewParticipant p where p.interviewUuid = ?1 and p.isRequiredScorer = true)",
+                uuid);
+        if (required > submittedByRequired) {
             throw new InvalidTransitionException(
-                    "round-up requires all " + required + " required scorers submitted (got " + submitted + ")",
+                    "round-up requires all " + required + " required scorers submitted (got " + submittedByRequired + ")",
                     List.of());
         }
         if (decision == null) throw new IllegalArgumentException("decision required");

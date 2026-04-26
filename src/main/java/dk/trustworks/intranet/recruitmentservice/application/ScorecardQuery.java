@@ -16,4 +16,16 @@ public class ScorecardQuery {
         return Scorecard.count(
             "interviewUuid = ?1 and submittedAt is not null", interviewUuid);
     }
+
+    /**
+     * Counts scorecards submitted by interviewers who are flagged as required scorers
+     * for the given interview. Used to gate SCORECARD_ROUNDUP auto-fire and round-up
+     * transitions — non-required scorers' submissions must not satisfy the threshold.
+     */
+    public long submittedByRequiredCount(String interviewUuid) {
+        return Scorecard.count(
+            "interviewUuid = ?1 and submittedAt is not null and interviewerUserUuid in "
+          + "(select p.userUuid from InterviewParticipant p where p.interviewUuid = ?1 and p.isRequiredScorer = true)",
+            interviewUuid);
+    }
 }

@@ -67,7 +67,7 @@ public class InterviewLifecycleService {
     @Transactional(Transactional.TxType.MANDATORY)
     public void onScorecardSubmitted(Interview iv, String actorUuid) {
         long required = participantQuery.requiredScorerCount(iv.uuid);
-        long submitted = scorecardQuery.submittedCount(iv.uuid);
+        long submitted = scorecardQuery.submittedByRequiredCount(iv.uuid);
         if (required > 0 && submitted >= required) {
             aiArtifactService.requestArtifact(
                 AiSubjectKind.INTERVIEW,

@@ -113,7 +113,7 @@ class InterviewLifecycleServiceTest {
         Interview iv = new Interview();
         iv.uuid = "iv-1";
         when(participantQuery.requiredScorerCount("iv-1")).thenReturn(2L);
-        when(scorecardQuery.submittedCount("iv-1")).thenReturn(2L);
+        when(scorecardQuery.submittedByRequiredCount("iv-1")).thenReturn(2L);
 
         svc.onScorecardSubmitted(iv, "actor-1");
 
@@ -130,7 +130,7 @@ class InterviewLifecycleServiceTest {
         Interview iv = new Interview();
         iv.uuid = "iv-1";
         when(participantQuery.requiredScorerCount("iv-1")).thenReturn(3L);
-        when(scorecardQuery.submittedCount("iv-1")).thenReturn(2L);
+        when(scorecardQuery.submittedByRequiredCount("iv-1")).thenReturn(2L);
 
         svc.onScorecardSubmitted(iv, "actor-1");
 
