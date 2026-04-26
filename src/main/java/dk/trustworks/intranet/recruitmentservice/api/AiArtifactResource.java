@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.api;
 
+import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactRegenerateRequest;
 import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactResponse;
 import dk.trustworks.intranet.recruitmentservice.api.dto.AiArtifactReviewRequest;
 import dk.trustworks.intranet.recruitmentservice.application.AiArtifactService;
@@ -35,6 +36,11 @@ import jakarta.ws.rs.core.MediaType;
  *       {@link AiArtifactService#editAndOverride}, or
  *       {@link AiArtifactService#discard}. The service refuses with 409 if the
  *       artifact is not in GENERATED state.</li>
+ *   <li>{@code POST /api/recruitment/ai-artifacts/{uuid}/regenerate} — force a
+ *       fresh AI attempt. Scope: {@code recruitment:write}. The previous
+ *       artifact is left untouched (audit trail); a brand-new artifact is
+ *       returned. The optional {@code reason} is folded into the inputs so
+ *       the digest differs from the prior attempt.</li>
  * </ul>
  *
  * <p>Access control is <strong>subject-derived</strong>: the artifact's
@@ -100,6 +106,25 @@ public class AiArtifactResource {
             artifacts.discard(uuid, actor);
         }
         return AiArtifactResponse.from(AiArtifact.findById(uuid));
+    }
+
+    @POST
+    @Path("/{uuid}/regenerate")
+    @RolesAllowed({"recruitment:write"})
+    public AiArtifactResponse regenerate(@PathParam("uuid") String uuid, AiArtifactRegenerateRequest req) {
+        AiArtifact prev = AiArtifact.findById(uuid);
+        if (prev == null) {
+            throw new NotFoundException("AiArtifact " + uuid);
+        }
+
+        String actor = header.getUserUuid();
+        // Same record-level guard as GET/review: the new artifact will share the
+        // previous one's subject, so the caller must be able to see that subject
+        // before we kick off a fresh attempt.
+        enforceSubjectVisibility(prev, actor, uuid);
+
+        AiArtifact next = artifacts.regenerate(uuid, actor, req == null ? null : req.reason());
+        return AiArtifactResponse.from(next);
     }
 
     /**

@@ -21,6 +21,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 /**
  * Resource-level test for {@link AiArtifactResource} (spec §6.9).
@@ -150,6 +151,18 @@ class AiArtifactResourceTest {
                 .body("{\"accepted\":true}")
                 .when().post("/api/recruitment/ai-artifacts/" + artifactUuid + "/review")
                 .then().statusCode(409);
+    }
+
+    @Test
+    @TestSecurity(user = "tam", roles = {"recruitment:write", "recruitment:admin"})
+    void regenerate_createsNewArtifactWithDifferentDigest() {
+        String first = seedCvExtractionInGenerated();
+        String second = given()
+                .header("X-Requested-By", TAM_UUID)
+                .contentType("application/json").body("{\"reason\":\"more accuracy\"}")
+                .when().post("/api/recruitment/ai-artifacts/" + first + "/regenerate")
+                .then().statusCode(200).extract().path("uuid");
+        assertNotEquals(first, second);
     }
 
     /**

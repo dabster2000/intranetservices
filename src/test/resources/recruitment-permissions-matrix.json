@@ -26,6 +26,7 @@
     {"method": "POST", "path": "/api/recruitment/roles/{uuid}/ai/role-brief",      "rolesAny": ["recruitment:write"]},
     {"method": "POST", "path": "/api/recruitment/candidates/{uuid}/ai/summary",    "rolesAny": ["recruitment:read"]},
     {"method": "GET",  "path": "/api/recruitment/ai-artifacts/{uuid}",             "rolesAny": ["recruitment:read"]},
-    {"method": "POST", "path": "/api/recruitment/ai-artifacts/{uuid}/review",      "rolesAny": ["recruitment:write"]}
+    {"method": "POST", "path": "/api/recruitment/ai-artifacts/{uuid}/review",      "rolesAny": ["recruitment:write"]},
+    {"method": "POST", "path": "/api/recruitment/ai-artifacts/{uuid}/regenerate",  "rolesAny": ["recruitment:write"]}
   ]
 }
