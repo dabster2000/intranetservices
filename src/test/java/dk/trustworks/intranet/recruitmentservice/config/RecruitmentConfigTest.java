@@ -27,6 +27,13 @@ class RecruitmentConfigTest {
         assertFalse(config.sharepointEnabled());
     }
 
+    @Test
+    void perKindAiFlagsDefaultDisabled() {
+        assertFalse(config.aiCvExtractionEnabled(), "recruitment.ai.cv-extraction.enabled defaults false");
+        assertFalse(config.aiRoleBriefEnabled(), "recruitment.ai.role-brief.enabled defaults false");
+        assertFalse(config.aiCandidateSummaryEnabled(), "recruitment.ai.candidate-summary.enabled defaults false");
+    }
+
     public static class EnabledProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {

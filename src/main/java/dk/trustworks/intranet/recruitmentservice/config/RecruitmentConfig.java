@@ -24,10 +24,22 @@ public class RecruitmentConfig {
     @ConfigProperty(name = "recruitment.sharepoint.enabled", defaultValue = "false")
     boolean sharepointEnabled;
 
+    @ConfigProperty(name = "recruitment.ai.cv-extraction.enabled", defaultValue = "false")
+    boolean aiCvExtractionEnabled;
+
+    @ConfigProperty(name = "recruitment.ai.role-brief.enabled", defaultValue = "false")
+    boolean aiRoleBriefEnabled;
+
+    @ConfigProperty(name = "recruitment.ai.candidate-summary.enabled", defaultValue = "false")
+    boolean aiCandidateSummaryEnabled;
+
     public boolean isEnabled() { return enabled; }
     public boolean aiEnabled() { return aiEnabled; }
     public boolean outlookEnabled() { return outlookEnabled; }
     public boolean slackEnabled() { return slackEnabled; }
     public boolean nextsignEnabled() { return nextsignEnabled; }
     public boolean sharepointEnabled() { return sharepointEnabled; }
+    public boolean aiCvExtractionEnabled() { return aiCvExtractionEnabled; }
+    public boolean aiRoleBriefEnabled() { return aiRoleBriefEnabled; }
+    public boolean aiCandidateSummaryEnabled() { return aiCandidateSummaryEnabled; }
 }

@@ -339,10 +339,18 @@ virkdata:
   api-key: ${VIRKDATA_API_KEY:}
 
 # Recruitment feature flags (Slice 1 introduces only the top-level switch; integration flags default to false)
+# Slice 2 adds per-kind AI feature flags (cv-extraction, role-brief, candidate-summary) that gate live OpenAIPort.
+# The master switch is recruitment.ai.enabled.
 recruitment:
   enabled: false
   ai:
     enabled: false
+    cv-extraction:
+      enabled: false
+    role-brief:
+      enabled: false
+    candidate-summary:
+      enabled: false
   outlook:
     enabled: false
   slack:
