@@ -1,0 +1,21 @@
+Alice Example
+alice.example@example.com
+
+Senior Consultant at Acme Consulting (2020-present)
+Skills: Java, AWS, TypeScript, Kubernetes, Terraform, PostgreSQL.
+
+Experienced full-stack consultant with 5+ years building Java microservices
+deployed on AWS using ECS Fargate and Kubernetes. Strong TypeScript skills
+on the frontend using React and Next.js. Languages: en, da.
+
+Experience: 5 years.
+Worked extensively with Java microservices, AWS infrastructure as code,
+TypeScript on the frontend, and Kubernetes orchestration in production.
+Solid track record of delivering reliable production systems at scale,
+with hands-on experience in observability, CI/CD, and cost optimisation.
+
+Education:
+MSc Software Engineering (2018), Fictional University.
+
+Certifications:
+AWS Certified Solutions Architect (Associate), CKAD.
