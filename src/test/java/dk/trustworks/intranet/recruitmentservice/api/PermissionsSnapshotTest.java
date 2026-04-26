@@ -44,7 +44,8 @@ class PermissionsSnapshotTest {
             OpenRoleResource.class,
             CandidateResource.class,
             ApplicationResource.class,
-            CandidateCvResource.class
+            CandidateCvResource.class,
+            OpenRoleAiResource.class
     );
 
     @Test
