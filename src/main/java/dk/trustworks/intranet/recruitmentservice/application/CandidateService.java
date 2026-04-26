@@ -27,6 +27,10 @@ public class CandidateService {
         if (input.uuid == null) input.uuid = UUID.randomUUID().toString();
         if (input.state == null) input.state = CandidateState.NEW;
         if (input.consentStatus == null) input.consentStatus = "PENDING";
+        // Slice 3a: auto-assign creator as owner when caller did not specify one.
+        if (input.ownerUserUuid == null || input.ownerUserUuid.isBlank()) {
+            input.ownerUserUuid = actorUuid;
+        }
         input.createdAt = LocalDateTime.now();
         input.updatedAt = input.createdAt;
         input.persist();

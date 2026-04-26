@@ -43,6 +43,13 @@ public class OpenRoleService {
         input.persist();
 
         RoleHistory.entry(input.uuid, null, RoleStatus.DRAFT, "Role created", actorUuid).persist();
+
+        // Slice 3a: auto-assign creator as RECRUITMENT_OWNER so they have visibility
+        // and the V310 backfill convention is upheld for forward-going inserts.
+        // Note: this does NOT trigger DRAFT → SOURCING (that path is reserved for
+        // explicit POST /assignments via addAssignment(...), which carries an
+        // explicit user intent).
+        RoleAssignment.fresh(input.uuid, actorUuid, ResponsibilityKind.RECRUITMENT_OWNER, actorUuid).persist();
         return input;
     }
 
