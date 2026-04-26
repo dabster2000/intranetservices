@@ -158,4 +158,39 @@ public class ApplicationService {
     public List<Application> listForRole(String roleUuid) {
         return Application.find("roleUuid", roleUuid).list();
     }
+
+    /**
+     * Lookup helper used by lifecycle services. Returns {@code null} when not
+     * found instead of throwing — callers decide how to react.
+     */
+    public Application findByIdOrNull(String uuid) {
+        return Application.findById(uuid);
+    }
+
+    /**
+     * Forward-only auto-advance triggered by Interview scheduling (spec §3.6).
+     * <p>
+     * No-op if {@code app.stage.ordinal() >= target.ordinal()} (never demotes).
+     * <p>
+     * <b>Bypasses {@link ApplicationStateMachine} by design.</b> The spec defines
+     * round-derived advancement that may skip intermediate stages (e.g., scheduling
+     * a CASE_OR_TECH interview when the application is in SCREENING jumps directly
+     * to CASE_OR_TECH_INTERVIEW without passing through FIRST_INTERVIEW). Manual
+     * stage changes still go through {@link #transition} and the FSM.
+     * <p>
+     * Joined to the caller's transaction (MANDATORY).
+     */
+    @Transactional(Transactional.TxType.MANDATORY)
+    public void advanceStageForwardOnly(Application app, ApplicationStage target, String actorUuid) {
+        if (target == null) return;
+        if (app.stage.ordinal() >= target.ordinal()) return;
+        ApplicationStage from = app.stage;
+        app.stage = target;
+        app.lastStageChangeAt = LocalDateTime.now();
+        app.updatedAt = LocalDateTime.now();
+        ApplicationStageHistory.entry(app.uuid, from, target,
+                "Auto-advanced on interview scheduled (round=" + target + ")",
+                actorUuid).persist();
+        lifecycle.onApplicationStageChanged(app.candidateUuid, target);
+    }
 }

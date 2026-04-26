@@ -149,6 +149,34 @@ public class OpenRoleService {
                 .toList();
     }
 
+    /**
+     * Lookup helper used by lifecycle services. Returns {@code null} when not
+     * found instead of throwing — callers decide how to react.
+     */
+    public OpenRole findByIdOrNull(String uuid) {
+        return OpenRole.findById(uuid);
+    }
+
+    /**
+     * Idempotent forward-only auto-advance: SOURCING → INTERVIEWING when the
+     * first interview is scheduled. No-op when already in INTERVIEWING (or any
+     * other status). Writes a {@link RoleHistory} row mirroring the regular
+     * transition path.
+     *
+     * <p>Joined to the caller's transaction (MANDATORY) — must be invoked from
+     * within an existing transaction.
+     */
+    @Transactional(Transactional.TxType.MANDATORY)
+    public void advanceToInterviewingIfSourcing(OpenRole role, String actorUuid) {
+        if (role.status != RoleStatus.SOURCING) return;
+        OpenRoleStateMachine.assertTransitionAllowed(role.status, RoleStatus.INTERVIEWING);
+        RoleStatus previous = role.status;
+        role.status = RoleStatus.INTERVIEWING;
+        role.updatedAt = LocalDateTime.now();
+        RoleHistory.entry(role.uuid, previous, RoleStatus.INTERVIEWING,
+                "Auto-advanced on first interview scheduled", actorUuid).persist();
+    }
+
     private static <E extends Enum<E>> E parseEnum(Class<E> type, String value, String paramName) {
         try {
             return Enum.valueOf(type, value);
