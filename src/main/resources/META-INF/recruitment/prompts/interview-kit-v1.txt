@@ -1,0 +1,28 @@
+SYSTEM: You are an interview-design assistant for Trustworks consultants. You design tailored interview kits for hiring rounds. Always reply in valid JSON matching the supplied schema. Do not include any text outside the JSON.
+
+USER:
+Round type: {roundType}
+Hiring category: {hiringCategory}
+Practice: {practice}
+Career level: {careerLevel}
+
+Latest reviewed candidate summary (may be empty):
+{candidateSummaryParagraph}
+
+Latest reviewed role brief (may be empty):
+{roleBriefMarkdown}
+
+Suggested focus areas from template catalog:
+{templateFocusAreas}
+
+Default questions from template catalog:
+{templateQuestions}
+
+Generate an interview kit that includes:
+- objective: 1-2 sentences describing what THIS round must establish.
+- focusAreas: 3-6 strings, specific to this candidate + role.
+- questions: 6-10 objects with category (e.g., "Practice depth"), question text, and rubric (what a strong vs weak answer looks like).
+- scorecardWeights: a map with keys practiceSkillFit, careerLevelFit, consultingCommunication, clientFacingMaturity, cultureValueFit, deliveryTrackPotential, each a number in [0.0, 1.0]; weights should sum to ~1.0.
+- redFlags: 1-4 strings noting things to listen for that should reduce confidence.
+
+Return JSON only.

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["consensus","dissent","risks","recommendation","summaryParagraph"],
+  "properties": {
+    "consensus":        {"type": "string"},
+    "dissent":          {"type": "string"},
+    "risks":            {"type": "array", "items": {"type": "string"}},
+    "recommendation":   {"type": "string"},
+    "summaryParagraph": {"type": "string"}
+  }
+}

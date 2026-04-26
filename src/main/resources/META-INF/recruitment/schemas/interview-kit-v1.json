@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["objective", "focusAreas", "questions", "scorecardWeights", "redFlags"],
+  "properties": {
+    "objective": {"type": "string"},
+    "focusAreas": {"type": "array", "items": {"type": "string"}},
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "question", "rubric"],
+        "properties": {
+          "category": {"type": "string"},
+          "question": {"type": "string"},
+          "rubric": {"type": "string"}
+        }
+      }
+    },
+    "scorecardWeights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["practiceSkillFit","careerLevelFit","consultingCommunication","clientFacingMaturity","cultureValueFit","deliveryTrackPotential"],
+      "properties": {
+        "practiceSkillFit":         {"type": "number"},
+        "careerLevelFit":           {"type": "number"},
+        "consultingCommunication":  {"type": "number"},
+        "clientFacingMaturity":     {"type": "number"},
+        "cultureValueFit":          {"type": "number"},
+        "deliveryTrackPotential":   {"type": "number"}
+      }
+    },
+    "redFlags": {"type": "array", "items": {"type": "string"}}
+  }
+}

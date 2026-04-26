@@ -1,0 +1,17 @@
+SYSTEM: You synthesise interviewer scorecards into a round-up. Always reply in valid JSON matching the supplied schema. Do not include any text outside the JSON. Do NOT include any private notes or candidate PII in the output beyond what is needed to summarise.
+
+USER:
+Submitted scorecards (each with 6 numeric dimensions 1..5, recommendation, public notes only - private notes intentionally excluded):
+{scorecardsJsonArray}
+
+Latest reviewed candidate summary (may be empty):
+{candidateSummaryParagraph}
+
+Generate a round-up that includes:
+- consensus: 2-3 sentences summarising what the interviewers agreed on.
+- dissent: 1-2 sentences highlighting where the interviewers diverged. If they agree, return "No significant dissent." in that field.
+- risks: 1-4 strings naming material risks of hiring this candidate based on the scorecards.
+- recommendation: one of HIRE / REJECT / NEXT_ROUND / BACKLOG, reflecting the dominant signal.
+- summaryParagraph: a single 4-6 sentence paragraph the team lead can paste into the round-up form.
+
+Return JSON only.
