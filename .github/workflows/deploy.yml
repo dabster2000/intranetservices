@@ -103,7 +103,7 @@ jobs:
               {"name":"RECRUITMENT_AI_ROLE_BRIEF_ENABLED","value":"true"},
               {"name":"RECRUITMENT_AI_CANDIDATE_SUMMARY_ENABLED","value":"true"},
               {"name":"RECRUITMENT_SHAREPOINT_SITE_URL","value":"https://trustworksaps.sharepoint.com/sites/Recruitment"},
-              {"name":"OPENAI_MODEL","value":"gpt-5-mini"}
+              {"name":"OPENAI_MODEL","value":"gpt-4o-mini"}
             ]
           secrets: |
             [
