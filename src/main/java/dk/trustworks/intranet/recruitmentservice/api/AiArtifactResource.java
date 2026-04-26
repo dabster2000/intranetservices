@@ -7,6 +7,7 @@ import dk.trustworks.intranet.recruitmentservice.application.AiArtifactService;
 import dk.trustworks.intranet.recruitmentservice.application.RecruitmentRecordAccessService;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.AiArtifact;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.Candidate;
+import dk.trustworks.intranet.recruitmentservice.domain.entities.Interview;
 import dk.trustworks.intranet.recruitmentservice.domain.entities.OpenRole;
 import dk.trustworks.intranet.recruitmentservice.domain.enums.AiSubjectKind;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -52,11 +53,12 @@ import jakarta.ws.rs.core.MediaType;
  * both collapse to 404 to avoid leaking the existence of subjects outside the
  * caller's scope.
  *
- * <p>Subject kinds APPLICATION/INTERVIEW/OFFER are not in scope for Slice 2;
- * artifacts of those kinds will fall through to the open-by-scope branch and
- * be returned to any holder of {@code recruitment:read}/{@code recruitment:write}
- * for now. Slice 3 will add concrete record-level checks once those aggregates
- * have visibility rules.
+ * <p>Slice 3a adds a record-level check for {@code INTERVIEW} subjects
+ * (INTERVIEW_KIT and SCORECARD_ROUNDUP artifacts) using the same
+ * {@code canSeeInterview} predicate the {@code /interviews} resource enforces.
+ * Subject kinds APPLICATION/OFFER are still not in scope and fall through to
+ * the open-by-scope branch; later slices will add concrete record-level checks
+ * once those aggregates have visibility rules.
  */
 @Path("/api/recruitment/ai-artifacts")
 @RequestScoped
@@ -143,7 +145,16 @@ public class AiArtifactResource {
             if (role == null || !recordAccess.canSeeOpenRole(role, actor)) {
                 throw new NotFoundException("AiArtifact " + artifactUuid);
             }
+        } else if (artifact.subjectKind == AiSubjectKind.INTERVIEW) {
+            // Slice 3a: INTERVIEW_KIT and SCORECARD_ROUNDUP artifacts are subject-bound
+            // to a specific interview. Use the same record-level guard the
+            // /interviews resource enforces — recruiters / participants / privileged
+            // viewers only. 404 (not 403) preserves the existence-leak convention.
+            Interview iv = Interview.findById(artifact.subjectUuid);
+            if (iv == null || !recordAccess.canSeeInterview(iv, actor)) {
+                throw new NotFoundException("AiArtifact " + artifactUuid);
+            }
         }
-        // APPLICATION/INTERVIEW/OFFER not used in Slice 2 — pass through on scope alone.
+        // APPLICATION/OFFER not used yet — pass through on scope alone.
     }
 }
