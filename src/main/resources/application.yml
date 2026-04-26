@@ -359,3 +359,20 @@ recruitment:
     enabled: false
   sharepoint:
     enabled: false
+
+# dev-e2e profile: enables recruitment + all AI sub-flags so the Playwright
+# golden-path spec can drive cv-upload, role-brief and candidate-summary flows
+# end-to-end. The deterministic E2eOpenAIPort (gated by @IfBuildProfile)
+# replaces the live OpenAIPortImpl under this profile, so no real OpenAI
+# calls fire and outputs are stable across runs.
+"%dev-e2e":
+  recruitment:
+    enabled: true
+    ai:
+      enabled: true
+      cv-extraction:
+        enabled: true
+      role-brief:
+        enabled: true
+      candidate-summary:
+        enabled: true
