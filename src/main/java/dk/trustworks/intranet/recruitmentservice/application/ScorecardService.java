@@ -70,6 +70,7 @@ public class ScorecardService {
 
         if (iv.status == InterviewStatus.SCHEDULED) {
             iv.status = InterviewStatus.HELD;
+            iv.heldAt = LocalDateTime.now();
             iv.persist();
         }
 

@@ -33,6 +33,9 @@ public class Interview extends PanacheEntityBase {
     @Column(name = "scheduled_at", nullable = false)
     public LocalDateTime scheduledAt;
 
+    @Column(name = "held_at")
+    public LocalDateTime heldAt;
+
     @Column(name = "duration_minutes", nullable = false)
     public Integer durationMinutes;
 
