@@ -40,11 +40,17 @@ public class GraphNotificationResource {
 
     @Inject GraphNotificationProcessor processor;
 
+    /** Microsoft Graph validation tokens are short JWTs — cap echo to 4 KB to defend against amplification abuse. */
+    private static final int MAX_VALIDATION_TOKEN_LENGTH = 4096;
+
     @POST
     @Path("/notifications")
     @PermitAll
     public Response notify(@QueryParam("validationToken") String validationToken, String body) {
         if (validationToken != null && !validationToken.isBlank()) {
+            if (validationToken.length() > MAX_VALIDATION_TOKEN_LENGTH) {
+                return Response.status(400).entity("validationToken too long").build();
+            }
             // Validation handshake: must echo the token verbatim as text/plain.
             return Response.ok(validationToken, MediaType.TEXT_PLAIN).build();
         }

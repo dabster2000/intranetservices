@@ -51,6 +51,15 @@ public class RecruitmentOutboxWorker {
     @Inject EntityManager em;
     @Inject OutboxDispatcher dispatcher;
 
+    /**
+     * Self-reference via the CDI proxy so {@link #dispatchOne(String)}'s
+     * {@code @Transactional(REQUIRES_NEW)} interceptor actually fires on
+     * per-row calls. A direct {@code this.dispatchOne(...)} call bypasses
+     * the proxy and silently inherits the enclosing batch transaction —
+     * which would defeat the per-row commit isolation guarantee.
+     */
+    @Inject RecruitmentOutboxWorker self;
+
     @Scheduled(every = "30s", concurrentExecution = ConcurrentExecution.SKIP, identity = "recruitment-outbox-drain")
     void drain() {
         try {
@@ -68,7 +77,7 @@ public class RecruitmentOutboxWorker {
         List<String> dueUuids = findDueUuids(BATCH_SIZE);
         int processed = 0;
         for (String uuid : dueUuids) {
-            if (dispatchOne(uuid)) {
+            if (self.dispatchOne(uuid)) {
                 processed++;
             }
         }
