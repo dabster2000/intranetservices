@@ -14,7 +14,7 @@ public final class OpenRoleStateMachine {
     static {
         Map<RoleStatus, Set<RoleStatus>> m = new EnumMap<>(RoleStatus.class);
         m.put(RoleStatus.DRAFT,        Set.of(RoleStatus.SOURCING, RoleStatus.CANCELLED));
-        m.put(RoleStatus.SOURCING,     Set.of(RoleStatus.PAUSED, RoleStatus.CANCELLED));
+        m.put(RoleStatus.SOURCING,     Set.of(RoleStatus.INTERVIEWING, RoleStatus.PAUSED, RoleStatus.CANCELLED));
         m.put(RoleStatus.INTERVIEWING, Set.of(RoleStatus.PAUSED, RoleStatus.CANCELLED));
         m.put(RoleStatus.OFFER,        Set.of(RoleStatus.PAUSED, RoleStatus.CANCELLED));
         m.put(RoleStatus.PAUSED,       Set.of(RoleStatus.SOURCING, RoleStatus.CANCELLED));

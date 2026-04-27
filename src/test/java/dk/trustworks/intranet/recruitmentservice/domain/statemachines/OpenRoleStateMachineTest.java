@@ -16,11 +16,19 @@ class OpenRoleStateMachineTest {
     }
 
     @Test
-    void sourcingMayPauseOrCancelOnly() {
+    void sourcingMayAdvanceToInterviewingPauseOrCancel() {
+        // Slice 3a: SOURCING → INTERVIEWING is auto-advanced by
+        // OpenRoleService.advanceToInterviewingIfSourcing when the first
+        // interview is scheduled. The Slice 1 derived-state-only model is
+        // superseded — the explicit forward transition is now legal.
         Set<RoleStatus> allowed = OpenRoleStateMachine.allowedTransitions(RoleStatus.SOURCING);
-        assertEquals(Set.of(RoleStatus.PAUSED, RoleStatus.CANCELLED), allowed);
-        assertFalse(allowed.contains(RoleStatus.INTERVIEWING),
-                "INTERVIEWING is derived from interview activity, not manually set in Slice 1");
+        assertEquals(Set.of(RoleStatus.INTERVIEWING, RoleStatus.PAUSED, RoleStatus.CANCELLED), allowed);
+    }
+
+    @Test
+    void sourcingToInterviewingIsLegal() {
+        assertDoesNotThrow(() ->
+                OpenRoleStateMachine.assertTransitionAllowed(RoleStatus.SOURCING, RoleStatus.INTERVIEWING));
     }
 
     @Test
