@@ -130,7 +130,23 @@ public class OutlookCalendarPortImpl implements OutlookCalendarPort {
 
     @Override
     public List<AttendeeResponse> getAttendeeStatuses(String organizerMailbox, String eventId) {
-        throw new UnsupportedOperationException("getAttendeeStatuses not implemented yet");
+        Objects.requireNonNull(organizerMailbox, "organizerMailbox");
+        Objects.requireNonNull(eventId, "eventId");
+        try {
+            Event event = graph.users().byUserId(organizerMailbox)
+                    .events().byEventId(eventId)
+                    .get();
+            if (event == null || event.getAttendees() == null) return List.of();
+            List<AttendeeResponse> out = new ArrayList<>(event.getAttendees().size());
+            for (Attendee a : event.getAttendees()) {
+                if (a.getEmailAddress() == null) continue;
+                ResponseType rt = a.getStatus() != null ? a.getStatus().getResponse() : null;
+                out.add(new AttendeeResponse(a.getEmailAddress().getAddress(), mapResponseType(rt)));
+            }
+            return List.copyOf(out);
+        } catch (ODataError e) {
+            throw mapError("getAttendeeStatuses", e);
+        }
     }
 
     @Override
