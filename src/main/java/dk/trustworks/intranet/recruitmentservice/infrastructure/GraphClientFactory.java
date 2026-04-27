@@ -5,6 +5,7 @@ import com.azure.identity.ClientSecretCredentialBuilder;
 import com.microsoft.graph.serviceclient.GraphServiceClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -32,8 +33,16 @@ public class GraphClientFactory {
     @ConfigProperty(name = "recruitment.graph.client-secret")
     String clientSecret;
 
+    /**
+     * Produced as {@link Singleton} (eagerly resolved, NO client-proxy) because
+     * Quarkus ARC cannot proxy {@code GraphServiceClient} — it lacks a public
+     * no-args constructor. {@code @ApplicationScoped} would fail the build with
+     * "It's not possible to automatically add a synthetic no-args constructor".
+     * {@link Singleton} sidesteps proxying while still sharing a single instance
+     * across the JVM.
+     */
     @Produces
-    @ApplicationScoped
+    @Singleton
     public GraphServiceClient produceClient() {
         ClientSecretCredential credential = new ClientSecretCredentialBuilder()
                 .tenantId(tenantId)
