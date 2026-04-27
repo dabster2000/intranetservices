@@ -169,9 +169,10 @@ public class InterviewService {
         if (newDurationMinutes != null) iv.durationMinutes = newDurationMinutes;
         if (iv.status == InterviewStatus.CANCELLED) {
             iv.status = InterviewStatus.SCHEDULED;
-            iv.rescheduleCount = (iv.rescheduleCount == null ? 0 : iv.rescheduleCount) + 1;
         }
+        iv.rescheduleCount = (iv.rescheduleCount == null ? 0 : iv.rescheduleCount) + 1;
         iv.persist();
+        lifecycle.onRescheduled(iv, iv.rescheduleCount, actorUuid);
         return iv;
     }
 
@@ -188,6 +189,7 @@ public class InterviewService {
         }
         iv.status = InterviewStatus.CANCELLED;
         iv.persist();
+        lifecycle.onCancelled(iv, reason, actorUuid);
         return iv;
     }
 
