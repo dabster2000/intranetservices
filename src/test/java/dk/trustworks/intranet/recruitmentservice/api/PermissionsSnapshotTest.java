@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
@@ -21,8 +22,10 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Snapshot test for §8.2 of the Recruitment Slice 1 plan: every recruitment endpoint's
@@ -33,11 +36,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * code review is forced when authorization rules change. The matrix is the snapshot; if a
  * scope is intentionally changed, update the JSON and the diff makes the change reviewable.
  *
+ * <p>Slice 3b extension: a single public endpoint exists for the Microsoft Graph webhook
+ * ({@link GraphNotificationResource} carries {@link PermitAll}). The scanner treats
+ * {@link PermitAll}-annotated methods as having a synthetic single-role
+ * {@code "@PermitAll"} so the matrix can capture them, and an extra invariant guards against
+ * accidentally widening this to a second public endpoint.
+ *
  * <p>Implementation note: uses pure reflection over a fixed list of resource classes to avoid
  * pulling in {@code org.reflections} as a test dependency and to avoid a {@code @QuarkusTest}
  * Arc/DB context (this test exercises annotations only).
  */
 class PermissionsSnapshotTest {
+
+    private static final String PERMIT_ALL_TOKEN = "@PermitAll";
 
     private static final List<Class<?>> RECRUITMENT_RESOURCES = List.of(
             RecruitmentStatusResource.class,
@@ -50,7 +61,10 @@ class PermissionsSnapshotTest {
             AiArtifactResource.class,
             InterviewResource.class,
             ScorecardResource.class,
-            InterviewAiResource.class
+            InterviewAiResource.class,
+            IntegrationStatusResource.class,
+            IntegrationRetryResource.class,
+            GraphNotificationResource.class
     );
 
     @Test
@@ -82,19 +96,29 @@ class PermissionsSnapshotTest {
             }
             String basePath = classPath.value();
             String classScope = roles(cls.getAnnotation(RolesAllowed.class));
+            boolean classPermitAll = cls.isAnnotationPresent(PermitAll.class);
             for (Method m : cls.getDeclaredMethods()) {
                 String method = httpMethod(m);
                 if (method == null) continue;
                 String subPath = m.isAnnotationPresent(Path.class) ? m.getAnnotation(Path.class).value() : "";
                 String fullPath = basePath + (subPath.isEmpty() || subPath.startsWith("/") ? subPath : "/" + subPath);
-                String methodScope = roles(m.getAnnotation(RolesAllowed.class));
-                Set<String> effective = methodScope != null
-                        ? splitCsv(methodScope)
-                        : (classScope != null ? splitCsv(classScope) : Set.of());
+                Set<String> effective = effectiveRoles(m, classScope, classPermitAll);
                 out.put(method + " " + normalizePath(fullPath), effective);
             }
         }
         return out;
+    }
+
+    private static Set<String> effectiveRoles(Method m, String classScope, boolean classPermitAll) {
+        // Method-level @PermitAll wins over @RolesAllowed (and over class-level).
+        if (m.isAnnotationPresent(PermitAll.class)) {
+            return Set.of(PERMIT_ALL_TOKEN);
+        }
+        String methodScope = roles(m.getAnnotation(RolesAllowed.class));
+        if (methodScope != null) return splitCsv(methodScope);
+        if (classScope != null) return splitCsv(classScope);
+        if (classPermitAll) return Set.of(PERMIT_ALL_TOKEN);
+        return Set.of();
     }
 
     private static String httpMethod(Method m) {
@@ -131,7 +155,7 @@ class PermissionsSnapshotTest {
             long count = Arrays.stream(cls.getDeclaredMethods())
                     .filter(m -> httpMethod(m) != null)
                     .count();
-            assertEquals(true, count > 0, cls.getName() + " has no HTTP endpoints");
+            assertTrue(count > 0, cls.getName() + " has no HTTP endpoints");
         }
     }
 
@@ -143,7 +167,26 @@ class PermissionsSnapshotTest {
         Set<String> seen = new LinkedHashSet<>();
         for (JsonNode entry : matrix.get("endpoints")) {
             String key = entry.get("method").asText() + " " + entry.get("path").asText();
-            assertEquals(true, seen.add(key), "Duplicate endpoint key in matrix: " + key);
+            assertTrue(seen.add(key), "Duplicate endpoint key in matrix: " + key);
         }
+    }
+
+    /**
+     * Slice 3b invariant: exactly one recruitment endpoint may be marked
+     * {@code publicEndpoint: true} (the Microsoft Graph webhook). Widening this
+     * is a security-sensitive change and must be reviewed deliberately.
+     */
+    @Test
+    void exactlyOneRecruitmentEndpointMayBePublic() throws Exception {
+        var mapper = new ObjectMapper();
+        var matrix = mapper.readTree(getClass().getResourceAsStream("/recruitment-permissions-matrix.json"));
+        long publicCount = StreamSupport.stream(matrix.get("endpoints").spliterator(), false)
+                .filter(entry -> {
+                    JsonNode pub = entry.get("publicEndpoint");
+                    return pub != null && pub.asBoolean(false);
+                })
+                .count();
+        assertEquals(1L, publicCount,
+                "exactly one recruitment endpoint may be publicEndpoint=true");
     }
 }
