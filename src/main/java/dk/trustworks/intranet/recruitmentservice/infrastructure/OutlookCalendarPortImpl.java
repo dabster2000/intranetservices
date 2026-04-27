@@ -151,17 +151,61 @@ public class OutlookCalendarPortImpl implements OutlookCalendarPort {
 
     @Override
     public GraphSubscriptionInfo createEventSubscription(SubscribeCommand cmd) {
-        throw new UnsupportedOperationException("createEventSubscription not implemented yet");
+        Objects.requireNonNull(cmd, "cmd");
+        Subscription sub = new Subscription();
+        sub.setChangeType("created,updated,deleted");
+        sub.setNotificationUrl(cmd.notificationUrl());
+        sub.setResource(cmd.resource());
+        sub.setClientState(cmd.clientStateSecret());
+        sub.setExpirationDateTime(cmd.expiresAt().atOffset(ZoneOffset.UTC));
+
+        try {
+            Subscription created = graph.subscriptions().post(sub);
+            if (created == null) {
+                throw new OutlookCalendarException(true, "GRAPH_EMPTY_SUBSCRIPTION",
+                        "Graph returned null subscription");
+            }
+            String id = created.getId();
+            Instant expires = created.getExpirationDateTime() != null
+                    ? created.getExpirationDateTime().toInstant()
+                    : cmd.expiresAt();
+            log.infof("[OutlookCalendarPort] createEventSubscription resource=%s -> id=%s exp=%s",
+                    cmd.resource(), id, expires);
+            return new GraphSubscriptionInfo(id, created.getResource(), expires);
+        } catch (ODataError e) {
+            throw mapError("createEventSubscription", e);
+        }
     }
 
     @Override
     public GraphSubscriptionInfo renewSubscription(String subscriptionId, Instant newExpiresAt) {
-        throw new UnsupportedOperationException("renewSubscription not implemented yet");
+        Objects.requireNonNull(subscriptionId, "subscriptionId");
+        Objects.requireNonNull(newExpiresAt, "newExpiresAt");
+        Subscription patch = new Subscription();
+        patch.setExpirationDateTime(newExpiresAt.atOffset(ZoneOffset.UTC));
+
+        try {
+            Subscription updated = graph.subscriptions().bySubscriptionId(subscriptionId).patch(patch);
+            String resource = updated != null ? updated.getResource() : null;
+            Instant expires = updated != null && updated.getExpirationDateTime() != null
+                    ? updated.getExpirationDateTime().toInstant()
+                    : newExpiresAt;
+            log.infof("[OutlookCalendarPort] renewSubscription id=%s exp=%s", subscriptionId, expires);
+            return new GraphSubscriptionInfo(subscriptionId, resource, expires);
+        } catch (ODataError e) {
+            throw mapError("renewSubscription", e);
+        }
     }
 
     @Override
     public void deleteSubscription(String subscriptionId) {
-        throw new UnsupportedOperationException("deleteSubscription not implemented yet");
+        Objects.requireNonNull(subscriptionId, "subscriptionId");
+        try {
+            graph.subscriptions().bySubscriptionId(subscriptionId).delete();
+            log.infof("[OutlookCalendarPort] deleteSubscription id=%s", subscriptionId);
+        } catch (ODataError e) {
+            throw mapError("deleteSubscription", e);
+        }
     }
 
     // ---- helpers ----
