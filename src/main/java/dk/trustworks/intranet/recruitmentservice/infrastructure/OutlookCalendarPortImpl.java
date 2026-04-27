@@ -83,12 +83,49 @@ public class OutlookCalendarPortImpl implements OutlookCalendarPort {
 
     @Override
     public void updateEvent(UpdateEventCommand cmd) {
-        throw new UnsupportedOperationException("updateEvent not implemented yet");
+        Objects.requireNonNull(cmd, "cmd");
+        // PATCH replaces the listed fields; we send the full attendee list so removals
+        // propagate. Subject/body intentionally not patched here (only time + attendees).
+        Event patch = new Event();
+        patch.setStart(toGraphDateTime(cmd.startUtc()));
+        patch.setEnd(toGraphDateTime(cmd.endUtc()));
+        List<Attendee> attendees = new ArrayList<>();
+        if (cmd.attendeeEmails() != null) {
+            for (String email : cmd.attendeeEmails()) {
+                if (email == null || email.isBlank()) continue;
+                Attendee a = new Attendee();
+                EmailAddress addr = new EmailAddress();
+                addr.setAddress(email);
+                a.setEmailAddress(addr);
+                a.setType(AttendeeType.Required);
+                attendees.add(a);
+            }
+        }
+        patch.setAttendees(attendees);
+
+        try {
+            graph.users().byUserId(cmd.organizerMailbox())
+                    .events().byEventId(cmd.eventId())
+                    .patch(patch);
+            log.infof("[OutlookCalendarPort] updateEvent interview=%s eventId=%s attendees=%d",
+                    cmd.interviewUuid(), cmd.eventId(), attendees.size());
+        } catch (ODataError e) {
+            throw mapError("updateEvent", e);
+        }
     }
 
     @Override
     public void cancelEvent(CancelEventCommand cmd) {
-        throw new UnsupportedOperationException("cancelEvent not implemented yet");
+        Objects.requireNonNull(cmd, "cmd");
+        try {
+            graph.users().byUserId(cmd.organizerMailbox())
+                    .events().byEventId(cmd.eventId())
+                    .delete();
+            log.infof("[OutlookCalendarPort] cancelEvent interview=%s eventId=%s reason=%s",
+                    cmd.interviewUuid(), cmd.eventId(), cmd.reason());
+        } catch (ODataError e) {
+            throw mapError("cancelEvent", e);
+        }
     }
 
     @Override
