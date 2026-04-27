@@ -356,13 +356,22 @@ recruitment:
     scorecard-roundup:
       enabled: false
   outlook:
-    enabled: false
+    enabled: ${RECRUITMENT_OUTLOOK_ENABLED:false}
   slack:
-    enabled: false
+    enabled: ${RECRUITMENT_SLACK_ENABLED:false}
+    bot-token: ${MOTHERSLACKBOTTOKEN:}
   nextsign:
     enabled: false
   sharepoint:
     enabled: false
+  # Microsoft Graph (organizer = TAM mailbox; app-only auth)
+  graph:
+    tenant-id: ${AZURE_TENANT_ID:}
+    client-id: ${AZURE_CLIENT_ID:}
+    client-secret: ${AZURE_CLIENT_SECRET:}
+    client-state-secret: ${RECRUITMENT_GRAPH_CLIENT_STATE_SECRET:}
+    notification-url: ${RECRUITMENT_GRAPH_NOTIFICATION_URL:https://api.trustworks.dk/api/recruitment/integrations/graph/notifications}
+  deep-link-base: ${RECRUITMENT_DEEP_LINK_BASE:https://intra.trustworks.dk}
 
 # dev-e2e profile: enables recruitment + all AI sub-flags so the Playwright
 # golden-path spec can drive cv-upload, role-brief and candidate-summary flows
