@@ -102,6 +102,7 @@ public class InterviewService {
         iv.scheduledAt = cmd.scheduledAt();
         iv.durationMinutes = durationMinutes;
         iv.status = InterviewStatus.SCHEDULED;
+        iv.createdBy = actorUuid;
         iv.rescheduleCount = 0;
         iv.persist();
 

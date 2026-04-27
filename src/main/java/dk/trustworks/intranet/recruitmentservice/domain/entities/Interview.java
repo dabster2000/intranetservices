@@ -49,6 +49,9 @@ public class Interview extends PanacheEntityBase {
     @Column(name = "status", length = 40, nullable = false)
     public InterviewStatus status;
 
+    @Column(name = "created_by", length = 36)
+    public String createdBy;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "round_up_decision", length = 40)
     public RoundUpDecision roundUpDecision;
