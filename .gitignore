@@ -40,3 +40,6 @@ nb-configuration.xml
 .env
 .run/
 /.run/
+
+# Git worktrees
+/.worktrees/
