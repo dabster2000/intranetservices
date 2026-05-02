@@ -2,9 +2,8 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
-import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
+import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -18,11 +17,11 @@ import java.util.Map;
 import static dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE;
 
 /**
- * Extracts the recalculateInvoiceItems logic from InvoiceService so it can be
- * injected and mocked independently in the orchestrator test.
+ * Canonical home for the invoice line-item recalculation pipeline.
  *
- * TODO(phase-H-followup): real impl — currently delegates to InvoiceService.
- *   Once InvoiceService is refactored (H10), this becomes the canonical home.
+ * Rebuilds the invoice items: deletes CALCULATED items, re-runs the pricing
+ * engine, and repopulates the collection on the entity. Used by both the draft
+ * update path and the e-conomic finalization orchestrator.
  */
 @ApplicationScoped
 public class InvoiceItemRecalculator {
@@ -33,15 +32,56 @@ public class InvoiceItemRecalculator {
     @Inject
     PricingEngine pricingEngine;
 
-    /**
-     * Rebuilds the invoice items: deletes CALCULATED items, re-runs the pricing
-     * engine, and repopulates the collection on the entity.
-     *
-     * TODO(phase-H-followup): real impl — mirror the private recalculateInvoiceItems
-     *   method in InvoiceService. Currently a no-op stub so the orchestrator compiles.
-     */
     @Transactional
     public void recalculateInvoiceItems(Invoice invoice) {
-        // TODO(phase-H-followup): real impl — port private recalculateInvoiceItems from InvoiceService
+        var baseItemData = invoice.getInvoiceitems().stream()
+                .filter(ii -> !ii.isEffectivelyCalculated())
+                // Clone each item as a new entity to avoid Hibernate managed-entity issues.
+                // A JPQL bulk delete only removes rows from the DB, not from the persistence
+                // context, so calling persist() on the original (still-managed) instances is
+                // silently ignored. Creating fresh instances guarantees an INSERT.
+                .map(ii -> new InvoiceItem(
+                        ii.getUuid(),           // preserve existing UUID
+                        ii.getConsultantuuid(),
+                        ii.getItemname(),
+                        ii.getDescription(),
+                        ii.getRate(),
+                        ii.getHours(),
+                        ii.getPosition(),
+                        invoice.getUuid(),
+                        BASE))
+                .toList();
+
+        List<InvoiceItem> oldManagedItems = new ArrayList<>(invoice.getInvoiceitems());
+
+        // Delete from DB first (auto-flush sees unchanged collection → no interference)
+        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        em.flush();
+
+        // CRITICAL: Clear the PersistentBag to break the CascadeType.ALL cascade path.
+        // Without this, the bag re-attaches detached items during subsequent flushes,
+        // causing "different object with same identifier" on persist.
+        invoice.invoiceitems.clear();
+        oldManagedItems.forEach(em::detach);
+
+        InvoiceItem.persist(baseItemData);
+
+        Map<String, String> cti = new HashMap<>();
+        ContractTypeItem.<ContractTypeItem>find("contractuuid", invoice.getContractuuid())
+                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+
+        var pr = pricingEngine.price(invoice, cti);
+
+        pr.syntheticItems.forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
+        InvoiceItem.persist(pr.syntheticItems);
+
+        invoice.invoiceitems.clear();
+        invoice.invoiceitems.addAll(baseItemData);
+        invoice.invoiceitems.addAll(pr.syntheticItems);
+        invoice.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
+        invoice.sumAfterDiscounts  = pr.sumAfterDiscounts.doubleValue();
+        invoice.vatAmount          = pr.vatAmount.doubleValue();
+        invoice.grandTotal         = pr.grandTotal.doubleValue();
+        invoice.calculationBreakdown = pr.breakdown;
     }
 }

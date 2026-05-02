@@ -92,6 +92,9 @@ public class InvoiceService {
     PricingEngine pricingEngine;
 
     @Inject
+    InvoiceItemRecalculator invoiceItemRecalculator;
+
+    @Inject
     @RestClient
     CurrencyAPI currencyAPI;
 
@@ -476,55 +479,7 @@ public class InvoiceService {
     }
 
     private void recalculateInvoiceItems(Invoice invoice) {
-        var baseItemData = invoice.getInvoiceitems().stream()
-                .filter(ii -> !ii.isEffectivelyCalculated())
-                // Clone each item as a new entity to avoid Hibernate managed-entity issues.
-                // A JPQL bulk delete only removes rows from the DB, not from the persistence
-                // context, so calling persist() on the original (still-managed) instances is
-                // silently ignored. Creating fresh instances guarantees an INSERT.
-                .map(ii -> new InvoiceItem(
-                        ii.getUuid(),           // preserve existing UUID
-                        ii.getConsultantuuid(),
-                        ii.getItemname(),
-                        ii.getDescription(),
-                        ii.getRate(),
-                        ii.getHours(),
-                        ii.getPosition(),
-                        invoice.getUuid(),
-                        BASE))
-                .toList();
-
-        List<InvoiceItem> oldManagedItems = new ArrayList<>(invoice.getInvoiceitems());
-
-        // Delete from DB first (auto-flush sees unchanged collection → no interference)
-        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
-        em.flush();
-
-        // CRITICAL: Clear the PersistentBag to break the CascadeType.ALL cascade path.
-        // Without this, the bag re-attaches detached items during subsequent flushes,
-        // causing "different object with same identifier" on persist.
-        invoice.invoiceitems.clear();
-        oldManagedItems.forEach(em::detach);
-
-        InvoiceItem.persist(baseItemData);
-
-        Map<String, String> cti = new HashMap<>();
-        ContractTypeItem.<ContractTypeItem>find("contractuuid", invoice.getContractuuid())
-                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
-
-        var pr = pricingEngine.price(invoice, cti);
-
-        pr.syntheticItems.forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
-        InvoiceItem.persist(pr.syntheticItems);
-
-        invoice.invoiceitems.clear();
-        invoice.invoiceitems.addAll(baseItemData);
-        invoice.invoiceitems.addAll(pr.syntheticItems);
-        invoice.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
-        invoice.sumAfterDiscounts  = pr.sumAfterDiscounts.doubleValue();
-        invoice.vatAmount          = pr.vatAmount.doubleValue();
-        invoice.grandTotal         = pr.grandTotal.doubleValue();
-        invoice.calculationBreakdown = pr.breakdown;
+        invoiceItemRecalculator.recalculateInvoiceItems(invoice);
     }
 
     @Transactional
