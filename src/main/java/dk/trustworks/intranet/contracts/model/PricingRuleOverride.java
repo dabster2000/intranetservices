@@ -130,7 +130,7 @@ public class PricingRuleOverride extends AbstractRuleOverrideEntity<PricingRuleS
 
         switch (overrideType) {
             case REPLACE:
-                return toPricingRuleStep();
+                return toStandaloneRule();
             case DISABLE:
                 return null;
             case MODIFY:
@@ -198,11 +198,12 @@ public class PricingRuleOverride extends AbstractRuleOverrideEntity<PricingRuleS
 
     /**
      * Convert this override to a standalone pricing rule step entity.
-     * Used for REPLACE strategy.
+     * Used for REPLACE strategy and for orphan MODIFY overrides
+     * (no matching base rule for the contract type).
      *
      * @return A new pricing rule step entity populated from override values
      */
-    private PricingRuleStepEntity toPricingRuleStep() {
+    public PricingRuleStepEntity toStandaloneRule() {
         PricingRuleStepEntity rule = new PricingRuleStepEntity();
         rule.setRuleId(this.ruleId);
         rule.setLabel(this.label != null ? this.label : "Override for " + this.ruleId);

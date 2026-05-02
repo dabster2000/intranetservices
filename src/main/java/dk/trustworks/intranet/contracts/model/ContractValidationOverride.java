@@ -107,7 +107,7 @@ public class ContractValidationOverride extends AbstractRuleOverrideEntity<Contr
 
         switch (overrideType) {
             case REPLACE:
-                return toValidationRule();
+                return toStandaloneRule();
             case DISABLE:
                 return null;
             case MODIFY:
@@ -163,11 +163,12 @@ public class ContractValidationOverride extends AbstractRuleOverrideEntity<Contr
 
     /**
      * Convert this override to a standalone validation rule entity.
-     * Used for REPLACE strategy.
+     * Used for REPLACE strategy and for MODIFY overrides whose contract type
+     * has no matching base rule (orphan MODIFY).
      *
      * @return A new validation rule entity populated from override values
      */
-    private ContractValidationRuleEntity toValidationRule() {
+    public ContractValidationRuleEntity toStandaloneRule() {
         ContractValidationRuleEntity rule = new ContractValidationRuleEntity();
         rule.setRuleId(this.ruleId);
         rule.setLabel(this.label != null ? this.label : "Override for " + this.ruleId);

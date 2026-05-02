@@ -176,21 +176,22 @@ public class ValidationOverrideDTO {
     private LocalDateTime updatedAt;
 
     /**
-     * Validation: Ensure REPLACE has all required fields.
+     * Validation: Ensure REPLACE (or any standalone-capable override) carries
+     * the parameters its validationType requires to function on its own.
      */
     public void validateForReplace() {
         if (overrideType == OverrideType.REPLACE) {
-            if (validationType == null) {
-                throw new IllegalArgumentException("ValidationType is required for REPLACE override");
-            }
-            if (label == null || label.isBlank()) {
-                throw new IllegalArgumentException("Label is required for REPLACE override");
-            }
+            requireStandaloneFields();
         }
     }
 
     /**
      * Validation: Ensure MODIFY has at least one override field.
+     *
+     * <p>Note: an orphan MODIFY (one whose contract type has no matching base
+     * rule) is treated by the resolver as a standalone rule. We therefore also
+     * require the same standalone fields when validationType is provided —
+     * otherwise the resulting effective rule would be unusable.
      */
     public void validateForModify() {
         if (overrideType == OverrideType.MODIFY) {
@@ -201,6 +202,42 @@ public class ValidationOverrideDTO {
                 throw new IllegalArgumentException(
                     "MODIFY override must specify at least one field to override");
             }
+            // If the override declares a validationType, it must be self-sufficient
+            // because the resolver may have to run it standalone.
+            if (validationType != null) {
+                requireStandaloneFields();
+            }
+        }
+    }
+
+    /**
+     * Enforce that this override carries enough information to act as a
+     * standalone validation rule.
+     */
+    private void requireStandaloneFields() {
+        if (validationType == null) {
+            throw new IllegalArgumentException("ValidationType is required");
+        }
+        if (label == null || label.isBlank()) {
+            throw new IllegalArgumentException("Label is required");
+        }
+        switch (validationType) {
+            case NOTES_REQUIRED:
+            case REQUIRE_TASK_SELECTION:
+                if (required == null) {
+                    throw new IllegalArgumentException(
+                        "'required' must be specified for " + validationType + " rules");
+                }
+                break;
+            case MIN_HOURS_PER_ENTRY:
+            case MAX_HOURS_PER_DAY:
+                if (thresholdValue == null) {
+                    throw new IllegalArgumentException(
+                        "'thresholdValue' (hours) is required for " + validationType + " rules");
+                }
+                break;
+            default:
+                // No additional parameters required.
         }
     }
 }

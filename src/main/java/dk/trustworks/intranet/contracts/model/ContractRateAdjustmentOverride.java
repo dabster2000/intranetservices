@@ -118,7 +118,7 @@ public class ContractRateAdjustmentOverride extends AbstractRuleOverrideEntity<C
 
         switch (overrideType) {
             case REPLACE:
-                return toRateAdjustmentRule();
+                return toStandaloneRule();
             case DISABLE:
                 return null;
             case MODIFY:
@@ -178,11 +178,12 @@ public class ContractRateAdjustmentOverride extends AbstractRuleOverrideEntity<C
 
     /**
      * Convert this override to a standalone rate adjustment rule entity.
-     * Used for REPLACE strategy.
+     * Used for REPLACE strategy and for orphan MODIFY overrides
+     * (no matching base rule for the contract type).
      *
      * @return A new rate adjustment entity populated from override values
      */
-    private ContractRateAdjustmentEntity toRateAdjustmentRule() {
+    public ContractRateAdjustmentEntity toStandaloneRule() {
         ContractRateAdjustmentEntity rule = new ContractRateAdjustmentEntity();
         rule.setRuleId(this.ruleId);
         rule.setLabel(this.label != null ? this.label : "Override for " + this.ruleId);

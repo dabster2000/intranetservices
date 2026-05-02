@@ -3,6 +3,7 @@ package dk.trustworks.intranet.contracts.services;
 import dk.trustworks.intranet.contracts.dto.ContractRuleSetDTO;
 import dk.trustworks.intranet.contracts.mappers.ContractOverrideMapper;
 import dk.trustworks.intranet.contracts.model.*;
+import dk.trustworks.intranet.contracts.model.enums.OverrideType;
 import io.quarkus.cache.CacheKey;
 import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -177,35 +178,31 @@ public class RuleResolutionService {
                         log.debugf("DISABLE: Removed rule %s", ruleId);
                         break;
 
-                    case REPLACE: {
-                        // Merge or replace and ensure most-specific (contract) wins by validationType
-                        ContractValidationRuleEntity mergedRule = override.merge(baseRule);
+                    case REPLACE:
+                    case MODIFY: {
+                        // When MODIFY has no matching base rule, treat the override as
+                        // a standalone rule (same path as REPLACE). The DTO-level
+                        // validation guarantees the override carries enough data
+                        // (validationType + at least one parameter) to function on its own.
+                        ContractValidationRuleEntity mergedRule = baseRule == null
+                            ? override.toStandaloneRule()
+                            : override.merge(baseRule);
                         if (mergedRule != null) {
-                            if (mergedRule.getValidationType() != null) {
+                            // For REPLACE/standalone, suppress base rules of the same
+                            // validationType to ensure the contract-specific rule wins.
+                            if ((override.getOverrideType() == OverrideType.REPLACE || baseRule == null)
+                                && mergedRule.getValidationType() != null) {
                                 var vt = mergedRule.getValidationType();
-                                // Remove any existing rule with the same validationType but different ruleId
                                 effectiveRules.entrySet().removeIf(e ->
                                     e.getValue().getValidationType() == vt && !e.getKey().equals(ruleId)
                                 );
                             }
                             effectiveRules.put(ruleId, mergedRule);
-                            log.debugf("REPLACE: Applied override for rule %s (suppressed same-type base rules)", ruleId);
+                            log.debugf("%s: Applied override for rule %s (baseRule %s)",
+                                override.getOverrideType(), ruleId, baseRule == null ? "absent" : "present");
                         }
                         break;
                     }
-                    case MODIFY:
-                        if (baseRule == null) {
-                            log.warnf("MODIFY override '%s' has no matching base rule for contract %s (type '%s') — skipping orphan override",
-                                ruleId, contractUuid, contractTypeCode);
-                            break;
-                        }
-                        // Merge attributes into base rule with same ruleId
-                        ContractValidationRuleEntity mergedRule = override.merge(baseRule);
-                        if (mergedRule != null) {
-                            effectiveRules.put(ruleId, mergedRule);
-                            log.debugf("MODIFY: Applied override for rule %s", ruleId);
-                        }
-                        break;
                 }
             }
         }
@@ -277,33 +274,26 @@ public class RuleResolutionService {
                         log.debugf("DISABLE: Removed rate adjustment %s", ruleId);
                         break;
 
-                    case REPLACE: {
-                        // Ensure most-specific (contract) wins by adjustmentType
-                        ContractRateAdjustmentEntity mergedRule = override.merge(baseRule);
+                    case REPLACE:
+                    case MODIFY: {
+                        // Orphan MODIFY (no matching base rule) is treated as a standalone rule.
+                        ContractRateAdjustmentEntity mergedRule = baseRule == null
+                            ? override.toStandaloneRule()
+                            : override.merge(baseRule);
                         if (mergedRule != null) {
-                            if (mergedRule.getAdjustmentType() != null) {
+                            if ((override.getOverrideType() == OverrideType.REPLACE || baseRule == null)
+                                && mergedRule.getAdjustmentType() != null) {
                                 var at = mergedRule.getAdjustmentType();
                                 effectiveRules.entrySet().removeIf(e ->
                                     e.getValue().getAdjustmentType() == at && !e.getKey().equals(ruleId)
                                 );
                             }
                             effectiveRules.put(ruleId, mergedRule);
-                            log.debugf("REPLACE: Applied override for rate adjustment %s (suppressed same-type base adjustments)", ruleId);
+                            log.debugf("%s: Applied rate override for rule %s (baseRule %s)",
+                                override.getOverrideType(), ruleId, baseRule == null ? "absent" : "present");
                         }
                         break;
                     }
-                    case MODIFY:
-                        if (baseRule == null) {
-                            log.warnf("MODIFY rate override '%s' has no matching base rule for contract %s (type '%s') — skipping orphan override",
-                                ruleId, contractUuid, contractTypeCode);
-                            break;
-                        }
-                        ContractRateAdjustmentEntity mergedRule = override.merge(baseRule);
-                        if (mergedRule != null) {
-                            effectiveRules.put(ruleId, mergedRule);
-                            log.debugf("MODIFY: Applied override for rate adjustment %s", ruleId);
-                        }
-                        break;
                 }
             }
         }
@@ -375,33 +365,26 @@ public class RuleResolutionService {
                         log.debugf("DISABLE: Removed pricing rule %s", ruleId);
                         break;
 
-                    case REPLACE: {
-                        // Ensure most-specific (contract) wins by ruleStepType
-                        PricingRuleStepEntity mergedRule = override.merge(baseRule);
+                    case REPLACE:
+                    case MODIFY: {
+                        // Orphan MODIFY (no matching base rule) is treated as a standalone rule.
+                        PricingRuleStepEntity mergedRule = baseRule == null
+                            ? override.toStandaloneRule()
+                            : override.merge(baseRule);
                         if (mergedRule != null) {
-                            if (mergedRule.getRuleStepType() != null) {
+                            if ((override.getOverrideType() == OverrideType.REPLACE || baseRule == null)
+                                && mergedRule.getRuleStepType() != null) {
                                 var st = mergedRule.getRuleStepType();
                                 effectiveRules.entrySet().removeIf(e ->
                                     e.getValue().getRuleStepType() == st && !e.getKey().equals(ruleId)
                                 );
                             }
                             effectiveRules.put(ruleId, mergedRule);
-                            log.debugf("REPLACE: Applied override for pricing rule %s (suppressed same-type base rules)", ruleId);
+                            log.debugf("%s: Applied pricing override for rule %s (baseRule %s)",
+                                override.getOverrideType(), ruleId, baseRule == null ? "absent" : "present");
                         }
                         break;
                     }
-                    case MODIFY:
-                        if (baseRule == null) {
-                            log.warnf("MODIFY pricing override '%s' has no matching base rule for contract %s (type '%s') — skipping orphan override",
-                                ruleId, contractUuid, contractTypeCode);
-                            break;
-                        }
-                        PricingRuleStepEntity mergedRule = override.merge(baseRule);
-                        if (mergedRule != null) {
-                            effectiveRules.put(ruleId, mergedRule);
-                            log.debugf("MODIFY: Applied override for pricing rule %s", ruleId);
-                        }
-                        break;
                 }
             }
         }
