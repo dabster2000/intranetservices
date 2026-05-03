@@ -257,7 +257,10 @@ public class CxoPeopleService {
                     bucket.label(), bucket.levels(), actualCount, actualPercent, bucket.targetPercent()));
         }
 
-        String snapshotDate = LocalDate.now().toString(); // ISO YYYY-MM-DD
+        // Use UTC to match the BFF's `new Date().toISOString().split('T')[0]`,
+        // which is also UTC. Without this, JVMs in non-UTC timezones can
+        // produce off-by-one snapshot dates near midnight UTC.
+        String snapshotDate = LocalDate.now(java.time.ZoneOffset.UTC).toString(); // ISO YYYY-MM-DD
         log.debugf("consultantPyramid: total=%d (companyFilter=%s)",
                 Long.valueOf(totalConsultants), Boolean.toString(hasCompanyFilter));
         return new ConsultantPyramidDTO(levels, totalConsultants, snapshotDate);
