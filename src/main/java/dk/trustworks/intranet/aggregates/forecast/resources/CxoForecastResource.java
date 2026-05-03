@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.forecast.resources;
 
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.CapacityDemandMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.RevenueForecastBandMonthDTO;
@@ -73,5 +74,11 @@ public class CxoForecastResource {
     @Path("/revenue-forecast")
     public List<RevenueForecastBandMonthDTO> revenueForecast(@QueryParam("companyIds") String companyIds) {
         return cxoForecastService.revenueForecast(parseCommaSeparated(companyIds));
+    }
+
+    @GET
+    @Path("/capacity-demand")
+    public List<CapacityDemandMonthDTO> capacityDemand(@QueryParam("companyIds") String companyIds) {
+        return cxoForecastService.capacityDemand(parseCommaSeparated(companyIds));
     }
 }

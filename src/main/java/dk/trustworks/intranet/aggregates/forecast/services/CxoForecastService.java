@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.forecast.services;
 
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.CapacityDemandMonthDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.CapacityDemandPracticeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffPracticeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthMonthDTO;
@@ -35,6 +37,20 @@ import java.util.Set;
 public class CxoForecastService {
 
     static final int CXO_QUERY_TIMEOUT_MS = 15_000;
+
+    /** Default avg billing rate (DKK/hour) used to convert revenue to FTE in capacity-demand. */
+    private static final double AVG_HOURLY_RATE = 1200.0;
+    /** Average working hours per month used to convert revenue to FTE in capacity-demand. */
+    private static final double HOURS_PER_MONTH = 160.33;
+
+    private static double revenueToFte(double revenueDkk) {
+        return revenueDkk / (AVG_HOURLY_RATE * HOURS_PER_MONTH);
+    }
+
+    /** Round to 1 decimal place — mirrors BFF's {@code Math.round(v * 10) / 10}. */
+    private static double round1(double v) {
+        return Math.round(v * 10.0) / 10.0;
+    }
 
     /** Display labels keyed by stage_id for the win-rates view. Falls back to raw value if missing. */
     private static final Map<String, String> STAGE_LABELS = Map.of(
@@ -590,6 +606,191 @@ public class CxoForecastService {
         }
 
         log.debugf("revenueForecast: %d months (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Capacity vs Demand (FTE Gap Forecast)
+    // ============================================================================
+
+    /**
+     * Per-practice scratch accumulator used during Java-side aggregation of
+     * the three capacity-vs-demand source tables. Mutable on purpose — the
+     * immutable {@link CapacityDemandPracticeDTO} is built at the end from
+     * the accumulated revenue + capacity totals.
+     */
+    private static final class PracticeData {
+        double capacityFte;
+        double backlogRevenue;
+        double pipelineRevenue;
+    }
+
+    /**
+     * Returns the current + 12-forward month capacity-vs-demand projection,
+     * mirroring the BFF route at {@code /api/cxo/forecast/capacity-demand}.
+     *
+     * <p>Three native queries are issued sequentially (the BFF parallelises
+     * them, but the JPA EntityManager is single-threaded):
+     * <ol>
+     *   <li>Capacity from {@code fact_employee_monthly_mat} — sum of
+     *       {@code fte_billable} grouped by (month, practice_id)</li>
+     *   <li>Backlog demand from {@code fact_backlog} — sum of
+     *       {@code backlog_revenue_dkk} grouped by (delivery_month, service_line_id)</li>
+     *   <li>Pipeline demand from {@code fact_pipeline} — sum of
+     *       {@code weighted_pipeline_dkk} grouped by (expected_revenue_month, service_line_id)</li>
+     * </ol>
+     * All three filter by {@code company_id IN (:companyIds)} when provided.</p>
+     *
+     * <p>FTE conversion: {@code revenueDkk / (1200 * 160.33)}. The capacity
+     * side uses {@code practice_id} as the practice key; demand sides use
+     * {@code service_line_id}. NULL on either side falls back to
+     * {@code "Unknown"} (BFF parity).</p>
+     *
+     * <p>Java assembly walks a monthly cursor from current month to
+     * {@code current + 12} (inclusive — always 13 months). For each month,
+     * iterates the practice map and emits one
+     * {@link CapacityDemandPracticeDTO} per practice with totals rounded to
+     * 1 decimal place via {@link #round1}.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return 13-month chronological list (always non-empty even with no source data)
+     */
+    public List<CapacityDemandMonthDTO> capacityDemand(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        // All three source tables here use company_id (no asymmetry).
+        String companyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        LocalDate now = LocalDate.now();
+        String currentMonth = String.format("%04d%02d", now.getYear(), now.getMonthValue());
+        LocalDate forwardEnd = now.withDayOfMonth(1).plusMonths(12);
+        String endMonth = String.format("%04d%02d", forwardEnd.getYear(), forwardEnd.getMonthValue());
+
+        // Query 1: capacity (current month through forward end)
+        String capacitySql = "SELECT month_key, practice_id, SUM(fte_billable) AS capacity_fte " +
+                "FROM fact_employee_monthly_mat " +
+                "WHERE month_key >= :currentMonth AND month_key <= :endMonth" + companyFilter + " " +
+                "GROUP BY month_key, practice_id";
+        Query capacityQuery = em.createNativeQuery(capacitySql, Tuple.class)
+                .setParameter("currentMonth", currentMonth)
+                .setParameter("endMonth", endMonth);
+        if (hasCompanyFilter) capacityQuery.setParameter("companyIds", companyIds);
+        capacityQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> capacityRows = capacityQuery.getResultList();
+
+        // Query 2: backlog demand (current month onward)
+        String backlogSql = "SELECT delivery_month_key, service_line_id, SUM(backlog_revenue_dkk) AS revenue " +
+                "FROM fact_backlog " +
+                "WHERE delivery_month_key >= :currentMonth" + companyFilter + " " +
+                "GROUP BY delivery_month_key, service_line_id";
+        Query backlogQuery = em.createNativeQuery(backlogSql, Tuple.class)
+                .setParameter("currentMonth", currentMonth);
+        if (hasCompanyFilter) backlogQuery.setParameter("companyIds", companyIds);
+        backlogQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> backlogRows = backlogQuery.getResultList();
+
+        // Query 3: pipeline demand (current month onward)
+        String pipelineSql = "SELECT expected_revenue_month_key, service_line_id, SUM(weighted_pipeline_dkk) AS revenue " +
+                "FROM fact_pipeline " +
+                "WHERE expected_revenue_month_key >= :currentMonth" + companyFilter + " " +
+                "GROUP BY expected_revenue_month_key, service_line_id";
+        Query pipelineQuery = em.createNativeQuery(pipelineSql, Tuple.class)
+                .setParameter("currentMonth", currentMonth);
+        if (hasCompanyFilter) pipelineQuery.setParameter("companyIds", companyIds);
+        pipelineQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> pipelineRows = pipelineQuery.getResultList();
+
+        // Build month → practice → PracticeData scratch map, seeded from capacity then enriched with demand.
+        Map<String, Map<String, PracticeData>> monthPracticeMap = new HashMap<>();
+
+        for (Tuple row : capacityRows) {
+            String month = row.get("month_key", String.class);
+            String practiceId = row.get("practice_id", String.class);
+            String practice = practiceId != null ? practiceId : "Unknown";
+            double capacityFte = toDouble(row.get("capacity_fte"));
+            monthPracticeMap
+                    .computeIfAbsent(month, k -> new HashMap<>())
+                    .computeIfAbsent(practice, k -> new PracticeData())
+                    .capacityFte += capacityFte;
+        }
+
+        for (Tuple row : backlogRows) {
+            String month = row.get("delivery_month_key", String.class);
+            String serviceLineId = row.get("service_line_id", String.class);
+            String practice = serviceLineId != null ? serviceLineId : "Unknown";
+            double revenue = toDouble(row.get("revenue"));
+            monthPracticeMap
+                    .computeIfAbsent(month, k -> new HashMap<>())
+                    .computeIfAbsent(practice, k -> new PracticeData())
+                    .backlogRevenue += revenue;
+        }
+
+        for (Tuple row : pipelineRows) {
+            String month = row.get("expected_revenue_month_key", String.class);
+            String serviceLineId = row.get("service_line_id", String.class);
+            String practice = serviceLineId != null ? serviceLineId : "Unknown";
+            double revenue = toDouble(row.get("revenue"));
+            monthPracticeMap
+                    .computeIfAbsent(month, k -> new HashMap<>())
+                    .computeIfAbsent(practice, k -> new PracticeData())
+                    .pipelineRevenue += revenue;
+        }
+
+        // Walk cursor — always emit 13 months (current + 12 forward).
+        List<CapacityDemandMonthDTO> result = new ArrayList<>();
+        LocalDate cursor = now.withDayOfMonth(1);
+        while (!cursor.isAfter(forwardEnd)) {
+            String monthKey = String.format("%04d%02d", cursor.getYear(), cursor.getMonthValue());
+            Map<String, PracticeData> practiceMap = monthPracticeMap.get(monthKey);
+
+            double totalCapacity = 0;
+            double totalBacklogDemand = 0;
+            double totalPipelineDemand = 0;
+            List<CapacityDemandPracticeDTO> byPractice = new ArrayList<>();
+
+            if (practiceMap != null) {
+                for (Map.Entry<String, PracticeData> entry : practiceMap.entrySet()) {
+                    String practice = entry.getKey();
+                    PracticeData data = entry.getValue();
+                    double backlogFte = revenueToFte(data.backlogRevenue);
+                    double pipelineFte = revenueToFte(data.pipelineRevenue);
+                    double demandFte = backlogFte + pipelineFte;
+
+                    totalCapacity += data.capacityFte;
+                    totalBacklogDemand += backlogFte;
+                    totalPipelineDemand += pipelineFte;
+
+                    byPractice.add(new CapacityDemandPracticeDTO(
+                            practice,
+                            round1(data.capacityFte),
+                            round1(demandFte),
+                            round1(data.capacityFte - demandFte)));
+                }
+            }
+
+            double totalDemand = totalBacklogDemand + totalPipelineDemand;
+            int year = cursor.getYear();
+            int monthNumber = cursor.getMonthValue();
+            String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+                    + " " + year;
+
+            result.add(new CapacityDemandMonthDTO(
+                    monthKey,
+                    monthLabel,
+                    round1(totalCapacity),
+                    round1(totalBacklogDemand),
+                    round1(totalPipelineDemand),
+                    round1(totalDemand),
+                    round1(totalCapacity - totalDemand),
+                    byPractice));
+
+            cursor = cursor.plusMonths(1);
+        }
+
+        log.debugf("capacityDemand: %d months (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
         return result;
     }
