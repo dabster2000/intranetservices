@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.executive.resources;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecHeadcountByTypeMonthDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecCareerLevelDistDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecRetentionCohortDTO;
 import dk.trustworks.intranet.aggregates.executive.services.ExecutivePeopleService;
 import jakarta.annotation.security.RolesAllowed;
@@ -100,5 +101,16 @@ public class ExecutivePeopleResource {
     @Path("/retention-cohorts")
     public List<ExecRetentionCohortDTO> retentionCohorts(@QueryParam("companyIds") String companyIds) {
         return executivePeopleService.retentionCohorts(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Returns the current-snapshot career-level distribution for active consultants.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/career-level-distribution")
+    public List<ExecCareerLevelDistDTO> careerLevelDistribution(@QueryParam("companyIds") String companyIds) {
+        return executivePeopleService.careerLevelDistribution(parseCommaSeparated(companyIds));
     }
 }

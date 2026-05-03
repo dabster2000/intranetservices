@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.executive.services;
 
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecCareerLevelDistDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecHeadcountByTypeMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecRetentionCohortDTO;
@@ -18,6 +19,7 @@ import java.time.Month;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -582,5 +584,119 @@ public class ExecutivePeopleService {
         if (v instanceof Date sqlDate) return sqlDate.toLocalDate();
         // Fall back to ISO parse for unexpected types (e.g. driver returning String)
         return LocalDate.parse(v.toString());
+    }
+
+    // ============================================================================
+    // Executive Dashboard: Career Level Distribution (Current Snapshot)
+    // ============================================================================
+
+    /**
+     * Career level → track entry. Mirrors {@code CAREER_LEVEL_TRACK_MAP} in the
+     * BFF route 1:1 (same levels, same track strings, same canonical order).
+     */
+    private record CareerLevelTrack(String careerLevel, String careerTrack) {}
+
+    /**
+     * Hardcoded canonical career-level → track mapping in display order.
+     * Mirrors the BFF route's {@code CAREER_LEVEL_TRACK_MAP} verbatim — same
+     * 18 levels, same six track names, same ordering. The endpoint always
+     * emits all 18 levels regardless of data.
+     */
+    private static final List<CareerLevelTrack> CAREER_LEVEL_TRACK_MAP = List.of(
+            new CareerLevelTrack("JUNIOR_CONSULTANT",         "Entry"),
+            new CareerLevelTrack("CONSULTANT",                "Delivery"),
+            new CareerLevelTrack("PROFESSIONAL_CONSULTANT",   "Delivery"),
+            new CareerLevelTrack("SENIOR_CONSULTANT",         "Delivery"),
+            new CareerLevelTrack("LEAD_CONSULTANT",           "Advisory"),
+            new CareerLevelTrack("MANAGING_CONSULTANT",       "Advisory"),
+            new CareerLevelTrack("PRINCIPAL_CONSULTANT",      "Advisory"),
+            new CareerLevelTrack("MANAGER",                   "Leadership"),
+            new CareerLevelTrack("SENIOR_MANAGER",            "Leadership"),
+            new CareerLevelTrack("ASSOCIATE_PARTNER",         "Leadership"),
+            new CareerLevelTrack("ENGAGEMENT_MANAGER",        "Client Engagement"),
+            new CareerLevelTrack("SENIOR_ENGAGEMENT_MANAGER", "Client Engagement"),
+            new CareerLevelTrack("ENGAGEMENT_DIRECTOR",       "Client Engagement"),
+            new CareerLevelTrack("PARTNER",                   "Partner / Director"),
+            new CareerLevelTrack("THOUGHT_LEADER_PARTNER",    "Partner / Director"),
+            new CareerLevelTrack("PRACTICE_LEADER",           "Partner / Director"),
+            new CareerLevelTrack("MANAGING_DIRECTOR",         "Partner / Director"),
+            new CareerLevelTrack("MANAGING_PARTNER",          "Partner / Director")
+    );
+
+    /**
+     * Returns the current-snapshot career-level distribution for active
+     * consultants, mirroring the BFF route at
+     * {@code /api/executive/career-level-distribution}.
+     *
+     * <p>Source: {@code user_career_level} joined to {@code userstatus} where
+     * {@code us.type='CONSULTANT', us.status='ACTIVE'}, with two correlated
+     * subqueries: one selects each user's most-recent {@code user_career_level}
+     * row ({@code MAX(active_from)}); the other ensures {@code userstatus} is
+     * also the most recent for that user via NOT EXISTS.</p>
+     *
+     * <p>The endpoint always emits all 18 canonical career levels with
+     * {@code count = 0} for levels with no active consultants — matches BFF.
+     * Career levels that exist in {@code user_career_level} but are not in
+     * the canonical {@link #CAREER_LEVEL_TRACK_MAP} are silently dropped from
+     * the response (defensive — the BFF behaves identically).</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return list of all 18 canonical levels in display order
+     */
+    public List<ExecCareerLevelDistDTO> careerLevelDistribution(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND us.companyuuid IN (:companyIds) " : "";
+
+        String sql = "SELECT " +
+                "  ucl.career_level             AS career_level, " +
+                "  COUNT(DISTINCT ucl.useruuid) AS consultant_count " +
+                "FROM user_career_level ucl " +
+                "JOIN userstatus us ON us.useruuid = ucl.useruuid " +
+                "  AND us.`type` = 'CONSULTANT' " +
+                "  AND us.status = 'ACTIVE' " +
+                companyFilter +
+                "WHERE ucl.active_from = ( " +
+                "  SELECT MAX(ucl2.active_from) " +
+                "  FROM user_career_level ucl2 " +
+                "  WHERE ucl2.useruuid = ucl.useruuid " +
+                ") " +
+                "AND NOT EXISTS ( " +
+                "  SELECT 1 FROM userstatus us2 " +
+                "  WHERE us2.useruuid = us.useruuid " +
+                "    AND us2.statusdate > us.statusdate " +
+                ") " +
+                "GROUP BY ucl.career_level " +
+                "ORDER BY ucl.career_level";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        // Build a lookup of actual counts. HashMap is fine here since we then
+        // iterate the canonical CAREER_LEVEL_TRACK_MAP (which dictates the
+        // response order); no need for LinkedHashMap.
+        Map<String, Long> countByLevel = new HashMap<>(rows.size());
+        for (Tuple row : rows) {
+            String careerLevel = row.get("career_level", String.class);
+            long count = ((Number) row.get("consultant_count")).longValue();
+            countByLevel.put(careerLevel, count);
+        }
+
+        // Always emit all 18 canonical levels in display order, even with zero count.
+        List<ExecCareerLevelDistDTO> result = new ArrayList<>(CAREER_LEVEL_TRACK_MAP.size());
+        for (CareerLevelTrack entry : CAREER_LEVEL_TRACK_MAP) {
+            long count = countByLevel.getOrDefault(entry.careerLevel(), 0L);
+            result.add(new ExecCareerLevelDistDTO(
+                    entry.careerLevel(), entry.careerTrack(), count));
+        }
+
+        log.debugf("careerLevelDistribution: %d levels (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
     }
 }
