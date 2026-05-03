@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.sales.services;
 
 import dk.trustworks.intranet.aggregates.sales.dto.cxo.BacklogCoverageMonthDTO;
 import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineFunnelStageDTO;
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineTrendMonthDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -169,6 +170,74 @@ public class CxoSalesService {
 
         log.debugf("backlogCoverage: %d months from %s (companyFilter=%s)",
                 Integer.valueOf(result.size()), currentMonthKey, Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Pipeline Trend (forward-looking 12 months)
+    // ============================================================================
+
+    /**
+     * Returns the forward-looking weighted-pipeline trend (current month + 11
+     * months ahead = 12 months total) from {@code fact_pipeline}, mirroring the
+     * BFF route at {@code /api/cxo/sales/pipeline-trend}.
+     *
+     * <p>fact_pipeline only stores open leads with future-dated delivery months,
+     * so the window must be forward-looking. {@code year} and {@code monthNumber}
+     * are derived from {@code expected_revenue_month_key} in SQL via
+     * {@code LEFT}/{@code RIGHT} CASTs because fact_pipeline does not expose
+     * them as columns.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return chronologically-ordered list of monthly weighted-pipeline totals (may be empty)
+     */
+    public List<PipelineTrendMonthDTO> pipelineTrend(Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate toDate = today.withDayOfMonth(1).plusMonths(11);
+        String fromMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+        String toMonthKey = String.format("%04d%02d", toDate.getYear(), toDate.getMonthValue());
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        String sql = "SELECT " +
+                "  expected_revenue_month_key                              AS month_key, " +
+                "  CAST(LEFT(expected_revenue_month_key, 4) AS UNSIGNED)   AS year_num, " +
+                "  CAST(RIGHT(expected_revenue_month_key, 2) AS UNSIGNED)  AS month_number, " +
+                "  COALESCE(SUM(weighted_pipeline_dkk), 0)                 AS weighted_pipeline_dkk " +
+                "FROM fact_pipeline " +
+                "WHERE expected_revenue_month_key >= :fromMonthKey " +
+                "  AND expected_revenue_month_key <= :toMonthKey" +
+                companyFilter + " " +
+                "GROUP BY expected_revenue_month_key " +
+                "ORDER BY expected_revenue_month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<PipelineTrendMonthDTO> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            String monthKey = row.get("month_key", String.class);
+            int year = ((Number) row.get("year_num")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double weightedPipeline = toDouble(row.get("weighted_pipeline_dkk"));
+            String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+                    + " " + year;
+            result.add(new PipelineTrendMonthDTO(
+                    monthKey, year, monthNumber, monthLabel, weightedPipeline));
+        }
+
+        log.debugf("pipelineTrend: %d months %s..%s (companyFilter=%s)",
+                Integer.valueOf(result.size()), fromMonthKey, toMonthKey,
+                Boolean.toString(hasCompanyFilter));
         return result;
     }
 }

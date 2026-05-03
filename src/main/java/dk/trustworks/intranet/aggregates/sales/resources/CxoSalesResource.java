@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.sales.resources;
 
 import dk.trustworks.intranet.aggregates.sales.dto.cxo.BacklogCoverageMonthDTO;
 import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineFunnelStageDTO;
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.sales.services.CxoSalesService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -63,5 +64,11 @@ public class CxoSalesResource {
     @Path("/backlog-coverage")
     public List<BacklogCoverageMonthDTO> backlogCoverage(@QueryParam("companyIds") String companyIds) {
         return cxoSalesService.backlogCoverage(parseCommaSeparated(companyIds));
+    }
+
+    @GET
+    @Path("/pipeline-trend")
+    public List<PipelineTrendMonthDTO> pipelineTrend(@QueryParam("companyIds") String companyIds) {
+        return cxoSalesService.pipelineTrend(parseCommaSeparated(companyIds));
     }
 }
