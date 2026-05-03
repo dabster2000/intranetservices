@@ -30,18 +30,9 @@ public class BatchScheduler {
     @ConfigProperty(name = "dk.trustworks.expense.economics-upload.enabled", defaultValue = "true")
     boolean expenseUploadEnabled;
 
-    /**
-     * BI nightly refresh observability heartbeat.
-     *
-     * The actual work is performed by the MariaDB event ev_bi_nightly_refresh,
-     * which calls sp_nightly_bi_refresh(3, 24) at 03:00 UTC daily. The procedure
-     * routinely runs longer than the Quarkus JTA transaction timeout, so calling
-     * it from a @Transactional Java method consistently produced
-     * QueryTimeoutException noise without ever completing the work.
-     *
-     * This method now logs a heartbeat 5 minutes after the MariaDB event starts,
-     * so log timelines still show the nightly refresh window.
-     */
+    // Observability heartbeat. The actual nightly BI refresh is run by the
+    // MariaDB event ev_bi_nightly_refresh at 03:00 UTC; it runs longer than
+    // any reasonable Quarkus JTA transaction timeout.
     @Scheduled(cron = "0 5 3 * * ?")
     void trigger() {
         log.info("BI nightly refresh handled by MariaDB event ev_bi_nightly_refresh; Quarkus side observing only");
@@ -161,12 +152,8 @@ public class BatchScheduler {
         }
     }
 
-    // Moved from 03:00 to 05:00 UTC: the BI nightly refresh (MariaDB event
-    // ev_bi_nightly_refresh) starts at 03:00 and rebuilds fact_user_day /
-    // fact_budget_day, holding row locks across the same expense-related
-    // tables. Running expense-sync at 03:00 produced 150+
-    // "Lock wait timeout exceeded" errors per week. 05:00 is well clear of
-    // the BI window (typically completes by 04:05).
+    // 05:00 UTC: must run after the BI nightly refresh window (starts 03:00,
+    // typically clears by 04:05) to avoid lock-wait contention on expense rows.
     @Scheduled(cron = "0 0 5 * * ?")
     void scheduleExpenseSync() {
         try {
