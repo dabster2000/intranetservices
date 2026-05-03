@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.delivery.dto.OverloadCountDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO;
 import dk.trustworks.intranet.aggregates.delivery.services.CxoDeliveryService;
 import dk.trustworks.intranet.aggregates.delivery.usecases.BreakEvenUtilizationUseCase;
 import jakarta.annotation.security.RolesAllowed;
@@ -23,6 +24,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -453,7 +455,7 @@ public class CxoDeliveryResource {
      */
     @GET
     @Path("/staffing-gap-forecast")
-    public java.util.List<dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO> staffingGapForecast(
+    public List<StaffingGapForecastMonthDTO> staffingGapForecast(
             @QueryParam("companyIds") String companyIds) {
         return cxoDeliveryService.staffingGapForecast(parseCommaSeparated(companyIds));
     }

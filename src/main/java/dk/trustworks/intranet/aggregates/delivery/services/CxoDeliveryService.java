@@ -13,12 +13,14 @@ import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapCellDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
+import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.math.BigDecimal;
@@ -1730,8 +1732,7 @@ public class CxoDeliveryService {
      * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
      * @return chronologically-ordered 12-month forward series
      */
-    public List<dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO>
-    staffingGapForecast(Set<String> companyIds) {
+    public List<StaffingGapForecastMonthDTO> staffingGapForecast(Set<String> companyIds) {
         boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
 
         LocalDate today = LocalDate.now();
@@ -1770,7 +1771,7 @@ public class CxoDeliveryService {
                 "ORDER BY yr, mo";
         String supplySql = supplySqlTemplate.replace("__SUPPLY_COMPANY_FILTER__", supplyCompanyFilter);
 
-        Query supplyQuery = em.createNativeQuery(supplySql, jakarta.persistence.Tuple.class);
+        Query supplyQuery = em.createNativeQuery(supplySql, Tuple.class);
         supplyQuery.setParameter("horizonYear", horizonYear);
         supplyQuery.setParameter("horizonMonth", horizonMonth);
         if (hasCompanyFilter) {
@@ -1779,7 +1780,7 @@ public class CxoDeliveryService {
         supplyQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<jakarta.persistence.Tuple> supplyRows = supplyQuery.getResultList();
+        List<Tuple> supplyRows = supplyQuery.getResultList();
 
         // ----------------------------------------------------------------------
         // 2) Demand query: SUM(consultant_count) per (year, month_number, delivery_month_key)
@@ -1796,7 +1797,7 @@ public class CxoDeliveryService {
                 "ORDER BY delivery_month_key";
         String demandSql = demandSqlTemplate.replace("__BACKLOG_COMPANY_FILTER__", backlogCompanyFilter);
 
-        Query demandQuery = em.createNativeQuery(demandSql, jakarta.persistence.Tuple.class);
+        Query demandQuery = em.createNativeQuery(demandSql, Tuple.class);
         demandQuery.setParameter("currentYear", currentYear);
         demandQuery.setParameter("currentMonth", currentMonth);
         demandQuery.setParameter("horizonYear", horizonYear);
@@ -1807,14 +1808,14 @@ public class CxoDeliveryService {
         demandQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<jakarta.persistence.Tuple> demandRows = demandQuery.getResultList();
+        List<Tuple> demandRows = demandQuery.getResultList();
 
         // ----------------------------------------------------------------------
         // 3) Build lookup maps (LinkedHashMap for deterministic iteration).
         // ----------------------------------------------------------------------
         Map<String, Double> supplyMap = new LinkedHashMap<>();
         double latestSupplyFte = 0d;
-        for (jakarta.persistence.Tuple row : supplyRows) {
+        for (Tuple row : supplyRows) {
             int yr = ((Number) row.get("yr")).intValue();
             int mo = ((Number) row.get("mo")).intValue();
             double fte = toDouble(row.get("active_consultants"));
@@ -1824,7 +1825,7 @@ public class CxoDeliveryService {
         }
 
         Map<String, Double> demandMap = new LinkedHashMap<>();
-        for (jakarta.persistence.Tuple row : demandRows) {
+        for (Tuple row : demandRows) {
             String key = row.get("month_key", String.class);
             demandMap.put(key, toDouble(row.get("demand_fte")));
         }
@@ -1832,8 +1833,7 @@ public class CxoDeliveryService {
         // ----------------------------------------------------------------------
         // 4) Build 12-month forward series; forward-fill supply for missing rows.
         // ----------------------------------------------------------------------
-        List<dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO> result =
-                new ArrayList<>(12);
+        List<StaffingGapForecastMonthDTO> result = new ArrayList<>(12);
         LocalDate cursor = today.withDayOfMonth(1);
         for (int i = 0; i < 12; i++) {
             int yr = cursor.getYear();
@@ -1848,8 +1848,7 @@ public class CxoDeliveryService {
                     .getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) + " " + yr;
             boolean isForecast = i > 0;
 
-            result.add(
-                new dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO(
+            result.add(new StaffingGapForecastMonthDTO(
                     key, yr, mo, monthLabel, supply, demand, gap, isForecast));
             cursor = cursor.plusMonths(1);
         }
