@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.executive.services;
 
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -8,9 +9,12 @@ import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.Month;
+import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -156,6 +160,127 @@ public class ExecutivePeopleService {
         }
 
         log.debugf("ageDistribution: %d buckets (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // Executive Dashboard: Gender Diversity Trend (Trailing 24 Months)
+    // ============================================================================
+
+    /** Mutable accumulator for {@link #genderTrend(Set)}'s server-side gender pivot. */
+    private static final class GenderAcc {
+        final String monthKey;
+        final int year;
+        final int monthNumber;
+        long male;
+        long female;
+        long unknown;
+        GenderAcc(String monthKey, int year, int monthNumber) {
+            this.monthKey = monthKey;
+            this.year = year;
+            this.monthNumber = monthNumber;
+        }
+    }
+
+    /**
+     * Returns the trailing-24-months gender diversity trend, mirroring the
+     * BFF route at {@code /api/executive/gender-trend}.
+     *
+     * <p>For each of the 24 months, counts users whose most-recent
+     * {@code userstatus} row on or before month-end has {@code status='ACTIVE'}
+     * and {@code type IN ('CONSULTANT', 'STUDENT', 'STAFF')}, joined to
+     * {@code user.gender}. The "most-recent" predicate is implemented via a
+     * NOT EXISTS correlated subquery (matches BFF SQL verbatim). The 24-month
+     * series is generated via a {@code UNION} derived table.</p>
+     *
+     * <p>Pivot is server-side: SQL returns one row per (month, gender), folded
+     * into one {@link ExecGenderTrendMonthDTO} per month via {@link LinkedHashMap}
+     * (SQL ORDER BY month_key preserves chronological order). MALE/FEMALE counts
+     * overwrite (single row per gender per month expected); other values
+     * including NULL accumulate into {@code unknownCount}. {@code femalePct} is
+     * computed as {@code round((femaleCount / (maleCount + femaleCount)) *
+     * 10000) / 100} excluding unknown from the denominator; {@code null} when
+     * the denominator is zero.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return chronologically-ordered list of monthly gender rows (may be empty)
+     */
+    public List<ExecGenderTrendMonthDTO> genderTrend(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND us.companyuuid IN (:companyIds) " : "";
+
+        String sql = "SELECT " +
+                "  DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL n MONTH), '%Y%m') AS month_key, " +
+                "  YEAR(DATE_SUB(CURDATE(), INTERVAL n MONTH))                AS `year`, " +
+                "  MONTH(DATE_SUB(CURDATE(), INTERVAL n MONTH))               AS month_number, " +
+                "  u.gender                                                   AS gender, " +
+                "  COUNT(DISTINCT us.useruuid)                                AS headcount " +
+                "FROM ( " +
+                "  SELECT 0 n UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 " +
+                "  UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 " +
+                "  UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION SELECT 11 " +
+                "  UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15 " +
+                "  UNION SELECT 16 UNION SELECT 17 UNION SELECT 18 UNION SELECT 19 " +
+                "  UNION SELECT 20 UNION SELECT 21 UNION SELECT 22 UNION SELECT 23 " +
+                ") nums " +
+                "JOIN userstatus us " +
+                "  ON  us.statusdate <= LAST_DAY(DATE_SUB(CURDATE(), INTERVAL n MONTH)) " +
+                "  AND us.`type` IN ('CONSULTANT', 'STUDENT', 'STAFF') " +
+                "  AND us.status = 'ACTIVE' " +
+                companyFilter +
+                "JOIN `user` u ON u.uuid = us.useruuid " +
+                "WHERE NOT EXISTS ( " +
+                "  SELECT 1 FROM userstatus us2 " +
+                "  WHERE us2.useruuid = us.useruuid " +
+                "    AND us2.statusdate >  us.statusdate " +
+                "    AND us2.statusdate <= LAST_DAY(DATE_SUB(CURDATE(), INTERVAL n MONTH)) " +
+                ") " +
+                "GROUP BY month_key, `year`, month_number, u.gender " +
+                "ORDER BY month_key, u.gender";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        Map<String, GenderAcc> monthMap = new LinkedHashMap<>();
+        for (Tuple row : rows) {
+            String monthKey = row.get("month_key", String.class);
+            int year = ((Number) row.get("year")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            String gender = row.get("gender", String.class);
+            long headcount = ((Number) row.get("headcount")).longValue();
+
+            GenderAcc acc = monthMap.computeIfAbsent(monthKey,
+                    k -> new GenderAcc(monthKey, year, monthNumber));
+            if ("MALE".equals(gender)) {
+                acc.male = headcount;
+            } else if ("FEMALE".equals(gender)) {
+                acc.female = headcount;
+            } else {
+                acc.unknown += headcount;
+            }
+        }
+
+        List<ExecGenderTrendMonthDTO> result = new ArrayList<>(monthMap.size());
+        for (GenderAcc acc : monthMap.values()) {
+            String monthLabel = Month.of(acc.monthNumber)
+                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
+            long denominator = acc.male + acc.female;
+            Double femalePct = denominator > 0
+                    ? Math.round((double) acc.female / denominator * 10000.0) / 100.0
+                    : null;
+            result.add(new ExecGenderTrendMonthDTO(
+                    acc.monthKey, monthLabel, acc.year, acc.monthNumber,
+                    acc.male, acc.female, acc.unknown, femalePct));
+        }
+
+        log.debugf("genderTrend: %d months (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
         return result;
     }

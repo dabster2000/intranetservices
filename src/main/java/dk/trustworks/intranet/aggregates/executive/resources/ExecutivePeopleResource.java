@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.executive.resources;
 
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.services.ExecutivePeopleService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -64,5 +65,16 @@ public class ExecutivePeopleResource {
     @Path("/age-distribution")
     public List<ExecAgeBucketDTO> ageDistribution(@QueryParam("companyIds") String companyIds) {
         return executivePeopleService.ageDistribution(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Returns the trailing-24-months gender diversity trend.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/gender-trend")
+    public List<ExecGenderTrendMonthDTO> genderTrend(@QueryParam("companyIds") String companyIds) {
+        return executivePeopleService.genderTrend(parseCommaSeparated(companyIds));
     }
 }
