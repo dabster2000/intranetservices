@@ -1,12 +1,15 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
 import dk.trustworks.intranet.aggregates.finance.dto.*;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.QuarterlyNewVsRepeatDTO;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.utils.TwConstants;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
+import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -2235,5 +2238,143 @@ public class CxoClientService {
                 totalClients,
                 Math.round(totalRevenueM * 100.0) / 100.0
         );
+    }
+
+    // ============================================================================
+    // CXO Command Center: New vs Repeat Client Revenue (quarterly)
+    // ============================================================================
+
+    /**
+     * Mutable accumulator used while folding native query rows into per-quarter buckets.
+     * Kept private to this service because it is not part of the API contract.
+     */
+    private static final class QuarterAccumulator {
+        final int year;
+        final int quarter;
+        double newRev;
+        double repeatRev;
+
+        QuarterAccumulator(int year, int quarter) {
+            this.year = year;
+            this.quarter = quarter;
+        }
+    }
+
+    /**
+     * Returns quarterly revenue split into NEW vs REPEAT client buckets, mirroring the BFF
+     * route at {@code /api/cxo/clients/new-vs-repeat-revenue}.
+     *
+     * <p>Classification rule: a project's revenue is "NEW" for the quarter that contains
+     * the project's first-ever invoice; otherwise the same project's revenue is "REPEAT".
+     * The classification is per project, not per client, because the underlying invoice
+     * data is keyed on {@code projectuuid}.</p>
+     *
+     * @param fromDate inclusive start of the date window; defaults to the 1st of the month
+     *                 two years ago when {@code null} (matches BFF default)
+     * @param toDate   inclusive end of the date window; defaults to today when {@code null}
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no company filter
+     * @return wrapper with the time-ordered quarterly breakdown
+     */
+    public NewVsRepeatClientRevenueDTO newVsRepeatRevenue(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate from = fromDate != null ? fromDate : today.minusYears(2).withDayOfMonth(1);
+        LocalDate to = toDate != null ? toDate : today;
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND i.companyuuid IN (:companyIds)" : "";
+
+        // CTE 1: project_first_invoice — earliest invoice date per project across all time.
+        // CTE 2: quarter_revenue — per project per quarter revenue, with quarter_start derived
+        //        so the final SELECT can compare it to first_invoice_date.
+        // Final: classify NEW vs REPEAT and SUM revenue per (year, quarter, client_type).
+        String sql = "WITH project_first_invoice AS ( " +
+                "  SELECT projectuuid, MIN(invoicedate) AS first_invoice_date " +
+                "  FROM invoices " +
+                "  WHERE type IN ('INVOICE', 'PHANTOM') " +
+                "    AND status IN ('CREATED', 'DRAFT') " +
+                "    AND projectuuid IS NOT NULL " +
+                "    AND projectuuid != '' " +
+                "  GROUP BY projectuuid " +
+                "), " +
+                "quarter_revenue AS ( " +
+                "  SELECT " +
+                "    YEAR(i.invoicedate)    AS yr, " +
+                "    QUARTER(i.invoicedate) AS qtr, " +
+                "    DATE(CONCAT( " +
+                "      YEAR(i.invoicedate), '-', " +
+                "      LPAD((QUARTER(i.invoicedate) - 1) * 3 + 1, 2, '0'), " +
+                "      '-01' " +
+                "    )) AS quarter_start, " +
+                "    i.projectuuid, " +
+                "    pfi.first_invoice_date, " +
+                "    SUM(ii.rate * ii.hours) AS revenue " +
+                "  FROM invoices i " +
+                "  JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "  JOIN project_first_invoice pfi ON pfi.projectuuid = i.projectuuid " +
+                "  WHERE i.type IN ('INVOICE', 'PHANTOM') " +
+                "    AND i.status IN ('CREATED', 'DRAFT') " +
+                "    AND i.invoicedate BETWEEN :fromDate AND :toDate" +
+                companyFilter + " " +
+                "  GROUP BY yr, qtr, quarter_start, i.projectuuid, pfi.first_invoice_date " +
+                ") " +
+                "SELECT " +
+                "  yr, " +
+                "  qtr, " +
+                "  CASE WHEN first_invoice_date >= quarter_start THEN 'NEW' ELSE 'REPEAT' END AS client_type, " +
+                "  SUM(revenue) AS total_revenue " +
+                "FROM quarter_revenue " +
+                "GROUP BY yr, qtr, client_type " +
+                "ORDER BY yr, qtr, client_type";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromDate", from);
+        query.setParameter("toDate", to);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", 15_000);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        // Aggregate per (year, quarter). TreeMap on the composite int key gives natural
+        // chronological ordering without parsing strings back out.
+        TreeMap<Integer, QuarterAccumulator> byKey = new TreeMap<>();
+        for (Tuple row : rows) {
+            int yr = ((Number) row.get("yr")).intValue();
+            int qtr = ((Number) row.get("qtr")).intValue();
+            String clientType = row.get("client_type", String.class);
+            double revenue = row.get("total_revenue") == null ? 0.0
+                    : ((Number) row.get("total_revenue")).doubleValue();
+
+            int key = yr * 10 + qtr;
+            QuarterAccumulator acc = byKey.computeIfAbsent(key, k -> new QuarterAccumulator(yr, qtr));
+            if ("NEW".equals(clientType)) {
+                acc.newRev += revenue;
+            } else {
+                acc.repeatRev += revenue;
+            }
+        }
+
+        List<QuarterlyNewVsRepeatDTO> quarters = new ArrayList<>(byKey.size());
+        for (QuarterAccumulator acc : byKey.values()) {
+            double total = acc.newRev + acc.repeatRev;
+            Double repeatSharePercent = total > 0
+                    ? Math.round((acc.repeatRev / total) * 10000.0) / 100.0
+                    : null;
+            quarters.add(new QuarterlyNewVsRepeatDTO(
+                    acc.year,
+                    acc.quarter,
+                    "Q" + acc.quarter + " " + acc.year,
+                    acc.newRev,
+                    acc.repeatRev,
+                    total,
+                    repeatSharePercent
+            ));
+        }
+
+        log.debugf("newVsRepeatRevenue: returned %d quarters (companyFilter=%s)",
+                Integer.valueOf(quarters.size()), Boolean.toString(hasCompanyFilter));
+        return new NewVsRepeatClientRevenueDTO(quarters);
     }
 }

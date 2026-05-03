@@ -14,6 +14,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FactFreshnessDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
 import jakarta.annotation.security.RolesAllowed;
@@ -681,5 +682,34 @@ public class CxoClientResource {
                 Integer.valueOf(result.getSegments().size()), Integer.valueOf(result.getTotalClients()), Double.valueOf(result.getTotalRevenueM()));
 
         return Response.ok(result).build();
+    }
+
+    /**
+     * Gets quarterly New vs Repeat client revenue.
+     *
+     * <p>Each quarter's revenue is split into "NEW" (project's first-ever invoice falls
+     * within that quarter) and "REPEAT" (subsequent quarters for the same project).
+     * The result is the time-ordered series of quarters with absolute DKK amounts and
+     * a repeat-share percentage.</p>
+     *
+     * @param fromDate ISO-8601 start date (optional, defaults to 2 years before today, day 1)
+     * @param toDate   ISO-8601 end date (optional, defaults to today)
+     * @param companyIds comma-separated company UUIDs (optional)
+     * @return NewVsRepeatClientRevenueDTO with the quarter series
+     */
+    @GET
+    @Path("/new-vs-repeat-revenue")
+    @RolesAllowed({"clients:read"})
+    public NewVsRepeatClientRevenueDTO newVsRepeatRevenue(
+            @QueryParam("fromDate") String fromDate,
+            @QueryParam("toDate") String toDate,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/new-vs-repeat-revenue: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+
+        LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
+        LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
+        return cxoClientService.newVsRepeatRevenue(from, to, parseCompanyIds(companyIds));
     }
 }
