@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.sales.resources;
 
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.BacklogCoverageMonthDTO;
 import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineFunnelStageDTO;
 import dk.trustworks.intranet.aggregates.sales.services.CxoSalesService;
 import jakarta.annotation.security.RolesAllowed;
@@ -56,5 +57,11 @@ public class CxoSalesResource {
     @Path("/pipeline-funnel")
     public List<PipelineFunnelStageDTO> pipelineFunnel(@QueryParam("companyIds") String companyIds) {
         return cxoSalesService.pipelineFunnel(parseCommaSeparated(companyIds));
+    }
+
+    @GET
+    @Path("/backlog-coverage")
+    public List<BacklogCoverageMonthDTO> backlogCoverage(@QueryParam("companyIds") String companyIds) {
+        return cxoSalesService.backlogCoverage(parseCommaSeparated(companyIds));
     }
 }

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.sales.services;
 
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.BacklogCoverageMonthDTO;
 import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineFunnelStageDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -8,8 +9,12 @@ import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
+import java.time.Month;
+import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -103,6 +108,67 @@ public class CxoSalesService {
 
         log.debugf("pipelineFunnel: %d stages (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Backlog Coverage
+    // ============================================================================
+
+    /**
+     * Returns the forward-looking backlog coverage curve from {@code fact_backlog},
+     * mirroring the BFF route at {@code /api/cxo/sales/backlog-coverage}. Only
+     * future months are included ({@code delivery_month_key >= currentMonthKey}),
+     * so the curve always begins at the current month and declines as signed
+     * coverage tapers off.
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return chronologically-ordered list of monthly backlog totals (may be empty)
+     */
+    public List<BacklogCoverageMonthDTO> backlogCoverage(Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        String currentMonthKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        String sql = "SELECT " +
+                "  delivery_month_key                     AS month_key, " +
+                "  year, " +
+                "  month_number, " +
+                "  COALESCE(SUM(backlog_revenue_dkk), 0)  AS backlog_revenue_dkk, " +
+                "  COALESCE(SUM(consultant_count), 0)     AS consultant_count " +
+                "FROM fact_backlog " +
+                "WHERE delivery_month_key >= :currentMonthKey" +
+                companyFilter + " " +
+                "GROUP BY delivery_month_key, year, month_number " +
+                "ORDER BY delivery_month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("currentMonthKey", currentMonthKey);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<BacklogCoverageMonthDTO> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            String monthKey = row.get("month_key", String.class);
+            int year = ((Number) row.get("year")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double backlogRevenue = toDouble(row.get("backlog_revenue_dkk"));
+            double consultantCount = toDouble(row.get("consultant_count"));
+            String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+                    + " " + year;
+            result.add(new BacklogCoverageMonthDTO(
+                    monthKey, year, monthNumber, monthLabel, backlogRevenue, consultantCount));
+        }
+
+        log.debugf("backlogCoverage: %d months from %s (companyFilter=%s)",
+                Integer.valueOf(result.size()), currentMonthKey, Boolean.toString(hasCompanyFilter));
         return result;
     }
 }
