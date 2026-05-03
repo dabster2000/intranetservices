@@ -31,6 +31,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.InvoiceItemExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRowExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.PracticeUtilizationMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetHoursByMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FutureNetAvailableDTO;
@@ -5996,6 +5997,124 @@ public class CxoFinanceService {
         }
 
         log.debugf("getPracticeUtilizationForecast: returned %d entries", result.size());
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Cost-to-Revenue
+    // ============================================================================
+
+    private static final String[] MONTH_LABELS = {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+
+    private static String costToRevenueMonthLabel(int year, int monthNumber) {
+        return MONTH_LABELS[monthNumber - 1] + " " + year;
+    }
+
+    /**
+     * Returns trailing 18 months of cost-to-revenue data, optionally filtered by company UUIDs.
+     *
+     * Mirrors the BFF route at /api/cxo/finance/cost-to-revenue (same SQL, same date window).
+     * The trailing 18-month window is computed from {@link LocalDate#now()} so that the result
+     * is always anchored on the current calendar month.
+     *
+     * @param companyIds optional set of company UUIDs; null means no company filter
+     * @return monthly data points ordered by month_key ascending (may be empty)
+     */
+    public List<CostToRevenueDataPointDTO> costToRevenue(Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate fromDate = today.withDayOfMonth(1).minusMonths(17);
+        int fromYear = fromDate.getYear();
+        int fromMonth = fromDate.getMonthValue();
+        int toYear = today.getYear();
+        int toMonth = today.getMonthValue();
+        String fromMonthKey = String.format("%d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%d%02d", toYear, toMonth);
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilterRevenue = hasCompanyFilter ? " AND r.company_id IN (:companyIds)" : "";
+        String companyFilterDelivery = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+        String companyFilterOpex = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        String sql = "SELECT " +
+                "  r.month_key, " +
+                "  r.year          AS year_num, " +
+                "  r.month_number, " +
+                "  SUM(r.net_revenue_dkk)                      AS revenue_dkk, " +
+                "  COALESCE(SUM(d.delivery_cost), 0)            AS delivery_cost_dkk, " +
+                "  COALESCE(SUM(o.opex_cost), 0)                AS opex_dkk, " +
+                "  CASE " +
+                "    WHEN SUM(r.net_revenue_dkk) > 0 " +
+                "    THEN ROUND( " +
+                "      (COALESCE(SUM(d.delivery_cost), 0) + COALESCE(SUM(o.opex_cost), 0)) " +
+                "      / SUM(r.net_revenue_dkk) * 100, " +
+                "      2 " +
+                "    ) " +
+                "    ELSE NULL " +
+                "  END AS cost_to_revenue_ratio_pct " +
+                "FROM fact_company_revenue_mat r " +
+                "LEFT JOIN ( " +
+                "  SELECT month_key, company_id, SUM(direct_delivery_cost_dkk) AS delivery_cost " +
+                "  FROM fact_project_financials_mat " +
+                "  WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) " +
+                "    AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth))" +
+                companyFilterDelivery + " " +
+                "  GROUP BY month_key, company_id " +
+                ") d ON d.month_key = r.month_key AND d.company_id = r.company_id " +
+                "LEFT JOIN ( " +
+                "  SELECT month_key, company_id, SUM(opex_amount_dkk) AS opex_cost " +
+                "  FROM fact_opex_mat " +
+                "  WHERE cost_type = 'OPEX' " +
+                "    AND (month_key >= :fromMonthKey AND month_key <= :toMonthKey)" +
+                companyFilterOpex + " " +
+                "  GROUP BY month_key, company_id " +
+                ") o ON o.month_key = r.month_key AND o.company_id = r.company_id " +
+                "WHERE (r.year > :fromYear OR (r.year = :fromYear AND r.month_number >= :fromMonth)) " +
+                "  AND (r.year < :toYear OR (r.year = :toYear AND r.month_number <= :toMonth))" +
+                companyFilterRevenue + " " +
+                "GROUP BY r.month_key, r.year, r.month_number " +
+                "ORDER BY r.month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromYear", fromYear);
+        query.setParameter("toYear", toYear);
+        query.setParameter("fromMonth", fromMonth);
+        query.setParameter("toMonth", toMonth);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", 15_000);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<CostToRevenueDataPointDTO> result = new ArrayList<>(rows.size());
+        for (Tuple t : rows) {
+            String monthKey = t.get("month_key", String.class);
+            int year = ((Number) t.get("year_num")).intValue();
+            int monthNumber = ((Number) t.get("month_number")).intValue();
+            double revenueDkk = ((Number) t.get("revenue_dkk")).doubleValue();
+            double deliveryCostDkk = ((Number) t.get("delivery_cost_dkk")).doubleValue();
+            double opexDkk = ((Number) t.get("opex_dkk")).doubleValue();
+            Object ratioRaw = t.get("cost_to_revenue_ratio_pct");
+            Double costToRevenueRatioPct = ratioRaw == null ? null : ((Number) ratioRaw).doubleValue();
+            result.add(new CostToRevenueDataPointDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    costToRevenueMonthLabel(year, monthNumber),
+                    revenueDkk,
+                    deliveryCostDkk,
+                    opexDkk,
+                    costToRevenueRatioPct
+            ));
+        }
+
+        log.debugf("costToRevenue: returned %d data points (companyFilter=%s)", result.size(), Boolean.toString(hasCompanyFilter));
         return result;
     }
 }

@@ -41,6 +41,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelBonusDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
 import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsService;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
@@ -1785,6 +1786,23 @@ public class CxoFinanceResource {
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getPracticeUtilizationForecast(practiceSet, companyIdSet);
+    }
+
+    /**
+     * CXO Command Center: trailing 18 months of cost-to-revenue ratio data.
+     *
+     * Returns one data point per month with revenue, direct delivery cost, OPEX,
+     * and the cost-to-revenue ratio in percent (null when revenue is zero).
+     *
+     * @param companyIds optional comma-separated list of company UUIDs to filter by
+     * @return list of data points ordered by month_key ascending
+     */
+    @GET
+    @Path("/cost-to-revenue")
+    @RolesAllowed({"finance:read"})
+    public List<CostToRevenueDataPointDTO> costToRevenue(@QueryParam("companyIds") String companyIds) {
+        log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s", companyIds);
+        return cxoFinanceService.costToRevenue(parseCompanyIds(companyIds));
     }
 
     /**
