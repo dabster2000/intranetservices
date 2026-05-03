@@ -32,6 +32,8 @@ public record PipelineHealthMonthDTO(
         if (month == null || !month.matches("\\d{6}"))
             throw new IllegalArgumentException("month must be YYYYMM, was " + month);
         Objects.requireNonNull(monthLabel, "monthLabel");
+        if (!Double.isFinite(coverageRatio))
+            throw new IllegalArgumentException("coverageRatio must be finite, was " + coverageRatio);
         byStage = byStage == null ? List.of() : List.copyOf(byStage);
     }
 }

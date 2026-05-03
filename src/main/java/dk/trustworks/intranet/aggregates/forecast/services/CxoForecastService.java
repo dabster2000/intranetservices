@@ -208,16 +208,20 @@ public class CxoForecastService {
      * <em>ignored</em> — {@code fact_historical_win_rates} has no
      * {@code company_uuid} column (the view aggregates across all companies).
      * The parameter is preserved on the service signature to keep the API
-     * surface uniform with the other CXO endpoints; mirrors BFF route lines
-     * 61-63.</p>
+     * surface uniform with the other CXO endpoints.</p>
      *
      * <p>Stage rows are emitted in canonical funnel order via
      * {@code ORDER BY FIELD(stage_id, ...)} and a {@link LinkedHashMap}
      * preserves that order. The aggregate {@code calibratedWinRatePct} is
-     * recomputed from the summed {@code wonCount}/{@code reachedCount} totals
-     * (BFF parity); when {@code reachedCount = 0} the static probability is
-     * used as the fallback, and {@code deltaPct = calibratedWinRatePct -
-     * staticProbabilityPct}.</p>
+     * recomputed from summed {@code wonCount}/{@code reachedCount} totals.
+     * The {@code reachedCount==0} branch is dead code in practice —
+     * {@code fact_historical_win_rates} emits each (stage, practice, deal_type)
+     * tuple only when {@code reachedCount >= 1} — but the fallback returns
+     * {@code staticProbabilityPct} rather than {@code 0} to make the dead
+     * branch produce a sensible value if upstream behaviour ever changes.
+     * NOT identical to the legacy BFF in this dead branch (BFF would have
+     * surfaced {@code 0} from {@code Number(NULL)} coercion).
+     * {@code deltaPct = calibratedWinRatePct - staticProbabilityPct}.</p>
      *
      * @param companyIds accepted but ignored — see method javadoc
      * @return funnel-ordered list of stage win-rate aggregates (may be empty)
@@ -584,7 +588,8 @@ public class CxoForecastService {
             double pipelineDkk = pipelineMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
             double renewalDkk = renewalMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
             double budgetDkk = budgetMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
-            // BFF: actualMap.get(monthKey) ?? null. Use containsKey to preserve null-vs-zero distinction.
+            // Use containsKey (not getOrDefault) to preserve the null-vs-zero distinction:
+            // a missing key means "no actuals row" (serialize null), not "actual revenue was zero".
             Double actualDkk = actualMap.containsKey(monthKey) ? actualMap.get(monthKey) : null;
             Double actualRevenueDkk = isFuture ? null : actualDkk;
 
@@ -704,7 +709,9 @@ public class CxoForecastService {
         List<Tuple> pipelineRows = pipelineQuery.getResultList();
 
         // Build month → practice → PracticeData scratch map, seeded from capacity then enriched with demand.
-        Map<String, Map<String, PracticeData>> monthPracticeMap = new HashMap<>();
+        // LinkedHashMap (outer + inner) preserves first-seen insertion order so the JSON
+        // byPractice array is deterministic — HashMap would yield non-reproducible output.
+        Map<String, Map<String, PracticeData>> monthPracticeMap = new LinkedHashMap<>();
 
         for (Tuple row : capacityRows) {
             String month = row.get("month_key", String.class);
@@ -712,7 +719,7 @@ public class CxoForecastService {
             String practice = practiceId != null ? practiceId : "Unknown";
             double capacityFte = toDouble(row.get("capacity_fte"));
             monthPracticeMap
-                    .computeIfAbsent(month, k -> new HashMap<>())
+                    .computeIfAbsent(month, k -> new LinkedHashMap<>())
                     .computeIfAbsent(practice, k -> new PracticeData())
                     .capacityFte += capacityFte;
         }
@@ -723,7 +730,7 @@ public class CxoForecastService {
             String practice = serviceLineId != null ? serviceLineId : "Unknown";
             double revenue = toDouble(row.get("revenue"));
             monthPracticeMap
-                    .computeIfAbsent(month, k -> new HashMap<>())
+                    .computeIfAbsent(month, k -> new LinkedHashMap<>())
                     .computeIfAbsent(practice, k -> new PracticeData())
                     .backlogRevenue += revenue;
         }
@@ -734,7 +741,7 @@ public class CxoForecastService {
             String practice = serviceLineId != null ? serviceLineId : "Unknown";
             double revenue = toDouble(row.get("revenue"));
             monthPracticeMap
-                    .computeIfAbsent(month, k -> new HashMap<>())
+                    .computeIfAbsent(month, k -> new LinkedHashMap<>())
                     .computeIfAbsent(practice, k -> new PracticeData())
                     .pipelineRevenue += revenue;
         }

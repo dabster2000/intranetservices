@@ -52,10 +52,15 @@ class CxoForecastServiceCapacityDemandTest {
             assertTrue(Double.isFinite(m.pipelineDemandFte()), "pipelineDemandFte must be finite");
             assertTrue(Double.isFinite(m.totalDemandFte()), "totalDemandFte must be finite");
             assertTrue(Double.isFinite(m.gapFte()), "gapFte must be finite");
-            // totalDemand = backlog + pipeline (each rounded to 1dp independently)
-            assertEquals(m.backlogDemandFte() + m.pipelineDemandFte(),
-                    m.totalDemandFte(), ROUNDING_TOLERANCE,
-                    "totalDemandFte should equal backlogDemandFte + pipelineDemandFte (within rounding)");
+            // SQL parity invariant: totalDemandFte is computed as backlogFte + pipelineFte
+            // before rounding, then each of the three is rounded to 1dp independently.
+            // The cumulative rounding error is bounded by 0.15 (3 * 0.05), so the
+            // identity must hold within that tolerance — a bigger drift means a code regression.
+            assertTrue(Math.abs(m.totalDemandFte() - m.backlogDemandFte() - m.pipelineDemandFte())
+                            <= ROUNDING_TOLERANCE,
+                    "totalDemandFte should equal backlogDemandFte + pipelineDemandFte within "
+                            + ROUNDING_TOLERANCE + " (was "
+                            + (m.totalDemandFte() - m.backlogDemandFte() - m.pipelineDemandFte()) + ")");
             assertNotNull(m.byPractice(), "byPractice must not be null");
             for (CapacityDemandPracticeDTO p : m.byPractice()) {
                 assertNotNull(p.practice(), "practice must not be null");

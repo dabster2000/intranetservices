@@ -43,7 +43,9 @@ class CxoSalesServiceBacklogCoverageTest {
             assertTrue(m.monthNumber() >= 1 && m.monthNumber() <= 12,
                     "monthNumber out of range: " + m.monthNumber());
             assertNotNull(m.monthLabel(), "monthLabel must not be null");
-            assertTrue(m.backlogRevenueDkk() >= 0.0, "backlogRevenueDkk must be non-negative");
+            // SQL parity invariant: backlog revenue is COALESCE(SUM(...), 0) of strictly
+            // non-negative monthly fees from fact_backlog, so it can never go negative.
+            assertTrue(m.backlogRevenueDkk() >= 0, "backlog revenue must be non-negative");
             assertTrue(m.consultantCount() >= 0.0, "consultantCount must be non-negative");
         }
     }

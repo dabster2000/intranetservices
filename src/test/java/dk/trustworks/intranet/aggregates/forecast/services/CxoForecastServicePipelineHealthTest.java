@@ -37,7 +37,11 @@ class CxoForecastServicePipelineHealthTest {
             assertTrue(Double.isFinite(m.totalExpectedDkk()), "totalExpectedDkk must be finite");
             assertTrue(Double.isFinite(m.totalWeightedDkk()), "totalWeightedDkk must be finite");
             assertTrue(m.budgetTargetDkk() >= 0.0, "budgetTargetDkk must be non-negative");
-            assertTrue(Double.isFinite(m.coverageRatio()), "coverageRatio must be finite");
+            // SQL parity invariant: coverageRatio = totalWeighted / budgetTarget when the
+            // target is positive, else 0 — both numerator (SUM of non-negative weighted
+            // pipeline) and denominator are >= 0, so the ratio must be finite and >= 0.
+            assertTrue(Double.isFinite(m.coverageRatio()) && m.coverageRatio() >= 0,
+                    "coverageRatio must be finite and non-negative, was " + m.coverageRatio());
             assertNotNull(m.byStage(), "byStage must not be null");
             for (PipelineHealthStageDTO s : m.byStage()) {
                 assertNotNull(s.stageId(), "stageId must not be null");

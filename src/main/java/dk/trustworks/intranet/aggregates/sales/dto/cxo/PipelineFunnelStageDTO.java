@@ -22,4 +22,9 @@ public record PipelineFunnelStageDTO(
         double expectedRevenueDkk,
         double weightedPipelineDkk,
         long opportunityCount
-) {}
+) {
+    public PipelineFunnelStageDTO {
+        java.util.Objects.requireNonNull(stageId, "stageId");
+        java.util.Objects.requireNonNull(stageLabel, "stageLabel");
+    }
+}

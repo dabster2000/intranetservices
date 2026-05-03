@@ -48,6 +48,12 @@ class CxoSalesServicePipelineFunnelTest {
             assertTrue(stage.opportunityCount() >= 0L,
                     "opportunityCount must be non-negative");
         }
+        // SQL parity invariant: weighted pipeline is expected revenue scaled by stage probability,
+        // so the sum of weighted values must always be at most the sum of expected values.
+        double totalExpected = result.stream().mapToDouble(PipelineFunnelStageDTO::expectedRevenueDkk).sum();
+        double totalWeighted = result.stream().mapToDouble(PipelineFunnelStageDTO::weightedPipelineDkk).sum();
+        assertTrue(totalWeighted <= totalExpected + 1e-6,
+                "Sum of weightedPipelineDkk must be <= sum of expectedRevenueDkk");
     }
 
     @Test

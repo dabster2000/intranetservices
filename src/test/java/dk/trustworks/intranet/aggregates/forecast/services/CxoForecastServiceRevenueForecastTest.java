@@ -53,10 +53,12 @@ class CxoForecastServiceRevenueForecastTest {
             assertTrue(Double.isFinite(m.forecastLowDkk()), "forecastLowDkk must be finite");
             assertTrue(Double.isFinite(m.forecastMidDkk()), "forecastMidDkk must be finite");
             assertTrue(Double.isFinite(m.forecastHighDkk()), "forecastHighDkk must be finite");
-            assertTrue(m.forecastLowDkk() <= m.forecastMidDkk() + 1e-6,
-                    "forecastLow <= forecastMid expected");
-            assertTrue(m.forecastMidDkk() <= m.forecastHighDkk() + 1e-6,
-                    "forecastMid <= forecastHigh expected");
+            // SQL parity invariant: low = backlog, mid = backlog + pipeline,
+            // high = backlog + pipeline + renewal. Pipeline and renewal are
+            // non-negative, so low <= mid <= high is required by construction.
+            assertTrue(m.forecastLowDkk() <= m.forecastMidDkk() + 1e-6
+                            && m.forecastMidDkk() <= m.forecastHighDkk() + 1e-6,
+                    "Band ordering forecastLow <= forecastMid <= forecastHigh must hold");
         }
     }
 

@@ -41,8 +41,9 @@ public class CxoSalesResource {
 
     /**
      * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
-     * Null means "no company filter" — services bind null to a SQL parameter and the WHERE clause
-     * `(:companyIds IS NULL OR fact.company_id IN (:companyIds))` short-circuits.
+     * Null means "no company filter" — services treat null as a flag to omit the company-filter
+     * WHERE clause entirely; the {@code :companyIds} parameter is bound only when a non-null Set
+     * is passed.
      */
     static Set<String> parseCommaSeparated(String raw) {
         if (raw == null || raw.isBlank()) return null;

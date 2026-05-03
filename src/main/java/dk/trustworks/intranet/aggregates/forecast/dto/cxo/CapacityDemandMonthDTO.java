@@ -32,6 +32,8 @@ public record CapacityDemandMonthDTO(
         if (month == null || !month.matches("\\d{6}"))
             throw new IllegalArgumentException("month must be YYYYMM, was " + month);
         Objects.requireNonNull(monthLabel, "monthLabel");
+        if (!Double.isFinite(gapFte))
+            throw new IllegalArgumentException("gapFte must be finite, was " + gapFte);
         byPractice = byPractice == null ? List.of() : List.copyOf(byPractice);
     }
 }

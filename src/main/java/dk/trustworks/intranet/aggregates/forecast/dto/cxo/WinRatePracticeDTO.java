@@ -14,4 +14,8 @@ public record WinRatePracticeDTO(
         String practice,
         double calibratedPct,
         long sampleSize
-) {}
+) {
+    public WinRatePracticeDTO {
+        java.util.Objects.requireNonNull(practice, "practice");
+    }
+}

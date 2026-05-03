@@ -13,4 +13,8 @@ public record WinRateDealTypeDTO(
         String dealType,
         double calibratedPct,
         long sampleSize
-) {}
+) {
+    public WinRateDealTypeDTO {
+        java.util.Objects.requireNonNull(dealType, "dealType");
+    }
+}

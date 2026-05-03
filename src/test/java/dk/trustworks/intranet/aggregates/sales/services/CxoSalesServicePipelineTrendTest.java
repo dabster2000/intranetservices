@@ -47,7 +47,9 @@ class CxoSalesServicePipelineTrendTest {
             assertTrue(m.monthNumber() >= 1 && m.monthNumber() <= 12,
                     "monthNumber out of range: " + m.monthNumber());
             assertNotNull(m.monthLabel(), "monthLabel must not be null");
-            assertTrue(m.weightedPipelineDkk() >= 0.0,
+            // SQL parity invariant: weighted pipeline is COALESCE(SUM(weighted_pipeline_dkk), 0)
+            // of strictly non-negative pipeline fees, so it can never go negative.
+            assertTrue(m.weightedPipelineDkk() >= 0,
                     "weightedPipelineDkk must be non-negative");
         }
     }

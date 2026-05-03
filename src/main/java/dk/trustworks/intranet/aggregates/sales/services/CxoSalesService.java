@@ -183,10 +183,12 @@ public class CxoSalesService {
      * BFF route at {@code /api/cxo/sales/pipeline-trend}.
      *
      * <p>fact_pipeline only stores open leads with future-dated delivery months,
-     * so the window must be forward-looking. {@code year} and {@code monthNumber}
-     * are derived from {@code expected_revenue_month_key} in SQL via
-     * {@code LEFT}/{@code RIGHT} CASTs because fact_pipeline does not expose
-     * them as columns.</p>
+     * so the window must be forward-looking. The {@code year} and
+     * {@code monthNumber} are derived from {@code expected_revenue_month_key}
+     * via {@code LEFT}/{@code RIGHT} CASTs to keep the projection self-contained
+     * — the materialized view does expose {@code year} and {@code month_number}
+     * columns, but parsing from the key avoids relying on the denormalized form
+     * and matches the legacy BFF SQL exactly.</p>
      *
      * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
      * @return chronologically-ordered list of monthly weighted-pipeline totals (may be empty)

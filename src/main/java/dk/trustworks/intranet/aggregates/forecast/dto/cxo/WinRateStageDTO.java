@@ -14,11 +14,12 @@ import java.util.Objects;
  * the {@code byPractice} and {@code byDealType} arrays.</p>
  *
  * <p>The aggregate {@code calibratedWinRatePct} is recomputed from the
- * summed {@code wonCount}/{@code reachedCount} totals (BFF parity, route
- * lines 128-134); {@code deltaPct} is the recomputed value minus
- * {@code staticProbabilityPct}. Stage rows are emitted in canonical funnel
- * order via {@code ORDER BY FIELD(...)} in the source query and a
- * {@code LinkedHashMap} preserves that insertion order.</p>
+ * summed {@code wonCount}/{@code reachedCount} totals (i.e. the rate is
+ * derived from the sum, not the average of per-row rates); {@code deltaPct}
+ * is the recomputed value minus {@code staticProbabilityPct}. Stage rows
+ * are emitted in canonical funnel order via {@code ORDER BY FIELD(...)} in
+ * the source query and a {@code LinkedHashMap} preserves that insertion
+ * order.</p>
  */
 public record WinRateStageDTO(
         String stageId,

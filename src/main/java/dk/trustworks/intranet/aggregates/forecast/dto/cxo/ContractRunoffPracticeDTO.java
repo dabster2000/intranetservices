@@ -18,4 +18,8 @@ public record ContractRunoffPracticeDTO(
         String practice,
         double revenueDkk,
         boolean isExpiring
-) {}
+) {
+    public ContractRunoffPracticeDTO {
+        java.util.Objects.requireNonNull(practice, "practice");
+    }
+}

@@ -37,8 +37,10 @@ class CxoForecastServiceContractRunoffTest {
             assertNotNull(m.month(), "month must not be null");
             assertTrue(m.month().matches("\\d{6}"), "month must be YYYYMM: " + m.month());
             assertNotNull(m.monthLabel(), "monthLabel must not be null");
-            assertTrue(m.activeRevenueDkk() >= 0.0, "activeRevenueDkk must be non-negative");
-            assertTrue(m.expiringRevenueDkk() >= 0.0, "expiringRevenueDkk must be non-negative");
+            // SQL parity invariant: both revenue components are SUM/CASE aggregates over
+            // monthly_revenue_dkk (strictly >= 0), so neither can go negative.
+            assertTrue(m.activeRevenueDkk() >= 0 && m.expiringRevenueDkk() >= 0,
+                    "active and expiring revenue must both be non-negative");
             assertTrue(m.expiringContractCount() >= 0L, "expiringContractCount must be non-negative");
             assertTrue(m.newRevenueDkk() >= 0.0, "newRevenueDkk must be non-negative");
             assertTrue(m.extensionRevenueDkk() >= 0.0, "extensionRevenueDkk must be non-negative");

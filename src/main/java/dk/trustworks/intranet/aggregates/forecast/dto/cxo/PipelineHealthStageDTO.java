@@ -13,4 +13,8 @@ public record PipelineHealthStageDTO(
         double expectedDkk,
         double weightedDkk,
         long opportunityCount
-) {}
+) {
+    public PipelineHealthStageDTO {
+        java.util.Objects.requireNonNull(stageId, "stageId");
+    }
+}

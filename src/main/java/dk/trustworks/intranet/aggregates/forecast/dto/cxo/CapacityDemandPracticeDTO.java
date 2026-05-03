@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.forecast.dto.cxo;
 
+import java.util.Objects;
+
 /**
  * Per-practice slice of the capacity-vs-demand view returned inside
  * {@link CapacityDemandMonthDTO#byPractice()}.
@@ -17,4 +19,10 @@ public record CapacityDemandPracticeDTO(
         double capacityFte,
         double demandFte,
         double gapFte
-) {}
+) {
+    public CapacityDemandPracticeDTO {
+        Objects.requireNonNull(practice, "practice");
+        if (!Double.isFinite(gapFte))
+            throw new IllegalArgumentException("gapFte must be finite, was " + gapFte);
+    }
+}

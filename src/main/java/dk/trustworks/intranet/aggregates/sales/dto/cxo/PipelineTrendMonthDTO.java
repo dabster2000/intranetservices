@@ -11,9 +11,12 @@ package dk.trustworks.intranet.aggregates.sales.dto.cxo;
  * window would always return empty results.</p>
  *
  * <p>{@code monthKey} is the {@code expected_revenue_month_key} value from
- * fact_pipeline ({@code YYYYMM}). {@code year} and {@code monthNumber} are
- * derived from the key in SQL via {@code LEFT}/{@code RIGHT} CASTs because
- * fact_pipeline does not expose them as columns.</p>
+ * fact_pipeline ({@code YYYYMM}). The {@code year} and {@code monthNumber}
+ * are derived from {@code expected_revenue_month_key} via {@code LEFT} and
+ * {@code RIGHT} CASTs to keep the projection self-contained — the materialized
+ * view does expose {@code year} and {@code month_number} columns, but parsing
+ * from the key avoids relying on the denormalized form and matches the legacy
+ * BFF SQL exactly.</p>
  *
  * <p>{@code monthLabel} is computed server-side via
  * {@code Month.getDisplayName(SHORT, ENGLISH)}.</p>

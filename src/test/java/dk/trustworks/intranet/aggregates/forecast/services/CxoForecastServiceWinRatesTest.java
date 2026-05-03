@@ -49,6 +49,10 @@ class CxoForecastServiceWinRatesTest {
             assertTrue(stage.reachedCount() >= 0L, "reachedCount must be non-negative");
             assertTrue(stage.wonCount() <= stage.reachedCount(),
                     "wonCount must not exceed reachedCount");
+            // SQL parity invariant: calibratedWinRatePct is wonCount * 100 / reachedCount
+            // (or staticProbabilityPct as fallback), which must lie in [0, 100].
+            assertTrue(stage.calibratedWinRatePct() >= 0 && stage.calibratedWinRatePct() <= 100,
+                    "calibratedWinRatePct must lie in [0, 100], was " + stage.calibratedWinRatePct());
             assertNotNull(stage.byPractice(), "byPractice must not be null");
             for (WinRatePracticeDTO p : stage.byPractice()) {
                 assertNotNull(p.practice(), "practice must not be null");

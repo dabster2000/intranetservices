@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies Phase 2 DTO records serialize to the exact JSON keys the frontend
@@ -158,6 +159,13 @@ class Phase2DtoJsonShapeTest {
                         "forecastLowDkk", "forecastMidDkk", "forecastHighDkk"),
                 futureKeys,
                 "actualRevenueDkk must be serialized as JSON null, not omitted");
+
+        // Lock down that the value is JSON null specifically (not a numeric coercion to 0)
+        // — if a Jackson config or @JsonProperty annotation ever silently coerced the
+        // null Double to 0.0, the previous key-set assertion would still pass.
+        JsonNode futureNode = mapper.valueToTree(futureMonth);
+        assertTrue(futureNode.get("actualRevenueDkk").isNull(),
+                "actualRevenueDkk must serialize as JSON null (not 0) for future months");
     }
 
     @Test
