@@ -117,7 +117,7 @@ public class PricingRuleCatalog {
      * @param invoiceDate The invoice date (for date filtering)
      * @return List of RuleSteps, empty if no rules found
      */
-    private List<RuleStep> loadFromDatabaseByCode(String contractTypeCode, LocalDate invoiceDate) {
+    protected List<RuleStep> loadFromDatabaseByCode(String contractTypeCode, LocalDate invoiceDate) {
         log.debug("Loading pricing rules from database for contract type: " + contractTypeCode);
 
         // Load entities from database

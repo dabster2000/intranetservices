@@ -55,7 +55,7 @@ public class InvoiceItemRecalculator {
         List<InvoiceItem> oldManagedItems = new ArrayList<>(invoice.getInvoiceitems());
 
         // Delete from DB first (auto-flush sees unchanged collection → no interference)
-        InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        deleteItemsByInvoiceUuid(invoice.getUuid());
         em.flush();
 
         // CRITICAL: Clear the PersistentBag to break the CascadeType.ALL cascade path.
@@ -64,7 +64,7 @@ public class InvoiceItemRecalculator {
         invoice.invoiceitems.clear();
         oldManagedItems.forEach(em::detach);
 
-        InvoiceItem.persist(baseItemData);
+        persistItems(baseItemData);
 
         // PricingEngine.price() reads invoice.invoiceitems to compute sumBefore.
         // Repopulate with the freshly persisted BASE items BEFORE pricing — otherwise
@@ -72,14 +72,12 @@ public class InvoiceItemRecalculator {
         // collapse to delta=0 and no synthetic line is emitted.
         invoice.invoiceitems.addAll(baseItemData);
 
-        Map<String, String> cti = new HashMap<>();
-        ContractTypeItem.<ContractTypeItem>find("contractuuid", invoice.getContractuuid())
-                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+        Map<String, String> cti = loadContractTypeItems(invoice.getContractuuid());
 
         var pr = pricingEngine.price(invoice, cti);
 
         pr.syntheticItems.forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
-        InvoiceItem.persist(pr.syntheticItems);
+        persistItems(pr.syntheticItems);
 
         invoice.invoiceitems.addAll(pr.syntheticItems);
         invoice.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
@@ -87,5 +85,23 @@ public class InvoiceItemRecalculator {
         invoice.vatAmount          = pr.vatAmount.doubleValue();
         invoice.grandTotal         = pr.grandTotal.doubleValue();
         invoice.calculationBreakdown = pr.breakdown;
+    }
+
+    /** Hook for tests: bulk-deletes invoice items via Panache. */
+    protected void deleteItemsByInvoiceUuid(String invoiceUuid) {
+        InvoiceItem.delete("invoiceuuid LIKE ?1", invoiceUuid);
+    }
+
+    /** Hook for tests: persists invoice items via Panache. */
+    protected void persistItems(Iterable<InvoiceItem> items) {
+        InvoiceItem.persist(items);
+    }
+
+    /** Hook for tests: loads {key → value} entries from {@code contract_type_items}. */
+    protected Map<String, String> loadContractTypeItems(String contractuuid) {
+        Map<String, String> cti = new HashMap<>();
+        ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid)
+                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+        return cti;
     }
 }
