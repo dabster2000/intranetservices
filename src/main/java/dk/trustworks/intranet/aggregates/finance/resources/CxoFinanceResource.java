@@ -42,6 +42,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
 import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsService;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
@@ -1803,6 +1804,24 @@ public class CxoFinanceResource {
     public List<CostToRevenueDataPointDTO> costToRevenue(@QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s", companyIds);
         return cxoFinanceService.costToRevenue(parseCompanyIds(companyIds));
+    }
+
+    /**
+     * CXO Command Center: trailing 18 months of gross margin data.
+     *
+     * Returns one data point per month with total revenue, total delivery cost,
+     * and the gross margin in percent (null when revenue is zero, though the SQL
+     * HAVING clause excludes zero-revenue months from the result set).
+     *
+     * @param companyIds optional comma-separated list of company UUIDs to filter by
+     * @return list of data points ordered by month_key ascending
+     */
+    @GET
+    @Path("/gross-margin-trend")
+    @RolesAllowed({"finance:read"})
+    public List<GrossMarginTrendDataPointDTO> grossMarginTrend(@QueryParam("companyIds") String companyIds) {
+        log.debugf("GET /finance/cxo/gross-margin-trend: companyIds=%s", companyIds);
+        return cxoFinanceService.grossMarginTrend(parseCompanyIds(companyIds));
     }
 
     /**

@@ -32,6 +32,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.OpexRowExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.PracticeUtilizationMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetHoursByMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FutureNetAvailableDTO;
@@ -6115,6 +6116,91 @@ public class CxoFinanceService {
         }
 
         log.debugf("costToRevenue: returned %d data points (companyFilter=%s)", result.size(), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Gross Margin Trend
+    // ============================================================================
+
+    /**
+     * Returns trailing 18 months of gross margin data, optionally filtered by company UUIDs.
+     *
+     * Mirrors the BFF route at /api/cxo/finance/gross-margin-trend (same SQL, same date window).
+     * Only months with positive revenue are included (HAVING SUM(recognized_revenue_dkk) > 0)
+     * to avoid nonsensical margins from zero or negative revenue months.
+     *
+     * @param companyIds optional set of company UUIDs; null means no company filter
+     * @return monthly data points ordered by month_key ascending (may be empty)
+     */
+    public List<GrossMarginTrendDataPointDTO> grossMarginTrend(Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate fromDate = today.withDayOfMonth(1).minusMonths(17);
+        int fromYear = fromDate.getYear();
+        int fromMonth = fromDate.getMonthValue();
+        int toYear = today.getYear();
+        int toMonth = today.getMonthValue();
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        String sql = "SELECT " +
+                "  month_key, " +
+                "  year           AS year_num, " +
+                "  month_number, " +
+                "  SUM(recognized_revenue_dkk)     AS total_revenue_dkk, " +
+                "  SUM(direct_delivery_cost_dkk)   AS total_cost_dkk, " +
+                "  CASE " +
+                "    WHEN SUM(recognized_revenue_dkk) > 0 " +
+                "    THEN ROUND( " +
+                "      (SUM(recognized_revenue_dkk) - SUM(direct_delivery_cost_dkk)) " +
+                "      / NULLIF(SUM(recognized_revenue_dkk), 0) * 100, " +
+                "      2 " +
+                "    ) " +
+                "    ELSE NULL " +
+                "  END AS gross_margin_pct " +
+                "FROM fact_project_financials_mat " +
+                "WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) " +
+                "  AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth))" +
+                companyFilter + " " +
+                "GROUP BY month_key, year, month_number " +
+                "HAVING SUM(recognized_revenue_dkk) > 0 " +
+                "ORDER BY month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromYear", fromYear);
+        query.setParameter("toYear", toYear);
+        query.setParameter("fromMonth", fromMonth);
+        query.setParameter("toMonth", toMonth);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", 15_000);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<GrossMarginTrendDataPointDTO> result = new ArrayList<>(rows.size());
+        for (Tuple t : rows) {
+            String monthKey = t.get("month_key", String.class);
+            int year = ((Number) t.get("year_num")).intValue();
+            int monthNumber = ((Number) t.get("month_number")).intValue();
+            double totalRevenueDkk = ((Number) t.get("total_revenue_dkk")).doubleValue();
+            double totalCostDkk = ((Number) t.get("total_cost_dkk")).doubleValue();
+            Object marginRaw = t.get("gross_margin_pct");
+            Double grossMarginPct = marginRaw == null ? null : ((Number) marginRaw).doubleValue();
+            result.add(new GrossMarginTrendDataPointDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    costToRevenueMonthLabel(year, monthNumber),
+                    totalRevenueDkk,
+                    totalCostDkk,
+                    grossMarginPct
+            ));
+        }
+
+        log.debugf("grossMarginTrend: returned %d data points (companyFilter=%s)", result.size(), Boolean.toString(hasCompanyFilter));
         return result;
     }
 }
