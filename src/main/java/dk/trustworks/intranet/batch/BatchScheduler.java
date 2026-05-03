@@ -31,26 +31,20 @@ public class BatchScheduler {
     boolean expenseUploadEnabled;
 
     /**
-     * Nightly BI recalculation via stored procedure.
-     * Replaces the previous partitioned Jakarta Batch job (bi-date-update)
-     * with a single stored procedure call that performs set-based operations.
+     * BI nightly refresh observability heartbeat.
      *
-     * The MariaDB event ev_bi_nightly_refresh also runs this at 03:00 daily
-     * as a resilient fallback in case the application server is down.
-     * This Java scheduler is kept as the primary trigger for observability.
+     * The actual work is performed by the MariaDB event ev_bi_nightly_refresh,
+     * which calls sp_nightly_bi_refresh(3, 24) at 03:00 UTC daily. The procedure
+     * routinely runs longer than the Quarkus JTA transaction timeout, so calling
+     * it from a @Transactional Java method consistently produced
+     * QueryTimeoutException noise without ever completing the work.
      *
-     * Parameters: 3-month lookback, 24-month forward projection.
+     * This method now logs a heartbeat 5 minutes after the MariaDB event starts,
+     * so log timelines still show the nightly refresh window.
      */
-    @Scheduled(cron = "0 0 3 * * ?")
-    @Transactional
+    @Scheduled(cron = "0 5 3 * * ?")
     void trigger() {
-        log.info("Starting BI nightly refresh via stored procedure (3-month lookback, 24-month forward)");
-        try {
-            em.createNativeQuery("CALL sp_nightly_bi_refresh(3, 24)").executeUpdate();
-            log.info("BI nightly refresh completed successfully");
-        } catch (Exception e) {
-            log.errorf(e, "BI nightly refresh failed");
-        }
+        log.info("BI nightly refresh handled by MariaDB event ev_bi_nightly_refresh; Quarkus side observing only");
     }
 
     // Finance loads
@@ -180,7 +174,13 @@ public class BatchScheduler {
         }
     }
 
-    @Scheduled(cron = "0 0 3 * * ?")
+    // Moved from 03:00 to 05:00 UTC: the BI nightly refresh (MariaDB event
+    // ev_bi_nightly_refresh) starts at 03:00 and rebuilds fact_user_day /
+    // fact_budget_day, holding row locks across the same expense-related
+    // tables. Running expense-sync at 03:00 produced 150+
+    // "Lock wait timeout exceeded" errors per week. 05:00 is well clear of
+    // the BI window (typically completes by 04:05).
+    @Scheduled(cron = "0 0 5 * * ?")
     void scheduleExpenseSync() {
         try {
             // Only query running executions if the job is known to the repository

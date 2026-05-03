@@ -1,0 +1,21 @@
+-- Drop the broken fact_minimum_viable_rate view.
+--
+-- Production audit on 2026-05-03:
+--   SELECT * FROM fact_minimum_viable_rate
+--   ERROR 1356 (HY000): View references invalid table(s) or column(s) ...
+-- The view's definition references fact_user_utilization, which was removed
+-- in V272 ("Drop fact_user_utilization, simplify utilization queries to read
+-- from fact_user_day"). The view has been broken ever since.
+--
+-- Impact analysis:
+--   - sp_refresh_fact_tables() block 10 populates fact_minimum_viable_rate_mat
+--     with its own SELECT (per V275); it does NOT read from this view.
+--   - Java code (BreakEvenUtilizationUseCase.java) queries
+--     fact_minimum_viable_rate_mat directly, not the view.
+--   - No other views, procedures, or queries reference this view.
+-- Therefore dropping it is safe and removes a misleading reconciliation source.
+--
+-- The materialized table fact_minimum_viable_rate_mat remains and is the
+-- canonical read path for break-even rate analytics.
+
+DROP VIEW IF EXISTS fact_minimum_viable_rate;
