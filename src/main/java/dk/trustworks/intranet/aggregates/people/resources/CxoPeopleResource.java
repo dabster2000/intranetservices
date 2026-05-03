@@ -1,17 +1,21 @@
 package dk.trustworks.intranet.aggregates.people.resources;
 
+import dk.trustworks.intranet.aggregates.people.dto.cxo.TurnoverTtmMonthDTO;
 import dk.trustworks.intranet.aggregates.people.services.CxoPeopleService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -48,5 +52,16 @@ public class CxoPeopleResource {
             if (!trimmed.isEmpty()) out.add(trimmed);
         }
         return out.isEmpty() ? null : out;
+    }
+
+    /**
+     * Returns the trailing-24-months hires-vs-terminations curve.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/turnover-ttm")
+    public List<TurnoverTtmMonthDTO> turnoverTtm(@QueryParam("companyIds") String companyIds) {
+        return cxoPeopleService.turnoverTtm(parseCommaSeparated(companyIds));
     }
 }
