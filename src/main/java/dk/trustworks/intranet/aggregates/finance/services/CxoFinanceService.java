@@ -54,13 +54,16 @@ import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.Month;
 import java.time.YearMonth;
+import java.time.format.TextStyle;
 
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -6008,14 +6011,8 @@ public class CxoFinanceService {
     // CXO Command Center: Cost-to-Revenue
     // ============================================================================
 
-    private static final String[] MONTH_LABELS = {
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    };
-
-    private static String costToRevenueMonthLabel(int year, int monthNumber) {
-        return MONTH_LABELS[monthNumber - 1] + " " + year;
-    }
+    /** Per-query timeout for CXO Command Center endpoints (matches the BFF's 15-second budget). */
+    private static final int CXO_QUERY_TIMEOUT_MS = 15_000;
 
     /**
      * Returns trailing 18 months of cost-to-revenue data, optionally filtered by company UUIDs.
@@ -6034,8 +6031,8 @@ public class CxoFinanceService {
         int fromMonth = fromDate.getMonthValue();
         int toYear = today.getYear();
         int toMonth = today.getMonthValue();
-        String fromMonthKey = String.format("%d%02d", fromYear, fromMonth);
-        String toMonthKey = String.format("%d%02d", toYear, toMonth);
+        String fromMonthKey = String.format("%04d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%04d%02d", toYear, toMonth);
 
         boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
         String companyFilterRevenue = hasCompanyFilter ? " AND r.company_id IN (:companyIds)" : "";
@@ -6062,8 +6059,7 @@ public class CxoFinanceService {
                 "LEFT JOIN ( " +
                 "  SELECT month_key, company_id, SUM(direct_delivery_cost_dkk) AS delivery_cost " +
                 "  FROM fact_project_financials_mat " +
-                "  WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) " +
-                "    AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth))" +
+                "  WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 companyFilterDelivery + " " +
                 "  GROUP BY month_key, company_id " +
                 ") d ON d.month_key = r.month_key AND d.company_id = r.company_id " +
@@ -6071,27 +6067,22 @@ public class CxoFinanceService {
                 "  SELECT month_key, company_id, SUM(opex_amount_dkk) AS opex_cost " +
                 "  FROM fact_opex_mat " +
                 "  WHERE cost_type = 'OPEX' " +
-                "    AND (month_key >= :fromMonthKey AND month_key <= :toMonthKey)" +
+                "    AND month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 companyFilterOpex + " " +
                 "  GROUP BY month_key, company_id " +
                 ") o ON o.month_key = r.month_key AND o.company_id = r.company_id " +
-                "WHERE (r.year > :fromYear OR (r.year = :fromYear AND r.month_number >= :fromMonth)) " +
-                "  AND (r.year < :toYear OR (r.year = :toYear AND r.month_number <= :toMonth))" +
+                "WHERE r.month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 companyFilterRevenue + " " +
                 "GROUP BY r.month_key, r.year, r.month_number " +
                 "ORDER BY r.month_key";
 
         Query query = em.createNativeQuery(sql, Tuple.class);
-        query.setParameter("fromYear", fromYear);
-        query.setParameter("toYear", toYear);
-        query.setParameter("fromMonth", fromMonth);
-        query.setParameter("toMonth", toMonth);
         query.setParameter("fromMonthKey", fromMonthKey);
         query.setParameter("toMonthKey", toMonthKey);
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", 15_000);
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -6110,7 +6101,7 @@ public class CxoFinanceService {
                     monthKey,
                     year,
                     monthNumber,
-                    costToRevenueMonthLabel(year, monthNumber),
+                    Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year,
                     revenueDkk,
                     deliveryCostDkk,
                     opexDkk,
@@ -6143,6 +6134,8 @@ public class CxoFinanceService {
         int fromMonth = fromDate.getMonthValue();
         int toYear = today.getYear();
         int toMonth = today.getMonthValue();
+        String fromMonthKey = String.format("%04d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%04d%02d", toYear, toMonth);
 
         boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
         String companyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
@@ -6163,22 +6156,19 @@ public class CxoFinanceService {
                 "    ELSE NULL " +
                 "  END AS gross_margin_pct " +
                 "FROM fact_project_financials_mat " +
-                "WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) " +
-                "  AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth))" +
+                "WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 companyFilter + " " +
                 "GROUP BY month_key, year, month_number " +
                 "HAVING SUM(recognized_revenue_dkk) > 0 " +
                 "ORDER BY month_key";
 
         Query query = em.createNativeQuery(sql, Tuple.class);
-        query.setParameter("fromYear", fromYear);
-        query.setParameter("toYear", toYear);
-        query.setParameter("fromMonth", fromMonth);
-        query.setParameter("toMonth", toMonth);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", 15_000);
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -6196,7 +6186,7 @@ public class CxoFinanceService {
                     monthKey,
                     year,
                     monthNumber,
-                    costToRevenueMonthLabel(year, monthNumber),
+                    Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year,
                     totalRevenueDkk,
                     totalCostDkk,
                     grossMarginPct
@@ -6244,6 +6234,8 @@ public class CxoFinanceService {
         int fromMonth = from.getMonthValue();
         int toYear = to.getYear();
         int toMonth = to.getMonthValue();
+        String fromMonthKey = String.format("%04d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%04d%02d", toYear, toMonth);
 
         boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
         String revenueCompanyFilter = hasCompanyFilter ? " AND us.companyuuid IN (:companyIds)" : "";
@@ -6289,7 +6281,7 @@ public class CxoFinanceService {
         if (hasCompanyFilter) {
             revenueQuery.setParameter("companyIds", companyIds);
         }
-        revenueQuery.setHint("javax.persistence.query.timeout", 15_000);
+        revenueQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> revenueRows = revenueQuery.getResultList();
@@ -6301,21 +6293,18 @@ public class CxoFinanceService {
                 "  month_number, " +
                 "  SUM(direct_delivery_cost_dkk) AS cost_dkk " +
                 "FROM fact_project_financials_mat " +
-                "WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) " +
-                "  AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth))" +
+                "WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 costCompanyFilter + " " +
                 "GROUP BY month_key, year, month_number " +
                 "ORDER BY month_key";
 
         Query costQuery = em.createNativeQuery(costSql, Tuple.class);
-        costQuery.setParameter("fromYear", fromYear);
-        costQuery.setParameter("fromMonth", fromMonth);
-        costQuery.setParameter("toYear", toYear);
-        costQuery.setParameter("toMonth", toMonth);
+        costQuery.setParameter("fromMonthKey", fromMonthKey);
+        costQuery.setParameter("toMonthKey", toMonthKey);
         if (hasCompanyFilter) {
             costQuery.setParameter("companyIds", companyIds);
         }
-        costQuery.setHint("javax.persistence.query.timeout", 15_000);
+        costQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> costRows = costQuery.getResultList();
@@ -6395,7 +6384,7 @@ public class CxoFinanceService {
                     monthKey,
                     agg.year,
                     agg.monthNumber,
-                    costToRevenueMonthLabel(agg.year, agg.monthNumber),
+                    Month.of(agg.monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + agg.year,
                     practiceRevenue,
                     totalRevenueDkk,
                     totalCostDkk,

@@ -58,21 +58,6 @@ public class CxoClientResource {
     jakarta.persistence.EntityManager em;
 
     /**
-     * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
-     * Null means "no company filter" — services bind null to a SQL parameter and the WHERE clause
-     * `(:companyIds IS NULL OR fact.company_id IN (:companyIds))` short-circuits.
-     */
-    private static Set<String> parseCompanyIds(String raw) {
-        if (raw == null || raw.isBlank()) return null;
-        Set<String> out = new HashSet<>();
-        for (String s : raw.split(",")) {
-            String trimmed = s.trim();
-            if (!trimmed.isEmpty()) out.add(trimmed);
-        }
-        return out.isEmpty() ? null : out;
-    }
-
-    /**
      * Gets Active Clients (TTM) KPI data.
      * Returns the count of distinct clients with revenue in a trailing 12-month window,
      * along with year-over-year comparison and monthly sparkline trend.
@@ -710,7 +695,7 @@ public class CxoClientResource {
 
         LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
         LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
-        return cxoClientService.newVsRepeatRevenue(from, to, parseCompanyIds(companyIds));
+        return cxoClientService.newVsRepeatRevenue(from, to, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -738,6 +723,6 @@ public class CxoClientResource {
 
         LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
         LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
-        return cxoClientService.creditNoteRate(from, to, parseCompanyIds(companyIds));
+        return cxoClientService.creditNoteRate(from, to, parseCommaSeparated(companyIds));
     }
 }

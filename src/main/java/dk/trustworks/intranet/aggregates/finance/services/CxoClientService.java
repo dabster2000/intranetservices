@@ -16,7 +16,9 @@ import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.Month;
 import java.time.format.DateTimeFormatter;
+import java.time.format.TextStyle;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -27,6 +29,9 @@ import java.util.stream.Collectors;
 @JBossLog
 @ApplicationScoped
 public class CxoClientService {
+
+    /** Per-query timeout for CXO Command Center endpoints (matches the BFF's 15-second budget). */
+    private static final int CXO_QUERY_TIMEOUT_MS = 15_000;
 
     @Inject
     EntityManager em;
@@ -2335,7 +2340,7 @@ public class CxoClientService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", 15_000);
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -2377,22 +2382,13 @@ public class CxoClientService {
         }
 
         log.debugf("newVsRepeatRevenue: returned %d quarters (companyFilter=%s)",
-                Integer.valueOf(quarters.size()), Boolean.toString(hasCompanyFilter));
+                quarters.size(), Boolean.toString(hasCompanyFilter));
         return new NewVsRepeatClientRevenueDTO(quarters);
     }
 
     // ============================================================================
     // CXO Command Center: Credit Note Rate
     // ============================================================================
-
-    private static final String[] CREDIT_NOTE_MONTH_LABELS = {
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    };
-
-    private static String creditNoteMonthLabel(int year, int monthNumber) {
-        return CREDIT_NOTE_MONTH_LABELS[monthNumber - 1] + " " + year;
-    }
 
     /**
      * Returns the monthly credit-note rate series plus the top-5 clients by credit-note
@@ -2462,7 +2458,7 @@ public class CxoClientService {
         if (hasCompanyFilter) {
             monthlyQuery.setParameter("companyIds", companyIds);
         }
-        monthlyQuery.setHint("javax.persistence.query.timeout", 15_000);
+        monthlyQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         Query topClientsQuery = em.createNativeQuery(topClientsSql, Tuple.class);
         topClientsQuery.setParameter("fromDate", from);
@@ -2470,7 +2466,7 @@ public class CxoClientService {
         if (hasCompanyFilter) {
             topClientsQuery.setParameter("companyIds", companyIds);
         }
-        topClientsQuery.setHint("javax.persistence.query.timeout", 15_000);
+        topClientsQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> monthlyRows = monthlyQuery.getResultList();
@@ -2492,7 +2488,7 @@ public class CxoClientService {
                     monthKey,
                     year,
                     monthNumber,
-                    creditNoteMonthLabel(year, monthNumber),
+                    Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year,
                     invoiceAmt,
                     creditNoteAmt,
                     ratePct
@@ -2508,8 +2504,8 @@ public class CxoClientService {
         }
 
         log.debugf("creditNoteRate: %d monthly buckets, %d top clients (companyFilter=%s)",
-                Integer.valueOf(monthly.size()),
-                Integer.valueOf(topClients.size()),
+                monthly.size(),
+                topClients.size(),
                 Boolean.toString(hasCompanyFilter));
         return new CreditNoteRateDTO(monthly, topClients);
     }

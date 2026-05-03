@@ -97,21 +97,6 @@ public class CxoFinanceResource {
     RequestHeaderHolder requestHeaderHolder;
 
     /**
-     * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
-     * Null means "no company filter" — services bind null to a SQL parameter and the WHERE clause
-     * `(:companyIds IS NULL OR fact.company_id IN (:companyIds))` short-circuits.
-     */
-    private static Set<String> parseCompanyIds(String raw) {
-        if (raw == null || raw.isBlank()) return null;
-        Set<String> out = new HashSet<>();
-        for (String s : raw.split(",")) {
-            String trimmed = s.trim();
-            if (!trimmed.isEmpty()) out.add(trimmed);
-        }
-        return out.isEmpty() ? null : out;
-    }
-
-    /**
      * Gets monthly revenue and margin trend data.
      *
      * @param fromDate Start date (ISO-8601 format, optional)
@@ -1803,7 +1788,7 @@ public class CxoFinanceResource {
     @Path("/cost-to-revenue")
     public List<CostToRevenueDataPointDTO> costToRevenue(@QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s", companyIds);
-        return cxoFinanceService.costToRevenue(parseCompanyIds(companyIds));
+        return cxoFinanceService.costToRevenue(parseCommaSeparated(companyIds));
     }
 
     /**
@@ -1820,7 +1805,7 @@ public class CxoFinanceResource {
     @Path("/gross-margin-trend")
     public List<GrossMarginTrendDataPointDTO> grossMarginTrend(@QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/gross-margin-trend: companyIds=%s", companyIds);
-        return cxoFinanceService.grossMarginTrend(parseCompanyIds(companyIds));
+        return cxoFinanceService.grossMarginTrend(parseCommaSeparated(companyIds));
     }
 
     /**
@@ -1848,7 +1833,7 @@ public class CxoFinanceResource {
                 fromDate, toDate, companyIds);
         LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
         LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
-        return cxoFinanceService.revenueByPractice(from, to, parseCompanyIds(companyIds));
+        return cxoFinanceService.revenueByPractice(from, to, parseCommaSeparated(companyIds));
     }
 
     /**
