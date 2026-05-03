@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.executive.services;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecHeadcountByTypeMonthDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecRetentionCohortDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecRetentionCohortPointDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -10,8 +12,11 @@ import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.sql.Date;
+import java.time.LocalDate;
 import java.time.Month;
 import java.time.format.TextStyle;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -402,5 +407,180 @@ public class ExecutivePeopleService {
         log.debugf("headcountByType: %d months (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
         return result;
+    }
+
+    // ============================================================================
+    // Executive Dashboard: Retention Cohort Survival Curves
+    // ============================================================================
+
+    /** First cohort year (inclusive). Mirrors {@code COHORT_START_YEAR} in BFF. */
+    private static final int RETENTION_COHORT_START_YEAR = 2019;
+    /** Last cohort year (inclusive). Mirrors {@code COHORT_END_YEAR} in BFF. */
+    private static final int RETENTION_COHORT_END_YEAR = 2025;
+    /** Fixed survival-curve sample points (months since hire). Mirrors {@code TIME_POINTS} in BFF. */
+    private static final List<Integer> RETENTION_TIME_POINTS =
+            List.of(0, 6, 12, 18, 24, 36, 48, 60, 72);
+
+    /** Per-employee lifecycle row used by {@link #retentionCohorts(Set)}. */
+    private static final class EmployeeLifecycle {
+        final LocalDate hireDate;
+        final LocalDate terminationDate; // null if still active
+        EmployeeLifecycle(LocalDate hireDate, LocalDate terminationDate) {
+            this.hireDate = hireDate;
+            this.terminationDate = terminationDate;
+        }
+    }
+
+    /**
+     * Returns hire-year cohort survival curves for cohorts {@value #RETENTION_COHORT_START_YEAR}
+     * through {@value #RETENTION_COHORT_END_YEAR}, mirroring the BFF route at
+     * {@code /api/executive/retention-cohorts}.
+     *
+     * <p><b>Per-employee SQL.</b> The native query returns one row per employee
+     * with {@code hire_date = MIN(statusdate WHERE status='ACTIVE' AND type IN
+     * (CONSULTANT, STUDENT, STAFF))} and a correlated subquery for
+     * {@code termination_date = MAX(statusdate WHERE status='TERMINATED' AND
+     * statusdate > hire_date)} (NULL if the employee never terminated).
+     * The HAVING clause restricts to {@code YEAR(hire_date) BETWEEN ? AND ?}.</p>
+     *
+     * <p><b>Java-side aggregation (nested DTO fold).</b> Per-employee rows are
+     * grouped by {@code YEAR(hireDate)} into a {@link LinkedHashMap} keyed by
+     * cohort year, preserving insertion order. The result list is built in
+     * ascending cohort year, with all 9 fixed time points present per cohort
+     * regardless of data — matches BFF semantics.</p>
+     *
+     * <p><b>Survival computation.</b> For each cohort year:
+     * <ul>
+     *   <li>Cohort reference point = Jan 1 of cohort year.</li>
+     *   <li>{@code monthsSinceCohortStart} = months from Jan 1 to today (UTC).</li>
+     *   <li>If a time point exceeds {@code monthsSinceCohortStart}, the point
+     *       is right-censored ({@code survivalPct = null}).</li>
+     *   <li>Otherwise count employees who survived at least N months: still-active
+     *       employees count as surviving every observed time point; terminated
+     *       employees count if {@code (terminationDate - hireDate) in months ≥ N}.</li>
+     *   <li>{@code survivalPct = round((survived / cohortSize) * 10000) / 100}.</li>
+     * </ul>
+     * Empty cohorts ({@code cohortSize = 0}) emit all 9 points with
+     * {@code survivalPct = null}.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return list of 7 cohort DTOs in ascending year order (always returned, even when empty)
+     */
+    public List<ExecRetentionCohortDTO> retentionCohorts(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        // BFF aliases the filter on `us_hire.companyuuid` — match that here.
+        String companyFilter = hasCompanyFilter ? " AND us_hire.companyuuid IN (:companyIds) " : "";
+
+        String sql = "SELECT " +
+                "  us_hire.useruuid                AS useruuid, " +
+                "  MIN(us_hire.statusdate)         AS hire_date, " +
+                "  ( " +
+                "    SELECT MAX(us_term.statusdate) " +
+                "    FROM userstatus us_term " +
+                "    WHERE us_term.useruuid = us_hire.useruuid " +
+                "      AND us_term.status = 'TERMINATED' " +
+                "      AND us_term.statusdate > ( " +
+                "        SELECT MIN(us_h2.statusdate) " +
+                "        FROM userstatus us_h2 " +
+                "        WHERE us_h2.useruuid = us_hire.useruuid " +
+                "          AND us_h2.status = 'ACTIVE' " +
+                "          AND us_h2.`type` IN ('CONSULTANT', 'STUDENT', 'STAFF') " +
+                "      ) " +
+                "  )                               AS termination_date " +
+                "FROM userstatus us_hire " +
+                "WHERE us_hire.status = 'ACTIVE' " +
+                "  AND us_hire.`type` IN ('CONSULTANT', 'STUDENT', 'STAFF') " +
+                companyFilter +
+                "GROUP BY us_hire.useruuid " +
+                "HAVING YEAR(MIN(us_hire.statusdate)) BETWEEN :cohortStart AND :cohortEnd";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setParameter("cohortStart", RETENTION_COHORT_START_YEAR);
+        query.setParameter("cohortEnd", RETENTION_COHORT_END_YEAR);
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        // Cohort fold: group by YEAR(hireDate). LinkedHashMap so we can iterate
+        // in deterministic order (though we always emit all years 2019..2025
+        // explicitly below, present or not).
+        Map<Integer, List<EmployeeLifecycle>> byCohort = new LinkedHashMap<>();
+        for (Tuple row : rows) {
+            LocalDate hire = toLocalDate(row.get("hire_date"));
+            if (hire == null) continue;
+            int cohortYear = hire.getYear();
+            if (cohortYear < RETENTION_COHORT_START_YEAR || cohortYear > RETENTION_COHORT_END_YEAR) {
+                continue;
+            }
+            LocalDate term = toLocalDate(row.get("termination_date"));
+            byCohort.computeIfAbsent(cohortYear, k -> new ArrayList<>())
+                    .add(new EmployeeLifecycle(hire, term));
+        }
+
+        LocalDate now = LocalDate.now();
+        List<ExecRetentionCohortDTO> result = new ArrayList<>(
+                RETENTION_COHORT_END_YEAR - RETENTION_COHORT_START_YEAR + 1);
+        for (int year = RETENTION_COHORT_START_YEAR; year <= RETENTION_COHORT_END_YEAR; year++) {
+            List<EmployeeLifecycle> employees = byCohort.getOrDefault(year, List.of());
+            long cohortSize = employees.size();
+
+            if (cohortSize == 0) {
+                List<ExecRetentionCohortPointDTO> emptyPoints = new ArrayList<>(RETENTION_TIME_POINTS.size());
+                for (int tp : RETENTION_TIME_POINTS) {
+                    emptyPoints.add(new ExecRetentionCohortPointDTO(tp, null));
+                }
+                result.add(new ExecRetentionCohortDTO(year, 0L, emptyPoints));
+                continue;
+            }
+
+            LocalDate cohortStart = LocalDate.of(year, 1, 1);
+            long monthsSinceCohortStart = ChronoUnit.MONTHS.between(cohortStart, now);
+
+            List<ExecRetentionCohortPointDTO> points = new ArrayList<>(RETENTION_TIME_POINTS.size());
+            for (int tp : RETENTION_TIME_POINTS) {
+                if (tp > monthsSinceCohortStart) {
+                    // Right-censored: time point beyond observation window
+                    points.add(new ExecRetentionCohortPointDTO(tp, null));
+                    continue;
+                }
+                long survived = 0;
+                for (EmployeeLifecycle emp : employees) {
+                    if (emp.terminationDate == null) {
+                        // Still active — survived all observed time points
+                        survived++;
+                    } else {
+                        long tenureMonths = ChronoUnit.MONTHS.between(emp.hireDate, emp.terminationDate);
+                        if (tenureMonths >= tp) {
+                            survived++;
+                        }
+                    }
+                }
+                double survivalPct = Math.round((double) survived / cohortSize * 10000.0) / 100.0;
+                points.add(new ExecRetentionCohortPointDTO(tp, survivalPct));
+            }
+
+            result.add(new ExecRetentionCohortDTO(year, cohortSize, points));
+        }
+
+        log.debugf("retentionCohorts: %d cohorts (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    /**
+     * Coerces a {@code java.sql.Date} or {@code java.time.LocalDate} value
+     * (returned by JDBC for DATE columns) to a {@link LocalDate}. Returns
+     * {@code null} for null input.
+     */
+    private static LocalDate toLocalDate(Object v) {
+        if (v == null) return null;
+        if (v instanceof LocalDate ld) return ld;
+        if (v instanceof Date sqlDate) return sqlDate.toLocalDate();
+        // Fall back to ISO parse for unexpected types (e.g. driver returning String)
+        return LocalDate.parse(v.toString());
     }
 }

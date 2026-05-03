@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.executive.resources;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecHeadcountByTypeMonthDTO;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecRetentionCohortDTO;
 import dk.trustworks.intranet.aggregates.executive.services.ExecutivePeopleService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -88,5 +89,16 @@ public class ExecutivePeopleResource {
     @Path("/headcount-by-type")
     public List<ExecHeadcountByTypeMonthDTO> headcountByType(@QueryParam("companyIds") String companyIds) {
         return executivePeopleService.headcountByType(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Returns hire-year cohort survival curves for cohorts 2019–2025.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/retention-cohorts")
+    public List<ExecRetentionCohortDTO> retentionCohorts(@QueryParam("companyIds") String companyIds) {
+        return executivePeopleService.retentionCohorts(parseCommaSeparated(companyIds));
     }
 }
