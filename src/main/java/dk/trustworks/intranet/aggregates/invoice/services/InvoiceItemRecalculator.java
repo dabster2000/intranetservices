@@ -66,6 +66,12 @@ public class InvoiceItemRecalculator {
 
         InvoiceItem.persist(baseItemData);
 
+        // PricingEngine.price() reads invoice.invoiceitems to compute sumBefore.
+        // Repopulate with the freshly persisted BASE items BEFORE pricing — otherwise
+        // sumBefore is 0 and percent-based discounts (e.g. NOVO_MSP_2025 1.8% MSP fee)
+        // collapse to delta=0 and no synthetic line is emitted.
+        invoice.invoiceitems.addAll(baseItemData);
+
         Map<String, String> cti = new HashMap<>();
         ContractTypeItem.<ContractTypeItem>find("contractuuid", invoice.getContractuuid())
                 .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
@@ -75,8 +81,6 @@ public class InvoiceItemRecalculator {
         pr.syntheticItems.forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
         InvoiceItem.persist(pr.syntheticItems);
 
-        invoice.invoiceitems.clear();
-        invoice.invoiceitems.addAll(baseItemData);
         invoice.invoiceitems.addAll(pr.syntheticItems);
         invoice.sumBeforeDiscounts = pr.sumBeforeDiscounts.doubleValue();
         invoice.sumAfterDiscounts  = pr.sumAfterDiscounts.doubleValue();
