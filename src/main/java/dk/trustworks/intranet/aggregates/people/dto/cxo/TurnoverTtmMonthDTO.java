@@ -33,5 +33,11 @@ public record TurnoverTtmMonthDTO(
             throw new IllegalArgumentException("monthNumber out of range: " + monthNumber);
         if (monthLabel == null)
             throw new IllegalArgumentException("monthLabel must not be null");
+        if (hires < 0)
+            throw new IllegalArgumentException("hires must be non-negative, was " + hires);
+        if (terminations < 0)
+            throw new IllegalArgumentException("terminations must be non-negative, was " + terminations);
+        // net = hires - terminations may legitimately be negative when
+        // terminations > hires, so it is intentionally not constrained.
     }
 }
