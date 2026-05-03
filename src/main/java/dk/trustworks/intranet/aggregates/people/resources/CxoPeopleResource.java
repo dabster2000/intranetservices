@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.people.resources;
 
+import dk.trustworks.intranet.aggregates.people.dto.cxo.ConsultantPyramidDTO;
 import dk.trustworks.intranet.aggregates.people.dto.cxo.TurnoverTtmMonthDTO;
 import dk.trustworks.intranet.aggregates.people.services.CxoPeopleService;
 import jakarta.annotation.security.RolesAllowed;
@@ -63,5 +64,16 @@ public class CxoPeopleResource {
     @Path("/turnover-ttm")
     public List<TurnoverTtmMonthDTO> turnoverTtm(@QueryParam("companyIds") String companyIds) {
         return cxoPeopleService.turnoverTtm(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Returns the current consultant-pyramid distribution snapshot.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/consultant-pyramid")
+    public ConsultantPyramidDTO consultantPyramid(@QueryParam("companyIds") String companyIds) {
+        return cxoPeopleService.consultantPyramid(parseCommaSeparated(companyIds));
     }
 }

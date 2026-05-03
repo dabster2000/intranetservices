@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.people.services;
 
+import dk.trustworks.intranet.aggregates.people.dto.cxo.ConsultantPyramidDTO;
+import dk.trustworks.intranet.aggregates.people.dto.cxo.PyramidLevelDTO;
 import dk.trustworks.intranet.aggregates.people.dto.cxo.TurnoverTtmMonthDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -8,11 +10,15 @@ import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.time.Month;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -25,6 +31,47 @@ public class CxoPeopleService {
 
     /** Per-query timeout for CXO Command Center endpoints (matches the legacy BFF's 15-second budget). */
     static final int CXO_QUERY_TIMEOUT_MS = 15_000;
+
+    /**
+     * Pyramid bucket descriptor: {@code label} (display + dedup key), the set of
+     * {@code career_level} codes that map to this bucket, and the hardcoded target %.
+     * Mirrors the {@code PYRAMID_BUCKETS} array in the legacy BFF
+     * {@code /api/cxo/people/consultant-pyramid/route.ts} verbatim — same labels,
+     * same career-level membership, same target percents.
+     */
+    private record PyramidBucket(String label, List<String> levels, double targetPercent) {}
+
+    /** Hardcoded pyramid buckets in display order. Matches the BFF source 1:1. */
+    private static final List<PyramidBucket> PYRAMID_BUCKETS = List.of(
+            new PyramidBucket("Junior",
+                    List.of("JUNIOR_CONSULTANT", "PROFESSIONAL_CONSULTANT"), 30.0),
+            new PyramidBucket("Mid",
+                    List.of("CONSULTANT"), 25.0),
+            new PyramidBucket("Senior",
+                    List.of("SENIOR_MANAGER", "ENGAGEMENT_MANAGER",
+                            "SENIOR_ENGAGEMENT_MANAGER", "MANAGER"), 25.0),
+            new PyramidBucket("Leadership",
+                    List.of("ASSOCIATE_PARTNER", "ENGAGEMENT_DIRECTOR", "PRACTICE_LEADER",
+                            "THOUGHT_LEADER_PARTNER", "MANAGING_DIRECTOR"), 15.0),
+            new PyramidBucket("Partner",
+                    List.of("PARTNER", "MANAGING_PARTNER"), 5.0)
+    );
+
+    /**
+     * Reverse index: career_level → bucket label. Built once at class load.
+     * Career levels not in this map are silently excluded from both counts and
+     * totalConsultants (matches BFF semantics).
+     */
+    private static final Map<String, String> CAREER_LEVEL_TO_BUCKET;
+    static {
+        Map<String, String> m = new HashMap<>();
+        for (PyramidBucket bucket : PYRAMID_BUCKETS) {
+            for (String level : bucket.levels()) {
+                m.put(level, bucket.label());
+            }
+        }
+        CAREER_LEVEL_TO_BUCKET = Map.copyOf(m);
+    }
 
     @Inject
     EntityManager em;
@@ -114,5 +161,99 @@ public class CxoPeopleService {
         log.debugf("turnoverTtm: %d months (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
         return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Consultant Pyramid
+    // ============================================================================
+
+    /**
+     * Returns the current pyramid distribution snapshot of active consultants
+     * across 5 hardcoded buckets, mirroring the BFF route at
+     * {@code /api/cxo/people/consultant-pyramid}.
+     *
+     * <p>Source: {@code user_career_level} joined to {@code userstatus} where
+     * {@code userstatus.type='CONSULTANT', status='ACTIVE'}, plus a correlated
+     * subquery to filter to each user's most-recent {@code user_career_level}
+     * row ({@code MAX(active_from)}). Career-level codes are then bucketed
+     * server-side via the static {@link #PYRAMID_BUCKETS} table.</p>
+     *
+     * <p>Career levels not mapped to any bucket are silently excluded from
+     * both the bucket counts and {@code totalConsultants} — matches BFF
+     * semantics.</p>
+     *
+     * <p>The 5 buckets are always returned in fixed order regardless of which
+     * buckets have rows, so the chart renderer can rely on the shape.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return snapshot DTO with 5 buckets in order Junior → Partner
+     */
+    public ConsultantPyramidDTO consultantPyramid(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        // The BFF joins userstatus a SECOND time (us2) on companyuuid when filter present.
+        // Match that here: the primary userstatus join (us) is unfiltered for company,
+        // and the company filter is applied via a separate join.
+        String companyJoin = hasCompanyFilter
+                ? "JOIN userstatus us2 ON us2.useruuid = ucl.useruuid AND us2.companyuuid IN (:companyIds) "
+                : "";
+
+        String sql = "SELECT " +
+                "  ucl.career_level                       AS career_level, " +
+                "  COUNT(DISTINCT ucl.useruuid)           AS consultant_count " +
+                "FROM user_career_level ucl " +
+                "JOIN userstatus us ON us.useruuid = ucl.useruuid " +
+                "  AND us.type = 'CONSULTANT' " +
+                "  AND us.status = 'ACTIVE' " +
+                companyJoin +
+                "WHERE ucl.active_from = ( " +
+                "  SELECT MAX(ucl2.active_from) " +
+                "  FROM user_career_level ucl2 " +
+                "  WHERE ucl2.useruuid = ucl.useruuid " +
+                ") " +
+                "GROUP BY ucl.career_level " +
+                "ORDER BY consultant_count DESC";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        // Aggregate raw rows into bucket counts. LinkedHashMap preserves the
+        // PYRAMID_BUCKETS insertion order so the response shape is deterministic.
+        Map<String, Long> bucketCounts = new LinkedHashMap<>();
+        for (PyramidBucket bucket : PYRAMID_BUCKETS) {
+            bucketCounts.put(bucket.label(), 0L);
+        }
+        long totalConsultants = 0L;
+        for (Tuple row : rows) {
+            String careerLevel = row.get("career_level", String.class);
+            long count = ((Number) row.get("consultant_count")).longValue();
+            String bucketLabel = CAREER_LEVEL_TO_BUCKET.get(careerLevel);
+            if (bucketLabel != null) {
+                bucketCounts.merge(bucketLabel, count, Long::sum);
+                totalConsultants += count;
+            }
+            // Unknown career levels are silently excluded from both counts and total
+            // (matches BFF semantics).
+        }
+
+        List<PyramidLevelDTO> levels = new ArrayList<>(PYRAMID_BUCKETS.size());
+        for (PyramidBucket bucket : PYRAMID_BUCKETS) {
+            long actualCount = bucketCounts.get(bucket.label());
+            double actualPercent = totalConsultants > 0
+                    ? Math.round((double) actualCount / totalConsultants * 10000.0) / 100.0
+                    : 0.0;
+            levels.add(new PyramidLevelDTO(
+                    bucket.label(), bucket.levels(), actualCount, actualPercent, bucket.targetPercent()));
+        }
+
+        String snapshotDate = LocalDate.now().toString(); // ISO YYYY-MM-DD
+        log.debugf("consultantPyramid: total=%d (companyFilter=%s)",
+                Long.valueOf(totalConsultants), Boolean.toString(hasCompanyFilter));
+        return new ConsultantPyramidDTO(levels, totalConsultants, snapshotDate);
     }
 }
