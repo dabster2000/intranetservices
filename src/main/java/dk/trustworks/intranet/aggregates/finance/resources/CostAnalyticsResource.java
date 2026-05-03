@@ -15,6 +15,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -1113,5 +1114,57 @@ public class CostAnalyticsResource {
             ));
         }
         return result;
+    }
+
+    /**
+     * Cost-data freshness for the Executive Dashboard banner.
+     *
+     * Reports the latest `expensedate` in `finance_details` (overall and per
+     * company). The Cost / Career Level Costs / Practices tabs read from
+     * `fact_opex_mat`, which derives from `finance_details`. Because monthly
+     * periods only close in e-conomics 1-3 weeks after month-end, the most
+     * recent month is often incomplete — surfacing this lets users avoid
+     * making decisions on partial data.
+     */
+    @GET
+    @Path("/cost-data-freshness")
+    public CostDataFreshnessDTO getCostDataFreshness() {
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT
+                    fd.companyuuid AS company_uuid,
+                    c.name         AS company_name,
+                    MAX(fd.expensedate) AS latest_expense_date
+                FROM finance_details fd
+                LEFT JOIN companies c ON c.uuid = fd.companyuuid
+                GROUP BY fd.companyuuid, c.name
+                ORDER BY latest_expense_date DESC
+                """, Tuple.class).getResultList();
+
+        LocalDate today = LocalDate.now();
+        LocalDate overallLatest = null;
+        List<CostDataFreshnessDTO.CompanyFreshness> perCompany = new ArrayList<>(rows.size());
+
+        for (Tuple row : rows) {
+            String companyUuid = row.get("company_uuid", String.class);
+            String companyName = row.get("company_name", String.class);
+            LocalDate latest = row.get("latest_expense_date") != null
+                    ? ((java.sql.Date) row.get("latest_expense_date")).toLocalDate()
+                    : null;
+            Integer daysBehind = latest != null
+                    ? (int) ChronoUnit.DAYS.between(latest, today)
+                    : null;
+            perCompany.add(new CostDataFreshnessDTO.CompanyFreshness(
+                    companyUuid, companyName, latest, daysBehind));
+            if (latest != null && (overallLatest == null || latest.isAfter(overallLatest))) {
+                overallLatest = latest;
+            }
+        }
+
+        Integer overallDaysBehind = overallLatest != null
+                ? (int) ChronoUnit.DAYS.between(overallLatest, today)
+                : null;
+
+        return new CostDataFreshnessDTO(overallLatest, overallDaysBehind, perCompany);
     }
 }
