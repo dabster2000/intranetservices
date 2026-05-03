@@ -33,6 +33,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.MonthlyRevenuePracticeDataPoint;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.RevenuePracticeDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.PracticeUtilizationMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetHoursByMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FutureNetAvailableDTO;
@@ -61,6 +63,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /**
@@ -6202,5 +6205,218 @@ public class CxoFinanceService {
 
         log.debugf("grossMarginTrend: returned %d data points (companyFilter=%s)", result.size(), Boolean.toString(hasCompanyFilter));
         return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Revenue by Practice
+    // ============================================================================
+
+    /**
+     * Canonical order for known practice ids in the {@code practices} response array.
+     * Anything else returned by the SQL is folded into {@code "OTHER"} which, when present,
+     * is appended after this list.
+     */
+    private static final List<String> KNOWN_PRACTICES = List.of("PM", "SA", "BA", "DEV", "CYB");
+
+    /**
+     * Returns trailing-window revenue broken down by practice (consultant-level attribution),
+     * with cost and margin overlay. Mirrors the BFF route at
+     * {@code /api/cxo/finance/revenue-by-practice}.
+     *
+     * <p>The revenue query attributes each invoice line item to {@code u.practice} of the
+     * delivering consultant (NOT the project-level service line). The cost query aggregates
+     * direct delivery cost by month from {@code fact_project_financials_mat}. Java assembles
+     * the two streams: cost-only months are present in the result with empty practice
+     * revenue, and any practice id outside {@link #KNOWN_PRACTICES} is collapsed into
+     * {@code "OTHER"}.</p>
+     *
+     * @param fromDate inclusive start of date window; defaults to first day of (now − 17 months) when null
+     * @param toDate   inclusive end of date window; defaults to today when null
+     * @param companyIds optional set of company UUIDs; null/empty means no company filter
+     * @return wrapper with the time-ordered month series and the ordered practices list
+     */
+    public RevenuePracticeDTO revenueByPractice(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate from = fromDate != null ? fromDate : today.withDayOfMonth(1).minusMonths(17);
+        LocalDate to = toDate != null ? toDate : today;
+
+        int fromYear = from.getYear();
+        int fromMonth = from.getMonthValue();
+        int toYear = to.getYear();
+        int toMonth = to.getMonthValue();
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String revenueCompanyFilter = hasCompanyFilter ? " AND us.companyuuid IN (:companyIds)" : "";
+        String costCompanyFilter = hasCompanyFilter ? " AND companyuuid IN (:companyIds)" : "";
+
+        // ----- Revenue query: consultant-level attribution via u.practice -----
+        String revenueSql = "SELECT " +
+                "  DATE_FORMAT(i.invoicedate, '%Y%m')    AS month_key, " +
+                "  YEAR(i.invoicedate)                   AS year_val, " +
+                "  MONTH(i.invoicedate)                  AS month_number, " +
+                "  COALESCE(u.practice, 'OTHER')         AS service_line_id, " +
+                "  SUM( " +
+                "    ii.rate * ii.hours " +
+                "    * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END " +
+                "    * CASE WHEN i.currency = 'DKK' THEN 1 ELSE COALESCE(cur.conversion, 1) END " +
+                "  ) AS revenue_dkk " +
+                "FROM invoiceitems ii " +
+                "JOIN invoices i ON ii.invoiceuuid = i.uuid " +
+                "JOIN `user` u ON u.uuid = ii.consultantuuid " +
+                "LEFT JOIN userstatus us ON us.useruuid = ii.consultantuuid " +
+                "  AND us.statusdate = ( " +
+                "    SELECT MAX(us2.statusdate) FROM userstatus us2 " +
+                "    WHERE us2.useruuid = ii.consultantuuid AND us2.statusdate <= i.invoicedate " +
+                "  ) " +
+                "LEFT JOIN currences cur ON cur.currency = i.currency " +
+                "  AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
+                "WHERE i.status = 'CREATED' " +
+                "  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                "  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL " +
+                "  AND ii.consultantuuid IS NOT NULL " +
+                "  AND us.type = 'CONSULTANT' " +
+                "  AND (YEAR(i.invoicedate) > :fromYear OR (YEAR(i.invoicedate) = :fromYear AND MONTH(i.invoicedate) >= :fromMonth)) " +
+                "  AND (YEAR(i.invoicedate) < :toYear OR (YEAR(i.invoicedate) = :toYear AND MONTH(i.invoicedate) <= :toMonth))" +
+                revenueCompanyFilter + " " +
+                "GROUP BY month_key, year_val, month_number, COALESCE(u.practice, 'OTHER') " +
+                "ORDER BY month_key, service_line_id";
+
+        Query revenueQuery = em.createNativeQuery(revenueSql, Tuple.class);
+        revenueQuery.setParameter("fromYear", fromYear);
+        revenueQuery.setParameter("fromMonth", fromMonth);
+        revenueQuery.setParameter("toYear", toYear);
+        revenueQuery.setParameter("toMonth", toMonth);
+        if (hasCompanyFilter) {
+            revenueQuery.setParameter("companyIds", companyIds);
+        }
+        revenueQuery.setHint("javax.persistence.query.timeout", 15_000);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> revenueRows = revenueQuery.getResultList();
+
+        // ----- Cost query: project-level direct delivery cost grouped by month -----
+        String costSql = "SELECT " +
+                "  month_key, " +
+                "  year                          AS year_val, " +
+                "  month_number, " +
+                "  SUM(direct_delivery_cost_dkk) AS cost_dkk " +
+                "FROM fact_project_financials_mat " +
+                "WHERE (year > :fromYear OR (year = :fromYear AND month_number >= :fromMonth)) " +
+                "  AND (year < :toYear OR (year = :toYear AND month_number <= :toMonth))" +
+                costCompanyFilter + " " +
+                "GROUP BY month_key, year, month_number " +
+                "ORDER BY month_key";
+
+        Query costQuery = em.createNativeQuery(costSql, Tuple.class);
+        costQuery.setParameter("fromYear", fromYear);
+        costQuery.setParameter("fromMonth", fromMonth);
+        costQuery.setParameter("toYear", toYear);
+        costQuery.setParameter("toMonth", toMonth);
+        if (hasCompanyFilter) {
+            costQuery.setParameter("companyIds", companyIds);
+        }
+        costQuery.setHint("javax.persistence.query.timeout", 15_000);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> costRows = costQuery.getResultList();
+
+        // ----- Index cost rows by month_key -----
+        Map<String, Double> costByMonth = new LinkedHashMap<>(costRows.size());
+        for (Tuple t : costRows) {
+            String monthKey = t.get("month_key", String.class);
+            double costDkk = ((Number) t.get("cost_dkk")).doubleValue();
+            costByMonth.put(monthKey, costDkk);
+        }
+
+        // ----- Group revenue rows by month → (practiceId → revenue) -----
+        // TreeMap keeps natural string ordering of YYYYMM, matching BFF localeCompare sort.
+        Map<String, MonthAggregate> monthMap = new TreeMap<>();
+        for (Tuple t : revenueRows) {
+            String monthKey = t.get("month_key", String.class);
+            int year = ((Number) t.get("year_val")).intValue();
+            int monthNumber = ((Number) t.get("month_number")).intValue();
+            String rawPracticeId = t.get("service_line_id", String.class);
+            double revenue = ((Number) t.get("revenue_dkk")).doubleValue();
+
+            // Defensive remap: anything outside KNOWN_PRACTICES becomes OTHER (matches BFF).
+            String practiceId = (rawPracticeId != null && KNOWN_PRACTICES.contains(rawPracticeId))
+                    ? rawPracticeId
+                    : "OTHER";
+
+            MonthAggregate agg = monthMap.computeIfAbsent(
+                    monthKey,
+                    k -> new MonthAggregate(year, monthNumber, new LinkedHashMap<>())
+            );
+            agg.practices.merge(practiceId, revenue, Double::sum);
+        }
+
+        // ----- Ensure cost-only months are represented (with empty practice revenue) -----
+        for (Tuple t : costRows) {
+            String monthKey = t.get("month_key", String.class);
+            if (!monthMap.containsKey(monthKey)) {
+                int year = ((Number) t.get("year_val")).intValue();
+                int monthNumber = ((Number) t.get("month_number")).intValue();
+                monthMap.put(monthKey, new MonthAggregate(year, monthNumber, new LinkedHashMap<>()));
+            }
+        }
+
+        // ----- Determine which practices have data (preserve canonical order; OTHER last) -----
+        Set<String> practiceSet = new HashSet<>();
+        for (MonthAggregate agg : monthMap.values()) {
+            practiceSet.addAll(agg.practices.keySet());
+        }
+        List<String> practices = new ArrayList<>(KNOWN_PRACTICES.size() + 1);
+        for (String p : KNOWN_PRACTICES) {
+            if (practiceSet.contains(p)) practices.add(p);
+        }
+        if (practiceSet.contains("OTHER")) practices.add("OTHER");
+
+        // ----- Build month data points (sorted by monthKey ascending via TreeMap) -----
+        List<MonthlyRevenuePracticeDataPoint> months = new ArrayList<>(monthMap.size());
+        for (Map.Entry<String, MonthAggregate> entry : monthMap.entrySet()) {
+            String monthKey = entry.getKey();
+            MonthAggregate agg = entry.getValue();
+
+            // LinkedHashMap with insertion order matching the practices list → stable JSON key order.
+            Map<String, Double> practiceRevenue = new LinkedHashMap<>(practices.size());
+            double totalRevenueDkk = 0.0;
+            for (String p : practices) {
+                double rev = agg.practices.getOrDefault(p, 0.0);
+                practiceRevenue.put(p, rev);
+                totalRevenueDkk += rev;
+            }
+
+            double totalCostDkk = costByMonth.getOrDefault(monthKey, 0.0);
+            Double marginPercent = totalRevenueDkk > 0
+                    ? Math.round(((totalRevenueDkk - totalCostDkk) / totalRevenueDkk) * 10000.0) / 100.0
+                    : null;
+
+            months.add(new MonthlyRevenuePracticeDataPoint(
+                    monthKey,
+                    agg.year,
+                    agg.monthNumber,
+                    costToRevenueMonthLabel(agg.year, agg.monthNumber),
+                    practiceRevenue,
+                    totalRevenueDkk,
+                    totalCostDkk,
+                    marginPercent
+            ));
+        }
+
+        log.debugf("revenueByPractice: returned %d months / %d practices (companyFilter=%s)",
+                months.size(), practices.size(), Boolean.toString(hasCompanyFilter));
+        return new RevenuePracticeDTO(months, practices);
+    }
+
+    /** Mutable per-month aggregator used during revenueByPractice assembly. */
+    private static final class MonthAggregate {
+        final int year;
+        final int monthNumber;
+        final Map<String, Double> practices;
+        MonthAggregate(int year, int monthNumber, Map<String, Double> practices) {
+            this.year = year;
+            this.monthNumber = monthNumber;
+            this.practices = practices;
+        }
     }
 }

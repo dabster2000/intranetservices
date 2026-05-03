@@ -43,6 +43,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.RevenuePracticeDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
 import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsService;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
@@ -1822,6 +1823,35 @@ public class CxoFinanceResource {
     public List<GrossMarginTrendDataPointDTO> grossMarginTrend(@QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/gross-margin-trend: companyIds=%s", companyIds);
         return cxoFinanceService.grossMarginTrend(parseCompanyIds(companyIds));
+    }
+
+    /**
+     * CXO Command Center: monthly invoiced revenue broken down by practice (service line),
+     * with cost and margin overlay.
+     *
+     * <p>Revenue is attributed at the consultant level via {@code u.practice} of the delivering
+     * consultant — NOT the project-level service line — to avoid distortion from EXTERNAL
+     * consultants, mixed-practice projects, and "UD" (Undefined) buckets. Cost remains
+     * project-level (from {@code fact_project_financials_mat}). Months with cost but no
+     * revenue still appear in the response with an empty practice revenue map.</p>
+     *
+     * @param fromDate optional ISO date (YYYY-MM-DD); defaults to first day of (today − 17 months)
+     * @param toDate   optional ISO date (YYYY-MM-DD); defaults to today
+     * @param companyIds optional comma-separated list of company UUIDs to filter by
+     * @return wrapper containing the monthly series and the ordered practices list
+     */
+    @GET
+    @Path("/revenue-by-practice")
+    @RolesAllowed({"finance:read"})
+    public RevenuePracticeDTO revenueByPractice(
+            @QueryParam("fromDate") String fromDate,
+            @QueryParam("toDate") String toDate,
+            @QueryParam("companyIds") String companyIds) {
+        log.debugf("GET /finance/cxo/revenue-by-practice: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+        LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
+        LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
+        return cxoFinanceService.revenueByPractice(from, to, parseCompanyIds(companyIds));
     }
 
     /**
