@@ -437,4 +437,24 @@ public class CxoDeliveryResource {
 
         return Response.ok(result).build();
     }
+
+    /**
+     * Gets the 12-month staffing supply-vs-demand forecast (CXO Command Center).
+     * Mirrors the BFF route at {@code /api/cxo/delivery/staffing-gap-forecast}.
+     *
+     * <p>For each month of a 12-month forward series starting at the current
+     * month, returns supply (active consultant headcount from
+     * {@code fact_user_day}), demand (booked consultant FTEs from
+     * {@code fact_backlog}), and the gap (supply − demand). For future months
+     * with no supply rows, the latest non-zero supply value is forward-filled.</p>
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     * @return chronologically-ordered 12-month forward series
+     */
+    @GET
+    @Path("/staffing-gap-forecast")
+    public java.util.List<dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO> staffingGapForecast(
+            @QueryParam("companyIds") String companyIds) {
+        return cxoDeliveryService.staffingGapForecast(parseCommaSeparated(companyIds));
+    }
 }
