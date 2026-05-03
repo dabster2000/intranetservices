@@ -1,0 +1,46 @@
+package dk.trustworks.intranet.aggregates.forecast.resources;
+
+import dk.trustworks.intranet.aggregates.forecast.services.CxoForecastService;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
+import java.util.HashSet;
+import java.util.Set;
+
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
+
+/**
+ * REST API for CxO Command Center forecast metrics — contract runoff, win rates,
+ * pipeline health, capacity-demand, and revenue forecast. Class-level scope
+ * inherits to all endpoint methods.
+ */
+@JBossLog
+@Tag(name = "forecast")
+@Path("/forecast/cxo")
+@RequestScoped
+@Produces(APPLICATION_JSON)
+@Consumes(APPLICATION_JSON)
+@SecurityRequirement(name = "jwt")
+@RolesAllowed({"dashboard:read"})
+public class CxoForecastResource {
+
+    @Inject
+    CxoForecastService cxoForecastService;
+
+    static Set<String> parseCommaSeparated(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        Set<String> out = new HashSet<>();
+        for (String s : raw.split(",")) {
+            String trimmed = s.trim();
+            if (!trimmed.isEmpty()) out.add(trimmed);
+        }
+        return out.isEmpty() ? null : out;
+    }
+}
