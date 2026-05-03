@@ -91,12 +91,6 @@ public class BatchScheduler {
         jobOperator.start("slack-user-sync", new Properties());
     }
 
-    // Birthdays
-    //@Scheduled(cron = "0 0 5 * * ?")
-    void scheduleBirthdayNotifications() {
-        jobOperator.start("birthday-notification", new Properties());
-    }
-
     // Team description monthly (10th at 10:00)
     @Scheduled(cron = "0 15 01 L * ?")
     void scheduleTeamDescription() {
@@ -114,13 +108,6 @@ public class BatchScheduler {
     void scheduleUserResumeUpdate() {
         jobOperator.start("user-resume-update", new Properties());
     }
-
-    //@Scheduled(every = "24h")
-    /*
-    void scheduleRevenueCacheRefresh() {
-        jobOperator.start("revenue-cache-refresh", new Properties());
-    }
-     */
 
     @Scheduled(every = "1m")
     void scheduleMailSend() {
