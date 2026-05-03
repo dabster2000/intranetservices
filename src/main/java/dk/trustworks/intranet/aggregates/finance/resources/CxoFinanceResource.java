@@ -1801,7 +1801,6 @@ public class CxoFinanceResource {
      */
     @GET
     @Path("/cost-to-revenue")
-    @RolesAllowed({"finance:read"})
     public List<CostToRevenueDataPointDTO> costToRevenue(@QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s", companyIds);
         return cxoFinanceService.costToRevenue(parseCompanyIds(companyIds));
@@ -1819,7 +1818,6 @@ public class CxoFinanceResource {
      */
     @GET
     @Path("/gross-margin-trend")
-    @RolesAllowed({"finance:read"})
     public List<GrossMarginTrendDataPointDTO> grossMarginTrend(@QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/gross-margin-trend: companyIds=%s", companyIds);
         return cxoFinanceService.grossMarginTrend(parseCompanyIds(companyIds));
@@ -1842,7 +1840,6 @@ public class CxoFinanceResource {
      */
     @GET
     @Path("/revenue-by-practice")
-    @RolesAllowed({"finance:read"})
     public RevenuePracticeDTO revenueByPractice(
             @QueryParam("fromDate") String fromDate,
             @QueryParam("toDate") String toDate,

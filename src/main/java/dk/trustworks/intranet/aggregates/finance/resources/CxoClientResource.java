@@ -699,7 +699,6 @@ public class CxoClientResource {
      */
     @GET
     @Path("/new-vs-repeat-revenue")
-    @RolesAllowed({"clients:read"})
     public NewVsRepeatClientRevenueDTO newVsRepeatRevenue(
             @QueryParam("fromDate") String fromDate,
             @QueryParam("toDate") String toDate,
