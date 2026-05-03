@@ -10,9 +10,11 @@ import java.util.List;
  * {@code src/lib/types/cxo.ts}. Source: active consultants
  * ({@code userstatus.type='CONSULTANT', status='ACTIVE'}) with their most
  * recent {@code user_career_level} entry, grouped into 5 hardcoded buckets:
- * Junior, Mid, Senior, Leadership, Partner. Career levels not mapped to a
- * bucket are silently excluded (they do not contribute to {@code totalConsultants}
- * either, matching BFF semantics).</p>
+ * Junior, Mid, Senior, Leadership, Partner. Unmapped career levels (e.g.
+ * SENIOR_CONSULTANT, LEAD_CONSULTANT, MANAGING_CONSULTANT,
+ * PRINCIPAL_CONSULTANT) contribute to {@code totalConsultants} (matching
+ * BFF semantics — the BFF accumulates the total unconditionally) but are
+ * not counted in any bucket.</p>
  *
  * <p>{@code snapshotDate} is the ISO-8601 date the snapshot was taken
  * server-side ({@code LocalDate.now()}, formatted as YYYY-MM-DD).</p>

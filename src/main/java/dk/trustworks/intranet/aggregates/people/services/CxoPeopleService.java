@@ -60,8 +60,10 @@ public class CxoPeopleService {
 
     /**
      * Reverse index: career_level → bucket label. Built once at class load.
-     * Career levels not in this map are silently excluded from both counts and
-     * totalConsultants (matches BFF semantics).
+     * Career levels not in this map are silently excluded from any bucket
+     * count, but they still contribute to {@code totalConsultants} (matches
+     * BFF semantics — the BFF accumulates {@code totalConsultants}
+     * unconditionally for every active-consultant row).
      */
     private static final Map<String, String> CAREER_LEVEL_TO_BUCKET;
     static {
@@ -179,9 +181,9 @@ public class CxoPeopleService {
      * row ({@code MAX(active_from)}). Career-level codes are then bucketed
      * server-side via the static {@link #PYRAMID_BUCKETS} table.</p>
      *
-     * <p>Career levels not mapped to any bucket are silently excluded from
-     * both the bucket counts and {@code totalConsultants} — matches BFF
-     * semantics.</p>
+     * <p>Unmapped career levels contribute to {@code totalConsultants}
+     * (matching BFF — the BFF accumulator is unconditional) but not to any
+     * bucket count.</p>
      *
      * <p>The 5 buckets are always returned in fixed order regardless of which
      * buckets have rows, so the chart renderer can rely on the shape.</p>
@@ -234,12 +236,15 @@ public class CxoPeopleService {
             String careerLevel = row.get("career_level", String.class);
             long count = ((Number) row.get("consultant_count")).longValue();
             String bucketLabel = CAREER_LEVEL_TO_BUCKET.get(careerLevel);
+            // totalConsultants is incremented unconditionally to match the BFF's
+            // unconditional accumulator. Unmapped career levels (e.g.
+            // SENIOR_CONSULTANT, LEAD_CONSULTANT, MANAGING_CONSULTANT,
+            // PRINCIPAL_CONSULTANT) still contribute to the total but are not
+            // counted in any bucket.
+            totalConsultants += count;
             if (bucketLabel != null) {
                 bucketCounts.merge(bucketLabel, count, Long::sum);
-                totalConsultants += count;
             }
-            // Unknown career levels are silently excluded from both counts and total
-            // (matches BFF semantics).
         }
 
         List<PyramidLevelDTO> levels = new ArrayList<>(PYRAMID_BUCKETS.size());
