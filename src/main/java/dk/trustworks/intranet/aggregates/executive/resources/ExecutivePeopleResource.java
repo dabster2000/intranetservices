@@ -1,17 +1,21 @@
 package dk.trustworks.intranet.aggregates.executive.resources;
 
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
 import dk.trustworks.intranet.aggregates.executive.services.ExecutivePeopleService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -48,5 +52,17 @@ public class ExecutivePeopleResource {
             if (!trimmed.isEmpty()) out.add(trimmed);
         }
         return out.isEmpty() ? null : out;
+    }
+
+    /**
+     * Returns the current-snapshot age distribution of active employees in
+     * 5-year buckets, stacked by gender.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/age-distribution")
+    public List<ExecAgeBucketDTO> ageDistribution(@QueryParam("companyIds") String companyIds) {
+        return executivePeopleService.ageDistribution(parseCommaSeparated(companyIds));
     }
 }
