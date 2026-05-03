@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.forecast.resources;
 
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateStageDTO;
 import dk.trustworks.intranet.aggregates.forecast.services.CxoForecastService;
 import jakarta.annotation.security.RolesAllowed;
@@ -59,5 +60,11 @@ public class CxoForecastResource {
     @Path("/win-rates")
     public List<WinRateStageDTO> winRates(@QueryParam("companyIds") String companyIds) {
         return cxoForecastService.winRates(parseCommaSeparated(companyIds));
+    }
+
+    @GET
+    @Path("/pipeline-health")
+    public List<PipelineHealthMonthDTO> pipelineHealth(@QueryParam("companyIds") String companyIds) {
+        return cxoForecastService.pipelineHealth(parseCommaSeparated(companyIds));
     }
 }

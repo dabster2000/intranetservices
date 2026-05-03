@@ -2,6 +2,8 @@ package dk.trustworks.intranet.aggregates.forecast.services;
 
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffPracticeDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthMonthDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthStageDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateDealTypeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRatePracticeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateStageDTO;
@@ -284,6 +286,131 @@ public class CxoForecastService {
         }
 
         log.debugf("winRates: %d stages", Integer.valueOf(result.size()));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Pipeline Health (Coverage Trend)
+    // ============================================================================
+
+    /**
+     * Per-month accumulator used during Java-side aggregation of
+     * {@code fact_pipeline_snapshot} rows. Mutable on purpose — the immutable
+     * {@link PipelineHealthMonthDTO} is built at the end from these totals.
+     */
+    private static final class PipelineMonthAccumulator {
+        double totalExpected;
+        double totalWeighted;
+        final List<PipelineHealthStageDTO> byStage = new ArrayList<>();
+    }
+
+    /**
+     * Returns the per-month pipeline health snapshot from
+     * {@code fact_pipeline_snapshot} joined against the per-month budget target
+     * from {@code fact_revenue_budget_mat}, mirroring the BFF route at
+     * {@code /api/cxo/forecast/pipeline-health}.
+     *
+     * <p>Two queries are issued sequentially (the BFF parallelises them, but
+     * the JPA EntityManager is single-threaded). The first returns one row per
+     * (snapshot_month, stage_id) bucket; the second returns one row per
+     * (month_key) budget total. Stage rows are emitted in canonical funnel
+     * order via {@code ORDER BY FIELD(stage_id, ...)} and a {@link LinkedHashMap}
+     * preserves the {@code snapshot_month} ordering.</p>
+     *
+     * <p>{@code coverageRatio = totalWeighted / budgetTarget} when the budget
+     * target is positive, otherwise {@code 0}. Note the column-name asymmetry:
+     * the snapshot table uses {@code company_uuid}, the budget materialised
+     * view uses {@code company_id}.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return chronologically-ordered list of monthly pipeline-health aggregates (may be empty)
+     */
+    public List<PipelineHealthMonthDTO> pipelineHealth(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String pipelineCompanyFilter = hasCompanyFilter ? " WHERE fps.company_uuid IN (:companyIds)" : "";
+        String budgetCompanyFilter = hasCompanyFilter ? " WHERE company_id IN (:companyIds)" : "";
+
+        // Query 1: pipeline snapshot rows per (month, stage)
+        String pipelineSql = "SELECT " +
+                "  fps.snapshot_month, " +
+                "  fps.stage_id, " +
+                "  COALESCE(SUM(fps.expected_revenue_dkk), 0) AS total_expected, " +
+                "  COALESCE(SUM(fps.weighted_pipeline_dkk), 0) AS total_weighted, " +
+                "  COUNT(DISTINCT fps.opportunity_uuid) AS opportunity_count " +
+                "FROM fact_pipeline_snapshot fps" +
+                pipelineCompanyFilter + " " +
+                "GROUP BY fps.snapshot_month, fps.stage_id " +
+                "ORDER BY fps.snapshot_month, FIELD(fps.stage_id, 'DETECTED','QUALIFIED','SHORTLISTED','PROPOSAL','NEGOTIATION')";
+
+        Query pipelineQuery = em.createNativeQuery(pipelineSql, Tuple.class);
+        if (hasCompanyFilter) {
+            pipelineQuery.setParameter("companyIds", companyIds);
+        }
+        pipelineQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> pipelineRows = pipelineQuery.getResultList();
+
+        // Query 2: budget total per month
+        String budgetSql = "SELECT " +
+                "  month_key, " +
+                "  SUM(budget_revenue_dkk) AS budget_target " +
+                "FROM fact_revenue_budget_mat" +
+                budgetCompanyFilter + " " +
+                "GROUP BY month_key";
+
+        Query budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
+        if (hasCompanyFilter) {
+            budgetQuery.setParameter("companyIds", companyIds);
+        }
+        budgetQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> budgetRows = budgetQuery.getResultList();
+
+        Map<String, Double> budgetByMonth = new java.util.HashMap<>();
+        for (Tuple row : budgetRows) {
+            String monthKey = row.get("month_key", String.class);
+            budgetByMonth.put(monthKey, Double.valueOf(toDouble(row.get("budget_target"))));
+        }
+
+        // LinkedHashMap preserves SQL ORDER BY snapshot_month — no extra sort needed.
+        Map<String, PipelineMonthAccumulator> byMonth = new LinkedHashMap<>();
+        for (Tuple row : pipelineRows) {
+            String month = row.get("snapshot_month", String.class);
+            String stageId = row.get("stage_id", String.class);
+            double expected = toDouble(row.get("total_expected"));
+            double weighted = toDouble(row.get("total_weighted"));
+            long opportunityCount = ((Number) row.get("opportunity_count")).longValue();
+
+            PipelineMonthAccumulator acc = byMonth.computeIfAbsent(month, k -> new PipelineMonthAccumulator());
+            acc.totalExpected += expected;
+            acc.totalWeighted += weighted;
+            acc.byStage.add(new PipelineHealthStageDTO(stageId, expected, weighted, opportunityCount));
+        }
+
+        List<PipelineHealthMonthDTO> result = new ArrayList<>(byMonth.size());
+        for (Map.Entry<String, PipelineMonthAccumulator> e : byMonth.entrySet()) {
+            String month = e.getKey();
+            PipelineMonthAccumulator acc = e.getValue();
+            double budgetTarget = budgetByMonth.getOrDefault(month, Double.valueOf(0.0)).doubleValue();
+            double coverageRatio = budgetTarget > 0.0 ? acc.totalWeighted / budgetTarget : 0.0;
+            int year = Integer.parseInt(month.substring(0, 4));
+            int monthNumber = Integer.parseInt(month.substring(4, 6));
+            String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+                    + " " + year;
+            result.add(new PipelineHealthMonthDTO(
+                    month,
+                    monthLabel,
+                    acc.totalExpected,
+                    acc.totalWeighted,
+                    budgetTarget,
+                    coverageRatio,
+                    acc.byStage));
+        }
+
+        log.debugf("pipelineHealth: %d months (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
         return result;
     }
 }
