@@ -52,5 +52,7 @@ class CxoFinanceServiceRevenueByPracticeTest {
         Set<String> companyIds = Set.of("00000000-0000-0000-0000-000000000001");
         RevenuePracticeDTO result = service.revenueByPractice(null, null, companyIds);
         assertNotNull(result);
+        assertTrue(result.months().isEmpty(), "filter with random UUIDs should return empty");
+        assertTrue(result.practices().isEmpty(), "filter with random UUIDs should return empty");
     }
 }

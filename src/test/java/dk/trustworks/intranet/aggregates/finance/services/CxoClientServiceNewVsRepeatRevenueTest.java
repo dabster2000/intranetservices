@@ -45,5 +45,6 @@ class CxoClientServiceNewVsRepeatRevenueTest {
         Set<String> companyIds = Set.of("00000000-0000-0000-0000-000000000001");
         NewVsRepeatClientRevenueDTO result = service.newVsRepeatRevenue(null, null, companyIds);
         assertNotNull(result);
+        assertTrue(result.quarters().isEmpty(), "filter with random UUIDs should return empty");
     }
 }

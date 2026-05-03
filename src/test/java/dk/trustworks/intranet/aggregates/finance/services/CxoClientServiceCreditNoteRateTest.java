@@ -39,6 +39,11 @@ class CxoClientServiceCreditNoteRateTest {
             assertTrue(c.creditNoteAmountDkk() > 0);
             assertTrue(c.creditNoteCount() > 0);
         }
+        for (int i = 1; i < result.topClients().size(); i++) {
+            assertTrue(
+                result.topClients().get(i - 1).creditNoteAmountDkk() >= result.topClients().get(i).creditNoteAmountDkk(),
+                "topClients must be sorted by creditNoteAmountDkk DESC at index " + i);
+        }
     }
 
     @Test
@@ -53,5 +58,7 @@ class CxoClientServiceCreditNoteRateTest {
         Set<String> companyIds = Set.of("00000000-0000-0000-0000-000000000001");
         CreditNoteRateDTO result = service.creditNoteRate(null, null, companyIds);
         assertNotNull(result);
+        assertTrue(result.monthly().isEmpty(), "filter with random UUIDs should return empty");
+        assertTrue(result.topClients().isEmpty(), "filter with random UUIDs should return empty");
     }
 }

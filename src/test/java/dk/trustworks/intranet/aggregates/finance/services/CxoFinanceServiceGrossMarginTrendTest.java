@@ -38,5 +38,6 @@ class CxoFinanceServiceGrossMarginTrendTest {
                                         "00000000-0000-0000-0000-000000000002");
         List<GrossMarginTrendDataPointDTO> result = service.grossMarginTrend(companyIds);
         assertNotNull(result);
+        assertTrue(result.isEmpty(), "filter with random UUIDs should return empty");
     }
 }

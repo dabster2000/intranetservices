@@ -40,6 +40,6 @@ class CxoFinanceServiceCostToRevenueTest {
                                         "00000000-0000-0000-0000-000000000002");
         List<CostToRevenueDataPointDTO> result = service.costToRevenue(companyIds);
         assertNotNull(result, "Service must return a list even with no matching rows");
-        // No further assertions: with random UUIDs the result is expected to be empty.
+        assertTrue(result.isEmpty(), "filter with random UUIDs should return empty");
     }
 }
