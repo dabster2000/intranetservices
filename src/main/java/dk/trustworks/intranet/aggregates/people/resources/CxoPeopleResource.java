@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.people.resources;
 
 import dk.trustworks.intranet.aggregates.people.dto.cxo.ConsultantPyramidDTO;
+import dk.trustworks.intranet.aggregates.people.dto.cxo.HeadcountGrowthMonthDTO;
 import dk.trustworks.intranet.aggregates.people.dto.cxo.TurnoverTtmMonthDTO;
 import dk.trustworks.intranet.aggregates.people.services.CxoPeopleService;
 import jakarta.annotation.security.RolesAllowed;
@@ -75,5 +76,16 @@ public class CxoPeopleResource {
     @Path("/consultant-pyramid")
     public ConsultantPyramidDTO consultantPyramid(@QueryParam("companyIds") String companyIds) {
         return cxoPeopleService.consultantPyramid(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Returns the trailing-24-months headcount-by-type curve.
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     */
+    @GET
+    @Path("/headcount-growth")
+    public List<HeadcountGrowthMonthDTO> headcountGrowth(@QueryParam("companyIds") String companyIds) {
+        return cxoPeopleService.headcountGrowth(parseCommaSeparated(companyIds));
     }
 }
