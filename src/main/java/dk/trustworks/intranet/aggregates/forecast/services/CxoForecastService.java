@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffPracticeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.PipelineHealthStageDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.RevenueForecastBandMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateDealTypeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRatePracticeDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateStageDTO;
@@ -14,9 +15,11 @@ import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.time.Month;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -368,7 +371,7 @@ public class CxoForecastService {
         @SuppressWarnings("unchecked")
         List<Tuple> budgetRows = budgetQuery.getResultList();
 
-        Map<String, Double> budgetByMonth = new java.util.HashMap<>();
+        Map<String, Double> budgetByMonth = new HashMap<>();
         for (Tuple row : budgetRows) {
             String monthKey = row.get("month_key", String.class);
             budgetByMonth.put(monthKey, Double.valueOf(toDouble(row.get("budget_target"))));
@@ -410,6 +413,183 @@ public class CxoForecastService {
         }
 
         log.debugf("pipelineHealth: %d months (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Revenue Forecast (Confidence Bands)
+    // ============================================================================
+
+    /**
+     * Returns the trailing-6 + current + 12-forward month revenue forecast
+     * with confidence bands, mirroring the BFF route at
+     * {@code /api/cxo/forecast/revenue-forecast}.
+     *
+     * <p>Five native queries are issued sequentially (the BFF parallelises
+     * them, but the JPA EntityManager is single-threaded):
+     * <ol>
+     *   <li>Actuals from {@code fact_company_revenue_mat} (column: {@code company_id})</li>
+     *   <li>Backlog from {@code fact_backlog} (column: {@code company_id})</li>
+     *   <li>Pipeline from {@code fact_pipeline} (column: {@code company_id})</li>
+     *   <li>Renewal estimate from {@code fact_revenue_runoff} (column: {@code company_uuid})
+     *       — multiplies expired monthly revenue by 0.6 (BFF parity)</li>
+     *   <li>Budget from {@code fact_revenue_budget_mat} (column: {@code company_id})</li>
+     * </ol>
+     * Each query has its own conditional WHERE clause; the runoff query's
+     * filter column is {@code company_uuid} (asymmetric — preserved verbatim).</p>
+     *
+     * <p>Java assembly walks a monthly cursor from {@code trailingStart} to
+     * {@code forwardEnd} inclusive (always 19 months). For each month:
+     * <ul>
+     *   <li>{@code actualRevenueDkk} is {@code null} for future months and
+     *       also {@code null} for past months without a row in the actuals
+     *       map (mirrors the BFF's {@code map.get(...) ?? null} semantics —
+     *       implemented via {@code containsKey} since the unboxing of
+     *       {@code Map.getOrDefault} would coerce a missing key to {@code 0}).</li>
+     *   <li>{@code forecastLowDkk = backlog}</li>
+     *   <li>{@code forecastMidDkk = backlog + pipeline}</li>
+     *   <li>{@code forecastHighDkk = backlog + pipeline + renewal}</li>
+     * </ul></p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return 19-month chronological list (always non-empty even with no source data)
+     */
+    public List<RevenueForecastBandMonthDTO> revenueForecast(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        // company_id columns appear in 4 of the 5 source tables; fact_revenue_runoff uses company_uuid.
+        String companyFilterId = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+        String companyFilterUuid = hasCompanyFilter ? " AND company_uuid IN (:companyIds)" : "";
+
+        LocalDate now = LocalDate.now();
+        String currentMonth = String.format("%04d%02d", now.getYear(), now.getMonthValue());
+        LocalDate trailingStart = now.withDayOfMonth(1).minusMonths(6);
+        String startMonth = String.format("%04d%02d", trailingStart.getYear(), trailingStart.getMonthValue());
+        LocalDate forwardEnd = now.withDayOfMonth(1).plusMonths(12);
+        String endMonth = String.format("%04d%02d", forwardEnd.getYear(), forwardEnd.getMonthValue());
+
+        // Query 1: actuals (trailing window through forward end)
+        String actualsSql = "SELECT month_key, SUM(net_revenue_dkk) AS actual_revenue " +
+                "FROM fact_company_revenue_mat " +
+                "WHERE month_key >= :startMonth AND month_key <= :endMonth" + companyFilterId + " " +
+                "GROUP BY month_key";
+        Query actualsQuery = em.createNativeQuery(actualsSql, Tuple.class)
+                .setParameter("startMonth", startMonth)
+                .setParameter("endMonth", endMonth);
+        if (hasCompanyFilter) actualsQuery.setParameter("companyIds", companyIds);
+        actualsQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> actualsRows = actualsQuery.getResultList();
+
+        // Query 2: backlog (current month onward)
+        String backlogSql = "SELECT delivery_month_key, SUM(backlog_revenue_dkk) AS backlog_revenue " +
+                "FROM fact_backlog " +
+                "WHERE delivery_month_key >= :currentMonth" + companyFilterId + " " +
+                "GROUP BY delivery_month_key";
+        Query backlogQuery = em.createNativeQuery(backlogSql, Tuple.class)
+                .setParameter("currentMonth", currentMonth);
+        if (hasCompanyFilter) backlogQuery.setParameter("companyIds", companyIds);
+        backlogQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> backlogRows = backlogQuery.getResultList();
+
+        // Query 3: weighted pipeline (current month onward)
+        String pipelineSql = "SELECT expected_revenue_month_key, SUM(weighted_pipeline_dkk) AS weighted_pipeline " +
+                "FROM fact_pipeline " +
+                "WHERE expected_revenue_month_key >= :currentMonth" + companyFilterId + " " +
+                "GROUP BY expected_revenue_month_key";
+        Query pipelineQuery = em.createNativeQuery(pipelineSql, Tuple.class)
+                .setParameter("currentMonth", currentMonth);
+        if (hasCompanyFilter) pipelineQuery.setParameter("companyIds", companyIds);
+        pipelineQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> pipelineRows = pipelineQuery.getResultList();
+
+        // Query 4: renewal estimate (60% of expiring revenue from runoff table)
+        String renewalSql = "SELECT future_month, " +
+                "SUM(CASE WHEN is_expired = 1 THEN monthly_revenue_dkk * 0.6 ELSE 0 END) AS renewal_estimate " +
+                "FROM fact_revenue_runoff " +
+                "WHERE 1=1" + companyFilterUuid + " " +
+                "GROUP BY future_month";
+        Query renewalQuery = em.createNativeQuery(renewalSql, Tuple.class);
+        if (hasCompanyFilter) renewalQuery.setParameter("companyIds", companyIds);
+        renewalQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> renewalRows = renewalQuery.getResultList();
+
+        // Query 5: budget (trailing window through forward end)
+        String budgetSql = "SELECT month_key, SUM(budget_revenue_dkk) AS budget " +
+                "FROM fact_revenue_budget_mat " +
+                "WHERE month_key >= :startMonth AND month_key <= :endMonth" + companyFilterId + " " +
+                "GROUP BY month_key";
+        Query budgetQuery = em.createNativeQuery(budgetSql, Tuple.class)
+                .setParameter("startMonth", startMonth)
+                .setParameter("endMonth", endMonth);
+        if (hasCompanyFilter) budgetQuery.setParameter("companyIds", companyIds);
+        budgetQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        @SuppressWarnings("unchecked")
+        List<Tuple> budgetRows = budgetQuery.getResultList();
+
+        // Build lookups
+        Map<String, Double> actualMap = new HashMap<>();
+        for (Tuple row : actualsRows) {
+            actualMap.put(row.get("month_key", String.class),
+                    Double.valueOf(toDouble(row.get("actual_revenue"))));
+        }
+        Map<String, Double> backlogMap = new HashMap<>();
+        for (Tuple row : backlogRows) {
+            backlogMap.put(row.get("delivery_month_key", String.class),
+                    Double.valueOf(toDouble(row.get("backlog_revenue"))));
+        }
+        Map<String, Double> pipelineMap = new HashMap<>();
+        for (Tuple row : pipelineRows) {
+            pipelineMap.put(row.get("expected_revenue_month_key", String.class),
+                    Double.valueOf(toDouble(row.get("weighted_pipeline"))));
+        }
+        Map<String, Double> renewalMap = new HashMap<>();
+        for (Tuple row : renewalRows) {
+            renewalMap.put(row.get("future_month", String.class),
+                    Double.valueOf(toDouble(row.get("renewal_estimate"))));
+        }
+        Map<String, Double> budgetMap = new HashMap<>();
+        for (Tuple row : budgetRows) {
+            budgetMap.put(row.get("month_key", String.class),
+                    Double.valueOf(toDouble(row.get("budget"))));
+        }
+
+        // Walk the cursor — always emit 19 months (trailing 6 + current + 12 forward).
+        List<RevenueForecastBandMonthDTO> result = new ArrayList<>();
+        LocalDate cursor = trailingStart;
+        while (!cursor.isAfter(forwardEnd)) {
+            String monthKey = String.format("%04d%02d", cursor.getYear(), cursor.getMonthValue());
+            boolean isFuture = monthKey.compareTo(currentMonth) >= 0;
+
+            double backlogDkk = backlogMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
+            double pipelineDkk = pipelineMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
+            double renewalDkk = renewalMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
+            double budgetDkk = budgetMap.getOrDefault(monthKey, Double.valueOf(0.0)).doubleValue();
+            // BFF: actualMap.get(monthKey) ?? null. Use containsKey to preserve null-vs-zero distinction.
+            Double actualDkk = actualMap.containsKey(monthKey) ? actualMap.get(monthKey) : null;
+            Double actualRevenueDkk = isFuture ? null : actualDkk;
+
+            int year = cursor.getYear();
+            int monthNumber = cursor.getMonthValue();
+            String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+                    + " " + year;
+
+            result.add(new RevenueForecastBandMonthDTO(
+                    monthKey,
+                    monthLabel,
+                    actualRevenueDkk,
+                    budgetDkk,
+                    backlogDkk,
+                    backlogDkk + pipelineDkk,
+                    backlogDkk + pipelineDkk + renewalDkk));
+
+            cursor = cursor.plusMonths(1);
+        }
+
+        log.debugf("revenueForecast: %d months (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
         return result;
     }
