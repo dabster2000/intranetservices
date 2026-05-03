@@ -1,17 +1,21 @@
 package dk.trustworks.intranet.aggregates.forecast.resources;
 
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.services.CxoForecastService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -42,5 +46,11 @@ public class CxoForecastResource {
             if (!trimmed.isEmpty()) out.add(trimmed);
         }
         return out.isEmpty() ? null : out;
+    }
+
+    @GET
+    @Path("/contract-runoff")
+    public List<ContractRunoffMonthDTO> contractRunoff(@QueryParam("companyIds") String companyIds) {
+        return cxoForecastService.contractRunoff(parseCommaSeparated(companyIds));
     }
 }
