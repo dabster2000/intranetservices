@@ -102,9 +102,6 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
             // Conference
             "conference:read", "conference:write",
 
-            // Lunch
-            "lunch:read", "lunch:write",
-
             // News
             "news:read", "news:write",
 
