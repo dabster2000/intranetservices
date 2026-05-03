@@ -126,7 +126,7 @@ public class ExecutivePeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -251,7 +251,7 @@ public class ExecutivePeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -372,7 +372,7 @@ public class ExecutivePeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -502,7 +502,7 @@ public class ExecutivePeopleService {
         }
         query.setParameter("cohortStart", RETENTION_COHORT_START_YEAR);
         query.setParameter("cohortEnd", RETENTION_COHORT_END_YEAR);
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -672,7 +672,7 @@ public class ExecutivePeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();

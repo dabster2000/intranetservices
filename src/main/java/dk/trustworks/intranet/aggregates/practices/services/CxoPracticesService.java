@@ -198,7 +198,7 @@ public class CxoPracticesService {
         if (hasCompanyFilter) {
             revenueQuery.setParameter("companyIds", companyIds);
         }
-        revenueQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        revenueQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> revenueRows = revenueQuery.getResultList();
@@ -233,7 +233,7 @@ public class CxoPracticesService {
         if (hasCompanyFilter) {
             opexQuery.setParameter("companyIds", companyIds);
         }
-        opexQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        opexQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> opexRows = opexQuery.getResultList();

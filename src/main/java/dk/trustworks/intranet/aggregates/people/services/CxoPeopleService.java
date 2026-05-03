@@ -143,7 +143,7 @@ public class CxoPeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -220,7 +220,7 @@ public class CxoPeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
@@ -344,7 +344,7 @@ public class CxoPeopleService {
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }
-        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();

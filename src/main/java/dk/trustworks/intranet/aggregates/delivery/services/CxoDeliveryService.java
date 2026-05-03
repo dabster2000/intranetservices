@@ -1776,7 +1776,7 @@ public class CxoDeliveryService {
         if (hasCompanyFilter) {
             supplyQuery.setParameter("companyIds", companyIds);
         }
-        supplyQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        supplyQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<jakarta.persistence.Tuple> supplyRows = supplyQuery.getResultList();
@@ -1804,7 +1804,7 @@ public class CxoDeliveryService {
         if (hasCompanyFilter) {
             demandQuery.setParameter("companyIds", companyIds);
         }
-        demandQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+        demandQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
         List<jakarta.persistence.Tuple> demandRows = demandQuery.getResultList();
