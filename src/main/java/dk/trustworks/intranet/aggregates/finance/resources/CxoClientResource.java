@@ -14,6 +14,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FactFreshnessDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CreditNoteRateDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
@@ -710,5 +711,33 @@ public class CxoClientResource {
         LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
         LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
         return cxoClientService.newVsRepeatRevenue(from, to, parseCompanyIds(companyIds));
+    }
+
+    /**
+     * Gets the monthly credit-note rate plus the top-5 clients by credit-note volume.
+     *
+     * <p>Only invoices in {@code economics_status IN ('BOOKED', 'PAID')} are counted, so
+     * drafts and in-progress invoices are excluded from the ratio. The {@code creditNoteRatePct}
+     * is the percentage of total billed value that was credited back, returned as
+     * {@code 0.0} (never null) when no invoices fall in a given month.</p>
+     *
+     * @param fromDate ISO-8601 start date (optional, defaults to the 1st of the month 11 months ago)
+     * @param toDate   ISO-8601 end date (optional, defaults to today)
+     * @param companyIds comma-separated company UUIDs (optional)
+     * @return CreditNoteRateDTO with the monthly series and top-5 clients
+     */
+    @GET
+    @Path("/credit-note-rate")
+    public CreditNoteRateDTO creditNoteRate(
+            @QueryParam("fromDate") String fromDate,
+            @QueryParam("toDate") String toDate,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/credit-note-rate: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+
+        LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
+        LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
+        return cxoClientService.creditNoteRate(from, to, parseCompanyIds(companyIds));
     }
 }

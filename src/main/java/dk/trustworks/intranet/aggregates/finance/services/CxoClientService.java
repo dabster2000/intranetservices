@@ -1,6 +1,9 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
 import dk.trustworks.intranet.aggregates.finance.dto.*;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CreditNoteRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CreditNoteTopClientDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.MonthlyCreditNoteDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.QuarterlyNewVsRepeatDTO;
 import dk.trustworks.intranet.dao.crm.model.Client;
@@ -2376,5 +2379,138 @@ public class CxoClientService {
         log.debugf("newVsRepeatRevenue: returned %d quarters (companyFilter=%s)",
                 Integer.valueOf(quarters.size()), Boolean.toString(hasCompanyFilter));
         return new NewVsRepeatClientRevenueDTO(quarters);
+    }
+
+    // ============================================================================
+    // CXO Command Center: Credit Note Rate
+    // ============================================================================
+
+    private static final String[] CREDIT_NOTE_MONTH_LABELS = {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+
+    private static String creditNoteMonthLabel(int year, int monthNumber) {
+        return CREDIT_NOTE_MONTH_LABELS[monthNumber - 1] + " " + year;
+    }
+
+    /**
+     * Returns the monthly credit-note rate series plus the top-5 clients by credit-note
+     * volume, mirroring the BFF route at {@code /api/cxo/clients/credit-note-rate}.
+     *
+     * <p>Only invoices in {@code economics_status IN ('BOOKED', 'PAID')} are counted, so
+     * drafts and in-progress invoices do not skew the ratio. The credit-note rate is
+     * computed in Java (not SQL) for parity with the BFF: when the denominator is zero
+     * the rate is {@code 0.0} rather than null.</p>
+     *
+     * @param fromDate inclusive start of the date window; defaults to the 1st of the month
+     *                 11 months before today when {@code null} (matches BFF default)
+     * @param toDate   inclusive end of the date window; defaults to today when {@code null}
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no company filter
+     * @return wrapper with the time-ordered monthly series and the top-5 clients
+     */
+    public CreditNoteRateDTO creditNoteRate(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate from = fromDate != null ? fromDate : today.withDayOfMonth(1).minusMonths(11);
+        LocalDate to = toDate != null ? toDate : today;
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND i.companyuuid IN (:companyIds)" : "";
+
+        String monthlySql = "SELECT " +
+                "  DATE_FORMAT(i.invoicedate, '%Y%m')     AS month_key, " +
+                "  YEAR(i.invoicedate)                     AS year_num, " +
+                "  MONTH(i.invoicedate)                    AS month_number, " +
+                "  SUM(CASE WHEN i.type IN ('INVOICE', 'PHANTOM') " +
+                "        THEN COALESCE(ii.rate * ii.hours, 0) " +
+                "        ELSE 0 " +
+                "      END)                                AS invoice_amount, " +
+                "  ABS(SUM(CASE WHEN i.type = 'CREDIT_NOTE' " +
+                "        THEN COALESCE(ii.rate * ii.hours, 0) " +
+                "        ELSE 0 " +
+                "      END))                               AS credit_note_amount " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.economics_status IN ('BOOKED', 'PAID') " +
+                "  AND i.invoicedate BETWEEN :fromDate AND :toDate " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL" +
+                companyFilter + " " +
+                "GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m'), YEAR(i.invoicedate), MONTH(i.invoicedate) " +
+                "ORDER BY month_key";
+
+        String topClientsSql = "SELECT " +
+                "  i.clientname                  AS clientname, " +
+                "  ABS(SUM(ii.rate * ii.hours))  AS total_credit_note_amount, " +
+                "  COUNT(DISTINCT i.uuid)        AS credit_note_count " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'CREDIT_NOTE' " +
+                "  AND i.economics_status IN ('BOOKED', 'PAID') " +
+                "  AND i.invoicedate BETWEEN :fromDate AND :toDate " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL " +
+                "  AND i.clientname IS NOT NULL" +
+                companyFilter + " " +
+                "GROUP BY i.clientname " +
+                "ORDER BY total_credit_note_amount DESC " +
+                "LIMIT 5";
+
+        Query monthlyQuery = em.createNativeQuery(monthlySql, Tuple.class);
+        monthlyQuery.setParameter("fromDate", from);
+        monthlyQuery.setParameter("toDate", to);
+        if (hasCompanyFilter) {
+            monthlyQuery.setParameter("companyIds", companyIds);
+        }
+        monthlyQuery.setHint("javax.persistence.query.timeout", 15_000);
+
+        Query topClientsQuery = em.createNativeQuery(topClientsSql, Tuple.class);
+        topClientsQuery.setParameter("fromDate", from);
+        topClientsQuery.setParameter("toDate", to);
+        if (hasCompanyFilter) {
+            topClientsQuery.setParameter("companyIds", companyIds);
+        }
+        topClientsQuery.setHint("javax.persistence.query.timeout", 15_000);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> monthlyRows = monthlyQuery.getResultList();
+        @SuppressWarnings("unchecked")
+        List<Tuple> topClientRows = topClientsQuery.getResultList();
+
+        List<MonthlyCreditNoteDTO> monthly = new ArrayList<>(monthlyRows.size());
+        for (Tuple row : monthlyRows) {
+            String monthKey = row.get("month_key", String.class);
+            int year = ((Number) row.get("year_num")).intValue();
+            int monthNumber = ((Number) row.get("month_number")).intValue();
+            double invoiceAmt = toDouble(row.get("invoice_amount"));
+            double creditNoteAmt = toDouble(row.get("credit_note_amount"));
+            double total = invoiceAmt + creditNoteAmt;
+            double ratePct = total > 0
+                    ? Math.round((creditNoteAmt / total) * 10000.0) / 100.0
+                    : 0.0;
+            monthly.add(new MonthlyCreditNoteDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    creditNoteMonthLabel(year, monthNumber),
+                    invoiceAmt,
+                    creditNoteAmt,
+                    ratePct
+            ));
+        }
+
+        List<CreditNoteTopClientDTO> topClients = new ArrayList<>(topClientRows.size());
+        for (Tuple row : topClientRows) {
+            String clientName = row.get("clientname", String.class);
+            double creditNoteAmt = toDouble(row.get("total_credit_note_amount"));
+            long creditNoteCount = ((Number) row.get("credit_note_count")).longValue();
+            topClients.add(new CreditNoteTopClientDTO(clientName, creditNoteAmt, creditNoteCount));
+        }
+
+        log.debugf("creditNoteRate: %d monthly buckets, %d top clients (companyFilter=%s)",
+                Integer.valueOf(monthly.size()),
+                Integer.valueOf(topClients.size()),
+                Boolean.toString(hasCompanyFilter));
+        return new CreditNoteRateDTO(monthly, topClients);
     }
 }
