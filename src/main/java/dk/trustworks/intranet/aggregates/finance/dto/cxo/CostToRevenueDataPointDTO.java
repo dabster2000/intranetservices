@@ -13,4 +13,13 @@ public record CostToRevenueDataPointDTO(
         double deliveryCostDkk,
         double opexDkk,
         Double costToRevenueRatioPct  // boxed: nullable when revenue == 0
-) {}
+) {
+    public CostToRevenueDataPointDTO {
+        if (monthKey == null || !monthKey.matches("\\d{6}"))
+            throw new IllegalArgumentException("monthKey must be YYYYMM, was " + monthKey);
+        if (monthNumber < 1 || monthNumber > 12)
+            throw new IllegalArgumentException("monthNumber out of range: " + monthNumber);
+        if (year < 2000 || year > 2100)
+            throw new IllegalArgumentException("year out of range: " + year);
+    }
+}

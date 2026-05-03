@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.dto.cxo;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Wrapper response for GET /clients/cxo/new-vs-repeat-revenue.
@@ -12,4 +13,8 @@ import java.util.List;
  */
 public record NewVsRepeatClientRevenueDTO(
         List<QuarterlyNewVsRepeatDTO> quarters
-) {}
+) {
+    public NewVsRepeatClientRevenueDTO {
+        Objects.requireNonNull(quarters, "quarters");
+    }
+}

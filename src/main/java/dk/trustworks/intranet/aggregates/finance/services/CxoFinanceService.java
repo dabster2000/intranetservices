@@ -103,6 +103,25 @@ public class CxoFinanceService {
     @Inject
     DistributionAwareOpexProvider opexProvider;
 
+    // -------------------------------------------------------------------------
+    // Generic helpers for safe DB value conversion (BIT, Boolean, Number, etc.)
+    // Mirrors the pattern in CxoClientService so MariaDB BIT columns and other
+    // edge cases are handled uniformly across the CXO services.
+    // -------------------------------------------------------------------------
+
+    private static double toDouble(Object v) {
+        if (v == null) return 0d;
+        if (v instanceof Number n) return n.doubleValue();
+        if (v instanceof Boolean b) return b ? 1d : 0d;
+        if (v instanceof byte[] bytes) {
+            return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
+        }
+        if (v instanceof java.util.BitSet bs) {
+            return bs.isEmpty() ? 0d : 1d;
+        }
+        return Double.parseDouble(v.toString());
+    }
+
     /**
      * Retrieves monthly revenue and margin data for the specified period and filters.
      *
@@ -6017,9 +6036,9 @@ public class CxoFinanceService {
     /**
      * Returns trailing 18 months of cost-to-revenue data, optionally filtered by company UUIDs.
      *
-     * Mirrors the BFF route at /api/cxo/finance/cost-to-revenue (same SQL, same date window).
-     * The trailing 18-month window is computed from {@link LocalDate#now()} so that the result
-     * is always anchored on the current calendar month.
+     * Ported from the legacy BFF route /api/cxo/finance/cost-to-revenue. The trailing 18-month
+     * window is computed from {@link LocalDate#now()} so that the result is always anchored on
+     * the current calendar month.
      *
      * @param companyIds optional set of company UUIDs; null means no company filter
      * @return monthly data points ordered by month_key ascending (may be empty)
@@ -6092,11 +6111,13 @@ public class CxoFinanceService {
             String monthKey = t.get("month_key", String.class);
             int year = ((Number) t.get("year_num")).intValue();
             int monthNumber = ((Number) t.get("month_number")).intValue();
-            double revenueDkk = ((Number) t.get("revenue_dkk")).doubleValue();
-            double deliveryCostDkk = ((Number) t.get("delivery_cost_dkk")).doubleValue();
-            double opexDkk = ((Number) t.get("opex_dkk")).doubleValue();
+            double revenueDkk = toDouble(t.get("revenue_dkk"));
+            double deliveryCostDkk = toDouble(t.get("delivery_cost_dkk"));
+            double opexDkk = toDouble(t.get("opex_dkk"));
             Object ratioRaw = t.get("cost_to_revenue_ratio_pct");
-            Double costToRevenueRatioPct = ratioRaw == null ? null : ((Number) ratioRaw).doubleValue();
+            // Preserve the explicit null guard: toDouble would coerce null to 0.0,
+            // but the frontend contract expects a real null when revenue == 0.
+            Double costToRevenueRatioPct = ratioRaw == null ? null : toDouble(ratioRaw);
             result.add(new CostToRevenueDataPointDTO(
                     monthKey,
                     year,
@@ -6120,9 +6141,9 @@ public class CxoFinanceService {
     /**
      * Returns trailing 18 months of gross margin data, optionally filtered by company UUIDs.
      *
-     * Mirrors the BFF route at /api/cxo/finance/gross-margin-trend (same SQL, same date window).
-     * Only months with positive revenue are included (HAVING SUM(recognized_revenue_dkk) > 0)
-     * to avoid nonsensical margins from zero or negative revenue months.
+     * Ported from the legacy BFF route /api/cxo/finance/gross-margin-trend. Only months with
+     * positive revenue are included (HAVING SUM(recognized_revenue_dkk) > 0) to avoid
+     * nonsensical margins from zero or negative revenue months.
      *
      * @param companyIds optional set of company UUIDs; null means no company filter
      * @return monthly data points ordered by month_key ascending (may be empty)
@@ -6178,10 +6199,12 @@ public class CxoFinanceService {
             String monthKey = t.get("month_key", String.class);
             int year = ((Number) t.get("year_num")).intValue();
             int monthNumber = ((Number) t.get("month_number")).intValue();
-            double totalRevenueDkk = ((Number) t.get("total_revenue_dkk")).doubleValue();
-            double totalCostDkk = ((Number) t.get("total_cost_dkk")).doubleValue();
+            double totalRevenueDkk = toDouble(t.get("total_revenue_dkk"));
+            double totalCostDkk = toDouble(t.get("total_cost_dkk"));
             Object marginRaw = t.get("gross_margin_pct");
-            Double grossMarginPct = marginRaw == null ? null : ((Number) marginRaw).doubleValue();
+            // Preserve the explicit null guard: HAVING currently filters zero-revenue
+            // months but the frontend contract is `number | null`, so keep null-safety.
+            Double grossMarginPct = marginRaw == null ? null : toDouble(marginRaw);
             result.add(new GrossMarginTrendDataPointDTO(
                     monthKey,
                     year,
@@ -6210,7 +6233,7 @@ public class CxoFinanceService {
 
     /**
      * Returns trailing-window revenue broken down by practice (consultant-level attribution),
-     * with cost and margin overlay. Mirrors the BFF route at
+     * with cost and margin overlay. Ported from the legacy BFF route at
      * {@code /api/cxo/finance/revenue-by-practice}.
      *
      * <p>The revenue query attributes each invoice line item to {@code u.practice} of the
@@ -6309,25 +6332,74 @@ public class CxoFinanceService {
         @SuppressWarnings("unchecked")
         List<Tuple> costRows = costQuery.getResultList();
 
+        RevenuePracticeDTO response = buildRevenueByPracticeResponse(revenueRows, costRows);
+
+        log.debugf("revenueByPractice: returned %d months / %d practices (companyFilter=%s)",
+                response.months().size(), response.practices().size(), Boolean.toString(hasCompanyFilter));
+        return response;
+    }
+
+    /**
+     * Mutable per-month aggregator used during revenueByPractice assembly.
+     * Package-private so that {@link #buildRevenueByPracticeResponse(List, List)} can be
+     * unit-tested without booting Quarkus.
+     */
+    static final class MonthAggregate {
+        final int year;
+        final int monthNumber;
+        final Map<String, Double> practices;
+        MonthAggregate(int year, int monthNumber, Map<String, Double> practices) {
+            this.year = year;
+            this.monthNumber = monthNumber;
+            this.practices = practices;
+        }
+    }
+
+    /**
+     * Pure post-query aggregation for {@link #revenueByPractice(LocalDate, LocalDate, Set)}.
+     * Extracted to a package-private static method so it can be unit-tested without a database.
+     *
+     * <p>Steps:
+     * <ol>
+     *   <li>Index cost rows by {@code month_key} into a flat map.</li>
+     *   <li>Group revenue rows by {@code month_key} into ({@code practiceId} → revenue), folding
+     *       any practice id outside {@link #KNOWN_PRACTICES} into {@code "OTHER"}.</li>
+     *   <li>Ensure cost-only months are represented in the output (with empty practice revenue).</li>
+     *   <li>Determine which practices appear at all, preserving the canonical order
+     *       {@code [PM, SA, BA, DEV, CYB]} with {@code "OTHER"} appended last when present.</li>
+     *   <li>Emit one {@link MonthlyRevenuePracticeDataPoint} per month with the per-month margin
+     *       computed in Java ({@code null} when revenue ≤ 0).</li>
+     * </ol></p>
+     *
+     * @param revenueRows tuples with columns: {@code month_key}, {@code year_val}, {@code month_number},
+     *                    {@code service_line_id}, {@code revenue_dkk}
+     * @param costRows    tuples with columns: {@code month_key}, {@code year_val}, {@code month_number},
+     *                    {@code cost_dkk}
+     * @return assembled DTO ready for JSON serialization
+     */
+    static RevenuePracticeDTO buildRevenueByPracticeResponse(
+            List<Tuple> revenueRows,
+            List<Tuple> costRows) {
+
         // ----- Index cost rows by month_key -----
         Map<String, Double> costByMonth = new LinkedHashMap<>(costRows.size());
         for (Tuple t : costRows) {
             String monthKey = t.get("month_key", String.class);
-            double costDkk = ((Number) t.get("cost_dkk")).doubleValue();
+            double costDkk = toDouble(t.get("cost_dkk"));
             costByMonth.put(monthKey, costDkk);
         }
 
         // ----- Group revenue rows by month → (practiceId → revenue) -----
-        // TreeMap keeps natural string ordering of YYYYMM, matching BFF localeCompare sort.
+        // TreeMap keeps natural string ordering of YYYYMM (ascending chronological).
         Map<String, MonthAggregate> monthMap = new TreeMap<>();
         for (Tuple t : revenueRows) {
             String monthKey = t.get("month_key", String.class);
             int year = ((Number) t.get("year_val")).intValue();
             int monthNumber = ((Number) t.get("month_number")).intValue();
             String rawPracticeId = t.get("service_line_id", String.class);
-            double revenue = ((Number) t.get("revenue_dkk")).doubleValue();
+            double revenue = toDouble(t.get("revenue_dkk"));
 
-            // Defensive remap: anything outside KNOWN_PRACTICES becomes OTHER (matches BFF).
+            // Defensive remap: anything outside KNOWN_PRACTICES becomes OTHER.
             String practiceId = (rawPracticeId != null && KNOWN_PRACTICES.contains(rawPracticeId))
                     ? rawPracticeId
                     : "OTHER";
@@ -6392,20 +6464,6 @@ public class CxoFinanceService {
             ));
         }
 
-        log.debugf("revenueByPractice: returned %d months / %d practices (companyFilter=%s)",
-                months.size(), practices.size(), Boolean.toString(hasCompanyFilter));
         return new RevenuePracticeDTO(months, practices);
-    }
-
-    /** Mutable per-month aggregator used during revenueByPractice assembly. */
-    private static final class MonthAggregate {
-        final int year;
-        final int monthNumber;
-        final Map<String, Double> practices;
-        MonthAggregate(int year, int monthNumber, Map<String, Double> practices) {
-            this.year = year;
-            this.monthNumber = monthNumber;
-            this.practices = practices;
-        }
     }
 }

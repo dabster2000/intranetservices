@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.dto.cxo;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Wrapper response for GET /clients/cxo/credit-note-rate.
@@ -12,4 +13,9 @@ import java.util.List;
 public record CreditNoteRateDTO(
         List<MonthlyCreditNoteDTO> monthly,
         List<CreditNoteTopClientDTO> topClients
-) {}
+) {
+    public CreditNoteRateDTO {
+        Objects.requireNonNull(monthly, "monthly");
+        Objects.requireNonNull(topClients, "topClients");
+    }
+}

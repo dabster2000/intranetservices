@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.dto.cxo;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Wrapper response for GET /finance/cxo/revenue-by-practice.
@@ -14,4 +15,9 @@ import java.util.List;
 public record RevenuePracticeDTO(
         List<MonthlyRevenuePracticeDataPoint> months,
         List<String> practices
-) {}
+) {
+    public RevenuePracticeDTO {
+        Objects.requireNonNull(months, "months");
+        Objects.requireNonNull(practices, "practices");
+    }
+}

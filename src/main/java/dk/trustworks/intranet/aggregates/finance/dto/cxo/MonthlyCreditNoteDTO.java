@@ -17,4 +17,13 @@ public record MonthlyCreditNoteDTO(
         double invoiceAmountDkk,
         double creditNoteAmountDkk,
         double creditNoteRatePct
-) {}
+) {
+    public MonthlyCreditNoteDTO {
+        if (monthKey == null || !monthKey.matches("\\d{6}"))
+            throw new IllegalArgumentException("monthKey must be YYYYMM, was " + monthKey);
+        if (monthNumber < 1 || monthNumber > 12)
+            throw new IllegalArgumentException("monthNumber out of range: " + monthNumber);
+        if (year < 2000 || year > 2100)
+            throw new IllegalArgumentException("year out of range: " + year);
+    }
+}

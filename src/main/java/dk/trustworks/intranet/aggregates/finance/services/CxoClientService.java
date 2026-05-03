@@ -2269,8 +2269,8 @@ public class CxoClientService {
     }
 
     /**
-     * Returns quarterly revenue split into NEW vs REPEAT client buckets, mirroring the BFF
-     * route at {@code /api/cxo/clients/new-vs-repeat-revenue}.
+     * Returns quarterly revenue split into NEW vs REPEAT client buckets. Ported from the
+     * legacy BFF route at {@code /api/cxo/clients/new-vs-repeat-revenue}.
      *
      * <p>Classification rule: a project's revenue is "NEW" for the quarter that contains
      * the project's first-ever invoice; otherwise the same project's revenue is "REPEAT".
@@ -2392,12 +2392,12 @@ public class CxoClientService {
 
     /**
      * Returns the monthly credit-note rate series plus the top-5 clients by credit-note
-     * volume, mirroring the BFF route at {@code /api/cxo/clients/credit-note-rate}.
+     * volume. Ported from the legacy BFF route at {@code /api/cxo/clients/credit-note-rate}.
      *
      * <p>Only invoices in {@code economics_status IN ('BOOKED', 'PAID')} are counted, so
      * drafts and in-progress invoices do not skew the ratio. The credit-note rate is
-     * computed in Java (not SQL) for parity with the BFF: when the denominator is zero
-     * the rate is {@code 0.0} rather than null.</p>
+     * computed in Java (not SQL): when the denominator is zero the rate is {@code 0.0}
+     * rather than null.</p>
      *
      * @param fromDate inclusive start of the date window; defaults to the 1st of the month
      *                 11 months before today when {@code null} (matches BFF default)

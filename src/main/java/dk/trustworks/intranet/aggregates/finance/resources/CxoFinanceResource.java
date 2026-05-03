@@ -1826,14 +1826,12 @@ public class CxoFinanceResource {
     @GET
     @Path("/revenue-by-practice")
     public RevenuePracticeDTO revenueByPractice(
-            @QueryParam("fromDate") String fromDate,
-            @QueryParam("toDate") String toDate,
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
             @QueryParam("companyIds") String companyIds) {
         log.debugf("GET /finance/cxo/revenue-by-practice: fromDate=%s, toDate=%s, companyIds=%s",
                 fromDate, toDate, companyIds);
-        LocalDate from = (fromDate == null || fromDate.isBlank()) ? null : LocalDate.parse(fromDate);
-        LocalDate to = (toDate == null || toDate.isBlank()) ? null : LocalDate.parse(toDate);
-        return cxoFinanceService.revenueByPractice(from, to, parseCommaSeparated(companyIds));
+        return cxoFinanceService.revenueByPractice(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**

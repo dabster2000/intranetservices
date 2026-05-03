@@ -18,4 +18,11 @@ public record QuarterlyNewVsRepeatDTO(
         double repeatRevenueDkk,
         double totalRevenueDkk,
         Double repeatSharePercent
-) {}
+) {
+    public QuarterlyNewVsRepeatDTO {
+        if (quarter < 1 || quarter > 4)
+            throw new IllegalArgumentException("quarter out of range: " + quarter);
+        if (year < 2000 || year > 2100)
+            throw new IllegalArgumentException("year out of range: " + year);
+    }
+}
