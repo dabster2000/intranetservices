@@ -2,6 +2,9 @@ package dk.trustworks.intranet.aggregates.forecast.services;
 
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffMonthDTO;
 import dk.trustworks.intranet.aggregates.forecast.dto.cxo.ContractRunoffPracticeDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateDealTypeDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRatePracticeDTO;
+import dk.trustworks.intranet.aggregates.forecast.dto.cxo.WinRateStageDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -27,6 +30,15 @@ import java.util.Set;
 public class CxoForecastService {
 
     static final int CXO_QUERY_TIMEOUT_MS = 15_000;
+
+    /** Display labels keyed by stage_id for the win-rates view. Falls back to raw value if missing. */
+    private static final Map<String, String> STAGE_LABELS = Map.of(
+            "DETECTED", "Detected",
+            "QUALIFIED", "Qualified",
+            "SHORTLISTED", "Shortlisted",
+            "PROPOSAL", "Proposal",
+            "NEGOTIATION", "Negotiation"
+    );
 
     @Inject
     EntityManager em;
@@ -144,6 +156,134 @@ public class CxoForecastService {
 
         log.debugf("contractRunoff: %d months (companyFilter=%s)",
                 Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Win Rate Calibration
+    // ============================================================================
+
+    /**
+     * Per-stage accumulator used during Java-side aggregation of
+     * {@code fact_historical_win_rates} rows. Mutable on purpose — the immutable
+     * {@link WinRateStageDTO} is built at the end from these totals.
+     */
+    private static final class StageAccumulator {
+        String stageLabel;
+        double staticProbabilityPct;
+        long sampleSize;
+        long wonCount;
+        long reachedCount;
+        final List<WinRatePracticeDTO> byPractice = new ArrayList<>();
+        final List<WinRateDealTypeDTO> byDealType = new ArrayList<>();
+    }
+
+    /**
+     * Returns the calibrated-vs-static win-rate comparison per pipeline stage
+     * from {@code fact_historical_win_rates}, mirroring the BFF route at
+     * {@code /api/cxo/forecast/win-rates}.
+     *
+     * <p><strong>Note:</strong> {@code companyIds} is intentionally accepted but
+     * <em>ignored</em> — {@code fact_historical_win_rates} has no
+     * {@code company_uuid} column (the view aggregates across all companies).
+     * The parameter is preserved on the service signature to keep the API
+     * surface uniform with the other CXO endpoints; mirrors BFF route lines
+     * 61-63.</p>
+     *
+     * <p>Stage rows are emitted in canonical funnel order via
+     * {@code ORDER BY FIELD(stage_id, ...)} and a {@link LinkedHashMap}
+     * preserves that order. The aggregate {@code calibratedWinRatePct} is
+     * recomputed from the summed {@code wonCount}/{@code reachedCount} totals
+     * (BFF parity); when {@code reachedCount = 0} the static probability is
+     * used as the fallback, and {@code deltaPct = calibratedWinRatePct -
+     * staticProbabilityPct}.</p>
+     *
+     * @param companyIds accepted but ignored — see method javadoc
+     * @return funnel-ordered list of stage win-rate aggregates (may be empty)
+     */
+    public List<WinRateStageDTO> winRates(Set<String> companyIds) {
+        if (companyIds != null && !companyIds.isEmpty()) {
+            log.debugf("winRates: companyIds=%s ignored — fact_historical_win_rates has no company_uuid",
+                    companyIds);
+        }
+
+        String sql = "SELECT " +
+                "  stage_id, " +
+                "  practice, " +
+                "  deal_type, " +
+                "  won_count, " +
+                "  reached_count, " +
+                "  calibrated_win_rate_pct, " +
+                "  static_probability_pct, " +
+                "  delta_pct, " +
+                "  sample_size " +
+                "FROM fact_historical_win_rates " +
+                "ORDER BY FIELD(stage_id, 'DETECTED','QUALIFIED','SHORTLISTED','PROPOSAL','NEGOTIATION')";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        // LinkedHashMap preserves SQL FIELD() ordering — no extra sort needed.
+        Map<String, StageAccumulator> byStage = new LinkedHashMap<>();
+        for (Tuple row : rows) {
+            String stageId = row.get("stage_id", String.class);
+            String practice = row.get("practice", String.class);
+            String dealType = row.get("deal_type", String.class);
+            double rowCalibratedPct = toDouble(row.get("calibrated_win_rate_pct"));
+            long rowSampleSize = ((Number) row.get("sample_size")).longValue();
+
+            StageAccumulator acc = byStage.computeIfAbsent(stageId, id -> {
+                StageAccumulator a = new StageAccumulator();
+                a.stageLabel = STAGE_LABELS.getOrDefault(id, id);
+                a.staticProbabilityPct = toDouble(row.get("static_probability_pct"));
+                return a;
+            });
+            acc.sampleSize += rowSampleSize;
+            acc.wonCount += ((Number) row.get("won_count")).longValue();
+            acc.reachedCount += ((Number) row.get("reached_count")).longValue();
+
+            if (practice != null) {
+                acc.byPractice.add(new WinRatePracticeDTO(practice, rowCalibratedPct, rowSampleSize));
+            }
+            if (dealType != null) {
+                // BFF dedupes by dealType (first occurrence wins per stage).
+                boolean alreadyPresent = false;
+                for (WinRateDealTypeDTO d : acc.byDealType) {
+                    if (d.dealType().equals(dealType)) {
+                        alreadyPresent = true;
+                        break;
+                    }
+                }
+                if (!alreadyPresent) {
+                    acc.byDealType.add(new WinRateDealTypeDTO(dealType, rowCalibratedPct, rowSampleSize));
+                }
+            }
+        }
+
+        List<WinRateStageDTO> result = new ArrayList<>(byStage.size());
+        for (Map.Entry<String, StageAccumulator> e : byStage.entrySet()) {
+            StageAccumulator acc = e.getValue();
+            double calibratedWinRatePct = acc.reachedCount > 0
+                    ? (acc.wonCount * 100.0 / acc.reachedCount)
+                    : acc.staticProbabilityPct;
+            double deltaPct = calibratedWinRatePct - acc.staticProbabilityPct;
+            result.add(new WinRateStageDTO(
+                    e.getKey(),
+                    acc.stageLabel,
+                    calibratedWinRatePct,
+                    acc.staticProbabilityPct,
+                    deltaPct,
+                    acc.sampleSize,
+                    acc.wonCount,
+                    acc.reachedCount,
+                    acc.byPractice,
+                    acc.byDealType));
+        }
+
+        log.debugf("winRates: %d stages", Integer.valueOf(result.size()));
         return result;
     }
 }
