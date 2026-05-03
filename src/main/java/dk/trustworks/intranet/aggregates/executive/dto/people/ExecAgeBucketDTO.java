@@ -40,5 +40,9 @@ public record ExecAgeBucketDTO(
             throw new IllegalArgumentException("unknownCount must be non-negative: " + unknownCount);
         if (total < 0)
             throw new IllegalArgumentException("total must be non-negative: " + total);
+        if (total != maleCount + femaleCount + unknownCount)
+            throw new IllegalArgumentException(
+                    "total must equal maleCount + femaleCount + unknownCount, but " + total +
+                            " != " + maleCount + " + " + femaleCount + " + " + unknownCount);
     }
 }

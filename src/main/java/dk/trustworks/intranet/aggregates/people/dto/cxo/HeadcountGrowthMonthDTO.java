@@ -35,5 +35,9 @@ public record HeadcountGrowthMonthDTO(
             throw new IllegalArgumentException("monthLabel must not be null");
         if (consultant < 0 || student < 0 || staff < 0 || total < 0)
             throw new IllegalArgumentException("counts must be non-negative");
+        if (total != consultant + student + staff)
+            throw new IllegalArgumentException(
+                    "total must equal consultant + student + staff, but " + total + " != " +
+                            consultant + " + " + student + " + " + staff);
     }
 }

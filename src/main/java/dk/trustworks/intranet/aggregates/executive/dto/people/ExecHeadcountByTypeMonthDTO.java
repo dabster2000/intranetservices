@@ -51,5 +51,9 @@ public record ExecHeadcountByTypeMonthDTO(
             throw new IllegalArgumentException("external must be non-negative: " + external);
         if (total < 0)
             throw new IllegalArgumentException("total must be non-negative: " + total);
+        if (total != consultant + student + staff + external)
+            throw new IllegalArgumentException(
+                    "total must equal consultant + student + staff + external, but " + total +
+                            " != " + consultant + " + " + student + " + " + staff + " + " + external);
     }
 }
