@@ -495,12 +495,31 @@ public class DanlonResource {
         for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
             // Skip users without a Danløn number
             if(danlonHistoryService.getDanlonAsOf(user.getUuid(), month).isEmpty()) continue;
-            double bonus = 0;
+            // Supplements + lump sums split by pension flag → Danløn løntype
+            //   pension=true  → "11" Periodisk tillæg (med pension)
+            //   supplements pension=false → "15" Periodisk tillæg uden pension
+            //   lump sums pension=false (danloenType==41) → "41" Tillæg ej ferieberettiget
+            List<SalarySupplement> supplements = salarySupplementService.findByUseruuidAndMonth(user.getUuid(), month);
+            List<SalaryLumpSum> lumpSums = salaryLumpSumService.findByUseruuidAndMonth(user.getUuid(), month);
 
-            bonus += salarySupplementService.findByUseruuidAndMonth(user.getUuid(), month).stream().mapToDouble(SalarySupplement::getValue).sum();
-            bonus += salaryLumpSumService.findByUseruuidAndMonth(user.getUuid(), month).stream().filter(salaryLumpSum -> salaryLumpSum.getSalaryType().getDanloenType()==41).mapToDouble(SalaryLumpSum::getLumpSum).sum();
+            double withPensionTotal = supplements.stream()
+                    .filter(s -> Boolean.TRUE.equals(s.getWithPension()))
+                    .mapToDouble(SalarySupplement::getValue).sum();
+            withPensionTotal += lumpSums.stream()
+                    .filter(s -> s.getSalaryType().getDanloenType()==41 && Boolean.TRUE.equals(s.getPension()))
+                    .mapToDouble(SalaryLumpSum::getLumpSum).sum();
 
-            if(bonus>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "41", "Bonus", "", "", formatDouble(bonus)));
+            double supplementsWithoutPension = supplements.stream()
+                    .filter(s -> !Boolean.TRUE.equals(s.getWithPension()))
+                    .mapToDouble(SalarySupplement::getValue).sum();
+
+            double lumpSumBonus = lumpSums.stream()
+                    .filter(s -> s.getSalaryType().getDanloenType()==41 && !Boolean.TRUE.equals(s.getPension()))
+                    .mapToDouble(SalaryLumpSum::getLumpSum).sum();
+
+            if(withPensionTotal>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "11", "Tillæg med pension", "", "", formatDouble(withPensionTotal)));
+            if(supplementsWithoutPension>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "15", "Tillæg uden pension", "", "", formatDouble(supplementsWithoutPension)));
+            if(lumpSumBonus>0) result.add(new DanlonSalarySupplements(company.getCvr(), danlonHistoryService.getDanlonAsOf(user.getUuid(), month).orElse(""), user.getFullname(), "41", "Bonus", "", "", formatDouble(lumpSumBonus)));
 
             List<Work> vacationList = workService.findByUserAndPaidOutMonthAndTaskuuid(user.getUuid(), VACATION, month).stream().filter(w -> w.getRegistered().isBefore(month.plusMonths(1).withDayOfMonth(1))).toList();;
             double vacation = vacationList.stream().mapToDouble(Work::getWorkduration).sum();
