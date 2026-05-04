@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.people.dto.cxo;
 
+import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
+
 /**
  * One month in the trailing-24-months headcount-by-type series returned by
  * GET /people/cxo/headcount-growth.
@@ -25,14 +27,7 @@ public record HeadcountGrowthMonthDTO(
         long total
 ) {
     public HeadcountGrowthMonthDTO {
-        if (monthKey == null || !monthKey.matches("\\d{6}"))
-            throw new IllegalArgumentException("monthKey must be YYYYMM, was " + monthKey);
-        if (year < 2000 || year > 2100)
-            throw new IllegalArgumentException("year out of range: " + year);
-        if (monthNumber < 1 || monthNumber > 12)
-            throw new IllegalArgumentException("monthNumber out of range: " + monthNumber);
-        if (monthLabel == null)
-            throw new IllegalArgumentException("monthLabel must not be null");
+        CxoSqlSupport.validateMonthBucket(monthKey, monthLabel, year, monthNumber);
         if (consultant < 0 || student < 0 || staff < 0 || total < 0)
             throw new IllegalArgumentException("counts must be non-negative");
         if (total != consultant + student + staff)

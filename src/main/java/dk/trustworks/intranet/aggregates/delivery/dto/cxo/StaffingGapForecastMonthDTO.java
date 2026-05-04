@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.delivery.dto.cxo;
 
+import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
+
 /**
  * One month in the 12-month staffing supply-vs-demand forecast returned by
  * GET /delivery/cxo/staffing-gap-forecast.
@@ -28,14 +30,7 @@ public record StaffingGapForecastMonthDTO(
         boolean isForecast
 ) {
     public StaffingGapForecastMonthDTO {
-        if (monthKey == null || !monthKey.matches("\\d{6}"))
-            throw new IllegalArgumentException("monthKey must be YYYYMM, was " + monthKey);
-        if (year < 2000 || year > 2100)
-            throw new IllegalArgumentException("year out of range: " + year);
-        if (monthNumber < 1 || monthNumber > 12)
-            throw new IllegalArgumentException("monthNumber out of range: " + monthNumber);
-        if (monthLabel == null)
-            throw new IllegalArgumentException("monthLabel must not be null");
+        CxoSqlSupport.validateMonthBucket(monthKey, monthLabel, year, monthNumber);
         if (!Double.isFinite(supplyFte))
             throw new IllegalArgumentException("supplyFte must be finite: " + supplyFte);
         if (!Double.isFinite(demandFte))

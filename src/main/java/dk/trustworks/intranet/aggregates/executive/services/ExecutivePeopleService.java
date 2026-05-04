@@ -137,7 +137,7 @@ public class ExecutivePeopleService {
             } else if ("FEMALE".equals(gender)) {
                 acc.female = headcount;
             } else {
-                // NULL or any other value → unknown (matches BFF default branch)
+                // NULL or any other value → unknown
                 acc.unknown += headcount;
             }
         }
@@ -499,7 +499,6 @@ public class ExecutivePeopleService {
      */
     public List<ExecRetentionCohortDTO> retentionCohorts(Set<String> companyIds) {
         boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
-        // BFF aliases the filter on `us_hire.companyuuid` — match that here.
         String companyFilter = hasCompanyFilter ? " AND us_hire.companyuuid IN (:companyIds) " : "";
 
         String sql = "SELECT " +
@@ -543,9 +542,6 @@ public class ExecutivePeopleService {
             throw pe;
         }
 
-        // Cohort fold: group by YEAR(hireDate). LinkedHashMap so we can iterate
-        // in deterministic order (though we always emit all years 2019..2025
-        // explicitly below, present or not).
         Map<Integer, List<EmployeeLifecycle>> byCohort = new LinkedHashMap<>();
         for (Tuple row : rows) {
             LocalDate hire = toLocalDate(row.get("hire_date"));
@@ -568,10 +564,6 @@ public class ExecutivePeopleService {
             long cohortSize = employees.size();
 
             if (cohortSize == 0) {
-                // Inner-list ExecRetentionCohortPointDTO construction is per-row
-                // in spirit; wrap each point so a single corrupt point can't
-                // take down the whole cohort. Outer ExecRetentionCohortDTO is
-                // fail-fast (the request is unrecoverable if it throws).
                 List<ExecRetentionCohortPointDTO> emptyPoints = new ArrayList<>(RETENTION_TIME_POINTS.size());
                 for (int tp : RETENTION_TIME_POINTS) {
                     try {

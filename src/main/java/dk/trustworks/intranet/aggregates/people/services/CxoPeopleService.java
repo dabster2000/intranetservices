@@ -63,9 +63,7 @@ public class CxoPeopleService {
     /**
      * Reverse index: career_level → bucket label. Built once at class load.
      * Career levels not in this map are silently excluded from any bucket
-     * count, but they still contribute to {@code totalConsultants} (matches
-     * BFF semantics — the BFF accumulates {@code totalConsultants}
-     * unconditionally for every active-consultant row).
+     * count, but they still contribute to {@code totalConsultants}.
      */
     private static final Map<String, String> CAREER_LEVEL_TO_BUCKET;
     static {
@@ -174,8 +172,7 @@ public class CxoPeopleService {
      * server-side via the static {@link #PYRAMID_BUCKETS} table.</p>
      *
      * <p>Unmapped career levels contribute to {@code totalConsultants}
-     * (matching BFF — the BFF accumulator is unconditional) but not to any
-     * bucket count.</p>
+     * but not to any bucket count.</p>
      *
      * <p>The 5 buckets are always returned in fixed order regardless of which
      * buckets have rows, so the chart renderer can rely on the shape.</p>
@@ -185,9 +182,8 @@ public class CxoPeopleService {
      */
     public ConsultantPyramidDTO consultantPyramid(Set<String> companyIds) {
         boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
-        // The BFF joins userstatus a SECOND time (us2) on companyuuid when filter present.
-        // Match that here: the primary userstatus join (us) is unfiltered for company,
-        // and the company filter is applied via a separate join.
+        // Apply the company filter via a separate join on us2 so the primary
+        // userstatus join (us) remains unfiltered for company.
         String companyJoin = hasCompanyFilter
                 ? "JOIN userstatus us2 ON us2.useruuid = ucl.useruuid AND us2.companyuuid IN (:companyIds) "
                 : "";
@@ -235,21 +231,12 @@ public class CxoPeopleService {
             String careerLevel = row.get("career_level", String.class);
             long count = toLong(row.get("consultant_count"));
             String bucketLabel = CAREER_LEVEL_TO_BUCKET.get(careerLevel);
-            // totalConsultants is incremented unconditionally to match the BFF's
-            // unconditional accumulator. Unmapped career levels (e.g.
-            // SENIOR_CONSULTANT, LEAD_CONSULTANT, MANAGING_CONSULTANT,
-            // PRINCIPAL_CONSULTANT) still contribute to the total but are not
-            // counted in any bucket.
             totalConsultants += count;
             if (bucketLabel != null) {
                 bucketCounts.merge(bucketLabel, count, Long::sum);
             }
         }
 
-        // The 5 PyramidLevelDTO entries are per-row in spirit (one per bucket);
-        // wrap each so a single corrupt bucket can't take down the whole snapshot.
-        // The outer ConsultantPyramidDTO construction below is fail-fast — if it
-        // throws, the request is unrecoverable.
         List<PyramidLevelDTO> levels = new ArrayList<>(PYRAMID_BUCKETS.size());
         int dropped = 0;
         for (PyramidBucket bucket : PYRAMID_BUCKETS) {
@@ -271,9 +258,8 @@ public class CxoPeopleService {
                     dropped, PYRAMID_BUCKETS.size());
         }
 
-        // Use UTC to match the BFF's `new Date().toISOString().split('T')[0]`,
-        // which is also UTC. Without this, JVMs in non-UTC timezones can
-        // produce off-by-one snapshot dates near midnight UTC.
+        // Use UTC; without this, JVMs in non-UTC timezones can produce
+        // off-by-one snapshot dates near midnight UTC.
         String snapshotDate = LocalDate.now(java.time.ZoneOffset.UTC).toString(); // ISO YYYY-MM-DD
         log.debugf("consultantPyramid: total=%d (companyFilter=%s)",
                 Long.valueOf(totalConsultants), Boolean.toString(hasCompanyFilter));
@@ -373,9 +359,6 @@ public class CxoPeopleService {
             throw pe;
         }
 
-        // Pivot type rows into one row per month. LinkedHashMap preserves SQL
-        // ORDER BY month_key insertion order so the response is chronologically
-        // ordered and deterministic.
         Map<String, HeadcountAccumulator> monthMap = new LinkedHashMap<>();
         for (Tuple row : rows) {
             String monthKey = row.get("month_key", String.class);

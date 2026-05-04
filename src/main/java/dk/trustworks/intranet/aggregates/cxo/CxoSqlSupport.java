@@ -68,4 +68,20 @@ public final class CxoSqlSupport {
         }
         return out.isEmpty() ? null : out;
     }
+
+    /**
+     * Validates the (monthKey, monthLabel, year, monthNumber) 4-field prefix
+     * shared by every CXO time-series DTO. Throws IllegalArgumentException
+     * with a contextual message identifying the offending field and value.
+     */
+    public static void validateMonthBucket(String monthKey, String monthLabel, int year, int monthNumber) {
+        if (monthKey == null || !monthKey.matches("\\d{6}"))
+            throw new IllegalArgumentException("monthKey must be YYYYMM, was " + monthKey);
+        if (year < 2000 || year > 2100)
+            throw new IllegalArgumentException("year out of range: " + year);
+        if (monthNumber < 1 || monthNumber > 12)
+            throw new IllegalArgumentException("monthNumber out of range: " + monthNumber);
+        if (monthLabel == null)
+            throw new IllegalArgumentException("monthLabel must not be null");
+    }
 }

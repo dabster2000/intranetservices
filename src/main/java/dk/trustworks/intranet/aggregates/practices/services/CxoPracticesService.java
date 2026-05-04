@@ -108,13 +108,6 @@ public class CxoPracticesService {
         // Period classification via a CASE expression; both windows fetched in
         // one query to halve round-trips. WHERE clause keeps the overall date
         // range = [priorStart, ttmEnd).
-        //
-        // The correlated subquery
-        //   us.statusdate = (SELECT MAX(us2.statusdate) FROM userstatus us2
-        //                    WHERE us2.useruuid = ii.consultantuuid
-        //                      AND us2.statusdate <= i.invoicedate)
-        // is preserved verbatim from the BFF — both `ii.consultantuuid` and
-        // `i.invoicedate` are real outer-query aliases (not a latent alias bug).
         // ----------------------------------------------------------------------
         String revenueCompanyFilter = hasCompanyFilter ? " AND i.companyuuid IN (:companyIds) " : "";
         String revenueSqlTemplate =
