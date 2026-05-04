@@ -1,0 +1,75 @@
+package dk.trustworks.intranet.aggregates.sales.resources;
+
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.BacklogCoverageMonthDTO;
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineFunnelStageDTO;
+import dk.trustworks.intranet.aggregates.sales.dto.cxo.PipelineTrendMonthDTO;
+import dk.trustworks.intranet.aggregates.sales.services.CxoSalesService;
+import jakarta.annotation.security.RolesAllowed;
+import jakarta.enterprise.context.RequestScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
+import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
+
+/**
+ * REST API for CxO Command Center sales metrics — pipeline trend, backlog coverage,
+ * and pipeline funnel. Class-level scope inherits to all endpoint methods.
+ */
+@JBossLog
+@Tag(name = "sales")
+@Path("/sales/cxo")
+@RequestScoped
+@Produces(APPLICATION_JSON)
+@Consumes(APPLICATION_JSON)
+@SecurityRequirement(name = "jwt")
+@RolesAllowed({"dashboard:read"})
+public class CxoSalesResource {
+
+    @Inject
+    CxoSalesService cxoSalesService;
+
+    /**
+     * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
+     * Null means "no company filter" — services treat null as a flag to omit the company-filter
+     * WHERE clause entirely; the {@code :companyIds} parameter is bound only when a non-null Set
+     * is passed.
+     */
+    static Set<String> parseCommaSeparated(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        Set<String> out = new HashSet<>();
+        for (String s : raw.split(",")) {
+            String trimmed = s.trim();
+            if (!trimmed.isEmpty()) out.add(trimmed);
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    @GET
+    @Path("/pipeline-funnel")
+    public List<PipelineFunnelStageDTO> pipelineFunnel(@QueryParam("companyIds") String companyIds) {
+        return cxoSalesService.pipelineFunnel(parseCommaSeparated(companyIds));
+    }
+
+    @GET
+    @Path("/backlog-coverage")
+    public List<BacklogCoverageMonthDTO> backlogCoverage(@QueryParam("companyIds") String companyIds) {
+        return cxoSalesService.backlogCoverage(parseCommaSeparated(companyIds));
+    }
+
+    @GET
+    @Path("/pipeline-trend")
+    public List<PipelineTrendMonthDTO> pipelineTrend(@QueryParam("companyIds") String companyIds) {
+        return cxoSalesService.pipelineTrend(parseCommaSeparated(companyIds));
+    }
+}
