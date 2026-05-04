@@ -13,13 +13,20 @@ import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapCellDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import jakarta.persistence.Query;
+import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
+
+import static dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport.CXO_QUERY_TIMEOUT_MS;
+import static dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport.toDouble;
+import static dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport.toInt;
 
 import java.math.BigDecimal;
 import java.time.DayOfWeek;
@@ -1671,5 +1678,184 @@ public class CxoDeliveryService {
         }
 
         return new ResourceHeatmapDTO(teams, weekLabels, cells);
+    }
+
+    // ============================================================================
+    // CXO Command Center: Staffing Gap / Surplus Forecast
+    // ============================================================================
+
+    /**
+     * Returns the 12-month staffing supply-vs-demand forecast, mirroring the BFF
+     * route at {@code /api/cxo/delivery/staffing-gap-forecast}.
+     *
+     * <p>Supply is sourced from {@code fact_user_day}: distinct active CONSULTANT
+     * users per (year, month) over a window from the previous month through the
+     * forward horizon (current month + 12). Demand is sourced from
+     * {@code fact_backlog} aggregated per (year, month_number) for the
+     * 12-month forward window.</p>
+     *
+     * <p>Forward-fill semantics (matches BFF): when a future month has no row
+     * in {@code fact_user_day}, supply uses the latest non-zero supply seen so
+     * far. {@code gapFte = supplyFte - demandFte}; positive = surplus,
+     * negative = deficit. {@code isForecast} is {@code true} for every month
+     * after the current month.</p>
+     *
+     * <p>The series always returns exactly 12 rows starting at the current
+     * month, regardless of which months actually have rows in either source —
+     * the chart renderer can rely on this fixed shape.</p>
+     *
+     * @param companyIds optional set of company UUIDs; {@code null}/empty means no filter
+     * @return chronologically-ordered 12-month forward series
+     */
+    public List<StaffingGapForecastMonthDTO> staffingGapForecast(Set<String> companyIds) {
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+
+        LocalDate today = LocalDate.now();
+        int currentYear = today.getYear();
+        int currentMonth = today.getMonthValue();
+
+        // Forward horizon: current month + 12 months → first day of horizon month.
+        LocalDate horizonDate = today.withDayOfMonth(1).plusMonths(12);
+        int horizonYear = horizonDate.getYear();
+        int horizonMonth = horizonDate.getMonthValue();
+
+        // Conditional company-filter SQL fragments (placeholder pattern for IN binding).
+        String supplyCompanyFilter = hasCompanyFilter ? " AND companyuuid IN (:companyIds) " : "";
+        String backlogCompanyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds) " : "";
+
+        // ----------------------------------------------------------------------
+        // 1) Supply query: active CONSULTANT distinct count per (year, month)
+        //    over [previous month, horizon month).
+        // ----------------------------------------------------------------------
+        String supplySqlTemplate =
+                "SELECT yr, mo, COUNT(DISTINCT useruuid) AS active_consultants " +
+                "FROM ( " +
+                "  SELECT YEAR(document_date) AS yr, MONTH(document_date) AS mo, useruuid " +
+                "  FROM fact_user_day " +
+                "  WHERE consultant_type = 'CONSULTANT' " +
+                "    AND status_type = 'ACTIVE' " +
+                "    AND document_date >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m-01') " +
+                "    AND document_date < DATE_FORMAT( " +
+                "      DATE_ADD(MAKEDATE(:horizonYear, 1) + INTERVAL (:horizonMonth - 1) MONTH, INTERVAL 1 MONTH), " +
+                "      '%Y-%m-01' " +
+                "    ) " +
+                "    __SUPPLY_COMPANY_FILTER__ " +
+                "  GROUP BY YEAR(document_date), MONTH(document_date), useruuid " +
+                ") t " +
+                "GROUP BY yr, mo " +
+                "ORDER BY yr, mo";
+        String supplySql = supplySqlTemplate.replace("__SUPPLY_COMPANY_FILTER__", supplyCompanyFilter);
+
+        Query supplyQuery = em.createNativeQuery(supplySql, Tuple.class);
+        supplyQuery.setParameter("horizonYear", horizonYear);
+        supplyQuery.setParameter("horizonMonth", horizonMonth);
+        if (hasCompanyFilter) {
+            supplyQuery.setParameter("companyIds", companyIds);
+        }
+        supplyQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> supplyRows;
+        try {
+            supplyRows = supplyQuery.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "staffingGapForecast supply query failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
+
+        // ----------------------------------------------------------------------
+        // 2) Demand query: SUM(consultant_count) per (year, month_number, delivery_month_key)
+        //    over [current, horizon].
+        // ----------------------------------------------------------------------
+        String demandSqlTemplate =
+                "SELECT year AS yr, month_number AS mo, delivery_month_key AS month_key, " +
+                "       SUM(consultant_count) AS demand_fte " +
+                "FROM fact_backlog " +
+                "WHERE (year > :currentYear OR (year = :currentYear AND month_number >= :currentMonth)) " +
+                "  AND (year < :horizonYear OR (year = :horizonYear AND month_number <= :horizonMonth)) " +
+                "  __BACKLOG_COMPANY_FILTER__ " +
+                "GROUP BY year, month_number, delivery_month_key " +
+                "ORDER BY delivery_month_key";
+        String demandSql = demandSqlTemplate.replace("__BACKLOG_COMPANY_FILTER__", backlogCompanyFilter);
+
+        Query demandQuery = em.createNativeQuery(demandSql, Tuple.class);
+        demandQuery.setParameter("currentYear", currentYear);
+        demandQuery.setParameter("currentMonth", currentMonth);
+        demandQuery.setParameter("horizonYear", horizonYear);
+        demandQuery.setParameter("horizonMonth", horizonMonth);
+        if (hasCompanyFilter) {
+            demandQuery.setParameter("companyIds", companyIds);
+        }
+        demandQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> demandRows;
+        try {
+            demandRows = demandQuery.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "staffingGapForecast demand query failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
+
+        // ----------------------------------------------------------------------
+        // 3) Build lookup maps (LinkedHashMap for deterministic iteration).
+        // ----------------------------------------------------------------------
+        Map<String, Double> supplyMap = new LinkedHashMap<>();
+        double latestSupplyFte = 0d;
+        for (Tuple row : supplyRows) {
+            int yr = toInt(row.get("yr"));
+            int mo = toInt(row.get("mo"));
+            double fte = toDouble(row.get("active_consultants"));
+            String key = String.format(Locale.ROOT, "%04d%02d", yr, mo);
+            supplyMap.put(key, fte);
+            if (fte > 0) latestSupplyFte = fte;
+        }
+
+        Map<String, Double> demandMap = new LinkedHashMap<>();
+        for (Tuple row : demandRows) {
+            String key = row.get("month_key", String.class);
+            demandMap.put(key, toDouble(row.get("demand_fte")));
+        }
+
+        // ----------------------------------------------------------------------
+        // 4) Build 12-month forward series; forward-fill supply for missing rows.
+        // Per-row DTO construction is wrapped in try/catch so a single corrupt
+        // month can't take down the whole 12-month series.
+        // ----------------------------------------------------------------------
+        List<StaffingGapForecastMonthDTO> result = new ArrayList<>(12);
+        LocalDate cursor = today.withDayOfMonth(1);
+        int dropped = 0;
+        for (int i = 0; i < 12; i++) {
+            int yr = cursor.getYear();
+            int mo = cursor.getMonthValue();
+            String key = String.format(Locale.ROOT, "%04d%02d", yr, mo);
+
+            double supply = supplyMap.containsKey(key) ? supplyMap.get(key) : latestSupplyFte;
+            double demand = demandMap.getOrDefault(key, 0d);
+            double gap = supply - demand;
+
+            String monthLabel = java.time.Month.of(mo)
+                    .getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) + " " + yr;
+            boolean isForecast = i > 0;
+
+            try {
+                result.add(new StaffingGapForecastMonthDTO(
+                        key, yr, mo, monthLabel, supply, demand, gap, isForecast));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in staffingGapForecast (dropped=%d, monthKey=%s): %s",
+                        dropped, key, e.getMessage());
+            }
+            cursor = cursor.plusMonths(1);
+        }
+        if (dropped > 0) {
+            log.warnf("staffingGapForecast dropped %d malformed rows out of 12", dropped);
+        }
+
+        log.debugf("staffingGapForecast: %d months (companyFilter=%s)",
+                Integer.valueOf(result.size()), Boolean.toString(hasCompanyFilter));
+        return result;
     }
 }

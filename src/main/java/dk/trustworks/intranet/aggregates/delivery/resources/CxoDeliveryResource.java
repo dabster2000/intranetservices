@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.delivery.resources;
 
+import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
 import dk.trustworks.intranet.aggregates.delivery.dto.AvgProjectMarginDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.BenchCountDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.BenchOverloadDetailsDTO;
@@ -10,6 +11,7 @@ import dk.trustworks.intranet.aggregates.delivery.dto.OverloadCountDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.RealizationRateDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.ResourceHeatmapDTO;
 import dk.trustworks.intranet.aggregates.delivery.dto.UtilizationTTMDTO;
+import dk.trustworks.intranet.aggregates.delivery.dto.cxo.StaffingGapForecastMonthDTO;
 import dk.trustworks.intranet.aggregates.delivery.services.CxoDeliveryService;
 import dk.trustworks.intranet.aggregates.delivery.usecases.BreakEvenUtilizationUseCase;
 import jakarta.annotation.security.RolesAllowed;
@@ -22,7 +24,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
@@ -70,8 +72,8 @@ public class CxoDeliveryResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         // Call service layer
         UtilizationTTMDTO result = cxoDeliveryService.getUtilizationTTM(
@@ -110,8 +112,8 @@ public class CxoDeliveryResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         // Call service layer
         ForecastUtilizationDTO result = cxoDeliveryService.getForecastUtilization(
@@ -150,8 +152,8 @@ public class CxoDeliveryResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         // Call service layer
         BenchCountDTO result = cxoDeliveryService.getBenchCount(
@@ -190,8 +192,8 @@ public class CxoDeliveryResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         // Call service layer
         OverloadCountDTO result = cxoDeliveryService.getOverloadCount(
@@ -231,8 +233,8 @@ public class CxoDeliveryResource {
         log.debugf("GET /delivery/cxo/bench-overload-details: asOfDate=%s, practices=%s, companyIds=%s",
                 asOfDate, practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         BenchOverloadDetailsDTO result = cxoDeliveryService.getBenchOverloadDetails(
                 asOfDate,
@@ -264,8 +266,8 @@ public class CxoDeliveryResource {
         log.debugf("GET /delivery/cxo/capacity-planning: practices=%s, companyIds=%s",
                 practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         CapacityPlanningDTO result = cxoDeliveryService.getCapacityPlanning(
                 practiceSet, companyIdSet);
@@ -292,8 +294,8 @@ public class CxoDeliveryResource {
         log.debugf("GET /delivery/cxo/resource-heatmap: practices=%s, companyIds=%s",
                 practices, companyIds);
 
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         ResourceHeatmapDTO result = cxoDeliveryService.getResourceHeatmap(
                 practiceSet, companyIdSet);
@@ -324,27 +326,6 @@ public class CxoDeliveryResource {
     }
 
     /**
-     * Parse comma-separated string into Set of trimmed values.
-     * Returns null if input is null or blank.
-     *
-     * @param input Comma-separated string (e.g., "PM,DEV,BA")
-     * @return Set of trimmed non-empty values, or null if no valid values
-     */
-    private Set<String> parseCommaSeparated(String input) {
-        if (input == null || input.isBlank()) {
-            return null;
-        }
-        Set<String> result = new HashSet<>();
-        for (String value : input.split(",")) {
-            String trimmed = value.trim();
-            if (!trimmed.isEmpty()) {
-                result.add(trimmed);
-            }
-        }
-        return result.isEmpty() ? null : result;
-    }
-
-    /**
      * Gets Realization Rate (TTM) KPI data.
      * Returns realization rate percentage over a trailing 12-month window,
      * along with year-over-year comparison and monthly sparkline trend.
@@ -367,8 +348,8 @@ public class CxoDeliveryResource {
                 fromDate, toDate, practices, companyIds);
 
         // Parse multi-value filters
-        Set<String> practiceSet = parseCommaSeparated(practices);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> practiceSet = CxoSqlSupport.parseCommaSeparated(practices);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         // Call service layer
         RealizationRateDTO result = cxoDeliveryService.getRealizationRate(
@@ -416,10 +397,10 @@ public class CxoDeliveryResource {
                 fromDate, toDate, sectors, serviceLines, contractTypes, clientId, companyIds);
 
         // Parse multi-value filters
-        Set<String> sectorSet = parseCommaSeparated(sectors);
-        Set<String> serviceLineSet = parseCommaSeparated(serviceLines);
-        Set<String> contractTypeSet = parseCommaSeparated(contractTypes);
-        Set<String> companyIdSet = parseCommaSeparated(companyIds);
+        Set<String> sectorSet = CxoSqlSupport.parseCommaSeparated(sectors);
+        Set<String> serviceLineSet = CxoSqlSupport.parseCommaSeparated(serviceLines);
+        Set<String> contractTypeSet = CxoSqlSupport.parseCommaSeparated(contractTypes);
+        Set<String> companyIdSet = CxoSqlSupport.parseCommaSeparated(companyIds);
 
         // Call service layer
         AvgProjectMarginDTO result = cxoDeliveryService.getAvgProjectMargin(
@@ -436,5 +417,25 @@ public class CxoDeliveryResource {
                 result.getCurrentTTMPercent(), result.getPriorTTMPercent(), result.getYoyChangePoints());
 
         return Response.ok(result).build();
+    }
+
+    /**
+     * Gets the 12-month staffing supply-vs-demand forecast (CXO Command Center).
+     * Mirrors the BFF route at {@code /api/cxo/delivery/staffing-gap-forecast}.
+     *
+     * <p>For each month of a 12-month forward series starting at the current
+     * month, returns supply (active consultant headcount from
+     * {@code fact_user_day}), demand (booked consultant FTEs from
+     * {@code fact_backlog}), and the gap (supply − demand). For future months
+     * with no supply rows, the latest non-zero supply value is forward-filled.</p>
+     *
+     * @param companyIds optional comma-separated UUID list; absent/blank means no filter
+     * @return chronologically-ordered 12-month forward series
+     */
+    @GET
+    @Path("/staffing-gap-forecast")
+    public List<StaffingGapForecastMonthDTO> staffingGapForecast(
+            @QueryParam("companyIds") String companyIds) {
+        return cxoDeliveryService.staffingGapForecast(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 }
