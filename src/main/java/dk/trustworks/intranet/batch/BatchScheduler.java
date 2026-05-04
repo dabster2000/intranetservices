@@ -294,4 +294,62 @@ public class BatchScheduler {
         }
     }
 
+    /**
+     * Drain the SharePoint candidate folder move queue.
+     * <p>
+     * Picks up rows in {@code recruitment_candidates} where status=HIRED and
+     * sharepoint_move_status=PENDING and copies the candidate's recruitment
+     * folder to the new employee's home folder, then deletes the source.
+     * Out-of-band from the convert HTTP transaction because Graph API calls
+     * cannot be rolled back. Idempotent — re-running on a row already in
+     * a terminal state (COMPLETED / PARTIAL / FAILED) is a no-op since the
+     * batchlet's query filters on PENDING.
+     * <p>
+     * Schedule: every 5 minutes — matches the cadence of nextsign-status-sync,
+     * which is the closest analogue (also a queue-drain over an external API).
+     */
+    @Scheduled(every = "5m")
+    void scheduleSharePointCandidateFolderMove() {
+        try {
+            if (jobOperator.getJobNames().contains("sharepoint-candidate-folder-move")) {
+                if (!jobOperator.getRunningExecutions("sharepoint-candidate-folder-move").isEmpty()) {
+                    log.debug("sharepoint-candidate-folder-move already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting sharepoint-candidate-folder-move batch job");
+            jobOperator.start("sharepoint-candidate-folder-move", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule sharepoint-candidate-folder-move: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Fan out HR notifications when a dossier-linked NextSign signing case
+     * completes and its signed documents have been uploaded to SharePoint.
+     * Joins signing_cases to candidate_dossier_revisions to detect dossier-
+     * linked completions, then queues mails per configured recipient under
+     * {@code recruitment.completion-notification.{company-uuid}}.
+     * <p>
+     * Schedule: every 5 minutes — same cadence as nextsign-status-sync so
+     * notifications go out within one cycle of the upstream upload completing.
+     * Dedup is in-memory only (cleared on JVM restart) — see the listener's
+     * class javadoc for the trade-off.
+     */
+    @Scheduled(every = "5m")
+    void scheduleRecruitmentSignatureCompletion() {
+        try {
+            if (jobOperator.getJobNames().contains("recruitment-signature-completion")) {
+                if (!jobOperator.getRunningExecutions("recruitment-signature-completion").isEmpty()) {
+                    log.debug("recruitment-signature-completion already running, skipping");
+                    return;
+                }
+            }
+            log.debug("Starting recruitment-signature-completion batch job");
+            jobOperator.start("recruitment-signature-completion", new Properties());
+        } catch (Exception e) {
+            log.debug("Could not schedule recruitment-signature-completion: " + e.getMessage());
+        }
+    }
+
 }

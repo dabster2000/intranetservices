@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="recruitment-signature-completion" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    Recruitment Signature Completion Notification Job
+
+    Purpose:
+    Fans out HR notifications when a dossier-linked NextSign signing case has
+    transitioned to COMPLETED + sharepoint_upload_status=UPLOADED. Joins
+    signing_cases against candidate_dossier_revisions.signing_case_key to
+    detect dossier-linked completions, then queues one TrustworksMail per
+    configured recipient under recruitment.completion-notification.{company-uuid}.
+
+    Processing Flow:
+    1. Native query joins signing_cases to candidate_dossier_revisions
+    2. For each (case_key, dossier_uuid) row, resolve candidate + target_company_uuid
+    3. Look up recruitment.completion-notification.{company-uuid} via MicroProfile Config
+    4. If configured: queue TrustworksMail per recipient via MailResource.sendingHTML
+    5. Track notified case_keys in an in-memory dedup set (clears on JVM restart)
+
+    Schedule:
+    Runs every 5 minutes via BatchScheduler — same cadence as nextsign-status-sync.
+
+    Similar to:
+    nextsign-status-sync.xml (proven pattern for dossier-adjacent post-commit work)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="fan-out-completion-notifications">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="recruitmentSignatureCompletionListener"/>
+    </step>
+</job>
