@@ -41,6 +41,9 @@ import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelBonusDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.RevenuePracticeDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
 import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsService;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
@@ -1770,6 +1773,65 @@ public class CxoFinanceResource {
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         return cxoFinanceService.getPracticeUtilizationForecast(practiceSet, companyIdSet);
+    }
+
+    /**
+     * CXO Command Center: trailing 18 months of cost-to-revenue ratio data.
+     *
+     * Returns one data point per month with revenue, direct delivery cost, OPEX,
+     * and the cost-to-revenue ratio in percent (null when revenue is zero).
+     *
+     * @param companyIds optional comma-separated list of company UUIDs to filter by
+     * @return list of data points ordered by month_key ascending
+     */
+    @GET
+    @Path("/cost-to-revenue")
+    public List<CostToRevenueDataPointDTO> costToRevenue(@QueryParam("companyIds") String companyIds) {
+        log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s", companyIds);
+        return cxoFinanceService.costToRevenue(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * CXO Command Center: trailing 18 months of gross margin data.
+     *
+     * Returns one data point per month with total revenue, total delivery cost,
+     * and the gross margin in percent (null when revenue is zero, though the SQL
+     * HAVING clause excludes zero-revenue months from the result set).
+     *
+     * @param companyIds optional comma-separated list of company UUIDs to filter by
+     * @return list of data points ordered by month_key ascending
+     */
+    @GET
+    @Path("/gross-margin-trend")
+    public List<GrossMarginTrendDataPointDTO> grossMarginTrend(@QueryParam("companyIds") String companyIds) {
+        log.debugf("GET /finance/cxo/gross-margin-trend: companyIds=%s", companyIds);
+        return cxoFinanceService.grossMarginTrend(parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * CXO Command Center: monthly invoiced revenue broken down by practice (service line),
+     * with cost and margin overlay.
+     *
+     * <p>Revenue is attributed at the consultant level via {@code u.practice} of the delivering
+     * consultant — NOT the project-level service line — to avoid distortion from EXTERNAL
+     * consultants, mixed-practice projects, and "UD" (Undefined) buckets. Cost remains
+     * project-level (from {@code fact_project_financials_mat}). Months with cost but no
+     * revenue still appear in the response with an empty practice revenue map.</p>
+     *
+     * @param fromDate optional ISO date (YYYY-MM-DD); defaults to first day of (today − 17 months)
+     * @param toDate   optional ISO date (YYYY-MM-DD); defaults to today
+     * @param companyIds optional comma-separated list of company UUIDs to filter by
+     * @return wrapper containing the monthly series and the ordered practices list
+     */
+    @GET
+    @Path("/revenue-by-practice")
+    public RevenuePracticeDTO revenueByPractice(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("companyIds") String companyIds) {
+        log.debugf("GET /finance/cxo/revenue-by-practice: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+        return cxoFinanceService.revenueByPractice(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**

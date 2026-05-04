@@ -31,6 +31,10 @@ import dk.trustworks.intranet.aggregates.finance.dto.InvoiceItemExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRowExportDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.VoluntaryAttritionDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.MonthlyRevenuePracticeDataPoint;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.RevenuePracticeDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.PracticeUtilizationMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.BudgetHoursByMonthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FutureNetAvailableDTO;
@@ -50,15 +54,19 @@ import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.Month;
 import java.time.YearMonth;
+import java.time.format.TextStyle;
 
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /**
@@ -94,6 +102,25 @@ public class CxoFinanceService {
 
     @Inject
     DistributionAwareOpexProvider opexProvider;
+
+    // -------------------------------------------------------------------------
+    // Generic helpers for safe DB value conversion (BIT, Boolean, Number, etc.)
+    // Mirrors the pattern in CxoClientService so MariaDB BIT columns and other
+    // edge cases are handled uniformly across the CXO services.
+    // -------------------------------------------------------------------------
+
+    private static double toDouble(Object v) {
+        if (v == null) return 0d;
+        if (v instanceof Number n) return n.doubleValue();
+        if (v instanceof Boolean b) return b ? 1d : 0d;
+        if (v instanceof byte[] bytes) {
+            return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
+        }
+        if (v instanceof java.util.BitSet bs) {
+            return bs.isEmpty() ? 0d : 1d;
+        }
+        return Double.parseDouble(v.toString());
+    }
 
     /**
      * Retrieves monthly revenue and margin data for the specified period and filters.
@@ -5997,5 +6024,446 @@ public class CxoFinanceService {
 
         log.debugf("getPracticeUtilizationForecast: returned %d entries", result.size());
         return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Cost-to-Revenue
+    // ============================================================================
+
+    /** Per-query timeout for CXO Command Center endpoints (matches the BFF's 15-second budget). */
+    private static final int CXO_QUERY_TIMEOUT_MS = 15_000;
+
+    /**
+     * Returns trailing 18 months of cost-to-revenue data, optionally filtered by company UUIDs.
+     *
+     * Ported from the legacy BFF route /api/cxo/finance/cost-to-revenue. The trailing 18-month
+     * window is computed from {@link LocalDate#now()} so that the result is always anchored on
+     * the current calendar month.
+     *
+     * @param companyIds optional set of company UUIDs; null means no company filter
+     * @return monthly data points ordered by month_key ascending (may be empty)
+     */
+    public List<CostToRevenueDataPointDTO> costToRevenue(Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate fromDate = today.withDayOfMonth(1).minusMonths(17);
+        int fromYear = fromDate.getYear();
+        int fromMonth = fromDate.getMonthValue();
+        int toYear = today.getYear();
+        int toMonth = today.getMonthValue();
+        String fromMonthKey = String.format("%04d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%04d%02d", toYear, toMonth);
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilterRevenue = hasCompanyFilter ? " AND r.company_id IN (:companyIds)" : "";
+        String companyFilterDelivery = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+        String companyFilterOpex = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        String sql = "SELECT " +
+                "  r.month_key, " +
+                "  r.year          AS year_num, " +
+                "  r.month_number, " +
+                "  SUM(r.net_revenue_dkk)                      AS revenue_dkk, " +
+                "  COALESCE(SUM(d.delivery_cost), 0)            AS delivery_cost_dkk, " +
+                "  COALESCE(SUM(o.opex_cost), 0)                AS opex_dkk, " +
+                "  CASE " +
+                "    WHEN SUM(r.net_revenue_dkk) > 0 " +
+                "    THEN ROUND( " +
+                "      (COALESCE(SUM(d.delivery_cost), 0) + COALESCE(SUM(o.opex_cost), 0)) " +
+                "      / SUM(r.net_revenue_dkk) * 100, " +
+                "      2 " +
+                "    ) " +
+                "    ELSE NULL " +
+                "  END AS cost_to_revenue_ratio_pct " +
+                "FROM fact_company_revenue_mat r " +
+                "LEFT JOIN ( " +
+                "  SELECT month_key, company_id, SUM(direct_delivery_cost_dkk) AS delivery_cost " +
+                "  FROM fact_project_financials_mat " +
+                "  WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey" +
+                companyFilterDelivery + " " +
+                "  GROUP BY month_key, company_id " +
+                ") d ON d.month_key = r.month_key AND d.company_id = r.company_id " +
+                "LEFT JOIN ( " +
+                "  SELECT month_key, company_id, SUM(opex_amount_dkk) AS opex_cost " +
+                "  FROM fact_opex_mat " +
+                "  WHERE cost_type = 'OPEX' " +
+                "    AND month_key BETWEEN :fromMonthKey AND :toMonthKey" +
+                companyFilterOpex + " " +
+                "  GROUP BY month_key, company_id " +
+                ") o ON o.month_key = r.month_key AND o.company_id = r.company_id " +
+                "WHERE r.month_key BETWEEN :fromMonthKey AND :toMonthKey" +
+                companyFilterRevenue + " " +
+                "GROUP BY r.month_key, r.year, r.month_number " +
+                "ORDER BY r.month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<CostToRevenueDataPointDTO> result = new ArrayList<>(rows.size());
+        for (Tuple t : rows) {
+            String monthKey = t.get("month_key", String.class);
+            int year = ((Number) t.get("year_num")).intValue();
+            int monthNumber = ((Number) t.get("month_number")).intValue();
+            double revenueDkk = toDouble(t.get("revenue_dkk"));
+            double deliveryCostDkk = toDouble(t.get("delivery_cost_dkk"));
+            double opexDkk = toDouble(t.get("opex_dkk"));
+            Object ratioRaw = t.get("cost_to_revenue_ratio_pct");
+            // Preserve the explicit null guard: toDouble would coerce null to 0.0,
+            // but the frontend contract expects a real null when revenue == 0.
+            Double costToRevenueRatioPct = ratioRaw == null ? null : toDouble(ratioRaw);
+            result.add(new CostToRevenueDataPointDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year,
+                    revenueDkk,
+                    deliveryCostDkk,
+                    opexDkk,
+                    costToRevenueRatioPct
+            ));
+        }
+
+        log.debugf("costToRevenue: returned %d data points (companyFilter=%s)", result.size(), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Gross Margin Trend
+    // ============================================================================
+
+    /**
+     * Returns trailing 18 months of gross margin data, optionally filtered by company UUIDs.
+     *
+     * Ported from the legacy BFF route /api/cxo/finance/gross-margin-trend. Only months with
+     * positive revenue are included (HAVING SUM(recognized_revenue_dkk) > 0) to avoid
+     * nonsensical margins from zero or negative revenue months.
+     *
+     * @param companyIds optional set of company UUIDs; null means no company filter
+     * @return monthly data points ordered by month_key ascending (may be empty)
+     */
+    public List<GrossMarginTrendDataPointDTO> grossMarginTrend(Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate fromDate = today.withDayOfMonth(1).minusMonths(17);
+        int fromYear = fromDate.getYear();
+        int fromMonth = fromDate.getMonthValue();
+        int toYear = today.getYear();
+        int toMonth = today.getMonthValue();
+        String fromMonthKey = String.format("%04d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%04d%02d", toYear, toMonth);
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String companyFilter = hasCompanyFilter ? " AND company_id IN (:companyIds)" : "";
+
+        String sql = "SELECT " +
+                "  month_key, " +
+                "  year           AS year_num, " +
+                "  month_number, " +
+                "  SUM(recognized_revenue_dkk)     AS total_revenue_dkk, " +
+                "  SUM(direct_delivery_cost_dkk)   AS total_cost_dkk, " +
+                "  CASE " +
+                "    WHEN SUM(recognized_revenue_dkk) > 0 " +
+                "    THEN ROUND( " +
+                "      (SUM(recognized_revenue_dkk) - SUM(direct_delivery_cost_dkk)) " +
+                "      / NULLIF(SUM(recognized_revenue_dkk), 0) * 100, " +
+                "      2 " +
+                "    ) " +
+                "    ELSE NULL " +
+                "  END AS gross_margin_pct " +
+                "FROM fact_project_financials_mat " +
+                "WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey" +
+                companyFilter + " " +
+                "GROUP BY month_key, year, month_number " +
+                "HAVING SUM(recognized_revenue_dkk) > 0 " +
+                "ORDER BY month_key";
+
+        Query query = em.createNativeQuery(sql, Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (hasCompanyFilter) {
+            query.setParameter("companyIds", companyIds);
+        }
+        query.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        List<GrossMarginTrendDataPointDTO> result = new ArrayList<>(rows.size());
+        for (Tuple t : rows) {
+            String monthKey = t.get("month_key", String.class);
+            int year = ((Number) t.get("year_num")).intValue();
+            int monthNumber = ((Number) t.get("month_number")).intValue();
+            double totalRevenueDkk = toDouble(t.get("total_revenue_dkk"));
+            double totalCostDkk = toDouble(t.get("total_cost_dkk"));
+            Object marginRaw = t.get("gross_margin_pct");
+            // Preserve the explicit null guard: HAVING currently filters zero-revenue
+            // months but the frontend contract is `number | null`, so keep null-safety.
+            Double grossMarginPct = marginRaw == null ? null : toDouble(marginRaw);
+            result.add(new GrossMarginTrendDataPointDTO(
+                    monthKey,
+                    year,
+                    monthNumber,
+                    Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + year,
+                    totalRevenueDkk,
+                    totalCostDkk,
+                    grossMarginPct
+            ));
+        }
+
+        log.debugf("grossMarginTrend: returned %d data points (companyFilter=%s)", result.size(), Boolean.toString(hasCompanyFilter));
+        return result;
+    }
+
+    // ============================================================================
+    // CXO Command Center: Revenue by Practice
+    // ============================================================================
+
+    /**
+     * Canonical order for known practice ids in the {@code practices} response array.
+     * Anything else returned by the SQL is folded into {@code "OTHER"} which, when present,
+     * is appended after this list.
+     */
+    private static final List<String> KNOWN_PRACTICES = List.of("PM", "SA", "BA", "DEV", "CYB");
+
+    /**
+     * Returns trailing-window revenue broken down by practice (consultant-level attribution),
+     * with cost and margin overlay. Ported from the legacy BFF route at
+     * {@code /api/cxo/finance/revenue-by-practice}.
+     *
+     * <p>The revenue query attributes each invoice line item to {@code u.practice} of the
+     * delivering consultant (NOT the project-level service line). The cost query aggregates
+     * direct delivery cost by month from {@code fact_project_financials_mat}. Java assembles
+     * the two streams: cost-only months are present in the result with empty practice
+     * revenue, and any practice id outside {@link #KNOWN_PRACTICES} is collapsed into
+     * {@code "OTHER"}.</p>
+     *
+     * @param fromDate inclusive start of date window; defaults to first day of (now − 17 months) when null
+     * @param toDate   inclusive end of date window; defaults to today when null
+     * @param companyIds optional set of company UUIDs; null/empty means no company filter
+     * @return wrapper with the time-ordered month series and the ordered practices list
+     */
+    public RevenuePracticeDTO revenueByPractice(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
+        LocalDate today = LocalDate.now();
+        LocalDate from = fromDate != null ? fromDate : today.withDayOfMonth(1).minusMonths(17);
+        LocalDate to = toDate != null ? toDate : today;
+
+        int fromYear = from.getYear();
+        int fromMonth = from.getMonthValue();
+        int toYear = to.getYear();
+        int toMonth = to.getMonthValue();
+        String fromMonthKey = String.format("%04d%02d", fromYear, fromMonth);
+        String toMonthKey = String.format("%04d%02d", toYear, toMonth);
+
+        boolean hasCompanyFilter = companyIds != null && !companyIds.isEmpty();
+        String revenueCompanyFilter = hasCompanyFilter ? " AND us.companyuuid IN (:companyIds)" : "";
+        String costCompanyFilter = hasCompanyFilter ? " AND companyuuid IN (:companyIds)" : "";
+
+        // ----- Revenue query: consultant-level attribution via u.practice -----
+        String revenueSql = "SELECT " +
+                "  DATE_FORMAT(i.invoicedate, '%Y%m')    AS month_key, " +
+                "  YEAR(i.invoicedate)                   AS year_val, " +
+                "  MONTH(i.invoicedate)                  AS month_number, " +
+                "  COALESCE(u.practice, 'OTHER')         AS service_line_id, " +
+                "  SUM( " +
+                "    ii.rate * ii.hours " +
+                "    * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END " +
+                "    * CASE WHEN i.currency = 'DKK' THEN 1 ELSE COALESCE(cur.conversion, 1) END " +
+                "  ) AS revenue_dkk " +
+                "FROM invoiceitems ii " +
+                "JOIN invoices i ON ii.invoiceuuid = i.uuid " +
+                "JOIN `user` u ON u.uuid = ii.consultantuuid " +
+                "LEFT JOIN userstatus us ON us.useruuid = ii.consultantuuid " +
+                "  AND us.statusdate = ( " +
+                "    SELECT MAX(us2.statusdate) FROM userstatus us2 " +
+                "    WHERE us2.useruuid = ii.consultantuuid AND us2.statusdate <= i.invoicedate " +
+                "  ) " +
+                "LEFT JOIN currences cur ON cur.currency = i.currency " +
+                "  AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
+                "WHERE i.status = 'CREATED' " +
+                "  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                "  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL " +
+                "  AND ii.consultantuuid IS NOT NULL " +
+                "  AND us.type = 'CONSULTANT' " +
+                "  AND (YEAR(i.invoicedate) > :fromYear OR (YEAR(i.invoicedate) = :fromYear AND MONTH(i.invoicedate) >= :fromMonth)) " +
+                "  AND (YEAR(i.invoicedate) < :toYear OR (YEAR(i.invoicedate) = :toYear AND MONTH(i.invoicedate) <= :toMonth))" +
+                revenueCompanyFilter + " " +
+                "GROUP BY month_key, year_val, month_number, COALESCE(u.practice, 'OTHER') " +
+                "ORDER BY month_key, service_line_id";
+
+        Query revenueQuery = em.createNativeQuery(revenueSql, Tuple.class);
+        revenueQuery.setParameter("fromYear", fromYear);
+        revenueQuery.setParameter("fromMonth", fromMonth);
+        revenueQuery.setParameter("toYear", toYear);
+        revenueQuery.setParameter("toMonth", toMonth);
+        if (hasCompanyFilter) {
+            revenueQuery.setParameter("companyIds", companyIds);
+        }
+        revenueQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> revenueRows = revenueQuery.getResultList();
+
+        // ----- Cost query: project-level direct delivery cost grouped by month -----
+        String costSql = "SELECT " +
+                "  month_key, " +
+                "  year                          AS year_val, " +
+                "  month_number, " +
+                "  SUM(direct_delivery_cost_dkk) AS cost_dkk " +
+                "FROM fact_project_financials_mat " +
+                "WHERE month_key BETWEEN :fromMonthKey AND :toMonthKey" +
+                costCompanyFilter + " " +
+                "GROUP BY month_key, year, month_number " +
+                "ORDER BY month_key";
+
+        Query costQuery = em.createNativeQuery(costSql, Tuple.class);
+        costQuery.setParameter("fromMonthKey", fromMonthKey);
+        costQuery.setParameter("toMonthKey", toMonthKey);
+        if (hasCompanyFilter) {
+            costQuery.setParameter("companyIds", companyIds);
+        }
+        costQuery.setHint("javax.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> costRows = costQuery.getResultList();
+
+        RevenuePracticeDTO response = buildRevenueByPracticeResponse(revenueRows, costRows);
+
+        log.debugf("revenueByPractice: returned %d months / %d practices (companyFilter=%s)",
+                response.months().size(), response.practices().size(), Boolean.toString(hasCompanyFilter));
+        return response;
+    }
+
+    /**
+     * Mutable per-month aggregator used during revenueByPractice assembly.
+     * Package-private so that {@link #buildRevenueByPracticeResponse(List, List)} can be
+     * unit-tested without booting Quarkus.
+     */
+    static final class MonthAggregate {
+        final int year;
+        final int monthNumber;
+        final Map<String, Double> practices;
+        MonthAggregate(int year, int monthNumber, Map<String, Double> practices) {
+            this.year = year;
+            this.monthNumber = monthNumber;
+            this.practices = practices;
+        }
+    }
+
+    /**
+     * Pure post-query aggregation for {@link #revenueByPractice(LocalDate, LocalDate, Set)}.
+     * Extracted to a package-private static method so it can be unit-tested without a database.
+     *
+     * <p>Steps:
+     * <ol>
+     *   <li>Index cost rows by {@code month_key} into a flat map.</li>
+     *   <li>Group revenue rows by {@code month_key} into ({@code practiceId} → revenue), folding
+     *       any practice id outside {@link #KNOWN_PRACTICES} into {@code "OTHER"}.</li>
+     *   <li>Ensure cost-only months are represented in the output (with empty practice revenue).</li>
+     *   <li>Determine which practices appear at all, preserving the canonical order
+     *       {@code [PM, SA, BA, DEV, CYB]} with {@code "OTHER"} appended last when present.</li>
+     *   <li>Emit one {@link MonthlyRevenuePracticeDataPoint} per month with the per-month margin
+     *       computed in Java ({@code null} when revenue ≤ 0).</li>
+     * </ol></p>
+     *
+     * @param revenueRows tuples with columns: {@code month_key}, {@code year_val}, {@code month_number},
+     *                    {@code service_line_id}, {@code revenue_dkk}
+     * @param costRows    tuples with columns: {@code month_key}, {@code year_val}, {@code month_number},
+     *                    {@code cost_dkk}
+     * @return assembled DTO ready for JSON serialization
+     */
+    static RevenuePracticeDTO buildRevenueByPracticeResponse(
+            List<Tuple> revenueRows,
+            List<Tuple> costRows) {
+
+        // ----- Index cost rows by month_key -----
+        Map<String, Double> costByMonth = new LinkedHashMap<>(costRows.size());
+        for (Tuple t : costRows) {
+            String monthKey = t.get("month_key", String.class);
+            double costDkk = toDouble(t.get("cost_dkk"));
+            costByMonth.put(monthKey, costDkk);
+        }
+
+        // ----- Group revenue rows by month → (practiceId → revenue) -----
+        // TreeMap keeps natural string ordering of YYYYMM (ascending chronological).
+        Map<String, MonthAggregate> monthMap = new TreeMap<>();
+        for (Tuple t : revenueRows) {
+            String monthKey = t.get("month_key", String.class);
+            int year = ((Number) t.get("year_val")).intValue();
+            int monthNumber = ((Number) t.get("month_number")).intValue();
+            String rawPracticeId = t.get("service_line_id", String.class);
+            double revenue = toDouble(t.get("revenue_dkk"));
+
+            // Defensive remap: anything outside KNOWN_PRACTICES becomes OTHER.
+            String practiceId = (rawPracticeId != null && KNOWN_PRACTICES.contains(rawPracticeId))
+                    ? rawPracticeId
+                    : "OTHER";
+
+            MonthAggregate agg = monthMap.computeIfAbsent(
+                    monthKey,
+                    k -> new MonthAggregate(year, monthNumber, new LinkedHashMap<>())
+            );
+            agg.practices.merge(practiceId, revenue, Double::sum);
+        }
+
+        // ----- Ensure cost-only months are represented (with empty practice revenue) -----
+        for (Tuple t : costRows) {
+            String monthKey = t.get("month_key", String.class);
+            if (!monthMap.containsKey(monthKey)) {
+                int year = ((Number) t.get("year_val")).intValue();
+                int monthNumber = ((Number) t.get("month_number")).intValue();
+                monthMap.put(monthKey, new MonthAggregate(year, monthNumber, new LinkedHashMap<>()));
+            }
+        }
+
+        // ----- Determine which practices have data (preserve canonical order; OTHER last) -----
+        Set<String> practiceSet = new HashSet<>();
+        for (MonthAggregate agg : monthMap.values()) {
+            practiceSet.addAll(agg.practices.keySet());
+        }
+        List<String> practices = new ArrayList<>(KNOWN_PRACTICES.size() + 1);
+        for (String p : KNOWN_PRACTICES) {
+            if (practiceSet.contains(p)) practices.add(p);
+        }
+        if (practiceSet.contains("OTHER")) practices.add("OTHER");
+
+        // ----- Build month data points (sorted by monthKey ascending via TreeMap) -----
+        List<MonthlyRevenuePracticeDataPoint> months = new ArrayList<>(monthMap.size());
+        for (Map.Entry<String, MonthAggregate> entry : monthMap.entrySet()) {
+            String monthKey = entry.getKey();
+            MonthAggregate agg = entry.getValue();
+
+            // LinkedHashMap with insertion order matching the practices list → stable JSON key order.
+            Map<String, Double> practiceRevenue = new LinkedHashMap<>(practices.size());
+            double totalRevenueDkk = 0.0;
+            for (String p : practices) {
+                double rev = agg.practices.getOrDefault(p, 0.0);
+                practiceRevenue.put(p, rev);
+                totalRevenueDkk += rev;
+            }
+
+            double totalCostDkk = costByMonth.getOrDefault(monthKey, 0.0);
+            Double marginPercent = totalRevenueDkk > 0
+                    ? Math.round(((totalRevenueDkk - totalCostDkk) / totalRevenueDkk) * 10000.0) / 100.0
+                    : null;
+
+            months.add(new MonthlyRevenuePracticeDataPoint(
+                    monthKey,
+                    agg.year,
+                    agg.monthNumber,
+                    Month.of(agg.monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + agg.year,
+                    practiceRevenue,
+                    totalRevenueDkk,
+                    totalCostDkk,
+                    marginPercent
+            ));
+        }
+
+        return new RevenuePracticeDTO(months, practices);
     }
 }

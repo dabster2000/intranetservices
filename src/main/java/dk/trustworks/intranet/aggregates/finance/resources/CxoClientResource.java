@@ -14,6 +14,8 @@ import dk.trustworks.intranet.aggregates.finance.dto.EngagementByCompanyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.FactFreshnessDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.IndustryDistributionDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.ServiceLinePenetrationDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.CreditNoteRateDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.cxo.NewVsRepeatClientRevenueDTO;
 import dk.trustworks.intranet.aggregates.finance.services.CxoClientService;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ClientProfitabilityProvider;
 import jakarta.annotation.security.RolesAllowed;
@@ -666,5 +668,57 @@ public class CxoClientResource {
                 Integer.valueOf(result.getSegments().size()), Integer.valueOf(result.getTotalClients()), Double.valueOf(result.getTotalRevenueM()));
 
         return Response.ok(result).build();
+    }
+
+    /**
+     * Gets quarterly New vs Repeat client revenue.
+     *
+     * <p>Each quarter's revenue is split into "NEW" (project's first-ever invoice falls
+     * within that quarter) and "REPEAT" (subsequent quarters for the same project).
+     * The result is the time-ordered series of quarters with absolute DKK amounts and
+     * a repeat-share percentage.</p>
+     *
+     * @param fromDate ISO-8601 start date (optional, defaults to the 1st of the calendar month two years ago)
+     * @param toDate   ISO-8601 end date (optional, defaults to today)
+     * @param companyIds comma-separated company UUIDs (optional)
+     * @return NewVsRepeatClientRevenueDTO with the quarter series
+     */
+    @GET
+    @Path("/new-vs-repeat-revenue")
+    public NewVsRepeatClientRevenueDTO newVsRepeatRevenue(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/new-vs-repeat-revenue: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+
+        return cxoClientService.newVsRepeatRevenue(fromDate, toDate, parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Gets the monthly credit-note rate plus the top-5 clients by credit-note volume.
+     *
+     * <p>Only invoices in {@code economics_status IN ('BOOKED', 'PAID')} are counted, so
+     * drafts and in-progress invoices are excluded from the ratio. The {@code creditNoteRatePct}
+     * is the percentage of total billed value that was credited back, returned as
+     * {@code 0.0} (never null) when no invoices fall in a given month.</p>
+     *
+     * @param fromDate ISO-8601 start date (optional, defaults to the 1st of the month 11 months ago)
+     * @param toDate   ISO-8601 end date (optional, defaults to today)
+     * @param companyIds comma-separated company UUIDs (optional)
+     * @return CreditNoteRateDTO with the monthly series and top-5 clients
+     */
+    @GET
+    @Path("/credit-note-rate")
+    public CreditNoteRateDTO creditNoteRate(
+            @QueryParam("fromDate") LocalDate fromDate,
+            @QueryParam("toDate") LocalDate toDate,
+            @QueryParam("companyIds") String companyIds) {
+
+        log.debugf("GET /clients/cxo/credit-note-rate: fromDate=%s, toDate=%s, companyIds=%s",
+                fromDate, toDate, companyIds);
+
+        return cxoClientService.creditNoteRate(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 }
