@@ -52,4 +52,20 @@ public final class CxoSqlSupport {
         throw new IllegalStateException("Unexpected SQL value type for int: "
                 + v.getClass().getName() + " (value=" + v + ")");
     }
+
+    /**
+     * Splits a comma-separated query parameter into a Set, returning null for
+     * blank/empty/whitespace-only input. Used by CXO resources that accept an
+     * optional companyIds filter — the null return signals "no filter" to
+     * the service layer's conditional SQL assembly.
+     */
+    public static java.util.Set<String> parseCommaSeparated(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String s : raw.split(",")) {
+            String trimmed = s.trim();
+            if (!trimmed.isEmpty()) out.add(trimmed);
+        }
+        return out.isEmpty() ? null : out;
+    }
 }

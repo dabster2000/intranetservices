@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.people.resources;
 
+import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
 import dk.trustworks.intranet.aggregates.people.dto.cxo.ConsultantPyramidDTO;
 import dk.trustworks.intranet.aggregates.people.dto.cxo.HeadcountGrowthMonthDTO;
 import dk.trustworks.intranet.aggregates.people.dto.cxo.TurnoverTtmMonthDTO;
@@ -16,9 +17,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -41,22 +40,6 @@ public class CxoPeopleResource {
     CxoPeopleService cxoPeopleService;
 
     /**
-     * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
-     * Null means "no company filter" — services treat null as a flag to omit the company-filter
-     * WHERE clause entirely; the {@code :companyIds} parameter is bound only when a non-null Set
-     * is passed.
-     */
-    static Set<String> parseCommaSeparated(String raw) {
-        if (raw == null || raw.isBlank()) return null;
-        Set<String> out = new HashSet<>();
-        for (String s : raw.split(",")) {
-            String trimmed = s.trim();
-            if (!trimmed.isEmpty()) out.add(trimmed);
-        }
-        return out.isEmpty() ? null : out;
-    }
-
-    /**
      * Returns the trailing-24-months hires-vs-terminations curve.
      *
      * @param companyIds optional comma-separated UUID list; absent/blank means no filter
@@ -64,7 +47,7 @@ public class CxoPeopleResource {
     @GET
     @Path("/turnover-ttm")
     public List<TurnoverTtmMonthDTO> turnoverTtm(@QueryParam("companyIds") String companyIds) {
-        return cxoPeopleService.turnoverTtm(parseCommaSeparated(companyIds));
+        return cxoPeopleService.turnoverTtm(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 
     /**
@@ -75,7 +58,7 @@ public class CxoPeopleResource {
     @GET
     @Path("/consultant-pyramid")
     public ConsultantPyramidDTO consultantPyramid(@QueryParam("companyIds") String companyIds) {
-        return cxoPeopleService.consultantPyramid(parseCommaSeparated(companyIds));
+        return cxoPeopleService.consultantPyramid(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 
     /**
@@ -86,6 +69,6 @@ public class CxoPeopleResource {
     @GET
     @Path("/headcount-growth")
     public List<HeadcountGrowthMonthDTO> headcountGrowth(@QueryParam("companyIds") String companyIds) {
-        return cxoPeopleService.headcountGrowth(parseCommaSeparated(companyIds));
+        return cxoPeopleService.headcountGrowth(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 }

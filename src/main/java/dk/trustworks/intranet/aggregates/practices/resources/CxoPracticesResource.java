@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.practices.resources;
 
+import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticesGrossMarginMonthDTO;
 import dk.trustworks.intranet.aggregates.practices.services.CxoPracticesService;
 import jakarta.annotation.security.RolesAllowed;
@@ -14,9 +15,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -39,22 +38,6 @@ public class CxoPracticesResource {
     CxoPracticesService cxoPracticesService;
 
     /**
-     * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
-     * Null means "no company filter" — services treat null as a flag to omit the company-filter
-     * WHERE clause entirely; the {@code :companyIds} parameter is bound only when a non-null Set
-     * is passed.
-     */
-    static Set<String> parseCommaSeparated(String raw) {
-        if (raw == null || raw.isBlank()) return null;
-        Set<String> out = new HashSet<>();
-        for (String s : raw.split(",")) {
-            String trimmed = s.trim();
-            if (!trimmed.isEmpty()) out.add(trimmed);
-        }
-        return out.isEmpty() ? null : out;
-    }
-
-    /**
      * Returns gross-margin % TTM and prior-period delta per practice.
      * Mirrors the BFF route at {@code /api/cxo/practices/gross-margin}.
      *
@@ -66,6 +49,6 @@ public class CxoPracticesResource {
     @Path("/gross-margin")
     public List<PracticesGrossMarginMonthDTO> grossMargin(
             @QueryParam("companyIds") String companyIds) {
-        return cxoPracticesService.grossMargin(parseCommaSeparated(companyIds));
+        return cxoPracticesService.grossMargin(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 }

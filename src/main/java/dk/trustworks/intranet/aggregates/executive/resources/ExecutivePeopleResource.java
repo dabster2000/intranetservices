@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.executive.resources;
 
+import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecAgeBucketDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecGenderTrendMonthDTO;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecHeadcountByTypeMonthDTO;
@@ -18,9 +19,7 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -43,22 +42,6 @@ public class ExecutivePeopleResource {
     ExecutivePeopleService executivePeopleService;
 
     /**
-     * Splits a comma-separated UUID list query param into a Set; returns null for blank input.
-     * Null means "no company filter" — services treat null as a flag to omit the company-filter
-     * WHERE clause entirely; the {@code :companyIds} parameter is bound only when a non-null Set
-     * is passed.
-     */
-    static Set<String> parseCommaSeparated(String raw) {
-        if (raw == null || raw.isBlank()) return null;
-        Set<String> out = new HashSet<>();
-        for (String s : raw.split(",")) {
-            String trimmed = s.trim();
-            if (!trimmed.isEmpty()) out.add(trimmed);
-        }
-        return out.isEmpty() ? null : out;
-    }
-
-    /**
      * Returns the current-snapshot age distribution of active employees in
      * 5-year buckets, stacked by gender.
      *
@@ -67,7 +50,7 @@ public class ExecutivePeopleResource {
     @GET
     @Path("/age-distribution")
     public List<ExecAgeBucketDTO> ageDistribution(@QueryParam("companyIds") String companyIds) {
-        return executivePeopleService.ageDistribution(parseCommaSeparated(companyIds));
+        return executivePeopleService.ageDistribution(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 
     /**
@@ -78,7 +61,7 @@ public class ExecutivePeopleResource {
     @GET
     @Path("/gender-trend")
     public List<ExecGenderTrendMonthDTO> genderTrend(@QueryParam("companyIds") String companyIds) {
-        return executivePeopleService.genderTrend(parseCommaSeparated(companyIds));
+        return executivePeopleService.genderTrend(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 
     /**
@@ -89,7 +72,7 @@ public class ExecutivePeopleResource {
     @GET
     @Path("/headcount-by-type")
     public List<ExecHeadcountByTypeMonthDTO> headcountByType(@QueryParam("companyIds") String companyIds) {
-        return executivePeopleService.headcountByType(parseCommaSeparated(companyIds));
+        return executivePeopleService.headcountByType(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 
     /**
@@ -100,7 +83,7 @@ public class ExecutivePeopleResource {
     @GET
     @Path("/retention-cohorts")
     public List<ExecRetentionCohortDTO> retentionCohorts(@QueryParam("companyIds") String companyIds) {
-        return executivePeopleService.retentionCohorts(parseCommaSeparated(companyIds));
+        return executivePeopleService.retentionCohorts(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 
     /**
@@ -111,6 +94,6 @@ public class ExecutivePeopleResource {
     @GET
     @Path("/career-level-distribution")
     public List<ExecCareerLevelDistDTO> careerLevelDistribution(@QueryParam("companyIds") String companyIds) {
-        return executivePeopleService.careerLevelDistribution(parseCommaSeparated(companyIds));
+        return executivePeopleService.careerLevelDistribution(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
 }
