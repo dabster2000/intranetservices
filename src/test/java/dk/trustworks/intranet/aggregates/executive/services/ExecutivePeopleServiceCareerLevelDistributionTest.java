@@ -38,6 +38,22 @@ class ExecutivePeopleServiceCareerLevelDistributionTest {
             "Entry", "Delivery", "Advisory", "Leadership", "Client Engagement", "Partner / Director"
     );
 
+    /**
+     * Canonical positional order of all 18 career levels — must match the
+     * service's {@code CAREER_LEVEL_TRACK_MAP} declaration order. A
+     * map-iteration-order regression (e.g. switching from {@code List} to
+     * {@code HashMap}) would silently break the chart's left-to-right axis
+     * order. Asserting positional order locks the contract.
+     */
+    private static final List<String> CANONICAL_ORDER = List.of(
+            "JUNIOR_CONSULTANT", "CONSULTANT", "PROFESSIONAL_CONSULTANT", "SENIOR_CONSULTANT",
+            "LEAD_CONSULTANT", "MANAGING_CONSULTANT", "PRINCIPAL_CONSULTANT",
+            "MANAGER", "SENIOR_MANAGER", "ASSOCIATE_PARTNER",
+            "ENGAGEMENT_MANAGER", "SENIOR_ENGAGEMENT_MANAGER", "ENGAGEMENT_DIRECTOR",
+            "PARTNER", "THOUGHT_LEADER_PARTNER", "PRACTICE_LEADER",
+            "MANAGING_DIRECTOR", "MANAGING_PARTNER"
+    );
+
     @Inject
     ExecutivePeopleService service;
 
@@ -45,7 +61,13 @@ class ExecutivePeopleServiceCareerLevelDistributionTest {
     void careerLevelDistribution_noCompanyFilter_returnsList() {
         List<ExecCareerLevelDistDTO> result = service.careerLevelDistribution(null);
         assertNotNull(result);
-        assertEquals(18, result.size(), "Must return all 18 canonical career levels");
+        assertEquals(CANONICAL_ORDER.size(), result.size(),
+                "Must always return exactly 18 levels");
+        // Positional invariant: each level must appear at its canonical index.
+        for (int i = 0; i < CANONICAL_ORDER.size(); i++) {
+            assertEquals(CANONICAL_ORDER.get(i), result.get(i).careerLevel(),
+                    "Level at index " + i + " must be " + CANONICAL_ORDER.get(i));
+        }
         Set<String> seen = new HashSet<>();
         for (ExecCareerLevelDistDTO row : result) {
             assertNotNull(row.careerLevel(), "careerLevel must not be null");
@@ -66,7 +88,13 @@ class ExecutivePeopleServiceCareerLevelDistributionTest {
         List<ExecCareerLevelDistDTO> result =
                 service.careerLevelDistribution(Set.of("00000000-0000-0000-0000-000000000001"));
         assertNotNull(result);
-        assertEquals(18, result.size(), "All 18 levels are always returned");
+        assertEquals(CANONICAL_ORDER.size(), result.size(),
+                "All 18 levels are always returned");
+        // Positional invariant holds even when data is empty.
+        for (int i = 0; i < CANONICAL_ORDER.size(); i++) {
+            assertEquals(CANONICAL_ORDER.get(i), result.get(i).careerLevel(),
+                    "Level at index " + i + " must be " + CANONICAL_ORDER.get(i));
+        }
         for (ExecCareerLevelDistDTO row : result) {
             assertEquals(0L, row.count(), "Unknown UUID must yield count=0 everywhere");
         }

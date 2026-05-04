@@ -5,10 +5,12 @@ import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,7 +39,19 @@ class CxoDeliveryServiceStaffingGapForecastTest {
         // Always exactly 12 rows.
         assertEquals(12, result.size(), "staffingGapForecast must return exactly 12 months");
 
+        // First row must be the current month (today.withDayOfMonth(1)).
+        LocalDate today = LocalDate.now();
+        String expectedFirstKey = String.format("%04d%02d", today.getYear(), today.getMonthValue());
+        assertEquals(expectedFirstKey, result.get(0).monthKey(),
+                "First row must be current month");
+        assertFalse(result.get(0).isForecast(),
+                "Current month must have isForecast=false");
+
         boolean firstSeen = false;
+        // Monthly progression must be strictly ascending and monthKey must agree
+        // with year+monthNumber. Catches a regression where the cursor advance
+        // is off-by-one or the year/month/key fields drift apart.
+        String prevKey = "";
         for (StaffingGapForecastMonthDTO row : result) {
             assertNotNull(row.monthKey(), "monthKey must not be null");
             assertEquals(6, row.monthKey().length(), "monthKey must be YYYYMM");
@@ -54,6 +68,21 @@ class CxoDeliveryServiceStaffingGapForecastTest {
             // Counts are non-negative aggregates from COUNT(DISTINCT) / SUM(consultant_count).
             assertTrue(row.supplyFte() >= 0, "supplyFte must be non-negative: " + row.supplyFte());
             assertTrue(row.demandFte() >= 0, "demandFte must be non-negative: " + row.demandFte());
+
+            // monthKey strictly ascending.
+            assertTrue(row.monthKey().compareTo(prevKey) > 0,
+                    "monthKey must be strictly ascending: prev=" + prevKey
+                            + " current=" + row.monthKey());
+            prevKey = row.monthKey();
+
+            // monthKey year-prefix and month-suffix must agree with the
+            // numeric year/monthNumber fields.
+            int yearFromKey = Integer.parseInt(row.monthKey().substring(0, 4));
+            int monthFromKey = Integer.parseInt(row.monthKey().substring(4));
+            assertEquals(yearFromKey, row.year(),
+                    "monthKey year-prefix must match row.year()");
+            assertEquals(monthFromKey, row.monthNumber(),
+                    "monthKey month-suffix must match row.monthNumber()");
 
             // First entry is the current month → not a forecast; later entries are.
             if (!firstSeen) {

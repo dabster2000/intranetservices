@@ -28,19 +28,74 @@ class CxoPeopleServiceConsultantPyramidTest {
     @Inject
     CxoPeopleService service;
 
+    /**
+     * Bucket targets and career-level mappings are load-bearing — they're the
+     * chart's reference contract. These constants mirror the service's
+     * {@code PYRAMID_BUCKETS} declaration verbatim. A refactor that silently
+     * swaps target percentages between buckets (e.g. swapping Junior 30% with
+     * Mid 25%) would corrupt the chart's reference line; positional bucket
+     * assertions catch this.
+     */
+    private static final List<String> JUNIOR_LEVELS =
+            List.of("JUNIOR_CONSULTANT", "PROFESSIONAL_CONSULTANT");
+    private static final List<String> MID_LEVELS =
+            List.of("CONSULTANT");
+    private static final List<String> SENIOR_LEVELS =
+            List.of("SENIOR_MANAGER", "ENGAGEMENT_MANAGER", "SENIOR_ENGAGEMENT_MANAGER", "MANAGER");
+    private static final List<String> LEADERSHIP_LEVELS =
+            List.of("ASSOCIATE_PARTNER", "ENGAGEMENT_DIRECTOR", "PRACTICE_LEADER",
+                    "THOUGHT_LEADER_PARTNER", "MANAGING_DIRECTOR");
+    private static final List<String> PARTNER_LEVELS =
+            List.of("PARTNER", "MANAGING_PARTNER");
+
+    private static void assertCanonicalBucketShape(List<PyramidLevelDTO> levels) {
+        assertEquals(5, levels.size(), "Must always return exactly 5 buckets");
+
+        PyramidLevelDTO junior = levels.get(0);
+        assertEquals("Junior", junior.bucketLabel());
+        assertEquals(30.0, junior.targetPercent(), 0.001,
+                "Junior bucket target must be locked at 30%");
+        assertEquals(JUNIOR_LEVELS, junior.careerLevels(),
+                "Junior bucket careerLevels must be locked");
+
+        PyramidLevelDTO mid = levels.get(1);
+        assertEquals("Mid", mid.bucketLabel());
+        assertEquals(25.0, mid.targetPercent(), 0.001,
+                "Mid bucket target must be locked at 25%");
+        assertEquals(MID_LEVELS, mid.careerLevels(),
+                "Mid bucket careerLevels must be locked");
+
+        PyramidLevelDTO senior = levels.get(2);
+        assertEquals("Senior", senior.bucketLabel());
+        assertEquals(25.0, senior.targetPercent(), 0.001,
+                "Senior bucket target must be locked at 25%");
+        assertEquals(SENIOR_LEVELS, senior.careerLevels(),
+                "Senior bucket careerLevels must be locked");
+
+        PyramidLevelDTO leadership = levels.get(3);
+        assertEquals("Leadership", leadership.bucketLabel());
+        assertEquals(15.0, leadership.targetPercent(), 0.001,
+                "Leadership bucket target must be locked at 15%");
+        assertEquals(LEADERSHIP_LEVELS, leadership.careerLevels(),
+                "Leadership bucket careerLevels must be locked");
+
+        PyramidLevelDTO partner = levels.get(4);
+        assertEquals("Partner", partner.bucketLabel());
+        assertEquals(5.0, partner.targetPercent(), 0.001,
+                "Partner bucket target must be locked at 5%");
+        assertEquals(PARTNER_LEVELS, partner.careerLevels(),
+                "Partner bucket careerLevels must be locked");
+    }
+
     @Test
     void consultantPyramid_noCompanyFilter_returnsList() {
         ConsultantPyramidDTO result = service.consultantPyramid(null);
         assertNotNull(result);
         assertNotNull(result.levels());
-        assertEquals(5, result.levels().size(),
-                "must return 5 pyramid buckets in fixed order");
-        // Bucket labels in fixed order.
-        assertEquals("Junior", result.levels().get(0).bucketLabel());
-        assertEquals("Mid", result.levels().get(1).bucketLabel());
-        assertEquals("Senior", result.levels().get(2).bucketLabel());
-        assertEquals("Leadership", result.levels().get(3).bucketLabel());
-        assertEquals("Partner", result.levels().get(4).bucketLabel());
+        // Bucket targets and career-level mappings are load-bearing — assert
+        // each bucket's targetPercent and careerLevels set so a refactor can't
+        // silently swap target percentages between buckets.
+        assertCanonicalBucketShape(result.levels());
 
         long sumActualCount = 0;
         double sumTargetPct = 0.0;
@@ -80,8 +135,9 @@ class CxoPeopleServiceConsultantPyramidTest {
                 service.consultantPyramid(Set.of("00000000-0000-0000-0000-000000000001"));
         assertNotNull(result);
         assertNotNull(result.levels());
-        // Buckets are always returned, just with zero counts.
-        assertEquals(5, result.levels().size());
+        // Even with no actual data, target percentages and careerLevels remain
+        // locked (they're independent of the company filter).
+        assertCanonicalBucketShape(result.levels());
         assertEquals(0L, result.totalConsultants(), "no real company → zero consultants");
         for (PyramidLevelDTO level : result.levels()) {
             assertEquals(0L, level.actualCount(),
