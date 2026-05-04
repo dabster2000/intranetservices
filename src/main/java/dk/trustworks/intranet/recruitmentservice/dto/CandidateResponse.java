@@ -1,14 +1,11 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
+import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
+
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-/**
- * Full read model for a single candidate, returned by
- * {@code GET /recruitment/candidates/{uuid}}. Includes status fields, lifecycle
- * timestamps, the SharePoint move queue marker, and a one-line summary of the
- * latest dossier revision (or {@code null} if none exists yet).
- */
 public record CandidateResponse(
         String uuid,
         String firstName,
@@ -18,11 +15,11 @@ public record CandidateResponse(
         String targetCompanyUuid,
         LocalDate targetStartDate,
         String notes,
-        String status,
+        CandidateStatus status,
         String declineReason,
         String convertedUserUuid,
         String sharepointFolderPath,
-        String sharepointMoveStatus,
+        SharePointMoveStatus sharepointMoveStatus,
         String createdByUseruuid,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,

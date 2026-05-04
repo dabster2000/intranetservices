@@ -19,22 +19,11 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 /**
- * Immutable Send-action snapshot. Persisting one of these rows is the only
- * outwardly-visible side effect of a Send: it captures exactly what was
- * dispatched (placeholder values, signer config, appendix list) so the
- * dossier timeline can be reconstructed forever after.
- * <p>
- * The three {@code _snapshot} columns store frozen JSON copies of the
- * dossier draft state at allocation time. They are typed as raw JSON
- * strings on the entity and the application service is responsible for
- * (de)serialising the typed value-objects from
- * {@code dk.trustworks.intranet.recruitmentservice.model.snapshot}.
- * <p>
- * Immutability of snapshots is application-enforced: once persisted, no
- * code path should mutate {@link #placeholderValuesSnapshot},
- * {@link #signersConfigSnapshot} or {@link #appendicesSnapshot}. The
- * Lombok-generated setters exist only so JPA can hydrate the row on read;
- * callers must not invoke them outside aggregate construction.
+ * Send-action snapshot row. Every column except {@code uuid} is declared
+ * {@code updatable=false} so post-persist mutation cannot reach the database
+ * — the JPA dirty-check would write the column, then Hibernate's metamodel
+ * suppresses the UPDATE. Setters exist only for hydration and pre-persist
+ * population in the {@code DossierRevisionService.snapshotFromValues} flow.
  */
 @Getter
 @Setter

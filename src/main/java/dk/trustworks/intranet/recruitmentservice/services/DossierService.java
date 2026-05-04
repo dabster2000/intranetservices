@@ -212,8 +212,14 @@ public class DossierService {
     }
 
     private int nextDisplayOrder(String dossierUuid) {
-        long count = CandidateDossierAppendix.count("dossierUuid", dossierUuid);
-        int next = (int) Math.min(count + 1, MAX_APPENDIX_ORDER);
+        // MAX+1 rather than count+1 — after delete-then-add we'd otherwise
+        // hand out an order that already exists on a surviving row.
+        Integer max = CandidateDossierAppendix.<CandidateDossierAppendix>find(
+                        "dossierUuid", Sort.descending("displayOrder"), dossierUuid)
+                .firstResultOptional()
+                .map(CandidateDossierAppendix::getDisplayOrder)
+                .orElse(0);
+        int next = Math.min(max + 1, MAX_APPENDIX_ORDER);
         return Math.max(next, 1);
     }
 
@@ -237,7 +243,7 @@ public class DossierService {
                 dossier.getTemplateUuid(),
                 placeholderValues != null ? placeholderValues : Map.of(),
                 signersConfig != null ? signersConfig : List.of(),
-                dossier.getStatus().name(),
+                dossier.getStatus(),
                 appendices,
                 dossier.getCreatedAt(),
                 dossier.getUpdatedAt()
@@ -259,8 +265,9 @@ public class DossierService {
         try {
             return objectMapper.readValue(raw, ref);
         } catch (JsonProcessingException e) {
-            log.warnf("Failed to parse JSON column: %s", e.getOriginalMessage());
-            return null;
+            // Re-throw: silent fallback to empty would let the autosave PUT
+            // overwrite the (still-valid) DB JSON with empty maps.
+            throw CandidateService.jsonError("read", e);
         }
     }
 

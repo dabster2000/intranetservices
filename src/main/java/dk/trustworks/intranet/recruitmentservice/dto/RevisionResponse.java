@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.dto;
 
+import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
+
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -39,7 +41,7 @@ public record RevisionResponse(
         String uuid,
         String dossierUuid,
         int versionNumber,
-        String kind,
+        RevisionKind kind,
         Map<String, String> placeholderValuesSnapshot,
         List<SignerConfigDto> signersConfigSnapshot,
         List<AppendixDto> appendixFileUuidsSnapshot,

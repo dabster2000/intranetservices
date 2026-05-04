@@ -89,18 +89,32 @@ public class DossierRevisionService {
     public CandidateDossierRevision snapshot(
             CandidateDossier dossier, RevisionKind kind, RecipientInfo recipient, UUID actor) {
         Objects.requireNonNull(dossier, "dossier must not be null");
+        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
+        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        return snapshotFromValues(dossier, kind, placeholders, signers, appendices, recipient, actor);
+    }
+
+    /**
+     * Pre-resolved variant: caller supplies the frozen draft state explicitly.
+     * Used by the signature-send flow so the snapshot persists atomically with
+     * the NextSign case key (no post-persist column mutation).
+     */
+    @Transactional
+    public CandidateDossierRevision snapshotFromValues(
+            CandidateDossier dossier,
+            RevisionKind kind,
+            Map<String, String> placeholders,
+            List<SignerConfigDto> signers,
+            List<AppendixDto> appendices,
+            RecipientInfo recipient,
+            UUID actor) {
+        Objects.requireNonNull(dossier, "dossier must not be null");
         Objects.requireNonNull(kind, "kind must not be null");
         Objects.requireNonNull(recipient, "recipient must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
 
         CandidateDossierRevision revision = dossier.allocateRevision(kind, actor);
-
-        // Freeze draft state into the revision's snapshot columns. We re-read
-        // the dossier's typed values via the sister service so the JSON
-        // marshalling lives in one place.
-        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
-        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
-        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
 
         revision.setPlaceholderValuesSnapshot(writeJson(placeholders));
         revision.setSignersConfigSnapshot(writeJson(signers));
@@ -163,7 +177,7 @@ public class DossierRevisionService {
                 revision.getUuid(),
                 revision.getDossierUuid(),
                 revision.getVersionNumber(),
-                revision.getKind().name(),
+                revision.getKind(),
                 placeholders != null ? placeholders : Map.of(),
                 signers != null ? signers : List.of(),
                 appendices != null ? appendices : List.of(),
@@ -194,8 +208,9 @@ public class DossierRevisionService {
         try {
             return objectMapper.readValue(raw, ref);
         } catch (JsonProcessingException e) {
-            log.warnf("Failed to parse JSON snapshot: %s", e.getOriginalMessage());
-            return null;
+            // Re-throw: a silently empty snapshot ships review/signature emails
+            // with the wrong placeholders or no signers.
+            throw CandidateService.jsonError("read snapshot", e);
         }
     }
 }

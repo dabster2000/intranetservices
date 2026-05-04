@@ -20,7 +20,6 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -105,8 +104,16 @@ public class CandidateService {
         Map<String, Object> params = new java.util.HashMap<>();
 
         if (statusFilter != null && !statusFilter.isBlank()) {
+            CandidateStatus parsed;
+            try {
+                parsed = CandidateStatus.valueOf(statusFilter.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new jakarta.ws.rs.WebApplicationException(
+                        "Invalid status filter: " + statusFilter,
+                        jakarta.ws.rs.core.Response.Status.BAD_REQUEST);
+            }
             where.append(" AND status = :status");
-            params.put("status", CandidateStatus.valueOf(statusFilter.toUpperCase()));
+            params.put("status", parsed);
         }
         if (search != null && !search.isBlank()) {
             where.append(" AND (LOWER(firstName) LIKE :q OR LOWER(lastName) LIKE :q OR LOWER(email) LIKE :q)");
@@ -129,8 +136,8 @@ public class CandidateService {
                     c.getEmail(),
                     c.getTargetCompanyUuid(),
                     dossier.map(CandidateDossier::getTemplateUuid).orElse(null),
-                    c.getStatus().name(),
-                    latest.map(r -> r.getKind().name()).orElse(null),
+                    c.getStatus(),
+                    latest.map(CandidateDossierRevision::getKind).orElse(null),
                     latest.map(CandidateDossierRevision::getCreatedAt).orElse(null)
             ));
         }
@@ -210,7 +217,7 @@ public class CandidateService {
 
     private Optional<RevisionSummary> latestRevision(String candidateUuid) {
         return latestRevisionEntity(candidateUuid).map(r -> new RevisionSummary(
-                r.getUuid(), r.getVersionNumber(), r.getKind().name(), r.getCreatedAt()));
+                r.getUuid(), r.getVersionNumber(), r.getKind(), r.getCreatedAt()));
     }
 
     private Optional<CandidateDossierRevision> latestRevisionEntity(String candidateUuid) {
@@ -248,11 +255,11 @@ public class CandidateService {
                 c.getTargetCompanyUuid(),
                 c.getTargetStartDate(),
                 c.getNotes(),
-                c.getStatus().name(),
+                c.getStatus(),
                 c.getDeclineReason(),
                 c.getConvertedUserUuid(),
                 c.getSharepointFolderPath(),
-                c.getSharepointMoveStatus() != null ? c.getSharepointMoveStatus().name() : null,
+                c.getSharepointMoveStatus(),
                 c.getCreatedByUseruuid(),
                 c.getCreatedAt(),
                 c.getUpdatedAt(),
@@ -269,23 +276,6 @@ public class CandidateService {
         return objectMapper;
     }
 
-    // Suppressed-for-now warning: marshalling helpers used by sister services
-    // live on this service so they can share the Jackson instance. They are
-    // package-private to keep that contract narrow.
-    @SuppressWarnings("unused")
-    private LocalDateTime nowMarker() {
-        return LocalDateTime.now();
-    }
-
-    @SuppressWarnings("unused")
-    static class JsonMarshallingHint {
-        // Intentionally empty: the Hibernate JSON column type emits raw JSON
-        // strings; Jackson is the single source of truth for typed
-        // marshalling. Leaving this hint class as documentation.
-    }
-
-    // Static helper used by sister services to surface marshalling errors
-    // through a common exception so the resource layer can unify error mapping.
     static IllegalStateException jsonError(String operation, JsonProcessingException cause) {
         return new IllegalStateException("JSON " + operation + " failed: " + cause.getOriginalMessage(), cause);
     }

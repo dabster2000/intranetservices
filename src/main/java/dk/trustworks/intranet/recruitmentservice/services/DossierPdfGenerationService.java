@@ -74,9 +74,25 @@ public class DossierPdfGenerationService {
      */
     public List<GeneratedPdf> generatePdfsFor(CandidateDossierRevision revision, String templateUuid) {
         Objects.requireNonNull(revision, "revision must not be null");
-        Objects.requireNonNull(templateUuid, "templateUuid must not be null");
+        return generatePdfsFromValues(
+                templateUuid,
+                readPlaceholderSnapshot(revision),
+                readAppendicesSnapshot(revision));
+    }
 
-        Map<String, String> placeholders = readPlaceholderSnapshot(revision);
+    /**
+     * Pre-resolved variant: caller supplies placeholder values and appendices
+     * directly. Used by the signature-send flow so the external NextSign call
+     * can run outside the snapshot transaction.
+     */
+    public List<GeneratedPdf> generatePdfsFromValues(
+            String templateUuid,
+            Map<String, String> placeholders,
+            List<AppendixDto> appendices) {
+        Objects.requireNonNull(templateUuid, "templateUuid must not be null");
+        Objects.requireNonNull(placeholders, "placeholders must not be null");
+        Objects.requireNonNull(appendices, "appendices must not be null");
+
         List<TemplateDocumentEntity> templateDocs =
                 TemplateDocumentEntity.findByTemplateUuid(templateUuid);
 
@@ -91,13 +107,8 @@ public class DossierPdfGenerationService {
             byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
                     fileUuid, placeholders, filename);
             out.add(new GeneratedPdf(filename, null, pdfBytes, true));
-            log.debugf("Generated PDF revision=%s doc=%s bytes=%d",
-                    revision.getUuid(), filename, pdfBytes.length);
         }
 
-        // Appendices — passed through as already-existing files. Downstream
-        // code can stream them direct from S3 by file_uuid.
-        List<AppendixDto> appendices = readAppendicesSnapshot(revision);
         for (AppendixDto appendix : appendices) {
             out.add(new GeneratedPdf(
                     appendix.originalFilename(),
@@ -131,9 +142,9 @@ public class DossierPdfGenerationService {
                     });
             return v == null ? Map.of() : new HashMap<>(v);
         } catch (Exception e) {
-            log.warnf("Could not parse placeholder snapshot for revision=%s: %s",
-                    revision.getUuid(), e.getMessage());
-            return Map.of();
+            // Don't ship a PDF with every placeholder blank — fail loudly.
+            throw new IllegalStateException(
+                    "Could not parse placeholder snapshot for revision=" + revision.getUuid(), e);
         }
     }
 
@@ -148,9 +159,8 @@ public class DossierPdfGenerationService {
                     });
             return v == null ? List.of() : v;
         } catch (Exception e) {
-            log.warnf("Could not parse appendices snapshot for revision=%s: %s",
-                    revision.getUuid(), e.getMessage());
-            return List.of();
+            throw new IllegalStateException(
+                    "Could not parse appendices snapshot for revision=" + revision.getUuid(), e);
         }
     }
 

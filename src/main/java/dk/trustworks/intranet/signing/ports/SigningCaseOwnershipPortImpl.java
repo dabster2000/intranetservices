@@ -7,12 +7,6 @@ import jakarta.persistence.EntityManager;
 import java.util.Objects;
 import java.util.UUID;
 
-/**
- * Default implementation of {@link SigningCaseOwnershipPort} that issues a
- * single parameterised {@code UPDATE} against {@code signing_cases}. Runs
- * within the caller's transaction (no {@code @Transactional} on this class)
- * so the ownership transfer composes atomically with the calling workflow.
- */
 @ApplicationScoped
 public class SigningCaseOwnershipPortImpl implements SigningCaseOwnershipPort {
 
@@ -24,10 +18,14 @@ public class SigningCaseOwnershipPortImpl implements SigningCaseOwnershipPort {
         Objects.requireNonNull(caseKey, "caseKey must not be null");
         Objects.requireNonNull(newUserUuid, "newUserUuid must not be null");
 
-        em.createNativeQuery(
+        int rows = em.createNativeQuery(
                 "UPDATE signing_cases SET user_uuid = :newUserUuid WHERE case_key = :caseKey")
                 .setParameter("newUserUuid", newUserUuid.toString())
                 .setParameter("caseKey", caseKey)
                 .executeUpdate();
+
+        if (rows == 0) {
+            throw new SigningCaseNotFoundException(caseKey);
+        }
     }
 }

@@ -13,7 +13,6 @@ import jakarta.ws.rs.ext.Provider;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,8 +68,10 @@ public class RecruitmentRevisionResponseFilter implements ContainerResponseFilte
      * conservative — we'd rather over-redact a "salary review meeting" key
      * than leak compensation data.
      */
+    // (?u) enables Unicode-aware case folding so e.g. uppercase Ø matches
+    // the lowercase ø in `løn`. Without it, `(?i)` only folds ASCII A-Z.
     private static final Pattern SENSITIVE_KEY_PATTERN = Pattern.compile(
-            "(?i).*(cpr|salary|salar|løn|lon|pension|wage|gehalt).*");
+            "(?iu).*(cpr|salary|salar|løn|lon|pension|wage|gehalt).*");
 
     private static final String SCOPE_USERS_READ = "users:read";
     private static final String REDACTED_VALUE = "[REDACTED]";
@@ -200,11 +201,5 @@ public class RecruitmentRevisionResponseFilter implements ContainerResponseFilte
             }
         }
         return n;
-    }
-
-    // suppress an unused HashMap import warning — used by build cache for clarity.
-    @SuppressWarnings("unused")
-    private static Map<String, String> hashMapHint() {
-        return new HashMap<>();
     }
 }

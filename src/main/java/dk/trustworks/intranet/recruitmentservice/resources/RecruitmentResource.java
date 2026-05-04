@@ -23,7 +23,6 @@ import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
-import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import dk.trustworks.intranet.recruitmentservice.security.RecruitmentSecuredResponse;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateConversionUseCase;
 import dk.trustworks.intranet.recruitmentservice.services.CandidateService;
@@ -437,7 +436,6 @@ public class RecruitmentResource {
     @POST
     @Path("/candidates/{uuid}/dossier/send-signature")
     @RolesAllowed({"recruitment:write"})
-    @Transactional
     public Response sendSignature(@PathParam("uuid") UUID candidateUuid,
                                   @Valid SendSignatureRequest request) {
         enforceFlag();
@@ -447,68 +445,58 @@ public class RecruitmentResource {
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
-        // 1) Allocate the revision so the snapshot reflects the dossier state
-        //    used to generate PDFs. We mutate the revision's signing_case_key
-        //    after NextSign returns (see step 5).
-        String firstSignerEmail = firstSignerEmailOrCandidate(dossierService, dossier, candidate.getEmail());
-        RecipientInfo recipient = new RecipientInfo(
-                firstSignerEmail,
-                fullName(candidate.getFirstName(), candidate.getLastName()),
-                actor,
-                body.note(),
-                null,
-                List.of());
-        CandidateDossierRevision revision = dossierRevisionService.snapshot(
-                dossier, RevisionKind.SIGNATURE, recipient, actor);
+        // 1) Resolve current draft state (read-only).
+        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
+        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
 
-        // 2) Generate the PDFs from the frozen snapshot.
-        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(
-                revision, dossier.getTemplateUuid());
+        // 2) Generate PDFs from those values (no DB writes).
+        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
+                dossier.getTemplateUuid(), placeholders, appendices);
 
-        // 3) Lazily provision the SharePoint folder. First signature send only
-        //    (per spec §11.5) — review email/PDF do not trigger this.
-        sharePointCandidateFolderService.ensureFolderForCandidate(candidate);
-
-        // 4) Build the NextSign documents + signers payload.
         List<DocumentInfo> documents = new ArrayList<>(pdfs.size());
         for (GeneratedPdf pdf : pdfs) {
             if (pdf.pdfBytes() != null) {
                 documents.add(new DocumentInfo(pdf.filename(), pdf.pdfBytes(), pdf.fromTemplate()));
             }
-            // Appendix files in S3 are fetched separately by downstream
-            // process — TODO (stage 4): wire S3 fetch + add as DocumentInfo.
         }
         if (documents.isEmpty()) {
             throw new WebApplicationException(
                     "Cannot send signature: no documents available on dossier",
                     Response.Status.CONFLICT);
         }
-
-        List<SignerInfo> signers = mapSigners(dossierService, dossier);
-        if (signers.isEmpty()) {
+        List<SignerInfo> signerInfos = mapSigners(signers);
+        if (signerInfos.isEmpty()) {
             throw new WebApplicationException(
                     "Cannot send signature: no signers configured on dossier",
                     Response.Status.CONFLICT);
         }
 
-        // 5) Create the NextSign case and persist the returned case_key on
-        //    the revision row. The setter is allowed only for hydration —
-        //    we accept that constraint for stage 3 because the column is
-        //    declared updatable=false and the Hibernate session has not
-        //    yet seen the row, so a setter call before persist is fine.
-        //    However the revision was already persisted by snapshot(), so
-        //    we issue a direct UPDATE through the entity manager.
+        // 3) External calls — these happen BEFORE any DB write so a slow
+        //    NextSign round-trip does not hold a transaction open against
+        //    candidate_dossier_revisions.
+        sharePointCandidateFolderService.ensureFolderForCandidate(candidate);
         String caseKey = nextsignSigningService.createMultiDocumentSigningCase(
                 documents,
-                signers,
+                signerInfos,
                 "recruitment-candidate:" + candidate.getUuid(),
-                collectSigningSchemas(dossierService, dossier));
+                collectSigningSchemas(signers));
 
-        CandidateDossierRevision.update(
-                "signingCaseKey = ?1 WHERE uuid = ?2",
-                caseKey, revision.getUuid());
+        // 4) Atomic snapshot — case_key is set on the revision before persist,
+        //    so the immutability invariant on signing_case_key holds.
+        String firstSignerEmail = firstSignerEmailFromList(signers, candidate.getEmail());
+        RecipientInfo recipient = new RecipientInfo(
+                firstSignerEmail,
+                fullName(candidate.getFirstName(), candidate.getLastName()),
+                actor,
+                body.note(),
+                caseKey,
+                List.of());
+        CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
+                dossier, RevisionKind.SIGNATURE,
+                placeholders, signers, appendices,
+                recipient, actor);
 
-        revision.setSigningCaseKey(caseKey);
         return Response.ok(dossierRevisionService.toResponse(revision)).build();
     }
 
@@ -606,38 +594,18 @@ public class RecruitmentResource {
         return ((first == null ? "" : first) + " " + (last == null ? "" : last)).trim();
     }
 
-    private static String firstSignerEmailOrCandidate(DossierService service, CandidateDossier dossier, String fallback) {
-        try {
-            List<SignerConfigDto> signers = service.currentSignersConfig(dossier);
-            for (SignerConfigDto s : signers) {
-                if (s.signing() && s.email() != null && !s.email().isBlank()) {
-                    return s.email();
-                }
-            }
-        } catch (RuntimeException e) {
-            // Safe fallback path; never let signer-list parsing break a Send.
-        }
-        return fallback;
-    }
-
-    private static List<SignerInfo> mapSigners(DossierService service, CandidateDossier dossier) {
-        List<SignerConfigDto> signers = service.currentSignersConfig(dossier);
+    private static List<SignerInfo> mapSigners(List<SignerConfigDto> signers) {
         List<SignerInfo> out = new ArrayList<>(signers.size());
         int group = 1;
         for (SignerConfigDto s : signers) {
             String role = s.role() != null ? s.role() : (s.signing() ? "signer" : "copy");
             out.add(new SignerInfo(group, s.name(), s.email(), role, s.signing(), s.needsCpr()));
-            // Each signer is a single sequential group by default;
-            // parallel/group-shared signing is configured server-side per
-            // template and not yet exposed on SignerConfigDto. Stage 4 to
-            // surface a `signingGroup` field if needed.
             group++;
         }
         return out;
     }
 
-    private static List<String> collectSigningSchemas(DossierService service, CandidateDossier dossier) {
-        List<SignerConfigDto> signers = service.currentSignersConfig(dossier);
+    private static List<String> collectSigningSchemas(List<SignerConfigDto> signers) {
         List<String> schemas = new ArrayList<>();
         for (SignerConfigDto s : signers) {
             if (s.signingSchema() != null && !s.signingSchema().isBlank()
@@ -646,6 +614,15 @@ public class RecruitmentResource {
             }
         }
         return schemas;
+    }
+
+    private static String firstSignerEmailFromList(List<SignerConfigDto> signers, String fallback) {
+        for (SignerConfigDto s : signers) {
+            if (s.signing() && s.email() != null && !s.email().isBlank()) {
+                return s.email();
+            }
+        }
+        return fallback;
     }
 
     /**
@@ -703,10 +680,4 @@ public class RecruitmentResource {
         public Map<String, String> meta = new HashMap<>();
     }
 
-    @SuppressWarnings("unused")
-    private static BusinessRuleViolation domainHint() {
-        // Static reference so the import isn't pruned as unused — the
-        // exception is mapped by BusinessRuleViolationExceptionMapper.
-        return new BusinessRuleViolation("placeholder");
-    }
 }
