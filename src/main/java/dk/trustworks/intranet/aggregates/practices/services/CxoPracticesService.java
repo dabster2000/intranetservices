@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticesGrossMarginM
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
@@ -33,7 +34,10 @@ public class CxoPracticesService {
     /**
      * Null-safe Tuple value coercion to primitive double. Mirrors the helper in
      * sibling CXO services — null → 0.0, primitives unboxed,
-     * Booleans/byte[]/BitSet treated as 1.0/0.0 truthy.
+     * Booleans/byte[]/BitSet treated as 1.0/0.0 truthy. Throws {@link
+     * IllegalStateException} on unexpected JDBC types (rather than swallowing
+     * them via {@code Double.parseDouble(toString())}) so a schema/driver
+     * mismatch fails loud instead of silently producing wrong numbers.
      */
     static double toDouble(Object v) {
         if (v == null) return 0d;
@@ -41,19 +45,41 @@ public class CxoPracticesService {
         if (v instanceof Boolean b) return b ? 1d : 0d;
         if (v instanceof byte[] bytes) return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
         if (v instanceof java.util.BitSet bs) return bs.isEmpty() ? 0d : 1d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     /**
      * Null-safe Tuple value coercion to boxed Double. NULL values are preserved as
      * {@code null} in the wire shape (e.g. ratios where the divisor is zero) so
-     * Jackson serializes them as JSON {@code null} rather than zero.
+     * Jackson serializes them as JSON {@code null} rather than zero. Throws
+     * {@link IllegalStateException} on unexpected JDBC types — see
+     * {@link #toDouble(Object)} for rationale.
      */
     static Double toDoubleBoxed(Object v) {
         if (v == null) return null;
         if (v instanceof Number n) return n.doubleValue();
         if (v instanceof Boolean b) return b ? 1d : 0d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive long (NULL → 0L). */
+    static long toLong(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number n) return n.longValue();
+        if (v instanceof Boolean b) return b ? 1L : 0L;
+        throw new IllegalStateException("Unexpected SQL value type for long: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive int (NULL → 0). */
+    static int toInt(Object v) {
+        if (v == null) return 0;
+        if (v instanceof Number n) return n.intValue();
+        if (v instanceof Boolean b) return b ? 1 : 0;
+        throw new IllegalStateException("Unexpected SQL value type for int: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     // ============================================================================
@@ -201,7 +227,14 @@ public class CxoPracticesService {
         revenueQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> revenueRows = revenueQuery.getResultList();
+        List<Tuple> revenueRows;
+        try {
+            revenueRows = revenueQuery.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "grossMargin revenue query failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // ----------------------------------------------------------------------
         // 2) OPEX query — fact_opex_mat per (practice_id, period).
@@ -236,7 +269,14 @@ public class CxoPracticesService {
         opexQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> opexRows = opexQuery.getResultList();
+        List<Tuple> opexRows;
+        try {
+            opexRows = opexQuery.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "grossMargin opex query failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // ----------------------------------------------------------------------
         // 3) Aggregate rows per practice (LinkedHashMap → deterministic order).
@@ -271,6 +311,7 @@ public class CxoPracticesService {
         // marginDeltaPts is null when either side is null.
         // ----------------------------------------------------------------------
         List<PracticesGrossMarginMonthDTO> result = new ArrayList<>(PRACTICES.size());
+        int dropped = 0;
         for (String practiceId : PRACTICES) {
             TwoPeriodAccumulator rev = revenueByPractice.get(practiceId);
             TwoPeriodAccumulator opex = opexByPractice.get(practiceId);
@@ -290,16 +331,26 @@ public class CxoPracticesService {
                     ? currentMarginPct - priorMarginPct
                     : null;
 
-            result.add(new PracticesGrossMarginMonthDTO(
-                    practiceId,
-                    currentRevenue,
-                    currentCost,
-                    currentMarginPct,
-                    priorRevenue,
-                    priorCost,
-                    priorMarginPct,
-                    marginDeltaPts
-            ));
+            try {
+                result.add(new PracticesGrossMarginMonthDTO(
+                        practiceId,
+                        currentRevenue,
+                        currentCost,
+                        currentMarginPct,
+                        priorRevenue,
+                        priorCost,
+                        priorMarginPct,
+                        marginDeltaPts
+                ));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in grossMargin (dropped=%d, practiceId=%s): %s",
+                        dropped, practiceId, e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("grossMargin dropped %d malformed practice rows out of %d",
+                    dropped, PRACTICES.size());
         }
 
         log.debugf("grossMargin: practices=%d (companyFilter=%s, ttm=%s..%s, prior=%s..%s)",

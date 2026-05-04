@@ -9,6 +9,7 @@ import dk.trustworks.intranet.aggregates.executive.dto.people.ExecRetentionCohor
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
@@ -44,7 +45,10 @@ public class ExecutivePeopleService {
      * Null-safe Tuple value coercion to primitive double. Mirrors the helper in
      * {@code CxoFinanceService}, {@code CxoClientService}, {@code CxoSalesService}, and
      * {@code CxoForecastService} — null → 0.0, primitives unboxed,
-     * Booleans/byte[]/BitSet treated as 1.0/0.0 truthy.
+     * Booleans/byte[]/BitSet treated as 1.0/0.0 truthy. Throws {@link
+     * IllegalStateException} on unexpected JDBC types (rather than swallowing
+     * them via {@code Double.parseDouble(toString())}) so a schema/driver
+     * mismatch fails loud instead of silently producing wrong numbers.
      */
     static double toDouble(Object v) {
         if (v == null) return 0d;
@@ -52,19 +56,41 @@ public class ExecutivePeopleService {
         if (v instanceof Boolean b) return b ? 1d : 0d;
         if (v instanceof byte[] bytes) return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
         if (v instanceof java.util.BitSet bs) return bs.isEmpty() ? 0d : 1d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     /**
      * Null-safe Tuple value coercion to boxed Double. NULL values are preserved as
      * {@code null} in the wire shape (e.g. ratios where the divisor is zero) so
-     * Jackson serializes them as JSON {@code null} rather than zero.
+     * Jackson serializes them as JSON {@code null} rather than zero. Throws
+     * {@link IllegalStateException} on unexpected JDBC types — see
+     * {@link #toDouble(Object)} for rationale.
      */
     static Double toDoubleBoxed(Object v) {
         if (v == null) return null;
         if (v instanceof Number n) return n.doubleValue();
         if (v instanceof Boolean b) return b ? 1d : 0d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive long (NULL → 0L). */
+    static long toLong(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number n) return n.longValue();
+        if (v instanceof Boolean b) return b ? 1L : 0L;
+        throw new IllegalStateException("Unexpected SQL value type for long: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive int (NULL → 0). */
+    static int toInt(Object v) {
+        if (v == null) return 0;
+        if (v instanceof Number n) return n.intValue();
+        if (v instanceof Boolean b) return b ? 1 : 0;
+        throw new IllegalStateException("Unexpected SQL value type for int: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     // ============================================================================
@@ -129,7 +155,14 @@ public class ExecutivePeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "ageDistribution failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // Mutable accumulator distinct from the immutable DTO record.
         final class Acc {
@@ -145,9 +178,9 @@ public class ExecutivePeopleService {
         Map<Integer, Acc> bucketMap = new LinkedHashMap<>();
 
         for (Tuple row : rows) {
-            int bucketStart = ((Number) row.get("bucket_start")).intValue();
+            int bucketStart = toInt(row.get("bucket_start"));
             String gender = row.get("gender", String.class);
-            long headcount = ((Number) row.get("headcount")).longValue();
+            long headcount = toLong(row.get("headcount"));
 
             Acc acc = bucketMap.computeIfAbsent(bucketStart, Acc::new);
             if ("MALE".equals(gender)) {
@@ -161,10 +194,21 @@ public class ExecutivePeopleService {
         }
 
         List<ExecAgeBucketDTO> result = new ArrayList<>(bucketMap.size());
+        int dropped = 0;
         for (Acc acc : bucketMap.values()) {
-            String label = acc.bucketStart + "–" + (acc.bucketStart + 4); // en-dash
-            long total = acc.male + acc.female + acc.unknown;
-            result.add(new ExecAgeBucketDTO(label, acc.bucketStart, acc.male, acc.female, acc.unknown, total));
+            try {
+                String label = acc.bucketStart + "–" + (acc.bucketStart + 4); // en-dash
+                long total = acc.male + acc.female + acc.unknown;
+                result.add(new ExecAgeBucketDTO(label, acc.bucketStart, acc.male, acc.female, acc.unknown, total));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in ageDistribution (dropped=%d, bucketStart=%d): %s",
+                        dropped, acc.bucketStart, e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("ageDistribution dropped %d malformed buckets out of %d",
+                    dropped, bucketMap.size());
         }
 
         log.debugf("ageDistribution: %d buckets (companyFilter=%s)",
@@ -254,15 +298,22 @@ public class ExecutivePeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "genderTrend failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         Map<String, GenderAcc> monthMap = new LinkedHashMap<>();
         for (Tuple row : rows) {
             String monthKey = row.get("month_key", String.class);
-            int year = ((Number) row.get("year")).intValue();
-            int monthNumber = ((Number) row.get("month_number")).intValue();
+            int year = toInt(row.get("year"));
+            int monthNumber = toInt(row.get("month_number"));
             String gender = row.get("gender", String.class);
-            long headcount = ((Number) row.get("headcount")).longValue();
+            long headcount = toLong(row.get("headcount"));
 
             GenderAcc acc = monthMap.computeIfAbsent(monthKey,
                     k -> new GenderAcc(monthKey, year, monthNumber));
@@ -276,16 +327,27 @@ public class ExecutivePeopleService {
         }
 
         List<ExecGenderTrendMonthDTO> result = new ArrayList<>(monthMap.size());
+        int dropped = 0;
         for (GenderAcc acc : monthMap.values()) {
-            String monthLabel = Month.of(acc.monthNumber)
-                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
-            long denominator = acc.male + acc.female;
-            Double femalePct = denominator > 0
-                    ? Math.round((double) acc.female / denominator * 10000.0) / 100.0
-                    : null;
-            result.add(new ExecGenderTrendMonthDTO(
-                    acc.monthKey, monthLabel, acc.year, acc.monthNumber,
-                    acc.male, acc.female, acc.unknown, femalePct));
+            try {
+                String monthLabel = Month.of(acc.monthNumber)
+                        .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
+                long denominator = acc.male + acc.female;
+                Double femalePct = denominator > 0
+                        ? Math.round((double) acc.female / denominator * 10000.0) / 100.0
+                        : null;
+                result.add(new ExecGenderTrendMonthDTO(
+                        acc.monthKey, monthLabel, acc.year, acc.monthNumber,
+                        acc.male, acc.female, acc.unknown, femalePct));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in genderTrend (dropped=%d, monthKey=%s): %s",
+                        dropped, acc.monthKey, e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("genderTrend dropped %d malformed rows out of %d",
+                    dropped, monthMap.size());
         }
 
         log.debugf("genderTrend: %d months (companyFilter=%s)",
@@ -375,15 +437,22 @@ public class ExecutivePeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "headcountByType failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         Map<String, HeadcountByTypeAcc> monthMap = new LinkedHashMap<>();
         for (Tuple row : rows) {
             String monthKey = row.get("month_key", String.class);
-            int year = ((Number) row.get("year")).intValue();
-            int monthNumber = ((Number) row.get("month_number")).intValue();
+            int year = toInt(row.get("year"));
+            int monthNumber = toInt(row.get("month_number"));
             String type = row.get("type", String.class);
-            long headcount = ((Number) row.get("headcount")).longValue();
+            long headcount = toLong(row.get("headcount"));
 
             HeadcountByTypeAcc acc = monthMap.computeIfAbsent(monthKey,
                     k -> new HeadcountByTypeAcc(monthKey, year, monthNumber));
@@ -397,13 +466,24 @@ public class ExecutivePeopleService {
         }
 
         List<ExecHeadcountByTypeMonthDTO> result = new ArrayList<>(monthMap.size());
+        int dropped = 0;
         for (HeadcountByTypeAcc acc : monthMap.values()) {
-            String monthLabel = Month.of(acc.monthNumber)
-                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
-            long total = acc.consultant + acc.student + acc.staff + acc.external;
-            result.add(new ExecHeadcountByTypeMonthDTO(
-                    acc.monthKey, monthLabel, acc.year, acc.monthNumber,
-                    acc.consultant, acc.student, acc.staff, acc.external, total));
+            try {
+                String monthLabel = Month.of(acc.monthNumber)
+                        .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
+                long total = acc.consultant + acc.student + acc.staff + acc.external;
+                result.add(new ExecHeadcountByTypeMonthDTO(
+                        acc.monthKey, monthLabel, acc.year, acc.monthNumber,
+                        acc.consultant, acc.student, acc.staff, acc.external, total));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in headcountByType (dropped=%d, monthKey=%s): %s",
+                        dropped, acc.monthKey, e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("headcountByType dropped %d malformed rows out of %d",
+                    dropped, monthMap.size());
         }
 
         log.debugf("headcountByType: %d months (companyFilter=%s)",
@@ -505,7 +585,14 @@ public class ExecutivePeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "retentionCohorts failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // Cohort fold: group by YEAR(hireDate). LinkedHashMap so we can iterate
         // in deterministic order (though we always emit all years 2019..2025
@@ -526,14 +613,25 @@ public class ExecutivePeopleService {
         LocalDate now = LocalDate.now();
         List<ExecRetentionCohortDTO> result = new ArrayList<>(
                 RETENTION_COHORT_END_YEAR - RETENTION_COHORT_START_YEAR + 1);
+        int totalDroppedPoints = 0;
         for (int year = RETENTION_COHORT_START_YEAR; year <= RETENTION_COHORT_END_YEAR; year++) {
             List<EmployeeLifecycle> employees = byCohort.getOrDefault(year, List.of());
             long cohortSize = employees.size();
 
             if (cohortSize == 0) {
+                // Inner-list ExecRetentionCohortPointDTO construction is per-row
+                // in spirit; wrap each point so a single corrupt point can't
+                // take down the whole cohort. Outer ExecRetentionCohortDTO is
+                // fail-fast (the request is unrecoverable if it throws).
                 List<ExecRetentionCohortPointDTO> emptyPoints = new ArrayList<>(RETENTION_TIME_POINTS.size());
                 for (int tp : RETENTION_TIME_POINTS) {
-                    emptyPoints.add(new ExecRetentionCohortPointDTO(tp, null));
+                    try {
+                        emptyPoints.add(new ExecRetentionCohortPointDTO(tp, null));
+                    } catch (IllegalArgumentException e) {
+                        totalDroppedPoints++;
+                        log.warnf("Skipping malformed point in retentionCohorts (year=%d, tp=%d): %s",
+                                year, tp, e.getMessage());
+                    }
                 }
                 result.add(new ExecRetentionCohortDTO(year, 0L, emptyPoints));
                 continue;
@@ -546,7 +644,13 @@ public class ExecutivePeopleService {
             for (int tp : RETENTION_TIME_POINTS) {
                 if (tp > monthsSinceCohortStart) {
                     // Right-censored: time point beyond observation window
-                    points.add(new ExecRetentionCohortPointDTO(tp, null));
+                    try {
+                        points.add(new ExecRetentionCohortPointDTO(tp, null));
+                    } catch (IllegalArgumentException e) {
+                        totalDroppedPoints++;
+                        log.warnf("Skipping malformed point in retentionCohorts (year=%d, tp=%d): %s",
+                                year, tp, e.getMessage());
+                    }
                     continue;
                 }
                 long survived = 0;
@@ -562,10 +666,20 @@ public class ExecutivePeopleService {
                     }
                 }
                 double survivalPct = Math.round((double) survived / cohortSize * 10000.0) / 100.0;
-                points.add(new ExecRetentionCohortPointDTO(tp, survivalPct));
+                try {
+                    points.add(new ExecRetentionCohortPointDTO(tp, survivalPct));
+                } catch (IllegalArgumentException e) {
+                    totalDroppedPoints++;
+                    log.warnf("Skipping malformed point in retentionCohorts (year=%d, tp=%d): %s",
+                            year, tp, e.getMessage());
+                }
             }
 
             result.add(new ExecRetentionCohortDTO(year, cohortSize, points));
+        }
+        if (totalDroppedPoints > 0) {
+            log.warnf("retentionCohorts dropped %d malformed points across all cohorts",
+                    totalDroppedPoints);
         }
 
         log.debugf("retentionCohorts: %d cohorts (companyFilter=%s)",
@@ -675,7 +789,14 @@ public class ExecutivePeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "careerLevelDistribution failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // Build a lookup of actual counts. HashMap is fine here since we then
         // iterate the canonical CAREER_LEVEL_TRACK_MAP (which dictates the
@@ -683,16 +804,27 @@ public class ExecutivePeopleService {
         Map<String, Long> countByLevel = new HashMap<>(rows.size());
         for (Tuple row : rows) {
             String careerLevel = row.get("career_level", String.class);
-            long count = ((Number) row.get("consultant_count")).longValue();
+            long count = toLong(row.get("consultant_count"));
             countByLevel.put(careerLevel, count);
         }
 
         // Always emit all 18 canonical levels in display order, even with zero count.
         List<ExecCareerLevelDistDTO> result = new ArrayList<>(CAREER_LEVEL_TRACK_MAP.size());
+        int dropped = 0;
         for (CareerLevelTrack entry : CAREER_LEVEL_TRACK_MAP) {
             long count = countByLevel.getOrDefault(entry.careerLevel(), 0L);
-            result.add(new ExecCareerLevelDistDTO(
-                    entry.careerLevel(), entry.careerTrack(), count));
+            try {
+                result.add(new ExecCareerLevelDistDTO(
+                        entry.careerLevel(), entry.careerTrack(), count));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in careerLevelDistribution (dropped=%d, level=%s): %s",
+                        dropped, entry.careerLevel(), e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("careerLevelDistribution dropped %d malformed levels out of %d",
+                    dropped, CAREER_LEVEL_TRACK_MAP.size());
         }
 
         log.debugf("careerLevelDistribution: %d levels (companyFilter=%s)",

@@ -19,6 +19,7 @@ import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
@@ -55,6 +56,10 @@ public class CxoDeliveryService {
      * {@code CxoFinanceService}, {@code CxoClientService}, {@code CxoSalesService},
      * {@code CxoForecastService}, and {@code CxoPeopleService} — null → 0.0,
      * primitives unboxed, Booleans/byte[]/BitSet treated as 1.0/0.0 truthy.
+     * Throws {@link IllegalStateException} on unexpected JDBC types (rather
+     * than swallowing them via {@code Double.parseDouble(toString())}) so a
+     * schema/driver mismatch fails loud instead of silently producing wrong
+     * numbers.
      */
     static double toDouble(Object v) {
         if (v == null) return 0d;
@@ -62,19 +67,41 @@ public class CxoDeliveryService {
         if (v instanceof Boolean b) return b ? 1d : 0d;
         if (v instanceof byte[] bytes) return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
         if (v instanceof java.util.BitSet bs) return bs.isEmpty() ? 0d : 1d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     /**
      * Null-safe Tuple value coercion to boxed Double. NULL values are preserved as
      * {@code null} in the wire shape (e.g. ratios where the divisor is zero) so
-     * Jackson serializes them as JSON {@code null} rather than zero.
+     * Jackson serializes them as JSON {@code null} rather than zero. Throws
+     * {@link IllegalStateException} on unexpected JDBC types — see
+     * {@link #toDouble(Object)} for rationale.
      */
     static Double toDoubleBoxed(Object v) {
         if (v == null) return null;
         if (v instanceof Number n) return n.doubleValue();
         if (v instanceof Boolean b) return b ? 1d : 0d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive long (NULL → 0L). */
+    static long toLong(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number n) return n.longValue();
+        if (v instanceof Boolean b) return b ? 1L : 0L;
+        throw new IllegalStateException("Unexpected SQL value type for long: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive int (NULL → 0). */
+    static int toInt(Object v) {
+        if (v == null) return 0;
+        if (v instanceof Number n) return n.intValue();
+        if (v instanceof Boolean b) return b ? 1 : 0;
+        throw new IllegalStateException("Unexpected SQL value type for int: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     /**
@@ -1780,7 +1807,14 @@ public class CxoDeliveryService {
         supplyQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> supplyRows = supplyQuery.getResultList();
+        List<Tuple> supplyRows;
+        try {
+            supplyRows = supplyQuery.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "staffingGapForecast supply query failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // ----------------------------------------------------------------------
         // 2) Demand query: SUM(consultant_count) per (year, month_number, delivery_month_key)
@@ -1808,7 +1842,14 @@ public class CxoDeliveryService {
         demandQuery.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> demandRows = demandQuery.getResultList();
+        List<Tuple> demandRows;
+        try {
+            demandRows = demandQuery.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "staffingGapForecast demand query failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // ----------------------------------------------------------------------
         // 3) Build lookup maps (LinkedHashMap for deterministic iteration).
@@ -1816,8 +1857,8 @@ public class CxoDeliveryService {
         Map<String, Double> supplyMap = new LinkedHashMap<>();
         double latestSupplyFte = 0d;
         for (Tuple row : supplyRows) {
-            int yr = ((Number) row.get("yr")).intValue();
-            int mo = ((Number) row.get("mo")).intValue();
+            int yr = toInt(row.get("yr"));
+            int mo = toInt(row.get("mo"));
             double fte = toDouble(row.get("active_consultants"));
             String key = String.format(Locale.ROOT, "%04d%02d", yr, mo);
             supplyMap.put(key, fte);
@@ -1832,9 +1873,12 @@ public class CxoDeliveryService {
 
         // ----------------------------------------------------------------------
         // 4) Build 12-month forward series; forward-fill supply for missing rows.
+        // Per-row DTO construction is wrapped in try/catch so a single corrupt
+        // month can't take down the whole 12-month series.
         // ----------------------------------------------------------------------
         List<StaffingGapForecastMonthDTO> result = new ArrayList<>(12);
         LocalDate cursor = today.withDayOfMonth(1);
+        int dropped = 0;
         for (int i = 0; i < 12; i++) {
             int yr = cursor.getYear();
             int mo = cursor.getMonthValue();
@@ -1848,9 +1892,18 @@ public class CxoDeliveryService {
                     .getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) + " " + yr;
             boolean isForecast = i > 0;
 
-            result.add(new StaffingGapForecastMonthDTO(
-                    key, yr, mo, monthLabel, supply, demand, gap, isForecast));
+            try {
+                result.add(new StaffingGapForecastMonthDTO(
+                        key, yr, mo, monthLabel, supply, demand, gap, isForecast));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in staffingGapForecast (dropped=%d, monthKey=%s): %s",
+                        dropped, key, e.getMessage());
+            }
             cursor = cursor.plusMonths(1);
+        }
+        if (dropped > 0) {
+            log.warnf("staffingGapForecast dropped %d malformed rows out of 12", dropped);
         }
 
         log.debugf("staffingGapForecast: %d months (companyFilter=%s)",

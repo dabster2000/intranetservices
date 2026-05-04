@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.people.dto.cxo.TurnoverTtmMonthDTO;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import jakarta.persistence.Query;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
@@ -83,7 +84,10 @@ public class CxoPeopleService {
      * Null-safe Tuple value coercion to primitive double. Mirrors the helper in
      * {@code CxoFinanceService}, {@code CxoClientService}, {@code CxoSalesService}, and
      * {@code CxoForecastService} — null → 0.0, primitives unboxed,
-     * Booleans/byte[]/BitSet treated as 1.0/0.0 truthy.
+     * Booleans/byte[]/BitSet treated as 1.0/0.0 truthy. Throws {@link
+     * IllegalStateException} on unexpected JDBC types (rather than swallowing
+     * them via {@code Double.parseDouble(toString())}) so a schema/driver
+     * mismatch fails loud instead of silently producing wrong numbers.
      */
     static double toDouble(Object v) {
         if (v == null) return 0d;
@@ -91,19 +95,41 @@ public class CxoPeopleService {
         if (v instanceof Boolean b) return b ? 1d : 0d;
         if (v instanceof byte[] bytes) return (bytes.length > 0 && bytes[0] != 0) ? 1d : 0d;
         if (v instanceof java.util.BitSet bs) return bs.isEmpty() ? 0d : 1d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     /**
      * Null-safe Tuple value coercion to boxed Double. NULL values are preserved as
      * {@code null} in the wire shape (e.g. ratios where the divisor is zero) so
-     * Jackson serializes them as JSON {@code null} rather than zero.
+     * Jackson serializes them as JSON {@code null} rather than zero. Throws
+     * {@link IllegalStateException} on unexpected JDBC types — see
+     * {@link #toDouble(Object)} for rationale.
      */
     static Double toDoubleBoxed(Object v) {
         if (v == null) return null;
         if (v instanceof Number n) return n.doubleValue();
         if (v instanceof Boolean b) return b ? 1d : 0d;
-        return Double.parseDouble(v.toString());
+        throw new IllegalStateException("Unexpected SQL value type for double: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive long (NULL → 0L). */
+    static long toLong(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number n) return n.longValue();
+        if (v instanceof Boolean b) return b ? 1L : 0L;
+        throw new IllegalStateException("Unexpected SQL value type for long: "
+                + v.getClass().getName() + " (value=" + v + ")");
+    }
+
+    /** Null-safe Tuple value coercion to primitive int (NULL → 0). */
+    static int toInt(Object v) {
+        if (v == null) return 0;
+        if (v instanceof Number n) return n.intValue();
+        if (v instanceof Boolean b) return b ? 1 : 0;
+        throw new IllegalStateException("Unexpected SQL value type for int: "
+                + v.getClass().getName() + " (value=" + v + ")");
     }
 
     // ============================================================================
@@ -146,19 +172,36 @@ public class CxoPeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "turnoverTtm failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         List<TurnoverTtmMonthDTO> result = new ArrayList<>(rows.size());
+        int dropped = 0;
         for (Tuple row : rows) {
-            String monthKey = row.get("month_key", String.class);
-            int year = ((Number) row.get("year")).intValue();
-            int monthNumber = ((Number) row.get("month_number")).intValue();
-            long hires = ((Number) row.get("hires")).longValue();
-            long terminations = ((Number) row.get("terminations")).longValue();
-            String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
-                    + " " + year;
-            result.add(new TurnoverTtmMonthDTO(
-                    monthKey, monthLabel, year, monthNumber, hires, terminations, hires - terminations));
+            try {
+                String monthKey = row.get("month_key", String.class);
+                int year = toInt(row.get("year"));
+                int monthNumber = toInt(row.get("month_number"));
+                long hires = toLong(row.get("hires"));
+                long terminations = toLong(row.get("terminations"));
+                String monthLabel = Month.of(monthNumber).getDisplayName(TextStyle.SHORT, Locale.ENGLISH)
+                        + " " + year;
+                result.add(new TurnoverTtmMonthDTO(
+                        monthKey, monthLabel, year, monthNumber, hires, terminations, hires - terminations));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in turnoverTtm (dropped=%d): %s",
+                        dropped, e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("turnoverTtm dropped %d malformed rows out of %d", dropped, rows.size());
         }
 
         log.debugf("turnoverTtm: %d months (companyFilter=%s)",
@@ -223,7 +266,14 @@ public class CxoPeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "consultantPyramid failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // Aggregate raw rows into bucket counts. LinkedHashMap preserves the
         // PYRAMID_BUCKETS insertion order so the response shape is deterministic.
@@ -234,7 +284,7 @@ public class CxoPeopleService {
         long totalConsultants = 0L;
         for (Tuple row : rows) {
             String careerLevel = row.get("career_level", String.class);
-            long count = ((Number) row.get("consultant_count")).longValue();
+            long count = toLong(row.get("consultant_count"));
             String bucketLabel = CAREER_LEVEL_TO_BUCKET.get(careerLevel);
             // totalConsultants is incremented unconditionally to match the BFF's
             // unconditional accumulator. Unmapped career levels (e.g.
@@ -247,14 +297,29 @@ public class CxoPeopleService {
             }
         }
 
+        // The 5 PyramidLevelDTO entries are per-row in spirit (one per bucket);
+        // wrap each so a single corrupt bucket can't take down the whole snapshot.
+        // The outer ConsultantPyramidDTO construction below is fail-fast — if it
+        // throws, the request is unrecoverable.
         List<PyramidLevelDTO> levels = new ArrayList<>(PYRAMID_BUCKETS.size());
+        int dropped = 0;
         for (PyramidBucket bucket : PYRAMID_BUCKETS) {
             long actualCount = bucketCounts.get(bucket.label());
             double actualPercent = totalConsultants > 0
                     ? Math.round((double) actualCount / totalConsultants * 10000.0) / 100.0
                     : 0.0;
-            levels.add(new PyramidLevelDTO(
-                    bucket.label(), bucket.levels(), actualCount, actualPercent, bucket.targetPercent()));
+            try {
+                levels.add(new PyramidLevelDTO(
+                        bucket.label(), bucket.levels(), actualCount, actualPercent, bucket.targetPercent()));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in consultantPyramid (dropped=%d, bucket=%s): %s",
+                        dropped, bucket.label(), e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("consultantPyramid dropped %d malformed buckets out of %d",
+                    dropped, PYRAMID_BUCKETS.size());
         }
 
         // Use UTC to match the BFF's `new Date().toISOString().split('T')[0]`,
@@ -350,7 +415,14 @@ public class CxoPeopleService {
         query.setHint("jakarta.persistence.query.timeout", CXO_QUERY_TIMEOUT_MS);
 
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
+        List<Tuple> rows;
+        try {
+            rows = query.getResultList();
+        } catch (PersistenceException pe) {
+            log.errorf(pe, "headcountGrowth failed (companyFilter=%s)",
+                    hasCompanyFilter ? "yes" : "none");
+            throw pe;
+        }
 
         // Pivot type rows into one row per month. LinkedHashMap preserves SQL
         // ORDER BY month_key insertion order so the response is chronologically
@@ -358,10 +430,10 @@ public class CxoPeopleService {
         Map<String, HeadcountAccumulator> monthMap = new LinkedHashMap<>();
         for (Tuple row : rows) {
             String monthKey = row.get("month_key", String.class);
-            int year = ((Number) row.get("year")).intValue();
-            int monthNumber = ((Number) row.get("month_number")).intValue();
+            int year = toInt(row.get("year"));
+            int monthNumber = toInt(row.get("month_number"));
             String type = row.get("type", String.class);
-            long headcount = ((Number) row.get("headcount")).longValue();
+            long headcount = toLong(row.get("headcount"));
 
             HeadcountAccumulator acc = monthMap.computeIfAbsent(monthKey,
                     k -> new HeadcountAccumulator(monthKey, year, monthNumber));
@@ -374,13 +446,24 @@ public class CxoPeopleService {
         }
 
         List<HeadcountGrowthMonthDTO> result = new ArrayList<>(monthMap.size());
+        int dropped = 0;
         for (HeadcountAccumulator acc : monthMap.values()) {
-            String monthLabel = Month.of(acc.monthNumber)
-                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
-            long total = acc.consultant + acc.student + acc.staff;
-            result.add(new HeadcountGrowthMonthDTO(
-                    acc.monthKey, monthLabel, acc.year, acc.monthNumber,
-                    acc.consultant, acc.student, acc.staff, total));
+            try {
+                String monthLabel = Month.of(acc.monthNumber)
+                        .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + acc.year;
+                long total = acc.consultant + acc.student + acc.staff;
+                result.add(new HeadcountGrowthMonthDTO(
+                        acc.monthKey, monthLabel, acc.year, acc.monthNumber,
+                        acc.consultant, acc.student, acc.staff, total));
+            } catch (IllegalArgumentException e) {
+                dropped++;
+                log.warnf("Skipping malformed row in headcountGrowth (dropped=%d, monthKey=%s): %s",
+                        dropped, acc.monthKey, e.getMessage());
+            }
+        }
+        if (dropped > 0) {
+            log.warnf("headcountGrowth dropped %d malformed rows out of %d",
+                    dropped, monthMap.size());
         }
 
         log.debugf("headcountGrowth: %d months (companyFilter=%s)",
