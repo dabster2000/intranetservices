@@ -5,8 +5,6 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
-import java.util.List;
-
 /**
  * Q2C API v5.1.0 REST client for draft invoice lifecycle operations.
  *
@@ -79,12 +77,4 @@ public interface EconomicsDraftInvoiceApiClient {
             @HeaderParam("X-AgreementGrantToken") String agreementGrant,
             @PathParam("documentId") int documentId,
             DraftInvoiceLineBatchRequest body);
-
-    @GET
-    @Path("/invoices/drafts")
-    EconomicsDraftPage listByFilter(
-            @HeaderParam("X-AppSecretToken") String appSecret,
-            @HeaderParam("X-AgreementGrantToken") String agreementGrant,
-            @QueryParam("filter") String filter,
-            @QueryParam("pagesize") Integer pagesize);
 }
