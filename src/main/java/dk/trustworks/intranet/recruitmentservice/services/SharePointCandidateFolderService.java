@@ -105,9 +105,7 @@ public class SharePointCandidateFolderService {
     public SharePointMoveStatus copyAndDeleteOnHire(RecruitmentCandidate candidate, String targetUsername) {
         Objects.requireNonNull(candidate, "candidate must not be null");
         Objects.requireNonNull(targetUsername, "targetUsername must not be null");
-        // Stub — surface as FAILED so the batchlet stops re-queueing every 5
-        // minutes. A follow-up PR wires the Graph copy/delete via
-        // SharePointService.ensureFolderExists + recursive driveItem move.
+        // Stub — return FAILED so the batchlet stops re-queueing.
         log.warnf("copyAndDeleteOnHire not implemented for candidate=%s target=%s — marking FAILED",
                 candidate.getUuid(), targetUsername);
         return SharePointMoveStatus.FAILED;

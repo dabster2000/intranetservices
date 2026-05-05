@@ -6,6 +6,7 @@ import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.signing.domain.SigningCase;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -235,18 +236,11 @@ public class RecruitmentSignatureCompletionListener extends MonitoredBatchlet {
      */
     private static String buildEmailBody(RecruitmentCandidate candidate) {
         return "<p>Candidate <strong>"
-                + escapeHtml(candidate.getFirstName()) + " " + escapeHtml(candidate.getLastName())
+                + HtmlEscape.escape(candidate.getFirstName()) + " " + HtmlEscape.escape(candidate.getLastName())
                 + "</strong> has signed all contracts.</p>"
                 + "<p>The signed documents have been uploaded to SharePoint.</p>"
                 + "<p>Open the dossier in the intranet to review next steps "
                 + "(<code>/recruitment/" + candidate.getUuid() + "</code>).</p>";
     }
 
-    private static String escapeHtml(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
-    }
 }

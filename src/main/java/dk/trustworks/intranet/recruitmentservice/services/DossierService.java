@@ -212,8 +212,8 @@ public class DossierService {
     }
 
     private int nextDisplayOrder(String dossierUuid) {
-        // MAX+1 rather than count+1 — after delete-then-add we'd otherwise
-        // hand out an order that already exists on a surviving row.
+        // Use MAX+1 — display_order is unique per dossier, and a count-based
+        // value would collide after delete-then-add.
         Integer max = CandidateDossierAppendix.<CandidateDossierAppendix>find(
                         "dossierUuid", Sort.descending("displayOrder"), dossierUuid)
                 .firstResultOptional()

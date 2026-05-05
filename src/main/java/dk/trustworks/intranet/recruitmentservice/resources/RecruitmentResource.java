@@ -33,6 +33,7 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.SharePointCandidateFolderService;
+import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.utils.NextsignSigningService;
@@ -445,12 +446,20 @@ public class RecruitmentResource {
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
-        // 1) Resolve current draft state (read-only).
         Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
         List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
         List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
 
-        // 2) Generate PDFs from those values (no DB writes).
+        // Validate signers before generating PDFs — PDF generation is the
+        // most expensive step in this flow, so a misconfigured dossier
+        // should fail fast.
+        List<SignerInfo> signerInfos = mapSigners(signers);
+        if (signerInfos.isEmpty()) {
+            throw new WebApplicationException(
+                    "Cannot send signature: no signers configured on dossier",
+                    Response.Status.CONFLICT);
+        }
+
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
                 dossier.getTemplateUuid(), placeholders, appendices);
 
@@ -465,16 +474,9 @@ public class RecruitmentResource {
                     "Cannot send signature: no documents available on dossier",
                     Response.Status.CONFLICT);
         }
-        List<SignerInfo> signerInfos = mapSigners(signers);
-        if (signerInfos.isEmpty()) {
-            throw new WebApplicationException(
-                    "Cannot send signature: no signers configured on dossier",
-                    Response.Status.CONFLICT);
-        }
 
-        // 3) External calls — these happen BEFORE any DB write so a slow
-        //    NextSign round-trip does not hold a transaction open against
-        //    candidate_dossier_revisions.
+        // External calls run before any DB write so a slow NextSign round-trip
+        // does not hold a transaction open against candidate_dossier_revisions.
         sharePointCandidateFolderService.ensureFolderForCandidate(candidate);
         String caseKey = nextsignSigningService.createMultiDocumentSigningCase(
                 documents,
@@ -482,8 +484,6 @@ public class RecruitmentResource {
                 "recruitment-candidate:" + candidate.getUuid(),
                 collectSigningSchemas(signers));
 
-        // 4) Atomic snapshot — case_key is set on the revision before persist,
-        //    so the immutability invariant on signing_case_key holds.
         String firstSignerEmail = firstSignerEmailFromList(signers, candidate.getEmail());
         RecipientInfo recipient = new RecipientInfo(
                 firstSignerEmail,
@@ -632,28 +632,20 @@ public class RecruitmentResource {
      */
     private static String buildReviewEmailBody(RecruitmentCandidate candidate, User sender, String note) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<p>Hi ").append(escapeHtml(candidate.getFirstName())).append(",</p>");
+        sb.append("<p>Hi ").append(HtmlEscape.escape(candidate.getFirstName())).append(",</p>");
         sb.append("<p>Please find attached the documents for your review. ");
         sb.append("Reach out if anything is unclear before the formal signing step.</p>");
         if (note != null && !note.isBlank()) {
-            sb.append("<p>").append(escapeHtml(note)).append("</p>");
+            sb.append("<p>").append(HtmlEscape.escape(note)).append("</p>");
         }
         sb.append("<p>Best regards,<br/>")
-                .append(escapeHtml(sender.getFirstname()))
+                .append(HtmlEscape.escape(sender.getFirstname()))
                 .append(" ")
-                .append(escapeHtml(sender.getLastname()))
+                .append(HtmlEscape.escape(sender.getLastname()))
                 .append("<br/>")
-                .append(escapeHtml(sender.getEmail()))
+                .append(HtmlEscape.escape(sender.getEmail()))
                 .append("</p>");
         return sb.toString();
-    }
-
-    private static String escapeHtml(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
     }
 
     private static StreamingOutput streamFor(byte[] bytes) {
