@@ -73,7 +73,8 @@ public class InvoiceToEconomicsDraftMapper {
         draft.setCustomerCountry(resolveCountry(billing.getBillingCountry()));
 
         // References
-        draft.setOtherReference(truncate(inv.getProjectref(), 250));
+        String contractBillingRef = ctx.contract() != null ? ctx.contract().getBillingRef() : null;
+        draft.setOtherReference(truncate(buildOtherReference(inv.getProjectref(), contractBillingRef), 250));
         draft.setHeading(inv.getType() == InvoiceType.CREDIT_NOTE ? "Kreditnota" : "Faktura");
         draft.setTextLine1(truncate(inv.getSpecificdescription(), 1000));
         if (ctx.contract() != null) {
@@ -118,6 +119,20 @@ public class InvoiceToEconomicsDraftMapper {
     }
 
     // ── private helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Combines project reference and contract billing reference into the
+     * customer-facing "Other reference" field. Joined with " | " when both are
+     * present; either may be null/blank.
+     */
+    private static String buildOtherReference(String projectRef, String contractBillingRef) {
+        boolean hasProject = projectRef != null && !projectRef.isBlank();
+        boolean hasBilling = contractBillingRef != null && !contractBillingRef.isBlank();
+        if (hasProject && hasBilling) return projectRef + " | " + contractBillingRef;
+        if (hasProject) return projectRef;
+        if (hasBilling) return contractBillingRef;
+        return null;
+    }
 
     /**
      * Builds the line description.

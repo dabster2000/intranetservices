@@ -159,17 +159,13 @@ public class InvoiceFinalizationOrchestrator {
                 agreements.productNumber(companyUuid)
         );
 
-        // Build header payload and embed tw:uuid in otherReference for retry
-        // reconciliation (SPEC-INV-001 §6.9)
         EconomicsDraftInvoice body = mapper.toDraft(ctx);
-        body.setOtherReference(appendTwUuid(body.getOtherReference(), invoiceUuid));
 
         // Idempotency-Key must be unique per attempt. e-conomic's idempotency layer
         // caches the response for ~24h: a fixed "draft-{invoiceUuid}" key would replay
         // the deleted-draft's number after a cancelFinalization, then the subsequent
         // createLinesBulk 404s on that recycled (deleted) draft. UUID suffix forces a
-        // fresh attempt each time. Reconciliation across attempts uses the tw:uuid
-        // embedded in otherReference (above), not the Idempotency-Key.
+        // fresh attempt each time.
         String idempotencyKey = "draft-" + invoiceUuid + "-" + UUID.randomUUID();
         log.infof("createDraft: invoiceUuid=%s idempotencyKey=%s", invoiceUuid, idempotencyKey);
 
@@ -442,14 +438,6 @@ public class InvoiceFinalizationOrchestrator {
                     "Invoice " + uuid + " is not DRAFT/QUEUED (status=" + inv.getStatus() + ")");
         }
         return inv;
-    }
-
-    private static String appendTwUuid(String currentRef, String invoiceUuid) {
-        String tag = "tw:" + invoiceUuid;
-        if (currentRef == null || currentRef.isBlank()) {
-            return tag;
-        }
-        return currentRef + " | " + tag;
     }
 
     private static boolean isNotFound(Throwable e) {
