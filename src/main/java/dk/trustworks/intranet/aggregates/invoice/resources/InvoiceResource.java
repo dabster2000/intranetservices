@@ -159,11 +159,16 @@ public class InvoiceResource {
                     .build();
         }
         Invoice invoice = invoiceService.findOneByUuid(invoiceuuid);
-        String filename = (invoice.invoicenumber > 0 ? invoice.invoicenumber : "draft") + "_" +
-                invoice.getType() + "-" + invoiceuuid + ".pdf";
+        String filename = buildPdfFilename(invoice.invoicenumber, invoiceuuid);
         return Response.ok(pdfBytes, "application/pdf")
                 .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
                 .build();
+    }
+
+    private static String buildPdfFilename(int invoicenumber, String invoiceuuid) {
+        return invoicenumber > 0
+                ? "Invoice-" + invoicenumber + ".pdf"
+                : "Invoice-draft-" + invoiceuuid.substring(0, 8) + ".pdf";
     }
 
     @GET
@@ -1243,6 +1248,9 @@ public class InvoiceResource {
                     .build();
         }
 
+        String filename = buildPdfFilename(inv.invoicenumber, uuid);
+        String contentDisposition = "attachment; filename=\"" + filename + "\"";
+
         try {
             if (inv.getStatus() == InvoiceStatus.PENDING_REVIEW && inv.getEconomicsDraftNumber() != null) {
                 var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
@@ -1260,14 +1268,14 @@ public class InvoiceResource {
                 }
                 java.io.InputStream pdf = bookApi.getDraftPdf(
                         tokens.appSecret(), tokens.agreementGrant(), draft.getDraftInvoiceNumber());
-                return Response.ok(pdf, "application/pdf").build();
+                return Response.ok(pdf, "application/pdf").header("Content-Disposition", contentDisposition).build();
             }
 
             if (inv.getEconomicsBookedNumber() != null) {
                 var tokens = agreementResolver.tokens(inv.getCompany().getUuid());
                 java.io.InputStream pdf = bookApi.getBookedPdf(
                         tokens.appSecret(), tokens.agreementGrant(), inv.getEconomicsBookedNumber());
-                return Response.ok(pdf, "application/pdf").build();
+                return Response.ok(pdf, "application/pdf").header("Content-Disposition", contentDisposition).build();
             }
 
             // Legacy: retrieve from S3 / DB via existing service
@@ -1278,7 +1286,7 @@ public class InvoiceResource {
                         .type(MediaType.TEXT_PLAIN)
                         .build();
             }
-            return Response.ok(pdfBytes, "application/pdf").build();
+            return Response.ok(pdfBytes, "application/pdf").header("Content-Disposition", contentDisposition).build();
 
         } catch (WebApplicationException wae) {
             // Forward e-conomic's status (esp. 404 "not ready yet") rather

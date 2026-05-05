@@ -11,6 +11,7 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.utils.CountryCodeMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.apache.commons.lang3.StringUtils;
 import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
@@ -27,6 +28,9 @@ import java.util.List;
 public class InvoiceToEconomicsDraftMapper {
 
     private static final Logger LOG = Logger.getLogger(InvoiceToEconomicsDraftMapper.class);
+
+    private static final int ECONOMICS_OTHER_REFERENCE_LIMIT = 250;
+    private static final String ELLIPSIS = "…";
 
     @Inject
     ClientEconomicsCustomerRepository customerRepo;
@@ -72,8 +76,7 @@ public class InvoiceToEconomicsDraftMapper {
         draft.setCustomerCity(truncate(billing.getBillingCity(), 250));
         draft.setCustomerCountry(resolveCountry(billing.getBillingCountry()));
 
-        // References — single line carries all three refs, separator " | ",
-        // empties dropped. See spec 2026-05-05-invoice-refs-redesign-design.md §2.
+        // See spec 2026-05-05-invoice-refs-redesign-design.md §2 for the join + truncation policy.
         draft.setOtherReference(
                 buildOtherReference(inv.getContractref(), inv.getProjectref(), inv.getSpecificdescription()));
         draft.setHeading(inv.getType() == InvoiceType.CREDIT_NOTE ? "Kreditnota" : "Faktura");
@@ -118,73 +121,45 @@ public class InvoiceToEconomicsDraftMapper {
     // ── private helpers ────────────────────────────────────────────────────────
 
     /**
-     * Joins the three customer-facing refs into a single "Øvrig ref" line.
-     * Empty/null segments are dropped. If the joined result exceeds the 250-char
-     * e-conomic limit, segments are shrunk in order: specificdescription first,
-     * then projectref, then contractref (most-critical for customer payment is
-     * preserved longest). Ellipsis "…" appended when a segment is shrunk.
-     * Returns null when all three are blank so the JSON property is omitted
-     * (EconomicsDraftInvoice uses {@code @JsonInclude(NON_NULL)}).
+     * Joins the three customer-facing refs into a single "Øvrig ref" line, joined
+     * with " | " and dropping empty segments. When the result exceeds the e-conomic
+     * 250-char limit, segments are shrunk in priority order: specificdescription
+     * first, projectref next, contractref last (customer payment reconciliation
+     * depends on contractref). Returns null when all three are blank so the JSON
+     * property is omitted ({@code @JsonInclude(NON_NULL)}).
      */
     private static String buildOtherReference(String contractref, String projectref, String specificdescription) {
-        return joinWithBudget(contractref, projectref, specificdescription, 250);
+        return joinWithBudget(contractref, projectref, specificdescription, ECONOMICS_OTHER_REFERENCE_LIMIT);
     }
 
-    /** Returns null when blank; otherwise trims surrounding whitespace so segments don't render with padded separators. */
-    private static String blankToNull(String s) {
-        return (s == null || s.isBlank()) ? null : s.trim();
-    }
-
-    /**
-     * Joins three customer-facing refs into a single line with " | " separators,
-     * shrinking segments in priority order (specificdescription first, projectref
-     * next, contractref last) until the joined result fits the budget. Each shrink
-     * appends "…" to the cut segment and logs a WARN. Empty/null segments are
-     * dropped entirely.
-     *
-     * <p>The priority order is encoded as the sequence of {@code if} blocks below:
-     * the LEAST-critical segment for customer payment is shrunk first, the
-     * MOST-critical (contractref) last.
-     *
-     * <p>Returns null when all three segments are blank, so the JSON property is
-     * omitted (EconomicsDraftInvoice uses {@code @JsonInclude(NON_NULL)}).
-     */
     private static String joinWithBudget(String contractref, String projectref, String specificdescription, int budget) {
-        // Normalize: blank → null, trim non-blank
-        contractref = blankToNull(contractref);
-        projectref = blankToNull(projectref);
-        specificdescription = blankToNull(specificdescription);
+        contractref = StringUtils.stripToNull(contractref);
+        projectref = StringUtils.stripToNull(projectref);
+        specificdescription = StringUtils.stripToNull(specificdescription);
 
         String joined = joinNonNull(contractref, projectref, specificdescription);
         if (joined == null || joined.length() <= budget) return joined;
 
-        // Priority 1 (lowest): shrink specificdescription first
         if (specificdescription != null) {
             specificdescription = shrinkSegment(specificdescription, joined.length() - budget);
             joined = joinNonNull(contractref, projectref, specificdescription);
-            LOG.warnf("otherReference truncated: shrunk specificdescription (final length=%d)", joined.length());
-            if (joined.length() <= budget) return joined;
+            if (joined.length() <= budget) {
+                LOG.warnf("otherReference shrunk to fit %d-char budget (length=%d)", budget, joined.length());
+                return joined;
+            }
         }
-
-        // Priority 2: shrink projectref next
         if (projectref != null) {
             projectref = shrinkSegment(projectref, joined.length() - budget);
             joined = joinNonNull(contractref, projectref, specificdescription);
-            LOG.warnf("otherReference truncated: shrunk projectref (final length=%d)", joined.length());
-            if (joined.length() <= budget) return joined;
+            if (joined.length() <= budget) {
+                LOG.warnf("otherReference shrunk to fit %d-char budget (length=%d)", budget, joined.length());
+                return joined;
+            }
         }
-
-        // Priority 3 (highest): shrink contractref last (customer payment depends on it)
-        if (contractref != null) {
-            contractref = shrinkSegment(contractref, joined.length() - budget);
-            joined = joinNonNull(contractref, projectref, specificdescription);
-            LOG.warnf("otherReference truncated: shrunk contractref (final length=%d)", joined.length());
-            if (joined.length() <= budget) return joined;
-        }
-
-        // Last resort — defensive, unreachable for budget=250 with 3 segments
-        LOG.warnf("otherReference still over budget after segment shrink — hard-truncating to %d chars", budget);
-        return joined.substring(0, budget - 1) + "…";
+        contractref = shrinkSegment(contractref, joined.length() - budget);
+        joined = joinNonNull(contractref, projectref, specificdescription);
+        LOG.warnf("otherReference shrunk to fit %d-char budget (length=%d)", budget, joined.length());
+        return joined;
     }
 
     /** Joins non-null arguments with " | "; returns null if all are null. */
@@ -198,13 +173,11 @@ public class InvoiceToEconomicsDraftMapper {
         return sb.length() == 0 ? null : sb.toString();
     }
 
-    /** Cuts {@code value} from the end and appends "…". {@code overshoot} is how many chars must be removed. */
+    /** Cuts {@code overshoot+1} chars from the end and appends an ellipsis (net reduction = overshoot). */
     private static String shrinkSegment(String value, int overshoot) {
         if (value == null) return null;
-        // We must remove `overshoot` chars and replace the trailing chars with "…" (1 char), so cut overshoot+1.
         int newLen = Math.max(0, value.length() - overshoot - 1);
-        if (newLen == 0) return "…";
-        return value.substring(0, newLen) + "…";
+        return newLen == 0 ? ELLIPSIS : value.substring(0, newLen) + ELLIPSIS;
     }
 
     /**
