@@ -72,14 +72,11 @@ public class InvoiceToEconomicsDraftMapper {
         draft.setCustomerCity(truncate(billing.getBillingCity(), 250));
         draft.setCustomerCountry(resolveCountry(billing.getBillingCountry()));
 
-        // References
-        String contractBillingRef = ctx.contract() != null ? ctx.contract().getBillingRef() : null;
-        draft.setOtherReference(truncate(buildOtherReference(inv.getProjectref(), contractBillingRef), 250));
+        // References — single line carries all three refs, separator " | ",
+        // empties dropped. See spec 2026-05-05-invoice-refs-redesign-design.md §2.
+        draft.setOtherReference(
+                buildOtherReference(inv.getContractref(), inv.getProjectref(), inv.getSpecificdescription()));
         draft.setHeading(inv.getType() == InvoiceType.CREDIT_NOTE ? "Kreditnota" : "Faktura");
-        draft.setTextLine1(truncate(inv.getSpecificdescription(), 1000));
-        if (ctx.contract() != null) {
-            draft.setTextLine2(truncate(ctx.contract().getBillingRef(), 1000));
-        }
 
         // Attention — only when contract carries a non-blank billingAttention
         // and a contact mapping exists for that name
@@ -121,17 +118,66 @@ public class InvoiceToEconomicsDraftMapper {
     // ── private helpers ────────────────────────────────────────────────────────
 
     /**
-     * Combines project reference and contract billing reference into the
-     * customer-facing "Other reference" field. Joined with " | " when both are
-     * present; either may be null/blank.
+     * Joins the three customer-facing refs into a single "Øvrig ref" line.
+     * Empty/null segments are dropped. If the joined result exceeds the 250-char
+     * e-conomic limit, segments are shrunk in order: specificdescription first,
+     * then projectref, then contractref (most-critical for customer payment is
+     * preserved longest). Ellipsis "…" appended when a segment is shrunk.
+     * Returns null when all three are blank so the JSON property is omitted
+     * (EconomicsDraftInvoice uses {@code @JsonInclude(NON_NULL)}).
      */
-    private static String buildOtherReference(String projectRef, String contractBillingRef) {
-        boolean hasProject = projectRef != null && !projectRef.isBlank();
-        boolean hasBilling = contractBillingRef != null && !contractBillingRef.isBlank();
-        if (hasProject && hasBilling) return projectRef + " | " + contractBillingRef;
-        if (hasProject) return projectRef;
-        if (hasBilling) return contractBillingRef;
-        return null;
+    private static String buildOtherReference(String contractref, String projectref, String specificdescription) {
+        String[] segments = new String[]{
+                blankToNull(contractref),
+                blankToNull(projectref),
+                blankToNull(specificdescription)
+        };
+        return joinWithBudget(segments, 250);
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
+    /**
+     * Joins non-null segments with " | ", shrinking from the end of the segment
+     * list (specificdescription, projectref, contractref) until the joined result
+     * fits within {@code budget} chars. Each shrink keeps a prefix and appends "…".
+     */
+    private static String joinWithBudget(String[] segments, int budget) {
+        // Drop nulls
+        List<String> active = new ArrayList<>(segments.length);
+        for (String s : segments) if (s != null) active.add(s);
+        if (active.isEmpty()) return null;
+
+        String joined = String.join(" | ", active);
+        if (joined.length() <= budget) return joined;
+
+        // Shrink in priority order: specificdescription (idx 2), then projectref (idx 1), then contractref (idx 0).
+        int[] shrinkOrder = new int[]{2, 1, 0};
+        for (int idx : shrinkOrder) {
+            if (segments[idx] == null) continue;
+            int overshoot = joined.length() - budget;
+            segments[idx] = shrinkSegment(segments[idx], overshoot);
+            // Rebuild active list and joined string
+            active.clear();
+            for (String s : segments) if (s != null) active.add(s);
+            joined = String.join(" | ", active);
+            LOG.warnf("otherReference truncated: segment shrunk to fit 250-char budget (final length=%d)", joined.length());
+            if (joined.length() <= budget) return joined;
+        }
+        // Last resort: hard-truncate the whole joined string to budget
+        LOG.warnf("otherReference still over budget after segment shrink — hard-truncating to %d chars", budget);
+        return joined.substring(0, budget - 1) + "…";
+    }
+
+    /** Cuts {@code value} from the end and appends "…". {@code overshoot} is how many chars must be removed. */
+    private static String shrinkSegment(String value, int overshoot) {
+        if (value == null) return null;
+        // We must remove `overshoot` chars and replace the trailing chars with "…" (1 char), so cut overshoot+1.
+        int newLen = Math.max(0, value.length() - overshoot - 1);
+        if (newLen == 0) return "…";
+        return value.substring(0, newLen) + "…";
     }
 
     /**
