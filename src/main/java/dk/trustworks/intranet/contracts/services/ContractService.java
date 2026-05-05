@@ -379,18 +379,17 @@ public class ContractService {
                         "amount = ?1, " +
                         "status = ?2, " +
                         "note = ?3, " +
-                        "refid = ?4, " +
-                        "company = ?5, " +
-                        "salesconsultant = ?6, " +
-                        "billingClientUuid = ?7, " +
-                        "billingAttention = ?8, " +
-                        "billingEmail = ?9, " +
-                        "billingRef = ?10, " +
-                        "paymentTermsUuid = ?11 " +
-                        "WHERE uuid like ?12 ",
+                        "company = ?4, " +
+                        "salesconsultant = ?5, " +
+                        "billingClientUuid = ?6, " +
+                        "billingAttention = ?7, " +
+                        "billingEmail = ?8, " +
+                        "billingRef = ?9, " +
+                        "paymentTermsUuid = ?10 " +
+                        "WHERE uuid like ?11 ",
                 contract.getAmount(), contract.getStatus(),
                 contract.getNote(),
-                contract.getRefid(), contract.getCompany(), contract.getSalesconsultant(),
+                contract.getCompany(), contract.getSalesconsultant(),
                 contract.getBillingClientUuid(), contract.getBillingAttention(),
                 contract.getBillingEmail(), contract.getBillingRef(),
                 contract.getPaymentTermsUuid(),
@@ -414,10 +413,6 @@ public class ContractService {
             if (!Objects.equals(oldContract.getNote(), contract.getNote())) {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
                         "note", oldContract.getNote(), contract.getNote());
-            }
-            if (!Objects.equals(oldContract.getRefid(), contract.getRefid())) {
-                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
-                        "refid", oldContract.getRefid(), contract.getRefid());
             }
         }
 

@@ -43,8 +43,6 @@ public class Contract extends PanacheEntityBase {
     @Pattern(regexp = "^[A-Z0-9_]+$", message = "Contract type must contain only uppercase letters, numbers, and underscores")
     private String contractType;
 
-    private String refid;
-
     @Column(name = "status")
     @Enumerated(EnumType.STRING)
     private ContractStatus status;
@@ -109,7 +107,6 @@ public class Contract extends PanacheEntityBase {
         this.amount = 0.0;
         this.created = LocalDateTime.now();
         this.salesconsultant = contract.getSalesconsultant();
-        this.refid = contract.getRefid();
         this.parentuuid = contract.getUuid();
         this.contractType = contract.getContractType();
         this.clientuuid = contract.getClientuuid();
@@ -171,7 +168,6 @@ public class Contract extends PanacheEntityBase {
                 ", company=" + (company != null ? company.getName() : "null") +
                 ", amount=" + amount +
                 ", contractType=" + contractType +
-                ", refid='" + refid + '\'' +
                 ", status=" + status +
                 ", clientuuid='" + clientuuid + '\'' +
                 ", parentuuid='" + parentuuid + '\'' +
