@@ -314,7 +314,7 @@ public class InvoiceGenerator {
                 invoiceDate,
                 invoiceDate.plusMonths(1),
                 project.getCustomerreference(),
-                contract.getRefid(), contract.getContractType(), contract.getCompany(),
+                contract.getBillingRef(), contract.getContractType(), contract.getCompany(),
                 billingClient.getCurrency(),
                 "");
 
