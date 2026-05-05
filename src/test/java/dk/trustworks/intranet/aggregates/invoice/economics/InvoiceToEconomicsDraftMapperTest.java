@@ -190,6 +190,80 @@ class InvoiceToEconomicsDraftMapperTest {
         assertThrows(IllegalStateException.class, () -> mapper.toDraft(ctx));
     }
 
+    // ── test 7: only contractref set ───────────────────────────────────────────
+
+    @Test
+    void otherReference_uses_only_contractref_when_other_two_blank() {
+        Client billing = makeClient("bc", "X", "1", ClientType.CLIENT);
+        Contract contract = makeContract("c", "bc", null, null);
+
+        Invoice inv = makeInvoice(InvoiceType.INVOICE, "co-1", "bc");
+        inv.setInvoicedate(LocalDate.now());
+        inv.setCurrency("DKK");
+        inv.setContractref("PO-30000783");
+        inv.setProjectref("");
+        inv.setSpecificdescription(null);
+
+        when(customerRepo.findByClientAndCompany("bc", "co-1"))
+                .thenReturn(Optional.of(makeMapping("bc", "co-1", 101)));
+
+        DraftContext ctx = new DraftContext(inv, contract, billing, 22, 5, 1, "1");
+        EconomicsDraftInvoice draft = mapper.toDraft(ctx);
+
+        assertEquals("PO-30000783", draft.getOtherReference());
+        assertNull(draft.getTextLine1());
+        assertNull(draft.getTextLine2());
+    }
+
+    // ── test 8: all three blank → otherReference is null ──────────────────────
+
+    @Test
+    void otherReference_is_null_when_all_three_refs_blank() {
+        Client billing = makeClient("bc", "X", "1", ClientType.CLIENT);
+        Contract contract = makeContract("c", "bc", null, null);
+
+        Invoice inv = makeInvoice(InvoiceType.INVOICE, "co-1", "bc");
+        inv.setInvoicedate(LocalDate.now());
+        inv.setCurrency("DKK");
+        // contractref / projectref / specificdescription all default to null/empty
+
+        when(customerRepo.findByClientAndCompany("bc", "co-1"))
+                .thenReturn(Optional.of(makeMapping("bc", "co-1", 101)));
+
+        DraftContext ctx = new DraftContext(inv, contract, billing, 22, 5, 1, "1");
+        EconomicsDraftInvoice draft = mapper.toDraft(ctx);
+
+        assertNull(draft.getOtherReference());
+    }
+
+    // ── test 9: 250-char overflow shrinks specificdescription first ───────────
+
+    @Test
+    void otherReference_shrinks_specificdescription_first_when_over_250_chars() {
+        Client billing = makeClient("bc", "X", "1", ClientType.CLIENT);
+        Contract contract = makeContract("c", "bc", null, null);
+
+        Invoice inv = makeInvoice(InvoiceType.INVOICE, "co-1", "bc");
+        inv.setInvoicedate(LocalDate.now());
+        inv.setCurrency("DKK");
+        inv.setContractref("PO-30000783");                    // 11 chars
+        inv.setProjectref("PROJ-123");                        // 8 chars
+        // join overhead: 2 separators of " | " = 6 chars; budget for description = 250 - 11 - 8 - 6 = 225
+        inv.setSpecificdescription("X".repeat(300));          // 300 chars — overshoots by 300 - 225 = 75
+
+        when(customerRepo.findByClientAndCompany("bc", "co-1"))
+                .thenReturn(Optional.of(makeMapping("bc", "co-1", 101)));
+
+        DraftContext ctx = new DraftContext(inv, contract, billing, 22, 5, 1, "1");
+        EconomicsDraftInvoice draft = mapper.toDraft(ctx);
+
+        String result = draft.getOtherReference();
+        assertNotNull(result);
+        assertTrue(result.length() <= 250, "otherReference must fit within 250 chars; got " + result.length());
+        assertTrue(result.startsWith("PO-30000783 | PROJ-123 | "), "contractref + projectref preserved untouched");
+        assertTrue(result.endsWith("…"), "specificdescription must be shrunk and end with ellipsis");
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     /**
