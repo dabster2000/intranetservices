@@ -58,6 +58,7 @@ class InvoiceToEconomicsDraftMapperTest {
         inv.setInvoicedate(LocalDate.of(2026, 4, 15));
         inv.setCurrency("DKK");
         inv.setSpecificdescription("April 2026 konsulenttimer");
+        inv.setContractref("PO-30000783");
         inv.setProjectref("PROJ-123");
         inv.setInvoiceitems(List.of(makeItem("consultant", "Developer hours",
                 new BigDecimal("80"), new BigDecimal("1200"))));
@@ -82,10 +83,11 @@ class InvoiceToEconomicsDraftMapperTest {
         assertEquals("1577",                        draft.getCustomerPostalCode());
         assertEquals("København V",                 draft.getCustomerCity());
         assertEquals("Denmark",                     draft.getCustomerCountry());
-        assertEquals("PROJ-123",                    draft.getOtherReference());
+        assertEquals("PO-30000783 | PROJ-123 | April 2026 konsulenttimer",
+                                                    draft.getOtherReference());
         assertEquals("Faktura",                     draft.getHeading());
-        assertEquals("April 2026 konsulenttimer",   draft.getTextLine1());
-        assertEquals("PO-30000783",                 draft.getTextLine2());
+        assertNull(                                 draft.getTextLine1());
+        assertNull(                                 draft.getTextLine2());
         assertEquals(67,                            draft.getAttentionNumber());
     }
 
