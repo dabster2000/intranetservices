@@ -70,27 +70,6 @@ public class PageRegistryResource {
     }
 
     @PUT
-    @Path("/{pageKey}/visibility")
-    @RolesAllowed({"system:write"})
-    @Operation(summary = "Toggle page visibility", description = "Switches a page between visible and hidden in the menu")
-    @APIResponse(responseCode = "200", description = "Visibility toggled successfully")
-    @APIResponse(responseCode = "404", description = "Page not found")
-    public Response toggleVisibility(
-            @Parameter(description = "The page key to toggle", required = true)
-            @PathParam("pageKey") String pageKey
-    ) {
-        Optional<PageRegistry> updated = repository.toggleVisibility(pageKey);
-
-        if (updated.isEmpty()) {
-            return Response.status(Response.Status.NOT_FOUND)
-                    .entity("{\"error\": \"Page not found: " + pageKey + "\"}")
-                    .build();
-        }
-
-        return Response.ok(PageRegistryDto.fromEntity(updated.get())).build();
-    }
-
-    @PUT
     @Path("/{pageKey}")
     @RolesAllowed({"system:write"})
     @Operation(summary = "Set page visibility", description = "Explicitly sets a page as visible or hidden")

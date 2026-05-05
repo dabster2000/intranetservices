@@ -50,21 +50,6 @@ public class PageRegistryRepository implements PanacheRepository<PageRegistry> {
 
     @Transactional
     @CacheInvalidateAll(cacheName = CACHE_NAME)
-    public Optional<PageRegistry> toggleVisibility(String pageKey) {
-        Optional<PageRegistry> pageOpt = findByPageKey(pageKey);
-
-        if (pageOpt.isPresent()) {
-            PageRegistry page = pageOpt.get();
-            page.setVisible(!page.isVisible());
-            persist(page);
-            return Optional.of(page);
-        }
-
-        return Optional.empty();
-    }
-
-    @Transactional
-    @CacheInvalidateAll(cacheName = CACHE_NAME)
     public Optional<PageRegistry> setVisibility(String pageKey, boolean visible) {
         Optional<PageRegistry> pageOpt = findByPageKey(pageKey);
 
