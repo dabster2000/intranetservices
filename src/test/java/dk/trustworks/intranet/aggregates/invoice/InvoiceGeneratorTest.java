@@ -161,6 +161,35 @@ class InvoiceGeneratorTest {
                         1, BigDecimal.valueOf(ratePercent)));
     }
 
+    // ── Test 4: contractref snapshots from billing_ref (not the old refid) ───────
+
+    /**
+     * Regression guard for commit f5389154.
+     *
+     * <p>Before the invoice-refs redesign, {@code Invoice.contractref} was populated
+     * from {@code contract.getRefid()} (a field that no longer exists). After the
+     * redesign it must come from {@code contract.getBillingRef()}.  This test makes
+     * that behavioral contract explicit so a future refactor cannot silently regress.
+     *
+     * <p>We also assert {@code projectref} to guard the parallel snapshot of the
+     * project's customer reference.
+     */
+    @Test
+    void buildInitialInvoice_snapshots_contractref_from_billingRef_not_refid() {
+        contract.setBillingRef("PO-30000783");
+        project.setCustomerreference("CUST-REF-99");
+        billingClient.setCurrency("DKK");
+        stubVatZone("DKK", 25.0);
+
+        Invoice invoice = generator.buildInitialInvoice(contract, project, billingClient, YearMonth.of(2026, 4));
+
+        assertEquals("PO-30000783", invoice.contractref,
+                "contractref must snapshot from contract.getBillingRef() (billing_ref column), "
+                + "not from the old refid field that was removed in the redesign");
+        assertEquals("CUST-REF-99", invoice.projectref,
+                "projectref must snapshot from project.getCustomerreference()");
+    }
+
     // ── Test 3: invoice date defaults to today ───────────────────────────────────
 
     @Test

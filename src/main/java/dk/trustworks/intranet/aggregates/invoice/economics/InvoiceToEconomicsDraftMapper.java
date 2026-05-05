@@ -127,48 +127,75 @@ public class InvoiceToEconomicsDraftMapper {
      * (EconomicsDraftInvoice uses {@code @JsonInclude(NON_NULL)}).
      */
     private static String buildOtherReference(String contractref, String projectref, String specificdescription) {
-        String[] segments = new String[]{
-                blankToNull(contractref),
-                blankToNull(projectref),
-                blankToNull(specificdescription)
-        };
-        return joinWithBudget(segments, 250);
+        return joinWithBudget(contractref, projectref, specificdescription, 250);
     }
 
+    /** Returns null when blank; otherwise trims surrounding whitespace so segments don't render with padded separators. */
     private static String blankToNull(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
 
     /**
-     * Joins non-null segments with " | ", shrinking from the end of the segment
-     * list (specificdescription, projectref, contractref) until the joined result
-     * fits within {@code budget} chars. Each shrink keeps a prefix and appends "…".
+     * Joins three customer-facing refs into a single line with " | " separators,
+     * shrinking segments in priority order (specificdescription first, projectref
+     * next, contractref last) until the joined result fits the budget. Each shrink
+     * appends "…" to the cut segment and logs a WARN. Empty/null segments are
+     * dropped entirely.
+     *
+     * <p>The priority order is encoded as the sequence of {@code if} blocks below:
+     * the LEAST-critical segment for customer payment is shrunk first, the
+     * MOST-critical (contractref) last.
+     *
+     * <p>Returns null when all three segments are blank, so the JSON property is
+     * omitted (EconomicsDraftInvoice uses {@code @JsonInclude(NON_NULL)}).
      */
-    private static String joinWithBudget(String[] segments, int budget) {
-        // Drop nulls
-        List<String> active = new ArrayList<>(segments.length);
-        for (String s : segments) if (s != null) active.add(s);
-        if (active.isEmpty()) return null;
+    private static String joinWithBudget(String contractref, String projectref, String specificdescription, int budget) {
+        // Normalize: blank → null, trim non-blank
+        contractref = blankToNull(contractref);
+        projectref = blankToNull(projectref);
+        specificdescription = blankToNull(specificdescription);
 
-        String joined = String.join(" | ", active);
-        if (joined.length() <= budget) return joined;
+        String joined = joinNonNull(contractref, projectref, specificdescription);
+        if (joined == null || joined.length() <= budget) return joined;
 
-        // Shrink in priority order: specificdescription (idx 2), then projectref (idx 1), then contractref (idx 0).
-        int[] shrinkOrder = new int[]{2, 1, 0};
-        for (int idx : shrinkOrder) {
-            if (segments[idx] == null) continue;
-            int overshoot = joined.length() - budget;
-            segments[idx] = shrinkSegment(segments[idx], overshoot);
-            // Rebuild active list and joined string
-            active.clear();
-            for (String s : segments) if (s != null) active.add(s);
-            joined = String.join(" | ", active);
-            LOG.warnf("otherReference truncated: segment shrunk to fit 250-char budget (final length=%d)", joined.length());
+        // Priority 1 (lowest): shrink specificdescription first
+        if (specificdescription != null) {
+            specificdescription = shrinkSegment(specificdescription, joined.length() - budget);
+            joined = joinNonNull(contractref, projectref, specificdescription);
+            LOG.warnf("otherReference truncated: shrunk specificdescription (final length=%d)", joined.length());
             if (joined.length() <= budget) return joined;
         }
-        // Last resort: hard-truncate the whole joined string to budget
+
+        // Priority 2: shrink projectref next
+        if (projectref != null) {
+            projectref = shrinkSegment(projectref, joined.length() - budget);
+            joined = joinNonNull(contractref, projectref, specificdescription);
+            LOG.warnf("otherReference truncated: shrunk projectref (final length=%d)", joined.length());
+            if (joined.length() <= budget) return joined;
+        }
+
+        // Priority 3 (highest): shrink contractref last (customer payment depends on it)
+        if (contractref != null) {
+            contractref = shrinkSegment(contractref, joined.length() - budget);
+            joined = joinNonNull(contractref, projectref, specificdescription);
+            LOG.warnf("otherReference truncated: shrunk contractref (final length=%d)", joined.length());
+            if (joined.length() <= budget) return joined;
+        }
+
+        // Last resort — defensive, unreachable for budget=250 with 3 segments
         LOG.warnf("otherReference still over budget after segment shrink — hard-truncating to %d chars", budget);
         return joined.substring(0, budget - 1) + "…";
+    }
+
+    /** Joins non-null arguments with " | "; returns null if all are null. */
+    private static String joinNonNull(String... segments) {
+        StringBuilder sb = new StringBuilder();
+        for (String s : segments) {
+            if (s == null) continue;
+            if (sb.length() > 0) sb.append(" | ");
+            sb.append(s);
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     /** Cuts {@code value} from the end and appends "…". {@code overshoot} is how many chars must be removed. */

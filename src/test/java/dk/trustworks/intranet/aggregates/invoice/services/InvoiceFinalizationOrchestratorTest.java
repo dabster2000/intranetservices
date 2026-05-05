@@ -86,6 +86,51 @@ class InvoiceFinalizationOrchestratorTest {
         verify(work, never()).registerAsPaidout(any());
     }
 
+    // ── regression: mapper's otherReference reaches e-conomic unmodified ────────
+    // Regression guard for commit 3c5d98e7.
+    //
+    // Before the invoice-refs redesign the orchestrator post-processed the mapper's
+    // output and prepended a "tw:<uuid>" retry-reconciliation tag to otherReference.
+    // That tag was removed in the redesign.  This test captures the EconomicsDraftInvoice
+    // body passed to draftApi.create() and asserts that the "tw:" prefix is absent,
+    // proving the orchestrator forwards the mapper's value unchanged.
+
+    @Test
+    void createDraft_passes_mapper_otherReference_to_economics_without_tw_prefix() {
+        Invoice inv = draftInvoice("i1", "co-1");
+        inv.setContractref("PO-1");
+        inv.setProjectref("PROJ-2");
+        inv.setSpecificdescription("desc");
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(billingResolver.resolve(inv)).thenReturn(new BillingContext(inv, contract(), billingClient()));
+        when(agreements.tokens("co-1")).thenReturn(tokens("APP", "GRANT"));
+        when(agreements.productNumber("co-1")).thenReturn("1");
+        when(agreements.layoutNumber("co-1")).thenReturn(22);
+        when(agreements.paymentTermFor(any())).thenReturn(5);
+        when(agreements.vatZoneFor(any(), any())).thenReturn(1);
+
+        EconomicsDraftInvoice draft = new EconomicsDraftInvoice();
+        draft.setDraftInvoiceNumber(4521);
+        draft.setOtherReference("PO-1 | PROJ-2 | desc"); // what the real mapper produces
+        when(mapper.toDraft(any())).thenReturn(draft);
+        when(mapper.toLines(any())).thenReturn(List.of(new EconomicsDraftLine()));
+        CreatedResult createResult = new CreatedResult();
+        createResult.setNumber(4521);
+        org.mockito.ArgumentCaptor<EconomicsDraftInvoice> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(EconomicsDraftInvoice.class);
+        when(draftApi.create(eq("APP"), eq("GRANT"), anyString(), bodyCaptor.capture())).thenReturn(createResult);
+
+        orchestrator.createDraft("i1");
+
+        EconomicsDraftInvoice sent = bodyCaptor.getValue();
+        assertNotNull(sent, "draftApi.create() must be called with a non-null body");
+        assertFalse(
+                sent.getOtherReference() != null && sent.getOtherReference().contains("tw:"),
+                "otherReference must not contain a 'tw:' retry-reconciliation tag — "
+                + "the orchestrator must pass the mapper's value through unchanged. "
+                + "Got: " + sent.getOtherReference());
+    }
+
     // ── regression: each createDraft call uses a fresh Idempotency-Key ─────────
     // Without this, e-conomic replays the deleted draft's response after a
     // cancelFinalization, and createLinesBulk 404s on the recycled draft number.
