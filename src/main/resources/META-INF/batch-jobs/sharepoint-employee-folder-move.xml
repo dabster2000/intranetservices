@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="sharepoint-employee-folder-move" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!--
+    SharePoint Employee Folder Move Batch Job
+
+    Purpose:
+    Retry queue for SharePoint employee-folder copies whose synchronous attempt
+    during candidate-convert (CandidateConversionUseCase.execute) did not reach
+    COMPLETED. Re-runs SharePointEmployeeFolderService.copyToEmployeeFolder for
+    rows in PENDING / PARTIAL / FAILED state. Runs out-of-band from the
+    candidate-convert HTTP transaction because Graph API calls cannot be
+    rolled back (spec §11.6).
+
+    Processing Flow:
+    1. Find HIRED candidates with sharepoint_move_status IN (PENDING, PARTIAL, FAILED)
+    2. For each: resolve username from converted_user_uuid + template's sharepoint_folder
+    3. Delegate to SharePointEmployeeFolderService.copyToEmployeeFolder()
+    4. Persist returned status (COMPLETED, PARTIAL, FAILED) on the candidate row
+    5. On COMPLETED: stamp s3_retention_until = NOW + 30 days on dossier revisions
+       (with non-null generated_pdfs_snapshot) and appendices (with non-null file_uuid)
+
+    Schedule:
+    Runs every 5 minutes via BatchScheduler
+
+    Similar to:
+    nextsign-status-sync.xml (proven pattern for queued post-commit operations)
+    -->
+
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
+
+    <step id="drain-pending-folder-moves">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
+
+        <batchlet ref="sharepointEmployeeFolderMoveBatchlet"/>
+    </step>
+</job>
