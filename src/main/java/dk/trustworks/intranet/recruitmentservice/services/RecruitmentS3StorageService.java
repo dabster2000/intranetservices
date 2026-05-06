@@ -2,12 +2,15 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.fileservice.model.File;
 import dk.trustworks.intranet.fileservice.services.S3FileService;
+import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
 import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -77,5 +80,26 @@ public class RecruitmentS3StorageService {
         Objects.requireNonNull(fileUuid, "fileUuid must not be null");
         s3FileService.delete(fileUuid);
         log.infof("Deleted recruitment PDF fileUuid=%s", fileUuid);
+    }
+
+    /**
+     * Persist each template-generated PDF in S3 and return the
+     * {@code (filename, fileUuid)} refs for the revision snapshot. Appendix
+     * PDFs (already in S3) are not duplicated — only PDFs with
+     * {@link DossierPdfGenerationService.GeneratedPdf#fromTemplate()} set are
+     * stored.
+     */
+    public List<RevisionResponse.PdfArtifactRef> storeTemplatePdfs(
+            List<DossierPdfGenerationService.GeneratedPdf> pdfs,
+            UUID candidateUuid,
+            RevisionKind kind) {
+        List<RevisionResponse.PdfArtifactRef> refs = new ArrayList<>();
+        for (DossierPdfGenerationService.GeneratedPdf pdf : pdfs) {
+            if (pdf.fromTemplate() && pdf.pdfBytes() != null) {
+                String fileUuid = storeGeneratedPdf(pdf.pdfBytes(), pdf.filename(), candidateUuid, kind);
+                refs.add(new RevisionResponse.PdfArtifactRef(pdf.filename(), fileUuid));
+            }
+        }
+        return refs;
     }
 }

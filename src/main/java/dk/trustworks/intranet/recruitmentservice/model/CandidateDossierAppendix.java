@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -94,5 +95,17 @@ public class CandidateDossierAppendix extends PanacheEntityBase {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * Find every appendix belonging to any dossier owned by the given
+     * candidate. Spans the {@code candidate -> dossier -> appendix} chain
+     * via a JPQL subselect so callers do not have to materialise the
+     * intermediate dossier list.
+     */
+    public static List<CandidateDossierAppendix> findByCandidate(String candidateUuid) {
+        return list(
+                "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1)",
+                candidateUuid);
     }
 }

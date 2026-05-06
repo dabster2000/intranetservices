@@ -1,7 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
-import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
@@ -9,12 +8,10 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertResponse;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
-import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
-import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import dk.trustworks.intranet.signing.ports.SigningCaseOwnershipPort;
@@ -26,8 +23,6 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -39,13 +34,14 @@ import java.util.stream.Collectors;
  * failure (e.g. signing-case ownership transfer) rolls the entire
  * conversion back — no partial hires.
  * <p>
- * The SharePoint folder copy now runs synchronously inside this transaction.
+ * The SharePoint folder copy runs synchronously inside this transaction.
  * On {@link SharePointMoveStatus#COMPLETED}, every revision and appendix
  * with S3-stored bytes is stamped with {@code s3_retention_until = NOW + 30 days}
  * so the {@code S3RetentionCleanupBatchlet} can reap the originals after the
  * retention window. On {@link SharePointMoveStatus#PARTIAL} or
- * {@link SharePointMoveStatus#FAILED}, retention stays NULL and the batchlet
- * (Task 9) retries the move.
+ * {@link SharePointMoveStatus#FAILED}, retention stays NULL and the
+ * {@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
+ * retries the move.
  *
  * <h3>Steps</h3>
  * <ol>
@@ -166,22 +162,19 @@ public class CandidateConversionUseCase {
             d.closeOnTerminal();
         }
 
-        // (i) Resolve the destination folder. The template's sharepoint_folder
-        //     is required at promote time; if blank, leave PENDING so an
-        //     operator can fix the template and retry via the batchlet.
-        CandidateDossier promoteDossier = CandidateDossier
-                .<CandidateDossier>find("candidateUuid", candidate.getUuid())
-                .firstResult();
-        DocumentTemplateEntity template = promoteDossier != null
-                ? DocumentTemplateEntity.<DocumentTemplateEntity>findById(promoteDossier.getTemplateUuid())
-                : null;
-        String baseFolder = template != null ? template.getSharepointFolder() : null;
+        // (i) Resolve the destination folder. Reuse the already-loaded
+        //     openDossiers list — there is at most one open dossier per
+        //     candidate in the current model, and it carries the template
+        //     UUID we need. The template's sharepoint_folder is required at
+        //     promote time; if blank, leave PENDING so an operator can fix
+        //     the template and retry via the batchlet.
+        CandidateDossier promoteDossier = openDossiers.stream().findFirst().orElse(null);
+        String baseFolder = sharePointEmployeeFolderService.resolveTemplateBaseFolder(promoteDossier);
 
         if (baseFolder == null || baseFolder.isBlank()) {
-            log.warnf("Template sharepoint_folder is blank for candidate=%s template=%s — " +
+            log.warnf("Template sharepoint_folder is blank for candidate=%s — " +
                             "leaving sharepoint_move_status=PENDING for operator follow-up",
-                    candidate.getUuid(),
-                    promoteDossier != null ? promoteDossier.getTemplateUuid() : "null");
+                    candidate.getUuid());
             candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
             return ConvertResponse.hired(user.uuid, candidate.getUuid(), caseKeys.size());
         }
@@ -204,19 +197,7 @@ public class CandidateConversionUseCase {
         //     retention NULL so the reaper does not strand a row that the
         //     batchlet may still need to upload.
         if (moveStatus == SharePointMoveStatus.COMPLETED) {
-            LocalDateTime retentionUntil = LocalDateTime.now().plusDays(30);
-            CandidateDossierRevision.update(
-                    "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
-                    "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
-                    "AND generatedPdfsSnapshot IS NOT NULL",
-                    retentionUntil, candidate.getUuid());
-            CandidateDossierAppendix.update(
-                    "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
-                    "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
-                    "AND fileUuid IS NOT NULL",
-                    retentionUntil, candidate.getUuid());
-            log.infof("Stamped s3_retention_until=%s on all S3-backed rows for candidate=%s",
-                    retentionUntil, candidate.getUuid());
+            sharePointEmployeeFolderService.stampS3RetentionUntil(candidate);
         }
 
         log.infof("Converted candidate uuid=%s -> user uuid=%s by actor=%s (signing cases transferred=%d)",
@@ -232,12 +213,7 @@ public class CandidateConversionUseCase {
      * audit log).
      */
     private List<String> collectSigningCaseKeys(String candidateUuid) {
-        return CandidateDossierRevision
-                .<CandidateDossierRevision>find(
-                        "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1) " +
-                        "AND signingCaseKey IS NOT NULL",
-                        candidateUuid)
-                .stream()
+        return CandidateDossierRevision.findByCandidate(candidateUuid).stream()
                 .map(CandidateDossierRevision::getSigningCaseKey)
                 .filter(k -> k != null && !k.isBlank())
                 .distinct()

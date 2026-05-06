@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
@@ -13,6 +14,7 @@ import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 
@@ -28,6 +30,8 @@ import java.util.Objects;
 @JBossLog
 @ApplicationScoped
 public class SharePointEmployeeFolderService {
+
+    private static final int RETENTION_DAYS = 30;
 
     @Inject
     SharePointService sharePointService;
@@ -80,7 +84,7 @@ public class SharePointEmployeeFolderService {
         int copied = 0;
         int failed = 0;
 
-        for (CandidateDossierRevision rev : revisionsFor(candidate)) {
+        for (CandidateDossierRevision rev : CandidateDossierRevision.findByCandidate(candidate.getUuid())) {
             if (rev.getGeneratedPdfsSnapshot() == null) continue;
             List<GeneratedPdfRef> refs;
             try {
@@ -111,7 +115,7 @@ public class SharePointEmployeeFolderService {
             }
         }
 
-        for (CandidateDossierAppendix a : appendicesFor(candidate)) {
+        for (CandidateDossierAppendix a : CandidateDossierAppendix.findByCandidate(candidate.getUuid())) {
             if (a.getFileUuid() == null) continue;
             try {
                 byte[] bytes = s3StorageService.fetchGeneratedPdf(a.getFileUuid());
@@ -139,16 +143,57 @@ public class SharePointEmployeeFolderService {
         return status;
     }
 
-    private static List<CandidateDossierRevision> revisionsFor(RecruitmentCandidate candidate) {
-        return CandidateDossierRevision.list(
-                "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1)",
-                candidate.getUuid());
+    /**
+     * Stamp {@code s3_retention_until = NOW + RETENTION_DAYS} on every
+     * S3-backed revision and appendix for {@code candidate}. Called after a
+     * successful SharePoint copy so the {@code S3RetentionCleanupBatchlet}
+     * can reap the originals after the retention window.
+     *
+     * @return total rows stamped (revisions + appendices)
+     */
+    public int stampS3RetentionUntil(RecruitmentCandidate candidate) {
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        LocalDateTime retentionUntil = LocalDateTime.now().plusDays(RETENTION_DAYS);
+        int revisions = (int) CandidateDossierRevision.update(
+                "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
+                "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
+                "AND generatedPdfsSnapshot IS NOT NULL",
+                retentionUntil, candidate.getUuid());
+        int appendices = (int) CandidateDossierAppendix.update(
+                "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
+                "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
+                "AND fileUuid IS NOT NULL",
+                retentionUntil, candidate.getUuid());
+        log.infof("Stamped s3_retention_until=%s on %d revision(s) + %d appendix(es) for candidate=%s",
+                retentionUntil, revisions, appendices, candidate.getUuid());
+        return revisions + appendices;
     }
 
-    private static List<CandidateDossierAppendix> appendicesFor(RecruitmentCandidate candidate) {
-        return CandidateDossierAppendix.list(
-                "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1)",
-                candidate.getUuid());
+    /**
+     * Resolves the destination SharePoint base folder from the candidate's
+     * dossier's template. Returns the folder string when set; {@code null}
+     * when either the dossier, the template, or the template's
+     * {@code sharepoint_folder} is missing.
+     */
+    public String resolveTemplateBaseFolder(RecruitmentCandidate candidate) {
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        CandidateDossier dossier = CandidateDossier
+                .<CandidateDossier>find("candidateUuid", candidate.getUuid())
+                .firstResult();
+        return resolveTemplateBaseFolder(dossier);
+    }
+
+    /**
+     * Same as {@link #resolveTemplateBaseFolder(RecruitmentCandidate)} but
+     * accepts an already-loaded dossier so callers that have one in scope
+     * (e.g. {@code CandidateConversionUseCase} which just queried for OPEN
+     * dossiers) can avoid a second round-trip.
+     */
+    public String resolveTemplateBaseFolder(CandidateDossier dossier) {
+        if (dossier == null) return null;
+        DocumentTemplateEntity template = DocumentTemplateEntity
+                .<DocumentTemplateEntity>findById(dossier.getTemplateUuid());
+        return template != null ? template.getSharepointFolder() : null;
     }
 
     private static String stripTrailingSlash(String s) {

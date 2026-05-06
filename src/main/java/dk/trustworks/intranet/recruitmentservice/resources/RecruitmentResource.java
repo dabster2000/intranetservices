@@ -431,7 +431,7 @@ public class RecruitmentResource {
                 dossier.getTemplateUuid(), placeholders, appendices);
 
         // 2) Persist each template-generated PDF to S3 and collect refs.
-        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsInS3(
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
                 pdfs, candidateUuid, RevisionKind.REVIEW_EMAIL);
 
         // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
@@ -500,7 +500,7 @@ public class RecruitmentResource {
         }
 
         // 2) Persist each template-generated PDF to S3 and collect refs.
-        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsInS3(
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
                 templatePdfs, candidateUuid, RevisionKind.REVIEW_PDF);
 
         // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
@@ -570,7 +570,7 @@ public class RecruitmentResource {
 
         // Persist each template-generated PDF to S3 before the revision row
         // references them in generated_pdfs_snapshot.
-        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsInS3(
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
                 pdfs, candidateUuid, RevisionKind.SIGNATURE);
 
         // External calls run before any DB write so a slow NextSign round-trip
@@ -598,25 +598,6 @@ public class RecruitmentResource {
     }
 
     // ---- Helpers --------------------------------------------------------------
-
-    /**
-     * Persist each template-generated PDF in S3 and return the
-     * {@code (filename, fileUuid)} refs for the revision snapshot. Appendix
-     * PDFs (already in S3) are not duplicated — only PDFs with
-     * {@code fromTemplate=true} are stored.
-     */
-    private List<RevisionResponse.PdfArtifactRef> storeTemplatePdfsInS3(
-            List<GeneratedPdf> pdfs, UUID candidateUuid, RevisionKind kind) {
-        List<RevisionResponse.PdfArtifactRef> refs = new ArrayList<>();
-        for (GeneratedPdf pdf : pdfs) {
-            if (pdf.fromTemplate() && pdf.pdfBytes() != null) {
-                String fileUuid = recruitmentS3StorageService.storeGeneratedPdf(
-                        pdf.pdfBytes(), pdf.filename(), candidateUuid, kind);
-                refs.add(new RevisionResponse.PdfArtifactRef(pdf.filename(), fileUuid));
-            }
-        }
-        return refs;
-    }
 
     /**
      * Block the request when the {@code recruitment.dossier.enabled} flag is

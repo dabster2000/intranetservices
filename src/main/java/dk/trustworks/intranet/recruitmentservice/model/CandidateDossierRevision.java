@@ -16,6 +16,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -108,5 +109,17 @@ public class CandidateDossierRevision extends PanacheEntityBase {
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
         }
+    }
+
+    /**
+     * Find every revision belonging to any dossier owned by the given
+     * candidate. Spans the {@code candidate -> dossier -> revision} chain
+     * via a JPQL subselect so callers do not have to materialise the
+     * intermediate dossier list.
+     */
+    public static List<CandidateDossierRevision> findByCandidate(String candidateUuid) {
+        return list(
+                "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1)",
+                candidateUuid);
     }
 }

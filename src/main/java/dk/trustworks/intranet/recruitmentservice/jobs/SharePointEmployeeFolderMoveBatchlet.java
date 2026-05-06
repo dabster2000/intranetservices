@@ -1,11 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.jobs;
 
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
-import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
-import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
-import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
-import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
@@ -16,7 +12,6 @@ import jakarta.inject.Named;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -63,7 +58,7 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
                 continue;
             }
 
-            String baseFolder = resolveTemplateFolder(candidate);
+            String baseFolder = folderService.resolveTemplateBaseFolder(candidate);
             if (baseFolder == null || baseFolder.isBlank()) {
                 log.debugf("Skipping candidate=%s — template's sharepoint_folder still blank",
                         candidate.getUuid());
@@ -83,17 +78,7 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
             candidate.setSharepointMoveStatus(status);
 
             if (status == SharePointMoveStatus.COMPLETED) {
-                LocalDateTime retentionUntil = LocalDateTime.now().plusDays(30);
-                CandidateDossierRevision.update(
-                        "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
-                        "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
-                        "AND generatedPdfsSnapshot IS NOT NULL",
-                        retentionUntil, candidate.getUuid());
-                CandidateDossierAppendix.update(
-                        "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
-                        "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
-                        "AND fileUuid IS NOT NULL",
-                        retentionUntil, candidate.getUuid());
+                folderService.stampS3RetentionUntil(candidate);
                 completed++;
             } else {
                 stillFailing++;
@@ -111,15 +96,5 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
         if (candidate.getConvertedUserUuid() == null) return null;
         User user = User.findById(candidate.getConvertedUserUuid());
         return user != null ? user.getUsername() : null;
-    }
-
-    private static String resolveTemplateFolder(RecruitmentCandidate candidate) {
-        CandidateDossier dossier = CandidateDossier
-                .<CandidateDossier>find("candidateUuid", candidate.getUuid())
-                .firstResult();
-        if (dossier == null) return null;
-        DocumentTemplateEntity template = DocumentTemplateEntity
-                .<DocumentTemplateEntity>findById(dossier.getTemplateUuid());
-        return template != null ? template.getSharepointFolder() : null;
     }
 }
