@@ -2,11 +2,13 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateListResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionSummary;
+import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
@@ -77,6 +79,7 @@ public class CandidateService {
         dossier.setCandidateUuid(candidate.getUuid());
         dossier.setTemplateUuid(req.templateUuid());
         dossier.setStatus(DossierStatus.OPEN);
+        dossier.setSignersConfigJson(seedSignersFromTemplate(req.templateUuid()));
         CandidateDossier.persist(dossier);
 
         log.infof("Created candidate uuid=%s template=%s by actor=%s",
@@ -278,5 +281,37 @@ public class CandidateService {
 
     static IllegalStateException jsonError(String operation, JsonProcessingException cause) {
         return new IllegalStateException("JSON " + operation + " failed: " + cause.getOriginalMessage(), cause);
+    }
+
+    /**
+     * Seed the dossier's signers_config from the template's default signers,
+     * sorted by signer group then display order. ${PLACEHOLDER} tokens in
+     * name/email are preserved as-is; revision snapshots resolve them at
+     * send time. Returns "[]" when the template defines no defaults so the
+     * not-null DB column always carries a valid JSON array.
+     */
+    private String seedSignersFromTemplate(String templateUuid) {
+        List<TemplateDefaultSignerEntity> defaults = TemplateDefaultSignerEntity
+                .find("template.uuid = ?1 ORDER BY signerGroup, displayOrder", templateUuid)
+                .list();
+
+        List<SignerConfigDto> signers = new ArrayList<>(defaults.size());
+        for (TemplateDefaultSignerEntity s : defaults) {
+            signers.add(new SignerConfigDto(
+                    String.valueOf(s.getSignerGroup()),
+                    s.getName(),
+                    s.getEmail(),
+                    s.isSigning(),
+                    s.isNeedsCpr(),
+                    s.getRole(),
+                    null
+            ));
+        }
+
+        try {
+            return objectMapper.writeValueAsString(signers);
+        } catch (JsonProcessingException e) {
+            throw jsonError("write", e);
+        }
     }
 }

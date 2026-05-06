@@ -13,6 +13,8 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.*;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.PathParam;
 import java.io.ByteArrayOutputStream;
@@ -29,6 +31,9 @@ public class S3FileService {
 
     @ConfigProperty(name = "bucket.files")
     String bucketName;
+
+    @Inject
+    EntityManager em;
 
     // S3Client is thread-safe for operations, initialized once in constructor
     private final S3Client s3;
@@ -67,28 +72,34 @@ public class S3FileService {
 
     public File findOne(String uuid) {
         Optional<File> optionalFile = File.findByIdOptional(uuid);
-        File file = null;
-        if(optionalFile.isPresent()) {
-            file = optionalFile.get();
-        } else {
+        boolean transientFile = optionalFile.isEmpty();
+        File file;
+        if (transientFile) {
             file = new File(uuid, "", "", "", "", null, null);
+        } else {
+            file = optionalFile.get();
+            // Detach so the byte payload (and any incidental setter below) is not
+            // dirty-flushed when the caller's transaction commits. The DB columns
+            // are narrow (e.g. files.type VARCHAR(20)) and Tika MIME strings can
+            // exceed them, which previously caused "Data too long for column
+            // 'type'" errors during recruitment PDF generation.
+            em.detach(file);
         }
-        System.out.println("file = " + file);
-        try{
+        try {
             Tika tika = new Tika();
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             s3.getObject(GetObjectRequest.builder().bucket(bucketName).key(uuid).build(), ResponseTransformer.toOutputStream(baos));
             byte[] bytes = baos.toByteArray();
-            System.out.println("bytes.length = " + bytes.length);
-            String fileType = tika.detect(bytes);
-            System.out.println("fileType = " + fileType);
             file.setFile(bytes);
-            file.setType(fileType);
-            System.out.println("Returning...");
-            return file;//new File(uuid, "", "DOCUMENT", "", "", null, file);
-        }  catch (S3Exception e) {
+            if (transientFile) {
+                // Only populate `type` for synthetic instances that aren't tracked in DB.
+                // Persisted rows keep their stored category ("DOCUMENT", "WORD_TEMPLATE", "PHOTO").
+                file.setType(tika.detect(bytes));
+            }
+            return file;
+        } catch (S3Exception e) {
             log.error("Error loading "+uuid+" from S3: "+e.awsErrorDetails().errorMessage(), e);
-            return file;//new File(uuid, "", "DOCUMENT", "", "", null, new byte[0]);
+            return file;
         }
     }
 
