@@ -9,7 +9,9 @@ import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
+import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
+import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import io.quarkus.panache.common.Sort;
@@ -17,6 +19,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.nio.file.InvalidPathException;
@@ -149,6 +153,80 @@ public class DossierService {
         if (deleted > 0) {
             log.infof("Removed appendix file=%s from dossier uuid=%s", fileUuid, dossier.getUuid());
         }
+    }
+
+    /**
+     * Replace the open dossier's draft state with a frozen revision snapshot
+     * (placeholders, signers, appendices). Past revisions stay immutable —
+     * only the current draft is modified.
+     *
+     * <p>Appendices are stored in a separate child table; this method
+     * deletes all current appendix rows and re-inserts new rows derived from
+     * the revision's {@code appendicesSnapshot}. The snapshot's S3 fileUuids
+     * are preserved on the new rows; if any of those S3 objects have been
+     * reaped, a subsequent Send action will fail with a clear error.
+     *
+     * @return refreshed {@link DossierResponse}
+     * @throws NotFoundException if revision doesn't belong to this candidate
+     * @throws WebApplicationException 409 if dossier is CLOSED or candidate
+     *         is in a terminal state
+     */
+    @Transactional
+    public DossierResponse branchFromRevision(UUID candidateUuid, UUID revisionUuid, UUID actor) {
+        Objects.requireNonNull(actor, "actor must not be null");
+
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null) {
+            throw new NotFoundException("Candidate not found: " + candidateUuid);
+        }
+        if (candidate.getStatus() == CandidateStatus.HIRED
+                || candidate.getStatus() == CandidateStatus.DECLINED
+                || candidate.getStatus() == CandidateStatus.WITHDRAWN) {
+            throw new WebApplicationException(
+                    "Cannot branch — candidate is in terminal state " + candidate.getStatus(),
+                    Response.Status.CONFLICT);
+        }
+
+        CandidateDossier dossier = CandidateDossier
+                .<CandidateDossier>find("candidateUuid = ?1 AND status = ?2",
+                        candidate.getUuid(), DossierStatus.OPEN)
+                .firstResult();
+        if (dossier == null) {
+            throw new WebApplicationException(
+                    "Cannot branch — no OPEN dossier on candidate " + candidateUuid,
+                    Response.Status.CONFLICT);
+        }
+
+        CandidateDossierRevision rev = CandidateDossierRevision.findById(revisionUuid.toString());
+        if (rev == null || !rev.getDossierUuid().equals(dossier.getUuid())) {
+            throw new NotFoundException(
+                    "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
+        }
+
+        // 1) Overwrite placeholder + signer drafts.
+        dossier.setPlaceholderValuesJson(rev.getPlaceholderValuesSnapshot());
+        dossier.setSignersConfigJson(rev.getSignersConfigSnapshot());
+
+        // 2) Replace appendix rows with what the snapshot recorded.
+        CandidateDossierAppendix.delete("dossierUuid", dossier.getUuid());
+        List<AppendixDto> snapshotAppendices = readJson(
+                rev.getAppendicesSnapshot(), new TypeReference<>() {});
+        if (snapshotAppendices != null) {
+            for (AppendixDto snap : snapshotAppendices) {
+                CandidateDossierAppendix appendix = new CandidateDossierAppendix();
+                appendix.setDossierUuid(dossier.getUuid());
+                appendix.setFileUuid(snap.fileUuid());
+                appendix.setOriginalFilename(snap.originalFilename());
+                appendix.setDisplayOrder(snap.displayOrder());
+                appendix.setUploadedByUseruuid(actor.toString());
+                CandidateDossierAppendix.persist(appendix);
+            }
+        }
+
+        log.infof("BRANCHED_FROM_REVISION candidate=%s revision=%s versionNumber=%d actor=%s",
+                candidate.getUuid(), rev.getUuid(), rev.getVersionNumber(), actor);
+
+        return toResponse(dossier);
     }
 
     // ---- helpers ---------------------------------------------------------------
