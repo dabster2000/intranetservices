@@ -15,6 +15,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.DeclineRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.RevisionSigningStatusSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.SendReviewRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SendSignatureRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
@@ -32,13 +33,17 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService.RecipientInfo;
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
-import dk.trustworks.intranet.recruitmentservice.services.SharePointCandidateFolderService;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
+import dk.trustworks.intranet.signing.domain.SigningCase;
+import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import dk.trustworks.intranet.utils.NextsignSigningService;
+import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.DocumentInfo;
 import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
+import dk.trustworks.intranet.utils.services.SigningService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -60,6 +65,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.StreamingOutput;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -121,13 +127,19 @@ public class RecruitmentResource {
     DossierPdfGenerationService pdfGenerationService;
 
     @Inject
-    SharePointCandidateFolderService sharePointCandidateFolderService;
+    RecruitmentS3StorageService recruitmentS3StorageService;
 
     @Inject
     CandidateConversionUseCase candidateConversionUseCase;
 
     @Inject
     NextsignSigningService nextsignSigningService;
+
+    @Inject
+    SigningService signingService;
+
+    @Inject
+    SigningCaseRepository signingCaseRepository;
 
     @Inject
     MailResource mailResource;
@@ -143,6 +155,18 @@ public class RecruitmentResource {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    /**
+     * MicroProfile {@link ManagedExecutor} used to dispatch the post-commit
+     * SharePoint copy after a successful candidate conversion. Running the
+     * copy off the request thread releases DB locks fast and keeps the
+     * convert-candidate REST response sub-100ms (efficiency finding H2).
+     * The copy itself is best-effort; the
+     * {@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
+     * retries any rows still in PENDING/PARTIAL/FAILED.
+     */
+    @Inject
+    ManagedExecutor managedExecutor;
 
     // ---- Candidate endpoints --------------------------------------------------
 
@@ -221,6 +245,24 @@ public class RecruitmentResource {
         enforceFlag();
         Objects.requireNonNull(request, "request body must not be null");
         ConvertResponse result = candidateConversionUseCase.execute(uuid, request, currentActor());
+
+        // Fire-and-forget the SharePoint copy after the conversion tx has
+        // committed. Doing it inline would hold DB row locks on the
+        // candidate/dossier/revision/appendix tables for 2-8 seconds while
+        // Graph API uploads each PDF (efficiency finding H2). On failure,
+        // sharepoint_move_status stays PENDING/PARTIAL/FAILED and the retry
+        // batchlet picks it up on its 5-minute cadence — no caller retry
+        // needed.
+        final UUID asyncCandidateUuid = uuid;
+        managedExecutor.execute(() -> {
+            try {
+                candidateConversionUseCase.runSharePointCopy(asyncCandidateUuid);
+            } catch (Exception e) {
+                log.errorf(e, "Async SharePoint copy failed for candidate=%s — batchlet will retry",
+                        asyncCandidateUuid);
+            }
+        });
+
         return Response.ok(result).build();
     }
 
@@ -339,6 +381,119 @@ public class RecruitmentResource {
                 .build();
     }
 
+    /**
+     * Fetches the live NextSign signing case detail for a SIGNATURE-kind
+     * revision. Reuses {@link SigningService#getCaseDetail(String)} — the same
+     * call used by the admin signing-cases tab — so per-signer audit trail and
+     * identity verification data is current. The freshness trade-off is
+     * round-trip latency (200-500ms) instead of cached staleness.
+     *
+     * <p>Authorization-by-ownership: the revision UUID must belong to a
+     * dossier owned by the candidate UUID in the path. URL-guessed revision
+     * UUIDs cannot leak signing detail across candidates.</p>
+     */
+    @GET
+    @Path("/candidates/{uuid}/dossier/revisions/{revUuid}/signing-status")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:read"})
+    @Transactional
+    public Response getSigningStatus(
+            @PathParam("uuid") UUID candidateUuid,
+            @PathParam("revUuid") UUID revisionUuid) {
+
+        enforceFlag();
+
+        CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
+        if (revision == null
+                || revision.getKind() != RevisionKind.SIGNATURE
+                || revision.getSigningCaseKey() == null
+                || revision.getSigningCaseKey().isBlank()) {
+            throw new NotFoundException(
+                    "No signing case for revision " + revisionUuid);
+        }
+
+        // Authorization-by-ownership: confirm the revision belongs to this
+        // candidate's dossier so URL-guessed revision UUIDs cannot leak.
+        CandidateDossier dossier = CandidateDossier.findById(revision.getDossierUuid());
+        if (dossier == null || !dossier.getCandidateUuid().equals(candidateUuid.toString())) {
+            throw new NotFoundException(
+                    "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
+        }
+
+        try {
+            NextSignCaseDetailDTO detail = signingService.getCaseDetail(revision.getSigningCaseKey());
+            return Response.ok(detail).build();
+        } catch (SigningService.SigningException e) {
+            log.warnf("NextSign case detail not found for revision=%s caseKey=%s — %s",
+                    revisionUuid, revision.getSigningCaseKey(), e.getMessage());
+            throw new NotFoundException(
+                    "NextSign case " + revision.getSigningCaseKey() + " not found");
+        }
+    }
+
+    /**
+     * Lightweight signing-status summary for the collapsed view of the
+     * recruitment dossier panel. Reads entirely from the local
+     * {@code signing_cases} cache populated by {@code NextSignStatusSyncBatchlet}
+     * — NO NextSign API call. Per-signer audit log / identity verification
+     * are not available from this endpoint; expand the panel to trigger the
+     * full {@link #getSigningStatus(UUID, UUID)} endpoint.
+     *
+     * <p>Same authorization-by-ownership rule as the full endpoint: the
+     * revision UUID must belong to a dossier owned by the candidate UUID.</p>
+     */
+    @GET
+    @Path("/candidates/{uuid}/dossier/revisions/{revUuid}/signing-status/summary")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:read"})
+    @Transactional
+    public Response getSigningStatusSummary(
+            @PathParam("uuid") UUID candidateUuid,
+            @PathParam("revUuid") UUID revisionUuid) {
+
+        enforceFlag();
+
+        CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
+        if (revision == null
+                || revision.getKind() != RevisionKind.SIGNATURE
+                || revision.getSigningCaseKey() == null
+                || revision.getSigningCaseKey().isBlank()) {
+            throw new NotFoundException(
+                    "No signing case for revision " + revisionUuid);
+        }
+
+        // Authorization-by-ownership: confirm the revision belongs to this
+        // candidate's dossier so URL-guessed revision UUIDs cannot leak.
+        CandidateDossier dossier = CandidateDossier.findById(revision.getDossierUuid());
+        if (dossier == null || !dossier.getCandidateUuid().equals(candidateUuid.toString())) {
+            throw new NotFoundException(
+                    "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
+        }
+
+        SigningCase sc = signingCaseRepository.findByCaseKey(revision.getSigningCaseKey())
+                .orElseThrow(() -> new NotFoundException("Signing case not in local cache yet"));
+
+        return Response.ok(new RevisionSigningStatusSummary(
+                sc.getCaseKey(),
+                sc.getStatus(),
+                sc.getTotalSigners() != null ? sc.getTotalSigners() : 0,
+                sc.getCompletedSigners() != null ? sc.getCompletedSigners() : 0,
+                sc.getLastStatusFetch()
+        )).build();
+    }
+
+    @POST
+    @Path("/candidates/{uuid}/dossier/branch-from-revision/{revUuid}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:write"})
+    @Transactional
+    public DossierResponse branchFromRevision(
+            @PathParam("uuid") UUID candidateUuid,
+            @PathParam("revUuid") UUID revisionUuid) {
+        enforceFlag();
+        return dossierService.branchFromRevision(candidateUuid, revisionUuid, currentActor());
+    }
+
     // ---- Send actions ---------------------------------------------------------
 
     @POST
@@ -355,23 +510,32 @@ public class RecruitmentResource {
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         User sender = requireUser(actor);
 
-        // 1) Snapshot the revision (allocates version_number + freezes JSON).
+        // 1) Generate PDFs from the current draft (so we have bytes to store
+        //    in S3 before the revision row references them).
+        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
+        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
+                dossier.getTemplateUuid(), placeholders, appendices);
+
+        // 2) Persist each template-generated PDF to S3 and collect refs.
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
+                pdfs, candidateUuid, RevisionKind.REVIEW_EMAIL);
+
+        // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
         RecipientInfo recipient = new RecipientInfo(
                 candidate.getEmail(),
                 fullName(candidate.getFirstName(), candidate.getLastName()),
                 actor,
                 body.note(),
                 null,
-                List.of());
-        CandidateDossierRevision revision = dossierRevisionService.snapshot(
-                dossier, RevisionKind.REVIEW_EMAIL, recipient, actor);
+                pdfRefs);
+        CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
+                dossier, RevisionKind.REVIEW_EMAIL,
+                placeholders, signers, appendices,
+                recipient, actor);
 
-        // 2) Generate PDFs from the snapshot. Failure here rolls back the
-        //    revision (we are inside the @Transactional boundary).
-        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(
-                revision, dossier.getTemplateUuid());
-
-        // 3) Build and queue the review email. Recipient is locked to
+        // 4) Build and queue the review email. Recipient is locked to
         //    candidate.email per spec §8.2 — the request DTO has no `to`
         //    field, so caller-supplied recipient overrides are impossible.
         TrustworksMail mail = new TrustworksMail(
@@ -407,24 +571,40 @@ public class RecruitmentResource {
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
-        RecipientInfo recipient = new RecipientInfo(
-                candidate.getEmail(),
-                fullName(candidate.getFirstName(), candidate.getLastName()),
-                actor,
-                body.note(),
-                null,
-                List.of());
-        CandidateDossierRevision revision = dossierRevisionService.snapshot(
-                dossier, RevisionKind.REVIEW_PDF, recipient, actor);
-
-        List<GeneratedPdf> templatePdfs = pdfGenerationService.generateTemplatePdfsFor(
-                revision, dossier.getTemplateUuid());
+        // 1) Generate PDFs from the current draft (so bytes exist before the
+        //    revision row references them in generated_pdfs_snapshot).
+        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
+        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<GeneratedPdf> allPdfs = pdfGenerationService.generatePdfsFromValues(
+                dossier.getTemplateUuid(), placeholders, appendices);
+        List<GeneratedPdf> templatePdfs = allPdfs.stream()
+                .filter(GeneratedPdf::fromTemplate)
+                .toList();
         if (templatePdfs.isEmpty()) {
             throw new WebApplicationException(
                     "No template documents are configured on this dossier",
                     Response.Status.CONFLICT);
         }
 
+        // 2) Persist each template-generated PDF to S3 and collect refs.
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
+                templatePdfs, candidateUuid, RevisionKind.REVIEW_PDF);
+
+        // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
+        RecipientInfo recipient = new RecipientInfo(
+                candidate.getEmail(),
+                fullName(candidate.getFirstName(), candidate.getLastName()),
+                actor,
+                body.note(),
+                null,
+                pdfRefs);
+        CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
+                dossier, RevisionKind.REVIEW_PDF,
+                placeholders, signers, appendices,
+                recipient, actor);
+
+        // 4) Stream the ZIP back to the manager for download.
         byte[] zipBytes = zipTemplatePdfs(templatePdfs);
         String zipName = zipFilenameFor(candidate);
         StreamingOutput stream = streamFor(zipBytes);
@@ -476,9 +656,13 @@ public class RecruitmentResource {
                     Response.Status.CONFLICT);
         }
 
+        // Persist each template-generated PDF to S3 before the revision row
+        // references them in generated_pdfs_snapshot.
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
+                pdfs, candidateUuid, RevisionKind.SIGNATURE);
+
         // External calls run before any DB write so a slow NextSign round-trip
         // does not hold a transaction open against candidate_dossier_revisions.
-        sharePointCandidateFolderService.ensureFolderForCandidate(candidate);
         String caseKey = nextsignSigningService.createMultiDocumentSigningCase(
                 documents,
                 signerInfos,
@@ -492,7 +676,7 @@ public class RecruitmentResource {
                 actor,
                 body.note(),
                 caseKey,
-                List.of());
+                pdfRefs);
         CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
                 dossier, RevisionKind.SIGNATURE,
                 placeholders, signers, appendices,

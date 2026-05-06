@@ -16,6 +16,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -67,6 +68,26 @@ public class CandidateDossierRevision extends PanacheEntityBase {
     @Column(name = "signing_case_key", length = 255, updatable = false)
     private String signingCaseKey;
 
+    /**
+     * Frozen JSON array of {@code {filename, fileUuid}} entries for the
+     * generated PDFs persisted to S3 at Send time. {@code null} for legacy
+     * revisions written before V321. Immutable: same {@code updatable=false}
+     * treatment as the other snapshot columns.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "generated_pdfs_snapshot", columnDefinition = "JSON", updatable = false)
+    private String generatedPdfsSnapshot;
+
+    /**
+     * When the S3-stored generated PDFs may be reaped after the parent
+     * candidate has been promoted. Set by the promote flow when the
+     * SharePoint copy succeeds; nulled by {@code S3RetentionCleanupBatchlet}
+     * after the S3 deletes succeed. Mutable — unlike snapshot columns,
+     * lifecycle metadata may evolve post-persist.
+     */
+    @Column(name = "s3_retention_until")
+    private LocalDateTime s3RetentionUntil;
+
     @Column(name = "recipient_email", length = 255, nullable = false, updatable = false)
     private String recipientEmail;
 
@@ -88,5 +109,17 @@ public class CandidateDossierRevision extends PanacheEntityBase {
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
         }
+    }
+
+    /**
+     * Find every revision belonging to any dossier owned by the given
+     * candidate. Spans the {@code candidate -> dossier -> revision} chain
+     * via a JPQL subselect so callers do not have to materialise the
+     * intermediate dossier list.
+     */
+    public static List<CandidateDossierRevision> findByCandidate(String candidateUuid) {
+        return list(
+                "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1)",
+                candidateUuid);
     }
 }

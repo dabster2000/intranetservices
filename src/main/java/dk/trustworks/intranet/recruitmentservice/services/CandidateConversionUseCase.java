@@ -12,7 +12,6 @@ import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
-import dk.trustworks.intranet.recruitmentservice.model.enums.RevisionKind;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
 import dk.trustworks.intranet.signing.ports.SigningCaseOwnershipPort;
@@ -24,26 +23,36 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * Use case orchestrating the full "candidate -> employee" conversion. All
- * steps execute inside a single {@link Transactional} boundary so any
- * failure (e.g. signing-case ownership transfer) rolls the entire
- * conversion back — no partial hires.
+ * Use case orchestrating the full "candidate -> employee" conversion. The
+ * {@link #execute(UUID, ConvertRequest, UUID)} method runs inside a single
+ * {@link Transactional} boundary so any failure (e.g. signing-case ownership
+ * transfer) rolls the entire conversion back — no partial hires.
  * <p>
- * The SharePoint folder copy-and-delete is intentionally NOT inside this
- * transaction (per spec §11.6, AC #12): the SharePoint API is slow and
- * cannot be rolled back. Instead, this method only flips
- * {@code sharepoint_move_status} to {@link SharePointMoveStatus#PENDING},
- * letting the post-commit batchlet (Stage 3) drive the actual copy
- * asynchronously.
+ * <b>Two-phase design (efficiency finding H2).</b> The transactional phase
+ * does only DB work and exits with {@code sharepoint_move_status = PENDING}.
+ * The slow Graph API uploads (~200-500ms per PDF, 4-8 PDFs/appendices) run
+ * <em>after</em> the conversion transaction commits, via
+ * {@link #runSharePointCopy(UUID)}. Callers are expected to dispatch
+ * {@code runSharePointCopy} on a {@code ManagedExecutor} so the HTTP response
+ * returns fast and DB row locks on
+ * {@code recruitment_candidates / candidate_dossiers /
+ * candidate_dossier_revisions / candidate_dossier_appendix /
+ * users / team_role / user_status / signing_cases} are released promptly.
+ * <p>
+ * If the post-commit copy fails (network blip, Graph API throttle,
+ * SharePoint outage), {@link
+ * dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
+ * picks up the still-{@code PENDING}/{@code PARTIAL}/{@code FAILED} row on
+ * its 5-minute cadence and retries — the user-facing conversion succeeds
+ * either way.
  *
- * <h3>Steps</h3>
+ * <h3>Conversion steps (transactional)</h3>
  * <ol>
  *   <li>Load candidate; guard ACTIVE state.</li>
  *   <li>Provision a new {@link User} via {@link UserService#createUser}.</li>
@@ -55,7 +64,16 @@ import java.util.stream.Collectors;
  *       {@link SigningCaseOwnershipPort#transferLocalOwner}.</li>
  *   <li>Call {@link RecruitmentCandidate#markHired}.</li>
  *   <li>Close every OPEN dossier on this candidate.</li>
- *   <li>Set {@code sharepoint_move_status = PENDING}.</li>
+ *   <li>Set {@code sharepoint_move_status = PENDING}. The post-commit
+ *       SharePoint copy is dispatched by the resource layer.</li>
+ * </ol>
+ *
+ * <h3>Post-commit steps ({@link #runSharePointCopy})</h3>
+ * <ol>
+ *   <li>Resolve target username and template base folder.</li>
+ *   <li>Copy every S3-backed PDF and appendix to the destination folder.</li>
+ *   <li>In a short follow-up tx, set the final move status and stamp
+ *       {@code s3_retention_until} on COMPLETED.</li>
  * </ol>
  */
 @JBossLog
@@ -67,6 +85,9 @@ public class CandidateConversionUseCase {
 
     @Inject
     SigningCaseOwnershipPort signingCaseOwnershipPort;
+
+    @Inject
+    SharePointEmployeeFolderService sharePointEmployeeFolderService;
 
     @Transactional
     public ConvertResponse execute(UUID candidateUuid, ConvertRequest req, UUID actor) {
@@ -157,7 +178,11 @@ public class CandidateConversionUseCase {
             d.closeOnTerminal();
         }
 
-        // (i) Queue the SharePoint move for the post-commit batchlet.
+        // (i) Mark SharePoint move as PENDING. The post-commit copy runs in
+        //     RecruitmentResource via runSharePointCopy(...) on a managed
+        //     executor, so the conversion REST call returns fast and DB locks
+        //     are released promptly. The retry batchlet
+        //     (SharePointEmployeeFolderMoveBatchlet) handles failures.
         candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
 
         log.infof("Converted candidate uuid=%s -> user uuid=%s by actor=%s (signing cases transferred=%d)",
@@ -167,18 +192,90 @@ public class CandidateConversionUseCase {
     }
 
     /**
+     * Run the post-commit SharePoint copy for a hired candidate. NOT
+     * transactional at the method level — the SharePoint upload runs without
+     * holding DB locks. The status update + retention stamping happens in a
+     * short follow-up transaction via {@link #applySharePointResult}.
+     *
+     * <p>Safe to call from a {@code ManagedExecutor} after {@link #execute}
+     * returns. The retry batchlet
+     * ({@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet})
+     * will pick up {@code PENDING}/{@code PARTIAL}/{@code FAILED} rows on its
+     * 5-minute cadence if this method fails, so callers do not need to retry.
+     */
+    public void runSharePointCopy(UUID candidateUuid) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null || candidate.getStatus() != CandidateStatus.HIRED) {
+            log.warnf("runSharePointCopy: candidate=%s not HIRED, skipping", candidateUuid);
+            return;
+        }
+        if (candidate.getSharepointMoveStatus() == SharePointMoveStatus.COMPLETED) {
+            log.debugf("runSharePointCopy: candidate=%s already COMPLETED, skipping", candidateUuid);
+            return;
+        }
+
+        String targetUsername = resolveTargetUsername(candidate);
+        if (targetUsername == null) {
+            log.warnf("runSharePointCopy: cannot resolve username for candidate=%s, leaving PENDING",
+                    candidateUuid);
+            return;
+        }
+        String baseFolder = sharePointEmployeeFolderService.resolveTemplateBaseFolder(candidate);
+        if (baseFolder == null || baseFolder.isBlank()) {
+            log.warnf("runSharePointCopy: template sharepoint_folder blank for candidate=%s, leaving PENDING",
+                    candidateUuid);
+            return;
+        }
+
+        SharePointMoveStatus moveStatus;
+        try {
+            moveStatus = sharePointEmployeeFolderService.copyToEmployeeFolder(
+                    candidate, targetUsername, baseFolder);
+        } catch (RuntimeException e) {
+            log.warnf(e, "runSharePointCopy: SharePoint copy threw for candidate=%s — staying PENDING for retry",
+                    candidateUuid);
+            return;
+        }
+        applySharePointResult(candidateUuid, moveStatus);
+    }
+
+    /**
+     * Persist the outcome of a SharePoint copy attempt. Runs inside a short
+     * transaction so the row is locked only for the status write + (on
+     * COMPLETED) retention stamping — the slow Graph upload is already done
+     * by the time this method is called.
+     */
+    @Transactional
+    public void applySharePointResult(UUID candidateUuid, SharePointMoveStatus status) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        Objects.requireNonNull(status, "status must not be null");
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null) {
+            log.warnf("applySharePointResult: candidate=%s not found, cannot update status",
+                    candidateUuid);
+            return;
+        }
+        candidate.setSharepointMoveStatus(status);
+        if (status == SharePointMoveStatus.COMPLETED) {
+            sharePointEmployeeFolderService.stampS3RetentionUntil(candidate);
+        }
+    }
+
+    private static String resolveTargetUsername(RecruitmentCandidate candidate) {
+        if (candidate.getConvertedUserUuid() == null) return null;
+        User user = User.findById(candidate.getConvertedUserUuid());
+        return user != null ? user.getUsername() : null;
+    }
+
+    /**
      * Pull the distinct {@code signing_case_key} values from every revision
      * across every dossier belonging to the candidate. Returns an ordered
      * list (Set iteration order is undefined; we want stability for the
      * audit log).
      */
     private List<String> collectSigningCaseKeys(String candidateUuid) {
-        return CandidateDossierRevision
-                .<CandidateDossierRevision>find(
-                        "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1) " +
-                        "AND signingCaseKey IS NOT NULL",
-                        candidateUuid)
-                .stream()
+        return CandidateDossierRevision.findByCandidate(candidateUuid).stream()
                 .map(CandidateDossierRevision::getSigningCaseKey)
                 .filter(k -> k != null && !k.isBlank())
                 .distinct()

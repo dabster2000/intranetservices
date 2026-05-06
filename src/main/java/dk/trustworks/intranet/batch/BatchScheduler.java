@@ -309,18 +309,18 @@ public class BatchScheduler {
      * which is the closest analogue (also a queue-drain over an external API).
      */
     @Scheduled(every = "5m")
-    void scheduleSharePointCandidateFolderMove() {
+    void scheduleSharePointEmployeeFolderMove() {
         try {
-            if (jobOperator.getJobNames().contains("sharepoint-candidate-folder-move")) {
-                if (!jobOperator.getRunningExecutions("sharepoint-candidate-folder-move").isEmpty()) {
-                    log.debug("sharepoint-candidate-folder-move already running, skipping");
+            if (jobOperator.getJobNames().contains("sharepoint-employee-folder-move")) {
+                if (!jobOperator.getRunningExecutions("sharepoint-employee-folder-move").isEmpty()) {
+                    log.debug("sharepoint-employee-folder-move already running, skipping");
                     return;
                 }
             }
-            log.debug("Starting sharepoint-candidate-folder-move batch job");
-            jobOperator.start("sharepoint-candidate-folder-move", new Properties());
+            log.debug("Starting sharepoint-employee-folder-move batch job");
+            jobOperator.start("sharepoint-employee-folder-move", new Properties());
         } catch (Exception e) {
-            log.debug("Could not schedule sharepoint-candidate-folder-move: " + e.getMessage());
+            log.debug("Could not schedule sharepoint-employee-folder-move: " + e.getMessage());
         }
     }
 

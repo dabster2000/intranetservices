@@ -123,6 +123,11 @@ public class DossierRevisionService {
         revision.setRecipientEmail(recipient.recipientEmail());
         revision.setSentByUseruuid(recipient.sentByUseruuid().toString());
         revision.setNote(recipient.note());
+
+        List<RevisionResponse.PdfArtifactRef> artifacts = recipient.pdfArtifacts();
+        revision.setGeneratedPdfsSnapshot(
+                (artifacts == null || artifacts.isEmpty()) ? null : writeJson(artifacts));
+
         revision.setSigningCaseKey(recipient.signingCaseKey());
 
         CandidateDossierRevision.persist(revision);
@@ -152,10 +157,7 @@ public class DossierRevisionService {
     }
 
     /**
-     * Hydrate a single revision into its response DTO. Note: pdfArtifactsSnapshot
-     * is not stored in the V313 schema as a column — it would be a future
-     * extension if we want to retain artifact refs. For now the caller can
-     * reconstruct artifacts from the appendices snapshot + a regenerated PDF.
+     * Hydrate a single revision into its response DTO.
      */
     public RevisionResponse toResponse(CandidateDossierRevision revision) {
         if (revision == null) {
@@ -173,6 +175,10 @@ public class DossierRevisionService {
                 revision.getAppendicesSnapshot(),
                 new TypeReference<>() {
                 });
+        List<RevisionResponse.PdfArtifactRef> pdfArtifacts = readJson(
+                revision.getGeneratedPdfsSnapshot(),
+                new TypeReference<>() {
+                });
         return new RevisionResponse(
                 revision.getUuid(),
                 revision.getDossierUuid(),
@@ -181,7 +187,7 @@ public class DossierRevisionService {
                 placeholders != null ? placeholders : Map.of(),
                 signers != null ? signers : List.of(),
                 appendices != null ? appendices : List.of(),
-                List.of(), // pdfArtifactsSnapshot — see note above
+                pdfArtifacts != null ? pdfArtifacts : List.of(),
                 revision.getSigningCaseKey(),
                 revision.getRecipientEmail(),
                 null, // recipientName not persisted yet

@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -69,6 +70,16 @@ public class CandidateDossierAppendix extends PanacheEntityBase {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * When the S3-stored file may be reaped after the parent candidate has
+     * been promoted. Set by the promote flow when the SharePoint copy
+     * succeeds; nulled by {@code S3RetentionCleanupBatchlet} after the
+     * S3 delete succeeds. {@code null} for active appendices (candidate
+     * still in flight) or for already-reaped rows.
+     */
+    @Column(name = "s3_retention_until")
+    private LocalDateTime s3RetentionUntil;
+
     @PrePersist
     protected void onCreate() {
         if (uuid == null) {
@@ -84,5 +95,17 @@ public class CandidateDossierAppendix extends PanacheEntityBase {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * Find every appendix belonging to any dossier owned by the given
+     * candidate. Spans the {@code candidate -> dossier -> appendix} chain
+     * via a JPQL subselect so callers do not have to materialise the
+     * intermediate dossier list.
+     */
+    public static List<CandidateDossierAppendix> findByCandidate(String candidateUuid) {
+        return list(
+                "dossierUuid IN (SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?1)",
+                candidateUuid);
     }
 }
