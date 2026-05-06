@@ -6,6 +6,7 @@ import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.recruitmentservice.dto.AppendixDto;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse.PdfArtifactRef;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
+import dk.trustworks.intranet.utils.services.PlaceholderFormattingService;
 import dk.trustworks.intranet.utils.services.WordDocumentService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -36,6 +37,9 @@ public class DossierPdfGenerationService {
 
     @Inject
     WordDocumentService wordDocumentService;
+
+    @Inject
+    PlaceholderFormattingService placeholderFormattingService;
 
     @Inject
     ObjectMapper objectMapper;
@@ -96,6 +100,17 @@ public class DossierPdfGenerationService {
         List<TemplateDocumentEntity> templateDocs =
                 TemplateDocumentEntity.findByTemplateUuid(templateUuid);
 
+        // Apply type-aware formatting (CURRENCY → "kr. 40.000,00", DECIMAL →
+        // "40.000,00") so the substituted strings render the same way as in
+        // the signing wizard. Mirrors SigningService.createMultiDocumentCaseFromTemplate.
+        Map<String, String> effectiveValues = placeholderFormattingService
+                .formatPlaceholderValues(templateUuid, placeholders);
+        long nonBlank = effectiveValues.values().stream()
+                .filter(v -> v != null && !v.isBlank())
+                .count();
+        log.infof("Effective placeholder keys for template %s: %s (non-blank=%d/%d)",
+                templateUuid, effectiveValues.keySet(), nonBlank, effectiveValues.size());
+
         List<GeneratedPdf> out = new ArrayList<>(templateDocs.size());
         for (TemplateDocumentEntity doc : templateDocs) {
             String fileUuid = doc.getFileUuid();
@@ -105,7 +120,7 @@ public class DossierPdfGenerationService {
             }
             String filename = ensurePdfSuffix(safeDocName(doc.getDocumentName()));
             byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
-                    fileUuid, placeholders, filename);
+                    fileUuid, effectiveValues, filename);
             out.add(new GeneratedPdf(filename, null, pdfBytes, true));
         }
 

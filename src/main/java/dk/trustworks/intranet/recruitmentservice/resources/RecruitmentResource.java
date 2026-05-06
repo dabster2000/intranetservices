@@ -523,8 +523,10 @@ public class RecruitmentResource {
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
                 dossier.getTemplateUuid(), placeholders, appendices);
 
-        // 2) Persist each template-generated PDF to S3 and collect refs.
-        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
+        // 2) Persist each template-generated PDF to S3 (best-effort — the
+        //    audit-side store must not block the user-facing email when the
+        //    in-memory bytes are valid attachments).
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsBestEffort(
                 pdfs, candidateUuid, RevisionKind.REVIEW_EMAIL);
 
         // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
@@ -595,11 +597,19 @@ public class RecruitmentResource {
                     Response.Status.CONFLICT);
         }
 
-        // 2) Persist each template-generated PDF to S3 and collect refs.
-        List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
+        // 2) Assemble the ZIP from the in-memory bytes FIRST so the audit-side
+        //    S3 store cannot fail the user-facing download.
+        byte[] zipBytes = zipTemplatePdfs(templatePdfs);
+        String zipName = zipFilenameFor(candidate);
+
+        // 3) Persist each template-generated PDF to S3 (best-effort — empty
+        //    refs land in generated_pdfs_snapshot if the upload hiccups; the
+        //    revision row still records the action and the user still gets the
+        //    documents).
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsBestEffort(
                 templatePdfs, candidateUuid, RevisionKind.REVIEW_PDF);
 
-        // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
+        // 4) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
         RecipientInfo recipient = new RecipientInfo(
                 candidate.getEmail(),
                 fullName(candidate.getFirstName(), candidate.getLastName()),
@@ -612,9 +622,7 @@ public class RecruitmentResource {
                 placeholders, signers, appendices,
                 recipient, actor);
 
-        // 4) Stream the ZIP back to the manager for download.
-        byte[] zipBytes = zipTemplatePdfs(templatePdfs);
-        String zipName = zipFilenameFor(candidate);
+        // 5) Stream the ZIP back to the manager for download.
         StreamingOutput stream = streamFor(zipBytes);
         return Response.ok(stream, "application/zip")
                 .header("Content-Disposition",
@@ -785,6 +793,25 @@ public class RecruitmentResource {
 
     private static String fullName(String first, String last) {
         return ((first == null ? "" : first) + " " + (last == null ? "" : last)).trim();
+    }
+
+    /**
+     * Wrap {@link RecruitmentS3StorageService#storeTemplatePdfs} so a transient
+     * S3 upload failure cannot block the user-facing email/ZIP. The store is
+     * pure audit (revision row's {@code generated_pdfs_snapshot}) — the actual
+     * PDF bytes already live in memory and have already been delivered to the
+     * caller (or are about to be). On failure we log a {@code warn} and return
+     * an empty ref list; the revision row still records the action.
+     */
+    private List<RevisionResponse.PdfArtifactRef> storeTemplatePdfsBestEffort(
+            List<GeneratedPdf> pdfs, UUID candidateUuid, RevisionKind kind) {
+        try {
+            return recruitmentS3StorageService.storeTemplatePdfs(pdfs, candidateUuid, kind);
+        } catch (RuntimeException e) {
+            log.warnf(e, "S3 audit-store failed for candidate=%s kind=%s — proceeding with empty pdf refs",
+                    candidateUuid, kind);
+            return List.of();
+        }
     }
 
     private static List<SignerInfo> mapSigners(List<SignerConfigDto> signers) {

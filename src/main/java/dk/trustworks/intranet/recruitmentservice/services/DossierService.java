@@ -357,7 +357,12 @@ public class DossierService {
     public Map<String, String> currentPlaceholderValues(CandidateDossier dossier) {
         Map<String, String> v = readJson(dossier.getPlaceholderValuesJson(), new TypeReference<>() {
         });
-        return v == null ? Collections.emptyMap() : new LinkedHashMap<>(v);
+        if (v == null || v.isEmpty()) {
+            log.warnf("Dossier %s has no persisted placeholder values — PDFs will render with blank substitutions",
+                    dossier.getUuid());
+            return Collections.emptyMap();
+        }
+        return new LinkedHashMap<>(v);
     }
 
     public List<SignerConfigDto> currentSignersConfig(CandidateDossier dossier) {
