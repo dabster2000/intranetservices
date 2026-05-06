@@ -23,6 +23,7 @@ public class DocumentTemplateDTO {
     private String uuid;
     private String name;
     private String description;
+    private String sharepointFolder;
     private TemplateCategory category;
     private boolean active;
     private LocalDateTime createdAt;
