@@ -62,6 +62,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.StreamingOutput;
 import lombok.extern.jbosslog.JBossLog;
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -149,6 +150,18 @@ public class RecruitmentResource {
     @Inject
     RequestHeaderHolder requestHeaderHolder;
 
+    /**
+     * MicroProfile {@link ManagedExecutor} used to dispatch the post-commit
+     * SharePoint copy after a successful candidate conversion. Running the
+     * copy off the request thread releases DB locks fast and keeps the
+     * convert-candidate REST response sub-100ms (efficiency finding H2).
+     * The copy itself is best-effort; the
+     * {@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
+     * retries any rows still in PENDING/PARTIAL/FAILED.
+     */
+    @Inject
+    ManagedExecutor managedExecutor;
+
     // ---- Candidate endpoints --------------------------------------------------
 
     @GET
@@ -226,6 +239,24 @@ public class RecruitmentResource {
         enforceFlag();
         Objects.requireNonNull(request, "request body must not be null");
         ConvertResponse result = candidateConversionUseCase.execute(uuid, request, currentActor());
+
+        // Fire-and-forget the SharePoint copy after the conversion tx has
+        // committed. Doing it inline would hold DB row locks on the
+        // candidate/dossier/revision/appendix tables for 2-8 seconds while
+        // Graph API uploads each PDF (efficiency finding H2). On failure,
+        // sharepoint_move_status stays PENDING/PARTIAL/FAILED and the retry
+        // batchlet picks it up on its 5-minute cadence — no caller retry
+        // needed.
+        final UUID asyncCandidateUuid = uuid;
+        managedExecutor.execute(() -> {
+            try {
+                candidateConversionUseCase.runSharePointCopy(asyncCandidateUuid);
+            } catch (Exception e) {
+                log.errorf(e, "Async SharePoint copy failed for candidate=%s — batchlet will retry",
+                        asyncCandidateUuid);
+            }
+        });
+
         return Response.ok(result).build();
     }
 

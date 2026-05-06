@@ -29,21 +29,30 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * Use case orchestrating the full "candidate -> employee" conversion. All
- * steps execute inside a single {@link Transactional} boundary so any
- * failure (e.g. signing-case ownership transfer) rolls the entire
- * conversion back — no partial hires.
+ * Use case orchestrating the full "candidate -> employee" conversion. The
+ * {@link #execute(UUID, ConvertRequest, UUID)} method runs inside a single
+ * {@link Transactional} boundary so any failure (e.g. signing-case ownership
+ * transfer) rolls the entire conversion back — no partial hires.
  * <p>
- * The SharePoint folder copy runs synchronously inside this transaction.
- * On {@link SharePointMoveStatus#COMPLETED}, every revision and appendix
- * with S3-stored bytes is stamped with {@code s3_retention_until = NOW + 30 days}
- * so the {@code S3RetentionCleanupBatchlet} can reap the originals after the
- * retention window. On {@link SharePointMoveStatus#PARTIAL} or
- * {@link SharePointMoveStatus#FAILED}, retention stays NULL and the
- * {@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
- * retries the move.
+ * <b>Two-phase design (efficiency finding H2).</b> The transactional phase
+ * does only DB work and exits with {@code sharepoint_move_status = PENDING}.
+ * The slow Graph API uploads (~200-500ms per PDF, 4-8 PDFs/appendices) run
+ * <em>after</em> the conversion transaction commits, via
+ * {@link #runSharePointCopy(UUID)}. Callers are expected to dispatch
+ * {@code runSharePointCopy} on a {@code ManagedExecutor} so the HTTP response
+ * returns fast and DB row locks on
+ * {@code recruitment_candidates / candidate_dossiers /
+ * candidate_dossier_revisions / candidate_dossier_appendix /
+ * users / team_role / user_status / signing_cases} are released promptly.
+ * <p>
+ * If the post-commit copy fails (network blip, Graph API throttle,
+ * SharePoint outage), {@link
+ * dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet}
+ * picks up the still-{@code PENDING}/{@code PARTIAL}/{@code FAILED} row on
+ * its 5-minute cadence and retries — the user-facing conversion succeeds
+ * either way.
  *
- * <h3>Steps</h3>
+ * <h3>Conversion steps (transactional)</h3>
  * <ol>
  *   <li>Load candidate; guard ACTIVE state.</li>
  *   <li>Provision a new {@link User} via {@link UserService#createUser}.</li>
@@ -55,9 +64,16 @@ import java.util.stream.Collectors;
  *       {@link SigningCaseOwnershipPort#transferLocalOwner}.</li>
  *   <li>Call {@link RecruitmentCandidate#markHired}.</li>
  *   <li>Close every OPEN dossier on this candidate.</li>
- *   <li>Resolve template's sharepoint_folder; PENDING if blank.</li>
- *   <li>Synchronous SharePoint copy via SharePointEmployeeFolderService.</li>
- *   <li>On COMPLETED, stamp s3_retention_until on revisions and appendices.</li>
+ *   <li>Set {@code sharepoint_move_status = PENDING}. The post-commit
+ *       SharePoint copy is dispatched by the resource layer.</li>
+ * </ol>
+ *
+ * <h3>Post-commit steps ({@link #runSharePointCopy})</h3>
+ * <ol>
+ *   <li>Resolve target username and template base folder.</li>
+ *   <li>Copy every S3-backed PDF and appendix to the destination folder.</li>
+ *   <li>In a short follow-up tx, set the final move status and stamp
+ *       {@code s3_retention_until} on COMPLETED.</li>
  * </ol>
  */
 @JBossLog
@@ -162,48 +178,94 @@ public class CandidateConversionUseCase {
             d.closeOnTerminal();
         }
 
-        // (i) Resolve the destination folder. Reuse the already-loaded
-        //     openDossiers list — there is at most one open dossier per
-        //     candidate in the current model, and it carries the template
-        //     UUID we need. The template's sharepoint_folder is required at
-        //     promote time; if blank, leave PENDING so an operator can fix
-        //     the template and retry via the batchlet.
-        CandidateDossier promoteDossier = openDossiers.stream().findFirst().orElse(null);
-        String baseFolder = sharePointEmployeeFolderService.resolveTemplateBaseFolder(promoteDossier);
-
-        if (baseFolder == null || baseFolder.isBlank()) {
-            log.warnf("Template sharepoint_folder is blank for candidate=%s — " +
-                            "leaving sharepoint_move_status=PENDING for operator follow-up",
-                    candidate.getUuid());
-            candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
-            return ConvertResponse.hired(user.uuid, candidate.getUuid(), caseKeys.size());
-        }
-
-        // (j) Synchronous SharePoint copy attempt. The batchlet retries
-        //     PENDING / FAILED / PARTIAL rows on a schedule.
-        SharePointMoveStatus moveStatus;
-        try {
-            moveStatus = sharePointEmployeeFolderService.copyToEmployeeFolder(
-                    candidate, user.getUsername(), baseFolder);
-        } catch (RuntimeException e) {
-            log.warnf(e, "SharePoint copy threw for candidate=%s — marking PENDING for batchlet retry",
-                    candidate.getUuid());
-            moveStatus = SharePointMoveStatus.PENDING;
-        }
-        candidate.setSharepointMoveStatus(moveStatus);
-
-        // (k) On full COMPLETED only: stamp s3_retention_until on every
-        //     revision and appendix referencing S3 storage. PARTIAL leaves
-        //     retention NULL so the reaper does not strand a row that the
-        //     batchlet may still need to upload.
-        if (moveStatus == SharePointMoveStatus.COMPLETED) {
-            sharePointEmployeeFolderService.stampS3RetentionUntil(candidate);
-        }
+        // (i) Mark SharePoint move as PENDING. The post-commit copy runs in
+        //     RecruitmentResource via runSharePointCopy(...) on a managed
+        //     executor, so the conversion REST call returns fast and DB locks
+        //     are released promptly. The retry batchlet
+        //     (SharePointEmployeeFolderMoveBatchlet) handles failures.
+        candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
 
         log.infof("Converted candidate uuid=%s -> user uuid=%s by actor=%s (signing cases transferred=%d)",
                 candidate.getUuid(), user.uuid, actor, caseKeys.size());
 
         return ConvertResponse.hired(user.uuid, candidate.getUuid(), caseKeys.size());
+    }
+
+    /**
+     * Run the post-commit SharePoint copy for a hired candidate. NOT
+     * transactional at the method level — the SharePoint upload runs without
+     * holding DB locks. The status update + retention stamping happens in a
+     * short follow-up transaction via {@link #applySharePointResult}.
+     *
+     * <p>Safe to call from a {@code ManagedExecutor} after {@link #execute}
+     * returns. The retry batchlet
+     * ({@link dk.trustworks.intranet.recruitmentservice.jobs.SharePointEmployeeFolderMoveBatchlet})
+     * will pick up {@code PENDING}/{@code PARTIAL}/{@code FAILED} rows on its
+     * 5-minute cadence if this method fails, so callers do not need to retry.
+     */
+    public void runSharePointCopy(UUID candidateUuid) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null || candidate.getStatus() != CandidateStatus.HIRED) {
+            log.warnf("runSharePointCopy: candidate=%s not HIRED, skipping", candidateUuid);
+            return;
+        }
+        if (candidate.getSharepointMoveStatus() == SharePointMoveStatus.COMPLETED) {
+            log.debugf("runSharePointCopy: candidate=%s already COMPLETED, skipping", candidateUuid);
+            return;
+        }
+
+        String targetUsername = resolveTargetUsername(candidate);
+        if (targetUsername == null) {
+            log.warnf("runSharePointCopy: cannot resolve username for candidate=%s, leaving PENDING",
+                    candidateUuid);
+            return;
+        }
+        String baseFolder = sharePointEmployeeFolderService.resolveTemplateBaseFolder(candidate);
+        if (baseFolder == null || baseFolder.isBlank()) {
+            log.warnf("runSharePointCopy: template sharepoint_folder blank for candidate=%s, leaving PENDING",
+                    candidateUuid);
+            return;
+        }
+
+        SharePointMoveStatus moveStatus;
+        try {
+            moveStatus = sharePointEmployeeFolderService.copyToEmployeeFolder(
+                    candidate, targetUsername, baseFolder);
+        } catch (RuntimeException e) {
+            log.warnf(e, "runSharePointCopy: SharePoint copy threw for candidate=%s — staying PENDING for retry",
+                    candidateUuid);
+            return;
+        }
+        applySharePointResult(candidateUuid, moveStatus);
+    }
+
+    /**
+     * Persist the outcome of a SharePoint copy attempt. Runs inside a short
+     * transaction so the row is locked only for the status write + (on
+     * COMPLETED) retention stamping — the slow Graph upload is already done
+     * by the time this method is called.
+     */
+    @Transactional
+    public void applySharePointResult(UUID candidateUuid, SharePointMoveStatus status) {
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+        Objects.requireNonNull(status, "status must not be null");
+        RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
+        if (candidate == null) {
+            log.warnf("applySharePointResult: candidate=%s not found, cannot update status",
+                    candidateUuid);
+            return;
+        }
+        candidate.setSharepointMoveStatus(status);
+        if (status == SharePointMoveStatus.COMPLETED) {
+            sharePointEmployeeFolderService.stampS3RetentionUntil(candidate);
+        }
+    }
+
+    private static String resolveTargetUsername(RecruitmentCandidate candidate) {
+        if (candidate.getConvertedUserUuid() == null) return null;
+        User user = User.findById(candidate.getConvertedUserUuid());
+        return user != null ? user.getUsername() : null;
     }
 
     /**
