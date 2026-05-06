@@ -394,6 +394,18 @@ public class RecruitmentResource {
         }
     }
 
+    @POST
+    @Path("/candidates/{uuid}/dossier/branch-from-revision/{revUuid}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:write"})
+    @Transactional
+    public DossierResponse branchFromRevision(
+            @PathParam("uuid") UUID candidateUuid,
+            @PathParam("revUuid") UUID revisionUuid) {
+        enforceFlag();
+        return dossierService.branchFromRevision(candidateUuid, revisionUuid, currentActor());
+    }
+
     // ---- Send actions ---------------------------------------------------------
 
     @POST
