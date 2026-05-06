@@ -33,7 +33,6 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
-import dk.trustworks.intranet.recruitmentservice.services.SharePointCandidateFolderService;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
@@ -120,9 +119,6 @@ public class RecruitmentResource {
 
     @Inject
     DossierPdfGenerationService pdfGenerationService;
-
-    @Inject
-    SharePointCandidateFolderService sharePointCandidateFolderService;
 
     @Inject
     RecruitmentS3StorageService recruitmentS3StorageService;
@@ -512,7 +508,6 @@ public class RecruitmentResource {
 
         // External calls run before any DB write so a slow NextSign round-trip
         // does not hold a transaction open against candidate_dossier_revisions.
-        sharePointCandidateFolderService.ensureFolderForCandidate(candidate);
         String caseKey = nextsignSigningService.createMultiDocumentSigningCase(
                 documents,
                 signerInfos,
