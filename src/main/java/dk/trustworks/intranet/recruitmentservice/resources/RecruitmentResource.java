@@ -62,6 +62,8 @@ import jakarta.ws.rs.core.StreamingOutput;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -70,6 +72,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 /**
  * REST entry point for the Recruitment Dossier feature. Implements the 17
@@ -392,7 +396,7 @@ public class RecruitmentResource {
     @POST
     @Path("/candidates/{uuid}/dossier/generate-review-pdf")
     @RolesAllowed({"recruitment:write"})
-    @Produces({MediaType.APPLICATION_JSON, "application/pdf"})
+    @Produces({MediaType.APPLICATION_JSON, "application/zip"})
     @Transactional
     public Response generateReviewPdf(@PathParam("uuid") UUID candidateUuid,
                                       @Valid SendReviewRequest request) {
@@ -421,15 +425,12 @@ public class RecruitmentResource {
                     Response.Status.CONFLICT);
         }
 
-        // Stream the FIRST template PDF as the response. Multi-document
-        // download for review-PDF is currently not on spec §11.4 — clients
-        // download the additional documents via the per-revision document
-        // endpoint after the revision is created.
-        GeneratedPdf primary = templatePdfs.get(0);
-        StreamingOutput stream = streamFor(primary.pdfBytes());
-        return Response.ok(stream, "application/pdf")
+        byte[] zipBytes = zipTemplatePdfs(templatePdfs);
+        String zipName = zipFilenameFor(candidate);
+        StreamingOutput stream = streamFor(zipBytes);
+        return Response.ok(stream, "application/zip")
                 .header("Content-Disposition",
-                        "attachment; filename=\"" + primary.filename() + "\"")
+                        "attachment; filename=\"" + zipName + "\"")
                 .header("X-Recruitment-Revision-Uuid", revision.getUuid())
                 .build();
     }
@@ -654,6 +655,56 @@ public class RecruitmentResource {
                 in.transferTo(out);
             }
         };
+    }
+
+    /**
+     * Pack each template-derived PDF as a separate entry in a single ZIP.
+     * Used by {@code POST /dossier/generate-review-pdf} so the manager
+     * downloads all template documents in one click without server-side
+     * merging (per spec §5.4 the manager is the one composing the review).
+     * Duplicate {@code filename} values are disambiguated with a numeric
+     * suffix to avoid clobbering entries inside the archive.
+     */
+    private static byte[] zipTemplatePdfs(List<GeneratedPdf> pdfs) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        Map<String, Integer> nameUseCounts = new HashMap<>();
+        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+            for (GeneratedPdf pdf : pdfs) {
+                if (pdf.pdfBytes() == null) continue;
+                String entryName = uniqueZipEntryName(pdf.filename(), nameUseCounts);
+                ZipEntry entry = new ZipEntry(entryName);
+                zos.putNextEntry(entry);
+                zos.write(pdf.pdfBytes());
+                zos.closeEntry();
+            }
+        } catch (IOException e) {
+            throw new WebApplicationException(
+                    "Failed to assemble review ZIP: " + e.getMessage(),
+                    Response.Status.INTERNAL_SERVER_ERROR);
+        }
+        return baos.toByteArray();
+    }
+
+    private static String uniqueZipEntryName(String filename, Map<String, Integer> seen) {
+        String base = (filename == null || filename.isBlank()) ? "document.pdf" : filename;
+        int count = seen.getOrDefault(base, 0);
+        seen.put(base, count + 1);
+        if (count == 0) return base;
+        int dot = base.lastIndexOf('.');
+        if (dot <= 0) return base + "-" + (count + 1);
+        return base.substring(0, dot) + "-" + (count + 1) + base.substring(dot);
+    }
+
+    private static String zipFilenameFor(RecruitmentCandidate candidate) {
+        String name = (candidate.getFirstName() + "-" + candidate.getLastName())
+                .trim()
+                .replaceAll("[^A-Za-z0-9._-]+", "-")
+                .replaceAll("-+", "-")
+                .replaceAll("^-|-$", "");
+        if (name.isEmpty()) {
+            name = "candidate";
+        }
+        return name + "-review.zip";
     }
 
     /**
