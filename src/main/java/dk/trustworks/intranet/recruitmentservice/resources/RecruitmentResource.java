@@ -504,6 +504,11 @@ public class RecruitmentResource {
                                @Valid SendReviewRequest request) {
         enforceFlag();
         SendReviewRequest body = request != null ? request : new SendReviewRequest(null);
+        if (body.note() == null || body.note().isBlank()) {
+            throw new WebApplicationException(
+                    "A message is required — the email body is exclusively this note.",
+                    Response.Status.BAD_REQUEST);
+        }
         UUID actor = currentActor();
 
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
@@ -535,14 +540,17 @@ public class RecruitmentResource {
                 placeholders, signers, appendices,
                 recipient, actor);
 
-        // 4) Build and queue the review email. Recipient is locked to
+        // 4) Build and send the review email immediately (so the transient
+        //    PDF attachments and Reply-To survive — the queued path persists
+        //    only the row, dropping both). Recipient is locked to
         //    candidate.email per spec §8.2 — the request DTO has no `to`
         //    field, so caller-supplied recipient overrides are impossible.
         TrustworksMail mail = new TrustworksMail(
                 UUID.randomUUID().toString(),
                 candidate.getEmail(),
-                "Trustworks: Documents for your review",
-                buildReviewEmailBody(candidate, sender, body.note()));
+                "Trustworks: Dokumenter til gennemlæsning / Documents for your review",
+                buildReviewEmailBody(body.note()));
+        mail.setReplyTo(sender.getEmail());
         for (GeneratedPdf pdf : pdfs) {
             if (pdf.pdfBytes() != null) {
                 mail.getAttachments().add(new EmailAttachment(
@@ -552,7 +560,7 @@ public class RecruitmentResource {
             // direct from S3 to TrustworksMail. Logged so the stage 4 gap is
             // visible in audit logs.
         }
-        mailResource.sendingHTML(mail);
+        mailResource.sendWithAttachments(mail);
 
         return Response.ok(dossierRevisionService.toResponse(revision)).build();
     }
@@ -811,25 +819,21 @@ public class RecruitmentResource {
     }
 
     /**
-     * Compose a minimalist HTML body for the review email. Intentionally
-     * generic — corporate branding lives on a future {@code review-email.html}
-     * template (per stage 4 todo).
+     * Compose the review email body. The body is exclusively the manager's
+     * note (escaped for safety) — no template greeting or sign-off — so the
+     * recipient sees only what the sender wrote. The note is required by
+     * {@link SendReviewRequest} validation, so we never produce an empty body.
+     * Newlines in the note are preserved as paragraph breaks.
      */
-    private static String buildReviewEmailBody(RecruitmentCandidate candidate, User sender, String note) {
+    private static String buildReviewEmailBody(String note) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<p>Hi ").append(HtmlEscape.escape(candidate.getFirstName())).append(",</p>");
-        sb.append("<p>Please find attached the documents for your review. ");
-        sb.append("Reach out if anything is unclear before the formal signing step.</p>");
-        if (note != null && !note.isBlank()) {
-            sb.append("<p>").append(HtmlEscape.escape(note)).append("</p>");
+        for (String paragraph : note.trim().split("\\R{2,}")) {
+            String trimmed = paragraph.trim();
+            if (trimmed.isEmpty()) continue;
+            sb.append("<p>")
+                    .append(HtmlEscape.escape(trimmed).replace("\n", "<br/>"))
+                    .append("</p>");
         }
-        sb.append("<p>Best regards,<br/>")
-                .append(HtmlEscape.escape(sender.getFirstname()))
-                .append(" ")
-                .append(HtmlEscape.escape(sender.getLastname()))
-                .append("<br/>")
-                .append(HtmlEscape.escape(sender.getEmail()))
-                .append("</p>");
         return sb.toString();
     }
 

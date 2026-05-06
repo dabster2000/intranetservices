@@ -257,6 +257,10 @@ public class MailResource {
                 trustworksMail.getBody()
             );
 
+            if (trustworksMail.getReplyTo() != null && !trustworksMail.getReplyTo().isBlank()) {
+                mail.setReplyTo(trustworksMail.getReplyTo());
+            }
+
             // Add attachments if present
             if (trustworksMail.hasAttachments()) {
                 for (EmailAttachment attachment : trustworksMail.getAttachments()) {

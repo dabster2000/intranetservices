@@ -33,6 +33,14 @@ public class TrustworksMail extends PanacheEntityBase {
     @Transient
     private List<EmailAttachment> attachments = new ArrayList<>();
 
+    /**
+     * Optional Reply-To address. Only honoured by the immediate-send path
+     * ({@link dk.trustworks.intranet.communicationsservice.resources.MailResource#sendWithAttachments}),
+     * because the queued JBeret send job does not persist this field.
+     */
+    @Transient
+    private String replyTo;
+
     public TrustworksMail(String uuid, String to, String subject, String body) {
         this.uuid = uuid;
         this.to = to;
