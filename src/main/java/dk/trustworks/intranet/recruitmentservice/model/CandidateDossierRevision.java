@@ -67,6 +67,26 @@ public class CandidateDossierRevision extends PanacheEntityBase {
     @Column(name = "signing_case_key", length = 255, updatable = false)
     private String signingCaseKey;
 
+    /**
+     * Frozen JSON array of {@code {filename, fileUuid}} entries for the
+     * generated PDFs persisted to S3 at Send time. {@code null} for legacy
+     * revisions written before V321. Immutable: same {@code updatable=false}
+     * treatment as the other snapshot columns.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "generated_pdfs_snapshot", columnDefinition = "JSON", updatable = false)
+    private String generatedPdfsSnapshot;
+
+    /**
+     * When the S3-stored generated PDFs may be reaped after the parent
+     * candidate has been promoted. Set by the promote flow when the
+     * SharePoint copy succeeds; nulled by {@code S3RetentionCleanupBatchlet}
+     * after the S3 deletes succeed. Mutable — unlike snapshot columns,
+     * lifecycle metadata may evolve post-persist.
+     */
+    @Column(name = "s3_retention_until")
+    private LocalDateTime s3RetentionUntil;
+
     @Column(name = "recipient_email", length = 255, nullable = false, updatable = false)
     private String recipientEmail;
 
