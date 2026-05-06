@@ -37,8 +37,10 @@ import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
 import dk.trustworks.intranet.utils.NextsignSigningService;
+import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.DocumentInfo;
 import dk.trustworks.intranet.utils.dto.signing.SignerInfo;
+import dk.trustworks.intranet.utils.services.SigningService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -128,6 +130,9 @@ public class RecruitmentResource {
 
     @Inject
     NextsignSigningService nextsignSigningService;
+
+    @Inject
+    SigningService signingService;
 
     @Inject
     MailResource mailResource;
@@ -337,6 +342,56 @@ public class RecruitmentResource {
                 .header("Content-Disposition",
                         "attachment; filename=\"" + pdf.filename() + "\"")
                 .build();
+    }
+
+    /**
+     * Fetches the live NextSign signing case detail for a SIGNATURE-kind
+     * revision. Reuses {@link SigningService#getCaseDetail(String)} — the same
+     * call used by the admin signing-cases tab — so per-signer audit trail and
+     * identity verification data is current. The freshness trade-off is
+     * round-trip latency (200-500ms) instead of cached staleness.
+     *
+     * <p>Authorization-by-ownership: the revision UUID must belong to a
+     * dossier owned by the candidate UUID in the path. URL-guessed revision
+     * UUIDs cannot leak signing detail across candidates.</p>
+     */
+    @GET
+    @Path("/candidates/{uuid}/dossier/revisions/{revUuid}/signing-status")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:read"})
+    @Transactional
+    public Response getSigningStatus(
+            @PathParam("uuid") UUID candidateUuid,
+            @PathParam("revUuid") UUID revisionUuid) {
+
+        enforceFlag();
+
+        CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
+        if (revision == null
+                || revision.getKind() != RevisionKind.SIGNATURE
+                || revision.getSigningCaseKey() == null
+                || revision.getSigningCaseKey().isBlank()) {
+            throw new NotFoundException(
+                    "No signing case for revision " + revisionUuid);
+        }
+
+        // Authorization-by-ownership: confirm the revision belongs to this
+        // candidate's dossier so URL-guessed revision UUIDs cannot leak.
+        CandidateDossier dossier = CandidateDossier.findById(revision.getDossierUuid());
+        if (dossier == null || !dossier.getCandidateUuid().equals(candidateUuid.toString())) {
+            throw new NotFoundException(
+                    "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
+        }
+
+        try {
+            NextSignCaseDetailDTO detail = signingService.getCaseDetail(revision.getSigningCaseKey());
+            return Response.ok(detail).build();
+        } catch (SigningService.SigningException e) {
+            log.warnf("NextSign case detail not found for revision=%s caseKey=%s — %s",
+                    revisionUuid, revision.getSigningCaseKey(), e.getMessage());
+            throw new NotFoundException(
+                    "NextSign case " + revision.getSigningCaseKey() + " not found");
+        }
     }
 
     // ---- Send actions ---------------------------------------------------------
