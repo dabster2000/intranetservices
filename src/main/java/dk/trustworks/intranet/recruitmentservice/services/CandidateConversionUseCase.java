@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
@@ -8,6 +9,7 @@ import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertResponse;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
+import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
@@ -25,6 +27,7 @@ import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -36,12 +39,13 @@ import java.util.stream.Collectors;
  * failure (e.g. signing-case ownership transfer) rolls the entire
  * conversion back — no partial hires.
  * <p>
- * The SharePoint folder copy-and-delete is intentionally NOT inside this
- * transaction (per spec §11.6, AC #12): the SharePoint API is slow and
- * cannot be rolled back. Instead, this method only flips
- * {@code sharepoint_move_status} to {@link SharePointMoveStatus#PENDING},
- * letting the post-commit batchlet (Stage 3) drive the actual copy
- * asynchronously.
+ * The SharePoint folder copy now runs synchronously inside this transaction.
+ * On {@link SharePointMoveStatus#COMPLETED}, every revision and appendix
+ * with S3-stored bytes is stamped with {@code s3_retention_until = NOW + 30 days}
+ * so the {@code S3RetentionCleanupBatchlet} can reap the originals after the
+ * retention window. On {@link SharePointMoveStatus#PARTIAL} or
+ * {@link SharePointMoveStatus#FAILED}, retention stays NULL and the batchlet
+ * (Task 9) retries the move.
  *
  * <h3>Steps</h3>
  * <ol>
@@ -55,7 +59,9 @@ import java.util.stream.Collectors;
  *       {@link SigningCaseOwnershipPort#transferLocalOwner}.</li>
  *   <li>Call {@link RecruitmentCandidate#markHired}.</li>
  *   <li>Close every OPEN dossier on this candidate.</li>
- *   <li>Set {@code sharepoint_move_status = PENDING}.</li>
+ *   <li>Resolve template's sharepoint_folder; PENDING if blank.</li>
+ *   <li>Synchronous SharePoint copy via SharePointEmployeeFolderService.</li>
+ *   <li>On COMPLETED, stamp s3_retention_until on revisions and appendices.</li>
  * </ol>
  */
 @JBossLog
@@ -67,6 +73,9 @@ public class CandidateConversionUseCase {
 
     @Inject
     SigningCaseOwnershipPort signingCaseOwnershipPort;
+
+    @Inject
+    SharePointEmployeeFolderService sharePointEmployeeFolderService;
 
     @Transactional
     public ConvertResponse execute(UUID candidateUuid, ConvertRequest req, UUID actor) {
@@ -157,8 +166,58 @@ public class CandidateConversionUseCase {
             d.closeOnTerminal();
         }
 
-        // (i) Queue the SharePoint move for the post-commit batchlet.
-        candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
+        // (i) Resolve the destination folder. The template's sharepoint_folder
+        //     is required at promote time; if blank, leave PENDING so an
+        //     operator can fix the template and retry via the batchlet.
+        CandidateDossier promoteDossier = CandidateDossier
+                .<CandidateDossier>find("candidateUuid", candidate.getUuid())
+                .firstResult();
+        DocumentTemplateEntity template = promoteDossier != null
+                ? DocumentTemplateEntity.<DocumentTemplateEntity>findById(promoteDossier.getTemplateUuid())
+                : null;
+        String baseFolder = template != null ? template.getSharepointFolder() : null;
+
+        if (baseFolder == null || baseFolder.isBlank()) {
+            log.warnf("Template sharepoint_folder is blank for candidate=%s template=%s — " +
+                            "leaving sharepoint_move_status=PENDING for operator follow-up",
+                    candidate.getUuid(),
+                    promoteDossier != null ? promoteDossier.getTemplateUuid() : "null");
+            candidate.setSharepointMoveStatus(SharePointMoveStatus.PENDING);
+            return ConvertResponse.hired(user.uuid, candidate.getUuid(), caseKeys.size());
+        }
+
+        // (j) Synchronous SharePoint copy attempt. The batchlet retries
+        //     PENDING / FAILED / PARTIAL rows on a schedule.
+        SharePointMoveStatus moveStatus;
+        try {
+            moveStatus = sharePointEmployeeFolderService.copyToEmployeeFolder(
+                    candidate, user.getUsername(), baseFolder);
+        } catch (RuntimeException e) {
+            log.warnf(e, "SharePoint copy threw for candidate=%s — marking PENDING for batchlet retry",
+                    candidate.getUuid());
+            moveStatus = SharePointMoveStatus.PENDING;
+        }
+        candidate.setSharepointMoveStatus(moveStatus);
+
+        // (k) On full COMPLETED only: stamp s3_retention_until on every
+        //     revision and appendix referencing S3 storage. PARTIAL leaves
+        //     retention NULL so the reaper does not strand a row that the
+        //     batchlet may still need to upload.
+        if (moveStatus == SharePointMoveStatus.COMPLETED) {
+            LocalDateTime retentionUntil = LocalDateTime.now().plusDays(30);
+            CandidateDossierRevision.update(
+                    "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
+                    "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
+                    "AND generatedPdfsSnapshot IS NOT NULL",
+                    retentionUntil, candidate.getUuid());
+            CandidateDossierAppendix.update(
+                    "s3RetentionUntil = ?1 WHERE dossierUuid IN " +
+                    "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
+                    "AND fileUuid IS NOT NULL",
+                    retentionUntil, candidate.getUuid());
+            log.infof("Stamped s3_retention_until=%s on all S3-backed rows for candidate=%s",
+                    retentionUntil, candidate.getUuid());
+        }
 
         log.infof("Converted candidate uuid=%s -> user uuid=%s by actor=%s (signing cases transferred=%d)",
                 candidate.getUuid(), user.uuid, actor, caseKeys.size());
