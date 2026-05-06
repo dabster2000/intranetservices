@@ -32,6 +32,7 @@ import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService
 import dk.trustworks.intranet.recruitmentservice.services.DossierRevisionService.RecipientInfo;
 import dk.trustworks.intranet.recruitmentservice.services.DossierService;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentFeatureFlag;
+import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
 import dk.trustworks.intranet.recruitmentservice.services.SharePointCandidateFolderService;
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
@@ -122,6 +123,9 @@ public class RecruitmentResource {
 
     @Inject
     SharePointCandidateFolderService sharePointCandidateFolderService;
+
+    @Inject
+    RecruitmentS3StorageService recruitmentS3StorageService;
 
     @Inject
     CandidateConversionUseCase candidateConversionUseCase;
@@ -355,23 +359,32 @@ public class RecruitmentResource {
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
         User sender = requireUser(actor);
 
-        // 1) Snapshot the revision (allocates version_number + freezes JSON).
+        // 1) Generate PDFs from the current draft (so we have bytes to store
+        //    in S3 before the revision row references them).
+        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
+        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
+                dossier.getTemplateUuid(), placeholders, appendices);
+
+        // 2) Persist each template-generated PDF to S3 and collect refs.
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsInS3(
+                pdfs, candidateUuid, RevisionKind.REVIEW_EMAIL);
+
+        // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
         RecipientInfo recipient = new RecipientInfo(
                 candidate.getEmail(),
                 fullName(candidate.getFirstName(), candidate.getLastName()),
                 actor,
                 body.note(),
                 null,
-                List.of());
-        CandidateDossierRevision revision = dossierRevisionService.snapshot(
-                dossier, RevisionKind.REVIEW_EMAIL, recipient, actor);
+                pdfRefs);
+        CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
+                dossier, RevisionKind.REVIEW_EMAIL,
+                placeholders, signers, appendices,
+                recipient, actor);
 
-        // 2) Generate PDFs from the snapshot. Failure here rolls back the
-        //    revision (we are inside the @Transactional boundary).
-        List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFor(
-                revision, dossier.getTemplateUuid());
-
-        // 3) Build and queue the review email. Recipient is locked to
+        // 4) Build and queue the review email. Recipient is locked to
         //    candidate.email per spec §8.2 — the request DTO has no `to`
         //    field, so caller-supplied recipient overrides are impossible.
         TrustworksMail mail = new TrustworksMail(
@@ -407,24 +420,40 @@ public class RecruitmentResource {
         RecruitmentCandidate candidate = requireCandidate(candidateUuid);
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
 
-        RecipientInfo recipient = new RecipientInfo(
-                candidate.getEmail(),
-                fullName(candidate.getFirstName(), candidate.getLastName()),
-                actor,
-                body.note(),
-                null,
-                List.of());
-        CandidateDossierRevision revision = dossierRevisionService.snapshot(
-                dossier, RevisionKind.REVIEW_PDF, recipient, actor);
-
-        List<GeneratedPdf> templatePdfs = pdfGenerationService.generateTemplatePdfsFor(
-                revision, dossier.getTemplateUuid());
+        // 1) Generate PDFs from the current draft (so bytes exist before the
+        //    revision row references them in generated_pdfs_snapshot).
+        Map<String, String> placeholders = dossierService.currentPlaceholderValues(dossier);
+        List<SignerConfigDto> signers = dossierService.currentSignersConfig(dossier);
+        List<AppendixDto> appendices = dossierService.currentAppendices(dossier.getUuid());
+        List<GeneratedPdf> allPdfs = pdfGenerationService.generatePdfsFromValues(
+                dossier.getTemplateUuid(), placeholders, appendices);
+        List<GeneratedPdf> templatePdfs = allPdfs.stream()
+                .filter(GeneratedPdf::fromTemplate)
+                .toList();
         if (templatePdfs.isEmpty()) {
             throw new WebApplicationException(
                     "No template documents are configured on this dossier",
                     Response.Status.CONFLICT);
         }
 
+        // 2) Persist each template-generated PDF to S3 and collect refs.
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsInS3(
+                templatePdfs, candidateUuid, RevisionKind.REVIEW_PDF);
+
+        // 3) Snapshot the revision (S3 fileUuids land in generated_pdfs_snapshot).
+        RecipientInfo recipient = new RecipientInfo(
+                candidate.getEmail(),
+                fullName(candidate.getFirstName(), candidate.getLastName()),
+                actor,
+                body.note(),
+                null,
+                pdfRefs);
+        CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
+                dossier, RevisionKind.REVIEW_PDF,
+                placeholders, signers, appendices,
+                recipient, actor);
+
+        // 4) Stream the ZIP back to the manager for download.
         byte[] zipBytes = zipTemplatePdfs(templatePdfs);
         String zipName = zipFilenameFor(candidate);
         StreamingOutput stream = streamFor(zipBytes);
@@ -476,6 +505,11 @@ public class RecruitmentResource {
                     Response.Status.CONFLICT);
         }
 
+        // Persist each template-generated PDF to S3 before the revision row
+        // references them in generated_pdfs_snapshot.
+        List<RevisionResponse.PdfArtifactRef> pdfRefs = storeTemplatePdfsInS3(
+                pdfs, candidateUuid, RevisionKind.SIGNATURE);
+
         // External calls run before any DB write so a slow NextSign round-trip
         // does not hold a transaction open against candidate_dossier_revisions.
         sharePointCandidateFolderService.ensureFolderForCandidate(candidate);
@@ -492,7 +526,7 @@ public class RecruitmentResource {
                 actor,
                 body.note(),
                 caseKey,
-                List.of());
+                pdfRefs);
         CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
                 dossier, RevisionKind.SIGNATURE,
                 placeholders, signers, appendices,
@@ -502,6 +536,25 @@ public class RecruitmentResource {
     }
 
     // ---- Helpers --------------------------------------------------------------
+
+    /**
+     * Persist each template-generated PDF in S3 and return the
+     * {@code (filename, fileUuid)} refs for the revision snapshot. Appendix
+     * PDFs (already in S3) are not duplicated — only PDFs with
+     * {@code fromTemplate=true} are stored.
+     */
+    private List<RevisionResponse.PdfArtifactRef> storeTemplatePdfsInS3(
+            List<GeneratedPdf> pdfs, UUID candidateUuid, RevisionKind kind) {
+        List<RevisionResponse.PdfArtifactRef> refs = new ArrayList<>();
+        for (GeneratedPdf pdf : pdfs) {
+            if (pdf.fromTemplate() && pdf.pdfBytes() != null) {
+                String fileUuid = recruitmentS3StorageService.storeGeneratedPdf(
+                        pdf.pdfBytes(), pdf.filename(), candidateUuid, kind);
+                refs.add(new RevisionResponse.PdfArtifactRef(pdf.filename(), fileUuid));
+            }
+        }
+        return refs;
+    }
 
     /**
      * Block the request when the {@code recruitment.dossier.enabled} flag is
