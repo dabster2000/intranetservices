@@ -69,6 +69,16 @@ public class CandidateDossierAppendix extends PanacheEntityBase {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    /**
+     * When the S3-stored file may be reaped after the parent candidate has
+     * been promoted. Set by the promote flow when the SharePoint copy
+     * succeeds; nulled by {@code S3RetentionCleanupBatchlet} after the
+     * S3 delete succeeds. {@code null} for active appendices (candidate
+     * still in flight) or for already-reaped rows.
+     */
+    @Column(name = "s3_retention_until")
+    private LocalDateTime s3RetentionUntil;
+
     @PrePersist
     protected void onCreate() {
         if (uuid == null) {
