@@ -15,6 +15,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.DeclineRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.DossierResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.RevisionSigningStatusSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.SendReviewRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SendSignatureRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
@@ -36,6 +37,8 @@ import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageSe
 import dk.trustworks.intranet.recruitmentservice.util.HtmlEscape;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import dk.trustworks.intranet.security.ScopeContext;
+import dk.trustworks.intranet.signing.domain.SigningCase;
+import dk.trustworks.intranet.signing.repository.SigningCaseRepository;
 import dk.trustworks.intranet.utils.NextsignSigningService;
 import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.DocumentInfo;
@@ -134,6 +137,9 @@ public class RecruitmentResource {
 
     @Inject
     SigningService signingService;
+
+    @Inject
+    SigningCaseRepository signingCaseRepository;
 
     @Inject
     MailResource mailResource;
@@ -423,6 +429,57 @@ public class RecruitmentResource {
             throw new NotFoundException(
                     "NextSign case " + revision.getSigningCaseKey() + " not found");
         }
+    }
+
+    /**
+     * Lightweight signing-status summary for the collapsed view of the
+     * recruitment dossier panel. Reads entirely from the local
+     * {@code signing_cases} cache populated by {@code NextSignStatusSyncBatchlet}
+     * — NO NextSign API call. Per-signer audit log / identity verification
+     * are not available from this endpoint; expand the panel to trigger the
+     * full {@link #getSigningStatus(UUID, UUID)} endpoint.
+     *
+     * <p>Same authorization-by-ownership rule as the full endpoint: the
+     * revision UUID must belong to a dossier owned by the candidate UUID.</p>
+     */
+    @GET
+    @Path("/candidates/{uuid}/dossier/revisions/{revUuid}/signing-status/summary")
+    @Produces(MediaType.APPLICATION_JSON)
+    @RolesAllowed({"recruitment:read"})
+    @Transactional
+    public Response getSigningStatusSummary(
+            @PathParam("uuid") UUID candidateUuid,
+            @PathParam("revUuid") UUID revisionUuid) {
+
+        enforceFlag();
+
+        CandidateDossierRevision revision = CandidateDossierRevision.findById(revisionUuid.toString());
+        if (revision == null
+                || revision.getKind() != RevisionKind.SIGNATURE
+                || revision.getSigningCaseKey() == null
+                || revision.getSigningCaseKey().isBlank()) {
+            throw new NotFoundException(
+                    "No signing case for revision " + revisionUuid);
+        }
+
+        // Authorization-by-ownership: confirm the revision belongs to this
+        // candidate's dossier so URL-guessed revision UUIDs cannot leak.
+        CandidateDossier dossier = CandidateDossier.findById(revision.getDossierUuid());
+        if (dossier == null || !dossier.getCandidateUuid().equals(candidateUuid.toString())) {
+            throw new NotFoundException(
+                    "Revision " + revisionUuid + " does not belong to candidate " + candidateUuid);
+        }
+
+        SigningCase sc = signingCaseRepository.findByCaseKey(revision.getSigningCaseKey())
+                .orElseThrow(() -> new NotFoundException("Signing case not in local cache yet"));
+
+        return Response.ok(new RevisionSigningStatusSummary(
+                sc.getCaseKey(),
+                sc.getStatus(),
+                sc.getTotalSigners() != null ? sc.getTotalSigners() : 0,
+                sc.getCompletedSigners() != null ? sc.getCompletedSigners() : 0,
+                sc.getLastStatusFetch()
+        )).build();
     }
 
     @POST
