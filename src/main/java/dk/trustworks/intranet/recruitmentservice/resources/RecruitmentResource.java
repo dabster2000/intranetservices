@@ -328,10 +328,12 @@ public class RecruitmentResource {
             fileUuid = request.fileUuid;
         }
 
+        boolean signObligated = request.signObligated == null || request.signObligated;
         AppendixDto appendix = dossierService.addAppendix(
                 UUID.fromString(dossier.getUuid()),
                 request.originalFilename,
                 fileUuid,
+                signObligated,
                 currentActor());
         return Response.created(URI.create(String.format(
                         "/recruitment/candidates/%s/dossier/appendices/%s",
@@ -684,11 +686,14 @@ public class RecruitmentResource {
         List<GeneratedPdf> pdfs = pdfGenerationService.generatePdfsFromValues(
                 dossier.getTemplateUuid(), placeholders, appendices);
 
-        List<DocumentInfo> documents = new ArrayList<>(pdfs.size());
-        for (GeneratedPdf pdf : pdfs) {
-            if (pdf.pdfBytes() != null) {
-                documents.add(new DocumentInfo(pdf.filename(), pdf.pdfBytes(), pdf.fromTemplate()));
-            }
+        // Resolve appendix bytes from S3 so NextSign receives every dossier
+        // document, not just the template-rendered ones. Templates already
+        // carry their bytes; appendices arrive with only a fileUuid.
+        List<GeneratedPdf> pdfsWithBytes = materializePdfBytes(pdfs);
+
+        List<DocumentInfo> documents = new ArrayList<>(pdfsWithBytes.size());
+        for (GeneratedPdf pdf : pdfsWithBytes) {
+            documents.add(new DocumentInfo(pdf.filename(), pdf.pdfBytes(), pdf.signObligated()));
         }
         if (documents.isEmpty()) {
             throw new WebApplicationException(
@@ -916,7 +921,8 @@ public class RecruitmentResource {
                 continue;
             }
             byte[] bytes = recruitmentS3StorageService.fetchGeneratedPdf(pdf.fileUuid());
-            out.add(new GeneratedPdf(pdf.filename(), pdf.fileUuid(), bytes, pdf.fromTemplate()));
+            out.add(new GeneratedPdf(pdf.filename(), pdf.fileUuid(), bytes,
+                    pdf.fromTemplate(), pdf.signObligated()));
         }
         return out;
     }
@@ -995,6 +1001,12 @@ public class RecruitmentResource {
         public String originalFilename;
         /** Base64-encoded file bytes; mutually exclusive with {@link #fileUuid}. */
         public String fileContent;
+        /**
+         * {@code true} = recipient must sign this appendix; {@code false} =
+         * attachment-only. Defaults to {@code true} when omitted to match the
+         * employee-management templates wizard's default.
+         */
+        public Boolean signObligated;
 
         // Suppress an unused-warning for the placeholder map — present so
         // future stage extensions (file size, mime type) can land without a

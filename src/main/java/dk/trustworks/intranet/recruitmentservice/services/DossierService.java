@@ -113,7 +113,8 @@ public class DossierService {
      * method is called.
      */
     @Transactional
-    public AppendixDto addAppendix(UUID dossierUuid, String originalFilename, String fileUuid, UUID actor) {
+    public AppendixDto addAppendix(UUID dossierUuid, String originalFilename, String fileUuid,
+                                   boolean signObligated, UUID actor) {
         Objects.requireNonNull(originalFilename, "originalFilename must not be null");
         Objects.requireNonNull(fileUuid, "fileUuid must not be null");
         Objects.requireNonNull(actor, "actor must not be null");
@@ -129,13 +130,14 @@ public class DossierService {
         appendix.setFileUuid(fileUuid);
         appendix.setOriginalFilename(sanitised);
         appendix.setDisplayOrder(nextOrder);
+        appendix.setSignObligated(signObligated);
         appendix.setUploadedByUseruuid(actor.toString());
         CandidateDossierAppendix.persist(appendix);
 
-        log.infof("Added appendix uuid=%s file=%s to dossier uuid=%s",
-                appendix.getUuid(), fileUuid, dossier.getUuid());
+        log.infof("Added appendix uuid=%s file=%s signObligated=%s to dossier uuid=%s",
+                appendix.getUuid(), fileUuid, signObligated, dossier.getUuid());
 
-        return new AppendixDto(appendix.getUuid(), fileUuid, sanitised, nextOrder);
+        return new AppendixDto(appendix.getUuid(), fileUuid, sanitised, nextOrder, signObligated);
     }
 
     /**
@@ -218,6 +220,7 @@ public class DossierService {
                 appendix.setFileUuid(snap.fileUuid());
                 appendix.setOriginalFilename(snap.originalFilename());
                 appendix.setDisplayOrder(snap.displayOrder());
+                appendix.setSignObligated(snap.signObligated());
                 appendix.setUploadedByUseruuid(actor.toString());
                 CandidateDossierAppendix.persist(appendix);
             }
@@ -313,7 +316,8 @@ public class DossierService {
         List<AppendixDto> appendices = CandidateDossierAppendix
                 .<CandidateDossierAppendix>find("dossierUuid", Sort.ascending("displayOrder"), dossier.getUuid())
                 .stream()
-                .map(a -> new AppendixDto(a.getUuid(), a.getFileUuid(), a.getOriginalFilename(), a.getDisplayOrder()))
+                .map(a -> new AppendixDto(a.getUuid(), a.getFileUuid(), a.getOriginalFilename(),
+                        a.getDisplayOrder(), a.isSignObligated()))
                 .toList();
         return new DossierResponse(
                 dossier.getUuid(),
@@ -380,7 +384,8 @@ public class DossierService {
         return CandidateDossierAppendix
                 .<CandidateDossierAppendix>find("dossierUuid", Sort.ascending("displayOrder"), dossierUuid)
                 .stream()
-                .map(a -> new AppendixDto(a.getUuid(), a.getFileUuid(), a.getOriginalFilename(), a.getDisplayOrder()))
+                .map(a -> new AppendixDto(a.getUuid(), a.getFileUuid(), a.getOriginalFilename(),
+                        a.getDisplayOrder(), a.isSignObligated()))
                 .toList();
     }
 

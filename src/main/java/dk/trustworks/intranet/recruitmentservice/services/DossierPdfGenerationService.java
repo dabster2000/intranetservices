@@ -57,10 +57,15 @@ public class DossierPdfGenerationService {
      * @param pdfBytes     non-null for freshly generated PDFs; {@code null}
      *                     when the caller should fetch the bytes from
      *                     {@link #fileUuid} via the file service
-     * @param fromTemplate {@code true} if produced from a template document;
-     *                     {@code false} for an appendix
+     * @param fromTemplate   {@code true} if produced from a template document;
+     *                       {@code false} for an appendix
+     * @param signObligated  {@code true} = signature required when shipped via
+     *                       NextSign; {@code false} = attachment-only.
+     *                       Templates are always signed; appendices reflect
+     *                       the recruiter's per-appendix choice.
      */
-    public record GeneratedPdf(String filename, String fileUuid, byte[] pdfBytes, boolean fromTemplate) {
+    public record GeneratedPdf(String filename, String fileUuid, byte[] pdfBytes,
+                               boolean fromTemplate, boolean signObligated) {
         public PdfArtifactRef toRef() {
             return new PdfArtifactRef(filename, fileUuid);
         }
@@ -121,7 +126,7 @@ public class DossierPdfGenerationService {
             String filename = ensurePdfSuffix(safeDocName(doc.getDocumentName()));
             byte[] pdfBytes = wordDocumentService.generatePdfFromWordTemplate(
                     fileUuid, effectiveValues, filename);
-            out.add(new GeneratedPdf(filename, null, pdfBytes, true));
+            out.add(new GeneratedPdf(filename, null, pdfBytes, true, true));
         }
 
         for (AppendixDto appendix : appendices) {
@@ -129,7 +134,8 @@ public class DossierPdfGenerationService {
                     appendix.originalFilename(),
                     appendix.fileUuid(),
                     null,
-                    false));
+                    false,
+                    appendix.signObligated()));
         }
         return out;
     }

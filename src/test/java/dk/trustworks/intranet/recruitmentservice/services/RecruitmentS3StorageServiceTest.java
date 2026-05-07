@@ -137,13 +137,13 @@ class RecruitmentS3StorageServiceTest {
         UUID candidateUuid = UUID.randomUUID();
         DossierPdfGenerationService.GeneratedPdf appendix =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "appendix.pdf", "existing-uuid", null, false);
+                        "appendix.pdf", "existing-uuid", null, false, false);
         DossierPdfGenerationService.GeneratedPdf nullBytes =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "broken.pdf", null, null, true);
+                        "broken.pdf", null, null, true, true);
         DossierPdfGenerationService.GeneratedPdf good =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "contract.pdf", null, "%PDF".getBytes(), true);
+                        "contract.pdf", null, "%PDF".getBytes(), true, true);
 
         List<RevisionResponse.PdfArtifactRef> refs =
                 service.storeTemplatePdfs(List.of(appendix, nullBytes, good),
@@ -159,13 +159,13 @@ class RecruitmentS3StorageServiceTest {
         UUID candidateUuid = UUID.randomUUID();
         DossierPdfGenerationService.GeneratedPdf p1 =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "alpha.pdf", null, "alpha-bytes".getBytes(), true);
+                        "alpha.pdf", null, "alpha-bytes".getBytes(), true, true);
         DossierPdfGenerationService.GeneratedPdf p2 =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "beta.pdf", null, "beta-bytes".getBytes(), true);
+                        "beta.pdf", null, "beta-bytes".getBytes(), true, true);
         DossierPdfGenerationService.GeneratedPdf p3 =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "gamma.pdf", null, "gamma-bytes".getBytes(), true);
+                        "gamma.pdf", null, "gamma-bytes".getBytes(), true, true);
 
         List<RevisionResponse.PdfArtifactRef> refs =
                 service.storeTemplatePdfs(List.of(p1, p2, p3),
@@ -233,13 +233,13 @@ class RecruitmentS3StorageServiceTest {
 
             DossierPdfGenerationService.GeneratedPdf p1 =
                     new DossierPdfGenerationService.GeneratedPdf(
-                            "first.pdf", null, "1".getBytes(), true);
+                            "first.pdf", null, "1".getBytes(), true, true);
             DossierPdfGenerationService.GeneratedPdf p2 =
                     new DossierPdfGenerationService.GeneratedPdf(
-                            "second.pdf", null, "2".getBytes(), true);
+                            "second.pdf", null, "2".getBytes(), true, true);
             DossierPdfGenerationService.GeneratedPdf p3 =
                     new DossierPdfGenerationService.GeneratedPdf(
-                            "third.pdf", null, "3".getBytes(), true);
+                            "third.pdf", null, "3".getBytes(), true, true);
 
             List<RevisionResponse.PdfArtifactRef> refs =
                     service.storeTemplatePdfs(List.of(p1, p2, p3),
@@ -275,7 +275,7 @@ class RecruitmentS3StorageServiceTest {
 
         DossierPdfGenerationService.GeneratedPdf p =
                 new DossierPdfGenerationService.GeneratedPdf(
-                        "x.pdf", null, "data".getBytes(), true);
+                        "x.pdf", null, "data".getBytes(), true, true);
 
         IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
                 service.storeTemplatePdfs(List.of(p), candidateUuid, RevisionKind.SIGNATURE));

@@ -60,6 +60,15 @@ public class CandidateDossierAppendix extends PanacheEntityBase {
     @Column(name = "display_order", nullable = false)
     private int displayOrder = 1;
 
+    /**
+     * TRUE = recipient must sign this appendix (included in the NextSign
+     * envelope as a signed document); FALSE = attachment-only.
+     * Mirrors {@code DocumentInfo.signObligated} semantics used by the
+     * employee-management templates/documents wizard.
+     */
+    @Column(name = "sign_obligated", nullable = false)
+    private boolean signObligated = true;
+
     /** Soft FK to {@code users.uuid} of the actor who uploaded this appendix. */
     @Column(name = "uploaded_by_useruuid", length = 36, nullable = false)
     private String uploadedByUseruuid;

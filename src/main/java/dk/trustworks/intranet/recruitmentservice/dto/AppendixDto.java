@@ -9,11 +9,14 @@ package dk.trustworks.intranet.recruitmentservice.dto;
  * @param fileUuid         S3 storage key
  * @param originalFilename sanitised filename presented to the recipient
  * @param displayOrder     1-based ordering within the dossier
+ * @param signObligated    {@code true} = signature required on this appendix;
+ *                         {@code false} = attachment only
  */
 public record AppendixDto(
         String uuid,
         String fileUuid,
         String originalFilename,
-        int displayOrder
+        int displayOrder,
+        boolean signObligated
 ) {
 }
