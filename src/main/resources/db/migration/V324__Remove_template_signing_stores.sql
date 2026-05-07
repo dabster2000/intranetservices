@@ -22,16 +22,18 @@
 --         WHERE company_uuid = signing_case.company_uuid
 --           AND type        = template.sharepoint_type
 --   The template_signing_stores indirection no longer carries any
---   information that isnt already expressible through that lookup, so
+--   information that isn't already expressible through that lookup, so
 --   we collapse it.
 --
--- Migration steps:
---   1. Add signing_cases.sharepoint_location_uuid (nullable).
---   2. Backfill it from the existing signing_store -> location chain.
---   3. Drop signing_cases.signing_store_uuid (it has no DB-level FK,
---      only a soft reference, so no DROP FOREIGN KEY is required).
---   4. Drop template_signing_stores entirely (its FK to
---      sharepoint_locations is dropped first to keep MariaDB happy).
+-- Idempotency:
+--   Every step uses MariaDB's IF [NOT] EXISTS clauses so that re-running
+--   this migration on a partially-applied schema is safe. The backfill
+--   UPDATE is gated through INFORMATION_SCHEMA + PREPARE so it is
+--   skipped when signing_store_uuid has already been dropped. This
+--   matters because MariaDB DDL auto-commits per statement: if a prior
+--   attempt of this migration crashed mid-way through, some DDL is
+--   already on disk while flyway_schema_history shows success=0, and
+--   quarkus.flyway.repair-at-start will retry the script.
 --
 -- Backwards compatibility:
 --   sharepoint_location_uuid is nullable on signing_cases — existing
@@ -45,51 +47,64 @@
 --   template_signing_stores before applying.
 -- ===================================================================
 
-START TRANSACTION;
-
 -- -------------------------------------------------------------------
--- 1. Add the new direct reference on signing_cases
+-- 1. Add the new direct reference on signing_cases.
+--    The original migration used `AFTER signing_store_uuid` for column
+--    placement, but if step 3 has already run on a previous attempt the
+--    AFTER target is gone and the statement fails. Column ordering is
+--    cosmetic only, so it is omitted here.
 -- -------------------------------------------------------------------
 ALTER TABLE signing_cases
-    ADD COLUMN sharepoint_location_uuid VARCHAR(36) NULL
-        COMMENT 'Direct reference to sharepoint_locations.uuid for auto-upload of signed document. Populated at case creation from (company_uuid, template.sharepoint_type). NULL = no auto-upload.'
-        AFTER signing_store_uuid;
+    ADD COLUMN IF NOT EXISTS sharepoint_location_uuid VARCHAR(36) NULL
+        COMMENT 'Direct reference to sharepoint_locations.uuid for auto-upload of signed document. Populated at case creation from (company_uuid, template.sharepoint_type). NULL = no auto-upload.';
 
 -- -------------------------------------------------------------------
 -- 2. Backfill from the old signing_store -> location chain.
---    template_signing_stores.location_uuid was made NOT NULL in V140,
---    so any signing_case with a signing_store_uuid will get a value.
+--    Only runs if signing_store_uuid still exists; otherwise the
+--    backfill has already been performed on a prior attempt and is
+--    skipped. Re-runs never overwrite already-populated rows.
 -- -------------------------------------------------------------------
-UPDATE signing_cases sc
-    JOIN template_signing_stores tss
-        ON sc.signing_store_uuid = tss.uuid
-SET sc.sharepoint_location_uuid = tss.location_uuid
-WHERE sc.signing_store_uuid IS NOT NULL;
+SET @has_old_col = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME   = 'signing_cases'
+       AND COLUMN_NAME  = 'signing_store_uuid'
+);
+
+SET @bf_sql = IF(@has_old_col = 1,
+    'UPDATE signing_cases sc
+        JOIN template_signing_stores tss
+          ON sc.signing_store_uuid = tss.uuid
+        SET sc.sharepoint_location_uuid = tss.location_uuid
+      WHERE sc.signing_store_uuid IS NOT NULL
+        AND sc.sharepoint_location_uuid IS NULL',
+    'DO 0');
+
+PREPARE bf_stmt FROM @bf_sql;
+EXECUTE bf_stmt;
+DEALLOCATE PREPARE bf_stmt;
 
 -- -------------------------------------------------------------------
--- 3. Drop the now-redundant soft reference column.
+-- 3. Drop the now-redundant soft reference column and its index.
 --    No FK exists on this column (V133 deliberately left it as a soft
---    reference), so a plain DROP COLUMN is sufficient. We also drop
---    the index added in V133 to avoid orphan-index warnings.
+--    reference), so plain DROP COLUMN is sufficient. IF EXISTS makes
+--    this a no-op when a previous attempt already dropped them.
 -- -------------------------------------------------------------------
 ALTER TABLE signing_cases
-    DROP INDEX  idx_sc_signing_store,
-    DROP COLUMN signing_store_uuid;
+    DROP INDEX  IF EXISTS idx_sc_signing_store,
+    DROP COLUMN IF EXISTS signing_store_uuid;
 
--- Helpful index for the new column (pending-upload batch jobs etc.)
-CREATE INDEX idx_sc_sharepoint_location ON signing_cases(sharepoint_location_uuid);
+-- Helpful index for the new column (pending-upload batch jobs etc.).
+CREATE INDEX IF NOT EXISTS idx_sc_sharepoint_location
+    ON signing_cases(sharepoint_location_uuid);
 
 -- -------------------------------------------------------------------
--- 4. Drop template_signing_stores.
---    Drop the FK to sharepoint_locations first (named in V140) so the
---    parent table is releasable.
+-- 4. Drop template_signing_stores entirely.
+--    DROP TABLE cascades the table's own FK constraints
+--    (fk_template_signing_stores_location, fk_template_signing_stores_template_uuid),
+--    so an explicit DROP FOREIGN KEY first is unnecessary.
 -- -------------------------------------------------------------------
-ALTER TABLE template_signing_stores
-    DROP FOREIGN KEY fk_template_signing_stores_location;
-
-DROP TABLE template_signing_stores;
-
-COMMIT;
+DROP TABLE IF EXISTS template_signing_stores;
 
 -- ===================================================================
 -- Validation queries (run manually after deploy)
