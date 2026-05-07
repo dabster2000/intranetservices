@@ -579,14 +579,10 @@ public class RecruitmentResource {
                 "Trustworks: Dokumenter til gennemlæsning / Documents for your review",
                 buildReviewEmailBody(body.note()));
         mail.setReplyTo(sender.getEmail());
-        for (GeneratedPdf pdf : pdfs) {
-            if (pdf.pdfBytes() != null) {
-                mail.getAttachments().add(new EmailAttachment(
-                        pdf.filename(), "application/pdf", pdf.pdfBytes()));
-            }
-            // Appendices live in S3; downstream code does not yet attach them
-            // direct from S3 to TrustworksMail. Logged so the stage 4 gap is
-            // visible in audit logs.
+        for (GeneratedPdf pdf : materializePdfBytes(pdfs)) {
+            if (pdf.pdfBytes() == null) continue;
+            mail.getAttachments().add(new EmailAttachment(
+                    pdf.filename(), "application/pdf", pdf.pdfBytes()));
         }
         mailResource.sendWithAttachments(mail);
 
@@ -624,8 +620,10 @@ public class RecruitmentResource {
         }
 
         // 2) Assemble the ZIP from the in-memory bytes FIRST so the audit-side
-        //    S3 store cannot fail the user-facing download.
-        byte[] zipBytes = zipTemplatePdfs(templatePdfs);
+        //    S3 store cannot fail the user-facing download. Includes both
+        //    template-derived PDFs (bytes already in memory) and appendices
+        //    (bytes fetched from S3 via materializePdfBytes).
+        byte[] zipBytes = zipPdfs(materializePdfBytes(allPdfs));
         String zipName = zipFilenameFor(candidate);
 
         // 3) Persist each template-generated PDF to S3 (best-effort — empty
@@ -899,14 +897,41 @@ public class RecruitmentResource {
     }
 
     /**
-     * Pack each template-derived PDF as a separate entry in a single ZIP.
-     * Used by {@code POST /dossier/generate-review-pdf} so the manager
-     * downloads all template documents in one click without server-side
-     * merging (per spec §5.4 the manager is the one composing the review).
+     * Resolve the bytes of every PDF in the list. Template-generated PDFs
+     * already carry their bytes; appendices arrive with only an S3
+     * {@code fileUuid} and need a GET to materialise. Returns a new list
+     * (input order preserved) where every entry has non-null
+     * {@code pdfBytes}, ready for emailing or zipping. Skips entries that
+     * have neither bytes nor a fileUuid (defensive — shouldn't happen).
+     */
+    private List<GeneratedPdf> materializePdfBytes(List<GeneratedPdf> pdfs) {
+        List<GeneratedPdf> out = new ArrayList<>(pdfs.size());
+        for (GeneratedPdf pdf : pdfs) {
+            if (pdf.pdfBytes() != null) {
+                out.add(pdf);
+                continue;
+            }
+            if (pdf.fileUuid() == null || pdf.fileUuid().isBlank()) {
+                log.warnf("Skipping PDF with no bytes and no fileUuid: %s", pdf.filename());
+                continue;
+            }
+            byte[] bytes = recruitmentS3StorageService.fetchGeneratedPdf(pdf.fileUuid());
+            out.add(new GeneratedPdf(pdf.filename(), pdf.fileUuid(), bytes, pdf.fromTemplate()));
+        }
+        return out;
+    }
+
+    /**
+     * Pack each PDF as a separate entry in a single ZIP. Used by
+     * {@code POST /dossier/generate-review-pdf} so the manager downloads
+     * all dossier documents — template-derived PDFs AND appendices — in
+     * one click without server-side merging (per spec §5.4 the manager is
+     * the one composing the review). Caller is responsible for resolving
+     * appendix bytes via {@link #materializePdfBytes(List)} first.
      * Duplicate {@code filename} values are disambiguated with a numeric
      * suffix to avoid clobbering entries inside the archive.
      */
-    private static byte[] zipTemplatePdfs(List<GeneratedPdf> pdfs) {
+    private static byte[] zipPdfs(List<GeneratedPdf> pdfs) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         Map<String, Integer> nameUseCounts = new HashMap<>();
         try (ZipOutputStream zos = new ZipOutputStream(baos)) {
