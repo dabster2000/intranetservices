@@ -58,6 +58,31 @@ public class RecruitmentS3StorageService {
     }
 
     /**
+     * Store an uploaded appendix file (typically a PDF picked by the manager
+     * via the dossier UI) in S3 alongside other recruitment files. Returns
+     * the new {@code fileUuid} that callers persist on the appendix row.
+     */
+    public String storeAppendix(byte[] bytes, String filename, UUID candidateUuid) {
+        Objects.requireNonNull(bytes, "bytes must not be null");
+        Objects.requireNonNull(filename, "filename must not be null");
+        Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
+
+        String fileUuid = UUID.randomUUID().toString();
+        File file = new File(
+                fileUuid,
+                candidateUuid.toString(),
+                "DOCUMENT",
+                filename,
+                filename,
+                LocalDate.now(),
+                bytes);
+        s3FileService.save(file);
+        log.infof("Stored recruitment appendix candidate=%s fileUuid=%s size=%d filename=%s",
+                candidateUuid, fileUuid, bytes.length, filename);
+        return fileUuid;
+    }
+
+    /**
      * Fetch the bytes of a previously stored generated PDF.
      *
      * @throws IllegalStateException if the file is not found in S3

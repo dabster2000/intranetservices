@@ -72,6 +72,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -296,16 +297,41 @@ public class RecruitmentResource {
     public Response addAppendix(@PathParam("uuid") UUID candidateUuid,
                                 AppendixUploadRequest request) {
         enforceFlag();
-        if (request == null || request.fileUuid == null || request.originalFilename == null) {
+        if (request == null || request.originalFilename == null || request.originalFilename.isBlank()) {
             throw new WebApplicationException(
-                    "fileUuid and originalFilename are required",
+                    "originalFilename is required",
                     Response.Status.BAD_REQUEST);
         }
+        boolean hasFileContent = request.fileContent != null && !request.fileContent.isBlank();
+        boolean hasFileUuid = request.fileUuid != null && !request.fileUuid.isBlank();
+        if (!hasFileContent && !hasFileUuid) {
+            throw new WebApplicationException(
+                    "Either fileContent (base64) or fileUuid is required",
+                    Response.Status.BAD_REQUEST);
+        }
+
         CandidateDossier dossier = requireDossierByCandidate(candidateUuid);
+
+        String fileUuid;
+        if (hasFileContent) {
+            byte[] bytes;
+            try {
+                bytes = Base64.getDecoder().decode(request.fileContent);
+            } catch (IllegalArgumentException e) {
+                throw new WebApplicationException(
+                        "Invalid fileContent (base64 decode failed)",
+                        Response.Status.BAD_REQUEST);
+            }
+            fileUuid = recruitmentS3StorageService.storeAppendix(
+                    bytes, request.originalFilename, candidateUuid);
+        } else {
+            fileUuid = request.fileUuid;
+        }
+
         AppendixDto appendix = dossierService.addAppendix(
                 UUID.fromString(dossier.getUuid()),
                 request.originalFilename,
-                request.fileUuid,
+                fileUuid,
                 currentActor());
         return Response.created(URI.create(String.format(
                         "/recruitment/candidates/%s/dossier/appendices/%s",
@@ -923,13 +949,27 @@ public class RecruitmentResource {
     }
 
     /**
-     * Carrier for {@code POST /dossier/appendices}. Captures the metadata
-     * that links a dossier to an already-uploaded S3 file. Validation lives
-     * in {@link DossierService#addAppendix} (filename sanitisation).
+     * Carrier for {@code POST /dossier/appendices}. Two upload modes:
+     * <ul>
+     *   <li><b>Direct upload (frontend default):</b> caller provides
+     *       {@code originalFilename} and {@code fileContent} (Base64-encoded
+     *       file bytes). The resource decodes, stores in S3, then registers
+     *       the appendix. Mirrors the {@code /templates/documents/upload}
+     *       pattern so the frontend can stay in the multipart→base64 BFF
+     *       shape it already uses for Word templates.</li>
+     *   <li><b>Pre-uploaded reference (legacy):</b> caller provides
+     *       {@code fileUuid} pointing at an already-S3-stored file plus
+     *       {@code originalFilename}. The resource only registers the
+     *       appendix row.</li>
+     * </ul>
+     * Validation lives in {@link DossierService#addAppendix} (filename
+     * sanitisation).
      */
     public static class AppendixUploadRequest {
         public String fileUuid;
         public String originalFilename;
+        /** Base64-encoded file bytes; mutually exclusive with {@link #fileUuid}. */
+        public String fileContent;
 
         // Suppress an unused-warning for the placeholder map — present so
         // future stage extensions (file size, mime type) can land without a
