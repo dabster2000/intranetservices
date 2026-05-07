@@ -6,14 +6,14 @@ import java.util.List;
 /**
  * Complete status information for a signing case.
  *
- * @param caseKey NextSign case key
+ * @param caseKey Unique NextSign case key
  * @param status Overall case status ("pending", "completed", "rejected", "expired", "cancelled")
  * @param documentName Name of the document being signed
  * @param createdAt Timestamp when the case was created
  * @param signers Status of each individual signer
  * @param totalSigners Total number of signers
  * @param completedSigners Number of signers who have completed signing
- * @param signingStoreUuid Reference to signing store for SharePoint auto-upload (nullable)
+ * @param sharepointLocationUuid Reference to {@code sharepoint_locations.uuid} for auto-upload (nullable)
  * @param sharepointUploadStatus SharePoint upload status: PENDING, UPLOADED, FAILED (nullable)
  * @param sharepointUploadError Error message if SharePoint upload failed (nullable)
  * @param sharepointFileUrl URL of the uploaded file in SharePoint (nullable)
@@ -26,7 +26,7 @@ public record SigningCaseStatus(
     List<SignerStatus> signers,
     int totalSigners,
     int completedSigners,
-    String signingStoreUuid,
+    String sharepointLocationUuid,
     String sharepointUploadStatus,
     String sharepointUploadError,
     String sharepointFileUrl

@@ -6,11 +6,15 @@ import java.util.List;
  * Request to create a signing case with multiple documents.
  * All documents will be bundled into a single signing case where
  * each signer signs all documents in sequence.
+ * <p>
+ * SharePoint destination is resolved automatically from the employee's active
+ * company and the {@code EMPLOYEE} location type — the same mechanism used by
+ * template-based cases.
+ * </p>
  *
  * @param documents        List of documents to be signed (all required)
  * @param signers          List of signers with group/order, name, email, and role
  * @param referenceId      Optional external reference ID for tracking
- * @param signingStoreUuid UUID of template_signing_stores for SharePoint auto-upload (optional)
  * @param signingSchemas   List of signing schema URNs (e.g., "urn:grn:authn:dk:mitid:substantial").
  *                         If null or empty, backend will use default schemas.
  */
@@ -18,7 +22,6 @@ public record CreateMultiDocumentSigningRequest(
     List<UploadedDocument> documents,
     List<SignerInfo> signers,
     String referenceId,
-    String signingStoreUuid,
     List<String> signingSchemas
 ) {
     /**

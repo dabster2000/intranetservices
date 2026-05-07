@@ -17,6 +17,11 @@ import java.util.Map;
  * Each additional document can be marked as requiring signature ({@code signObligated: true})
  * or as attachment-only ({@code signObligated: false}).
  * </p>
+ * <p>
+ * The SharePoint upload destination is no longer specified by the caller — it is
+ * resolved at signing-case creation time from the user's active company and the
+ * template's {@code sharepoint_type} (see {@code SigningService}).
+ * </p>
  *
  * @param documentName        Name of the document (used in signing case metadata)
  * @param documents           List of template documents with their content (REQUIRED)
@@ -25,8 +30,6 @@ import java.util.Map;
  * @param referenceId         Optional external reference ID for tracking
  * @param signingSchemas      List of signing schema URNs (e.g., "urn:grn:authn:dk:mitid:substantial").
  *                            If null or empty, backend will use default schemas.
- * @param signingStoreUuid    UUID of template_signing_stores for SharePoint auto-upload after signing completes.
- *                            Optional - if null, no auto-upload will occur.
  * @param templateUuid        UUID of the parent document template for placeholder type lookup.
  *                            Optional - if provided, enables type-aware formatting (e.g., Danish currency format for CURRENCY fields).
  * @param additionalDocuments Optional list of pre-generated PDF documents to include in the signing case.
@@ -39,7 +42,6 @@ public record CreateTemplateSigningRequest(
     List<SignerInfo> signers,
     String referenceId,
     List<String> signingSchemas,
-    String signingStoreUuid,
     String templateUuid,
     List<UploadedDocument> additionalDocuments
 ) {

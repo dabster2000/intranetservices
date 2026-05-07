@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.fileservice.resources;
 
-import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.fileservice.dto.UserSharePointDocumentDTO;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import dk.trustworks.intranet.signing.domain.SigningCase;
@@ -65,9 +65,9 @@ public class UserSharePointDocumentResource {
     /**
      * Download a SharePoint document by signing case ID.
      *
-     * Uses the signing store configuration (from template_signing_stores) to get the correct
-     * site URL and drive name for Graph API, since URL path segments don't always match
-     * Graph API drive names (e.g., "Delte dokumenter" vs "Shared Documents").
+     * Uses the resolved {@code sharepoint_locations} row to get the correct site URL and
+     * drive name for Graph API, since URL path segments don't always match Graph API drive
+     * names (e.g., "Delte dokumenter" vs "Shared Documents").
      *
      * @param signingCaseId the signing case ID
      * @return the file content as bytes
@@ -86,32 +86,32 @@ public class UserSharePointDocumentResource {
             throw new NotFoundException("No SharePoint URL for signing case: " + signingCaseId);
         }
 
-        // Get signing store configuration for correct site URL and drive name
-        String signingStoreUuid = signingCase.getSigningStoreUuid();
-        if (signingStoreUuid == null || signingStoreUuid.isBlank()) {
-            log.warnf("No signing store UUID for case %d, falling back to URL parsing", signingCaseId);
+        // Get SharePoint location for correct site URL and drive name
+        String sharepointLocationUuid = signingCase.getSharepointLocationUuid();
+        if (sharepointLocationUuid == null || sharepointLocationUuid.isBlank()) {
+            log.warnf("No SharePoint location UUID for case %d, falling back to URL parsing", signingCaseId);
             return downloadUsingUrlParsing(url, signingCaseId);
         }
 
-        TemplateSigningStoreEntity store = TemplateSigningStoreEntity.findById(signingStoreUuid);
-        if (store == null) {
-            log.warnf("Signing store not found: %s, falling back to URL parsing", signingStoreUuid);
+        SharePointLocationEntity location = SharePointLocationEntity.findByUuid(sharepointLocationUuid);
+        if (location == null) {
+            log.warnf("SharePoint location not found: %s, falling back to URL parsing", sharepointLocationUuid);
             return downloadUsingUrlParsing(url, signingCaseId);
         }
 
         // Extract folder path and filename from URL
-        FolderAndFilename folderAndFilename = extractFolderAndFilename(url, store.getFolderPath());
+        FolderAndFilename folderAndFilename = extractFolderAndFilename(url, location.getFolderPath());
         if (folderAndFilename == null) {
             log.errorf("Failed to extract folder/filename from URL: %s", url);
             throw new NotFoundException("Invalid SharePoint URL for signing case: " + signingCaseId);
         }
 
-        log.infof("Downloading from SharePoint using store config: site=%s, drive=%s, folder=%s, file=%s",
-            store.getSiteUrl(), store.getDriveName(), folderAndFilename.folderPath, folderAndFilename.fileName);
+        log.infof("Downloading from SharePoint using location config: site=%s, drive=%s, folder=%s, file=%s",
+            location.getSiteUrl(), location.getDriveName(), folderAndFilename.folderPath, folderAndFilename.fileName);
 
         return sharePointService.downloadFile(
-            store.getSiteUrl(),
-            store.getDriveName(),
+            location.getSiteUrl(),
+            location.getDriveName(),
             folderAndFilename.folderPath,
             folderAndFilename.fileName
         );

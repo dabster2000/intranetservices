@@ -1,19 +1,16 @@
 package dk.trustworks.intranet.documentservice.services;
 
 import dk.trustworks.intranet.documentservice.dto.DocumentTemplateDTO;
-import dk.trustworks.intranet.documentservice.dto.SharePointLocationDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateDefaultSignerDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplatePlaceholderDTO;
 import dk.trustworks.intranet.documentservice.dto.TemplateSigningSchemaDTO;
-import dk.trustworks.intranet.documentservice.dto.TemplateSigningStoreDTO;
 import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
-import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDefaultSignerEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateDocumentEntity;
 import dk.trustworks.intranet.documentservice.model.TemplatePlaceholderEntity;
 import dk.trustworks.intranet.documentservice.model.TemplateSigningSchemaEntity;
-import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
+import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.documentservice.model.enums.TemplateCategory;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.transaction.Transactional;
@@ -89,6 +86,7 @@ public class TemplateService {
         entity.setDescription(dto.getDescription());
         entity.setSharepointFolder(dto.getSharepointFolder());
         entity.setCategory(dto.getCategory());
+        entity.setSharepointType(dto.getSharepointType() != null ? dto.getSharepointType() : SharePointLocationType.EMPLOYEE);
         entity.setActive(dto.isActive());
         entity.setCreatedBy(currentUserUuid);
         entity.setModifiedBy(currentUserUuid);
@@ -114,14 +112,6 @@ public class TemplateService {
             for (TemplateSigningSchemaDTO schemaDTO : dto.getSigningSchemas()) {
                 TemplateSigningSchemaEntity schema = toSigningSchemaEntity(schemaDTO);
                 entity.addSigningSchema(schema);
-            }
-        }
-
-        // Add signing stores
-        if (dto.getSigningStores() != null) {
-            for (TemplateSigningStoreDTO storeDTO : dto.getSigningStores()) {
-                TemplateSigningStoreEntity store = toSigningStoreEntity(storeDTO);
-                entity.addSigningStore(store);
             }
         }
 
@@ -164,6 +154,9 @@ public class TemplateService {
         entity.setDescription(dto.getDescription());
         entity.setSharepointFolder(dto.getSharepointFolder());
         entity.setCategory(dto.getCategory());
+        if (dto.getSharepointType() != null) {
+            entity.setSharepointType(dto.getSharepointType());
+        }
         entity.setActive(dto.isActive());
         entity.setModifiedBy(currentUserUuid);
 
@@ -218,23 +211,6 @@ public class TemplateService {
             log.infof("No signing schemas to add for template %s", uuid);
         }
 
-        // Delete old signing stores from database first to avoid Hibernate persistence context conflicts
-        long deletedStoreCount = TemplateSigningStoreEntity.deleteByTemplateUuid(uuid);
-        log.infof("Deleted %d existing signing stores for template %s", deletedStoreCount, uuid);
-        entity.clearSigningStores();
-
-        // Rebuild signing stores from DTO - explicitly persist each new store
-        if (dto.getSigningStores() != null && !dto.getSigningStores().isEmpty()) {
-            log.infof("Adding %d signing stores to template %s", dto.getSigningStores().size(), uuid);
-            for (TemplateSigningStoreDTO storeDTO : dto.getSigningStores()) {
-                TemplateSigningStoreEntity store = toSigningStoreEntity(storeDTO);
-                entity.addSigningStore(store);
-                store.persist();  // Explicitly persist each new signing store
-            }
-        } else {
-            log.infof("No signing stores to add for template %s", uuid);
-        }
-
         // Delete old documents from database first
         long deletedDocCount = TemplateDocumentEntity.deleteByTemplateUuid(uuid);
         log.infof("Deleted %d existing documents for template %s", deletedDocCount, uuid);
@@ -272,20 +248,6 @@ public class TemplateService {
 
         entity.softDelete();
         log.infof("Template deleted (soft): %s", uuid);
-    }
-
-    /**
-     * Find all active signing stores across all templates.
-     * Used by Upload Document UI to select a SharePoint destination.
-     *
-     * @return List of all active signing store DTOs, sorted by displayOrder then displayName
-     */
-    public List<TemplateSigningStoreDTO> findAllActiveSigningStores() {
-        log.debug("Fetching all active signing stores");
-        List<TemplateSigningStoreEntity> entities = TemplateSigningStoreEntity.findAllActive();
-        return entities.stream()
-                .map(this::toSigningStoreDTO)
-                .collect(Collectors.toList());
     }
 
     /**
@@ -336,6 +298,7 @@ public class TemplateService {
                 .description(entity.getDescription())
                 .sharepointFolder(entity.getSharepointFolder())
                 .category(entity.getCategory())
+                .sharepointType(entity.getSharepointType())
                 .active(entity.isActive())
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
@@ -364,11 +327,6 @@ public class TemplateService {
                 .map(this::toSigningSchemaDTO)
                 .collect(Collectors.toList());
         dto.setSigningSchemas(signingSchemasDTOs);
-
-        List<TemplateSigningStoreDTO> signingStoreDTOs = entity.getSigningStores().stream()
-                .map(this::toSigningStoreDTO)
-                .collect(Collectors.toList());
-        dto.setSigningStores(signingStoreDTOs);
 
         // Load documents separately (not cascade-managed)
         List<TemplateDocumentDTO> documentDTOs = TemplateDocumentEntity.findByTemplateUuid(entity.getUuid()).stream()
@@ -479,70 +437,6 @@ public class TemplateService {
         }
         entity.setSchemaType(dto.getSchemaType());
         entity.setDisplayOrder(dto.getDisplayOrder());
-        return entity;
-    }
-
-    /**
-     * Convert signing store entity to DTO.
-     * Includes the full SharePoint location object.
-     */
-    private TemplateSigningStoreDTO toSigningStoreDTO(TemplateSigningStoreEntity entity) {
-        SharePointLocationDTO locationDTO = null;
-        if (entity.getLocation() != null) {
-            SharePointLocationEntity loc = entity.getLocation();
-            locationDTO = SharePointLocationDTO.builder()
-                    .uuid(loc.getUuid())
-                    .name(loc.getName())
-                    .siteUrl(loc.getSiteUrl())
-                    .driveName(loc.getDriveName())
-                    .folderPath(loc.getFolderPath())
-                    .isActive(loc.getIsActive() != null ? loc.getIsActive() : true)
-                    .displayOrder(loc.getDisplayOrder() != null ? loc.getDisplayOrder() : 1)
-                    .createdAt(loc.getCreatedAt())
-                    .updatedAt(loc.getUpdatedAt())
-                    .build();
-        }
-
-        return TemplateSigningStoreDTO.builder()
-                .uuid(entity.getUuid())
-                .locationUuid(entity.getLocation() != null ? entity.getLocation().getUuid() : null)
-                .location(locationDTO)
-                .displayNameOverride(entity.getDisplayNameOverride())
-                .isActive(entity.getIsActive() != null ? entity.getIsActive() : true)
-                .displayOrder(entity.getDisplayOrder() != null ? entity.getDisplayOrder() : 1)
-                .userDirectory(entity.getUserDirectory() != null ? entity.getUserDirectory() : false)
-                .createdAt(entity.getCreatedAt())
-                .updatedAt(entity.getUpdatedAt())
-                .build();
-    }
-
-    /**
-     * Convert signing store DTO to entity.
-     * Looks up the SharePoint location by UUID.
-     */
-    private TemplateSigningStoreEntity toSigningStoreEntity(TemplateSigningStoreDTO dto) {
-        TemplateSigningStoreEntity entity = new TemplateSigningStoreEntity();
-        if (dto.getUuid() != null) {
-            entity.setUuid(dto.getUuid());
-        }
-
-        // Lookup and set the SharePoint location
-        String locationUuid = dto.getLocationUuid();
-        if (locationUuid == null && dto.getLocation() != null) {
-            locationUuid = dto.getLocation().getUuid();
-        }
-        if (locationUuid != null) {
-            SharePointLocationEntity location = SharePointLocationEntity.findByUuid(locationUuid);
-            if (location == null) {
-                throw new WebApplicationException("SharePoint location not found: " + locationUuid, 400);
-            }
-            entity.setLocation(location);
-        }
-
-        entity.setDisplayNameOverride(dto.getDisplayNameOverride());
-        entity.setIsActive(dto.isActive());
-        entity.setDisplayOrder(dto.getDisplayOrder());
-        entity.setUserDirectory(dto.isUserDirectory());
         return entity;
     }
 

@@ -2,7 +2,7 @@ package dk.trustworks.intranet.signing.jobs;
 
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import dk.trustworks.intranet.documentservice.model.TemplateSigningStoreEntity;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.sharepoint.dto.DriveItem;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
@@ -210,8 +210,8 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
      * @return true if upload is needed
      */
     private boolean shouldUploadToSharePoint(SigningCase signingCase) {
-        // Must have a signing store configured
-        if (signingCase.getSigningStoreUuid() == null || signingCase.getSigningStoreUuid().isBlank()) {
+        // Must have a SharePoint location configured
+        if (signingCase.getSharepointLocationUuid() == null || signingCase.getSharepointLocationUuid().isBlank()) {
             return false;
         }
         // Must not already be uploaded or partially uploaded
@@ -228,23 +228,23 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
      */
     private void uploadSignedDocumentToSharePoint(SigningCase signingCase) {
         String caseKey = signingCase.getCaseKey();
-        String signingStoreUuid = signingCase.getSigningStoreUuid();
+        String sharepointLocationUuid = signingCase.getSharepointLocationUuid();
 
-        log.infof("Starting SharePoint upload for case: %s (store: %s)", caseKey, signingStoreUuid);
+        log.infof("Starting SharePoint upload for case: %s (location: %s)", caseKey, sharepointLocationUuid);
 
         try {
-            // 1. Get signing store configuration
-            TemplateSigningStoreEntity store = TemplateSigningStoreEntity.findById(signingStoreUuid);
-            if (store == null) {
-                String error = "Signing store not found: " + signingStoreUuid;
+            // 1. Get SharePoint location configuration
+            SharePointLocationEntity location = SharePointLocationEntity.findByUuid(sharepointLocationUuid);
+            if (location == null) {
+                String error = "SharePoint location not found: " + sharepointLocationUuid;
                 log.errorf(error);
                 markSharePointUploadFailed(signingCase, error);
                 return;
             }
 
-            if (!Boolean.TRUE.equals(store.getIsActive())) {
-                log.warnf("Signing store %s is inactive, skipping upload for case %s",
-                    signingStoreUuid, caseKey);
+            if (!Boolean.TRUE.equals(location.getIsActive())) {
+                log.warnf("SharePoint location %s is inactive, skipping upload for case %s",
+                    sharepointLocationUuid, caseKey);
                 return;
             }
 
@@ -262,16 +262,16 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
 
             log.infof("Downloaded %d signed documents for case %s", documents.size(), caseKey);
 
-            // 3. Construct folder path with user subdirectory if enabled
-            String uploadFolderPath = buildUploadFolderPath(store, signingCase);
+            // 3. Construct folder path with username subdirectory (always appended for EMPLOYEE upload pattern)
+            String uploadFolderPath = buildUploadFolderPath(location, signingCase);
 
             // 4. Ensure folder exists (create if necessary)
             if (uploadFolderPath != null && !uploadFolderPath.isBlank()) {
                 log.debugf("Ensuring folder exists before upload: %s", uploadFolderPath);
                 try {
                     sharePointService.ensureFolderExists(
-                        store.getSiteUrl(),
-                        store.getDriveName(),
+                        location.getSiteUrl(),
+                        location.getDriveName(),
                         uploadFolderPath
                     );
                     log.debugf("Folder verified/created successfully");
@@ -298,8 +298,8 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                         uploadIdx, documents.size(), filename);
 
                     DriveItem result = sharePointService.uploadFile(
-                        store.getSiteUrl(),
-                        store.getDriveName(),
+                        location.getSiteUrl(),
+                        location.getDriveName(),
                         uploadFolderPath,
                         filename,
                         doc.pdfBytes()
@@ -364,73 +364,28 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
     }
 
     /**
-     * Builds the upload folder path, optionally appending username subdirectory.
+     * Builds the upload folder path by appending the case owner's username to the
+     * location's base folder path.
+     * <p>
+     * Username is always appended for the auto-upload pattern; if the username can't
+     * be resolved the base path is returned unchanged.
+     * </p>
      *
-     * Logic:
-     * - If store.userDirectory = false: return original folder path
-     * - If store.userDirectory = true: append "/{username}" to folder path
-     * - Handles null/empty folder paths gracefully
-     * - Sanitizes username to prevent path injection
-     *
-     * Examples:
-     * - basePath="Contracts/2025", userDirectory=false → "Contracts/2025"
-     * - basePath="Contracts/2025", userDirectory=true, username="hans.lassen" → "Contracts/2025/hans.lassen"
-     * - basePath=null, userDirectory=true, username="hans.lassen" → "hans.lassen"
-     *
-     * @param store The signing store entity
+     * @param location    The SharePoint location entity
      * @param signingCase The signing case entity
      * @return The constructed folder path
      */
-    private String buildUploadFolderPath(TemplateSigningStoreEntity store, SigningCase signingCase) {
-        String basePath = store.getFolderPath();
-
-        // If user directory not enabled, return original path
-        if (!Boolean.TRUE.equals(store.getUserDirectory())) {
-            return basePath;
-        }
-
-        // User directory enabled - need to append username
+    private String buildUploadFolderPath(SharePointLocationEntity location, SigningCase signingCase) {
+        String basePath = location.getFolderPath();
         String userUuid = signingCase.getUserUuid();
-        if (userUuid == null || userUuid.isBlank()) {
-            log.warnf("User directory enabled but signingCase.userUuid is null for case %s - using base path",
-                signingCase.getCaseKey());
-            return basePath;
-        }
-
-        // Lookup user entity to get username
+        if (userUuid == null || userUuid.isBlank()) return basePath;
         Optional<User> userOpt = User.findByIdOptional(userUuid);
-        if (userOpt.isEmpty()) {
-            log.warnf("User directory enabled but user %s not found for case %s - using base path",
-                userUuid, signingCase.getCaseKey());
-            return basePath;
-        }
-
-        User user = userOpt.get();
-        String username = user.getUsername();
-
-        if (username == null || username.isBlank()) {
-            log.warnf("User directory enabled but username is null for user %s, case %s - using base path",
-                userUuid, signingCase.getCaseKey());
-            return basePath;
-        }
-
-        // Sanitize username to prevent path injection attacks
+        if (userOpt.isEmpty()) return basePath;
+        String username = userOpt.get().getUsername();
+        if (username == null || username.isBlank()) return basePath;
         String sanitizedUsername = sanitizePathSegment(username);
-
-        // Build combined path
-        if (basePath == null || basePath.isBlank()) {
-            log.debugf("Empty base path, using username subdirectory only: %s", sanitizedUsername);
-            return sanitizedUsername;
-        }
-
-        // Normalize path separators and combine
-        String normalizedBase = basePath.trim().replaceAll("[\\\\/]+$", ""); // Remove trailing slashes
-        String finalPath = normalizedBase + "/" + sanitizedUsername;
-
-        log.infof("User directory enabled: base=%s + username=%s → final=%s",
-            basePath, sanitizedUsername, finalPath);
-
-        return finalPath;
+        String normalizedBase = (basePath == null || basePath.isBlank()) ? "" : basePath.trim().replaceAll("[\\\\/]+$", "");
+        return normalizedBase.isEmpty() ? sanitizedUsername : normalizedBase + "/" + sanitizedUsername;
     }
 
     /**

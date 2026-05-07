@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.documentservice.model;
 
+import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
+import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -12,8 +15,11 @@ import java.util.UUID;
 
 /**
  * JPA Entity for shared SharePoint locations.
- * Represents a reusable SharePoint folder configuration that can be referenced by multiple signing stores.
- * This allows centralized management of SharePoint locations across templates.
+ * <p>
+ * Each row represents a reusable SharePoint folder bound to a specific company and
+ * classification ({@link SharePointLocationType}). The pair (company, type) is used
+ * by the signing flow to deterministically resolve a location for a given template.
+ * </p>
  */
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
@@ -40,6 +46,16 @@ public class SharePointLocationEntity extends PanacheEntityBase {
 
     @Column(name = "folder_path", length = 500)
     private String folderPath;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_uuid", nullable = false)
+    @NotNull(message = "Company is required")
+    private Company company;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "type", nullable = false)
+    @NotNull(message = "Type is required")
+    private SharePointLocationType type;
 
     @Column(name = "is_active", nullable = false)
     private Boolean isActive = true;
@@ -102,6 +118,21 @@ public class SharePointLocationEntity extends PanacheEntityBase {
     }
 
     /**
+     * Find the unique location for a (company, type) pair.
+     * <p>
+     * The signing flow calls this after resolving the user's active company and the
+     * template's {@link SharePointLocationType} to choose the upload destination.
+     * </p>
+     *
+     * @param companyUuid Company UUID
+     * @param type        Location classification
+     * @return The matching location, or null if none is configured
+     */
+    public static SharePointLocationEntity findByCompanyAndType(String companyUuid, SharePointLocationType type) {
+        return find("company.uuid = ?1 AND type = ?2", companyUuid, type).firstResult();
+    }
+
+    /**
      * Check if a location with the given path already exists.
      * Used for validation to prevent duplicate paths.
      *
@@ -134,15 +165,5 @@ public class SharePointLocationEntity extends PanacheEntityBase {
         }
         return count("siteUrl = ?1 AND driveName = ?2 AND folderPath = ?3 AND uuid != ?4",
                 siteUrl, driveName, folderPath, excludeUuid) > 0;
-    }
-
-    /**
-     * Count the number of signing stores referencing this location.
-     *
-     * @param locationUuid The location UUID
-     * @return Number of signing stores using this location
-     */
-    public static long countReferences(String locationUuid) {
-        return TemplateSigningStoreEntity.count("location.uuid = ?1", locationUuid);
     }
 }

@@ -4,21 +4,25 @@ import java.util.List;
 
 /**
  * Request to create a new signing case.
+ * <p>
+ * Direct (non-template) signing cases do not configure a SharePoint upload
+ * destination — auto-upload only happens for cases created via a template,
+ * where the destination is resolved from the user's company and the template's
+ * {@code sharepoint_type}.
+ * </p>
  *
  * @param documentName Name/filename of the document (e.g., "contract.pdf")
  * @param documentBase64 Base64 encoded PDF content
  * @param contentType MIME type of the document (typically "application/pdf")
  * @param signers List of signers with their order and role
  * @param referenceId Optional internal tracking ID (can be null)
- * @param signingStoreUuid Optional UUID of template_signing_stores for SharePoint auto-upload (can be null)
  */
 public record CreateSigningCaseRequest(
     String documentName,
     String documentBase64,
     String contentType,
     List<SignerInfo> signers,
-    String referenceId,
-    String signingStoreUuid
+    String referenceId
 ) {
     /**
      * Validates that required fields are present and signers list is not empty.

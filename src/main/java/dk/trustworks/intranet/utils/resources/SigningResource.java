@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.utils.resources;
 
 import dk.trustworks.intranet.documentservice.dto.TemplateDocumentDTO;
+import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
 import dk.trustworks.intranet.utils.dto.nextsign.NextSignCaseDetailDTO;
 import dk.trustworks.intranet.utils.dto.signing.AdminSigningCaseDTO;
 import dk.trustworks.intranet.utils.dto.signing.CreateMultiDocumentSigningRequest;
@@ -105,23 +106,18 @@ public class SigningResource {
             log.infof("Signing case created successfully. CaseKey: %s", response.caseKey());
 
             // Save minimal record for async processing (NEW ASYNC PATTERN)
-            // Status will be fetched by background batch job to avoid NextSign race condition
+            // Status will be fetched by background batch job to avoid NextSign race condition.
             try {
                 String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
-                String signingStoreUuid = request.signingStoreUuid();
+                String sharepointLocationUuid = signingService.resolveSharepointLocationUuid(
+                    targetUserUuid, SharePointLocationType.EMPLOYEE);
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, signingStoreUuid);
-
-                if (signingStoreUuid != null && !signingStoreUuid.isBlank()) {
-                    log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, signingStoreUuid: %s)",
-                        response.caseKey(), totalSigners, signingStoreUuid);
-                } else {
-                    log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
-                        response.caseKey(), totalSigners);
-                }
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, sharepointLocationUuid);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
+                    response.caseKey(), totalSigners, sharepointLocationUuid);
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
@@ -216,17 +212,20 @@ public class SigningResource {
             log.infof("Signing case created from template successfully. CaseKey: %s", response.caseKey());
 
             // Save minimal record for async processing (NEW ASYNC PATTERN)
-            // Status will be fetched by background batch job to avoid NextSign race condition
+            // Status will be fetched by background batch job to avoid NextSign race condition.
+            // SharePoint location is resolved from the user's active company + template's
+            // sharepoint_type (no longer specified by the caller).
             try {
                 String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
                 String documentName = request.documentName() != null ?
                     request.documentName() : "Untitled Document";
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
-                String signingStoreUuid = request.signingStoreUuid();
+                String sharepointLocationUuid = resolveSharepointLocationUuidForTemplate(
+                    request.templateUuid(), targetUserUuid);
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, signingStoreUuid);
-                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, signingStoreUuid: %s)",
-                    response.caseKey(), totalSigners, signingStoreUuid);
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, sharepointLocationUuid);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
+                    response.caseKey(), totalSigners, sharepointLocationUuid);
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "
@@ -251,6 +250,28 @@ public class SigningResource {
             log.errorf(e, "Unexpected error creating signing case from template: %s", e.getMessage());
             return serverError("INTERNAL_ERROR", "An unexpected error occurred: " + e.getMessage());
         }
+    }
+
+    /**
+     * Resolves the SharePoint location UUID for a template-based signing case by
+     * loading the template's {@code sharepointType} and delegating to the signing
+     * service for the (company, type) lookup.
+     *
+     * @param templateUuid The parent template UUID (may be null)
+     * @param userUuid     The employee UUID
+     * @return Resolved SharePoint location UUID, or null if no auto-upload should occur
+     */
+    private String resolveSharepointLocationUuidForTemplate(String templateUuid, String userUuid) {
+        if (templateUuid == null || templateUuid.isBlank() || userUuid == null) {
+            return null;
+        }
+        dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity template =
+            dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity.findById(templateUuid);
+        if (template == null) {
+            log.warnf("Template not found for SharePoint resolution: %s", templateUuid);
+            return null;
+        }
+        return signingService.resolveSharepointLocationUuid(userUuid, template.getSharepointType());
     }
 
     /**
@@ -397,22 +418,17 @@ public class SigningResource {
 
             log.infof("Multi-document signing case created successfully. CaseKey: %s", response.caseKey());
 
-            // Save minimal record for async processing
+            // Save minimal record for async processing.
             try {
                 String targetUserUuid = resolveTargetUserUuid(userUuid, securityContext);
                 String documentName = request.getDisplayName();
                 int totalSigners = request.signers() != null ? request.signers().size() : 0;
-                String signingStoreUuid = request.signingStoreUuid();
+                String sharepointLocationUuid = signingService.resolveSharepointLocationUuid(
+                    targetUserUuid, SharePointLocationType.EMPLOYEE);
 
-                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, signingStoreUuid);
-
-                if (signingStoreUuid != null && !signingStoreUuid.isBlank()) {
-                    log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, signingStoreUuid: %s)",
-                        response.caseKey(), totalSigners, signingStoreUuid);
-                } else {
-                    log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d)",
-                        response.caseKey(), totalSigners);
-                }
+                signingService.saveMinimalCase(response.caseKey(), targetUserUuid, documentName, totalSigners, sharepointLocationUuid);
+                log.infof("Saved minimal case record for async status fetch: %s (totalSigners: %d, sharepointLocationUuid: %s)",
+                    response.caseKey(), totalSigners, sharepointLocationUuid);
 
             } catch (Exception e) {
                 log.errorf(e, "CRITICAL: Failed to save minimal case record for %s. "

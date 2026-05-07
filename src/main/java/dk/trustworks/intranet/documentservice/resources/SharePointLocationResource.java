@@ -2,6 +2,8 @@ package dk.trustworks.intranet.documentservice.resources;
 
 import dk.trustworks.intranet.documentservice.dto.SharePointLocationDTO;
 import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
+import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
+import dk.trustworks.intranet.model.Company;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.transaction.Transactional;
@@ -17,8 +19,12 @@ import java.util.stream.Collectors;
 
 /**
  * REST resource for shared SharePoint location management.
- * Provides CRUD operations for SharePoint locations that can be referenced
- * by multiple signing store configurations.
+ * <p>
+ * Each location is bound to a single company and a single
+ * {@link SharePointLocationType}. The signing flow uses that pair to deterministically
+ * resolve a location for a given template, so admins no longer maintain explicit
+ * template-to-location links.
+ * </p>
  */
 @JBossLog
 @Path("/sharepoint-locations")
@@ -117,13 +123,19 @@ public class SharePointLocationResource {
         entity.setIsActive(dto.isActive());
         entity.setDisplayOrder(dto.getDisplayOrder());
 
+        if (dto.getCompanyUuid() != null) {
+            entity.setCompany(loadCompany(dto.getCompanyUuid()));
+        }
+        if (dto.getType() != null) {
+            entity.setType(dto.getType());
+        }
+
         log.infof("Updated SharePoint location: uuid=%s, name=%s", uuid, dto.getName());
         return toDTO(entity);
     }
 
     /**
      * Delete a SharePoint location.
-     * Fails if the location is still referenced by signing stores.
      *
      * @param uuid Location UUID
      * @return No content response
@@ -138,14 +150,6 @@ public class SharePointLocationResource {
         SharePointLocationEntity entity = SharePointLocationEntity.findByUuid(uuid);
         if (entity == null) {
             throw new WebApplicationException("SharePoint location not found: " + uuid, Response.Status.NOT_FOUND);
-        }
-
-        // Check if location is in use
-        long referenceCount = SharePointLocationEntity.countReferences(uuid);
-        if (referenceCount > 0) {
-            throw new WebApplicationException(
-                    "Cannot delete location: still referenced by " + referenceCount + " signing store(s)",
-                    Response.Status.CONFLICT);
         }
 
         entity.delete();
@@ -163,11 +167,12 @@ public class SharePointLocationResource {
                 .siteUrl(entity.getSiteUrl())
                 .driveName(entity.getDriveName())
                 .folderPath(entity.getFolderPath())
+                .companyUuid(entity.getCompany() != null ? entity.getCompany().getUuid() : null)
+                .type(entity.getType())
                 .isActive(entity.getIsActive() != null ? entity.getIsActive() : true)
                 .displayOrder(entity.getDisplayOrder() != null ? entity.getDisplayOrder() : 1)
                 .createdAt(entity.getCreatedAt())
                 .updatedAt(entity.getUpdatedAt())
-                .referenceCount(SharePointLocationEntity.countReferences(entity.getUuid()))
                 .build();
     }
 
@@ -182,6 +187,22 @@ public class SharePointLocationResource {
         entity.setFolderPath(dto.getFolderPath());
         entity.setIsActive(dto.isActive());
         entity.setDisplayOrder(dto.getDisplayOrder());
+        entity.setType(dto.getType() != null ? dto.getType() : SharePointLocationType.OTHER);
+        if (dto.getCompanyUuid() != null) {
+            entity.setCompany(loadCompany(dto.getCompanyUuid()));
+        }
         return entity;
+    }
+
+    /**
+     * Loads a {@link Company} by UUID, raising 400 if it cannot be resolved.
+     */
+    private Company loadCompany(String companyUuid) {
+        Company company = Company.findById(companyUuid);
+        if (company == null) {
+            throw new WebApplicationException(
+                "Company not found: " + companyUuid, Response.Status.BAD_REQUEST);
+        }
+        return company;
     }
 }

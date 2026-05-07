@@ -170,11 +170,14 @@ public class SigningCase {
     // --- SharePoint Auto-Upload Fields ---
 
     /**
-     * Reference to template_signing_stores.uuid for auto-upload configuration.
-     * If set, signed documents will be automatically uploaded to SharePoint.
+     * Reference to {@code sharepoint_locations.uuid} for auto-upload of the signed document.
+     * <p>
+     * Resolved at signing-case creation time from the user's active company and the
+     * template's {@code sharepoint_type}. If null, no auto-upload is performed.
+     * </p>
      */
-    @Column(name = "signing_store_uuid", length = 36)
-    private String signingStoreUuid;
+    @Column(name = "sharepoint_location_uuid", length = 36)
+    private String sharepointLocationUuid;
 
     /**
      * SharePoint upload status: PENDING, UPLOADED, FAILED.

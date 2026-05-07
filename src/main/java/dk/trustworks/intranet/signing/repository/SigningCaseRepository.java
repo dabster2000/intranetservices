@@ -135,7 +135,7 @@ public class SigningCaseRepository implements PanacheRepository<SigningCase> {
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) OR " +
             // Case 3: Completed cases needing SharePoint upload (signing may have completed after fetch)
             // Includes both PENDING (not yet attempted) and FAILED (retry after delay)
-            "(processingStatus = 'COMPLETED' AND signingStoreUuid IS NOT NULL AND " +
+            "(processingStatus = 'COMPLETED' AND sharepointLocationUuid IS NOT NULL AND " +
             "sharepointUploadStatus IN ('PENDING', 'FAILED') AND " +
             "(lastStatusFetch IS NULL OR lastStatusFetch < ?2)) " +
             "ORDER BY createdAt ASC",
