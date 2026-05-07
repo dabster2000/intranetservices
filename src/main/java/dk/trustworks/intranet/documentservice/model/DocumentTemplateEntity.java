@@ -36,9 +36,6 @@ public class DocumentTemplateEntity extends PanacheEntityBase {
     @Column(columnDefinition = "TEXT")
     private String description;
 
-    @Column(name = "sharepoint_folder", length = 500)
-    private String sharepointFolder;
-
     @Column(nullable = false, length = 50)
     @Enumerated(EnumType.STRING)
     @NotNull(message = "Category is required")

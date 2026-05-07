@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.jobs;
 
 import dk.trustworks.intranet.batch.monitoring.MonitoredBatchlet;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
@@ -58,17 +59,18 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
                 continue;
             }
 
-            String baseFolder = folderService.resolveTemplateBaseFolder(candidate);
-            if (baseFolder == null || baseFolder.isBlank()) {
-                log.debugf("Skipping candidate=%s — template's sharepoint_folder still blank",
-                        candidate.getUuid());
+            SharePointLocationEntity location = folderService.resolveEmployeeLocation(
+                    candidate.getConvertedUserUuid());
+            if (location == null) {
+                log.debugf("Skipping candidate=%s — no active EMPLOYEE SharePointLocation for promoted user=%s",
+                        candidate.getUuid(), candidate.getConvertedUserUuid());
                 skipped++;
                 continue;
             }
 
             SharePointMoveStatus status;
             try {
-                status = folderService.copyToEmployeeFolder(candidate, username, baseFolder);
+                status = folderService.copyToEmployeeFolder(candidate, username, location);
             } catch (RuntimeException e) {
                 log.warnf(e, "Retry threw for candidate=%s — leaving sharepoint_move_status unchanged",
                         candidate.getUuid());

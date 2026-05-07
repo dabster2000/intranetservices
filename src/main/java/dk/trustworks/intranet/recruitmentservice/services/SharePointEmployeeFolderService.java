@@ -2,8 +2,10 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
-import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
+import dk.trustworks.intranet.aggregates.users.services.StatusService;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
+import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
@@ -12,7 +14,6 @@ import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -20,12 +21,13 @@ import java.util.Objects;
 
 /**
  * Copies a promoted candidate's S3-backed generated PDFs and appendices into
- * the SharePoint folder defined by the template ({@code template.sharepoint_folder})
- * with the new username appended.
+ * the SharePoint folder defined by the {@code (user.company, EMPLOYEE)}
+ * SharePointLocation, with the new username appended.
  * <p>
- * Replaces {@code SharePointCandidateFolderService} (V321). Per the design,
- * the recruitment-side SharePoint folder is no longer created during the
- * candidate phase — SharePoint is touched only at promote time.
+ * Per the design, the recruitment-side SharePoint folder is no longer created
+ * during the candidate phase — SharePoint is touched only at promote time.
+ * The destination is the same one the e-signing flow uses for the same user
+ * (single source of truth: {@link SharePointLocationEntity}).
  */
 @JBossLog
 @ApplicationScoped
@@ -42,36 +44,54 @@ public class SharePointEmployeeFolderService {
     @Inject
     ObjectMapper objectMapper;
 
-    @ConfigProperty(name = "sharepoint.recruitment.site-url",
-            defaultValue = "https://trustworks.sharepoint.com/sites/Recruitment")
-    String siteUrl;
+    @Inject
+    StatusService statusService;
 
-    @ConfigProperty(name = "sharepoint.recruitment.drive-name",
-            defaultValue = "Documents")
-    String driveName;
+    /**
+     * Resolve the destination SharePoint location for a promoted user via the
+     * shared {@link SharePointLocationEntity} registry. Same chain that
+     * {@code SigningService.resolveSharepointLocationUuid} uses:
+     * {@code userUuid → UserStatus.company → (company, EMPLOYEE) → location}.
+     *
+     * @return the location, or {@code null} when the user has no active
+     *         employment status, no company, or the company has no active
+     *         {@link SharePointLocationType#EMPLOYEE} location configured.
+     */
+    public SharePointLocationEntity resolveEmployeeLocation(String userUuid) {
+        if (userUuid == null || userUuid.isBlank()) return null;
+        UserStatus currentStatus = statusService.getLatestEmploymentStatus(userUuid);
+        if (currentStatus == null || currentStatus.getCompany() == null) return null;
+        return SharePointLocationEntity.findByCompanyAndType(
+                currentStatus.getCompany().getUuid(), SharePointLocationType.EMPLOYEE);
+    }
 
     /**
      * Copy every S3-backed file (generated PDFs across all revisions, and
      * every appendix) for {@code candidate} into
-     * {@code templateBaseFolder/targetUsername}.
+     * {@code location.folderPath/targetUsername} on
+     * {@code location.siteUrl / location.driveName}.
      *
      * @return {@link SharePointMoveStatus#COMPLETED} on full success,
-     *         {@link SharePointMoveStatus#FAILED} otherwise
-     * @throws IllegalArgumentException if {@code templateBaseFolder} is blank
+     *         {@link SharePointMoveStatus#FAILED} on full failure, or
+     *         {@link SharePointMoveStatus#PARTIAL} when at least one file
+     *         landed and at least one failed.
+     * @throws NullPointerException     if any required argument is null
+     * @throws IllegalArgumentException if the username or resolved path fails
+     *                                  the safety guards
      */
     public SharePointMoveStatus copyToEmployeeFolder(
-            RecruitmentCandidate candidate, String targetUsername, String templateBaseFolder) {
+            RecruitmentCandidate candidate, String targetUsername, SharePointLocationEntity location) {
         Objects.requireNonNull(candidate, "candidate must not be null");
         Objects.requireNonNull(targetUsername, "targetUsername must not be null");
-        if (templateBaseFolder == null || templateBaseFolder.isBlank()) {
-            throw new IllegalArgumentException(
-                    "Template's sharepoint_folder is blank — cannot promote candidate "
-                            + candidate.getUuid() + ". Set the destination on the template.");
-        }
-        guardSafePath(templateBaseFolder);
+        Objects.requireNonNull(location, "location must not be null");
+
+        String siteUrl = location.getSiteUrl();
+        String driveName = location.getDriveName();
+        String basePath = location.getFolderPath();
+        if (basePath != null) guardSafePath(basePath);
         guardSafeUsername(targetUsername);
 
-        String destFolder = stripTrailingSlash(templateBaseFolder) + "/" + targetUsername;
+        String destFolder = buildDestFolder(basePath, targetUsername);
 
         try {
             sharePointService.ensureFolderExists(siteUrl, driveName, destFolder);
@@ -138,8 +158,8 @@ public class SharePointEmployeeFolderService {
         } else {
             status = SharePointMoveStatus.PARTIAL;
         }
-        log.infof("SharePoint copy candidate=%s username=%s dest=%s copied=%d failed=%d status=%s",
-                candidate.getUuid(), targetUsername, destFolder, copied, failed, status);
+        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d status=%s",
+                candidate.getUuid(), targetUsername, siteUrl, driveName, destFolder, copied, failed, status);
         return status;
     }
 
@@ -170,30 +190,13 @@ public class SharePointEmployeeFolderService {
     }
 
     /**
-     * Resolves the destination SharePoint base folder from the candidate's
-     * dossier's template. Returns the folder string when set; {@code null}
-     * when either the dossier, the template, or the template's
-     * {@code sharepoint_folder} is missing.
+     * Build the destination folder path. A blank or null base resolves to
+     * {@code /<username>}; otherwise {@code <basePath>/<username>} with a
+     * single separator.
      */
-    public String resolveTemplateBaseFolder(RecruitmentCandidate candidate) {
-        Objects.requireNonNull(candidate, "candidate must not be null");
-        CandidateDossier dossier = CandidateDossier
-                .<CandidateDossier>find("candidateUuid", candidate.getUuid())
-                .firstResult();
-        return resolveTemplateBaseFolder(dossier);
-    }
-
-    /**
-     * Same as {@link #resolveTemplateBaseFolder(RecruitmentCandidate)} but
-     * accepts an already-loaded dossier so callers that have one in scope
-     * (e.g. {@code CandidateConversionUseCase} which just queried for OPEN
-     * dossiers) can avoid a second round-trip.
-     */
-    public String resolveTemplateBaseFolder(CandidateDossier dossier) {
-        if (dossier == null) return null;
-        DocumentTemplateEntity template = DocumentTemplateEntity
-                .<DocumentTemplateEntity>findById(dossier.getTemplateUuid());
-        return template != null ? template.getSharepointFolder() : null;
+    private static String buildDestFolder(String basePath, String username) {
+        if (basePath == null || basePath.isBlank()) return "/" + username;
+        return stripTrailingSlash(basePath) + "/" + username;
     }
 
     private static String stripTrailingSlash(String s) {
@@ -214,7 +217,7 @@ public class SharePointEmployeeFolderService {
         }
     }
 
-    /** Allow only alphanumeric + dash/underscore (Trustworks usernames). */
+    /** Allow only alphanumeric + dash/underscore/dot (Trustworks usernames). */
     private static void guardSafeUsername(String username) {
         if (username == null || username.isBlank()) {
             throw new IllegalArgumentException("targetUsername must not be blank");

@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
-import dk.trustworks.intranet.documentservice.model.DocumentTemplateEntity;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import org.junit.jupiter.api.Test;
 
@@ -30,9 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       annotated {@code @Transactional} so the status update + retention
  *       stamp share a short tx (the slow Graph upload itself runs outside
  *       any DB tx).</li>
- *   <li>The {@code DocumentTemplateEntity.getSharepointFolder} accessor
- *       still exists (used by
- *       {@link SharePointEmployeeFolderService#resolveTemplateBaseFolder}).</li>
+ *   <li>The folder service exposes
+ *       {@link SharePointEmployeeFolderService#resolveEmployeeLocation(String)},
+ *       the registry-based replacement for the old per-template folder
+ *       resolver.</li>
  *   <li>The {@link SharePointMoveStatus} enum still includes the four
  *       values the use case drives ({@code PENDING}/{@code PARTIAL}/
  *       {@code FAILED}/{@code COMPLETED}).</li>
@@ -79,12 +80,14 @@ class CandidateConversionUseCaseSharePointTest {
     }
 
     @Test
-    void documentTemplateEntity_exposes_sharepointFolder_getter() throws Exception {
-        // The use case (via SharePointEmployeeFolderService.resolveTemplateBaseFolder)
-        // reads the template's sharepoint_folder via the Lombok getter.
-        // Reflection guards against the field/getter being renamed.
-        Method getter = DocumentTemplateEntity.class.getMethod("getSharepointFolder");
-        assertEquals(String.class, getter.getReturnType());
+    void folderService_exposes_resolveEmployeeLocation() throws Exception {
+        // The use case (and the retry batchlet) resolve the SharePoint
+        // destination for a promoted user via this method, which performs
+        // (userUuid → UserStatus.company → (company, EMPLOYEE) → location).
+        // Reflection guards against accidental rename / signature drift.
+        Method m = SharePointEmployeeFolderService.class.getMethod(
+                "resolveEmployeeLocation", String.class);
+        assertEquals(SharePointLocationEntity.class, m.getReturnType());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
@@ -221,17 +222,21 @@ public class CandidateConversionUseCase {
                     candidateUuid);
             return;
         }
-        String baseFolder = sharePointEmployeeFolderService.resolveTemplateBaseFolder(candidate);
-        if (baseFolder == null || baseFolder.isBlank()) {
-            log.warnf("runSharePointCopy: template sharepoint_folder blank for candidate=%s, leaving PENDING",
-                    candidateUuid);
+        String userUuid = candidate.getConvertedUserUuid();
+        SharePointLocationEntity location = userUuid == null
+                ? null : sharePointEmployeeFolderService.resolveEmployeeLocation(userUuid);
+        if (location == null) {
+            log.warnf("runSharePointCopy: no active EMPLOYEE SharePointLocation for promoted user "
+                    + "(candidate=%s, user=%s) — leaving PENDING. Configure (company, EMPLOYEE) "
+                    + "in admin/settings SharePoint locations; the retry batchlet will pick this up.",
+                    candidateUuid, userUuid);
             return;
         }
 
         SharePointMoveStatus moveStatus;
         try {
             moveStatus = sharePointEmployeeFolderService.copyToEmployeeFolder(
-                    candidate, targetUsername, baseFolder);
+                    candidate, targetUsername, location);
         } catch (RuntimeException e) {
             log.warnf(e, "runSharePointCopy: SharePoint copy threw for candidate=%s — staying PENDING for retry",
                     candidateUuid);

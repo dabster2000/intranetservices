@@ -84,7 +84,6 @@ public class TemplateService {
         DocumentTemplateEntity entity = new DocumentTemplateEntity();
         entity.setName(dto.getName());
         entity.setDescription(dto.getDescription());
-        entity.setSharepointFolder(dto.getSharepointFolder());
         entity.setCategory(dto.getCategory());
         entity.setSharepointType(dto.getSharepointType() != null ? dto.getSharepointType() : SharePointLocationType.EMPLOYEE);
         entity.setActive(dto.isActive());
@@ -152,7 +151,6 @@ public class TemplateService {
 
         entity.setName(dto.getName());
         entity.setDescription(dto.getDescription());
-        entity.setSharepointFolder(dto.getSharepointFolder());
         entity.setCategory(dto.getCategory());
         if (dto.getSharepointType() != null) {
             entity.setSharepointType(dto.getSharepointType());
@@ -296,7 +294,6 @@ public class TemplateService {
                 .uuid(entity.getUuid())
                 .name(entity.getName())
                 .description(entity.getDescription())
-                .sharepointFolder(entity.getSharepointFolder())
                 .category(entity.getCategory())
                 .sharepointType(entity.getSharepointType())
                 .active(entity.isActive())

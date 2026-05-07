@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,7 +11,6 @@ import java.lang.reflect.Field;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
@@ -36,8 +36,6 @@ class SharePointEmployeeFolderServiceTest {
         injectField(service, "sharePointService", sharePointService);
         injectField(service, "s3StorageService", s3StorageService);
         injectField(service, "objectMapper", new ObjectMapper());
-        injectField(service, "siteUrl", "https://example.sharepoint.com/sites/Recruitment");
-        injectField(service, "driveName", "Documents");
     }
 
     private static void injectField(Object target, String name, Object value) throws Exception {
@@ -46,86 +44,64 @@ class SharePointEmployeeFolderServiceTest {
         f.set(target, value);
     }
 
-    @Test
-    void copyToEmployeeFolder_blankBaseFolder_throws() {
-        RecruitmentCandidate candidate = new RecruitmentCandidate();
-        candidate.setUuid(UUID.randomUUID().toString());
+    private static SharePointLocationEntity location(String folderPath) {
+        SharePointLocationEntity loc = new SharePointLocationEntity();
+        loc.setSiteUrl("https://example.sharepoint.com/sites/Trustworks-HR");
+        loc.setDriveName("Documents");
+        loc.setFolderPath(folderPath);
+        return loc;
+    }
 
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(candidate, "tlb", null));
-        assertTrue(ex.getMessage().contains("sharepoint_folder is blank"));
-        // Validation must short-circuit before any external call.
-        verifyNoInteractions(sharePointService);
-        verifyNoInteractions(s3StorageService);
+    private static RecruitmentCandidate candidate() {
+        RecruitmentCandidate c = new RecruitmentCandidate();
+        c.setUuid(UUID.randomUUID().toString());
+        return c;
     }
 
     @Test
-    void copyToEmployeeFolder_blankWhitespaceBaseFolder_throws() {
-        RecruitmentCandidate candidate = new RecruitmentCandidate();
-        candidate.setUuid(UUID.randomUUID().toString());
-
-        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(candidate, "tlb", "   "));
-        assertTrue(ex.getMessage().contains("sharepoint_folder is blank"));
-        verifyNoInteractions(sharePointService);
-    }
-
-    @Test
-    void copyToEmployeeFolder_pathTraversal_throws() {
-        RecruitmentCandidate candidate = new RecruitmentCandidate();
-        candidate.setUuid(UUID.randomUUID().toString());
-
+    void copyToEmployeeFolder_pathTraversalInLocationFolder_throws() {
         assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(candidate, "tlb", "../etc"));
+                () -> service.copyToEmployeeFolder(candidate(), "tlb", location("../etc")));
         verifyNoInteractions(sharePointService);
     }
 
     @Test
     void copyToEmployeeFolder_pathTraversalInUsername_throws() {
-        RecruitmentCandidate candidate = new RecruitmentCandidate();
-        candidate.setUuid(UUID.randomUUID().toString());
-
         assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(candidate, "../tlb", "/Medarbejdere"));
+                () -> service.copyToEmployeeFolder(candidate(), "../tlb", location("/Medarbejdere")));
         verifyNoInteractions(sharePointService);
     }
 
     @Test
     void copyToEmployeeFolder_nullCandidate_throws() {
         assertThrows(NullPointerException.class,
-                () -> service.copyToEmployeeFolder(null, "tlb", "/Medarbejdere"));
+                () -> service.copyToEmployeeFolder(null, "tlb", location("/Medarbejdere")));
     }
 
     @Test
     void copyToEmployeeFolder_nullUsername_throws() {
-        RecruitmentCandidate candidate = new RecruitmentCandidate();
-        candidate.setUuid(UUID.randomUUID().toString());
-
         assertThrows(NullPointerException.class,
-                () -> service.copyToEmployeeFolder(candidate, null, "/Medarbejdere"));
+                () -> service.copyToEmployeeFolder(candidate(), null, location("/Medarbejdere")));
     }
 
     @Test
-    void guardSafeUsername_rejectsSlash() {
-        RecruitmentCandidate cand = new RecruitmentCandidate();
-        cand.setUuid(java.util.UUID.randomUUID().toString());
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(cand, "../etc/passwd", "/Medarbejdere"));
+    void copyToEmployeeFolder_nullLocation_throws() {
+        assertThrows(NullPointerException.class,
+                () -> service.copyToEmployeeFolder(candidate(), "tlb", null));
+        verifyNoInteractions(sharePointService);
     }
 
     @Test
-    void guardSafeUsername_rejectsSpaces() {
-        RecruitmentCandidate cand = new RecruitmentCandidate();
-        cand.setUuid(java.util.UUID.randomUUID().toString());
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(cand, "first last", "/Medarbejdere"));
+    void copyToEmployeeFolder_usernameWithSpaces_rejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.copyToEmployeeFolder(candidate(), "first last", location("/Medarbejdere")));
+        verifyNoInteractions(sharePointService);
     }
 
     @Test
-    void guardSafePath_rejectsUrlEncodedTraversal() {
-        RecruitmentCandidate cand = new RecruitmentCandidate();
-        cand.setUuid(java.util.UUID.randomUUID().toString());
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> service.copyToEmployeeFolder(cand, "tlb", "/foo/%2e%2e/bar"));
+    void copyToEmployeeFolder_urlEncodedTraversalInFolder_rejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.copyToEmployeeFolder(candidate(), "tlb", location("/foo/%2e%2e/bar")));
+        verifyNoInteractions(sharePointService);
     }
 }
