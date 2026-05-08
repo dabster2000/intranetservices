@@ -304,6 +304,9 @@ public class OnboardingUploadService {
             log.errorf("Onboarding upload: user %s not found", userUuid);
             throw new WebApplicationException(Response.Status.INTERNAL_SERVER_ERROR);
         }
+        // User.statuses is @Transient — User.findById does not populate it.
+        // Hydrate from UserStatus directly before asking for the active one.
+        user.getStatuses().addAll(UserStatus.findByUseruuid(userUuid));
         UserStatus status = user.getUserStatus(LocalDate.now());
         if (status == null || status.getCompany() == null || status.getCompany().getUuid() == null) {
             log.errorf("Onboarding upload: user %s has no active company", userUuid);
