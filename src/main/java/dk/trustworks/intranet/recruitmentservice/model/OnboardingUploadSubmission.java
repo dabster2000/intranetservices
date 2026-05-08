@@ -86,6 +86,19 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     @Column(name = "file_size_bytes", nullable = false)
     private long fileSizeBytes;
 
+    /**
+     * Lifecycle timestamp for the recruitment S3 reaper. NULL means
+     * <em>not eligible for reaping</em> (default — set on every row at
+     * insert time). Stamped to {@code NOW + 30 days} when the candidate's
+     * promotion-time SharePoint copy reaches
+     * {@link dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus#COMPLETED}
+     * and cleared back to NULL once the S3 reaper has deleted the
+     * underlying object. Has no meaning for SHAREPOINT-target rows, which
+     * never own an S3 object to reap.
+     */
+    @Column(name = "s3_retention_until")
+    private LocalDateTime s3RetentionUntil;
+
     @Column(name = "uploaded_at", nullable = false, updatable = false)
     private LocalDateTime uploadedAt;
 
