@@ -126,4 +126,17 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     public static boolean existsForTokenAndType(String tokenUuid, OnboardingDocumentType type) {
         return count("tokenUuid = ?1 AND documentType = ?2", tokenUuid, type) > 0;
     }
+
+    /**
+     * All S3-stored onboarding submissions for the given candidate, ordered
+     * by document type so the upload pass and log output are deterministic.
+     * Used by {@code SharePointEmployeeFolderService.copyToEmployeeFolder}
+     * to migrate identity documents into SharePoint at promotion time.
+     */
+    public static List<OnboardingUploadSubmission> findS3SubmissionsByCandidate(String candidateUuid) {
+        return list(
+                "candidateUuid = ?1 AND storageTarget = ?2 AND s3FileUuid IS NOT NULL " +
+                "ORDER BY documentType",
+                candidateUuid, StorageTarget.S3);
+    }
 }
