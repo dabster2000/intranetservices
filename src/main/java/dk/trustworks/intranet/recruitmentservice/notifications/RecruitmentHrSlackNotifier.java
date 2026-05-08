@@ -3,6 +3,8 @@ package dk.trustworks.intranet.recruitmentservice.notifications;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadToken;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -44,6 +46,13 @@ public class RecruitmentHrSlackNotifier {
      * Convert flow to re-enter on PARTIAL/FAILED→COMPLETED transitions.
      */
     private static final Set<String> NOTIFIED_CANDIDATE_UUIDS = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Dedup set for the onboarding-upload-complete notification, keyed on
+     * token UUID. Prevents a duplicate Slack post if the final upload's
+     * persistence retries (e.g. constraint-violation re-throw under load).
+     */
+    private static final Set<String> NOTIFIED_ONBOARDING_TOKEN_UUIDS = ConcurrentHashMap.newKeySet();
 
     @Inject
     SlackService slackService;
@@ -162,6 +171,105 @@ public class RecruitmentHrSlackNotifier {
             }
         } catch (RuntimeException e) {
             log.debugf(e, "Could not resolve recruiter name for uuid=%s", recruiterUuid);
+        }
+        return "unknown";
+    }
+
+    // ── Onboarding-upload completion ───────────────────────────────────────
+
+    /**
+     * Notify HR that every required identity document has been uploaded
+     * via the public onboarding upload page. Two flavours:
+     *
+     * <ul>
+     *   <li><b>Candidate flow</b> — message names the candidate and links
+     *       to the recruitment dossier page.</li>
+     *   <li><b>User flow</b> — message names the new hire (full name +
+     *       username) and links to their SharePoint onboarding folder via
+     *       the most recent submission's {@code webUrl}.</li>
+     * </ul>
+     *
+     * <p>Idempotent across the JVM lifetime per {@code token.uuid}. Slack
+     * failures are logged and swallowed so the upload transaction never
+     * rolls back.</p>
+     */
+    public void notifyOnboardingComplete(OnboardingUploadToken token,
+                                         List<OnboardingUploadSubmission> submissions) {
+        if (token == null || token.getUuid() == null) {
+            log.warn("notifyOnboardingComplete: token or token UUID is null, skipping");
+            return;
+        }
+        if (!NOTIFIED_ONBOARDING_TOKEN_UUIDS.add(token.getUuid())) {
+            log.debugf("notifyOnboardingComplete: already notified token=%s, skipping", token.getUuid());
+            return;
+        }
+
+        try {
+            String message = formatOnboardingCompleteMessage(token,
+                    submissions == null ? List.of() : submissions);
+            slackService.sendMessage(channelId, message, botTokenKey);
+            log.infof("HR Slack onboarding-complete notification posted for token=%s channel=%s",
+                    token.getUuid(), channelId);
+        } catch (Exception e) {
+            log.errorf(e, "HR Slack onboarding-complete notification failed for token=%s: %s",
+                    token.getUuid(), e.getMessage());
+        }
+    }
+
+    /** Visible for tests. */
+    String formatOnboardingCompleteMessage(OnboardingUploadToken token,
+                                           List<OnboardingUploadSubmission> submissions) {
+        int count = submissions.size();
+        if (token.getCandidateUuid() != null) {
+            String candidateName = resolveCandidateName(token.getCandidateUuid());
+            String dossierUrl = stripTrailingSlash(dossierBaseUrl) + "/" + token.getCandidateUuid();
+            return ":file_folder: Candidate " + candidateName
+                    + " has uploaded all required onboarding identity documents ("
+                    + count + " file(s)). " + dossierUrl;
+        }
+        // User flow.
+        String userUuid = token.getUserUuid();
+        String fullName = "unknown";
+        String username = "unknown";
+        if (userUuid != null) {
+            try {
+                User u = User.findById(userUuid);
+                if (u != null) {
+                    String first = nullSafe(u.getFirstname()).trim();
+                    String last = nullSafe(u.getLastname()).trim();
+                    String composed = (first + " " + last).trim();
+                    if (!composed.isEmpty()) fullName = composed;
+                    if (u.getUsername() != null && !u.getUsername().isBlank()) {
+                        username = u.getUsername();
+                    }
+                }
+            } catch (RuntimeException e) {
+                log.debugf(e, "Could not resolve user for uuid=%s", userUuid);
+            }
+        }
+        String folderUrl = "";
+        for (int i = submissions.size() - 1; i >= 0; i--) {
+            String url = submissions.get(i).getSharepointWebUrl();
+            if (url != null && !url.isBlank()) {
+                folderUrl = url;
+                break;
+            }
+        }
+        return ":file_folder: " + fullName + " (" + username
+                + ") has uploaded all required onboarding identity documents to SharePoint. "
+                + folderUrl;
+    }
+
+    private static String resolveCandidateName(String candidateUuid) {
+        if (candidateUuid == null) return "unknown";
+        try {
+            RecruitmentCandidate c = RecruitmentCandidate.findById(candidateUuid);
+            if (c != null) {
+                String full = (nullSafe(c.getFirstName()) + " " + nullSafe(c.getLastName())).trim();
+                if (!full.isEmpty()) return full;
+            }
+        } catch (RuntimeException e) {
+            log.debugf(e, "Could not resolve candidate name for uuid=%s", candidateUuid);
         }
         return "unknown";
     }
