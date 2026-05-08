@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.services.GeneratedPdfRef;
 import dk.trustworks.intranet.recruitmentservice.services.RecruitmentS3StorageService;
 import io.quarkus.scheduler.Scheduled;
@@ -44,7 +45,7 @@ public class S3RetentionCleanupBatchlet {
 
     @Transactional
     public int run() {
-        return reapRevisions() + reapAppendices();
+        return reapRevisions() + reapAppendices() + reapOnboardingSubmissions();
     }
 
     private int reapRevisions() {
@@ -96,6 +97,41 @@ public class S3RetentionCleanupBatchlet {
                 log.errorf(e,
                         "Failed to reap appendix uuid=%s — leaving retention timestamp for retry",
                         a.getUuid());
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Reap onboarding identity-document uploads whose retention timestamp has
+     * elapsed. Mirrors {@link #reapAppendices()} exactly: the {@code s3_file_uuid}
+     * column is intentionally left populated as an audit trail; the lifecycle
+     * signal that the row has been reaped is {@code s3RetentionUntil} going
+     * back to {@code null}.
+     *
+     * <p>SHAREPOINT-target submissions are skipped — they never owned an S3
+     * object — but the predicate is explicit for clarity in the EXPLAIN plan.</p>
+     */
+    private int reapOnboardingSubmissions() {
+        LocalDateTime now = LocalDateTime.now();
+        List<OnboardingUploadSubmission> due = OnboardingUploadSubmission.list(
+                "s3RetentionUntil IS NOT NULL AND s3RetentionUntil < ?1 " +
+                "AND storageTarget = ?2 AND s3FileUuid IS NOT NULL",
+                now, OnboardingUploadSubmission.StorageTarget.S3);
+
+        int count = 0;
+        for (OnboardingUploadSubmission sub : due) {
+            try {
+                s3StorageService.deleteGeneratedPdf(sub.getS3FileUuid());
+                // s3_file_uuid is preserved as an audit trail (mirrors the
+                // appendix pattern). Lifecycle signal is s3_retention_until
+                // returning to NULL.
+                sub.setS3RetentionUntil(null);
+                count++;
+            } catch (Exception e) {
+                log.errorf(e,
+                        "Failed to reap onboarding submission uuid=%s — leaving retention timestamp for retry",
+                        sub.getUuid());
             }
         }
         return count;
