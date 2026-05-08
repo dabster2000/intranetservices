@@ -6,7 +6,9 @@ import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
+import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier;
 import dk.trustworks.intranet.recruitmentservice.services.SharePointEmployeeFolderService;
+import dk.trustworks.intranet.recruitmentservice.services.SharePointEmployeeFolderService.CopyResult;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
@@ -14,6 +16,7 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Retry batchlet for SharePoint employee-folder moves whose synchronous
@@ -34,6 +37,9 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
 
     @Inject
     SharePointEmployeeFolderService folderService;
+
+    @Inject
+    RecruitmentHrSlackNotifier recruitmentHrSlackNotifier;
 
     @Override
     @Transactional
@@ -68,19 +74,25 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
                 continue;
             }
 
-            SharePointMoveStatus status;
+            CopyResult result;
             try {
-                status = folderService.copyToEmployeeFolder(candidate, username, location);
+                result = folderService.copyToEmployeeFolder(candidate, username, location);
             } catch (RuntimeException e) {
                 log.warnf(e, "Retry threw for candidate=%s — leaving sharepoint_move_status unchanged",
                         candidate.getUuid());
                 stillFailing++;
                 continue;
             }
+            SharePointMoveStatus status = result.status();
             candidate.setSharepointMoveStatus(status);
 
             if (status == SharePointMoveStatus.COMPLETED) {
                 folderService.stampS3RetentionUntil(candidate);
+                // The dedup set inside RecruitmentHrSlackNotifier ensures the
+                // batchlet does not re-fire a notification that the original
+                // Convert flow already sent.
+                UUID recruiter = parseUuidOrNull(candidate.getCreatedByUseruuid());
+                recruitmentHrSlackNotifier.notifyHire(candidate, recruiter, result.signedFilenames());
                 completed++;
             } else {
                 stillFailing++;
@@ -98,5 +110,14 @@ public class SharePointEmployeeFolderMoveBatchlet extends MonitoredBatchlet {
         if (candidate.getConvertedUserUuid() == null) return null;
         User user = User.findById(candidate.getConvertedUserUuid());
         return user != null ? user.getUsername() : null;
+    }
+
+    private static UUID parseUuidOrNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 }

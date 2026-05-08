@@ -184,6 +184,34 @@ public interface GraphApiClient {
     DriveItemCollectionResponse listRootChildren(@PathParam("driveId") String driveId);
 
     /**
+     * Updates a DriveItem's metadata. Used to rename a file by sending a
+     * PATCH with the new {@code name} field.
+     *
+     * <p>JAX-RS lacks a {@code @PATCH} annotation; we declare the verb via
+     * {@link HttpMethod}.
+     *
+     * @param driveId the unique drive identifier
+     * @param itemId  the unique item identifier
+     * @param patch   the partial update body (typically {@code {"name": "newName"}})
+     * @return the updated DriveItem
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/driveitem-update">Update DriveItem</a>
+     */
+    @PATCH
+    @Path("/drives/{driveId}/items/{itemId}")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    DriveItem updateItem(
+        @PathParam("driveId") String driveId,
+        @PathParam("itemId") String itemId,
+        UpdateItemRequest patch
+    );
+
+    /**
+     * Request body for a DriveItem PATCH (e.g. rename via {@code name}).
+     */
+    record UpdateItemRequest(String name) { }
+
+    /**
      * Request body for folder creation.
      */
     record CreateFolderRequest(

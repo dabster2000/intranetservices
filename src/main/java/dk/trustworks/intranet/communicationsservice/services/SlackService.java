@@ -44,18 +44,42 @@ public class SlackService {
     }
 
     public void sendMessage(String channel, String message) {
+        sendMessage(channel, message, "mother");
+    }
+
+    /**
+     * Posts a plain-text message to the given Slack channel using the bot
+     * token selected by {@code tokenKey}.
+     *
+     * <p>Token selection: {@code "admin"} (case-insensitive) → {@code adminSlackBotToken};
+     * any other value (including {@code null} / blank / {@code "mother"})
+     * → {@code motherSlackBotToken}.
+     *
+     * <p>Token contents are never logged — only the {@code tokenKey} label.
+     *
+     * @param channel  Slack channel ID
+     * @param message  plain-text message body (Slack mrkdwn supported)
+     * @param tokenKey {@code "mother"} or {@code "admin"} — selects which bot
+     *                 token to authenticate with
+     */
+    public void sendMessage(String channel, String message, String tokenKey) {
+        String resolvedKey = (tokenKey != null && tokenKey.equalsIgnoreCase("admin"))
+                ? "admin" : "mother";
+        String token = "admin".equals(resolvedKey) ? adminSlackBotToken : motherSlackBotToken;
         try {
-        Slack slack = Slack.getInstance();
-            ChatPostMessageResponse response = slack.methods(motherSlackBotToken)
+            Slack slack = Slack.getInstance();
+            ChatPostMessageResponse response = slack.methods(token)
                     .chatPostMessage(req -> req
                             .channel(channel)
                             .text(message));
 
             if (!response.isOk()) {
-                System.err.println("Failed to send message due to error: " + response.getError());
+                log.errorf("Failed to send Slack message via tokenKey=%s channel=%s: %s",
+                        resolvedKey, channel, response.getError());
             }
         } catch (Exception e) {
-            System.err.println("Error sending Slack message: " + e.getMessage());
+            log.errorf(e, "Error sending Slack message via tokenKey=%s channel=%s: %s",
+                    resolvedKey, channel, e.getMessage());
         }
     }
 

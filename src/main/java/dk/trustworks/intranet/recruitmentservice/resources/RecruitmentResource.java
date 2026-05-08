@@ -714,6 +714,18 @@ public class RecruitmentResource {
                 "recruitment-candidate:" + candidate.getUuid(),
                 collectSigningSchemas(signers));
 
+        // Persist the minimal signing-cases row so NextSignStatusSyncBatchlet
+        // tracks status for this recruitment case. The 5th argument is the
+        // literal null: SharePoint upload is owned by the Convert flow, not
+        // by the sync batchlet (whose skip guard fires when the location uuid
+        // is null/blank — see NextSignStatusSyncBatchlet.java:214).
+        signingService.saveMinimalCase(
+                caseKey,
+                candidate.getUuid(),
+                "Recruitment: " + fullName(candidate.getFirstName(), candidate.getLastName()),
+                signerInfos.size(),
+                null);
+
         String firstSignerEmail = firstSignerEmailFromList(signers, candidate.getEmail());
         RecipientInfo recipient = new RecipientInfo(
                 firstSignerEmail,

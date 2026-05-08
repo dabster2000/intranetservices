@@ -281,6 +281,37 @@ public class SharePointService {
     }
 
     /**
+     * Renames a file at {@code folderPath/oldName} to {@code newName}, keeping
+     * it in the same folder. Implemented as a Graph PATCH on the DriveItem.
+     *
+     * @param siteUrl   the SharePoint site URL
+     * @param driveName the document library name
+     * @param folderPath the folder path containing the file (null/empty for root)
+     * @param oldName   the current file name
+     * @param newName   the new file name
+     * @return the updated DriveItem
+     * @throws SharePointException if the file does not exist or the rename fails
+     */
+    public DriveItem renameFile(
+            String siteUrl, String driveName, String folderPath,
+            String oldName, String newName) {
+        log.infof("Renaming file: site=%s, drive=%s, path=%s, %s -> %s",
+            siteUrl, driveName, folderPath, oldName, newName);
+
+        String filePath = GraphPath.buildFilePath(folderPath, oldName);
+        String filePathEncoded = GraphPath.encodePath(filePath);
+
+        String siteId = resolveSiteId(siteUrl);
+        String driveId = resolveDriveId(siteId, driveName);
+
+        DriveItem item = graphClient.getDriveItemByPath(driveId, filePathEncoded);
+        DriveItem updated = graphClient.updateItem(driveId, item.id(),
+                new dk.trustworks.intranet.sharepoint.client.GraphApiClient.UpdateItemRequest(newName));
+        log.infof("File renamed: id=%s, newName=%s", updated.id(), newName);
+        return updated;
+    }
+
+    /**
      * Ensures a folder exists at the specified path, creating it if necessary.
      * Handles nested paths by creating parent folders recursively.
      *

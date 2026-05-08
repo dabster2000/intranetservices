@@ -11,13 +11,19 @@ import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
+import dk.trustworks.intranet.utils.services.SigningService;
+import dk.trustworks.intranet.utils.services.SigningService.SignedDocumentDownload;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Copies a promoted candidate's S3-backed generated PDFs and appendices into
@@ -47,6 +53,20 @@ public class SharePointEmployeeFolderService {
     @Inject
     StatusService statusService;
 
+    @Inject
+    SigningService signingService;
+
+    @Inject
+    EntityManager em;
+
+    /**
+     * Outcome of {@link #copyToEmployeeFolder}: the aggregate move status
+     * plus the ordered list of signed-PDF filenames that were uploaded. The
+     * Convert flow uses {@code signedFilenames} to build the HR Slack message
+     * body on COMPLETED.
+     */
+    public record CopyResult(SharePointMoveStatus status, List<String> signedFilenames) { }
+
     /**
      * Resolve the destination SharePoint location for a promoted user via the
      * shared {@link SharePointLocationEntity} registry. Same chain that
@@ -71,15 +91,22 @@ public class SharePointEmployeeFolderService {
      * {@code location.folderPath/targetUsername} on
      * {@code location.siteUrl / location.driveName}.
      *
-     * @return {@link SharePointMoveStatus#COMPLETED} on full success,
-     *         {@link SharePointMoveStatus#FAILED} on full failure, or
-     *         {@link SharePointMoveStatus#PARTIAL} when at least one file
-     *         landed and at least one failed.
+     * <p>For the latest COMPLETED {@code SIGNATURE} revision, the
+     * template-rendered uploads are renamed to {@code {name}_unsigned.pdf}
+     * and the signed PDFs from NextSign are uploaded as
+     * {@code {name}_signed.pdf} to provide a side-by-side audit trail in
+     * SharePoint. Older or non-SIGNATURE revisions are not renamed; their
+     * filenames are unchanged. Appendices keep their original filenames.
+     *
+     * @return a {@link CopyResult} carrying the aggregate
+     *         {@link SharePointMoveStatus} (COMPLETED / PARTIAL / FAILED) and
+     *         the list of {@code _signed.pdf} filenames successfully
+     *         uploaded; the list is empty when no signed archival ran.
      * @throws NullPointerException     if any required argument is null
      * @throws IllegalArgumentException if the username or resolved path fails
      *                                  the safety guards
      */
-    public SharePointMoveStatus copyToEmployeeFolder(
+    public CopyResult copyToEmployeeFolder(
             RecruitmentCandidate candidate, String targetUsername, SharePointLocationEntity location) {
         Objects.requireNonNull(candidate, "candidate must not be null");
         Objects.requireNonNull(targetUsername, "targetUsername must not be null");
@@ -98,11 +125,18 @@ public class SharePointEmployeeFolderService {
         } catch (Exception e) {
             log.errorf(e, "ensureFolderExists FAILED candidate=%s dest=%s — abort with FAILED",
                     candidate.getUuid(), destFolder);
-            return SharePointMoveStatus.FAILED;
+            return new CopyResult(SharePointMoveStatus.FAILED, List.of());
         }
 
         int copied = 0;
         int failed = 0;
+
+        // Identify the latest COMPLETED SIGNATURE revision (if any). Files
+        // belonging to this revision will be renamed to _unsigned.pdf after
+        // the unsigned upload loop, and the signed envelope will be
+        // downloaded + uploaded as _signed.pdf below.
+        LatestSignatureRevision latestSigned = findLatestCompletedSignatureRevision(candidate.getUuid());
+        Set<String> filenamesUploadedForSignedRevision = new HashSet<>();
 
         for (CandidateDossierRevision rev : CandidateDossierRevision.findByCandidate(candidate.getUuid())) {
             if (rev.getGeneratedPdfsSnapshot() == null) continue;
@@ -119,12 +153,17 @@ public class SharePointEmployeeFolderService {
                 failed++;
                 continue;
             }
+            boolean isSignedRevision = latestSigned != null
+                    && rev.getUuid().equals(latestSigned.revisionUuid);
             for (GeneratedPdfRef ref : refs) {
                 if (ref.fileUuid() == null) continue;
                 try {
                     byte[] bytes = s3StorageService.fetchGeneratedPdf(ref.fileUuid());
                     sharePointService.uploadFile(siteUrl, driveName, destFolder, ref.filename(), bytes);
                     copied++;
+                    if (isSignedRevision) {
+                        filenamesUploadedForSignedRevision.add(ref.filename());
+                    }
                 } catch (Exception e) {
                     log.errorf(e,
                             "SharePoint copy FAILED for one file " +
@@ -150,6 +189,58 @@ public class SharePointEmployeeFolderService {
             }
         }
 
+        // Signed archival: rename unsigned uploads of the latest COMPLETED
+        // SIGNATURE revision to {name}_unsigned.pdf, then download and
+        // upload signed PDFs as {name}_signed.pdf.
+        List<String> signedFilenames = List.of();
+        if (latestSigned == null) {
+            log.infof("No COMPLETED SIGNATURE revision for candidate=%s — skipping signed archival",
+                    candidate.getUuid());
+        } else {
+            // Rename successful unsigned uploads from this revision.
+            for (String original : filenamesUploadedForSignedRevision) {
+                String renamed = stripPdfSuffix(original) + "_unsigned.pdf";
+                try {
+                    sharePointService.renameFile(siteUrl, driveName, destFolder, original, renamed);
+                } catch (Exception e) {
+                    log.errorf(e,
+                            "SharePoint rename FAILED candidate=%s revision=%s %s -> %s",
+                            candidate.getUuid(), latestSigned.revisionUuid, original, renamed);
+                    failed++;
+                }
+            }
+
+            // Download signed envelope and upload each signed PDF.
+            try {
+                List<SignedDocumentDownload> signed = signingService
+                        .downloadAllSignedDocuments(latestSigned.caseKey);
+                List<String> uploadedSigned = new ArrayList<>(signed.size());
+                for (SignedDocumentDownload doc : signed) {
+                    String signedName = stripPdfSuffix(doc.name()) + "_signed.pdf";
+                    try {
+                        sharePointService.uploadFile(siteUrl, driveName, destFolder,
+                                signedName, doc.pdfBytes());
+                        uploadedSigned.add(signedName);
+                        copied++;
+                    } catch (Exception e) {
+                        log.errorf(e,
+                                "SharePoint upload FAILED for signed PDF " +
+                                "candidate=%s caseKey=%s name=%s",
+                                candidate.getUuid(), latestSigned.caseKey, signedName);
+                        failed++;
+                    }
+                }
+                signedFilenames = List.copyOf(uploadedSigned);
+            } catch (Exception e) {
+                log.errorf(e,
+                        "downloadAllSignedDocuments FAILED candidate=%s caseKey=%s",
+                        candidate.getUuid(), latestSigned.caseKey);
+                // Unknown count — record at least one failure so status
+                // collapses to PARTIAL/FAILED and Slack does not fire.
+                failed++;
+            }
+        }
+
         SharePointMoveStatus status;
         if (failed == 0) {
             status = SharePointMoveStatus.COMPLETED;
@@ -158,9 +249,51 @@ public class SharePointEmployeeFolderService {
         } else {
             status = SharePointMoveStatus.PARTIAL;
         }
-        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d status=%s",
-                candidate.getUuid(), targetUsername, siteUrl, driveName, destFolder, copied, failed, status);
-        return status;
+        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d signed=%d status=%s",
+                candidate.getUuid(), targetUsername, siteUrl, driveName, destFolder,
+                copied, failed, signedFilenames.size(), status);
+        return new CopyResult(status, signedFilenames);
+    }
+
+    /** Strip a trailing {@code .pdf} extension (case-insensitive). */
+    static String stripPdfSuffix(String name) {
+        if (name == null) return "";
+        if (name.length() < 4) return name;
+        String tail = name.substring(name.length() - 4);
+        return tail.equalsIgnoreCase(".pdf")
+                ? name.substring(0, name.length() - 4)
+                : name;
+    }
+
+    /** Internal carrier for the latest COMPLETED SIGNATURE revision lookup. */
+    private record LatestSignatureRevision(String revisionUuid, String caseKey) { }
+
+    /**
+     * Find the most recent {@code SIGNATURE} revision for {@code candidateUuid}
+     * whose linked {@code signing_cases.status = 'COMPLETED'}. Returns
+     * {@code null} when none exists. Native SQL inner-join mirrors the
+     * pattern used by {@code RecruitmentSignatureCompletionListener} so the
+     * recruitment domain has one canonical join shape.
+     */
+    private LatestSignatureRevision findLatestCompletedSignatureRevision(String candidateUuid) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT cdr.uuid, cdr.signing_case_key " +
+                "FROM candidate_dossier_revisions cdr " +
+                "INNER JOIN signing_cases sc " +
+                "  ON cdr.signing_case_key = sc.case_key " +
+                "WHERE cdr.kind = 'SIGNATURE' " +
+                "  AND cdr.signing_case_key IS NOT NULL " +
+                "  AND sc.status = 'COMPLETED' " +
+                "  AND cdr.dossier_uuid IN " +
+                "      (SELECT d.uuid FROM candidate_dossiers d WHERE d.candidate_uuid = :cuuid) " +
+                "ORDER BY cdr.created_at DESC " +
+                "LIMIT 1")
+                .setParameter("cuuid", candidateUuid)
+                .getResultList();
+        if (rows.isEmpty()) return null;
+        Object[] row = rows.get(0);
+        return new LatestSignatureRevision((String) row[0], (String) row[1]);
     }
 
     /**

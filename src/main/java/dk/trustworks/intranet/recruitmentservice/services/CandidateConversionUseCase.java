@@ -15,6 +15,9 @@ import dk.trustworks.intranet.recruitmentservice.model.enums.CandidateStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.DossierStatus;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.recruitmentservice.model.exception.BusinessRuleViolation;
+import dk.trustworks.intranet.recruitmentservice.notifications.RecruitmentHrSlackNotifier;
+import dk.trustworks.intranet.recruitmentservice.services.SharePointEmployeeFolderService.CopyResult;
+import dk.trustworks.intranet.signing.ports.SigningCaseNotFoundException;
 import dk.trustworks.intranet.signing.ports.SigningCaseOwnershipPort;
 import dk.trustworks.intranet.userservice.model.TeamRole;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
@@ -90,6 +93,9 @@ public class CandidateConversionUseCase {
     @Inject
     SharePointEmployeeFolderService sharePointEmployeeFolderService;
 
+    @Inject
+    RecruitmentHrSlackNotifier recruitmentHrSlackNotifier;
+
     @Transactional
     public ConvertResponse execute(UUID candidateUuid, ConvertRequest req, UUID actor) {
         Objects.requireNonNull(req, "req must not be null");
@@ -164,7 +170,15 @@ public class CandidateConversionUseCase {
         // (e.g. resends).
         List<String> caseKeys = collectSigningCaseKeys(candidate.getUuid());
         for (String caseKey : caseKeys) {
-            signingCaseOwnershipPort.transferLocalOwner(caseKey, UUID.fromString(user.uuid));
+            try {
+                signingCaseOwnershipPort.transferLocalOwner(caseKey, UUID.fromString(user.uuid));
+            } catch (SigningCaseNotFoundException e) {
+                // Best-effort audit operation; row may not exist for in-flight candidates
+                // whose Send-for-Signature predates the saveMinimalCase wiring
+                // (recruitment-convert-signed-archive).
+                log.warnf("Skipping ownership transfer for caseKey=%s on candidate=%s: %s",
+                        caseKey, candidate.getUuid(), e.getMessage());
+            }
         }
 
         // (g) Domain transition — guards re-checked inside the entity.
@@ -233,16 +247,26 @@ public class CandidateConversionUseCase {
             return;
         }
 
-        SharePointMoveStatus moveStatus;
+        CopyResult result;
         try {
-            moveStatus = sharePointEmployeeFolderService.copyToEmployeeFolder(
+            result = sharePointEmployeeFolderService.copyToEmployeeFolder(
                     candidate, targetUsername, location);
         } catch (RuntimeException e) {
             log.warnf(e, "runSharePointCopy: SharePoint copy threw for candidate=%s — staying PENDING for retry",
                     candidateUuid);
             return;
         }
-        applySharePointResult(candidateUuid, moveStatus);
+        UUID recruiter = parseUuidOrNull(candidate.getCreatedByUseruuid());
+        applySharePointResult(candidateUuid, result, recruiter);
+    }
+
+    private static UUID parseUuidOrNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**
@@ -250,11 +274,21 @@ public class CandidateConversionUseCase {
      * transaction so the row is locked only for the status write + (on
      * COMPLETED) retention stamping — the slow Graph upload is already done
      * by the time this method is called.
+     *
+     * <p>On {@link SharePointMoveStatus#COMPLETED}, also fires the HR Slack
+     * notification (in-memory deduped per candidate, never throws).
+     *
+     * @param candidateUuid candidate whose move just finished
+     * @param result        copy outcome including signed-PDF filenames
+     * @param recruiterUuid actor who triggered Convert (used by the Slack
+     *                      notifier to resolve recruiter display name); may
+     *                      be {@code null} on batchlet-driven retries
      */
     @Transactional
-    public void applySharePointResult(UUID candidateUuid, SharePointMoveStatus status) {
+    public void applySharePointResult(UUID candidateUuid, CopyResult result, UUID recruiterUuid) {
         Objects.requireNonNull(candidateUuid, "candidateUuid must not be null");
-        Objects.requireNonNull(status, "status must not be null");
+        Objects.requireNonNull(result, "result must not be null");
+        SharePointMoveStatus status = result.status();
         RecruitmentCandidate candidate = RecruitmentCandidate.findById(candidateUuid.toString());
         if (candidate == null) {
             log.warnf("applySharePointResult: candidate=%s not found, cannot update status",
@@ -264,6 +298,7 @@ public class CandidateConversionUseCase {
         candidate.setSharepointMoveStatus(status);
         if (status == SharePointMoveStatus.COMPLETED) {
             sharePointEmployeeFolderService.stampS3RetentionUntil(candidate);
+            recruitmentHrSlackNotifier.notifyHire(candidate, recruiterUuid, result.signedFilenames());
         }
     }
 
