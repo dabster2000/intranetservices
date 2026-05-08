@@ -192,9 +192,28 @@ public class RecruitmentHrSlackNotifier {
      * <p>Idempotent across the JVM lifetime per {@code token.uuid}. Slack
      * failures are logged and swallowed so the upload transaction never
      * rolls back.</p>
+     *
+     * <p>Display name and link URL are pre-resolved by the caller (the
+     * upload service has the user / candidate context in hand and runs
+     * outside any DB transaction, so the notifier no longer reaches back
+     * into Panache). Pass {@code "unknown"} for {@code displayName} or
+     * {@code ""} for {@code linkUrl} if the caller could not resolve
+     * either — never null.</p>
+     *
+     * @param token        the onboarding token whose required types are now all submitted
+     * @param submissions  the full set of submissions for the token (unused
+     *                     for the message body itself but kept for
+     *                     forward-compatibility / count metrics)
+     * @param displayName  candidate full name OR {@code "Full Name (username)"}
+     *                     for the user flow; never null
+     * @param linkUrl      candidate dossier URL (candidate flow) or the
+     *                     SharePoint folder webUrl (user flow); may be empty
+     *                     but never null
      */
     public void notifyOnboardingComplete(OnboardingUploadToken token,
-                                         List<OnboardingUploadSubmission> submissions) {
+                                         List<OnboardingUploadSubmission> submissions,
+                                         String displayName,
+                                         String linkUrl) {
         if (token == null || token.getUuid() == null) {
             log.warn("notifyOnboardingComplete: token or token UUID is null, skipping");
             return;
@@ -205,8 +224,11 @@ public class RecruitmentHrSlackNotifier {
         }
 
         try {
-            String message = formatOnboardingCompleteMessage(token,
-                    submissions == null ? List.of() : submissions);
+            String message = formatOnboardingCompleteMessage(
+                    token,
+                    submissions == null ? List.of() : submissions,
+                    displayName == null ? "unknown" : displayName,
+                    linkUrl == null ? "" : linkUrl);
             slackService.sendMessage(channelId, message, botTokenKey);
             log.infof("HR Slack onboarding-complete notification posted for token=%s channel=%s",
                     token.getUuid(), channelId);
@@ -218,59 +240,18 @@ public class RecruitmentHrSlackNotifier {
 
     /** Visible for tests. */
     String formatOnboardingCompleteMessage(OnboardingUploadToken token,
-                                           List<OnboardingUploadSubmission> submissions) {
+                                           List<OnboardingUploadSubmission> submissions,
+                                           String displayName,
+                                           String linkUrl) {
         int count = submissions.size();
         if (token.getCandidateUuid() != null) {
-            String candidateName = resolveCandidateName(token.getCandidateUuid());
-            String dossierUrl = stripTrailingSlash(dossierBaseUrl) + "/" + token.getCandidateUuid();
-            return ":file_folder: Candidate " + candidateName
+            return ":file_folder: Candidate " + displayName
                     + " has uploaded all required onboarding identity documents ("
-                    + count + " file(s)). " + dossierUrl;
+                    + count + " file(s)). " + linkUrl;
         }
         // User flow.
-        String userUuid = token.getUserUuid();
-        String fullName = "unknown";
-        String username = "unknown";
-        if (userUuid != null) {
-            try {
-                User u = User.findById(userUuid);
-                if (u != null) {
-                    String first = nullSafe(u.getFirstname()).trim();
-                    String last = nullSafe(u.getLastname()).trim();
-                    String composed = (first + " " + last).trim();
-                    if (!composed.isEmpty()) fullName = composed;
-                    if (u.getUsername() != null && !u.getUsername().isBlank()) {
-                        username = u.getUsername();
-                    }
-                }
-            } catch (RuntimeException e) {
-                log.debugf(e, "Could not resolve user for uuid=%s", userUuid);
-            }
-        }
-        String folderUrl = "";
-        for (int i = submissions.size() - 1; i >= 0; i--) {
-            String url = submissions.get(i).getSharepointWebUrl();
-            if (url != null && !url.isBlank()) {
-                folderUrl = url;
-                break;
-            }
-        }
-        return ":file_folder: " + fullName + " (" + username
-                + ") has uploaded all required onboarding identity documents to SharePoint. "
-                + folderUrl;
-    }
-
-    private static String resolveCandidateName(String candidateUuid) {
-        if (candidateUuid == null) return "unknown";
-        try {
-            RecruitmentCandidate c = RecruitmentCandidate.findById(candidateUuid);
-            if (c != null) {
-                String full = (nullSafe(c.getFirstName()) + " " + nullSafe(c.getLastName())).trim();
-                if (!full.isEmpty()) return full;
-            }
-        } catch (RuntimeException e) {
-            log.debugf(e, "Could not resolve candidate name for uuid=%s", candidateUuid);
-        }
-        return "unknown";
+        return ":file_folder: " + displayName
+                + " has uploaded all required onboarding identity documents to SharePoint. "
+                + linkUrl;
     }
 }

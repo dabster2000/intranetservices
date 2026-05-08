@@ -11,7 +11,7 @@ CREATE TABLE onboarding_upload_submissions (
     original_filename        VARCHAR(500) NOT NULL,
     content_type             VARCHAR(100) NOT NULL,
     file_size_bytes          BIGINT       NOT NULL,
-    uploaded_at              TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    uploaded_at              DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     UNIQUE KEY uk_ous_token_doctype (token_uuid, document_type),
     KEY idx_ous_candidate (candidate_uuid),
     KEY idx_ous_user      (user_uuid),
