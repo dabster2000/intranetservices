@@ -9,6 +9,7 @@ import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
 import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
@@ -190,6 +191,48 @@ public class SharePointEmployeeFolderService {
             }
         }
 
+        // ── Onboarding identity documents ────────────────────────────────
+        // Migrate any S3-backed onboarding uploads (driver's licence, health
+        // insurance, criminal record) into <destFolder>/Onboarding/. Same
+        // location the user-flow upload page (OnboardingUploadService) writes
+        // to directly when the token is bound to a user instead of a
+        // candidate. Filenames are deterministic so retries overwrite cleanly
+        // and HR has a predictable layout.
+        String onboardingFolder = destFolder + "/Onboarding";
+        List<OnboardingUploadSubmission> onboardingUploads =
+                OnboardingUploadSubmission.findS3SubmissionsByCandidate(candidate.getUuid());
+        if (!onboardingUploads.isEmpty()) {
+            boolean folderReady = true;
+            try {
+                sharePointService.ensureFolderExists(siteUrl, driveName, onboardingFolder);
+            } catch (Exception e) {
+                log.errorf(e,
+                        "ensureFolderExists FAILED for Onboarding subfolder " +
+                        "candidate=%s dest=%s — counting %d onboarding files as failed",
+                        candidate.getUuid(), onboardingFolder, onboardingUploads.size());
+                failed += onboardingUploads.size();
+                folderReady = false;
+            }
+            if (folderReady) {
+                for (OnboardingUploadSubmission sub : onboardingUploads) {
+                    try {
+                        byte[] bytes = s3StorageService.fetchGeneratedPdf(sub.getS3FileUuid());
+                        String filename = onboardingFilename(sub.getDocumentType(), sub.getContentType());
+                        sharePointService.uploadFile(
+                                siteUrl, driveName, onboardingFolder, filename, bytes);
+                        copied++;
+                    } catch (Exception e) {
+                        log.errorf(e,
+                                "SharePoint copy FAILED for onboarding upload " +
+                                "candidate=%s submission=%s type=%s fileUuid=%s",
+                                candidate.getUuid(), sub.getUuid(),
+                                sub.getDocumentType(), sub.getS3FileUuid());
+                        failed++;
+                    }
+                }
+            }
+        }
+
         // Signed archival: rename unsigned uploads of the latest COMPLETED
         // SIGNATURE revision to {name}_unsigned.pdf, then download and
         // upload signed PDFs as {name}_signed.pdf.
@@ -250,9 +293,9 @@ public class SharePointEmployeeFolderService {
         } else {
             status = SharePointMoveStatus.PARTIAL;
         }
-        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d signed=%d status=%s",
+        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d signed=%d onboarding=%d status=%s",
                 candidate.getUuid(), targetUsername, siteUrl, driveName, destFolder,
-                copied, failed, signedFilenames.size(), status);
+                copied, failed, signedFilenames.size(), onboardingUploads.size(), status);
         return new CopyResult(status, signedFilenames);
     }
 
