@@ -257,6 +257,38 @@ public class SharePointService {
     }
 
     /**
+     * Deletes a previously uploaded file by its DriveItem id, given the
+     * site / drive context the upload returned. Used by compensating-delete
+     * paths (e.g. an upload succeeded but the caller's subsequent audit-row
+     * persist failed and the orphan must be removed).
+     *
+     * <p>404s are swallowed as a successful idempotent delete; any other
+     * {@link SharePointException} is re-thrown so callers can decide whether
+     * to log-and-continue or surface to the user.</p>
+     *
+     * @param siteUrl   the SharePoint site URL the upload used
+     * @param driveName the document library name the upload used
+     * @param driveItemId the DriveItem id returned by the original upload
+     */
+    public void deleteFileById(String siteUrl, String driveName, String driveItemId) {
+        log.infof("Deleting drive item: site=%s, drive=%s, itemId=%s",
+                siteUrl, driveName, driveItemId);
+
+        String siteId = resolveSiteId(siteUrl);
+        String driveId = resolveDriveId(siteId, driveName);
+
+        try {
+            graphClient.deleteItem(driveId, driveItemId);
+        } catch (SharePointException e) {
+            if (e.getStatusCode() == 404) {
+                log.debugf("Drive item already gone (404), treating delete as success: %s", driveItemId);
+                return;
+            }
+            throw e;
+        }
+    }
+
+    /**
      * Gets file metadata without downloading content.
      *
      * @param siteUrl the SharePoint site URL
