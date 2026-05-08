@@ -8,6 +8,8 @@ import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingUploadSubmission;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
@@ -189,6 +191,48 @@ public class SharePointEmployeeFolderService {
             }
         }
 
+        // ── Onboarding identity documents ────────────────────────────────
+        // Migrate any S3-backed onboarding uploads (driver's licence, health
+        // insurance, criminal record) into <destFolder>/Onboarding/. Same
+        // location the user-flow upload page (OnboardingUploadService) writes
+        // to directly when the token is bound to a user instead of a
+        // candidate. Filenames are deterministic so retries overwrite cleanly
+        // and HR has a predictable layout.
+        String onboardingFolder = destFolder + "/Onboarding";
+        List<OnboardingUploadSubmission> onboardingUploads =
+                OnboardingUploadSubmission.findS3SubmissionsByCandidate(candidate.getUuid());
+        if (!onboardingUploads.isEmpty()) {
+            boolean folderReady = true;
+            try {
+                sharePointService.ensureFolderExists(siteUrl, driveName, onboardingFolder);
+            } catch (Exception e) {
+                log.errorf(e,
+                        "ensureFolderExists FAILED for Onboarding subfolder " +
+                        "candidate=%s dest=%s — counting %d onboarding files as failed",
+                        candidate.getUuid(), onboardingFolder, onboardingUploads.size());
+                failed += onboardingUploads.size();
+                folderReady = false;
+            }
+            if (folderReady) {
+                for (OnboardingUploadSubmission sub : onboardingUploads) {
+                    try {
+                        byte[] bytes = s3StorageService.fetchGeneratedPdf(sub.getS3FileUuid());
+                        String filename = onboardingFilename(sub.getDocumentType(), sub.getContentType());
+                        sharePointService.uploadFile(
+                                siteUrl, driveName, onboardingFolder, filename, bytes);
+                        copied++;
+                    } catch (Exception e) {
+                        log.errorf(e,
+                                "SharePoint copy FAILED for onboarding upload " +
+                                "candidate=%s submission=%s type=%s fileUuid=%s",
+                                candidate.getUuid(), sub.getUuid(),
+                                sub.getDocumentType(), sub.getS3FileUuid());
+                        failed++;
+                    }
+                }
+            }
+        }
+
         // Signed archival: rename unsigned uploads of the latest COMPLETED
         // SIGNATURE revision to {name}_unsigned.pdf, then download and
         // upload signed PDFs as {name}_signed.pdf.
@@ -249,9 +293,9 @@ public class SharePointEmployeeFolderService {
         } else {
             status = SharePointMoveStatus.PARTIAL;
         }
-        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d signed=%d status=%s",
+        log.infof("SharePoint copy candidate=%s username=%s site=%s drive=%s dest=%s copied=%d failed=%d signed=%d onboarding=%d status=%s",
                 candidate.getUuid(), targetUsername, siteUrl, driveName, destFolder,
-                copied, failed, signedFilenames.size(), status);
+                copied, failed, signedFilenames.size(), onboardingUploads.size(), status);
         return new CopyResult(status, signedFilenames);
     }
 
@@ -302,7 +346,7 @@ public class SharePointEmployeeFolderService {
      * successful SharePoint copy so the {@code S3RetentionCleanupBatchlet}
      * can reap the originals after the retention window.
      *
-     * @return total rows stamped (revisions + appendices)
+     * @return total rows stamped (revisions + appendices + onboarding uploads)
      */
     public int stampS3RetentionUntil(RecruitmentCandidate candidate) {
         Objects.requireNonNull(candidate, "candidate must not be null");
@@ -317,9 +361,14 @@ public class SharePointEmployeeFolderService {
                 "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
                 "AND fileUuid IS NOT NULL",
                 retentionUntil, candidate.getUuid());
-        log.infof("Stamped s3_retention_until=%s on %d revision(s) + %d appendix(es) for candidate=%s",
-                retentionUntil, revisions, appendices, candidate.getUuid());
-        return revisions + appendices;
+        int onboarding = (int) OnboardingUploadSubmission.update(
+                "s3RetentionUntil = ?1 WHERE candidateUuid = ?2 " +
+                "AND storageTarget = ?3 AND s3FileUuid IS NOT NULL",
+                retentionUntil, candidate.getUuid(),
+                OnboardingUploadSubmission.StorageTarget.S3);
+        log.infof("Stamped s3_retention_until=%s on %d revision(s) + %d appendix(es) + %d onboarding upload(s) for candidate=%s",
+                retentionUntil, revisions, appendices, onboarding, candidate.getUuid());
+        return revisions + appendices + onboarding;
     }
 
     /**
@@ -364,5 +413,46 @@ public class SharePointEmployeeFolderService {
                         "Username contains disallowed character: " + username);
             }
         }
+    }
+
+    /**
+     * Build the deterministic SharePoint filename for an onboarding
+     * identity-document upload during candidate promotion. Format:
+     * {@code <doc_type>.<ext>}, where the doc type is a fixed lowercase
+     * snake_case name and the extension is derived from the submission's
+     * stored content type.
+     *
+     * <p>Filenames are deterministic so the retry batchlet's overwrite
+     * semantics work and HR can predict the layout (drivers_license.pdf,
+     * health_insurance.jpg, criminal_record.png).</p>
+     *
+     * <p>Package-private for unit testing.</p>
+     */
+    static String onboardingFilename(OnboardingDocumentType type, String contentType) {
+        String base = switch (type) {
+            case DRIVERS_LICENSE  -> "drivers_license";
+            case HEALTH_INSURANCE -> "health_insurance";
+            case CRIMINAL_RECORD  -> "criminal_record";
+        };
+        return base + extensionFor(contentType);
+    }
+
+    /**
+     * Resolve a file extension from a stored content_type. Strips any charset
+     * suffix and lowercases. Unknown / null types yield "" (no extension)
+     * rather than guessing — the caller's allowlist
+     * ({@link dk.trustworks.intranet.recruitmentservice.services.OnboardingUploadService})
+     * means the unknown branch should be unreachable in practice.
+     */
+    static String extensionFor(String contentType) {
+        if (contentType == null) return "";
+        int semi = contentType.indexOf(';');
+        String bare = (semi >= 0 ? contentType.substring(0, semi) : contentType).trim().toLowerCase();
+        return switch (bare) {
+            case "application/pdf" -> ".pdf";
+            case "image/jpeg"      -> ".jpg";
+            case "image/png"       -> ".png";
+            default                -> "";
+        };
     }
 }

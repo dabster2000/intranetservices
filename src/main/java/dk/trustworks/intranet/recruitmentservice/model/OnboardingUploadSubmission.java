@@ -86,6 +86,19 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     @Column(name = "file_size_bytes", nullable = false)
     private long fileSizeBytes;
 
+    /**
+     * Lifecycle timestamp for the recruitment S3 reaper. NULL means
+     * <em>not eligible for reaping</em> (default — set on every row at
+     * insert time). Stamped to {@code NOW + 30 days} when the candidate's
+     * promotion-time SharePoint copy reaches
+     * {@link dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus#COMPLETED}
+     * and cleared back to NULL once the S3 reaper has deleted the
+     * underlying object. Has no meaning for SHAREPOINT-target rows, which
+     * never own an S3 object to reap.
+     */
+    @Column(name = "s3_retention_until")
+    private LocalDateTime s3RetentionUntil;
+
     @Column(name = "uploaded_at", nullable = false, updatable = false)
     private LocalDateTime uploadedAt;
 
@@ -112,5 +125,18 @@ public class OnboardingUploadSubmission extends PanacheEntityBase {
     /** Whether the {@code (token, type)} pair already has a submission row. */
     public static boolean existsForTokenAndType(String tokenUuid, OnboardingDocumentType type) {
         return count("tokenUuid = ?1 AND documentType = ?2", tokenUuid, type) > 0;
+    }
+
+    /**
+     * All S3-stored onboarding submissions for the given candidate, ordered
+     * by document type so the upload pass and log output are deterministic.
+     * Used by {@code SharePointEmployeeFolderService.copyToEmployeeFolder}
+     * to migrate identity documents into SharePoint at promotion time.
+     */
+    public static List<OnboardingUploadSubmission> findS3SubmissionsByCandidate(String candidateUuid) {
+        return list(
+                "candidateUuid = ?1 AND storageTarget = ?2 AND s3FileUuid IS NOT NULL " +
+                "ORDER BY documentType",
+                candidateUuid, StorageTarget.S3);
     }
 }
