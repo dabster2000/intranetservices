@@ -8,6 +8,7 @@ import dk.trustworks.intranet.sharepoint.dto.DriveItemCollectionResponse;
 import dk.trustworks.intranet.sharepoint.dto.Site;
 import io.quarkus.oidc.client.filter.OidcClientFilter;
 import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.Encoded;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
@@ -204,6 +205,26 @@ public interface GraphApiClient {
         @PathParam("driveId") String driveId,
         @PathParam("itemId") String itemId,
         UpdateItemRequest patch
+    );
+
+    /**
+     * Deletes a DriveItem by its ID. Used as a compensating action when a
+     * caller has already uploaded a file but needs to remove it (e.g. the
+     * subsequent audit-row persist failed and the upload must be undone).
+     *
+     * <p>Returns 204 on success, 404 if the item is already gone (treat as
+     * idempotent). Other 4xx/5xx errors propagate via the registered
+     * {@code GraphResponseExceptionMapper}.</p>
+     *
+     * @param driveId the unique drive identifier
+     * @param itemId  the unique item identifier
+     * @see <a href="https://learn.microsoft.com/en-us/graph/api/driveitem-delete">Delete DriveItem</a>
+     */
+    @DELETE
+    @Path("/drives/{driveId}/items/{itemId}")
+    void deleteItem(
+        @PathParam("driveId") String driveId,
+        @PathParam("itemId") String itemId
     );
 
     /**
