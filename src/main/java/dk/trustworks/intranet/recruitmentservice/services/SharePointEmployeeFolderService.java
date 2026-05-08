@@ -8,6 +8,7 @@ import dk.trustworks.intranet.documentservice.model.enums.SharePointLocationType
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierAppendix;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossierRevision;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
 import dk.trustworks.intranet.recruitmentservice.model.RecruitmentCandidate;
 import dk.trustworks.intranet.recruitmentservice.model.enums.SharePointMoveStatus;
 import dk.trustworks.intranet.sharepoint.service.SharePointService;
@@ -364,5 +365,46 @@ public class SharePointEmployeeFolderService {
                         "Username contains disallowed character: " + username);
             }
         }
+    }
+
+    /**
+     * Build the deterministic SharePoint filename for an onboarding
+     * identity-document upload during candidate promotion. Format:
+     * {@code <doc_type>.<ext>}, where the doc type is a fixed lowercase
+     * snake_case name and the extension is derived from the submission's
+     * stored content type.
+     *
+     * <p>Filenames are deterministic so the retry batchlet's overwrite
+     * semantics work and HR can predict the layout (drivers_license.pdf,
+     * health_insurance.jpg, criminal_record.png).</p>
+     *
+     * <p>Package-private for unit testing.</p>
+     */
+    static String onboardingFilename(OnboardingDocumentType type, String contentType) {
+        String base = switch (type) {
+            case DRIVERS_LICENSE  -> "drivers_license";
+            case HEALTH_INSURANCE -> "health_insurance";
+            case CRIMINAL_RECORD  -> "criminal_record";
+        };
+        return base + extensionFor(contentType);
+    }
+
+    /**
+     * Resolve a file extension from a stored content_type. Strips any charset
+     * suffix and lowercases. Unknown / null types yield "" (no extension)
+     * rather than guessing — the caller's allowlist
+     * ({@link dk.trustworks.intranet.recruitmentservice.services.OnboardingUploadService})
+     * means the unknown branch should be unreachable in practice.
+     */
+    static String extensionFor(String contentType) {
+        if (contentType == null) return "";
+        int semi = contentType.indexOf(';');
+        String bare = (semi >= 0 ? contentType.substring(0, semi) : contentType).trim().toLowerCase();
+        return switch (bare) {
+            case "application/pdf" -> ".pdf";
+            case "image/jpeg"      -> ".jpg";
+            case "image/png"       -> ".png";
+            default                -> "";
+        };
     }
 }
