@@ -10,4 +10,6 @@
 ALTER TABLE onboarding_upload_submissions
     ADD COLUMN s3_retention_until DATETIME(6) NULL
         COMMENT 'Eligible for S3 reaping when set and elapsed (mirrors candidate_dossier_revisions.s3_retention_until). NULL on rows that have not been moved to SharePoint or whose owner is the user-flow.',
-    ADD INDEX idx_ous_s3_retention (s3_retention_until);
+    ADD INDEX idx_ous_s3_retention (s3_retention_until),
+    ALGORITHM=INPLACE,
+    LOCK=NONE;
