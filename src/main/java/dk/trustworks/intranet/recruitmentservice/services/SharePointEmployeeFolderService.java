@@ -361,9 +361,14 @@ public class SharePointEmployeeFolderService {
                 "(SELECT d.uuid FROM CandidateDossier d WHERE d.candidateUuid = ?2) " +
                 "AND fileUuid IS NOT NULL",
                 retentionUntil, candidate.getUuid());
-        log.infof("Stamped s3_retention_until=%s on %d revision(s) + %d appendix(es) for candidate=%s",
-                retentionUntil, revisions, appendices, candidate.getUuid());
-        return revisions + appendices;
+        int onboarding = (int) OnboardingUploadSubmission.update(
+                "s3RetentionUntil = ?1 WHERE candidateUuid = ?2 " +
+                "AND storageTarget = ?3 AND s3FileUuid IS NOT NULL",
+                retentionUntil, candidate.getUuid(),
+                OnboardingUploadSubmission.StorageTarget.S3);
+        log.infof("Stamped s3_retention_until=%s on %d revision(s) + %d appendix(es) + %d onboarding upload(s) for candidate=%s",
+                retentionUntil, revisions, appendices, onboarding, candidate.getUuid());
+        return revisions + appendices + onboarding;
     }
 
     /**
