@@ -346,7 +346,7 @@ public class SharePointEmployeeFolderService {
      * successful SharePoint copy so the {@code S3RetentionCleanupBatchlet}
      * can reap the originals after the retention window.
      *
-     * @return total rows stamped (revisions + appendices)
+     * @return total rows stamped (revisions + appendices + onboarding uploads)
      */
     public int stampS3RetentionUntil(RecruitmentCandidate candidate) {
         Objects.requireNonNull(candidate, "candidate must not be null");
