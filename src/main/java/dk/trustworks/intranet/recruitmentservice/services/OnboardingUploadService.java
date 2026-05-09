@@ -134,7 +134,7 @@ public class OnboardingUploadService {
 
         // Token-flag gate: the type must be one the token explicitly asked for.
         if (!isTypeAllowedByToken(token, type)) {
-            throw badRequest("DOCUMENT_TYPE_NOT_ALLOWED");
+            throw badRequest(OnboardingErrorCodes.DOCUMENT_TYPE_NOT_ALLOWED);
         }
 
         // Single-shot per type — first-pass check (race-safe DB unique key
@@ -145,19 +145,19 @@ public class OnboardingUploadService {
 
         // Bytes / MIME / size sanity check.
         if (bytes == null || bytes.length == 0) {
-            throw badRequest("EMPTY_FILE");
+            throw badRequest(OnboardingErrorCodes.EMPTY_FILE);
         }
         if (bytes.length > MAX_BYTES) {
-            throw badRequest("FILE_TOO_LARGE");
+            throw badRequest(OnboardingErrorCodes.FILE_TOO_LARGE);
         }
         String normalisedContentType = normaliseContentType(contentType);
         if (!ALLOWED_MIME_TYPES.contains(normalisedContentType)) {
-            throw badRequest("UNSUPPORTED_MEDIA_TYPE");
+            throw badRequest(OnboardingErrorCodes.UNSUPPORTED_MEDIA_TYPE);
         }
         if (!magicMatches(normalisedContentType, bytes)) {
             // Asserted MIME and actual bytes disagree — refuse rather than
             // trust the public-facing Content-Type header.
-            throw badRequest("UNSUPPORTED_MEDIA_TYPE");
+            throw badRequest(OnboardingErrorCodes.UNSUPPORTED_MEDIA_TYPE);
         }
 
         // ── 1b. AI validation gate. Synchronous; fail-closed. ────────────
@@ -174,7 +174,7 @@ public class OnboardingUploadService {
         // Sanitise filename — never trust public input as a path component.
         String safeFilename = sanitiseFilename(filename);
         if (safeFilename.isBlank()) {
-            throw badRequest("INVALID_FILENAME");
+            throw badRequest(OnboardingErrorCodes.INVALID_FILENAME);
         }
 
         // Branch on token ownership (XOR enforced both at DB and here).
@@ -439,7 +439,7 @@ public class OnboardingUploadService {
     private static WebApplicationException alreadySubmitted() {
         return new WebApplicationException(
                 Response.status(Response.Status.CONFLICT)
-                        .entity("{\"error\":\"ALREADY_SUBMITTED\"}")
+                        .entity("{\"error\":\"" + OnboardingErrorCodes.ALREADY_SUBMITTED + "\"}")
                         .type(MediaType.APPLICATION_JSON)
                         .build());
     }
@@ -465,7 +465,7 @@ public class OnboardingUploadService {
         String safe = reason == null ? "" : reason
                 .replace("\\", "\\\\")
                 .replace("\"", "\\\"");
-        String body = "{\"error\":\"AI_REJECTED\",\"reason\":\"" + safe + "\"}";
+        String body = "{\"error\":\"" + OnboardingErrorCodes.AI_REJECTED + "\",\"reason\":\"" + safe + "\"}";
         return new WebApplicationException(
                 Response.status(422)
                         .entity(body)

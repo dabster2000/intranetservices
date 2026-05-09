@@ -10,6 +10,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.Base64;
+
 /**
  * Synchronous AI validator for the public onboarding upload endpoint.
  *
@@ -30,6 +32,8 @@ import lombok.extern.jbosslog.JBossLog;
 public class OnboardingDocumentValidationService {
 
     static final ObjectMapper MAPPER = new ObjectMapper();
+
+    static final ObjectNode SCHEMA = buildSchema();
 
     public record ValidationDecision(boolean approved, String reason) {}
 
@@ -244,7 +248,7 @@ public class OnboardingDocumentValidationService {
         if (type == null || bytes == null || bytes.length == 0) {
             return new ValidationDecision(false, "No document provided to validate.");
         }
-        String base64 = java.util.Base64.getEncoder().encodeToString(bytes);
+        String base64 = Base64.getEncoder().encodeToString(bytes);
         String system = systemPromptFor(type);
         String raw;
         try {
@@ -253,7 +257,7 @@ public class OnboardingDocumentValidationService {
                     "Validate this image and return the JSON object specified by the schema.",
                     base64,
                     mimeType,
-                    buildSchema(),
+                    SCHEMA,
                     "OnboardingDocValidation",
                     FALLBACK_REJECTED_JSON);
         } catch (RuntimeException e) {
