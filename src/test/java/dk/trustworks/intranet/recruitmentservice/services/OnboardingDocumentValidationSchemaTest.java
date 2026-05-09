@@ -194,4 +194,13 @@ class OnboardingDocumentValidationSchemaTest {
         assertEquals(false, d.approved());
         assertTrue(d.reason().length() >= 5);
     }
+
+    @Test
+    void validate_publicMethodExistsWithExpectedSignature() throws Exception {
+        java.lang.reflect.Method m = OnboardingDocumentValidationService.class
+                .getMethod("validate", OnboardingDocumentType.class, byte[].class, String.class);
+        assertEquals(
+                OnboardingDocumentValidationService.ValidationDecision.class,
+                m.getReturnType());
+    }
 }

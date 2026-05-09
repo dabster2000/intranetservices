@@ -232,4 +232,38 @@ public class OnboardingDocumentValidationService {
         }
         return new ValidationDecision(approved, reason);
     }
+
+    /**
+     * Validate one uploaded document against the type-specific prompt.
+     *
+     * <p>Returns a rejected {@link ValidationDecision} on any failure path —
+     * transport error, refusal, malformed JSON, or guardrail mismatch. The
+     * caller never has to handle exceptions.</p>
+     */
+    public ValidationDecision validate(OnboardingDocumentType type, byte[] bytes, String mimeType) {
+        if (type == null || bytes == null || bytes.length == 0) {
+            return new ValidationDecision(false, "No document provided to validate.");
+        }
+        String base64 = java.util.Base64.getEncoder().encodeToString(bytes);
+        String system = systemPromptFor(type);
+        String raw;
+        try {
+            raw = openAIService.askWithSchemaAndImage(
+                    system,
+                    "Validate this image and return the JSON object specified by the schema.",
+                    base64,
+                    mimeType,
+                    buildSchema(),
+                    "OnboardingDocValidation",
+                    FALLBACK_REJECTED_JSON);
+        } catch (RuntimeException e) {
+            log.errorf(e, "[OnboardingValidate] OpenAI call failed for type=%s", type);
+            return new ValidationDecision(false,
+                    "AI validation failed — please try again, or contact hr@trustworks.dk if it keeps failing.");
+        }
+        ValidationDecision d = parseDecision(raw);
+        log.infof("[OnboardingValidate] type=%s approved=%s reasonLen=%d",
+                type, d.approved(), d.reason() == null ? 0 : d.reason().length());
+        return d;
+    }
 }
