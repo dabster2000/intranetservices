@@ -100,4 +100,98 @@ class OnboardingDocumentValidationSchemaTest {
                 OnboardingDocumentType.CRIMINAL_RECORD);
         assertTrue(!dl.equals(hi) && !hi.equals(cr) && !dl.equals(cr));
     }
+
+    @Test
+    void parse_validApprovedResponse() {
+        String raw = """
+            {
+              "approved": true,
+              "reason": "Document looks good.",
+              "checks": {
+                "isCorrectDocumentType": true,
+                "isDanish": true,
+                "isReadable": true,
+                "isValid": true
+              }
+            }
+            """;
+        var d = OnboardingDocumentValidationService.parseDecision(raw);
+        assertTrue(d.approved());
+        assertEquals("Document looks good.", d.reason());
+    }
+
+    @Test
+    void parse_validRejectedResponse() {
+        String raw = """
+            {
+              "approved": false,
+              "reason": "Image is too blurry to read the expiry date.",
+              "checks": {
+                "isCorrectDocumentType": true,
+                "isDanish": true,
+                "isReadable": false,
+                "isValid": true
+              }
+            }
+            """;
+        var d = OnboardingDocumentValidationService.parseDecision(raw);
+        assertEquals(false, d.approved());
+        assertEquals("Image is too blurry to read the expiry date.", d.reason());
+    }
+
+    @Test
+    void parse_guardrail_flipsApprovedToFalseWhenCheckFails() {
+        // Model claims approved=true but isReadable=false. Guardrail forces rejection.
+        String raw = """
+            {
+              "approved": true,
+              "reason": "Looks fine.",
+              "checks": {
+                "isCorrectDocumentType": true,
+                "isDanish": true,
+                "isReadable": false,
+                "isValid": true
+              }
+            }
+            """;
+        var d = OnboardingDocumentValidationService.parseDecision(raw);
+        assertEquals(false, d.approved());
+        assertTrue(d.reason().toLowerCase().contains("inconsistency")
+                || d.reason().toLowerCase().contains("re-upload"));
+    }
+
+    @Test
+    void parse_emptyOrGarbage_returnsRejected() {
+        var empty = OnboardingDocumentValidationService.parseDecision("");
+        assertEquals(false, empty.approved());
+        var garbage = OnboardingDocumentValidationService.parseDecision("not json at all");
+        assertEquals(false, garbage.approved());
+    }
+
+    @Test
+    void parse_missingChecks_returnsRejected() {
+        String raw = """
+            { "approved": true, "reason": "All good" }
+            """;
+        var d = OnboardingDocumentValidationService.parseDecision(raw);
+        assertEquals(false, d.approved());
+    }
+
+    @Test
+    void parse_reasonMissing_usesGenericFallback() {
+        String raw = """
+            {
+              "approved": false,
+              "checks": {
+                "isCorrectDocumentType": false,
+                "isDanish": false,
+                "isReadable": false,
+                "isValid": false
+              }
+            }
+            """;
+        var d = OnboardingDocumentValidationService.parseDecision(raw);
+        assertEquals(false, d.approved());
+        assertTrue(d.reason().length() >= 5);
+    }
 }

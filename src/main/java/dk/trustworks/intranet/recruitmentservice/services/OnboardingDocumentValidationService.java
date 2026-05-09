@@ -182,4 +182,53 @@ public class OnboardingDocumentValidationService {
             case CRIMINAL_RECORD  -> SYSTEM_PROMPT_CRIMINAL_RECORD;
         };
     }
+
+    /**
+     * Parse a strict-JSON-Schema response from OpenAI into a
+     * {@link ValidationDecision}. Applies the guardrail
+     * {@code approved == AND(checks)} after parsing.
+     *
+     * <p>Any of: empty input, unparsable input, missing {@code checks}
+     * object, or {@code approved} disagreeing with the AND of its checks
+     * yields a rejected decision with a generic friendly reason. The
+     * caller never has to deal with malformed AI output.</p>
+     */
+    static ValidationDecision parseDecision(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return new ValidationDecision(false, "AI validation returned no response — please try again.");
+        }
+        com.fasterxml.jackson.databind.JsonNode node;
+        try {
+            node = MAPPER.readTree(raw);
+        } catch (Exception e) {
+            log.warnf("[OnboardingValidate] Could not parse AI response: %s",
+                    raw.length() > 200 ? raw.substring(0, 200) + "..." : raw);
+            return new ValidationDecision(false,
+                    "AI validation returned an unreadable response — please try again.");
+        }
+        com.fasterxml.jackson.databind.JsonNode checks = node.path("checks");
+        if (!checks.isObject()) {
+            return new ValidationDecision(false,
+                    "AI validation returned an incomplete response — please try again.");
+        }
+        boolean expected = checks.path("isCorrectDocumentType").asBoolean(false)
+                && checks.path("isDanish").asBoolean(false)
+                && checks.path("isReadable").asBoolean(false)
+                && checks.path("isValid").asBoolean(false);
+        boolean approved = node.path("approved").asBoolean(false);
+        String reason = node.path("reason").asText("");
+        if (reason == null || reason.isBlank()) {
+            reason = expected
+                    ? "Document accepted."
+                    : "Document could not be validated — please re-upload a clearer image.";
+        }
+        if (approved != expected) {
+            // Guardrail: trust the per-check booleans, not the top-level claim.
+            log.warnf("[OnboardingValidate] approved/checks mismatch: approved=%s expected=%s",
+                    approved, expected);
+            return new ValidationDecision(false,
+                    "Validation inconsistency — please re-upload the document.");
+        }
+        return new ValidationDecision(approved, reason);
+    }
 }
