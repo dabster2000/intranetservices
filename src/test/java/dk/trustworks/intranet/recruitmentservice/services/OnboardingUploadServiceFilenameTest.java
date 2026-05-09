@@ -105,14 +105,10 @@ class OnboardingUploadServiceFilenameTest {
     // ── magic-byte sniffing (defense against lying Content-Type) ──────────
 
     @Test
-    void magic_pdf_matchesPDFHeader() {
+    void magic_pdf_isNoLongerAccepted() {
+        // PDF support was deliberately removed when AI document validation
+        // landed — the vision API takes images only.
         byte[] bytes = {0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37};
-        assertTrue(OnboardingUploadService.magicMatches("application/pdf", bytes));
-    }
-
-    @Test
-    void magic_pdf_rejectsNonPDFBytes() {
-        byte[] bytes = {0x4d, 0x5a, (byte) 0x90, 0x00}; // PE/EXE header.
         assertEquals(false, OnboardingUploadService.magicMatches("application/pdf", bytes));
     }
 
@@ -130,7 +126,6 @@ class OnboardingUploadServiceFilenameTest {
 
     @Test
     void magic_rejectsTooShortInput() {
-        assertEquals(false, OnboardingUploadService.magicMatches("application/pdf", new byte[]{0x25, 0x50}));
         assertEquals(false, OnboardingUploadService.magicMatches("image/png", new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47}));
     }
 

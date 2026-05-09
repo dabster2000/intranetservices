@@ -73,9 +73,11 @@ public class OnboardingUploadService {
      * in {@link #magicMatches} so a caller cannot bypass the format
      * restriction by lying about the type ({@code application/octet-stream}
      * is intentionally excluded).</p>
+     *
+     * <p>PDF was dropped when AI document validation landed — the vision
+     * API takes images only, and the client-side accept list now matches.</p>
      */
     private static final Set<String> ALLOWED_MIME_TYPES = Set.of(
-            "application/pdf",
             "image/jpeg",
             "image/png"
     );
@@ -464,7 +466,6 @@ public class OnboardingUploadService {
      * unintended file format past the allowlist.
      *
      * <ul>
-     *   <li>PDF: {@code 25 50 44 46} ("%PDF")</li>
      *   <li>JPEG: {@code FF D8 FF}</li>
      *   <li>PNG: {@code 89 50 4E 47 0D 0A 1A 0A}</li>
      * </ul>
@@ -472,8 +473,6 @@ public class OnboardingUploadService {
     static boolean magicMatches(String contentType, byte[] bytes) {
         if (bytes == null || bytes.length < 4) return false;
         return switch (contentType) {
-            case "application/pdf" ->
-                    bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46;
             case "image/jpeg" ->
                     (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8 && (bytes[2] & 0xff) == 0xff;
             case "image/png" -> bytes.length >= 8
