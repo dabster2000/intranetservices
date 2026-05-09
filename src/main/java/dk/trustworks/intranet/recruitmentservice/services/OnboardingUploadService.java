@@ -40,12 +40,19 @@ import java.util.UUID;
  * keep the slow S3/SharePoint upload (1–5 s round trip) <i>outside</i> any
  * DB transaction so we don't hold a connection while waiting on a
  * remote HTTP API. The narrow audit-row insert runs in its own
- * transaction via {@link OnboardingSubmissionPersister}.</p>
+ * transaction via {@link OnboardingSubmissionPersister}. The AI vision
+ * call (3–8 s typical latency) likewise runs outside any transaction,
+ * for the same reason — we never hold a JDBC connection while waiting
+ * on a remote HTTP API.</p>
  *
  * <p><b>Order of operations:</b></p>
  * <ol>
  *   <li>Read-only validation (token lookup, expiry, type-allowed,
  *       existsForTokenAndType, MIME / size / magic-byte / filename) — no TX.</li>
+ *   <li>AI document validation gate — synchronous OpenAI vision call
+ *       against the type-specific prompt; fail-closed (rejection throws
+ *       <b>422 AI_REJECTED</b>); still no DB transaction, so the slow
+ *       remote call does not hold a connection.</li>
  *   <li>Pre-resolve display name + link URL for the eventual Slack message
  *       so the notifier needs no further DB reads.</li>
  *   <li>Upload bytes to S3 / SharePoint — <i>still no TX</i>.</li>

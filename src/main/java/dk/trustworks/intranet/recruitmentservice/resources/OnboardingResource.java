@@ -145,6 +145,9 @@ public class OnboardingResource {
                     .build();
         }
 
+        // AI_REJECTED arrives as a WebApplicationException(422) built in
+        // OnboardingUploadService.aiRejected(); Quarkus passes it through
+        // with the JSON body intact, so no explicit catch arm is needed.
         try {
             OnboardingValidateResponse response = onboardingUploadService.handleUpload(
                     tokenUuid,
@@ -156,14 +159,9 @@ public class OnboardingResource {
         } catch (ForbiddenException fe) {
             // Same silence rule as /validate — never leak token existence.
             return Response.status(Response.Status.FORBIDDEN).build();
-        }
-        // Note: AI_REJECTED arrives as a WebApplicationException with a
-        // 422 Response built in OnboardingUploadService.aiRejected();
-        // Quarkus passes it through with the body intact.
-        catch (BadRequestException bre) {
+        } catch (BadRequestException bre) {
             return bre.getResponse();
         }
-
     }
 
     // ── Protected lookup endpoints ─────────────────────────────────────────────
