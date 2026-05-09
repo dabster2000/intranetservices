@@ -97,6 +97,9 @@ public class OnboardingUploadService {
     @Inject
     OnboardingSubmissionPersister onboardingSubmissionPersister;
 
+    @Inject
+    OnboardingDocumentValidationService documentValidationService;
+
     @ConfigProperty(name = "recruitment.hr.slack.dossier-base-url",
             defaultValue = "https://intra.trustworks.dk/recruitment/candidates")
     String dossierBaseUrl;
@@ -148,6 +151,17 @@ public class OnboardingUploadService {
             // Asserted MIME and actual bytes disagree — refuse rather than
             // trust the public-facing Content-Type header.
             throw badRequest("UNSUPPORTED_MEDIA_TYPE");
+        }
+
+        // ── 1b. AI validation gate. Synchronous; fail-closed. ────────────
+        // Runs after structural checks but before any storage write so
+        // rejected documents never reach S3/SharePoint.
+        OnboardingDocumentValidationService.ValidationDecision aiDecision =
+                documentValidationService.validate(type, bytes, normalisedContentType);
+        if (!aiDecision.approved()) {
+            log.infof("Onboarding upload AI-rejected token=%s type=%s reasonLen=%d",
+                    tokenUuid, type, aiDecision.reason() == null ? 0 : aiDecision.reason().length());
+            throw aiRejected(sanitiseReasonForBody(aiDecision.reason()));
         }
 
         // Sanitise filename — never trust public input as a path component.
@@ -450,6 +464,19 @@ public class OnboardingUploadService {
                         .entity(body)
                         .type(MediaType.APPLICATION_JSON)
                         .build());
+    }
+
+    /**
+     * Strip ASCII control characters (U+0000–U+001F) from an AI-supplied
+     * reason before it is embedded into the JSON response body. The model
+     * is prompted for "one short sentence", but a misbehaving model could
+     * still emit a stray newline or tab, which would produce invalid JSON
+     * if pasted as-is into a string literal. Replace each control char
+     * with a space; collapse the result to a single line.
+     */
+    private static String sanitiseReasonForBody(String reason) {
+        if (reason == null) return "";
+        return reason.replaceAll("[\\x00-\\x1F]", " ").trim();
     }
 
     /**
