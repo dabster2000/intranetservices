@@ -44,7 +44,7 @@ public class StatusService {
     }
 
     public UserStatus getLatestEmploymentStatus(String useruuid) {
-        List<UserStatus> userStatusList = UserStatus.find("useruuid like ?1 and statusdate < ?2 order by statusdate desc", useruuid, LocalDate.now()).list();
+        List<UserStatus> userStatusList = UserStatus.find("useruuid like ?1 and statusdate <= ?2 order by statusdate desc", useruuid, LocalDate.now()).list();
         UserStatus latestEmployed = null;
         for (UserStatus userStatus : userStatusList) {
             if(userStatus.getStatus().equals(StatusType.TERMINATED)) return latestEmployed;

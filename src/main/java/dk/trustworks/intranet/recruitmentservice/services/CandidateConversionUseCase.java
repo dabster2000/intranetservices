@@ -27,6 +27,7 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -60,7 +61,15 @@ import java.util.stream.Collectors;
  * <ol>
  *   <li>Load candidate; guard ACTIVE state.</li>
  *   <li>Provision a new {@link User} via {@link UserService#createUser}.</li>
- *   <li>Insert {@link UserStatus} with {@link StatusType#PREBOARDING}.</li>
+ *   <li>Insert two {@link UserStatus} rows:
+ *       (1) {@link StatusType#PREBOARDING} at
+ *       {@code max(plannedStart - 2 months, today)} with {@code allocation = 0}
+ *       and {@code is_tw_bonus_eligible = false}, and
+ *       (2) {@link StatusType#ACTIVE} at {@code plannedStart} with the requested
+ *       allocation and {@code is_tw_bonus_eligible = true}. PREBOARDING is
+ *       skipped when its computed statusdate equals {@code plannedStart}
+ *       (i.e. {@code plannedStart} on or before today) to honour
+ *       {@code uq_userstatus_user_date(useruuid, statusdate)}.</li>
  *   <li>Insert {@link UserCareerLevel}.</li>
  *   <li>Insert {@link TeamRole}.</li>
  *   <li>For each unique signing case key referenced by the candidate's
@@ -132,17 +141,39 @@ public class CandidateConversionUseCase {
         user.setUsername(req.username());
         userService.createUser(user);
 
-        // (c) PREBOARDING status row — statusdate = the planned start date
-        // so reports like "starts soon" pick up the new joiner.
-        UserStatus status = new UserStatus(
+        // (c) Two status rows: PREBOARDING (alloc=0, bonus=false) makes the
+        // new user discoverable to StatusService.getLatestEmploymentStatus
+        // today so the SharePoint copy resolves the user's company on
+        // convert day. ACTIVE carries the requested allocation and bonus
+        // eligibility. Skipping PREBOARDING when its date collapses onto
+        // plannedStart honours uq_userstatus_user_date(useruuid, statusdate).
+        LocalDate plannedStart = req.plannedStartDate();
+        LocalDate preboardingDate = computePreboardingDate(plannedStart, LocalDate.now());
+        if (preboardingDate.equals(plannedStart)) {
+            log.debugf("Skipping PREBOARDING insert: user=%s plannedStart=%s equals preboardingDate", user.uuid, plannedStart);
+        } else {
+            UserStatus preboarding = new UserStatus(
+                    req.consultantType(),
+                    StatusType.PREBOARDING,
+                    preboardingDate,
+                    0,
+                    user.uuid);
+            preboarding.setUuid(UUID.randomUUID().toString());
+            preboarding.setCompany(company);
+            preboarding.setTwBonusEligible(false);
+            UserStatus.persist(preboarding);
+        }
+
+        UserStatus active = new UserStatus(
                 req.consultantType(),
-                StatusType.PREBOARDING,
-                req.plannedStartDate(),
+                StatusType.ACTIVE,
+                plannedStart,
                 req.allocation(),
                 user.uuid);
-        status.setUuid(UUID.randomUUID().toString());
-        status.setCompany(company);
-        UserStatus.persist(status);
+        active.setUuid(UUID.randomUUID().toString());
+        active.setCompany(company);
+        active.setTwBonusEligible(true);
+        UserStatus.persist(active);
 
         // (d) Career level — active_from is the planned start so the
         // user's earliest career-level row aligns with their hire date.
@@ -267,6 +298,23 @@ public class CandidateConversionUseCase {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    /**
+     * PREBOARDING statusdate = 2 months before the planned start, but never
+     * in the past — clamp to {@code today} when the rule would otherwise
+     * yield a date earlier than today. The result is used for the
+     * PREBOARDING row inserted at conversion time. Same-date with
+     * {@code plannedStart} is handled by the caller (we skip PREBOARDING
+     * to honour {@code uq_userstatus_user_date}).
+     *
+     * <p>Package-private for unit testing.</p>
+     */
+    static LocalDate computePreboardingDate(LocalDate plannedStart, LocalDate today) {
+        Objects.requireNonNull(plannedStart, "plannedStart must not be null");
+        Objects.requireNonNull(today, "today must not be null");
+        LocalDate twoMonthsBefore = plannedStart.minusMonths(2);
+        return twoMonthsBefore.isBefore(today) ? today : twoMonthsBefore;
     }
 
     /**
