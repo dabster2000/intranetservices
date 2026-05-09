@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.recruitmentservice.services;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -197,7 +198,7 @@ public class OnboardingDocumentValidationService {
         if (raw == null || raw.isBlank()) {
             return new ValidationDecision(false, "AI validation returned no response — please try again.");
         }
-        com.fasterxml.jackson.databind.JsonNode node;
+        JsonNode node;
         try {
             node = MAPPER.readTree(raw);
         } catch (Exception e) {
@@ -206,7 +207,7 @@ public class OnboardingDocumentValidationService {
             return new ValidationDecision(false,
                     "AI validation returned an unreadable response — please try again.");
         }
-        com.fasterxml.jackson.databind.JsonNode checks = node.path("checks");
+        JsonNode checks = node.path("checks");
         if (!checks.isObject()) {
             return new ValidationDecision(false,
                     "AI validation returned an incomplete response — please try again.");
