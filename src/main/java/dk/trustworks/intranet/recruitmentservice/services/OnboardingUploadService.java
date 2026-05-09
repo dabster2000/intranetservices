@@ -40,12 +40,19 @@ import java.util.UUID;
  * keep the slow S3/SharePoint upload (1–5 s round trip) <i>outside</i> any
  * DB transaction so we don't hold a connection while waiting on a
  * remote HTTP API. The narrow audit-row insert runs in its own
- * transaction via {@link OnboardingSubmissionPersister}.</p>
+ * transaction via {@link OnboardingSubmissionPersister}. The AI vision
+ * call (3–8 s typical latency) likewise runs outside any transaction,
+ * for the same reason — we never hold a JDBC connection while waiting
+ * on a remote HTTP API.</p>
  *
  * <p><b>Order of operations:</b></p>
  * <ol>
  *   <li>Read-only validation (token lookup, expiry, type-allowed,
  *       existsForTokenAndType, MIME / size / magic-byte / filename) — no TX.</li>
+ *   <li>AI document validation gate — synchronous OpenAI vision call
+ *       against the type-specific prompt; fail-closed (rejection throws
+ *       <b>422 AI_REJECTED</b>); still no DB transaction, so the slow
+ *       remote call does not hold a connection.</li>
  *   <li>Pre-resolve display name + link URL for the eventual Slack message
  *       so the notifier needs no further DB reads.</li>
  *   <li>Upload bytes to S3 / SharePoint — <i>still no TX</i>.</li>
@@ -73,9 +80,11 @@ public class OnboardingUploadService {
      * in {@link #magicMatches} so a caller cannot bypass the format
      * restriction by lying about the type ({@code application/octet-stream}
      * is intentionally excluded).</p>
+     *
+     * <p>PDF was dropped when AI document validation landed — the vision
+     * API takes images only, and the client-side accept list now matches.</p>
      */
     private static final Set<String> ALLOWED_MIME_TYPES = Set.of(
-            "application/pdf",
             "image/jpeg",
             "image/png"
     );
@@ -94,6 +103,9 @@ public class OnboardingUploadService {
 
     @Inject
     OnboardingSubmissionPersister onboardingSubmissionPersister;
+
+    @Inject
+    OnboardingDocumentValidationService documentValidationService;
 
     @ConfigProperty(name = "recruitment.hr.slack.dossier-base-url",
             defaultValue = "https://intra.trustworks.dk/recruitment/candidates")
@@ -122,7 +134,7 @@ public class OnboardingUploadService {
 
         // Token-flag gate: the type must be one the token explicitly asked for.
         if (!isTypeAllowedByToken(token, type)) {
-            throw badRequest("DOCUMENT_TYPE_NOT_ALLOWED");
+            throw badRequest(OnboardingErrorCodes.DOCUMENT_TYPE_NOT_ALLOWED);
         }
 
         // Single-shot per type — first-pass check (race-safe DB unique key
@@ -133,25 +145,36 @@ public class OnboardingUploadService {
 
         // Bytes / MIME / size sanity check.
         if (bytes == null || bytes.length == 0) {
-            throw badRequest("EMPTY_FILE");
+            throw badRequest(OnboardingErrorCodes.EMPTY_FILE);
         }
         if (bytes.length > MAX_BYTES) {
-            throw badRequest("FILE_TOO_LARGE");
+            throw badRequest(OnboardingErrorCodes.FILE_TOO_LARGE);
         }
         String normalisedContentType = normaliseContentType(contentType);
         if (!ALLOWED_MIME_TYPES.contains(normalisedContentType)) {
-            throw badRequest("UNSUPPORTED_MEDIA_TYPE");
+            throw badRequest(OnboardingErrorCodes.UNSUPPORTED_MEDIA_TYPE);
         }
         if (!magicMatches(normalisedContentType, bytes)) {
             // Asserted MIME and actual bytes disagree — refuse rather than
             // trust the public-facing Content-Type header.
-            throw badRequest("UNSUPPORTED_MEDIA_TYPE");
+            throw badRequest(OnboardingErrorCodes.UNSUPPORTED_MEDIA_TYPE);
+        }
+
+        // ── 1b. AI validation gate. Synchronous; fail-closed. ────────────
+        // Runs after structural checks but before any storage write so
+        // rejected documents never reach S3/SharePoint.
+        OnboardingDocumentValidationService.ValidationDecision aiDecision =
+                documentValidationService.validate(type, bytes, normalisedContentType);
+        if (!aiDecision.approved()) {
+            log.infof("Onboarding upload AI-rejected token=%s type=%s reasonLen=%d",
+                    tokenUuid, type, aiDecision.reason() == null ? 0 : aiDecision.reason().length());
+            throw aiRejected(sanitiseReasonForBody(aiDecision.reason()));
         }
 
         // Sanitise filename — never trust public input as a path component.
         String safeFilename = sanitiseFilename(filename);
         if (safeFilename.isBlank()) {
-            throw badRequest("INVALID_FILENAME");
+            throw badRequest(OnboardingErrorCodes.INVALID_FILENAME);
         }
 
         // Branch on token ownership (XOR enforced both at DB and here).
@@ -416,7 +439,7 @@ public class OnboardingUploadService {
     private static WebApplicationException alreadySubmitted() {
         return new WebApplicationException(
                 Response.status(Response.Status.CONFLICT)
-                        .entity("{\"error\":\"ALREADY_SUBMITTED\"}")
+                        .entity("{\"error\":\"" + OnboardingErrorCodes.ALREADY_SUBMITTED + "\"}")
                         .type(MediaType.APPLICATION_JSON)
                         .build());
     }
@@ -427,6 +450,40 @@ public class OnboardingUploadService {
                         .entity("{\"error\":\"" + code + "\"}")
                         .type(MediaType.APPLICATION_JSON)
                         .build());
+    }
+
+    /**
+     * Build a {@code 422 Unprocessable Entity} response carrying the AI
+     * validator's user-facing reason. Distinct from the existing 400/409
+     * codes so the frontend can render the AI reason in-zone rather than
+     * the generic "could not save" copy.
+     *
+     * <p>The reason is the model's own text. We escape JSON specials but
+     * never log it at WARN — the field is part of the public response body.</p>
+     */
+    private static WebApplicationException aiRejected(String reason) {
+        String safe = reason == null ? "" : reason
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
+        String body = "{\"error\":\"" + OnboardingErrorCodes.AI_REJECTED + "\",\"reason\":\"" + safe + "\"}";
+        return new WebApplicationException(
+                Response.status(422)
+                        .entity(body)
+                        .type(MediaType.APPLICATION_JSON)
+                        .build());
+    }
+
+    /**
+     * Strip ASCII control characters (U+0000–U+001F) from an AI-supplied
+     * reason before it is embedded into the JSON response body. The model
+     * is prompted for "one short sentence", but a misbehaving model could
+     * still emit a stray newline or tab, which would produce invalid JSON
+     * if pasted as-is into a string literal. Replace each control char
+     * with a space; collapse the result to a single line.
+     */
+    private static String sanitiseReasonForBody(String reason) {
+        if (reason == null) return "";
+        return reason.replaceAll("[\\x00-\\x1F]", " ").trim();
     }
 
     /**
@@ -464,7 +521,6 @@ public class OnboardingUploadService {
      * unintended file format past the allowlist.
      *
      * <ul>
-     *   <li>PDF: {@code 25 50 44 46} ("%PDF")</li>
      *   <li>JPEG: {@code FF D8 FF}</li>
      *   <li>PNG: {@code 89 50 4E 47 0D 0A 1A 0A}</li>
      * </ul>
@@ -472,8 +528,6 @@ public class OnboardingUploadService {
     static boolean magicMatches(String contentType, byte[] bytes) {
         if (bytes == null || bytes.length < 4) return false;
         return switch (contentType) {
-            case "application/pdf" ->
-                    bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46;
             case "image/jpeg" ->
                     (bytes[0] & 0xff) == 0xff && (bytes[1] & 0xff) == 0xd8 && (bytes[2] & 0xff) == 0xff;
             case "image/png" -> bytes.length >= 8
