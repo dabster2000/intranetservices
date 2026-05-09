@@ -5,6 +5,7 @@ import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
 import dk.trustworks.intranet.userservice.model.enums.TeamMemberType;
 import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -46,6 +47,7 @@ public record ConvertRequest(
         @NotBlank(message = "teamUuid is required") @Size(min = 36, max = 36) String teamUuid,
         @NotNull(message = "teamMemberType is required") TeamMemberType teamMemberType,
         @NotNull(message = "plannedStartDate is required") LocalDate plannedStartDate,
-        int allocation
+        @Min(value = 1, message = "salary must be at least 1") int salary,
+        int allocation // hours per week the employee is contracted to work (37 = Danish full-time)
 ) {
 }

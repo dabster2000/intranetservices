@@ -2,9 +2,11 @@ package dk.trustworks.intranet.recruitmentservice.services;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.documentservice.model.SharePointLocationEntity;
+import dk.trustworks.intranet.domain.user.entity.Salary;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
+import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.ConvertResponse;
@@ -195,7 +197,16 @@ public class CandidateConversionUseCase {
                 req.teamMemberType());
         TeamRole.persist(teamRole);
 
-        // (f) Transfer signing-case ownership for every signing_case_key
+        // (f) Initial salary row — monthly, with standard Danish benefit defaults.
+        Salary salary = new Salary(plannedStart, req.salary(), user.uuid);
+        salary.setType(SalaryType.NORMAL);
+        salary.setLunch(true);
+        salary.setPhone(true);
+        salary.setPrayerDay(true);
+        salary.setInternet(false);
+        Salary.persist(salary);
+
+        // (g) Transfer signing-case ownership for every signing_case_key
         // referenced by this candidate's dossier revisions. Distinct keys
         // only — a single case may be referenced by multiple revisions
         // (e.g. resends).
@@ -212,10 +223,10 @@ public class CandidateConversionUseCase {
             }
         }
 
-        // (g) Domain transition — guards re-checked inside the entity.
+        // (h) Domain transition — guards re-checked inside the entity.
         candidate.markHired(UUID.fromString(user.uuid), actor);
 
-        // (h) Close any still-OPEN dossiers.
+        // (i) Close any still-OPEN dossiers.
         List<CandidateDossier> openDossiers = CandidateDossier
                 .<CandidateDossier>find("candidateUuid = ?1 AND status = ?2",
                         candidate.getUuid(), DossierStatus.OPEN)
@@ -224,7 +235,7 @@ public class CandidateConversionUseCase {
             d.closeOnTerminal();
         }
 
-        // (i) Mark SharePoint move as PENDING. The post-commit copy runs in
+        // (j) Mark SharePoint move as PENDING. The post-commit copy runs in
         //     RecruitmentResource via runSharePointCopy(...) on a managed
         //     executor, so the conversion REST call returns fast and DB locks
         //     are released promptly. The retry batchlet
