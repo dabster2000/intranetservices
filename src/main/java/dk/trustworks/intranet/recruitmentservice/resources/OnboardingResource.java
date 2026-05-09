@@ -145,6 +145,9 @@ public class OnboardingResource {
                     .build();
         }
 
+        // AI_REJECTED arrives as a WebApplicationException(422) built in
+        // OnboardingUploadService.aiRejected(); Quarkus passes it through
+        // with the JSON body intact, so no explicit catch arm is needed.
         try {
             OnboardingValidateResponse response = onboardingUploadService.handleUpload(
                     tokenUuid,

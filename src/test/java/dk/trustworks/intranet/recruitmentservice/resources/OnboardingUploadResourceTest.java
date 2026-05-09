@@ -100,13 +100,13 @@ class OnboardingUploadResourceTest {
     // ── Happy paths ────────────────────────────────────────────────────────────
 
     /**
-     * Candidate flow: PDF upload routes to S3, audit row stores the file UUID
+     * Candidate flow: JPEG upload routes to S3, audit row stores the file UUID
      * with {@code storage_target='S3'}, and the response carries the updated
      * submitted block.
      */
     @Test
     @TestTransaction
-    void candidateFlow_validPdf_returns200_storesInS3_andPersistsAuditRow() throws IOException {
+    void candidateFlow_validJpeg_returns200_storesInS3_andPersistsAuditRow() throws IOException {
         // Arrange: candidate token requesting drivers-license only.
         String candidateUuid = createCandidate();
         String tokenUuid = createCandidateToken(candidateUuid, true, false, false);
@@ -118,11 +118,11 @@ class OnboardingUploadResourceTest {
         // Persister is mocked: capture and forward the row to a real persist so we can assert columns.
         captureAndPersist();
 
-        File pdf = tempFileWithBytes(PDF_BYTES, "license.pdf");
+        File jpeg = tempFileWithBytes(JPEG_BYTES, "license.jpg");
 
         // Act
         given()
-                .multiPart("file", pdf, "application/pdf")
+                .multiPart("file", jpeg, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(200)
@@ -215,10 +215,10 @@ class OnboardingUploadResourceTest {
         token.setCreatedByUseruuid(UUID.randomUUID().toString());
         token.persist();
 
-        File pdf = tempFileWithBytes(PDF_BYTES, "license.pdf");
+        File jpeg = tempFileWithBytes(JPEG_BYTES, "license.jpg");
 
         given()
-                .multiPart("file", pdf, "application/pdf")
+                .multiPart("file", jpeg, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + token.getUuid() + "/upload")
                 .then().statusCode(403)
@@ -240,11 +240,11 @@ class OnboardingUploadResourceTest {
                 .thenReturn(UUID.randomUUID().toString());
         captureAndPersist();
 
-        File pdf = tempFileWithBytes(PDF_BYTES, "license.pdf");
+        File jpeg = tempFileWithBytes(JPEG_BYTES, "license.jpg");
 
         // First call → 200
         given()
-                .multiPart("file", pdf, "application/pdf")
+                .multiPart("file", jpeg, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(200);
@@ -252,7 +252,7 @@ class OnboardingUploadResourceTest {
         // Second call → 409 ALREADY_SUBMITTED. The service's pre-check sees the row
         // and short-circuits — no additional storage call.
         given()
-                .multiPart("file", pdf, "application/pdf")
+                .multiPart("file", jpeg, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(409)
@@ -271,10 +271,10 @@ class OnboardingUploadResourceTest {
         // Token only enables HEALTH_INSURANCE — DRIVERS_LICENSE must be rejected.
         String tokenUuid = createCandidateToken(candidateUuid, false, true, false);
 
-        File pdf = tempFileWithBytes(PDF_BYTES, "license.pdf");
+        File jpeg = tempFileWithBytes(JPEG_BYTES, "license.jpg");
 
         given()
-                .multiPart("file", pdf, "application/pdf")
+                .multiPart("file", jpeg, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(400)
@@ -294,13 +294,13 @@ class OnboardingUploadResourceTest {
 
         // 10 MiB + 1 byte — caught by the resource-layer pre-flight on file.size().
         byte[] huge = new byte[10 * 1024 * 1024 + 1];
-        // Seed PDF magic bytes so any later magic check would still pass — but we expect
+        // Seed JPEG magic bytes so any later magic check would still pass — but we expect
         // the size check to fail first.
-        huge[0] = 0x25; huge[1] = 0x50; huge[2] = 0x44; huge[3] = 0x46;
-        File big = tempFileWithBytes(huge, "huge.pdf");
+        huge[0] = (byte) 0xff; huge[1] = (byte) 0xd8; huge[2] = (byte) 0xff; huge[3] = (byte) 0xe0;
+        File big = tempFileWithBytes(huge, "huge.jpg");
 
         given()
-                .multiPart("file", big, "application/pdf")
+                .multiPart("file", big, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(400)
@@ -328,19 +328,54 @@ class OnboardingUploadResourceTest {
                 .storeIdentityDocument(any(byte[].class), anyString(), any(UUID.class));
     }
 
-    // ── Magic-byte mismatch ────────────────────────────────────────────────────
+    // ── PDF no longer in allow-list ────────────────────────────────────────────
 
+    /**
+     * Following the move to an image-only allow-list, {@code application/pdf}
+     * is no longer accepted by the onboarding upload endpoint regardless of
+     * whether the bytes are a real PDF. The MIME allow-list gate must reject
+     * the request with {@code 400 UNSUPPORTED_MEDIA_TYPE} before any storage
+     * call is made.
+     */
     @Test
     @TestTransaction
-    void contentTypePdfButJpegMagicBytes_returns400_UNSUPPORTED_MEDIA_TYPE() throws IOException {
+    void pdfUpload_returns400_UNSUPPORTED_MEDIA_TYPE() throws IOException {
         String candidateUuid = createCandidate();
         String tokenUuid = createCandidateToken(candidateUuid, true, false, false);
 
-        // Asserts MIME = application/pdf but bytes are a JPEG.
-        File spoofed = tempFileWithBytes(JPEG_BYTES, "spoof.pdf");
+        // Real PDF bytes + application/pdf content type — the allow-list must reject it.
+        File pdf = tempFileWithBytes(PDF_BYTES, "license.pdf");
 
         given()
-                .multiPart("file", spoofed, "application/pdf")
+                .multiPart("file", pdf, "application/pdf")
+                .formParam("documentType", "DRIVERS_LICENSE")
+                .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
+                .then().statusCode(400)
+                .body(containsString("UNSUPPORTED_MEDIA_TYPE"));
+
+        verify(recruitmentS3StorageService, never())
+                .storeIdentityDocument(any(byte[].class), anyString(), any(UUID.class));
+    }
+
+    // ── Magic-byte mismatch (regression guard for the magic-bytes gate) ───────
+
+    /**
+     * Even with an allow-listed MIME type, the request must be rejected when
+     * the file's magic bytes do not match the declared content type. Posts
+     * JPEG-magic bytes with {@code image/png} → expect
+     * {@code 400 UNSUPPORTED_MEDIA_TYPE}.
+     */
+    @Test
+    @TestTransaction
+    void mimeMismatchPngContentTypeButJpegMagicBytes_returns400_UNSUPPORTED_MEDIA_TYPE() throws IOException {
+        String candidateUuid = createCandidate();
+        String tokenUuid = createCandidateToken(candidateUuid, true, false, false);
+
+        // Declared as PNG but bytes are a JPEG — magic-byte gate must catch it.
+        File spoofed = tempFileWithBytes(JPEG_BYTES, "spoof.png");
+
+        given()
+                .multiPart("file", spoofed, "image/png")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(400)
@@ -379,10 +414,10 @@ class OnboardingUploadResourceTest {
                 "uk_ous_token_doctype"))
                 .when(onboardingSubmissionPersister).persist(any(OnboardingUploadSubmission.class));
 
-        File pdf = tempFileWithBytes(PDF_BYTES, "license.pdf");
+        File jpeg = tempFileWithBytes(JPEG_BYTES, "license.jpg");
 
         given()
-                .multiPart("file", pdf, "application/pdf")
+                .multiPart("file", jpeg, "image/jpeg")
                 .formParam("documentType", "DRIVERS_LICENSE")
                 .when().post("/onboarding/tokens/" + tokenUuid + "/upload")
                 .then().statusCode(409)
