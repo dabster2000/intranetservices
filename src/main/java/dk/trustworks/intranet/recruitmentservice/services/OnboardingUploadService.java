@@ -432,6 +432,27 @@ public class OnboardingUploadService {
     }
 
     /**
+     * Build a {@code 422 Unprocessable Entity} response carrying the AI
+     * validator's user-facing reason. Distinct from the existing 400/409
+     * codes so the frontend can render the AI reason in-zone rather than
+     * the generic "could not save" copy.
+     *
+     * <p>The reason is the model's own text. We escape JSON specials but
+     * never log it at WARN — the field is part of the public response body.</p>
+     */
+    private static WebApplicationException aiRejected(String reason) {
+        String safe = reason == null ? "" : reason
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
+        String body = "{\"error\":\"AI_REJECTED\",\"reason\":\"" + safe + "\"}";
+        return new WebApplicationException(
+                Response.status(422)
+                        .entity(body)
+                        .type(MediaType.APPLICATION_JSON)
+                        .build());
+    }
+
+    /**
      * Positive allowlist filename sanitiser: keep only ASCII alphanumerics,
      * dot, underscore, hyphen, and space. Collapses any run of dots so
      * "{@code ..}" cannot resurface from a unicode look-alike. Returns ""

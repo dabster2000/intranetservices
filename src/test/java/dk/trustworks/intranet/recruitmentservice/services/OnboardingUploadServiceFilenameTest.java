@@ -136,4 +136,20 @@ class OnboardingUploadServiceFilenameTest {
         assertEquals(false,
                 OnboardingUploadService.magicMatches("application/octet-stream", new byte[]{0x25, 0x50, 0x44, 0x46}));
     }
+
+    @Test
+    void aiRejected_returns422WithStructuredBody() throws Exception {
+        // Reflection because aiRejected is private; we still want to verify
+        // the response shape is consistent across maintenance.
+        java.lang.reflect.Method m = OnboardingUploadService.class
+                .getDeclaredMethod("aiRejected", String.class);
+        m.setAccessible(true);
+        jakarta.ws.rs.WebApplicationException ex = (jakarta.ws.rs.WebApplicationException) m.invoke(
+                null, "test reason");
+        jakarta.ws.rs.core.Response r = ex.getResponse();
+        assertEquals(422, r.getStatus());
+        String body = (String) r.getEntity();
+        assertTrue(body.contains("\"AI_REJECTED\""));
+        assertTrue(body.contains("\"test reason\""));
+    }
 }
