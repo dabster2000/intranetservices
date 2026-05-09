@@ -91,4 +91,95 @@ public class OnboardingDocumentValidationService {
 
         return schema;
     }
+
+    static final String SYSTEM_PROMPT_DRIVERS_LICENSE = """
+            You are validating a Danish driver's licence (kørekort) submitted as part of a hiring onboarding.
+
+            Decide whether the image can be accepted, by evaluating four checks. Set each boolean strictly:
+
+            - isCorrectDocumentType: true ONLY if the image clearly shows a driver's licence (a credit-card-sized
+              card with photo, name, date of birth, licence categories like A/B/C, and a licence number).
+              False for passports, ID cards, sundhedskort, or any other document.
+
+            - isDanish: true ONLY if the document is a Danish driver's licence. Indicators include the wording
+              "KØREKORT" / "DRIVING LICENCE" with a Danish issuing authority, the small "DK" country code in the
+              EU flag, or Danish category labels. Older paper Danish licences (pink folded paper) are also valid.
+
+            - isReadable: true ONLY if the photo is sharp enough that the name, date of birth, expiry date,
+              and licence number are all clearly legible without guessing. Reject blurry, dark, glare-covered,
+              rotated, or partially-cropped images.
+
+            - isValid: true ONLY if the licence has not expired. Compare the printed expiry date (field 4b) to
+              today's date. If the expiry date is unreadable, set isValid=false.
+
+            approved = all four booleans true.
+
+            reason: one short sentence (<=240 chars). If approved, say so plainly. If rejected, name the SINGLE
+            biggest issue and tell the user what to do next (e.g. "We could not read the expiry date — please
+            upload a sharper photo with all four corners visible"). Never expose internal field names.
+
+            Return ONLY the JSON object specified by the schema. No markdown, no commentary.
+            """;
+
+    static final String SYSTEM_PROMPT_HEALTH_INSURANCE = """
+            You are validating a Danish health-insurance card (sundhedskort, also known as the yellow card / det
+            gule sygesikringsbevis) submitted as part of a hiring onboarding.
+
+            - isCorrectDocumentType: true ONLY if the image shows a sundhedskort — a yellow plastic card showing
+              the holder's name, CPR number, address, and the assigned general practitioner (læge). False for
+              driver's licences, passports, EU health insurance cards (the blue EHIC), or anything else.
+
+            - isDanish: true ONLY if it is a Danish sundhedskort issued by a Danish kommune / Region. Look for
+              Danish text such as "Sundhedskort", a Danish address, and a 10-digit CPR number formatted DDMMYY-XXXX.
+              The blue EU EHIC (Det blå EU-sygesikringsbevis) is NOT acceptable here — set isDanish=false and
+              explain in the reason.
+
+            - isReadable: true ONLY if the holder's name, CPR number, address, and GP information are clearly
+              legible. Reject blurry, glare-covered, partly-cropped, or low-resolution photos.
+
+            - isValid: true unless the card itself shows an expiry/validity date that is in the past. Sundhedskort
+              do not normally print an expiry — in that case treat isValid=true if the card is otherwise legible.
+
+            approved = all four booleans true.
+
+            reason: one short sentence (<=240 chars). If rejected, name the SINGLE biggest issue and tell the
+            user what to do next. Never expose CPR digits in the reason.
+
+            Return ONLY the JSON object specified by the schema. No markdown, no commentary.
+            """;
+
+    static final String SYSTEM_PROMPT_CRIMINAL_RECORD = """
+            You are validating a Danish certificate of criminal record (straffeattest / privat straffeattest)
+            submitted as part of a hiring onboarding.
+
+            - isCorrectDocumentType: true ONLY if the document is a straffeattest issued by Danish police
+              (Politiet / Rigspolitiet). Indicators: the heading "Straffeattest" or "Privat straffeattest", the
+              named subject's full name and CPR, an issue date (udstedt), and a Politiet logo or letterhead.
+              False for course certificates, references, child-protection certificates (børneattest — that is
+              a different document), or any other paper.
+
+            - isDanish: true ONLY if it is issued by Danish Politiet/Rigspolitiet (Danish text, Danish authority).
+
+            - isReadable: true ONLY if the subject's name, the issue date, and the body text are clearly legible.
+              Reject blurry, partial, or rotated images. PDFs printed and re-photographed are fine if sharp.
+
+            - isValid: true ONLY if the issue date (udstedt) is no more than 3 calendar months before today.
+              If the issue date is unreadable, set isValid=false.
+
+            approved = all four booleans true.
+
+            reason: one short sentence (<=240 chars). If rejected, name the SINGLE biggest issue and tell the
+            user what to do (e.g. "Your straffeattest is more than 3 months old — please request a fresh one
+            from politi.dk and upload it"). Never expose CPR digits.
+
+            Return ONLY the JSON object specified by the schema. No markdown, no commentary.
+            """;
+
+    static String systemPromptFor(OnboardingDocumentType type) {
+        return switch (type) {
+            case DRIVERS_LICENSE  -> SYSTEM_PROMPT_DRIVERS_LICENSE;
+            case HEALTH_INSURANCE -> SYSTEM_PROMPT_HEALTH_INSURANCE;
+            case CRIMINAL_RECORD  -> SYSTEM_PROMPT_CRIMINAL_RECORD;
+        };
+    }
 }

@@ -3,6 +3,7 @@ package dk.trustworks.intranet.recruitmentservice.services;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dk.trustworks.intranet.recruitmentservice.model.OnboardingDocumentType;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -59,5 +60,44 @@ class OnboardingDocumentValidationSchemaTest {
         assertEquals(false, checks.path("isDanish").asBoolean(true));
         assertEquals(false, checks.path("isReadable").asBoolean(true));
         assertEquals(false, checks.path("isValid").asBoolean(true));
+    }
+
+    @Test
+    void prompt_driversLicense_mentionsKorekort() {
+        String p = OnboardingDocumentValidationService.systemPromptFor(
+                OnboardingDocumentType.DRIVERS_LICENSE);
+        assertTrue(p.toLowerCase().contains("kørekort") || p.toLowerCase().contains("korekort")
+                || p.toLowerCase().contains("driver"));
+        assertTrue(p.contains("isCorrectDocumentType"));
+        assertTrue(p.contains("isDanish"));
+        assertTrue(p.contains("isReadable"));
+        assertTrue(p.contains("isValid"));
+    }
+
+    @Test
+    void prompt_healthInsurance_mentionsSundhedskort() {
+        String p = OnboardingDocumentValidationService.systemPromptFor(
+                OnboardingDocumentType.HEALTH_INSURANCE);
+        assertTrue(p.toLowerCase().contains("sundhedskort"));
+        assertTrue(p.toLowerCase().contains("ehic") || p.toLowerCase().contains("blue"));
+    }
+
+    @Test
+    void prompt_criminalRecord_mentionsStraffeattest() {
+        String p = OnboardingDocumentValidationService.systemPromptFor(
+                OnboardingDocumentType.CRIMINAL_RECORD);
+        assertTrue(p.toLowerCase().contains("straffeattest"));
+        assertTrue(p.toLowerCase().contains("3 month") || p.contains("3 calendar months"));
+    }
+
+    @Test
+    void prompt_allTypesAreDistinct() {
+        String dl = OnboardingDocumentValidationService.systemPromptFor(
+                OnboardingDocumentType.DRIVERS_LICENSE);
+        String hi = OnboardingDocumentValidationService.systemPromptFor(
+                OnboardingDocumentType.HEALTH_INSURANCE);
+        String cr = OnboardingDocumentValidationService.systemPromptFor(
+                OnboardingDocumentType.CRIMINAL_RECORD);
+        assertTrue(!dl.equals(hi) && !hi.equals(cr) && !dl.equals(cr));
     }
 }
