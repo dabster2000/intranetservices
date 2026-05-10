@@ -390,8 +390,11 @@ public class DistributionAwareOpexProvider {
         // Salary pool cap state — must be mutable and reset per month (legacy semantics)
         Map<String, BigDecimal> staffRemainingByCompany = new HashMap<>(md.staffBaseBI102);
 
-        // Accumulator: payerUuid → costCenterId → expenseCategoryId → {amount, isPayroll}
-        Map<String, Map<String, Map<String, double[]>>> accumulator = new HashMap<>();
+        // Accumulator: payerUuid → costCenterId → expenseCategoryId → isPayroll → amount.
+        // isPayroll is a key dimension so SALARIES accounts cannot contaminate the OPEX
+        // total inside categories that mix both cost types (e.g. "Delte services" maps
+        // 84 OPEX accounts and 3 SALARIES accounts into PEOPLE_NON_BILLABLE).
+        Map<String, Map<String, Map<String, Map<Boolean, Double>>>> accumulator = new HashMap<>();
 
         for (AccountingCategory category : md.categories) {
             String groupname = category.getAccountname();  // maps to groupname column
@@ -440,23 +443,19 @@ public class DistributionAwareOpexProvider {
 
                     if (allocated.compareTo(BigDecimal.ZERO) <= 0) continue;
 
-                    // Accumulate: payerUuid → costCenterId → expenseCategoryId → [amount, payrollFlag]
+                    // Accumulate: payerUuid → costCenterId → expenseCategoryId → isPayroll → amount
                     accumulator
                             .computeIfAbsent(payerUuid, k -> new HashMap<>())
                             .computeIfAbsent(costCenterId, k -> new HashMap<>())
-                            .merge(
-                                    expenseCategoryId,
-                                    new double[]{allocated.doubleValue(), isPayroll ? 1.0 : 0.0},
-                                    (existing, incoming) -> new double[]{
-                                            existing[0] + incoming[0],
-                                            Math.max(existing[1], incoming[1])
-                                    }
-                            );
+                            .computeIfAbsent(expenseCategoryId, k -> new HashMap<>())
+                            .merge(isPayroll, allocated.doubleValue(), Double::sum);
                 }
             }
         }
 
-        // Flatten accumulator → OpexRow list
+        // Flatten accumulator → OpexRow list. Each (payer, costCenter, expenseCategory)
+        // can produce up to two rows — one with isPayroll=true and one with isPayroll=false —
+        // mirroring how fact_opex_mat keeps SALARIES and OPEX rows separate by cost_type.
         List<OpexRow> rows = new ArrayList<>();
         for (var payerEntry : accumulator.entrySet()) {
             String payerUuid = payerEntry.getKey();
@@ -464,22 +463,23 @@ public class DistributionAwareOpexProvider {
                 String costCenterId = ccEntry.getKey();
                 for (var catEntry : ccEntry.getValue().entrySet()) {
                     String expenseCategoryId = catEntry.getKey();
-                    double[] vals = catEntry.getValue();
-                    double amount = vals[0];
-                    boolean isPayroll = vals[1] > 0.0;
+                    for (var prEntry : catEntry.getValue().entrySet()) {
+                        boolean isPayroll = prEntry.getKey();
+                        double amount = prEntry.getValue();
 
-                    if (amount <= 0.0) continue;
+                        if (amount <= 0.0) continue;
 
-                    rows.add(new OpexRow(
-                            payerUuid,
-                            costCenterId,
-                            expenseCategoryId,
-                            monthKeyStr,
-                            amount,
-                            1,  // distribution rows don't have individual GL entry counts
-                            isPayroll,
-                            OpexRow.SOURCE_DISTRIBUTION
-                    ));
+                        rows.add(new OpexRow(
+                                payerUuid,
+                                costCenterId,
+                                expenseCategoryId,
+                                monthKeyStr,
+                                amount,
+                                1,  // distribution rows don't have individual GL entry counts
+                                isPayroll,
+                                OpexRow.SOURCE_DISTRIBUTION
+                        ));
+                    }
                 }
             }
         }
