@@ -249,6 +249,22 @@ slack:
   slackApi: https://slack.com/api
   motherSlackBotToken: ${MOTHERSLACKBOTTOKEN:xx}
   adminSlackBotToken: ${ADMINSLACKBOTTOKEN:xx}
+  # Operations alert channel (#ops-alert) — destination for pipeline-health
+  # alerts emitted by FactChangeLogBacklogAlertBatchlet. Override per
+  # environment if a separate test channel is desired.
+  opsAlertChannel: ${SLACK_OPS_ALERT_CHANNEL:C0B2VQ2CFU1}
+factChangeLog:
+  # Daily retention window (in days) for processed change-log rows. Used by
+  # ChangeLogRetentionBatchlet — rows whose processed_at is older than this
+  # cutoff are deleted in chunks at 02:15 UTC each day.
+  retention:
+    days: ${FACT_CHANGE_LOG_RETENTION_DAYS:30}
+  # Backlog-alert thresholds for FactChangeLogBacklogAlertBatchlet (every 5
+  # minutes). Either threshold being breached triggers a Slack message to
+  # slack.opsAlertChannel.
+  backlogAlert:
+    maxPending: ${FACT_CHANGE_LOG_BACKLOG_MAX_PENDING:500}
+    maxOldestPendingMinutes: ${FACT_CHANGE_LOG_BACKLOG_MAX_OLDEST_MINUTES:30}
 e-conomics:
   xAppSecretToken: ${XAPPSERCREETTOKEN:none}
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}

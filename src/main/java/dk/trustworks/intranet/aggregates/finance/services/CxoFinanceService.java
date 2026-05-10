@@ -3236,7 +3236,7 @@ public class CxoFinanceService {
 
     /**
      * Query prior period utilization data from source tables (historical actuals).
-     * Uses work_full for billable hours and bi_data_per_day for available hours.
+     * Uses work_full for billable hours and fact_user_day for available hours.
      */
     private Map<String, Double> queryPriorUtilizationData(
             LocalDate fromDate, LocalDate toDate,
@@ -3285,7 +3285,7 @@ public class CxoFinanceService {
         // Available hours unchanged
         StringBuilder availableSql = new StringBuilder(
                 "SELECT COALESCE(SUM(b.gross_available_hours - COALESCE(b.unavailable_hours, 0)), 0.0) AS total_available_hours " +
-                        "FROM bi_data_per_day b " +
+                        "FROM fact_user_day b " +
                         "WHERE b.document_date >= :fromDate " +
                         "  AND b.document_date <= :toDate " +
                         "  AND b.consultant_type = 'CONSULTANT' " +
@@ -5765,7 +5765,7 @@ public class CxoFinanceService {
     /**
      * Absence waterfall: monthly breakdown of how gross capacity is reduced.
      * Replaces BFF route /api/cxo/delivery/absence-waterfall.
-     * Queries fact_user_utilization view which aggregates from bi_data_per_day.
+     * Queries fact_user_utilization view which aggregates from fact_user_day.
      *
      * @param fromDate   Start date (inclusive, uses year/month for filtering)
      * @param toDate     End date (inclusive, uses year/month for filtering)
