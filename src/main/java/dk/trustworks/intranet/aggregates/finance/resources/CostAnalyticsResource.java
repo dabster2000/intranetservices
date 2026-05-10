@@ -1148,9 +1148,11 @@ public class CostAnalyticsResource {
         for (Tuple row : rows) {
             String companyUuid = row.get("company_uuid", String.class);
             String companyName = row.get("company_name", String.class);
-            LocalDate latest = row.get("latest_expense_date") != null
-                    ? ((java.sql.Date) row.get("latest_expense_date")).toLocalDate()
-                    : null;
+            // Hibernate's typed accessor handles whichever java.sql.Date / LocalDate /
+            // Timestamp the JDBC driver returns. Newer MariaDB Connector/J versions
+            // return LocalDate directly, so the previous (java.sql.Date) cast threw
+            // ClassCastException at runtime.
+            LocalDate latest = row.get("latest_expense_date", LocalDate.class);
             Integer daysBehind = latest != null
                     ? (int) ChronoUnit.DAYS.between(latest, today)
                     : null;

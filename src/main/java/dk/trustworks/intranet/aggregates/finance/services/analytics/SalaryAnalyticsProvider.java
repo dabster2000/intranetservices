@@ -21,8 +21,12 @@ import static dk.trustworks.intranet.aggregates.utilization.services.Utilization
 /**
  * Provides salary aggregation queries for all cost dashboards.
  *
- * All salary data comes from {@code fact_user_day} with standard filters:
- * consultant_type='CONSULTANT', status_type='ACTIVE', salary > 0.
+ * All salary data comes from {@code fact_salary_monthly} with standard filters:
+ * employee_type='CONSULTANT', employee_status='ACTIVE', effective_salary > 0.
+ *
+ * (Earlier versions read from {@code fact_user_day.salary} but that column is
+ * never populated by the running ETL — the writer job is dormant. See
+ * {@code ProfitabilityProvider.getCostPerFte} for the same migration pattern.)
  *
  * Career level resolution always uses LAST_DAY() of the month for consistency.
  */
@@ -63,28 +67,25 @@ public class SalaryAnalyticsProvider {
         String fromKey = toMonthKey(fromDate);
         String toKey = toMonthKey(toDate);
 
+        // Salary source: fact_salary_monthly (the canonical monthly salary fact table).
+        // fact_user_day.salary is unpopulated in production (always 0); the writer
+        // job is dormant. Use fact_salary_monthly.effective_salary instead.
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT r.month_key, ");
         sql.append("  COALESCE(sal.total_salary, 0) AS total_salary, ");
         sql.append("  COALESCE(SUM(r.net_revenue_dkk), 0) AS total_revenue ");
         sql.append("FROM fact_company_revenue_mat r ");
         sql.append("LEFT JOIN ( ");
-        sql.append("  SELECT CONCAT(LPAD(yr, 4, '0'), LPAD(mn, 2, '0')) AS month_key, ");
-        sql.append("    SUM(monthly_sal) AS total_salary ");
-        sql.append("  FROM ( ");
-        sql.append("    SELECT fud.year AS yr, fud.month AS mn, ");
-        sql.append("      MAX(fud.salary) AS monthly_sal ");
-        sql.append("    FROM fact_user_day fud ");
-        sql.append("    WHERE fud.consultant_type = 'CONSULTANT' ");
-        sql.append("      AND fud.status_type = 'ACTIVE' ");
-        sql.append("      AND fud.salary > 0 ");
-        sql.append("      AND fud.document_date >= :fromDate ");
-        sql.append("      AND fud.document_date <= :toDate ");
+        sql.append("  SELECT month_key, SUM(effective_salary) AS total_salary ");
+        sql.append("  FROM fact_salary_monthly ");
+        sql.append("  WHERE month_key >= :fromKey AND month_key <= :toKey ");
+        sql.append("    AND employee_type = 'CONSULTANT' ");
+        sql.append("    AND employee_status = 'ACTIVE' ");
+        sql.append("    AND effective_salary > 0 ");
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("      AND fud.companyuuid IN (:companyIds) ");
+            sql.append("    AND companyuuid IN (:companyIds) ");
         }
-        sql.append("    GROUP BY fud.useruuid, fud.year, fud.month ");
-        sql.append("  ) per_user GROUP BY yr, mn ");
+        sql.append("  GROUP BY month_key ");
         sql.append(") sal ON sal.month_key = r.month_key ");
         sql.append("WHERE r.month_key >= :fromKey AND r.month_key <= :toKey ");
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -94,8 +95,6 @@ public class SalaryAnalyticsProvider {
         sql.append("ORDER BY r.month_key");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromDate", fromDate);
-        query.setParameter("toDate", toDate);
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -128,8 +127,16 @@ public class SalaryAnalyticsProvider {
 
     private List<SalaryByBandDTO> querySalaryByBand(String aggregateFunction, LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
         String bandCase = CareerBandMapper.toSqlCase("ucl.career_level");
+        String fromKey = toMonthKey(fromDate);
+        String toKey = toMonthKey(toDate);
 
-        // Step 1: Per-consultant monthly salary (deduplicate daily rows with MAX)
+        // Salary source: fact_salary_monthly (canonical monthly salary fact table).
+        // fact_user_day.salary is unpopulated in production (always 0).
+        //
+        // Step 1: Per-consultant monthly salary — SUM across companyuuid rows because
+        //         fact_salary_monthly is at (useruuid × companyuuid × month) grain; a
+        //         consultant who switches companies mid-month has multiple proportional
+        //         rows that sum to the full monthly salary.
         // Step 2: Join career level at LAST_DAY of month (consistent resolution)
         // Step 3: Aggregate (AVG or SUM) per band per month
         StringBuilder sql = new StringBuilder();
@@ -138,18 +145,17 @@ public class SalaryAnalyticsProvider {
         sql.append(aggregateFunction).append("(per_user.monthly_sal) AS salary_value, ");
         sql.append("COUNT(*) AS consultant_count ");
         sql.append("FROM ( ");
-        sql.append("  SELECT fud.useruuid, fud.year AS yr, fud.month AS mn, ");
-        sql.append("    MAX(fud.salary) AS monthly_sal ");
-        sql.append("  FROM fact_user_day fud ");
-        sql.append("  WHERE fud.consultant_type = 'CONSULTANT' ");
-        sql.append("    AND fud.status_type = 'ACTIVE' ");
-        sql.append("    AND fud.salary > 0 ");
-        sql.append("    AND fud.document_date >= :fromDate ");
-        sql.append("    AND fud.document_date <= :toDate ");
+        sql.append("  SELECT useruuid, year AS yr, month_number AS mn, ");
+        sql.append("    SUM(effective_salary) AS monthly_sal ");
+        sql.append("  FROM fact_salary_monthly ");
+        sql.append("  WHERE month_key >= :fromKey AND month_key <= :toKey ");
+        sql.append("    AND employee_type = 'CONSULTANT' ");
+        sql.append("    AND employee_status = 'ACTIVE' ");
+        sql.append("    AND effective_salary > 0 ");
         if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("    AND fud.companyuuid IN (:companyIds) ");
+            sql.append("    AND companyuuid IN (:companyIds) ");
         }
-        sql.append("  GROUP BY fud.useruuid, fud.year, fud.month ");
+        sql.append("  GROUP BY useruuid, year, month_number ");
         sql.append(") per_user ");
         // Join career level effective at end of month
         sql.append("LEFT JOIN user_career_level ucl ON ucl.useruuid = per_user.useruuid ");
@@ -162,8 +168,8 @@ public class SalaryAnalyticsProvider {
         sql.append("ORDER BY per_user.yr, per_user.mn, career_band");
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromDate", fromDate);
-        query.setParameter("toDate", toDate);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
         }
