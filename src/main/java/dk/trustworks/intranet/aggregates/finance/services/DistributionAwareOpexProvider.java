@@ -30,20 +30,30 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * FY-aware OPEX data provider that unifies two data sources:
+ * Settlement-aware OPEX data provider that unifies two data sources per month:
  * <ol>
- *   <li><b>Current FY months</b>: computes distribution via {@link IntercompanyCalcService} so each
- *       company sees its allocated share of shared expenses.</li>
- *   <li><b>Previous FY months</b>: queries {@code fact_opex_mat} directly (raw GL), because
- *       INTERNAL_SERVICE settlement invoices have already been booked in the GL.</li>
+ *   <li><b>Unsettled months</b>: months for which no finalized INTERNAL_SERVICE invoice exists
+ *       — {@code fact_opex_mat} still reflects raw pre-distribution GL, so this provider computes
+ *       distribution via {@link IntercompanyCalcService} so each company sees its allocated
+ *       share of shared expenses.</li>
+ *   <li><b>Settled months</b>: months with at least one finalized INTERNAL_SERVICE invoice
+ *       (status != DRAFT) — settlement is already booked in the GL via the resulting voucher,
+ *       so this provider queries {@code fact_opex_mat} directly (raw GL).</li>
  * </ol>
  *
- * <p>The FY boundary is calendar-based: once June 30 passes, the previous FY immediately switches
- * to raw GL. No grace period or manual flag.
+ * <p>Settlement is detected per (year, month) on the {@code invoices} table. Any single
+ * finalized INTERNAL_SERVICE invoice for that month flips the month to the raw-GL path —
+ * partial-coverage cases (some sender→debtor pairs invoiced, others not) are rare in practice
+ * and treated as fully settled.
+ *
+ * <p>This replaces an earlier calendar-based switch that assumed settlement always happened at
+ * fiscal-year close. In reality INTERNAL_SERVICE invoices are issued with arbitrary delay —
+ * sometimes monthly, sometimes lumped at year-end, sometimes skipped entirely (e.g. due to cash
+ * position). The settlement-presence check makes the chart correct regardless of cadence.
  *
  * <p>Category mapping logic is intentionally kept in sync with the {@code category_mapping} CTE in
  * {@code V205__Recreate_fact_opex_with_cost_type.sql}. Any change to V205 must be reflected here
- * and vice versa. Account filtering now uses {@code cost_type IN (OPEX, SALARIES)} instead of the
+ * and vice versa. Account filtering uses {@code cost_type IN (OPEX, SALARIES)} instead of the
  * brittle account-code-range filter [3000, 6000) that was removed in V205.
  */
 @ApplicationScoped
@@ -133,29 +143,41 @@ public class DistributionAwareOpexProvider {
         YearMonth from = parseMonthKey(fromMonthKey);
         YearMonth to   = parseMonthKey(toMonthKey);
 
-        List<YearMonth> currentFyMonths  = new ArrayList<>();
-        List<YearMonth> previousFyMonths = new ArrayList<>();
+        Set<YearMonth> settledMonths = findSettledMonths(from, to);
+
+        List<YearMonth> unsettledMonths = new ArrayList<>();
+        List<YearMonth> rawGlMonths     = new ArrayList<>();
 
         for (YearMonth ym = from; !ym.isAfter(to); ym = ym.plusMonths(1)) {
-            if (isCurrentFiscalYear(ym.getYear(), ym.getMonthValue())) {
-                currentFyMonths.add(ym);
+            if (settledMonths.contains(ym)) {
+                rawGlMonths.add(ym);
             } else {
-                previousFyMonths.add(ym);
+                unsettledMonths.add(ym);
             }
         }
 
         List<OpexRow> result = new ArrayList<>();
 
-        // Previous FY: raw GL from fact_opex_mat
-        if (!previousFyMonths.isEmpty()) {
-            String prevFrom = formatMonthKey(previousFyMonths.getFirst());
-            String prevTo   = formatMonthKey(previousFyMonths.getLast());
-            result.addAll(queryFactOpexMat(prevFrom, prevTo, companyIds, costCenters, expenseCategories));
+        // Settled months: raw GL from fact_opex_mat (a single contiguous range query is fine —
+        // any unsettled gaps inside the range simply contribute zero rows from fact_opex_mat
+        // because the INTERNAL_SERVICE voucher hasn't been booked, but we still query distribution
+        // for those months separately below)
+        if (!rawGlMonths.isEmpty()) {
+            String prevFrom = formatMonthKey(rawGlMonths.getFirst());
+            String prevTo   = formatMonthKey(rawGlMonths.getLast());
+            // Filter results to settled months only — covers the case of non-contiguous settlement
+            List<OpexRow> rawRows = queryFactOpexMat(prevFrom, prevTo, companyIds, costCenters, expenseCategories);
+            for (OpexRow row : rawRows) {
+                YearMonth ym = parseMonthKey(row.monthKey());
+                if (settledMonths.contains(ym)) {
+                    result.add(row);
+                }
+            }
         }
 
-        // Current FY: distribution algorithm, batch-loaded for efficiency
-        if (!currentFyMonths.isEmpty()) {
-            result.addAll(computeDistributionForMonths(currentFyMonths, companyIds, costCenters, expenseCategories));
+        // Unsettled months: distribution algorithm, batch-loaded for efficiency
+        if (!unsettledMonths.isEmpty()) {
+            result.addAll(computeDistributionForMonths(unsettledMonths, companyIds, costCenters, expenseCategories));
         }
 
         // Sort by monthKey ascending so callers get chronological order
@@ -211,22 +233,42 @@ public class DistributionAwareOpexProvider {
     }
 
     /**
-     * Determines whether a given month falls within the current fiscal year.
+     * Returns the subset of {@code [from, to]} months that have at least one finalized
+     * INTERNAL_SERVICE invoice in the {@code invoices} table.
      *
-     * <p>Fiscal year: July 1 (year Y) through June 30 (year Y+1).
-     * Calendar-based only — once June 30 passes, the boundary moves forward immediately.
+     * <p>"Finalized" means {@code status != 'DRAFT'} — DRAFT invoices are work-in-progress
+     * and have not yet produced a GL voucher in e-conomic, so the GL still reflects raw
+     * pre-distribution amounts. Once a DRAFT is finalized (CREATED / QUEUED / PENDING_REVIEW),
+     * the corresponding voucher is booked and the GL becomes the settlement truth for that month.
      *
-     * @param year  calendar year
-     * @param month calendar month (1=Jan … 12=Dec)
-     * @return true if the month is within the current FY
+     * <p>Granularity is per (year, month). Any single finalized INTERNAL_SERVICE for the month
+     * counts as full settlement; partial-coverage cases are treated as settled. The
+     * {@code year}/{@code month} columns on {@code invoices} represent the cost period the
+     * invoice covers, not its issue date.
      */
-    public boolean isCurrentFiscalYear(int year, int month) {
-        LocalDate today = LocalDate.now();
-        int fyStartYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
-        LocalDate fyStart = LocalDate.of(fyStartYear, 7, 1);
-        LocalDate fyEnd   = LocalDate.of(fyStartYear + 1, 6, 30);
-        LocalDate monthDate = LocalDate.of(year, month, 1);
-        return !monthDate.isBefore(fyStart) && !monthDate.isAfter(fyEnd);
+    @SuppressWarnings("unchecked")
+    public Set<YearMonth> findSettledMonths(YearMonth from, YearMonth to) {
+        int fromKey = from.getYear() * 100 + from.getMonthValue();
+        int toKey   = to.getYear()   * 100 + to.getMonthValue();
+
+        String sql = "SELECT DISTINCT year, month FROM invoices " +
+                     "WHERE type = 'INTERNAL_SERVICE' " +
+                     "  AND status <> 'DRAFT' " +
+                     "  AND (year * 100 + month) >= :fromKey " +
+                     "  AND (year * 100 + month) <= :toKey";
+
+        List<Object[]> rows = em.createNativeQuery(sql)
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
+                .getResultList();
+
+        Set<YearMonth> result = new java.util.HashSet<>();
+        for (Object[] row : rows) {
+            int yr = ((Number) row[0]).intValue();
+            int mn = ((Number) row[1]).intValue();
+            result.add(YearMonth.of(yr, mn));
+        }
+        return result;
     }
 
     // -----------------------------------------------------------------------
