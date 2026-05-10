@@ -242,14 +242,14 @@ public class IntercompanyCalcService {
                    a.avg_salary * (CAST(b.days_in_company AS DECIMAL(18,6)) / CAST(c.days_total AS DECIMAL(18,6))) AS weighted_avg
             FROM (
                 SELECT useruuid, AVG(COALESCE(salary,0)) AS avg_salary
-                FROM bi_data_per_day
+                FROM fact_user_day
                 WHERE year = :year AND month = :month
                   AND consultant_type = 'STAFF'
                 GROUP BY useruuid
             ) a
             JOIN (
                 SELECT useruuid, companyuuid, COUNT(DISTINCT day) AS days_in_company
-                FROM bi_data_per_day
+                FROM fact_user_day
                 WHERE year = :year AND month = :month
                   AND consultant_type = 'STAFF'
                   AND companyuuid IS NOT NULL
@@ -257,7 +257,7 @@ public class IntercompanyCalcService {
             ) b ON a.useruuid = b.useruuid
             JOIN (
                 SELECT useruuid, COUNT(DISTINCT day) AS days_total
-                FROM bi_data_per_day
+                FROM fact_user_day
                 WHERE year = :year AND month = :month
                   AND consultant_type = 'STAFF'
                 GROUP BY useruuid
