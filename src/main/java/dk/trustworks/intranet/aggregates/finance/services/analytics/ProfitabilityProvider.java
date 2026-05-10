@@ -77,25 +77,24 @@ public class ProfitabilityProvider {
         @SuppressWarnings("unchecked")
         List<Tuple> fteRows = fteQuery.getResultList();
 
-        // 2. Query salary per month from fact_user_day (same pattern as SalaryAnalyticsProvider)
+        // 2. Query salary per month from fact_salary_monthly.
+        // fact_user_day.salary is unpopulated in production (always 0); the canonical
+        // monthly consultant salary lives in fact_salary_monthly.effective_salary.
         StringBuilder salSql = new StringBuilder();
-        salSql.append("SELECT CONCAT(LPAD(yr, 4, '0'), LPAD(mn, 2, '0')) AS month_key, ");
-        salSql.append("  SUM(monthly_sal) AS total_salary ");
-        salSql.append("FROM ( ");
-        salSql.append("  SELECT fud.year AS yr, fud.month AS mn, MAX(fud.salary) AS monthly_sal ");
-        salSql.append("  FROM fact_user_day fud ");
-        salSql.append("  WHERE fud.consultant_type = 'CONSULTANT' ");
-        salSql.append("    AND fud.status_type = 'ACTIVE' AND fud.salary > 0 ");
-        salSql.append("    AND fud.document_date >= :fromDate AND fud.document_date <= :toDate ");
+        salSql.append("SELECT month_key, SUM(effective_salary) AS total_salary ");
+        salSql.append("FROM fact_salary_monthly ");
+        salSql.append("WHERE month_key >= :fromKey AND month_key <= :toKey ");
+        salSql.append("  AND employee_type = 'CONSULTANT' ");
+        salSql.append("  AND employee_status = 'ACTIVE' ");
+        salSql.append("  AND effective_salary > 0 ");
         if (companyIds != null && !companyIds.isEmpty()) {
-            salSql.append("    AND fud.companyuuid IN (:companyIds) ");
+            salSql.append("  AND companyuuid IN (:companyIds) ");
         }
-        salSql.append("  GROUP BY fud.useruuid, fud.year, fud.month ");
-        salSql.append(") per_user GROUP BY yr, mn");
+        salSql.append("GROUP BY month_key");
 
         var salQuery = em.createNativeQuery(salSql.toString(), Tuple.class);
-        salQuery.setParameter("fromDate", fromDate);
-        salQuery.setParameter("toDate", toDate);
+        salQuery.setParameter("fromKey", fromKey);
+        salQuery.setParameter("toKey", toKey);
         if (companyIds != null && !companyIds.isEmpty()) {
             salQuery.setParameter("companyIds", companyIds);
         }

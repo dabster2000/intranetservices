@@ -234,48 +234,32 @@ public class IntercompanyCalcService {
     }
 
     private Map<String, BigDecimal> staffBaseFromBI(int year, int month, double salaryBufferMultiplier) {
+        // Source: fact_salary_monthly (the canonical monthly salary fact table).
+        // Earlier versions read fact_user_day.salary, but that column is never populated
+        // by the running system — the writer (UserSalaryCalculatorService.recalculateSalary)
+        // is only invoked by the unscheduled `budget-aggregation` batch job, leaving the
+        // staff cap silently disabled. fact_salary_monthly already apportions salary
+        // per (user × company × month) via its own ETL, so no day-weighting is needed here.
+        String monthKey = String.format("%04d%02d", year, month);
         String sql = """
-        SELECT t.companyuuid, SUM(t.weighted_avg) AS staff_month_avg
-        FROM (
-            SELECT b.companyuuid,
-                   a.useruuid,
-                   a.avg_salary * (CAST(b.days_in_company AS DECIMAL(18,6)) / CAST(c.days_total AS DECIMAL(18,6))) AS weighted_avg
-            FROM (
-                SELECT useruuid, AVG(COALESCE(salary,0)) AS avg_salary
-                FROM fact_user_day
-                WHERE year = :year AND month = :month
-                  AND consultant_type = 'STAFF'
-                GROUP BY useruuid
-            ) a
-            JOIN (
-                SELECT useruuid, companyuuid, COUNT(DISTINCT day) AS days_in_company
-                FROM fact_user_day
-                WHERE year = :year AND month = :month
-                  AND consultant_type = 'STAFF'
-                  AND companyuuid IS NOT NULL
-                GROUP BY useruuid, companyuuid
-            ) b ON a.useruuid = b.useruuid
-            JOIN (
-                SELECT useruuid, COUNT(DISTINCT day) AS days_total
-                FROM fact_user_day
-                WHERE year = :year AND month = :month
-                  AND consultant_type = 'STAFF'
-                GROUP BY useruuid
-            ) c ON a.useruuid = c.useruuid AND c.days_total > 0
-        ) t
-        GROUP BY t.companyuuid
+        SELECT companyuuid, SUM(effective_salary) AS staff_month_total
+        FROM fact_salary_monthly
+        WHERE month_key = :monthKey
+          AND employee_type = 'STAFF'
+          AND employee_status = 'ACTIVE'
+          AND effective_salary > 0
+        GROUP BY companyuuid
         """;
         Query q = em.createNativeQuery(sql);
-        q.setParameter("year", year);
-        q.setParameter("month", month);
+        q.setParameter("monthKey", monthKey);
 
         Map<String, BigDecimal> map = new HashMap<>();
         @SuppressWarnings("unchecked")
         List<Object[]> rows = q.getResultList();
         for (Object[] r : rows) {
             String companyuuid = (String) r[0];
-            BigDecimal avgSum = new BigDecimal(String.valueOf(r[1]));
-            map.put(companyuuid, avgSum);
+            BigDecimal staffSum = new BigDecimal(String.valueOf(r[1]));
+            map.put(companyuuid, staffSum);
         }
 
         // Sikr nøgler for alle companies og påfør pensionsfaktor
