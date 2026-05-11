@@ -4532,8 +4532,14 @@ public class CxoFinanceService {
 
         // 2. Average monthly OPEX (OPEX-only, excluding salaries) and average monthly salaries
         //    from fact_opex over TTM period. Both are used for projected future months.
-        double avgMonthlyOpex     = queryAvgMonthlyOpex(ttmFromKey, ttmToKey, companyIds);
-        double avgMonthlySalaries = queryAvgMonthlySalaries(ttmFromKey, ttmToKey, companyIds);
+        //    Fetch the TTM OpexRow list ONCE and filter twice — earlier this made 2 separate
+        //    DistributionAwareOpexProvider calls per range, each triggering its own
+        //    IntercompanyCalcService.loadFiscalYear (~27k finance_details rows). Halving
+        //    the call count cuts the cold-path latency that was timing out at the 60s ALB.
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> ttmOpexRows =
+                opexProvider.getDistributionAwareOpex(ttmFromKey, ttmToKey, companyIds, null, null);
+        double avgMonthlyOpex     = averageMonthlyAmount(ttmOpexRows, row -> !row.isPayrollFlag());
+        double avgMonthlySalaries = averageMonthlyAmount(ttmOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
 
         log.debugf("TTM gross margin=%.2f%%, avg monthly OPEX=%.2f DKK, avg monthly salaries=%.2f DKK",
                 ttmGrossMarginPct, avgMonthlyOpex, avgMonthlySalaries);
@@ -4555,8 +4561,11 @@ public class CxoFinanceService {
         }
 
         // 4. Actual OPEX (OPEX-only) and salaries by month — separate fields per spec.
-        java.util.Map<String, Double> opexByMonth     = queryMonthlyOpex(fyFromKey, fyToKey, companyIds);
-        java.util.Map<String, Double> salariesByMonth = queryMonthlySalaries(fyFromKey, fyToKey, companyIds);
+        //    Same single-fetch + dual-filter optimization as in step 2 above, but for the FY window.
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> fyOpexRows =
+                opexProvider.getDistributionAwareOpex(fyFromKey, fyToKey, companyIds, null, null);
+        java.util.Map<String, Double> opexByMonth     = sumByMonth(fyOpexRows, row -> !row.isPayrollFlag());
+        java.util.Map<String, Double> salariesByMonth = sumByMonth(fyOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
 
         // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
         java.util.Map<String, Double> internalCostByMonth = queryMonthlyInternalInvoiceCost(fyFromKey, fyToKey, companyIds);
@@ -5127,6 +5136,47 @@ public class CxoFinanceService {
 
         Object[] row = (Object[]) query.getSingleResult();
         return new double[]{((Number) row[0]).doubleValue(), ((Number) row[1]).doubleValue()};
+    }
+
+    /**
+     * Helper: Average monthly amount across a pre-fetched {@link OpexRow} list, filtered by predicate.
+     *
+     * <p>Used by {@link #getExpectedAccumulatedEBITDA} to compute both
+     * {@code avgMonthlyOpex} (non-payroll rows) and {@code avgMonthlySalaries} (payroll rows)
+     * from a single {@code DistributionAwareOpexProvider.getDistributionAwareOpex} fetch —
+     * each underlying fetch triggers {@code IntercompanyCalcService.loadFiscalYear} which
+     * scans every {@code finance_details} row for the FY range, so doing the fetch once and
+     * filtering twice is significantly cheaper on cold paths.
+     */
+    private double averageMonthlyAmount(
+            List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows,
+            java.util.function.Predicate<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> filter) {
+        double total = 0.0;
+        java.util.Set<String> months = new java.util.HashSet<>();
+        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
+            if (filter.test(row)) {
+                total += row.opexAmountDkk();
+                months.add(row.monthKey());
+            }
+        }
+        return months.isEmpty() ? 0.0 : total / months.size();
+    }
+
+    /**
+     * Helper: Sum amounts per month across a pre-fetched {@link OpexRow} list, filtered by predicate.
+     * Same single-fetch + dual-filter optimization rationale as
+     * {@link #averageMonthlyAmount(List, java.util.function.Predicate)}.
+     */
+    private java.util.Map<String, Double> sumByMonth(
+            List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows,
+            java.util.function.Predicate<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> filter) {
+        java.util.Map<String, Double> byMonth = new java.util.TreeMap<>();
+        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
+            if (filter.test(row)) {
+                byMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
+            }
+        }
+        return byMonth;
     }
 
     /**
