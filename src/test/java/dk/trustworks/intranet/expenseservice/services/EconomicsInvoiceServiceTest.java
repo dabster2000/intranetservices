@@ -1,11 +1,16 @@
 package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.supplier.EconomicsSupplierResolver;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver.Tokens;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoicePdfS3Service;
 import dk.trustworks.intranet.expenseservice.exceptions.PdfNotYetRenderedException;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.Journal;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.SupplierInvoice;
+import dk.trustworks.intranet.expenseservice.remote.dto.economics.Voucher;
+import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.model.Company;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -37,6 +42,7 @@ class EconomicsInvoiceServiceTest {
     @Mock InvoicePdfS3Service invoicePdfS3Service;
     @Mock EconomicsBookingApiClient bookingApi;
     @Mock EconomicsAgreementResolver agreementResolver;
+    @Mock EconomicsSupplierResolver supplierResolver;
 
     @Test
     void loadInvoicePdfBytes_reads_from_s3_when_storage_key_present() throws IOException {
@@ -130,5 +136,111 @@ class EconomicsInvoiceServiceTest {
         inv.setCompany(company);
         inv.setEconomicsBookedNumber(bookedNumber);
         return inv;
+    }
+
+    private Invoice internalInvoiceWithCvr(String invoiceUuid,
+                                           String issuerUuid,
+                                           String issuerCvr,
+                                           String debtorUuid) {
+        Invoice inv = new Invoice();
+        inv.setUuid(invoiceUuid);
+        inv.setInvoicenumber(20240315);
+        inv.setClientname("Trustworks A/S");
+        inv.setGrandTotal(12500.00);
+        inv.setInvoicedate(java.time.LocalDate.of(2025, 2, 14));
+
+        Company issuer = new Company();
+        issuer.setUuid(issuerUuid);
+        issuer.setName("Trustworks A/S");
+        issuer.setCvr(issuerCvr);
+        inv.setCompany(issuer);
+
+        inv.setDebtorCompanyuuid(debtorUuid);
+
+        return inv;
+    }
+
+    @Test
+    void buildJSONRequest_internalJournal_enrichesWhenSupplierResolved() {
+        Invoice inv = internalInvoiceWithCvr("inv-int-1", "issuer-1", "44232855", "debtor-1");
+
+        IntegrationKey.IntegrationKeyValue keys = new IntegrationKey.IntegrationKeyValue(
+                "https://restapi.e-conomic.com",
+                "app-secret",
+                "agreement-grant",
+                /*expenseJournalNumber*/ 1,
+                /*invoiceJournalNumber*/ 5,
+                /*invoiceAccountNumber*/ 2101,
+                /*internalJournalNumber*/ 7,
+                /*invoiceProductNumber*/ 1);
+
+        Company debtor = new Company();
+        debtor.setUuid("debtor-1");
+        debtor.setName("Trustworks NO AS");
+
+        Journal journal = new Journal(7);  // internal journal
+        when(supplierResolver.resolveByCvr("debtor-1", "44232855"))
+                .thenReturn(java.util.Optional.of(50007));
+
+        Voucher voucher = service.buildJSONRequest(inv, journal, "text", keys, debtor);
+
+        java.util.List<SupplierInvoice> supplierInvoices = voucher.getEntries().getSupplierInvoices();
+        assertNotNull(supplierInvoices);
+        assertEquals(1, supplierInvoices.size());
+        SupplierInvoice si = supplierInvoices.get(0);
+        assertNotNull(si.getSupplier(), "supplier should be set");
+        assertEquals(50007, si.getSupplier().getSupplierNumber());
+        assertNotNull(si.getContraVatAccount(), "contraVatAccount should be set");
+        assertEquals("I25", si.getContraVatAccount().getVatCode());
+        // Customer-invoice list must be null in the supplier-journal branch
+        assertNull(voucher.getEntries().getManualCustomerInvoices());
+    }
+
+    @Test
+    void buildJSONRequest_internalJournal_omitsEnrichmentWhenResolverEmpty() {
+        Invoice inv = internalInvoiceWithCvr("inv-int-2", "issuer-1", "44232855", "debtor-1");
+
+        IntegrationKey.IntegrationKeyValue keys = new IntegrationKey.IntegrationKeyValue(
+                "https://restapi.e-conomic.com",
+                "app-secret",
+                "agreement-grant",
+                1, 5, 2101, 7, 1);
+
+        Company debtor = new Company();
+        debtor.setUuid("debtor-1");
+        debtor.setName("Trustworks NO AS");
+
+        Journal journal = new Journal(7);
+        when(supplierResolver.resolveByCvr("debtor-1", "44232855"))
+                .thenReturn(java.util.Optional.empty());
+
+        Voucher voucher = service.buildJSONRequest(inv, journal, "text", keys, debtor);
+
+        SupplierInvoice si = voucher.getEntries().getSupplierInvoices().get(0);
+        assertNull(si.getSupplier(), "supplier must remain unset when resolver returns empty");
+        assertNull(si.getContraVatAccount(), "contraVatAccount must remain unset when resolver returns empty");
+    }
+
+    @Test
+    void buildJSONRequest_customerJournal_doesNotInvokeResolver() {
+        Invoice inv = internalInvoiceWithCvr("inv-cust-1", "issuer-1", "44232855", "debtor-1");
+
+        IntegrationKey.IntegrationKeyValue keys = new IntegrationKey.IntegrationKeyValue(
+                "https://restapi.e-conomic.com",
+                "app-secret",
+                "agreement-grant",
+                1, 5, 2101, 7, 1);
+
+        Company issuerAsTarget = new Company();
+        issuerAsTarget.setUuid("issuer-1");
+        issuerAsTarget.setName("Trustworks A/S");
+
+        Journal journal = new Journal(5);  // customer journal (NOT internal)
+
+        Voucher voucher = service.buildJSONRequest(inv, journal, "text", keys, issuerAsTarget);
+
+        assertNull(voucher.getEntries().getSupplierInvoices());
+        assertNotNull(voucher.getEntries().getManualCustomerInvoices());
+        verifyNoInteractions(supplierResolver);
     }
 }

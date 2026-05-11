@@ -7,9 +7,11 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({
         "account",
+        "supplier",
         "text",
         "amount",
         "contraAccount",
+        "contraVatAccount",
         "supplierInvoiceNumber",
         "date"
 })
@@ -27,6 +29,12 @@ public class SupplierInvoice {
     public String date;
     @JsonProperty("supplierInvoiceNumber")
     public String supplierInvoiceNumber;
+
+    @JsonProperty("supplier")
+    public Supplier supplier;
+
+    @JsonProperty("contraVatAccount")
+    public VatAccount contraVatAccount;
 
     public SupplierInvoice(){
 
@@ -101,13 +109,35 @@ public class SupplierInvoice {
         this.supplierInvoiceNumber = supplierInvoiceNumber;
     }
 
+    @JsonProperty("supplier")
+    public Supplier getSupplier() {
+        return supplier;
+    }
+
+    @JsonProperty("supplier")
+    public void setSupplier(Supplier supplier) {
+        this.supplier = supplier;
+    }
+
+    @JsonProperty("contraVatAccount")
+    public VatAccount getContraVatAccount() {
+        return contraVatAccount;
+    }
+
+    @JsonProperty("contraVatAccount")
+    public void setContraVatAccount(VatAccount contraVatAccount) {
+        this.contraVatAccount = contraVatAccount;
+    }
+
     @Override
     public String toString() {
         return "SupplierInvoice{" +
                 "account='" + account + '\'' +
+                ", supplier=" + supplier +
                 ", text='" + text + '\'' +
                 ", amount='" + amount + '\'' +
                 ", contraAccount='" + contraAccount + '\'' +
+                ", contraVatAccount=" + contraVatAccount +
                 ", supplierInvoiceNumber=" + supplierInvoiceNumber +
                 ", date='" + date +
                 '}';
