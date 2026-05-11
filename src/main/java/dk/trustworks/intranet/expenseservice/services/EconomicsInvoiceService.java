@@ -180,10 +180,11 @@ public class EconomicsInvoiceService {
                         issuerCvr);
             }
 
-            log.debug("SupplierInvoice text=" + supplierInvoice.text
-                    + ", contraAccount=" + contraAccount.getAccountNumber()
-                    + ", supplier=" + supplierInvoice.getSupplier()
-                    + ", contraVatAccount=" + supplierInvoice.getContraVatAccount());
+            log.debugf("SupplierInvoice text=%s, contraAccount=%s, supplier=%s, contraVatAccount=%s",
+                    supplierInvoice.text,
+                    contraAccount.getAccountNumber(),
+                    supplierInvoice.getSupplier(),
+                    supplierInvoice.getContraVatAccount());
             List<SupplierInvoice> supplierInvoices = new ArrayList<>();
             supplierInvoices.add(supplierInvoice);
             entries.setSupplierInvoices(supplierInvoices);

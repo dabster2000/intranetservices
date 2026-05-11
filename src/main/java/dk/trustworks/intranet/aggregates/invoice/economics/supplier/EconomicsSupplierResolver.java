@@ -30,6 +30,8 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class EconomicsSupplierResolver {
 
+    private static final String CVR_FILTER_PREFIX = "corporateIdentificationNumber$eq:";
+
     @Inject
     EconomicsAgreementResolver agreementResolver;
 
@@ -67,7 +69,7 @@ public class EconomicsSupplierResolver {
             page = suppliersApi.findByFilter(
                     tokens.appSecret(),
                     tokens.agreementGrant(),
-                    "corporateIdentificationNumber$eq:" + issuerCvr);
+                    CVR_FILTER_PREFIX + issuerCvr);
         } catch (RuntimeException e) {
             log.errorf(e, "Supplier resolve failed for CVR %s in debtor %s: API error",
                     issuerCvr, debtorCompanyUuid);

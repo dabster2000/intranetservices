@@ -23,7 +23,6 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 public interface EconomicsSuppliersApiClient {
 
     /**
-     * Returns the suppliers in the agreement that match the given filter.
      * Filter syntax: {@code corporateIdentificationNumber$eq:{cvr}}.
      */
     @GET
