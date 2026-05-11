@@ -8,6 +8,7 @@ import dk.trustworks.intranet.expenseservice.exceptions.PdfNotYetRenderedExcepti
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
+import dk.trustworks.intranet.aggregates.invoice.economics.supplier.EconomicsSupplierResolver;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
@@ -30,13 +31,20 @@ import java.io.InputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 @JBossLog
 @ApplicationScoped
 public class EconomicsInvoiceService {
 
+    /** Hardcoded Danish 25% purchase VAT code applied to account 2101 on INTERNAL invoices. */
+    private static final String INTERCOMPANY_VAT_CODE = "I25";
+
     @Inject
     InvoicePdfS3Service invoicePdfS3Service;
+
+    @Inject
+    EconomicsSupplierResolver supplierResolver;
 
     @Inject
     @RestClient
@@ -148,8 +156,35 @@ public class EconomicsInvoiceService {
         // Check if this is an internal journal (supplier invoice) or regular journal (customer invoice)
         if (journal.getJournalNumber() == integrationKeyValue.internalJournalNumber()) {
             log.info("Creating supplier invoice for number " + invoice.getInvoicenumber());
-            SupplierInvoice supplierInvoice = new SupplierInvoice(account, StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()), text, invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0, contraAccount, date);
-            log.debug("SupplierInvoice text=" + supplierInvoice.text + ", contraAccount=" + contraAccount.getAccountNumber());
+            SupplierInvoice supplierInvoice = new SupplierInvoice(
+                    account,
+                    StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()),
+                    text,
+                    invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0,
+                    contraAccount,
+                    date);
+
+            String issuerCvr = invoice.getCompany() != null ? invoice.getCompany().getCvr() : null;
+            Optional<Integer> resolvedSupplier = supplierResolver.resolveByCvr(
+                    targetCompany.getUuid(), issuerCvr);
+            if (resolvedSupplier.isPresent()) {
+                supplierInvoice.setSupplier(new Supplier(resolvedSupplier.get()));
+                supplierInvoice.setContraVatAccount(new VatAccount(INTERCOMPANY_VAT_CODE));
+                log.infof("Enriched SupplierInvoice for invoice %s with supplier %d and vatCode %s",
+                        invoice.getUuid(), resolvedSupplier.get(), INTERCOMPANY_VAT_CODE);
+            } else {
+                log.warnf(
+                        "INTERNAL invoice %s: no supplier in debtor %s e-conomic for CVR %s — posting without supplier/VAT",
+                        invoice.getUuid(),
+                        targetCompany.getName(),
+                        issuerCvr);
+            }
+
+            log.debugf("SupplierInvoice text=%s, contraAccount=%s, supplier=%s, contraVatAccount=%s",
+                    supplierInvoice.text,
+                    contraAccount.getAccountNumber(),
+                    supplierInvoice.getSupplier(),
+                    supplierInvoice.getContraVatAccount());
             List<SupplierInvoice> supplierInvoices = new ArrayList<>();
             supplierInvoices.add(supplierInvoice);
             entries.setSupplierInvoices(supplierInvoices);
