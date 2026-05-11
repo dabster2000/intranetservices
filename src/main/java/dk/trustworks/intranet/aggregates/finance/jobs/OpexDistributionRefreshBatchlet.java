@@ -102,8 +102,10 @@ public class OpexDistributionRefreshBatchlet {
         String msg = ":rotating_light: *fact_opex_distribution_mat refresh failed*\n"
                 + "• error: `" + e.getClass().getSimpleName() + ": " + e.getMessage() + "`\n"
                 + "• impact: EBITDA Forecast chart will use yesterday's snapshot until next 03:30 UTC.\n"
-                + "• action: check Quarkus production logs for stack trace; if persistent, "
-                + "increase `opex-distribution.refresh-window-fy-back` or recycle the task.";
+                + "• action: check Quarkus production logs for the stack trace; "
+                + "recycle the task to retry via the cold-start guard. "
+                + "Do NOT increase `opex-distribution.refresh-window-fy-back` — "
+                + "that widens the failing workload.";
         slackService.sendMessage(opsAlertChannel, msg, "mother");
         lastAlertSent.set(now);
     }
