@@ -12,6 +12,8 @@ import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.Collections;
@@ -21,6 +23,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Parity test: asserts that what the refresh batchlet writes into
@@ -80,6 +83,12 @@ class OpexDistributionRefreshParityIT {
             live.put(ym, aggregate(liveRows));
         }
 
+        // Guard: don't let a sparse test DB make the parity test pass vacuously.
+        int totalLiveRows = live.values().stream().mapToInt(Map::size).sum();
+        assertTrue(totalLiveRows > 0,
+                "Live algorithm produced zero rows across the current FY — parity test "
+                + "would pass vacuously. Source data may be missing from the test database.");
+
         // 2. Run the refresh
         refreshService.refresh();
 
@@ -102,13 +111,19 @@ class OpexDistributionRefreshParityIT {
         }
     }
 
-    /** Aggregate {@code List<OpexRow>} into a Map keyed by composite dimension string. */
+    /** Aggregate List<OpexRow> into a Map keyed by composite dimension string.
+     *  Each amount is rounded to 2 decimal places (HALF_EVEN) before summing,
+     *  matching the rounding the DB performs at INSERT time for DECIMAL(14,2).
+     *  This keeps the live-vs-materialized comparison apples-to-apples. */
     private static Map<String, Double> aggregate(List<OpexRow> rows) {
         Map<String, Double> out = new HashMap<>();
         for (OpexRow r : rows) {
             String key = r.companyId() + "|" + r.costCenterId() + "|"
                     + r.expenseCategoryId() + "|" + r.isPayrollFlag();
-            out.merge(key, r.opexAmountDkk(), Double::sum);
+            double rounded = BigDecimal.valueOf(r.opexAmountDkk())
+                    .setScale(2, RoundingMode.HALF_EVEN)
+                    .doubleValue();
+            out.merge(key, rounded, Double::sum);
         }
         return out;
     }
