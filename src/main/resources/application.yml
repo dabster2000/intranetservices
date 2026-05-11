@@ -312,6 +312,9 @@ dk:
         invoice:
           network:
             CurrencyAPI/mp-rest/url: https://api.freecurrencyapi.com
+      opex-distribution:
+        refresh-window-fy-back: 1
+        max-staleness-hours: 30
 pricingEngine:
   enabled: true
 cvtool:
