@@ -33,7 +33,8 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
@@ -53,6 +54,12 @@ public class  EconomicsService {
     @ConfigProperty(name = "dk.trustworks.environment.id", defaultValue = "production")
     String environmentId;
 
+    /**
+     * Cap on closed-period auto-shift retries. Covers the realistic edge cases (period
+     * boundary race, year-end roll-over) without risking runaway loops.
+     */
+    private static final int MAX_PERIOD_SHIFT_DAYS = 7;
+
     /** Builds the e-conomics Idempotency-Key header value for a voucher POST. */
     String buildIdempotencyKey(Expense expense) {
         if (expense.hasKnownCacheIssue() || Boolean.TRUE.equals(expense.getIsOrphaned())) {
@@ -60,6 +67,30 @@ public class  EconomicsService {
                     environmentId, expense.getUuid(), expense.getSafeRetryCount());
         }
         return environmentId + "-expense-" + expense.getUuid();
+    }
+
+    /**
+     * Idempotency key used when retrying after a closed-period rejection. Distinct from
+     * the standard and orphan keys so e-conomics' cache treats the shifted-date POST as a
+     * fresh request.
+     */
+    String buildPeriodShiftIdempotencyKey(Expense expense, int shiftDays) {
+        return String.format("%s-expense-%s-period-shift-%d",
+                environmentId, expense.getUuid(), shiftDays);
+    }
+
+    /**
+     * Detects e-conomic error responses indicating the voucher's entry date falls in a
+     * closed accounting period. e-conomic uses errorCode names in its problem-detail
+     * body; we match the known variants seen in production / documented in the API.
+     */
+    boolean isPeriodClosedError(String body) {
+        if (body == null) return false;
+        return body.contains("AccountingYearClosed")
+                || body.contains("EntryDateInClosedPeriod")
+                || body.contains("DateInClosedPeriod")
+                || body.contains("PeriodClosed")
+                || body.contains("ClosedAccountingYear");
     }
 
     public Response sendVoucher(Expense expense, ExpenseFile expensefile, UserAccount userAccount) throws Exception {
@@ -75,59 +106,80 @@ public class  EconomicsService {
             expense.setAccount(String.valueOf(convertKontokode(Integer.parseInt(expense.getAccount()))));
         }
 
-        Voucher voucher = buildJSONRequest(expense, userAccount, journal, text);
-
-        ObjectMapper o = new ObjectMapper();
-        String json = o.writeValueAsString(voucher);
-        // call e-conomics endpoint with proper resource management
-        log.info("Voucher payload = " + json);
-
         try (EconomicsAPI remoteApi = getEconomicsAPI(result)) {
+            Voucher voucher = null;
             Response response = null;
-            try {
-                String idempotencyKey = buildIdempotencyKey(expense);
-                log.debugf("Posting voucher for expense %s with idempotency key %s",
-                        expense.getUuid(), idempotencyKey);
+            String lastBody = null;
+            int lastStatus = 0;
 
-                response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
-            } catch (WebApplicationException e) {
-                String errorDetails = safeRead(e.getResponse());
-                log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails);
-                throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, e.getResponse().getStatus(), errorDetails);
-            } catch (Exception e) {
-                log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
-                throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, null, e.getMessage());
+            // Period-closed auto-shift: each retry advances the voucher entry date by 1 day
+            // and uses a fresh idempotency key so e-conomic's cache treats it as new.
+            for (int shift = 0; shift <= MAX_PERIOD_SHIFT_DAYS; shift++) {
+                LocalDate voucherDate = LocalDate.now().plusDays(shift);
+                voucher = buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate);
+                String json = new ObjectMapper().writeValueAsString(voucher);
+                String idempotencyKey = (shift == 0)
+                        ? buildIdempotencyKey(expense)
+                        : buildPeriodShiftIdempotencyKey(expense, shift);
+
+                if (shift == 0) {
+                    log.debugf("Posting voucher for expense %s with idempotency key %s", expense.getUuid(), idempotencyKey);
+                    log.info("Voucher payload = " + json);
+                } else {
+                    log.warnf("Closed period on previous attempt — retrying expense %s with voucher date %s (shift +%d days, key %s)",
+                            expense.getUuid(), voucherDate, shift, idempotencyKey);
+                }
+
+                try {
+                    response = remoteApi.postVoucher(journal.getJournalNumber(), idempotencyKey, json);
+                } catch (WebApplicationException e) {
+                    String errorDetails = safeRead(e.getResponse());
+                    log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + e.getResponse().getStatus() + ", details: " + errorDetails);
+                    throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, e.getResponse().getStatus(), errorDetails);
+                } catch (Exception e) {
+                    log.error("Failed to post voucher to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", voucher: " + voucher);
+                    throw new ExpenseUploadException("Failed to post voucher to e-conomics", e, null, e.getMessage());
+                }
+
+                int status = response.getStatus();
+                if (status >= 200 && status < 300) break; // success — fall through to response parsing
+                lastStatus = status;
+                lastBody = safeRead(response);
+                try { response.close(); } catch (Exception ignore) {}
+                response = null;
+                if (status != 400 || !isPeriodClosedError(lastBody)) {
+                    log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + status + ", details: " + lastBody);
+                    throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, status, lastBody);
+                }
+            }
+            if (response == null) {
+                log.error("Voucher post failed after " + (MAX_PERIOD_SHIFT_DAYS + 1) + " period-shift attempts. Expenseuuid: " + expense.getUseruuid() + ", lastStatus: " + lastStatus + ", lastBody: " + lastBody);
+                throw new ExpenseUploadException(
+                        "Voucher post failed: closed period persists after " + MAX_PERIOD_SHIFT_DAYS + " day-shift retries",
+                        null, lastStatus, lastBody);
             }
 
-            // extract voucher number from response
             try (Response voucherResponse = response) {
-                if ((Objects.requireNonNull(voucherResponse).getStatus() > 199) & (voucherResponse.getStatus() < 300)) {
-                    ObjectMapper objectMapper = new ObjectMapper();
-                    String responseAsString = voucherResponse.readEntity(String.class);
-                    JsonNode root = objectMapper.readValue(responseAsString, JsonNode.class);
-                    JsonNode first = root.isArray() ? (!root.isEmpty() ? root.get(0) : null) : root;
-                    if (first == null || first.get("voucherNumber") == null) {
-                        log.error("Unexpected voucher POST response: " + responseAsString);
-                        throw new ExpenseUploadException("Unexpected voucher response from e-conomics", null, 502, responseAsString);
-                    }
-                    int voucherNumber = first.get("voucherNumber").asInt();
-                    expense.setVouchernumber(voucherNumber);
-                    // persist accountingYear (canonical URL form without any trailing letters) and journal too
-                    String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2025/2026 or 2025/2026a
-                    String urlYear = DateUtils.toEconomicsUrlYear(fiscalYearName);
-                    log.debugf("Storing accounting year for expense %s: fiscalYear=%s -> storedFormat=%s",
-                        expense.getUuid(), fiscalYearName, urlYear);
-                    expense.setAccountingyear(urlYear);
-                    expense.setJournalnumber(journal.getJournalNumber());
-
-                    //upload file to e-conomics voucher
-                    return sendFile(expense, expensefile, voucher);
-
-                } else {
-                    String errorDetails = safeRead(voucherResponse);
-                    log.error("voucher not posted successfully to e-conomics. Expenseuuid: " + expense.getUseruuid() + ", status: " + voucherResponse.getStatus() + ", details: " + errorDetails);
-                    throw new ExpenseUploadException("Voucher not posted successfully to e-conomics", null, voucherResponse.getStatus(), errorDetails);
+                ObjectMapper objectMapper = new ObjectMapper();
+                String responseAsString = voucherResponse.readEntity(String.class);
+                JsonNode root = objectMapper.readValue(responseAsString, JsonNode.class);
+                JsonNode first = root.isArray() ? (!root.isEmpty() ? root.get(0) : null) : root;
+                if (first == null || first.get("voucherNumber") == null) {
+                    log.error("Unexpected voucher POST response: " + responseAsString);
+                    throw new ExpenseUploadException("Unexpected voucher response from e-conomics", null, 502, responseAsString);
                 }
+                int voucherNumber = first.get("voucherNumber").asInt();
+                expense.setVouchernumber(voucherNumber);
+                // persist accountingYear (canonical URL form without any trailing letters) and journal too
+                String fiscalYearName = voucher.getAccountingYear().getYear(); // e.g., 2025/2026 or 2025/2026a
+                String urlYear = DateUtils.toEconomicsUrlYear(fiscalYearName);
+                log.debugf("Storing accounting year for expense %s: fiscalYear=%s -> storedFormat=%s",
+                    expense.getUuid(), fiscalYearName, urlYear);
+                expense.setAccountingyear(urlYear);
+                expense.setJournalnumber(journal.getJournalNumber());
+
+                //upload file to e-conomics voucher
+                return sendFile(expense, expensefile, voucher);
             }
         }
     }
@@ -276,16 +328,24 @@ public class  EconomicsService {
     }
 
     public Voucher buildJSONRequest(Expense expense, UserAccount userAccount, Journal journal, String text){
+        return buildJSONRequestWithDate(expense, userAccount, journal, text, LocalDate.now());
+    }
+
+    /**
+     * Builds the voucher JSON payload with an explicit entry date. The accounting year
+     * is derived from this date (not today's date) so closed-period auto-shifts that
+     * cross the fiscal year boundary land in the correct year.
+     */
+    public Voucher buildJSONRequestWithDate(Expense expense, UserAccount userAccount, Journal journal, String text, LocalDate voucherDate){
 
         ContraAccount contraAccount = new ContraAccount(userAccount.getEconomics());
         ExpenseAccount expenseaccount = new ExpenseAccount(Integer.parseInt(expense.getAccount()));
         Company company = getCompanyFromExpense(expense);
-        String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.getCurrentFiscalStartDate(), company.getUuid());
+        String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.fiscalYearStart(voucherDate), company.getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
         log.debug("Using accounting year " + fiscalYearName + " for company " + company.getUuid());
 
-        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
-        String date = dateFormat.format(new Date());
+        String date = voucherDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
 
         FinanceVoucher financeVoucher1 = new FinanceVoucher(expenseaccount, text, expense.getAmount(), contraAccount, date);
         List<FinanceVoucher> financeVouchers = new ArrayList<>();
