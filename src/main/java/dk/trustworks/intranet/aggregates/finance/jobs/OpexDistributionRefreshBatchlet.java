@@ -49,7 +49,7 @@ public class OpexDistributionRefreshBatchlet {
     @Inject
     ManagedExecutor managedExecutor;
 
-    @ConfigProperty(name = "opexDistribution.opsAlertChannel", defaultValue = "ops-alerts")
+    @ConfigProperty(name = "slack.opsAlertChannel", defaultValue = "C0B2VQ2CFU1")
     String opsAlertChannel;
 
     // null encodes "no alert in flight". Prevents Slack spam across rolling outages.
