@@ -5180,45 +5180,6 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper: Query average monthly OPEX (OPEX-only, excluding SALARIES) over a TTM window.
-     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
-     * Filters to non-payroll rows (isPayrollFlag = false) and divides total by distinct month count.
-     */
-    private double queryAvgMonthlyOpex(String fromKey, String toKey, Set<String> companyIds) {
-        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
-                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
-        double totalOpex = 0.0;
-        java.util.Set<String> months = new java.util.HashSet<>();
-        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
-            if (!row.isPayrollFlag()) {
-                totalOpex += row.opexAmountDkk();
-                months.add(row.monthKey());
-            }
-        }
-        return months.isEmpty() ? 0.0 : totalOpex / months.size();
-    }
-
-    /**
-     * Helper: Query average monthly salary costs (SALARIES only) over a TTM window.
-     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection.
-     * Filters to payroll rows (isPayrollFlag = true) and divides total by distinct month count.
-     * Used to populate the {@code avgMonthlySalaries} estimate for projected future months.
-     */
-    private double queryAvgMonthlySalaries(String fromKey, String toKey, Set<String> companyIds) {
-        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
-                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
-        double totalSalaries = 0.0;
-        java.util.Set<String> months = new java.util.HashSet<>();
-        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
-            if (row.isPayrollFlag()) {
-                totalSalaries += row.opexAmountDkk();
-                months.add(row.monthKey());
-            }
-        }
-        return months.isEmpty() ? 0.0 : totalSalaries / months.size();
-    }
-
-    /**
      * Helper: Query monthly revenue and direct cost (deduplicated) for EBITDA calculation.
      * Returns map of monthKey → double[]{revenue, cost}.
      */
@@ -5316,48 +5277,6 @@ public class CxoFinanceService {
             result.put(mk, new double[]{cost});
         }
         return result;
-    }
-
-    /**
-     * Helper: Query actual OPEX by month (excludes SALARIES — cost_type = 'OPEX' only).
-     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection,
-     * then filters returned rows to OPEX cost type only.
-     * Returns map of monthKey → total opex_amount_dkk for OPEX rows.
-     */
-    private java.util.Map<String, Double> queryMonthlyOpex(String fromKey, String toKey, Set<String> companyIds) {
-        // DistributionAwareOpexProvider returns both OPEX and SALARIES rows.
-        // We filter to OPEX-only here; salaries are queried separately via queryMonthlySalaries.
-        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
-                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
-        java.util.Map<String, Double> byMonth = new java.util.TreeMap<>();
-        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
-            if (!row.isPayrollFlag()) {
-                byMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
-            }
-        }
-        return byMonth;
-    }
-
-    /**
-     * Helper: Query salary costs by month (cost_type = 'SALARIES' only).
-     * Delegates to {@link DistributionAwareOpexProvider} for FY-aware data source selection,
-     * then filters returned rows to SALARIES cost type only (isPayrollFlag = true).
-     * Returns map of monthKey → total salary_amount_dkk.
-     *
-     * <p>Salary amounts are kept separate from OPEX so the EBITDA API can return them
-     * in a dedicated {@code monthlySalariesDkk} field, enabling the frontend to render
-     * SALARIES as a distinct stacked segment within the Operating Costs bar.
-     */
-    private java.util.Map<String, Double> queryMonthlySalaries(String fromKey, String toKey, Set<String> companyIds) {
-        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> rows =
-                opexProvider.getDistributionAwareOpex(fromKey, toKey, companyIds, null, null);
-        java.util.Map<String, Double> byMonth = new java.util.TreeMap<>();
-        for (dk.trustworks.intranet.aggregates.finance.dto.OpexRow row : rows) {
-            if (row.isPayrollFlag()) {
-                byMonth.merge(row.monthKey(), row.opexAmountDkk(), Double::sum);
-            }
-        }
-        return byMonth;
     }
 
     /**
