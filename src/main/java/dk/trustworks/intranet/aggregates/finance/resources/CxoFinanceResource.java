@@ -59,6 +59,9 @@ import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
+import io.quarkus.cache.CacheKey;
+import io.quarkus.cache.CacheResult;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -1246,13 +1249,14 @@ public class CxoFinanceResource {
      */
     @GET
     @Path("/expected-accumulated-ebitda")
+    @CacheResult(cacheName = "expected-accumulated-ebitda")
     public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
-            @QueryParam("asOfDate") String asOfDateStr,
-            @QueryParam("sectors") String sectors,
-            @QueryParam("serviceLines") String serviceLines,
-            @QueryParam("contractTypes") String contractTypes,
-            @QueryParam("clientId") String clientId,
-            @QueryParam("companyIds") String companyIds) {
+            @CacheKey @QueryParam("asOfDate") String asOfDateStr,
+            @CacheKey @QueryParam("sectors") String sectors,
+            @CacheKey @QueryParam("serviceLines") String serviceLines,
+            @CacheKey @QueryParam("contractTypes") String contractTypes,
+            @CacheKey @QueryParam("clientId") String clientId,
+            @CacheKey @QueryParam("companyIds") String companyIds) {
 
         log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
                 asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);

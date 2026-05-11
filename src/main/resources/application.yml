@@ -170,6 +170,9 @@ quarkus:
       consultant-allocation:
         expire-after-write: 1H  # Consultant allocation cache (1 hour TTL)
         maximum-size: 1000  # Maximum number of allocation entries
+      expected-accumulated-ebitda:
+        expire-after-write: 5M  # EBITDA chart cold-path takes ~minutes; cache the full response
+        maximum-size: 200       # ~200 distinct (asOfDate, filter) combinations is generous
       page-registry:
         expire-after-write: 5M  # Page registry cache (5 min TTL for quick updates)
         maximum-size: 100  # Small table - only ~20-50 pages expected
