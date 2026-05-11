@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.finance.health;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.health.HealthCheck;
@@ -36,6 +37,7 @@ public class OpexDistributionFreshnessCheck implements HealthCheck {
     int maxStalenessHours;
 
     @Override
+    @Transactional(Transactional.TxType.SUPPORTS)
     public HealthCheckResponse call() {
         Object[] row = (Object[]) em.createNativeQuery(
                 "SELECT MIN(refreshed_at), COUNT(*) FROM fact_opex_distribution_mat")
@@ -54,8 +56,11 @@ public class OpexDistributionFreshnessCheck implements HealthCheck {
                 .withData("age_hours", ageHours)
                 .withData("max_allowed_hours", maxStalenessHours);
 
-        return (rowCount > 0 && ageHours <= maxStalenessHours)
-                ? b.up().build()
-                : b.down().build();
+        if (rowCount > 0 && ageHours <= maxStalenessHours) {
+            return b.up().build();
+        }
+        log.warnf("opex-distribution-freshness DOWN: rows=%d, age_hours=%d, max_hours=%d",
+                rowCount, ageHours, maxStalenessHours);
+        return b.down().build();
     }
 }
