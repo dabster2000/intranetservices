@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
+import dk.trustworks.intranet.aggregates.finance.dto.AllPracticesCareerDistributionResult;
+import dk.trustworks.intranet.aggregates.finance.dto.AllPracticesCareerDistributionResult.MemberBasicInfo;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantAbsenceDayDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamAbsenceOverviewDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamCareerDistributionDTO;
@@ -23,6 +25,7 @@ import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -42,6 +45,8 @@ import java.util.stream.Collectors;
 @JBossLog
 @ApplicationScoped
 public class TeamPeopleService {
+
+    private static final String UNASSIGNED_TRACK = "NONE";
 
     @Inject
     EntityManager em;
@@ -79,27 +84,73 @@ public class TeamPeopleService {
                 .setParameter("memberUuids", memberUuids)
                 .getResultList();
 
-        // Group by track+level
         Map<String, List<String>> grouped = new LinkedHashMap<>();
-        Map<String, String> trackByKey = new LinkedHashMap<>();
+        for (Tuple row : rows) {
+            String track = row.get("career_track") != null ? (String) row.get("career_track") : UNASSIGNED_TRACK;
+            String key = track + "|" + row.get("career_level");
+            grouped.computeIfAbsent(key, k -> new ArrayList<>()).add((String) row.get("useruuid"));
+        }
+        return buildDistributionDTOs(grouped);
+    }
+
+    /**
+     * Returns the career level distribution for all active consultants in the five
+     * regular practices (PM, BA, CYB, DEV, SA), grouped by career track and level.
+     * Excludes terminated and pre-boarding employees.
+     */
+    public AllPracticesCareerDistributionResult getAllPracticesCareerDistribution() {
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT ucl.career_track, ucl.career_level, ucl.useruuid, u.firstname, u.lastname
+                FROM user_career_level ucl
+                JOIN user u ON ucl.useruuid = u.uuid
+                JOIN userstatus us ON us.useruuid = u.uuid
+                WHERE u.practice IN ('PM', 'BA', 'CYB', 'DEV', 'SA')
+                  AND ucl.active_from = (
+                      SELECT MAX(ucl2.active_from)
+                      FROM user_career_level ucl2
+                      WHERE ucl2.useruuid = ucl.useruuid
+                        AND ucl2.active_from <= CURDATE()
+                  )
+                  AND us.statusdate = (
+                      SELECT MAX(us2.statusdate)
+                      FROM userstatus us2
+                      WHERE us2.useruuid = u.uuid
+                        AND us2.statusdate <= CURDATE()
+                  )
+                  AND us.status NOT IN ('TERMINATED', 'PREBOARDING')
+                ORDER BY ucl.career_track, ucl.career_level
+                """, Tuple.class)
+                .getResultList();
+
+        Map<String, List<String>> grouped = new LinkedHashMap<>();
+        List<MemberBasicInfo> members = new ArrayList<>();
+        Set<String> seenUuids = new HashSet<>();
 
         for (Tuple row : rows) {
-            String track = row.get("career_track") != null ? (String) row.get("career_track") : "NONE";
-            String level = (String) row.get("career_level");
-            String key = track + "|" + level;
-            grouped.computeIfAbsent(key, k -> new ArrayList<>()).add((String) row.get("useruuid"));
-            trackByKey.putIfAbsent(key, track);
+            String rawLevel = (String) row.get("career_level");
+            if (rawLevel == null) {
+                log.warnf("Consultant %s has null career_level — skipping from all-practices distribution", row.get("useruuid"));
+                continue;
+            }
+            String track = row.get("career_track") != null ? (String) row.get("career_track") : UNASSIGNED_TRACK;
+            String uuid  = (String) row.get("useruuid");
+            grouped.computeIfAbsent(track + "|" + rawLevel, k -> new ArrayList<>()).add(uuid);
+            if (seenUuids.add(uuid)) {
+                String firstname = row.get("firstname") != null ? (String) row.get("firstname") : "";
+                String lastname  = row.get("lastname")  != null ? (String) row.get("lastname")  : "";
+                members.add(new MemberBasicInfo(uuid, firstname, lastname));
+            }
         }
 
+        return new AllPracticesCareerDistributionResult(buildDistributionDTOs(grouped), members);
+    }
+
+    private List<TeamCareerDistributionDTO> buildDistributionDTOs(Map<String, List<String>> grouped) {
         return grouped.entrySet().stream()
                 .map(entry -> {
                     String[] parts = entry.getKey().split("\\|");
-                    return new TeamCareerDistributionDTO(
-                            parts[0],
-                            parts[1],
-                            entry.getValue().size(),
-                            entry.getValue()
-                    );
+                    return new TeamCareerDistributionDTO(parts[0], parts[1], entry.getValue().size(), entry.getValue());
                 })
                 .toList();
     }
