@@ -43,7 +43,8 @@ public class OpexDistributionFreshnessCheck implements HealthCheck {
                 "SELECT MIN(refreshed_at), COUNT(*) FROM fact_opex_distribution_mat")
                 .getSingleResult();
         LocalDateTime oldest = row[0] == null ? null
-                : ((Timestamp) row[0]).toLocalDateTime();
+                : row[0] instanceof Timestamp ts ? ts.toLocalDateTime()
+                : (LocalDateTime) row[0];
         long rowCount = ((Number) row[1]).longValue();
 
         long ageHours = oldest == null ? Long.MAX_VALUE
