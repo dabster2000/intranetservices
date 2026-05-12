@@ -56,7 +56,11 @@ public class OpexDistributionFreshnessCheck implements HealthCheck {
                 .withData("age_hours", ageHours)
                 .withData("max_allowed_hours", maxStalenessHours);
 
-        if (rowCount > 0 && ageHours <= maxStalenessHours) {
+        if (rowCount == 0) {
+            // Empty table = cold-start refresh pending — not stale, just not yet populated
+            return b.up().build();
+        }
+        if (ageHours <= maxStalenessHours) {
             return b.up().build();
         }
         log.warnf("opex-distribution-freshness DOWN: rows=%d, age_hours=%d, max_hours=%d",
