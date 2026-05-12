@@ -62,7 +62,7 @@ public class OpexDistributionRefreshBatchlet {
             log.infof("fact_opex_distribution_mat refreshed: inserted=%d deleted=%d took=%dms window=[%s..%s)",
                     outcome.inserted(), outcome.deleted(), outcome.took().toMillis(),
                     outcome.windowFrom(), outcome.windowTo());
-            lastAlertSent.set(null);  // success clears alert state
+            lastAlertSent.set(null);
         } catch (Exception e) {
             log.errorf(e, "fact_opex_distribution_mat refresh failed");
             fireSlackAlertIfNeeded(e);

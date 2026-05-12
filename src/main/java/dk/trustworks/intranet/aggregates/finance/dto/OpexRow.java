@@ -46,6 +46,12 @@ public record OpexRow(
     /** Convenience constant for distribution-computed data source. */
     public static final String SOURCE_DISTRIBUTION = "DISTRIBUTION";
 
+    /** Cost-type value persisted to fact_opex_*.cost_type for payroll rows. */
+    public static final String COST_TYPE_SALARIES = "SALARIES";
+
+    /** Cost-type value persisted to fact_opex_*.cost_type for non-payroll OPEX rows. */
+    public static final String COST_TYPE_OPEX = "OPEX";
+
     /**
      * Compact constructor validates non-null invariants and enforces non-negative amounts.
      */

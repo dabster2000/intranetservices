@@ -67,9 +67,9 @@ class OpexDistributionRefreshParityIT {
     @Test
     @Transactional
     void materialized_rows_match_live_compute_for_every_month_in_current_fy() {
-        // 1. Snapshot live algorithm output for the current FY
-        LocalDate fyStart = UtilizationCalculationHelper.getCurrentFiscalYearRange().start();
-        LocalDate fyEnd = UtilizationCalculationHelper.getCurrentFiscalYearRange().end().plusDays(1);
+        var currentFy = UtilizationCalculationHelper.getCurrentFiscalYearRange();
+        LocalDate fyStart = currentFy.start();
+        LocalDate fyEnd = currentFy.end().plusDays(1);
 
         FiscalYearData fyData = intercompanyCalcService.loadFiscalYear(
                 fyStart, fyEnd, salaryBufferMultiplier);
@@ -83,22 +83,19 @@ class OpexDistributionRefreshParityIT {
             live.put(ym, aggregate(liveRows));
         }
 
-        // Guard: don't let a sparse test DB make the parity test pass vacuously.
+        // Guard: a sparse test DB would otherwise make this test pass vacuously.
         int totalLiveRows = live.values().stream().mapToInt(Map::size).sum();
         assertTrue(totalLiveRows > 0,
                 "Live algorithm produced zero rows across the current FY — parity test "
                 + "would pass vacuously. Source data may be missing from the test database.");
 
-        // 2. Run the refresh
         refreshService.refresh();
 
-        // 3. Read back materialized rows by month and aggregate the same way
         Map<YearMonth, Map<String, Double>> mat = new TreeMap<>();
         for (YearMonth ym : live.keySet()) {
             mat.put(ym, readMatTableForMonth(ym));
         }
 
-        // 4. Compare per month
         for (YearMonth ym : live.keySet()) {
             Map<String, Double> liveMonth = live.get(ym);
             Map<String, Double> matMonth = mat.get(ym);

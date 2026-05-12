@@ -48,5 +48,6 @@ CREATE TABLE IF NOT EXISTS fact_opex_distribution_mat (
     KEY idx_fodm_month_key       (month_key),
     KEY idx_fodm_payroll_month   (is_payroll_flag, month_key),
     KEY idx_fodm_category_month  (expense_category_id, month_key),
-    KEY idx_fodm_cost_center     (cost_center_id, month_key)
+    KEY idx_fodm_cost_center     (cost_center_id, month_key),
+    KEY idx_fodm_refreshed_at    (refreshed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcSer
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.FiscalYearRange;
+import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -61,21 +62,17 @@ public class OpexDistributionRefreshService {
     @Transactional
     public RefreshOutcome refresh() {
         Instant start = Instant.now();
-        LocalDate today = LocalDate.now();
 
         FiscalYearRange currentFy =
                 UtilizationCalculationHelper.getCurrentFiscalYearRange();
         LocalDate windowFrom = currentFy.start().minusYears(fyBack);
-        LocalDate windowTo = currentFy.end().plusDays(1);  // exclusive
+        LocalDate windowToExclusive = currentFy.end().plusDays(1);
 
-        // 1. Load all source data for the window in ONE batch (existing helper).
         FiscalYearData fyData = intercompanyCalcService.loadFiscalYear(
-                windowFrom, windowTo, salaryBufferMultiplier);
+                windowFrom, windowToExclusive, salaryBufferMultiplier);
 
-        // 2. For each month, compute distribution rows. The provider's
-        //    computeDistributionForMonth is @CacheResult-annotated per monthKey,
-        //    but since the cache key matches the per-month workload and we
-        //    explicitly DELETE before INSERT, cached output is the right thing.
+        // computeDistributionForMonth is @CacheResult-annotated per monthKey; the
+        // explicit DELETE-before-INSERT below means cached output is safe to use.
         List<OpexRow> allRows = new ArrayList<>();
         for (YearMonth ym : fyData.perMonth.keySet()) {
             allRows.addAll(opexProvider.computeDistributionForMonth(
@@ -84,9 +81,8 @@ public class OpexDistributionRefreshService {
                     fyData.lumpsByMonth.getOrDefault(ym, Collections.emptyMap())));
         }
 
-        // 3. DELETE + INSERT for the window (idempotent, single tx).
         String fromKey = UtilizationCalculationHelper.toMonthKey(windowFrom);
-        String toKey = UtilizationCalculationHelper.toMonthKey(windowTo);
+        String toKey = UtilizationCalculationHelper.toMonthKey(windowToExclusive);
 
         int deleted = em.createNativeQuery(
                 "DELETE FROM fact_opex_distribution_mat " +
@@ -99,9 +95,9 @@ public class OpexDistributionRefreshService {
 
         Duration took = Duration.between(start, Instant.now());
         log.infof("Refreshed fact_opex_distribution_mat: deleted=%d inserted=%d took=%dms window=[%s..%s)",
-                deleted, inserted, took.toMillis(), windowFrom, windowTo);
+                deleted, inserted, took.toMillis(), windowFrom, windowToExclusive);
 
-        return new RefreshOutcome(inserted, deleted, took, windowFrom, windowTo);
+        return new RefreshOutcome(inserted, deleted, took, windowFrom, windowToExclusive);
     }
 
     private int bulkInsert(List<OpexRow> rows, LocalDateTime refreshedAt) {
@@ -140,10 +136,10 @@ public class OpexDistributionRefreshService {
                     java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
             int monthVal = ym.getMonthValue();
             int yearVal = ym.getYear();
-            int fyVal = monthVal >= 7 ? yearVal : yearVal - 1;
+            int fyVal = DateUtils.fiscalYearStart(ym.atDay(1)).getYear();
             int fmn = monthVal >= 7 ? monthVal - 6 : monthVal + 6;
             String fmk = String.format("FY%04d-%02d", fyVal, fmn);
-            String cost = r.isPayrollFlag() ? "SALARIES" : "OPEX";
+            String cost = r.isPayrollFlag() ? OpexRow.COST_TYPE_SALARIES : OpexRow.COST_TYPE_OPEX;
             String id = r.companyId() + "-" + r.costCenterId() + "-"
                       + r.expenseCategoryId() + "-" + (r.isPayrollFlag() ? "1" : "0")
                       + "-" + r.monthKey();

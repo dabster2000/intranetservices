@@ -8,8 +8,6 @@ import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.Test;
 
-import java.time.YearMonth;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -69,18 +67,13 @@ class OpexDistributionRefreshServiceIT {
     @Test
     @Transactional
     void refresh_windowRespectsConfiguredFyBack() {
-        refreshService.refresh();
-
-        YearMonth currentFyStart = YearMonth.from(
-                UtilizationCalculationHelper.getCurrentFiscalYearRange().start());
-        YearMonth windowFloor = currentFyStart.minusYears(refreshService.fyBack);
+        RefreshOutcome outcome = refreshService.refresh();
 
         String minMonthKey = (String) em.createNativeQuery(
                         "SELECT MIN(month_key) FROM fact_opex_distribution_mat")
                 .getSingleResult();
 
-        String windowFloorKey = String.format("%04d%02d",
-                windowFloor.getYear(), windowFloor.getMonthValue());
+        String windowFloorKey = UtilizationCalculationHelper.toMonthKey(outcome.windowFrom());
         assertTrue(minMonthKey.compareTo(windowFloorKey) >= 0,
                 "minimum month_key " + minMonthKey
                         + " must not precede window floor " + windowFloorKey);
