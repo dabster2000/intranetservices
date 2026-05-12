@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.finance.dto.AllPracticesCareerDistributionResult;
 import dk.trustworks.intranet.aggregates.finance.dto.ConsultantAbsenceDayDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamAbsenceOverviewDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamCareerDistributionDTO;
@@ -180,6 +181,13 @@ public class TeamResource {
     public List<TeamCareerDistributionDTO> getCareerDistribution(@PathParam("teamuuid") String teamuuid) {
         teamDashboardService.validateTeamAccess(teamuuid, requestHeaderHolder.getUserUuid());
         return teamPeopleService.getCareerDistribution(teamuuid);
+    }
+
+    @GET
+    @Path("/all-practices/career-distribution")
+    @RolesAllowed({"dashboard:read"})
+    public AllPracticesCareerDistributionResult getAllPracticesCareerDistribution() {
+        return teamPeopleService.getAllPracticesCareerDistribution();
     }
 
     @GET
