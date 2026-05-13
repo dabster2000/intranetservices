@@ -42,8 +42,8 @@ class OpexDistributionRefreshBatchletTest {
 
     @Mock OpexDistributionRefreshService refreshService;
     @Mock SlackService slackService;
-    @Mock EntityManager em;
     @Mock ManagedExecutor managedExecutor;
+    @Mock EntityManager em;
     @Mock Query query;
 
     OpexDistributionRefreshBatchlet batchlet;
@@ -53,8 +53,8 @@ class OpexDistributionRefreshBatchletTest {
         batchlet = new OpexDistributionRefreshBatchlet();
         batchlet.refreshService = refreshService;
         batchlet.slackService = slackService;
-        batchlet.em = em;
         batchlet.managedExecutor = managedExecutor;
+        batchlet.em = em;
         batchlet.opsAlertChannel = CHANNEL;
     }
 

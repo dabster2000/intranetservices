@@ -44,10 +44,10 @@ public class OpexDistributionRefreshBatchlet {
     SlackService slackService;
 
     @Inject
-    EntityManager em;
+    ManagedExecutor managedExecutor;
 
     @Inject
-    ManagedExecutor managedExecutor;
+    EntityManager em;
 
     @ConfigProperty(name = "slack.opsAlertChannel", defaultValue = "C0B2VQ2CFU1")
     String opsAlertChannel;
