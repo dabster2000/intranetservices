@@ -58,6 +58,20 @@ public interface EconomicsAPI extends AutoCloseable {
                                 @QueryParam("filter") String filter,
                                 @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
 
+        /**
+         * Lists accounts (chart of accounts) for the current tenant. Used by
+         * {@code EconomicRevenueImportService} (PR 2 of external-invoice-import)
+         * to discover revenue accounts before filtering by tenant-specific
+         * deny-lists (1040 for TECH/CYBER; 2101 for A/S; 2102/2103 VMS).
+         *
+         * @param filter   e-conomic filter expression, e.g. {@code "accountType$eq:revenue"}
+         * @param pagesize page size (default 1000 — chart of accounts is small)
+         */
+        @GET
+        @Path("/accounts")
+        Response getAccounts(@QueryParam("filter") String filter,
+                             @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
+
         @GET
         @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment")
         Response getVoucherAttachmentMeta(@PathParam("journalNumber") int journalNumber,
