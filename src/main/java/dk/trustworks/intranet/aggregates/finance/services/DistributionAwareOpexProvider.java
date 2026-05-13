@@ -1,29 +1,15 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
-import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService;
-import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService.MonthData;
-import dk.trustworks.intranet.aggregates.accounting.services.IntercompanyCalcService.ShareAmounts;
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
-import dk.trustworks.intranet.financeservice.model.AccountingAccount;
-import dk.trustworks.intranet.financeservice.model.AccountingCategory;
-import dk.trustworks.intranet.financeservice.model.enums.CostType;
-import dk.trustworks.intranet.model.Company;
-import io.quarkus.cache.CacheKey;
-import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Tuple;
 import lombok.extern.jbosslog.JBossLog;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.YearMonth;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,9 +19,10 @@ import java.util.TreeMap;
  * Settlement-aware OPEX data provider that unifies two data sources per month:
  * <ol>
  *   <li><b>Unsettled months</b>: months for which no finalized INTERNAL_SERVICE invoice exists
- *       — {@code fact_opex_mat} still reflects raw pre-distribution GL, so this provider computes
- *       distribution via {@link IntercompanyCalcService} so each company sees its allocated
- *       share of shared expenses.</li>
+ *       — {@code fact_opex_mat} still reflects raw pre-distribution GL, so this provider reads
+ *       from {@code fact_opex_distribution_mat} (populated nightly by
+ *       {@link OpexDistributionRefreshService}) where each company sees its allocated share of
+ *       shared expenses.</li>
  *   <li><b>Settled months</b>: months with at least one finalized INTERNAL_SERVICE invoice
  *       (status != DRAFT) — settlement is already booked in the GL via the resulting voucher,
  *       so this provider queries {@code fact_opex_mat} directly (raw GL).</li>
@@ -51,65 +38,15 @@ import java.util.TreeMap;
  * sometimes monthly, sometimes lumped at year-end, sometimes skipped entirely (e.g. due to cash
  * position). The settlement-presence check makes the chart correct regardless of cadence.
  *
- * <p>Category mapping logic is intentionally kept in sync with the {@code category_mapping} CTE in
- * {@code V205__Recreate_fact_opex_with_cost_type.sql}. Any change to V205 must be reflected here
- * and vice versa. Account filtering uses {@code cost_type IN (OPEX, SALARIES)} instead of the
- * brittle account-code-range filter [3000, 6000) that was removed in V205.
+ * <p>Prior to PR 2 this provider also computed the distribution algorithm inline on every
+ * request, which made the EBITDA forecast endpoint a >30s cold-path. The algorithm now lives in
+ * {@link OpexDistributionRefreshService} and runs nightly; this class reads the materialized
+ * output and stays on the hot read path. Category mapping logic and {@code OPEX_COST_TYPES} have
+ * therefore moved to the refresh service alongside the compute methods.
  */
 @ApplicationScoped
 @JBossLog
 public class DistributionAwareOpexProvider {
-
-    // -----------------------------------------------------------------------
-    // Category mapping — MUST match V125__fact_opex.sql category_mapping CTE
-    // -----------------------------------------------------------------------
-
-    /**
-     * Maps accounting_categories.groupname (stored as AccountingCategory.accountname in Java)
-     * to the expense_category_id dimension used by fact_opex.
-     *
-     * Matches exactly the CASE expression in V125 category_mapping CTE.
-     */
-    private static final Map<String, String> GROUPNAME_TO_EXPENSE_CATEGORY;
-
-    /**
-     * Maps accounting_categories.groupname to cost_center_id dimension.
-     *
-     * Matches exactly the CASE expression in V125 category_mapping CTE.
-     */
-    private static final Map<String, String> GROUPNAME_TO_COST_CENTER;
-
-    static {
-        Map<String, String> ec = new HashMap<>();
-        ec.put("Delte services",                      "PEOPLE_NON_BILLABLE");
-        ec.put("Salgsfremmende omkostninger",          "SALES_MARKETING");
-        ec.put("Lokaleomkostninger",                   "OFFICE_FACILITIES");
-        ec.put("Variable omkostninger",                "TOOLS_SOFTWARE");
-        ec.put("\u00D8vrige administrationsomk. i alt", "OTHER_OPEX");  // Øvrige administrationsomk. i alt
-        GROUPNAME_TO_EXPENSE_CATEGORY = Collections.unmodifiableMap(ec);
-
-        Map<String, String> cc = new HashMap<>();
-        cc.put("Delte services",                      "HR_ADMIN");
-        cc.put("Salgsfremmende omkostninger",          "SALES");
-        cc.put("Lokaleomkostninger",                   "FACILITIES");
-        cc.put("Variable omkostninger",                "INTERNAL_IT");
-        cc.put("\u00D8vrige administrationsomk. i alt", "ADMIN");       // Øvrige administrationsomk. i alt
-        GROUPNAME_TO_COST_CENTER = Collections.unmodifiableMap(cc);
-    }
-
-    /**
-     * Cost types included in the OPEX distribution. Matches the filter in V205 fact_opex.
-     * OPEX and SALARIES are the two types that flow through the distribution algorithm.
-     * DIRECT_COSTS, REVENUE, IGNORE, and OTHER are excluded.
-     */
-    private static final Set<CostType> OPEX_COST_TYPES = Set.of(CostType.OPEX, CostType.SALARIES);
-
-    /** Salary buffer multiplier — same config property used by AccountingResource. */
-    @ConfigProperty(name = "dk.trustworks.intranet.aggregates.accounting.salary-buffer-multiplier", defaultValue = "1.02")
-    double salaryBufferMultiplier;
-
-    @Inject
-    IntercompanyCalcService intercompanyCalcService;
 
     @Inject
     EntityManager em;
@@ -121,8 +58,9 @@ public class DistributionAwareOpexProvider {
     /**
      * Returns OPEX rows for the given month range and optional filters.
      *
-     * <p>Months in the current fiscal year are served via the distribution algorithm.
-     * Months in a previous fiscal year are served from {@code fact_opex_mat} (raw GL).
+     * <p>Months with a finalized INTERNAL_SERVICE invoice are served from
+     * {@code fact_opex_mat} (raw GL). All other months are served from
+     * {@code fact_opex_distribution_mat} which the nightly refresh batch populates.
      *
      * @param fromMonthKey     start month inclusive, format YYYYMM
      * @param toMonthKey       end month inclusive, format YYYYMM
@@ -138,50 +76,59 @@ public class DistributionAwareOpexProvider {
             Set<String> costCenters,
             Set<String> expenseCategories) {
 
-        log.debugf("getDistributionAwareOpex: from=%s to=%s companies=%s", fromMonthKey, toMonthKey, companyIds);
+        log.debugf("getDistributionAwareOpex: from=%s to=%s companies=%s",
+                fromMonthKey, toMonthKey, companyIds);
 
         YearMonth from = parseMonthKey(fromMonthKey);
         YearMonth to   = parseMonthKey(toMonthKey);
 
         Set<YearMonth> settledMonths = findSettledMonths(from, to);
 
-        List<YearMonth> unsettledMonths = new ArrayList<>();
-        List<YearMonth> rawGlMonths     = new ArrayList<>();
-
+        // Build contiguous-range monthKey strings for the two paths. The settled
+        // path queries fact_opex_mat by [min, max] range; the unsettled path queries
+        // fact_opex_distribution_mat the same way. We use min..max (not a list) because:
+        //   - it preserves the IN-clause-free SQL shape we already have for fact_opex_mat
+        //   - filter by `WHERE month_key IN settledKeys` inline after the fetch handles
+        //     the rare non-contiguous case
+        List<String> settledKeys   = new ArrayList<>();
+        List<String> unsettledKeys = new ArrayList<>();
         for (YearMonth ym = from; !ym.isAfter(to); ym = ym.plusMonths(1)) {
-            if (settledMonths.contains(ym)) {
-                rawGlMonths.add(ym);
-            } else {
-                unsettledMonths.add(ym);
-            }
+            (settledMonths.contains(ym) ? settledKeys : unsettledKeys)
+                    .add(formatMonthKey(ym));
         }
 
         List<OpexRow> result = new ArrayList<>();
-
-        // Settled months: raw GL from fact_opex_mat (a single contiguous range query is fine —
-        // any unsettled gaps inside the range simply contribute zero rows from fact_opex_mat
-        // because the INTERNAL_SERVICE voucher hasn't been booked, but we still query distribution
-        // for those months separately below)
-        if (!rawGlMonths.isEmpty()) {
-            String prevFrom = formatMonthKey(rawGlMonths.getFirst());
-            String prevTo   = formatMonthKey(rawGlMonths.getLast());
-            // Filter results to settled months only — covers the case of non-contiguous settlement
-            List<OpexRow> rawRows = queryFactOpexMat(prevFrom, prevTo, companyIds, costCenters, expenseCategories);
+        if (!settledKeys.isEmpty()) {
+            String prevFrom = settledKeys.getFirst();
+            String prevTo   = settledKeys.getLast();
+            List<OpexRow> rawRows = queryFactOpexMat(prevFrom, prevTo,
+                    companyIds, costCenters, expenseCategories);
+            // Keep only settled months (covers the non-contiguous case).
             for (OpexRow row : rawRows) {
-                YearMonth ym = parseMonthKey(row.monthKey());
-                if (settledMonths.contains(ym)) {
+                if (settledMonths.contains(parseMonthKey(row.monthKey()))) {
+                    result.add(row);
+                }
+            }
+        }
+        if (!unsettledKeys.isEmpty()) {
+            String distFrom = unsettledKeys.getFirst();
+            String distTo   = unsettledKeys.getLast();
+            List<OpexRow> distRows = queryFactOpexDistributionMat(distFrom, distTo,
+                    companyIds, costCenters, expenseCategories);
+            // Same non-contiguous filter, in case a settled month sits between
+            // two unsettled ones.
+            Set<YearMonth> unsettledSet = new HashSet<>();
+            for (YearMonth ym = from; !ym.isAfter(to); ym = ym.plusMonths(1)) {
+                if (!settledMonths.contains(ym)) unsettledSet.add(ym);
+            }
+            for (OpexRow row : distRows) {
+                if (unsettledSet.contains(parseMonthKey(row.monthKey()))) {
                     result.add(row);
                 }
             }
         }
 
-        // Unsettled months: distribution algorithm, batch-loaded for efficiency
-        if (!unsettledMonths.isEmpty()) {
-            result.addAll(computeDistributionForMonths(unsettledMonths, companyIds, costCenters, expenseCategories));
-        }
-
-        // Sort by monthKey ascending so callers get chronological order
-        result.sort((a, b) -> a.monthKey().compareTo(b.monthKey()));
+        result.sort(java.util.Comparator.comparing(OpexRow::monthKey));
         return result;
     }
 
@@ -262,7 +209,7 @@ public class DistributionAwareOpexProvider {
                 .setParameter("toKey", toKey)
                 .getResultList();
 
-        Set<YearMonth> result = new java.util.HashSet<>();
+        Set<YearMonth> result = new HashSet<>();
         for (Object[] row : rows) {
             int yr = ((Number) row[0]).intValue();
             int mn = ((Number) row[1]).intValue();
@@ -272,7 +219,7 @@ public class DistributionAwareOpexProvider {
     }
 
     // -----------------------------------------------------------------------
-    // Previous FY: query fact_opex_mat
+    // Settled months: query fact_opex_mat
     // -----------------------------------------------------------------------
 
     @SuppressWarnings("unchecked")
@@ -336,254 +283,75 @@ public class DistributionAwareOpexProvider {
         return result;
     }
 
-    // -----------------------------------------------------------------------
-    // Current FY: distribution computation
-    // -----------------------------------------------------------------------
-
     /**
-     * Batch-loads fiscal year data via {@link IntercompanyCalcService#loadFiscalYear} and
-     * computes distribution for each requested month.
+     * Reads OPEX rows for the given months from {@code fact_opex_distribution_mat}.
+     * Mirror of {@link #queryFactOpexMat}, but for distribution-computed rows that
+     * the nightly batchlet writes. Result rows carry {@code OpexRow.SOURCE_DISTRIBUTION}.
      *
-     * <p>Using the batch loader avoids separate GL + availability queries per month, which
-     * would be prohibitively expensive when 12 months are requested in a single page load.
+     * <p>Callers (in particular {@link #getDistributionAwareOpex}) decide which
+     * months go to which table based on settlement state.
      */
-    private List<OpexRow> computeDistributionForMonths(
-            List<YearMonth> months,
+    @SuppressWarnings("unchecked")
+    private List<OpexRow> queryFactOpexDistributionMat(
+            String fromMonthKey,
+            String toMonthKey,
             Set<String> companyIds,
             Set<String> costCenters,
             Set<String> expenseCategories) {
 
-        YearMonth first = months.getFirst();
-        YearMonth last  = months.getLast();
+        StringBuilder sql = new StringBuilder(
+                "SELECT company_id, cost_center_id, expense_category_id, cost_type, month_key, " +
+                "  SUM(opex_amount_dkk) AS opex_amount, " +
+                "  SUM(invoice_count) AS invoice_count, " +
+                "  MAX(is_payroll_flag) AS is_payroll " +
+                "FROM fact_opex_distribution_mat " +
+                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey "
+        );
 
-        LocalDate batchFrom = first.atDay(1);
-        LocalDate batchTo   = last.plusMonths(1).atDay(1);  // exclusive
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND company_id IN (:companyIds) ");
+        }
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("AND cost_center_id IN (:costCenters) ");
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            sql.append("AND expense_category_id IN (:expenseCategories) ");
+        }
+        sql.append("GROUP BY company_id, cost_center_id, expense_category_id, cost_type, month_key " +
+                   "ORDER BY month_key ASC");
 
-        log.debugf("Loading FY batch for distribution: %s – %s (%d months)", batchFrom, batchTo, months.size());
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+        if (costCenters != null && !costCenters.isEmpty()) {
+            query.setParameter("costCenters", costCenters);
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            query.setParameter("expenseCategories", expenseCategories);
+        }
 
-        IntercompanyCalcService.FiscalYearData fyData =
-                intercompanyCalcService.loadFiscalYear(batchFrom, batchTo, salaryBufferMultiplier);
-
-        List<OpexRow> result = new ArrayList<>();
-        for (YearMonth ym : months) {
-            MonthData md = fyData.perMonth.get(ym);
-            if (md == null) {
-                log.warnf("No MonthData found for %s in FiscalYearData — skipping", ym);
-                continue;
-            }
-            Map<String, BigDecimal> lumps = fyData.lumpsByMonth.getOrDefault(ym, Collections.emptyMap());
-            List<OpexRow> monthRows = computeDistributionForMonth(ym, md, lumps);
-            result.addAll(applyFilters(monthRows, companyIds, costCenters, expenseCategories));
+        List<Tuple> rows = query.getResultList();
+        List<OpexRow> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            double amount = row.get("opex_amount") != null
+                    ? ((Number) row.get("opex_amount")).doubleValue() : 0.0;
+            if (amount <= 0.0) continue;
+            result.add(new OpexRow(
+                    (String) row.get("company_id"),
+                    (String) row.get("cost_center_id"),
+                    (String) row.get("expense_category_id"),
+                    (String) row.get("month_key"),
+                    amount,
+                    row.get("invoice_count") != null
+                            ? ((Number) row.get("invoice_count")).intValue() : 0,
+                    "SALARIES".equals(row.get("cost_type")),
+                    OpexRow.SOURCE_DISTRIBUTION
+            ));
         }
         return result;
-    }
-
-    /**
-     * Computes distribution-adjusted OPEX rows for a single month.
-     *
-     * <p>This method is cached per monthKey to avoid redundant recomputation when the same
-     * month is queried by multiple CXO endpoints in a single page load.
-     * The 5-minute TTL matches the {@code sp_incremental_bi_refresh} frequency.
-     *
-     * <p>Note: {@code @CacheResult} only caches on the method arguments as cache key.
-     * The cache key here is {@code monthKey} (the first argument). Since all data for a month
-     * is derived from the same GL snapshot, caching per monthKey is correct.
-     *
-     * <p>The method delegates computation details to
-     * {@link #computeDistributionRowsForMonth(YearMonth, MonthData, Map)}
-     * to keep the cached method signature simple.
-     */
-    @CacheResult(cacheName = "distribution-opex")
-    public List<OpexRow> computeDistributionForMonth(
-            @CacheKey YearMonth monthKey,
-            MonthData md,
-            Map<String, BigDecimal> lumpsByAccount) {
-        return computeDistributionRowsForMonth(monthKey, md, lumpsByAccount);
-    }
-
-    /**
-     * Core distribution logic for one month.
-     *
-     * <p>Algorithm:
-     * <ol>
-     *   <li>For each origin company × account where {@code cost_type IN (OPEX, SALARIES)}:
-     *       <ul>
-     *         <li>Compute {@link ShareAmounts} via
-     *             {@link IntercompanyCalcService#computeDistributionLegacyShareForAccount}</li>
-     *         <li>For each payer company: allocated = baseToShare * payerRatio
-     *             + (if payer==origin: originRemainder)</li>
-     *       </ul>
-     *   <li>Map each (origin, payer, account) to OPEX category dimensions using
-     *       {@link #resolveExpenseCategory} and {@link #resolveCostCenter}.</li>
-     *   <li>Aggregate per (payerCompany × costCenter × expenseCategory × month).</li>
-     * </ol>
-     *
-     * <p>The {@code staffRemainingByCompany} map is mutated by
-     * {@code computeDistributionLegacyShareForAccount} to implement salary pool capping.
-     * A fresh mutable copy is created per month call to avoid cross-call contamination.
-     */
-    private List<OpexRow> computeDistributionRowsForMonth(
-            YearMonth ym,
-            MonthData md,
-            Map<String, BigDecimal> lumpsByAccount) {
-
-        String monthKeyStr = formatMonthKey(ym);
-
-        // Salary pool cap state — must be mutable and reset per month (legacy semantics)
-        Map<String, BigDecimal> staffRemainingByCompany = new HashMap<>(md.staffBaseBI102);
-
-        // Accumulator: payerUuid → costCenterId → expenseCategoryId → isPayroll → amount.
-        // isPayroll is a key dimension so SALARIES accounts cannot contaminate the OPEX
-        // total inside categories that mix both cost types (e.g. "Delte services" maps
-        // 84 OPEX accounts and 3 SALARIES accounts into PEOPLE_NON_BILLABLE).
-        Map<String, Map<String, Map<String, Map<Boolean, Double>>>> accumulator = new HashMap<>();
-
-        for (AccountingCategory category : md.categories) {
-            String groupname = category.getAccountname();  // maps to groupname column
-
-            String expenseCategoryId = resolveExpenseCategory(groupname);
-            String costCenterId      = resolveCostCenter(groupname);
-
-            for (AccountingAccount account : category.getAccounts()) {
-
-                // Filter by cost_type: only OPEX and SALARIES accounts participate in distribution.
-                // Replaces the brittle account-code range [3000, 6000) and EXCLUDED_GROUPNAMES.
-                // Matches the filter in V205 fact_opex (aa.cost_type IN ('OPEX', 'SALARIES')).
-                if (!OPEX_COST_TYPES.contains(account.getCostType())) continue;
-
-                String originUuid = account.getCompany().getUuid();
-
-                BigDecimal gl = md.glByCompanyAccountRange
-                        .getOrDefault(originUuid, Collections.emptyMap())
-                        .getOrDefault(account.getAccountCode(), BigDecimal.ZERO);
-
-                // Use absolute value to match V125 fact_opex which uses SUM(ABS(amount)).
-                // Credit/reversal entries (negative GL) still contribute to OPEX totals.
-                gl = gl.abs();
-
-                BigDecimal lump = lumpsByAccount.getOrDefault(account.getUuid(), BigDecimal.ZERO);
-
-                ShareAmounts share = intercompanyCalcService.computeDistributionLegacyShareForAccount(
-                        md, account, originUuid, gl, lump, staffRemainingByCompany);
-
-                boolean isPayroll = account.isSalary();
-
-                for (Company payer : md.companies) {
-                    String payerUuid = payer.getUuid();
-                    BigDecimal ratio = md.ratioByCompany.getOrDefault(payerUuid, BigDecimal.ZERO);
-
-                    BigDecimal allocated = BigDecimal.ZERO;
-
-                    if (share.baseToShare.compareTo(BigDecimal.ZERO) > 0) {
-                        allocated = allocated.add(
-                                share.baseToShare.multiply(ratio).setScale(IntercompanyCalcService.SCALE, IntercompanyCalcService.RM)
-                        );
-                    }
-                    if (payerUuid.equals(originUuid) && share.originRemainder.compareTo(BigDecimal.ZERO) > 0) {
-                        allocated = allocated.add(share.originRemainder);
-                    }
-
-                    if (allocated.compareTo(BigDecimal.ZERO) <= 0) continue;
-
-                    // Accumulate: payerUuid → costCenterId → expenseCategoryId → isPayroll → amount
-                    accumulator
-                            .computeIfAbsent(payerUuid, k -> new HashMap<>())
-                            .computeIfAbsent(costCenterId, k -> new HashMap<>())
-                            .computeIfAbsent(expenseCategoryId, k -> new HashMap<>())
-                            .merge(isPayroll, allocated.doubleValue(), Double::sum);
-                }
-            }
-        }
-
-        // Flatten accumulator → OpexRow list. Each (payer, costCenter, expenseCategory)
-        // can produce up to two rows — one with isPayroll=true and one with isPayroll=false —
-        // mirroring how fact_opex_mat keeps SALARIES and OPEX rows separate by cost_type.
-        List<OpexRow> rows = new ArrayList<>();
-        for (var payerEntry : accumulator.entrySet()) {
-            String payerUuid = payerEntry.getKey();
-            for (var ccEntry : payerEntry.getValue().entrySet()) {
-                String costCenterId = ccEntry.getKey();
-                for (var catEntry : ccEntry.getValue().entrySet()) {
-                    String expenseCategoryId = catEntry.getKey();
-                    for (var prEntry : catEntry.getValue().entrySet()) {
-                        boolean isPayroll = prEntry.getKey();
-                        double amount = prEntry.getValue();
-
-                        if (amount <= 0.0) continue;
-
-                        rows.add(new OpexRow(
-                                payerUuid,
-                                costCenterId,
-                                expenseCategoryId,
-                                monthKeyStr,
-                                amount,
-                                1,  // distribution rows don't have individual GL entry counts
-                                isPayroll,
-                                OpexRow.SOURCE_DISTRIBUTION
-                        ));
-                    }
-                }
-            }
-        }
-
-        log.debugf("Distribution computed for %s: %d rows across %d companies",
-                monthKeyStr, rows.size(), md.companies.size());
-        return rows;
-    }
-
-    // -----------------------------------------------------------------------
-    // Category mapping helpers
-    // -----------------------------------------------------------------------
-
-    /**
-     * Maps the category groupname (DB: accounting_categories.groupname,
-     * Java: AccountingCategory.accountname) to expense_category_id.
-     *
-     * <p>Defaults to "OTHER_OPEX" for unknown groupnames, matching V125 ELSE clause.
-     */
-    private static String resolveExpenseCategory(String groupname) {
-        return GROUPNAME_TO_EXPENSE_CATEGORY.getOrDefault(groupname, "OTHER_OPEX");
-    }
-
-    /**
-     * Maps the category groupname to cost_center_id.
-     *
-     * <p>Defaults to "GENERAL" for unknown groupnames, matching V125 ELSE clause.
-     */
-    private static String resolveCostCenter(String groupname) {
-        return GROUPNAME_TO_COST_CENTER.getOrDefault(groupname, "GENERAL");
-    }
-
-    // -----------------------------------------------------------------------
-    // Post-fetch filtering
-    // -----------------------------------------------------------------------
-
-    /**
-     * Applies optional dimension filters to a list of OpexRow values.
-     *
-     * <p>Filtering is done in Java rather than in SQL for the distribution path,
-     * because distribution computes all companies and categories in one pass.
-     */
-    private static List<OpexRow> applyFilters(
-            List<OpexRow> rows,
-            Set<String> companyIds,
-            Set<String> costCenters,
-            Set<String> expenseCategories) {
-
-        if ((companyIds == null || companyIds.isEmpty())
-                && (costCenters == null || costCenters.isEmpty())
-                && (expenseCategories == null || expenseCategories.isEmpty())) {
-            return rows;
-        }
-
-        List<OpexRow> filtered = new ArrayList<>(rows.size());
-        for (OpexRow row : rows) {
-            if (companyIds != null && !companyIds.isEmpty() && !companyIds.contains(row.companyId())) continue;
-            if (costCenters != null && !costCenters.isEmpty() && !costCenters.contains(row.costCenterId())) continue;
-            if (expenseCategories != null && !expenseCategories.isEmpty() && !expenseCategories.contains(row.expenseCategoryId())) continue;
-            filtered.add(row);
-        }
-        return filtered;
     }
 
     // -----------------------------------------------------------------------

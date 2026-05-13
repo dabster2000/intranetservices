@@ -16,7 +16,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,20 +27,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Parity test: asserts that what the refresh batchlet writes into
- * {@code fact_opex_distribution_mat} is bit-for-bit identical to what
- * the live {@link DistributionAwareOpexProvider#computeDistributionForMonth}
- * produces today.
+ * {@code fact_opex_distribution_mat} is bit-for-bit identical to what the
+ * in-memory distribution algorithm produces from the same {@code FiscalYearData}.
+ *
+ * <p>Since PR 2 moved {@code computeDistributionForMonth(s)} from the provider
+ * into {@link OpexDistributionRefreshService}, this test now verifies that the
+ * INSERT path doesn't corrupt the algorithm output — i.e. the rows we write to
+ * the table aggregate (per {company,costCenter,expenseCategory,isPayroll}) to
+ * the same totals the in-memory algorithm produces.
  *
  * <p>For each month in the current fiscal year:
  * <ol>
- *   <li>Run the live algorithm directly</li>
- *   <li>Run the refresh service</li>
+ *   <li>Run the algorithm directly via {@code computeDistributionForMonths}</li>
+ *   <li>Run the refresh service (DELETE + INSERT)</li>
  *   <li>Read back the materialized rows</li>
  *   <li>Assert (company, cost_center, expense_category, is_payroll) → amount maps match</li>
  * </ol>
  *
- * <p>Guards against future algorithm drift — if anyone later changes one path
- * but not the other, this test fails loudly.
+ * <p>Guards against future regressions in the bulk-insert mapping layer
+ * (column order, decimal scaling, monthKey conversion, etc.).
  *
  * <p>Spec: docs/superpowers/specs/2026-05-11-fact-opex-distribution-mat-design.md §7 #1
  */
@@ -49,9 +54,6 @@ class OpexDistributionRefreshParityIT {
 
     @Inject
     IntercompanyCalcService intercompanyCalcService;
-
-    @Inject
-    DistributionAwareOpexProvider opexProvider;
 
     @Inject
     OpexDistributionRefreshService refreshService;
@@ -74,13 +76,15 @@ class OpexDistributionRefreshParityIT {
         FiscalYearData fyData = intercompanyCalcService.loadFiscalYear(
                 fyStart, fyEnd, salaryBufferMultiplier);
 
+        List<YearMonth> months = new ArrayList<>(fyData.perMonth.keySet());
+        List<OpexRow> liveRows = refreshService.computeDistributionForMonths(months, fyData);
+
         Map<YearMonth, Map<String, Double>> live = new TreeMap<>();
-        for (YearMonth ym : fyData.perMonth.keySet()) {
-            List<OpexRow> liveRows = opexProvider.computeDistributionForMonth(
-                    ym,
-                    fyData.perMonth.get(ym),
-                    fyData.lumpsByMonth.getOrDefault(ym, Collections.emptyMap()));
-            live.put(ym, aggregate(liveRows));
+        for (OpexRow r : liveRows) {
+            YearMonth ym = YearMonth.parse(r.monthKey(),
+                    java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+            live.computeIfAbsent(ym, k -> new HashMap<>())
+                .merge(dimensionKey(r), roundToCents(r.opexAmountDkk()), Double::sum);
         }
 
         // Guard: a sparse test DB would otherwise make this test pass vacuously.
@@ -108,21 +112,17 @@ class OpexDistributionRefreshParityIT {
         }
     }
 
-    /** Aggregate List<OpexRow> into a Map keyed by composite dimension string.
-     *  Each amount is rounded to 2 decimal places (HALF_EVEN) before summing,
-     *  matching the rounding the DB performs at INSERT time for DECIMAL(14,2).
-     *  This keeps the live-vs-materialized comparison apples-to-apples. */
-    private static Map<String, Double> aggregate(List<OpexRow> rows) {
-        Map<String, Double> out = new HashMap<>();
-        for (OpexRow r : rows) {
-            String key = r.companyId() + "|" + r.costCenterId() + "|"
-                    + r.expenseCategoryId() + "|" + r.isPayrollFlag();
-            double rounded = BigDecimal.valueOf(r.opexAmountDkk())
-                    .setScale(2, RoundingMode.HALF_EVEN)
-                    .doubleValue();
-            out.merge(key, rounded, Double::sum);
-        }
-        return out;
+    private static String dimensionKey(OpexRow r) {
+        return r.companyId() + "|" + r.costCenterId() + "|"
+                + r.expenseCategoryId() + "|" + r.isPayrollFlag();
+    }
+
+    /** Rounded to 2 decimal places (HALF_EVEN) to match what the DB performs
+     *  at INSERT time for DECIMAL(14,2). Keeps live-vs-materialized apples-to-apples. */
+    private static double roundToCents(double amount) {
+        return BigDecimal.valueOf(amount)
+                .setScale(2, RoundingMode.HALF_EVEN)
+                .doubleValue();
     }
 
     @SuppressWarnings("unchecked")
