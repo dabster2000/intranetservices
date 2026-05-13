@@ -14,6 +14,13 @@ quarkus:
       leak-detection-interval: PT5M
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
+  transaction-manager:
+    # OpexDistributionRefreshService.refresh() loads ~165k rows from finance_details +
+    # fact_user_day and inserts 321 rows in one prepared statement — real duration is
+    # 56-60s. The Narayana default of 60s is too tight; staging (1 vCPU) blows past it
+    # while production (2 vCPU) succeeds by ~4s. 600s gives generous headroom without
+    # masking pathological regressions.
+    default-transaction-timeout: 600s
   hibernate-orm:
     jdbc:
       statement-batch-size: 32
