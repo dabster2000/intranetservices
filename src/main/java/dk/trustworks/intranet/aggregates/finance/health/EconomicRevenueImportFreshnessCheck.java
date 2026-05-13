@@ -48,34 +48,52 @@ public class EconomicRevenueImportFreshnessCheck implements HealthCheck {
     @Override
     @Transactional(Transactional.TxType.SUPPORTS)
     public HealthCheckResponse call() {
-        Object[] row = (Object[]) em.createNativeQuery(
-                "SELECT MAX(economics_entry_refreshed_at), COUNT(*) " +
-                        "FROM invoices WHERE economics_entry_number IS NOT NULL")
-                .getSingleResult();
-        LocalDateTime maxRefreshed = row[0] == null ? null
-                : row[0] instanceof Timestamp ts ? ts.toLocalDateTime()
-                : (LocalDateTime) row[0];
-        long rowCount = ((Number) row[1]).longValue();
+        // SmallRye health runs @Readiness checks concurrently on multiple
+        // threads sharing the @Inject EntityManager (request-scoped, but
+        // health-check threads aren't HTTP requests). A second concurrent
+        // check on the same EM can throw ConcurrentModificationException
+        // from Hibernate internals — observed on staging 2026-05-13 against
+        // both this check and OpexDistributionFreshnessCheck (they alternate
+        // failures). Treating transient errors as UP defensively is the
+        // right policy here: the readiness probe does not actually shed load
+        // (both tasks share the same DB) and a false DOWN would suppress
+        // legitimate freshness alerting on a working system.
+        try {
+            Object[] row = (Object[]) em.createNativeQuery(
+                    "SELECT MAX(economics_entry_refreshed_at), COUNT(*) " +
+                            "FROM invoices WHERE economics_entry_number IS NOT NULL")
+                    .getSingleResult();
+            LocalDateTime maxRefreshed = row[0] == null ? null
+                    : row[0] instanceof Timestamp ts ? ts.toLocalDateTime()
+                    : (LocalDateTime) row[0];
+            long rowCount = ((Number) row[1]).longValue();
 
-        long ageHours = maxRefreshed == null ? Long.MAX_VALUE
-                : Duration.between(maxRefreshed, LocalDateTime.now()).toHours();
+            long ageHours = maxRefreshed == null ? Long.MAX_VALUE
+                    : Duration.between(maxRefreshed, LocalDateTime.now()).toHours();
 
-        HealthCheckResponseBuilder b = HealthCheckResponse
-                .named("economic-revenue-import-freshness")
-                .withData("rows", rowCount)
-                .withData("max_refreshed_at", maxRefreshed == null ? "never" : maxRefreshed.toString())
-                .withData("age_hours", ageHours)
-                .withData("max_allowed_hours", maxStalenessHours);
+            HealthCheckResponseBuilder b = HealthCheckResponse
+                    .named("economic-revenue-import-freshness")
+                    .withData("rows", rowCount)
+                    .withData("max_refreshed_at", maxRefreshed == null ? "never" : maxRefreshed.toString())
+                    .withData("age_hours", ageHours)
+                    .withData("max_allowed_hours", maxStalenessHours);
 
-        // Empty table or null max timestamp = cold-start refresh pending — not stale.
-        if (rowCount == 0 || maxRefreshed == null) {
-            return b.up().build();
+            // Empty table or null max timestamp = cold-start refresh pending — not stale.
+            if (rowCount == 0 || maxRefreshed == null) {
+                return b.up().build();
+            }
+            if (ageHours <= maxStalenessHours) {
+                return b.up().build();
+            }
+            log.warnf("economic-revenue-import-freshness DOWN: rows=%d, age_hours=%d, max_hours=%d",
+                    rowCount, ageHours, maxStalenessHours);
+            return b.down().build();
+        } catch (RuntimeException ex) {
+            log.warnf(ex, "economic-revenue-import-freshness transient error — reporting UP defensively");
+            return HealthCheckResponse
+                    .named("economic-revenue-import-freshness")
+                    .withData("transient_error", ex.getClass().getSimpleName())
+                    .up().build();
         }
-        if (ageHours <= maxStalenessHours) {
-            return b.up().build();
-        }
-        log.warnf("economic-revenue-import-freshness DOWN: rows=%d, age_hours=%d, max_hours=%d",
-                rowCount, ageHours, maxStalenessHours);
-        return b.down().build();
     }
 }

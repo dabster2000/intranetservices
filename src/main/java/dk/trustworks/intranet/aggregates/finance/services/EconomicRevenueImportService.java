@@ -330,12 +330,19 @@ public class EconomicRevenueImportService {
      */
     List<AccountInfo> fetchRevenueAccounts(EconomicsAPI api, String companyUuid) {
         List<AccountInfo> result = new ArrayList<>();
-        try (Response r = api.getAccounts("accountType$eq:revenue", 1000)) {
+        // e-conomic does NOT have a "revenue" accountType — the valid values are
+        // profitAndLoss, status, totalFrom, heading, headingStart, sumInterval,
+        // sumAlpha. We fetch all profitAndLoss accounts; the downstream entry-type
+        // filter (manualDebtorInvoice + financeVoucher@2180) and the Layer 1
+        // account hard-skip do the actual revenue-vs-expense narrowing. The
+        // Account JSON field for the human-readable label is "name", not
+        // "accountName" — verified against live e-conomic 2026-05-13.
+        try (Response r = api.getAccounts("accountType$eq:profitAndLoss", 1000)) {
             String body = r.readEntity(String.class);
             JsonNode root = readTree(body);
             for (JsonNode node : iterateCollection(root)) {
                 int accountNumber = node.path("accountNumber").asInt();
-                String accountName = node.path("accountName").asText("");
+                String accountName = node.path("name").asText("");
                 if (shouldSkipAccount(companyUuid, accountNumber)) continue;
                 result.add(new AccountInfo(accountNumber, accountName));
             }
