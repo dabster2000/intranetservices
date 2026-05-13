@@ -336,6 +336,77 @@ public class DistributionAwareOpexProvider {
         return result;
     }
 
+    /**
+     * Reads OPEX rows for the given months from {@code fact_opex_distribution_mat}.
+     * Mirror of {@link #queryFactOpexMat}, but for distribution-computed rows that
+     * the nightly batchlet writes. Result rows carry {@code OpexRow.SOURCE_DISTRIBUTION}.
+     *
+     * <p>Callers (in particular {@link #getDistributionAwareOpex}) decide which
+     * months go to which table based on settlement state.
+     */
+    @SuppressWarnings("unchecked")
+    private List<OpexRow> queryFactOpexDistributionMat(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> companyIds,
+            Set<String> costCenters,
+            Set<String> expenseCategories) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT company_id, cost_center_id, expense_category_id, cost_type, month_key, " +
+                "  SUM(opex_amount_dkk) AS opex_amount, " +
+                "  SUM(invoice_count) AS invoice_count, " +
+                "  MAX(is_payroll_flag) AS is_payroll " +
+                "FROM fact_opex_distribution_mat " +
+                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey "
+        );
+
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND company_id IN (:companyIds) ");
+        }
+        if (costCenters != null && !costCenters.isEmpty()) {
+            sql.append("AND cost_center_id IN (:costCenters) ");
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            sql.append("AND expense_category_id IN (:expenseCategories) ");
+        }
+        sql.append("GROUP BY company_id, cost_center_id, expense_category_id, cost_type, month_key " +
+                   "ORDER BY month_key ASC");
+
+        var query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromMonthKey", fromMonthKey);
+        query.setParameter("toMonthKey", toMonthKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+        if (costCenters != null && !costCenters.isEmpty()) {
+            query.setParameter("costCenters", costCenters);
+        }
+        if (expenseCategories != null && !expenseCategories.isEmpty()) {
+            query.setParameter("expenseCategories", expenseCategories);
+        }
+
+        List<Tuple> rows = query.getResultList();
+        List<OpexRow> result = new ArrayList<>(rows.size());
+        for (Tuple row : rows) {
+            double amount = row.get("opex_amount") != null
+                    ? ((Number) row.get("opex_amount")).doubleValue() : 0.0;
+            if (amount <= 0.0) continue;
+            result.add(new OpexRow(
+                    (String) row.get("company_id"),
+                    (String) row.get("cost_center_id"),
+                    (String) row.get("expense_category_id"),
+                    (String) row.get("month_key"),
+                    amount,
+                    row.get("invoice_count") != null
+                            ? ((Number) row.get("invoice_count")).intValue() : 0,
+                    "SALARIES".equals(row.get("cost_type")),
+                    OpexRow.SOURCE_DISTRIBUTION
+            ));
+        }
+        return result;
+    }
+
     // -----------------------------------------------------------------------
     // Current FY: distribution computation
     // -----------------------------------------------------------------------
