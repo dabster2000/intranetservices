@@ -281,7 +281,7 @@ e-conomics:
 # co-deployed with V341 for the production cutover.
 economics:
   import:
-    dry-run: ${ECONOMICS_IMPORT_DRY_RUN:true}
+    dry-run: ${ECONOMICS_IMPORT_DRY_RUN:false}
 currencyapi:
   key: ${API_KEY:xx}
 bucket:
