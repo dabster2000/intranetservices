@@ -496,14 +496,39 @@ public class EconomicRevenueImportService {
     }
 
     /**
-     * Layer 1: account hard-skip per tenant rules.
+     * Layer 1: per-tenant account filter — whitelist by range + deny-list.
+     *
+     * <p>A {@code manualDebtorInvoice} voucher has MULTIPLE entries (revenue
+     * line, debtor-ledger line, optionally VAT) — fetching by entryType
+     * returns all of them. To avoid importing the debtor-ledger entries
+     * (account 8610 etc.) and expense-account entries that may also carry
+     * the type, we narrow per tenant:
+     *
+     * <ul>
+     *   <li><b>A/S</b>: accept account in {@code [2100, 2200)} minus
+     *       deny-list {@code {2101, 2102, 2103}}. Catches Vattenfall (2104),
+     *       Energinet (2106), Real Word AB / EU (2120, 2130), Kantineordning
+     *       (2180). Verified against spec dry-run target ~170/+18.5M.
+     *   <li><b>TECH/CYBER</b>: skip everything. The spec's dry-run target is
+     *       0/0 for both — TECH/CYBER have no direct external customer
+     *       revenue via e-conomic; all is internal billing already captured
+     *       by the existing INTERNAL invoice flow.
+     *   <li><b>Other</b>: skip everything (defensive).
+     * </ul>
+     *
+     * <p>If TECH/CYBER ever gain external revenue, expand the rule to a
+     * proper range (likely {@code [1100, 1200)} or similar) and re-verify.
      */
     boolean shouldSkipAccount(String companyUuid, int accountNumber) {
-        if (VMS_DENY_LIST.contains(accountNumber)) return true;
-        if (AS_COMPANY_UUIDS.contains(companyUuid)
-                && accountNumber == AS_BOOKED_INVOICE_ACCOUNT) return true;
-        return TECH_CYBER_COMPANY_UUIDS.contains(companyUuid)
-                && accountNumber == TECH_CYBER_INTERCOMPANY_REVENUE_ACCOUNT;
+        if (AS_COMPANY_UUIDS.contains(companyUuid)) {
+            if (accountNumber < 2100 || accountNumber >= 2200) return true;
+            if (accountNumber == AS_BOOKED_INVOICE_ACCOUNT) return true;
+            return VMS_DENY_LIST.contains(accountNumber);
+        }
+        if (TECH_CYBER_COMPANY_UUIDS.contains(companyUuid)) {
+            return true;
+        }
+        return true;
     }
 
     /**

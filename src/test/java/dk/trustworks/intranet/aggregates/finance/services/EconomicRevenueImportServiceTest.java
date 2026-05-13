@@ -93,26 +93,35 @@ class EconomicRevenueImportServiceTest {
     // ------------------------------------------------------------------------
 
     @Test
-    @DisplayName("Layer 1: 1040 skipped for TECH/CYBER; 2101 skipped for A/S; 2102/2103 skipped for ALL; 2104 admitted for A/S")
+    @DisplayName("Layer 1: A/S whitelist [2100,2200) minus deny-list; TECH/CYBER skip everything (no external revenue via e-conomic)")
     void testLayer1AccountHardSkip() {
-        // TECH/CYBER intercompany revenue
-        assertTrue(service.shouldSkipAccount(TECH_UUID, 1040), "TECH must skip 1040");
-        assertTrue(service.shouldSkipAccount(CYBER_UUID, 1040), "CYBER must skip 1040");
-        assertFalse(service.shouldSkipAccount(AS_UUID, 1040), "A/S must NOT skip 1040");
+        // A/S whitelist range [2100, 2200) — outside range → skip
+        assertTrue(service.shouldSkipAccount(AS_UUID, 1040), "A/S must skip 1040 (outside revenue range)");
+        assertTrue(service.shouldSkipAccount(AS_UUID, 5600), "A/S must skip 5600 (expense account)");
+        assertTrue(service.shouldSkipAccount(AS_UUID, 8610), "A/S must skip 8610 (debtor ledger)");
+        assertTrue(service.shouldSkipAccount(AS_UUID, 9418), "A/S must skip 9418 (financial expense)");
 
-        // A/S booked invoice column
-        assertTrue(service.shouldSkipAccount(AS_UUID, 2101), "A/S must skip 2101");
-        assertFalse(service.shouldSkipAccount(TECH_UUID, 2101), "TECH must NOT skip 2101");
-        assertFalse(service.shouldSkipAccount(CYBER_UUID, 2101), "CYBER must NOT skip 2101");
-
-        // VMS deny-list — ALL tenants skip
+        // A/S in range but in deny-list → skip
+        assertTrue(service.shouldSkipAccount(AS_UUID, 2101), "A/S must skip booked-invoice 2101");
         assertTrue(service.shouldSkipAccount(AS_UUID, 2102), "A/S must skip VMS 2102");
         assertTrue(service.shouldSkipAccount(AS_UUID, 2103), "A/S must skip VMS 2103");
-        assertTrue(service.shouldSkipAccount(TECH_UUID, 2102), "TECH must skip VMS 2102");
-        assertTrue(service.shouldSkipAccount(CYBER_UUID, 2103), "CYBER must skip VMS 2103");
 
-        // Legit A/S revenue account
-        assertFalse(service.shouldSkipAccount(AS_UUID, 2104), "A/S must NOT skip legit revenue 2104");
+        // A/S legit revenue accounts → admit
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2104), "A/S must NOT skip Vattenfall 2104");
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2106), "A/S must NOT skip Energinet 2106");
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2130), "A/S must NOT skip Real Word/EU 2130");
+        assertFalse(service.shouldSkipAccount(AS_UUID, 2180), "A/S must NOT skip Kantineordning 2180");
+
+        // TECH/CYBER skip EVERYTHING — no external revenue via this flow
+        assertTrue(service.shouldSkipAccount(TECH_UUID, 1010), "TECH must skip 1010");
+        assertTrue(service.shouldSkipAccount(TECH_UUID, 1040), "TECH must skip 1040 (intercompany)");
+        assertTrue(service.shouldSkipAccount(TECH_UUID, 2102), "TECH must skip 2102 (VMS)");
+        assertTrue(service.shouldSkipAccount(TECH_UUID, 2104), "TECH must skip 2104 (not TECH's revenue)");
+        assertTrue(service.shouldSkipAccount(CYBER_UUID, 1010), "CYBER must skip 1010");
+        assertTrue(service.shouldSkipAccount(CYBER_UUID, 2103), "CYBER must skip 2103 (VMS)");
+
+        // Unknown company → skip defensively
+        assertTrue(service.shouldSkipAccount("unknown-uuid", 2104), "Unknown company must skip");
     }
 
     // ------------------------------------------------------------------------
