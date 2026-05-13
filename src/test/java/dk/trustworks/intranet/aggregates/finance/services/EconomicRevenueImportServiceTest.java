@@ -280,7 +280,8 @@ class EconomicRevenueImportServiceTest {
                 "Some text",
                 7001,
                 "ClientCo A/S",
-                LocalDate.of(2025, 3, 15));
+                LocalDate.of(2025, 3, 15),
+                0);
 
         service.insertInvoiceAndItem(v, LocalDateTime.of(2026, 5, 13, 2, 0));
 
@@ -358,19 +359,19 @@ class EconomicRevenueImportServiceTest {
                 new EconomicRevenueImportService.EntryDto(
                         9005, 50001, "manualDebtorInvoice", "2024/2025",
                         new BigDecimal("1000.00"), "Faktura 999-888", 2104,
-                        "ClientCo", "Account fallback", LocalDate.of(2025, 3, 15)),
+                        "ClientCo", "Account fallback", LocalDate.of(2025, 3, 15), 0),
                 new EconomicRevenueImportService.EntryDto(
                         9006, 50001, "manualDebtorInvoice", "2024/2025",
                         new BigDecimal("-200.00"), "later note", 2104,
-                        null, "Account fallback", LocalDate.of(2025, 3, 16)),
+                        null, "Account fallback", LocalDate.of(2025, 3, 16), 0),
                 new EconomicRevenueImportService.EntryDto(
                         9001, 50001, "manualDebtorInvoice", "2024/2025",
                         new BigDecimal("500.00"), "ignored text", 2104,
-                        null, "Account fallback", LocalDate.of(2025, 3, 17)),
+                        null, "Account fallback", LocalDate.of(2025, 3, 17), 0),
                 new EconomicRevenueImportService.EntryDto(
                         9007, 50001, "manualDebtorInvoice", "2024/2025",
                         new BigDecimal("-500.00"), "ignored text", 2104,
-                        null, "Account fallback", LocalDate.of(2025, 3, 18))
+                        null, "Account fallback", LocalDate.of(2025, 3, 18), 0)
         );
 
         List<AggregatedVoucher> agg = service.aggregateByVoucher(AS_UUID, entries);
@@ -399,7 +400,7 @@ class EconomicRevenueImportServiceTest {
         AggregatedVoucher negV = new AggregatedVoucher(
                 AS_UUID, "2024/2025", 2104, 5001,
                 new BigDecimal("-12345.67"),
-                "text", 7001, "ClientCo", LocalDate.of(2025, 1, 1));
+                "text", 7001, "ClientCo", LocalDate.of(2025, 1, 1), 0);
 
         service.insertInvoiceAndItem(negV, LocalDateTime.now());
 
@@ -440,7 +441,7 @@ class EconomicRevenueImportServiceTest {
         return new AggregatedVoucher(
                 companyUuid, "2024/2025", 2104, voucherNumber,
                 new BigDecimal("1000.00"), text, entryNumber,
-                "ClientCo", LocalDate.of(2025, 3, 15));
+                "ClientCo", LocalDate.of(2025, 3, 15), 0);
     }
 
     private AggregatedVoucher voucherAt(String companyUuid, int account, int voucherNumber,
@@ -448,7 +449,7 @@ class EconomicRevenueImportServiceTest {
         return new AggregatedVoucher(
                 companyUuid, "2024/2025", account, voucherNumber,
                 new BigDecimal(amount), "text", entryNumber,
-                "ClientCo", LocalDate.of(2025, 3, 15));
+                "ClientCo", LocalDate.of(2025, 3, 15), 0);
     }
 
     /**

@@ -180,7 +180,8 @@ public class EconomicRevenueImportService {
             // Step 1: Load integration keys for this company.
             IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(company);
 
-            // Step 2-4: open API + fetch revenue accounts + filter by tenant rules.
+            // Step 2: fetch profitAndLoss accounts (for the accountNumber → name
+            // lookup map used as clientname fallback). Build map keyed by number.
             List<AccountInfo> accounts;
             try (EconomicsAPI api = buildEconomicsApi(keys)) {
                 accounts = fetchRevenueAccounts(api, companyUuid);
@@ -188,23 +189,55 @@ public class EconomicRevenueImportService {
                 log.errorf(ex, "EconomicRevenueImportService: failed to list accounts for company %s", companyUuid);
                 continue;
             }
-            log.infof("EconomicRevenueImportService: company=%s accountsAfterFilter=%d", companyUuid, accounts.size());
+            Map<Integer, String> accountNameMap = new HashMap<>();
+            for (AccountInfo a : accounts) accountNameMap.put(a.accountNumber(), a.accountName());
+            log.infof("EconomicRevenueImportService: company=%s accountsForNameMap=%d", companyUuid, accounts.size());
 
-            // Step 5-6: page entries per account × accounting year.
-            List<EntryDto> entries;
+            // Step 3: discover accounting-year URL codes overlapping our window.
+            // E-conomic tenants use non-standard codes (A/S = "2025_6_2026a")
+            // so we ask the API rather than hardcoding "_6_" patterns.
+            List<String> yearCodes;
             try (EconomicsAPI api = buildEconomicsApi(keys)) {
-                entries = fetchEntries(api, accounts, from, to);
+                yearCodes = discoverAccountingYears(api, from, to);
+            } catch (Exception ex) {
+                log.errorf(ex, "EconomicRevenueImportService: failed to discover accounting-years for company %s", companyUuid);
+                continue;
+            }
+            log.infof("EconomicRevenueImportService: company=%s yearCodes=%s", companyUuid, yearCodes);
+
+            // Step 4-6: per year, fetch all manualDebtorInvoice entries (entries
+            // endpoint does NOT support account filter — verified live 2026-05-13)
+            // AND entries on account 2180 (financeVoucher special case via the
+            // URL-scoped /accounts/{n}/.../entries endpoint).
+            List<EntryDto> entries = new ArrayList<>();
+            try (EconomicsAPI api = buildEconomicsApi(keys)) {
+                for (String yearCode : yearCodes) {
+                    entries.addAll(fetchEntriesByType(api, yearCode, "manualDebtorInvoice", accountNameMap));
+                    entries.addAll(fetchEntriesForAccount(api, 2180, yearCode, accountNameMap));
+                }
             } catch (Exception ex) {
                 log.errorf(ex, "EconomicRevenueImportService: failed to fetch entries for company %s", companyUuid);
                 continue;
             }
             log.infof("EconomicRevenueImportService: company=%s entriesFetched=%d", companyUuid, entries.size());
 
-            // Step 7: keep only manualDebtorInvoice and financeVoucher(account=2180).
-            List<EntryDto> filtered = entries.stream()
-                    .filter(this::isImportableEntry)
-                    .toList();
-            log.infof("EconomicRevenueImportService: company=%s entriesAfterTypeFilter=%d", companyUuid, filtered.size());
+            // Step 7: filter to importable types + apply date window + Layer 1
+            // account hard-skip (client-side because the entries endpoint can't
+            // filter by account).
+            List<EntryDto> filtered = new ArrayList<>();
+            int layer1Skipped = 0;
+            for (EntryDto e : entries) {
+                if (!isImportableEntry(e)) continue;
+                if (e.entryDate() != null && (e.entryDate().isBefore(from) || e.entryDate().isAfter(to))) continue;
+                if (shouldSkipAccount(companyUuid, e.account())) {
+                    layer1Skipped++;
+                    continue;
+                }
+                filtered.add(e);
+            }
+            skippedByLayer.merge(DedupLayer.LAYER_1_ACCOUNT_HARDSKIP, layer1Skipped, Integer::sum);
+            log.infof("EconomicRevenueImportService: company=%s entriesAfterTypeFilter=%d layer1Skipped=%d",
+                    companyUuid, filtered.size(), layer1Skipped);
 
             // Step 8: aggregate by voucher.
             List<AggregatedVoucher> aggregated = aggregateByVoucher(companyUuid, filtered);
@@ -351,32 +384,112 @@ public class EconomicRevenueImportService {
     }
 
     /**
-     * Iterates {@code [from.year .. to.year]} and pages e-conomic
-     * {@code /accounting-years/{year}/entries} for each account. Uses the
-     * date-range filter so e-conomic does the heavy lifting; the caller-side
-     * type filter ({@link #isImportableEntry}) and dedup happen after.
+     * Discovers accounting-year URL codes that overlap the import window.
+     * E-conomic tenants can use non-standard year codes (e.g. A/S uses
+     * {@code 2025_6_2026a} where TECH/CYBER use {@code 2025_6_2026}) so a
+     * hardcoded {@code year + "_6_" + (year+1)} pattern is unreliable —
+     * verified against live API 2026-05-13. We call
+     * {@code GET /accounting-years} and extract the year code from each
+     * year's {@code self} URL, keeping only years that overlap
+     * {@code [from, to]}.
      */
-    List<EntryDto> fetchEntries(EconomicsAPI api, List<AccountInfo> accounts,
-                                LocalDate from, LocalDate to) {
-        List<EntryDto> entries = new ArrayList<>();
-        for (AccountInfo acc : accounts) {
-            for (int year = from.getYear(); year <= to.getYear(); year++) {
-                // e-conomic fiscal year format example: "2024/2025" — encoded as "2024_6_2025" in URLs.
-                String yearStr = year + "_6_" + (year + 1);
-                String filter = "account.accountNumber$eq:" + acc.accountNumber()
-                        + "$and$:date$gte$:" + from
-                        + "$and$:date$lte$:" + to;
-                try (Response r = api.getYearEntries(yearStr, filter, 1000)) {
-                    String body = r.readEntity(String.class);
-                    JsonNode root = readTree(body);
-                    for (JsonNode node : iterateCollection(root)) {
-                        EntryDto e = parseEntry(node, acc);
-                        if (e != null) entries.add(e);
-                    }
-                } catch (Exception ex) {
-                    log.warnf(ex, "EconomicRevenueImportService: fetchEntries error for account=%d year=%s — skipping",
-                            acc.accountNumber(), yearStr);
+    List<String> discoverAccountingYears(EconomicsAPI api, LocalDate from, LocalDate to) {
+        List<String> codes = new ArrayList<>();
+        try (Response r = api.getAccountingYears(50)) {
+            String body = r.readEntity(String.class);
+            JsonNode root = readTree(body);
+            for (JsonNode node : iterateCollection(root)) {
+                LocalDate fromDate = parseDate(node.path("fromDate").asText(null));
+                LocalDate toDate = parseDate(node.path("toDate").asText(null));
+                if (fromDate == null || toDate == null) continue;
+                // year overlap check: year[fromDate, toDate] ∩ window[from, to] non-empty
+                if (toDate.isBefore(from) || fromDate.isAfter(to)) continue;
+                String self = node.path("self").asText("");
+                int slash = self.lastIndexOf('/');
+                if (slash >= 0 && slash < self.length() - 1) {
+                    codes.add(self.substring(slash + 1));
                 }
+            }
+        }
+        return codes;
+    }
+
+    /**
+     * Fetches all entries of a given {@code entryType} in an accounting year,
+     * paginated. The {@code /accounting-years/{y}/entries} endpoint does NOT
+     * support filtering by {@code account.accountNumber} (allowed fields are
+     * {@code entryType, date, voucherNumber, entryNumber, text, customer,
+     * supplier, project, costType, unit1, unit2} — verified against live API
+     * 2026-05-13 via HTTP 400 with developerHint listing allowed fields).
+     * Account-level filtering happens client-side after the fetch.
+     */
+    List<EntryDto> fetchEntriesByType(EconomicsAPI api, String yearCode, String entryType,
+                                      Map<Integer, String> accountNameMap) {
+        List<EntryDto> entries = new ArrayList<>();
+        String filter = "entryType$eq:" + entryType;
+        int skipPages = 0;
+        while (true) {
+            try (Response r = api.getYearEntries(yearCode, filter, 1000, skipPages)) {
+                String body = r.readEntity(String.class);
+                JsonNode root = readTree(body);
+                int pageCount = 0;
+                for (JsonNode node : iterateCollection(root)) {
+                    EntryDto e = parseEntry(node, accountNameMap);
+                    if (e != null) entries.add(e);
+                    pageCount++;
+                }
+                // pagination: stop when this page is short OR pagination metadata says no more
+                int pageSize = root.path("pagination").path("pageSize").asInt(1000);
+                int totalResults = root.path("pagination").path("results").asInt(-1);
+                if (pageCount < pageSize) break;
+                if (totalResults >= 0 && (skipPages + 1) * pageSize >= totalResults) break;
+                skipPages++;
+                if (skipPages > 50) {
+                    log.warnf("EconomicRevenueImportService: fetchEntriesByType hit skipPages safety cap at year=%s type=%s", yearCode, entryType);
+                    break;
+                }
+            } catch (Exception ex) {
+                log.warnf(ex, "EconomicRevenueImportService: fetchEntriesByType error year=%s type=%s skipPages=%d — stopping",
+                        yearCode, entryType, skipPages);
+                break;
+            }
+        }
+        return entries;
+    }
+
+    /**
+     * Fetches all entries on a specific account in an accounting year via the
+     * URL-scoped endpoint {@code /accounts/{n}/accounting-years/{y}/entries}.
+     * Used for the {@code financeVoucher@2180} path because the entries-by-year
+     * endpoint can't filter by account. Paginated.
+     */
+    List<EntryDto> fetchEntriesForAccount(EconomicsAPI api, int accountNumber, String yearCode,
+                                          Map<Integer, String> accountNameMap) {
+        List<EntryDto> entries = new ArrayList<>();
+        int skipPages = 0;
+        while (true) {
+            try (Response r = api.getAccountEntries(accountNumber, yearCode, null, 1000, skipPages)) {
+                String body = r.readEntity(String.class);
+                JsonNode root = readTree(body);
+                int pageCount = 0;
+                for (JsonNode node : iterateCollection(root)) {
+                    EntryDto e = parseEntry(node, accountNameMap);
+                    if (e != null) entries.add(e);
+                    pageCount++;
+                }
+                int pageSize = root.path("pagination").path("pageSize").asInt(1000);
+                int totalResults = root.path("pagination").path("results").asInt(-1);
+                if (pageCount < pageSize) break;
+                if (totalResults >= 0 && (skipPages + 1) * pageSize >= totalResults) break;
+                skipPages++;
+                if (skipPages > 50) {
+                    log.warnf("EconomicRevenueImportService: fetchEntriesForAccount hit skipPages safety cap at account=%d year=%s", accountNumber, yearCode);
+                    break;
+                }
+            } catch (Exception ex) {
+                log.warnf(ex, "EconomicRevenueImportService: fetchEntriesForAccount error account=%d year=%s skipPages=%d — stopping",
+                        accountNumber, yearCode, skipPages);
+                break;
             }
         }
         return entries;
@@ -443,8 +556,12 @@ public class EconomicRevenueImportService {
                         e.customerName() != null && !e.customerName().isBlank()
                                 ? e.customerName()
                                 : e.accountNameFallback(),
-                        e.entryDate()));
+                        e.entryDate(),
+                        e.invoiceNumber()));
             } else {
+                // First non-zero invoiceNumber wins (entries within a voucher share it
+                // when present; reversal pairs may omit it on one side).
+                int invNum = prev.invoiceNumber() != 0 ? prev.invoiceNumber() : e.invoiceNumber();
                 by.put(key, new AggregatedVoucher(
                         prev.companyUuid(),
                         prev.accountingYear(),
@@ -454,7 +571,8 @@ public class EconomicRevenueImportService {
                         prev.representativeText(),       // first entry's text wins
                         Math.min(prev.minEntryNumber(), e.entryNumber()),
                         prev.clientname(),
-                        prev.entryDate()));
+                        prev.entryDate(),
+                        invNum));
             }
         }
         return new ArrayList<>(by.values());
@@ -516,17 +634,27 @@ public class EconomicRevenueImportService {
      * duplicates.
      */
     Optional<DedupLayer> findExistingByFakturaText(AggregatedVoucher v) {
-        if (v.representativeText() == null) return Optional.empty();
-        Matcher m = FAKTURA_TEXT_PATTERN.matcher(v.representativeText());
-        if (!m.find()) return Optional.empty();
-        int invoiceNum;
-        try {
-            invoiceNum = Integer.parseInt(m.group(1) + m.group(2));
-        } catch (NumberFormatException ex) {
-            log.warnf("EconomicRevenueImportService: Layer 4 parseInt overflow on text=%s — skipping layer",
-                    v.representativeText());
-            return Optional.empty();
+        // Layer 4a: e-conomic provides invoiceNumber directly on the entry
+        // (verified against live API 2026-05-13). When non-zero, prefer it
+        // over the regex-on-text fallback — same dedup intent, no parser
+        // ambiguity. The regex path remains for pre-API-v18 entries that
+        // only carry the reference in free text.
+        Integer invoiceNum = null;
+        if (v.invoiceNumber() > 0) {
+            invoiceNum = v.invoiceNumber();
+        } else if (v.representativeText() != null) {
+            Matcher m = FAKTURA_TEXT_PATTERN.matcher(v.representativeText());
+            if (m.find()) {
+                try {
+                    invoiceNum = Integer.parseInt(m.group(1) + m.group(2));
+                } catch (NumberFormatException ex) {
+                    log.warnf("EconomicRevenueImportService: Layer 4 parseInt overflow on text=%s — skipping layer",
+                            v.representativeText());
+                    return Optional.empty();
+                }
+            }
         }
+        if (invoiceNum == null) return Optional.empty();
         @SuppressWarnings("unchecked")
         List<Object> rs = em.createNativeQuery(
                         "SELECT 1 FROM invoices " +
@@ -661,7 +789,15 @@ public class EconomicRevenueImportService {
         return Collections.emptyList();
     }
 
-    private EntryDto parseEntry(JsonNode node, AccountInfo acc) {
+    /**
+     * Parses an e-conomic entry JSON node into our {@link EntryDto}. Reads
+     * the account number from the nested {@code account.accountNumber} field
+     * (the entry's own account, not the discovery account) and looks up the
+     * account name from the supplied map for the clientname fallback. Also
+     * reads {@code invoiceNumber} (e-conomic-provided, used for direct
+     * Layer 4 dedup when present) — verified against live API 2026-05-13.
+     */
+    private EntryDto parseEntry(JsonNode node, Map<Integer, String> accountNameMap) {
         try {
             int entryNumber = node.path("entryNumber").asInt();
             int voucherNumber = node.path("voucherNumber").asInt();
@@ -672,11 +808,15 @@ public class EconomicRevenueImportService {
                     : new BigDecimal(node.path("amount").asText("0"));
             String text = node.path("text").asText("");
             String customerName = node.path("customer").path("name").asText(null);
-            // entry.account.accountNumber takes precedence over the discovery account
-            int accountNumber = node.path("account").path("accountNumber").asInt(acc.accountNumber());
+            int accountNumber = node.path("account").path("accountNumber").asInt(0);
+            int invoiceNumber = node.path("invoiceNumber").asInt(0);
             LocalDate date = parseDate(node.path("date").asText(null));
+            String accountNameFallback = accountNameMap != null
+                    ? accountNameMap.getOrDefault(accountNumber, "")
+                    : "";
             return new EntryDto(entryNumber, voucherNumber, entryType, accountingYear,
-                    amount, text, accountNumber, customerName, acc.accountName(), date);
+                    amount, text, accountNumber, customerName, accountNameFallback, date,
+                    invoiceNumber);
         } catch (Exception ex) {
             log.warnf("EconomicRevenueImportService: failed to parse entry node — skipping: %s", node);
             return null;
@@ -707,7 +847,14 @@ public class EconomicRevenueImportService {
     /** Per-account row from {@code GET /accounts}. */
     record AccountInfo(int accountNumber, String accountName) {}
 
-    /** Per-entry row from {@code GET /accounting-years/{year}/entries}. */
+    /**
+     * Per-entry row from {@code GET /accounting-years/{year}/entries} or
+     * {@code GET /accounts/{n}/accounting-years/{y}/entries}.
+     *
+     * <p>{@code invoiceNumber} is the e-conomic-side numeric invoice
+     * reference (when present; 0 otherwise). Used for Layer 4 direct match
+     * — preferred over the regex-on-text fallback when {@code > 0}.
+     */
     record EntryDto(
             int entryNumber,
             int voucherNumber,
@@ -718,9 +865,17 @@ public class EconomicRevenueImportService {
             int account,
             String customerName,
             String accountNameFallback,
-            LocalDate entryDate) {}
+            LocalDate entryDate,
+            int invoiceNumber) {}
 
-    /** Aggregated voucher — one inserted invoice maps 1:1 to one of these. */
+    /**
+     * Aggregated voucher — one inserted invoice maps 1:1 to one of these.
+     *
+     * <p>{@code invoiceNumber} carries the e-conomic-provided
+     * {@code invoiceNumber} for Layer 4 direct dedup (0 when the entry
+     * had no invoiceNumber field, in which case Layer 4 falls back to the
+     * regex-on-text path).
+     */
     public record AggregatedVoucher(
             String companyUuid,
             String accountingYear,
@@ -730,5 +885,6 @@ public class EconomicRevenueImportService {
             String representativeText,
             int minEntryNumber,
             String clientname,
-            LocalDate entryDate) {}
+            LocalDate entryDate,
+            int invoiceNumber) {}
 }
