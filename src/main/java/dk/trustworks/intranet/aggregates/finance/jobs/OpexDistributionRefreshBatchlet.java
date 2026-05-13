@@ -8,6 +8,7 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.context.ManagedExecutor;
@@ -45,6 +46,9 @@ public class OpexDistributionRefreshBatchlet {
     @Inject
     ManagedExecutor managedExecutor;
 
+    @Inject
+    EntityManager em;
+
     @ConfigProperty(name = "slack.opsAlertChannel", defaultValue = "C0B2VQ2CFU1")
     String opsAlertChannel;
 
@@ -66,21 +70,25 @@ public class OpexDistributionRefreshBatchlet {
     }
 
     /**
-     * Startup refresh: fires a one-shot async refresh on every boot so we can
-     * verify the nightly batch path immediately after deploy without waiting
-     * for the next 03:30 UTC cycle. Reverted to "only when empty" in PR 2
-     * once the read path is flipped and confidence in the refresh is high.
+     * Cold-start guard: if the table is empty on app boot, fire a one-shot
+     * async refresh so the EBITDA endpoint isn't broken until the next
+     * scheduled run.
      */
     void onStart(@Observes StartupEvent ev) {
-        log.warnf("Triggering one-shot fact_opex_distribution_mat refresh asynchronously on startup (verification mode)");
-        managedExecutor.submit(() -> {
-            try {
-                refreshService.refresh();
-            } catch (Exception e) {
-                log.errorf(e, "startup one-shot refresh failed");
-                fireSlackAlertIfNeeded(e);
-            }
-        });
+        long rowCount = ((Number) em.createNativeQuery(
+                "SELECT COUNT(*) FROM fact_opex_distribution_mat")
+                .getSingleResult()).longValue();
+        if (rowCount == 0) {
+            log.warnf("fact_opex_distribution_mat is empty on startup — triggering one-shot refresh asynchronously");
+            managedExecutor.submit(() -> {
+                try {
+                    refreshService.refresh();
+                } catch (Exception e) {
+                    log.errorf(e, "startup one-shot refresh failed");
+                    fireSlackAlertIfNeeded(e);
+                }
+            });
+        }
     }
 
     void fireSlackAlertIfNeeded(Exception e) {

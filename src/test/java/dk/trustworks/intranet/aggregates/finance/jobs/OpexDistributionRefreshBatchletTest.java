@@ -3,6 +3,8 @@ package dk.trustworks.intranet.aggregates.finance.jobs;
 import dk.trustworks.intranet.aggregates.finance.services.OpexDistributionRefreshService;
 import dk.trustworks.intranet.aggregates.finance.services.OpexDistributionRefreshService.RefreshOutcome;
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import org.eclipse.microprofile.context.ManagedExecutor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -41,6 +43,8 @@ class OpexDistributionRefreshBatchletTest {
     @Mock OpexDistributionRefreshService refreshService;
     @Mock SlackService slackService;
     @Mock ManagedExecutor managedExecutor;
+    @Mock EntityManager em;
+    @Mock Query query;
 
     OpexDistributionRefreshBatchlet batchlet;
 
@@ -50,6 +54,7 @@ class OpexDistributionRefreshBatchletTest {
         batchlet.refreshService = refreshService;
         batchlet.slackService = slackService;
         batchlet.managedExecutor = managedExecutor;
+        batchlet.em = em;
         batchlet.opsAlertChannel = CHANNEL;
     }
 
@@ -99,14 +104,24 @@ class OpexDistributionRefreshBatchletTest {
     }
 
     @Test
-    void onStart_alwaysSubmitsAsyncRefresh() {
-        // Verification-mode startup: refresh fires on every boot so we can
-        // observe the nightly path after deploy. Reverted to "only when empty"
-        // in PR 2 once the read path is flipped.
+    void onStart_emptyTable_submitsAsyncRefresh() {
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.getSingleResult()).thenReturn(0L);
+
         batchlet.onStart(null);
 
         verify(managedExecutor, times(1)).submit(org.mockito.ArgumentMatchers.<Runnable>any());
         verify(refreshService, never()).refresh();
+    }
+
+    @Test
+    void onStart_populatedTable_doesNotTriggerRefresh() {
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.getSingleResult()).thenReturn(123L);
+
+        batchlet.onStart(null);
+
+        verify(managedExecutor, never()).submit(org.mockito.ArgumentMatchers.<Runnable>any());
     }
 
     @Test
