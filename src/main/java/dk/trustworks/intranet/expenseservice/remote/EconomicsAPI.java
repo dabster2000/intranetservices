@@ -56,7 +56,47 @@ public interface EconomicsAPI extends AutoCloseable {
         @Path("/accounting-years/{accountingYear}/entries")
         Response getYearEntries(@PathParam("accountingYear") String accountingYear,
                                 @QueryParam("filter") String filter,
-                                @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
+                                @QueryParam("pagesize") @DefaultValue("1000") int pagesize,
+                                @QueryParam("skippages") @DefaultValue("0") int skippages);
+
+        /**
+         * Lists accounts (chart of accounts) for the current tenant. Used by
+         * {@code EconomicRevenueImportService} (PR 2 of external-invoice-import)
+         * to build an accountNumber→name lookup map for the clientname fallback.
+         *
+         * @param filter   e-conomic filter expression, e.g. {@code "accountType$eq:profitAndLoss"}
+         * @param pagesize page size (default 1000 — chart of accounts is small)
+         */
+        @GET
+        @Path("/accounts")
+        Response getAccounts(@QueryParam("filter") String filter,
+                             @QueryParam("pagesize") @DefaultValue("1000") int pagesize);
+
+        /**
+         * Lists all accounting years for the current tenant. Used by
+         * {@code EconomicRevenueImportService} to discover the URL-encoded
+         * year codes dynamically — tenants can use non-standard names like
+         * {@code 2025_6_2026a} (suffix variants) so a hardcoded
+         * {@code year + "_6_" + (year+1)} pattern is unreliable.
+         */
+        @GET
+        @Path("/accounting-years")
+        Response getAccountingYears(@QueryParam("pagesize") @DefaultValue("50") int pagesize);
+
+        /**
+         * Lists entries on a specific account in a specific accounting year.
+         * Used by {@code EconomicRevenueImportService} for the
+         * {@code financeVoucher@2180} fetch path (the entries endpoint at
+         * {@code /accounting-years/{y}/entries} does not allow filtering by
+         * {@code account.accountNumber}, so we scope by URL instead).
+         */
+        @GET
+        @Path("/accounts/{accountNumber}/accounting-years/{accountingYear}/entries")
+        Response getAccountEntries(@PathParam("accountNumber") int accountNumber,
+                                   @PathParam("accountingYear") String accountingYear,
+                                   @QueryParam("filter") String filter,
+                                   @QueryParam("pagesize") @DefaultValue("1000") int pagesize,
+                                   @QueryParam("skippages") @DefaultValue("0") int skippages);
 
         @GET
         @Path("/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment")

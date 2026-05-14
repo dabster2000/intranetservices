@@ -274,6 +274,14 @@ e-conomics:
   xAgreementGrantToken: ${XAGREEMENTGRANTTOKEN:none}
   journal-number: ${JOURNALNUMBER:15}
   expense-journal-number: ${EXPENSEJOURNALNUMBER:15}
+
+# E-conomic revenue auto-import (PR 2 of external-invoice-import).
+# When true (default for PR 2), the import service computes a DryRunOutcome
+# and emits structured logs WITHOUT inserting any rows. PR 3 flips this off
+# co-deployed with V341 for the production cutover.
+economics:
+  import:
+    dry-run: ${ECONOMICS_IMPORT_DRY_RUN:false}
 currencyapi:
   key: ${API_KEY:xx}
 bucket:
@@ -316,6 +324,11 @@ dk:
       opex-distribution:
         refresh-window-fy-back: 1
         max-staleness-hours: 30
+      # E-conomic revenue auto-import (PR 2 of external-invoice-import).
+      # Freshness threshold for EconomicRevenueImportFreshnessCheck. Stays
+      # close to the 24h cron cadence; +1h grace covers clock skew + retry.
+      economic-revenue-import:
+        max-staleness-hours: 25
 pricingEngine:
   enabled: true
 cvtool:

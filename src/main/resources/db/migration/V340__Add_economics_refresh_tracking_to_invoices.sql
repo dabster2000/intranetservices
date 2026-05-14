@@ -1,0 +1,160 @@
+-- =============================================================================
+-- V340: Add e-conomic import refresh tracking to invoices
+--
+-- Why this change:
+--   PR 2 of the e-conomic external revenue import slice (see spec
+--   docs/superpowers/specs/2026-05-13-external-invoice-import-design.md
+--   and PR 2 locked decisions
+--   .claude/tmp/external-invoice-import/pr2-locked-decisions.md, Q1).
+--
+--   PR 2 introduces EconomicRevenueImportService — a nightly @Scheduled
+--   batchlet that pulls manualDebtorInvoice + financeVoucher (account
+--   2180) entries from e-conomic and persists them as type='PHANTOM'
+--   invoice rows (with economics_entry_number set, the discriminator for
+--   auto-imported rows; see V338 header).
+--
+--   To monitor that the nightly refresh is actually running (and not
+--   silently stalled on a Slack-suppressed exception or a credential
+--   rotation), PR 2 also introduces a @Readiness health check
+--   (EconomicRevenueImportFreshnessCheck) that returns DOWN if the most
+--   recent successful refresh is older than a configurable threshold
+--   (default 25 hours). For that check to have a durable signal it needs
+--   a column it can MAX() against per refresh — hence this migration.
+--
+--   The freshness check's underlying native query is:
+--     SELECT MAX(economics_entry_refreshed_at), COUNT(*)
+--     FROM   invoices
+--     WHERE  economics_entry_number IS NOT NULL;
+--
+--   EconomicRevenueImportService.refresh() stamps
+--   economics_entry_refreshed_at = NOW() on every row it inserts during a
+--   batch run. On zero-net-inserts runs (the steady-state case once
+--   e-conomic has been fully drained), the service performs a single
+--   "sentinel write" UPDATE on the oldest imported row so MAX(...) still
+--   advances and the freshness check stays UP. See pr2-locked-decisions.md
+--   §"Sentinel-write on empty refreshes (user-approved)".
+--
+-- Why DATETIME NULL:
+--   * NULL is the correct default for the ~5,500 existing rows and for
+--     all future non-imported invoices. Only auto-imported PHANTOMs
+--     (economics_entry_number IS NOT NULL) ever have a non-NULL value
+--     here. The freshness query filters
+--     `WHERE economics_entry_number IS NOT NULL` BEFORE evaluating MAX,
+--     so NULLs from manual rows never reach the aggregate.
+--   * DATETIME (not TIMESTAMP) — consistent with other audit-style
+--     columns on this table (invoicedate, duedate are DATE; bookingdate
+--     is DATETIME). DATETIME has no 2038 epoch limit and stores the
+--     literal wall-clock value the service writes via NOW() in MariaDB
+--     session timezone, matching V338's economics_accounting_year + the
+--     refresh service's own native INSERT statement.
+--   * Single-column add; instant-add applies under InnoDB online DDL
+--     (`ALGORITHM=INPLACE, LOCK=NONE`) — zero table rewrite, zero row
+--     lock, safe on the live production table.
+--
+-- Why NOT NULL was rejected:
+--   A NOT NULL constraint would require a backfill UPDATE for all
+--   ~5,500 existing rows. There is no meaningful value to backfill —
+--   none of those rows were e-conomic-imported, so any sentinel value
+--   (epoch zero, NOW(), '1970-01-01 00:00:00') would be a lie about what
+--   the column means. NULL is the honest answer: "this row was never
+--   refreshed by EconomicRevenueImportService." The freshness check's
+--   WHERE clause makes the NULL irrelevant to the aggregate.
+--
+-- Indexing decision (explicit):
+--   No additional index — relies on V338's
+--   `uniq_invoices_economic_entry (companyuuid, economics_entry_number)`
+--   for the filtered MAX query.
+--
+--   The freshness query is:
+--     SELECT MAX(economics_entry_refreshed_at), COUNT(*)
+--     FROM   invoices
+--     WHERE  economics_entry_number IS NOT NULL;
+--
+--   MariaDB's optimizer can satisfy the WHERE predicate via an index
+--   range scan on uniq_invoices_economic_entry (the second column,
+--   economics_entry_number, lets the optimizer pick all non-NULL keys
+--   without touching the heap). The MAX(...) on a non-indexed column
+--   still costs a row fetch per non-NULL match, but the candidate set
+--   is bounded by the count of auto-imported rows (~170 immediately
+--   post-cutover; ~2,000 within a year — far smaller than a full table
+--   scan over ~5,500 rows).
+--
+--   Run EXPLAIN on staging after PR 2 deploys. If p99 latency for the
+--   freshness check exceeds 50 ms, file a follow-up migration to add
+--   `INDEX idx_invoices_economic_refresh (economics_entry_number,
+--   economics_entry_refreshed_at)` — that composite makes the aggregate
+--   index-only (no heap fetch). Deliberately NOT added now: the
+--   freshness check runs at most a few times per minute (Quarkus
+--   @Readiness probes); the current uniq index is sufficient at PR 2's
+--   data volume; adding a second multi-column index up front would
+--   carry write-amplification cost on every invoice INSERT/UPDATE for a
+--   read path that may not need it.
+--
+-- Affected rows:
+--   0 immediate. ALTER TABLE adds one nullable column; InnoDB
+--   instant-add applies — no row rewrite, no lock escalation, no
+--   downtime. PR 2's EconomicRevenueImportService is the only writer of
+--   this column (via native SQL); on the first nightly run it will set
+--   the column on each newly-imported row.
+--
+-- Deployment note:
+--   Ships with PR 2 Java code (EconomicRevenueImportService +
+--   EconomicRevenueImportBatchlet + EconomicRevenueImportFreshnessCheck)
+--   but is STANDALONE SAFE: the Java code accesses
+--   economics_entry_refreshed_at only through EntityManager.createNativeQuery,
+--   never via Hibernate typed mapping, so deploying V340 ahead of the
+--   Java code is a no-op for the application, and deploying the Java
+--   code ahead of V340 would surface as SQLSyntaxErrorException at the
+--   first batchlet invocation (caught by the existing 6h-rate-limited
+--   Slack alert). Recommended order: V340 + Java co-deploy.
+--
+--   DRY_RUN is on by default (`economics.import.dry-run=true`) in PR 2,
+--   so the column is written only by the sentinel-write path during PR 2.
+--   Flipping DRY_RUN off and writing real imports is deferred to PR 3.
+--
+-- Side effects:
+--   None. No Hibernate ORM mapping in PR 2 (Invoice.java is NOT modified;
+--   no @Column field added — see pr2-locked-decisions.md and plan
+--   "Assumptions" section). No triggers on invoices
+--   (verified phantom-reuse-verification.md §3 C1). No fact-view
+--   amendments needed (V201/V209 do not reference this column).
+--   No materialized-table refresh impact. No FK changes.
+--
+-- Related Java (post-PR 2):
+--   - dk.trustworks.intranet.aggregates.finance.services.EconomicRevenueImportService
+--     (writes economics_entry_refreshed_at on every INSERT and on the
+--     sentinel-write UPDATE for empty refreshes)
+--   - dk.trustworks.intranet.aggregates.finance.health.EconomicRevenueImportFreshnessCheck
+--     (@Readiness check; reads MAX(economics_entry_refreshed_at) WHERE
+--     economics_entry_number IS NOT NULL; returns DOWN if older than
+--     `dk.trustworks.intranet.economic-revenue-import.max-staleness-hours`,
+--     default 25h)
+--
+-- Verification (manual, post-deploy):
+--   1. Confirm the column exists on the table:
+--        SHOW CREATE TABLE invoices;
+--        -- Expect a new line:
+--        --   `economics_entry_refreshed_at` datetime DEFAULT NULL
+--
+--   2. Confirm zero rows have been touched by V340 itself:
+--        SELECT COUNT(*) AS refreshed_rows
+--        FROM   invoices
+--        WHERE  economics_entry_refreshed_at IS NOT NULL;
+--        -- Expect: 0 immediately after V340. Becomes > 0 only after
+--        --   PR 2's batchlet has run at least once (sentinel write
+--        --   advances even on zero-insert runs).
+--
+--   3. Confirm the freshness query uses the V338 unique index:
+--        EXPLAIN
+--        SELECT MAX(economics_entry_refreshed_at)
+--        FROM   invoices
+--        WHERE  economics_entry_number IS NOT NULL;
+--        -- Expect: `key = uniq_invoices_economic_entry` (the V338 unique
+--        --   index), `Extra = Using where; Using index` (or similar).
+--        --   If the optimizer ignores the index and picks ALL/full table
+--        --   scan, file the follow-up index migration noted above.
+-- =============================================================================
+
+ALTER TABLE invoices
+  ADD COLUMN economics_entry_refreshed_at DATETIME NULL,
+  ALGORITHM=INPLACE, LOCK=NONE;

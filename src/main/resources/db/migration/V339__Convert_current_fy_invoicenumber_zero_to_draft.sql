@@ -1,0 +1,205 @@
+-- =============================================================================
+-- V339: Demote current-FY invoicenumber=0 workaround invoices to DRAFT
+--
+-- Why this change:
+--   PR 1 of the e-conomic external revenue import slice (see spec
+--   docs/superpowers/specs/2026-05-13-external-invoice-import-design.md
+--   and research report
+--   .claude/tmp/external-invoice-import/phantom-reuse-verification.md).
+--
+--   Historically the team has tracked direct-billed customer revenue
+--   (Magnit Global, Energinet Koncern, Energinet, Devoteam) via two
+--   workarounds:
+--     (a) "PHANTOM" type invoices with invoicenumber=0 representing
+--          broker-billed Magnit revenue not yet posted by the broker.
+--     (b) "INVOICE" type rows manually created with invoicenumber=0 —
+--          i.e., never sent through e-conomic — to capture customer
+--          billings that exist only in e-conomic.
+--   Both workarounds become obsolete once EconomicRevenueImportService
+--   (PR 2) pulls the underlying e-conomic manualDebtorInvoice /
+--   financeVoucher entries as type='PHANTOM' with a populated
+--   economics_entry_number (the PHANTOM type is being vacated by THIS
+--   migration and reused as the e-conomic-import bucket — see V338 header).
+--   To prevent double-counting once PR 2/3 reintroduces the underlying
+--   revenue, the legacy workaround rows must first be removed from
+--   chart revenue.
+--
+-- Why DRAFT (not an archive column):
+--   V201 / fact_company_revenue and V209 / fact_client_revenue already
+--   filter `status='CREATED'` for INVOICE+PHANTOM+CREDIT_NOTE:
+--     WHERE (i.type IN ('INVOICE','PHANTOM') AND i.status = 'CREATED')
+--        OR (i.type = 'INTERNAL'             AND i.status IN ('QUEUED','CREATED'))
+--        OR (i.type = 'CREDIT_NOTE'          AND i.status = 'CREATED')
+--   (V201 lines 60-64, 70-74, 106-110; V209 lines 78-82, 88-92, 127-131.)
+--   Demoting CREATED -> DRAFT therefore removes a row from revenue
+--   without any new column or view changes — DRAFT is implicitly
+--   excluded by the existing filter. fact_company_revenue_mat refreshes
+--   nightly via sp_refresh_fact_tables block 11 (per V336 source), which
+--   truncates+reinserts from the view; the chart will reflect the
+--   demotion on the next batch run.
+--
+--   This replaces an earlier design that added an archived_at column
+--   (V338) and a follow-up V340 to add `AND archived_at IS NULL` to V201.
+--   The status-reuse approach removes both — smaller blast radius, one
+--   fewer migration, reuses well-tested vocabulary. Research
+--   verification: phantom-reuse-verification.md §1, §3.
+--
+-- Scope (data-driven; WHERE clause is byte-for-byte from the spec):
+--   invoicenumber = 0
+--   AND status NOT IN ('DRAFT', 'QUEUED')   -- preserve in-flight drafts
+--                                              and legitimate INTERNAL queue
+--   AND ((year = 2025 AND month >= 7) OR (year = 2026 AND month <= 6))
+--                                              -- bound to FY25-26
+--
+--   This deliberately captures ONLY current-FY rows. Pre-FY25-26
+--   invoicenumber=0 rows (hundreds across 2018-2024) remain UNTOUCHED as
+--   legitimate historical revenue. Research §4 D2 confirms the full
+--   landscape: 161 INVOICE-CREATED rows in 2024 with invoicenumber=0,
+--   116 in 2022, 106 in 2023, 61 in 2021, etc. — these have always been
+--   counted in the chart and MUST NOT be demoted.
+--
+-- Scope coverage check (research §4 D1, D3):
+--   * All 18 PHANTOM rows in the entire DB are caught by this WHERE
+--     (PHANTOM exists only in year=2025 / status=CREATED / invoicenumber=0).
+--     There are no other PHANTOMs to worry about.
+--   * All 72 current-FY type='INVOICE' workaround rows (invoicenumber=0,
+--     status=CREATED, in FY25-26) are also caught.
+--   * Total = 90 rows. Sum = ~13.0M DKK. No expansion needed.
+--   * The 49 INTERNAL-QUEUED rows with invoicenumber=0 are CORRECTLY
+--     PRESERVED by the `status NOT IN ('DRAFT','QUEUED')` clause — they
+--     are the legitimate cross-company settlement flow.
+--
+-- Pre-flight verification (live production DB, 2026-05-13):
+--   Spec authored 2026-05-13 morning projected 95 rows / 13,008,163 DKK.
+--   Live pre-flight on 2026-05-13 (same day, late) measured 90 rows /
+--   13,008,163 DKK (72 INVOICE + 18 PHANTOM; clients Magnit Global,
+--   Energinet Koncern, Energinet, Devoteam). Row count drift: -5 rows
+--   (specifically: 4 of 5 Devoteam rows consolidated to 1, and 1 of 19
+--   Magnit PHANTOM rows booked out of scope between spec authoring
+--   and migration execution). Sum drift: ZERO — every per-client and
+--   per-type sum matches the spec exactly to the cent.
+--
+--   Interpretation: the 5-row delta is normal operational booking
+--   between spec authoring (morning) and migration execution (late same
+--   day), not a spec error. The financial blast radius is identical to
+--   what the spec projects. The WHERE clause is data-driven, so today's
+--   90 rows IS exactly the set the spec intends to retire.
+--
+--   Future readers: do NOT panic if a spec-vs-reality row count differs
+--   by a handful of rows. The scope is the SQL predicate, not the row
+--   count snapshot.
+--
+-- Status lifecycle context (research §2):
+--   The full invoices.status vocabulary across the entire table is just
+--   three values: DRAFT (293 rows), QUEUED (49 rows), CREATED (5,182
+--   rows). There is no PAID, SUBMITTED, BOOKED, or CANCELLED state. All
+--   90 target rows are currently status=CREATED. CREATED -> DRAFT is a
+--   "backwards" transition in the typical lifecycle direction, but it is
+--   NOT illegal: there is no DB-level trigger or check constraint
+--   enforcing forward-only progression (research §3 C1 verified zero
+--   triggers on the invoices table). UI-side behavior is unaffected
+--   for retired rows.
+--
+-- Affected rows (at time of writing): 90.
+--   - Demotes status from CREATED to DRAFT on each.
+--   - No DELETE; no FK changes; no column type changes.
+--   - All affected rows have companyuuid =
+--     d8894494-2fb4-4f72-9e05-e6032e6dd691 (Trustworks A/S). Zero rows
+--     in TW TECH or TW CYBER (verified pre-flight).
+--
+-- Zero GL impact (research §3 C4):
+--   finance_details has no UUID FK to invoices.uuid; the link is by
+--   invoicenumber (INT). With all 90 target rows holding invoicenumber=0
+--   they cannot be unambiguously joined to any specific GL row. In
+--   practice these rows have NEVER been posted to the GL from the
+--   app — the corresponding e-conomic ManualDebtorInvoice entries (which
+--   PR 2 will import as PHANTOM) are the only GL representation of this
+--   revenue. Demoting their status to DRAFT therefore does NOT need to
+--   "unpost" anything; there is nothing to unpost.
+--
+-- Deployment note:
+--   DEPENDS ON V338 only insofar as both migrations belong to PR 1 and
+--   ship together. V339 does not technically read or write any column
+--   introduced by V338, so the order is conventionally "V338 first"
+--   (the Flyway version sequence enforces this automatically).
+--   Re-running V339 after a partial failure is safe and idempotent: the
+--   WHERE clause excludes already-DRAFT rows via
+--   `status NOT IN ('DRAFT','QUEUED')`, so a second run is a no-op.
+--
+-- Side effects:
+--   - fact_company_revenue / fact_client_revenue (V201/V209): NOT
+--     touched directly. They already filter status='CREATED'; the
+--     demoted rows simply disappear from the view's output on the next
+--     read.
+--   - fact_company_revenue_mat / fact_client_revenue_mat: refreshed
+--     nightly via sp_refresh_fact_tables (block 11/7; per V336 source).
+--     Chart EBITDA drops by ~13.0M DKK YTD on the next nightly batch.
+--   - EBITDA forecast / CXO chart: -13.0M DKK delta until PR 2/3 imports
+--     PHANTOM-typed e-conomic revenue (~+18.5M DKK), giving a net
+--     ~+5.5M DKK chart correction. This briefly understates revenue
+--     between V339 deploy and PR 3 import — intentional, acceptable.
+--   - bonusService.recalcForInvoice: NOT called (demotion is a soft
+--     status change, not a delete or finalization).
+--   - 64 invoice_economics_uploads rows reference the demoted invoices
+--     (research §3 C2). They are not cascade-affected; they remain as
+--     telemetry of "we tried to upload this." No cleanup needed.
+--   - invoice_bonuses (0 rows for the 90), invoice_control_history
+--     (0 rows): nothing to clean up.
+--
+-- Related Java (post-PR 2 / PR 3):
+--   - dk.trustworks.intranet.aggregates.finance.services.EconomicRevenueImportService
+--     (will produce replacement PHANTOM revenue for these demoted rows)
+--   - InvoiceService / InvoiceFinalizationOrchestrator: no PR 1 changes;
+--     defensive changes around PHANTOM-with-economics_entry_number are
+--     deferred to PR 2.
+-- =============================================================================
+
+UPDATE invoices
+SET status = 'DRAFT'
+WHERE invoicenumber = 0
+  AND status NOT IN ('DRAFT', 'QUEUED')
+  AND ((year = 2025 AND month >= 7) OR (year = 2026 AND month <= 6));
+
+-- Verification (manual, post-deploy):
+--   SELECT COUNT(*) AS demoted_rows
+--   FROM invoices
+--   WHERE invoicenumber = 0
+--     AND status = 'DRAFT'
+--     AND ((year = 2025 AND month >= 7) OR (year = 2026 AND month <= 6));
+--   -- Expect (as of 2026-05-13): demoted_rows >= 90 (sum of pre-existing
+--   --   DRAFTs in scope + the 90 newly demoted).
+--
+--   SELECT type, COUNT(*) AS row_cnt
+--   FROM invoices
+--   WHERE invoicenumber = 0
+--     AND status = 'CREATED'
+--     AND ((year = 2025 AND month >= 7) OR (year = 2026 AND month <= 6))
+--   GROUP BY type ORDER BY type;
+--   -- Expect: zero rows. All current-FY invoicenumber=0 CREATED rows
+--   --   have been demoted.
+--
+--   SELECT COUNT(*) AS leftover_phantom_created
+--   FROM invoices
+--   WHERE type = 'PHANTOM' AND status = 'CREATED';
+--   -- Expect (immediately after V339, before PR 2 imports): 0.
+--   -- After PR 2 nightly imports: > 0 (e-conomic-imported PHANTOM rows,
+--   -- distinguishable by economics_entry_number IS NOT NULL).
+--
+--   -- Sum check (chart impact):
+--   SELECT COALESCE(SUM(per_invoice.sum_no_tax), 0) AS demoted_sum_dkk
+--   FROM invoices i
+--   LEFT JOIN (
+--     SELECT invoiceuuid, SUM(hours * rate) AS sum_no_tax
+--     FROM invoiceitems
+--     GROUP BY invoiceuuid
+--   ) per_invoice ON per_invoice.invoiceuuid = i.uuid
+--   WHERE i.invoicenumber = 0
+--     AND i.status = 'DRAFT'
+--     AND ((i.year = 2025 AND i.month >= 7) OR (i.year = 2026 AND i.month <= 6))
+--     AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE');
+--   -- Expect (as of 2026-05-13): includes ~13.0M DKK from the 90 newly
+--   --   demoted rows, plus whatever pre-existing in-scope DRAFTs already
+--   --   accumulated to. Note: Invoice.sumNoTax is a Java-computed getter,
+--   --   not a stored column; the LEFT JOIN against invoiceitems mirrors
+--   --   getSumNoTax() = SUM(invoiceitems.hours * rate). PHANTOM rows
+--   --   have no invoiceitems and contribute 0 to the sum here.

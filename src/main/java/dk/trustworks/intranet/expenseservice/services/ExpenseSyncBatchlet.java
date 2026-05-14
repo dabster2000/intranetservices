@@ -103,7 +103,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             String yearFilter = "voucherNumber$eq:" + vn;
             // Convert to underscore format for accounting-years path parameter
             String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year);
-            Response yr = api.getYearEntries(yearId, yearFilter, 1000);
+            Response yr = api.getYearEntries(yearId, yearFilter, 1000, 0);
             int yrStatus = yr != null ? yr.getStatus() : -1;
             String yrBody = null;
             try {

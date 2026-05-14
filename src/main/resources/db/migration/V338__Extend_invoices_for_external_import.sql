@@ -1,0 +1,124 @@
+-- =============================================================================
+-- V338: Extend invoices for e-conomic ManualDebtorInvoice import
+--
+-- Why this change:
+--   PR 1 of the e-conomic external revenue import slice (see spec
+--   docs/superpowers/specs/2026-05-13-external-invoice-import-design.md
+--   and research report
+--   .claude/tmp/external-invoice-import/phantom-reuse-verification.md).
+--
+--   The future EconomicRevenueImportService (PR 2) will pull
+--   manualDebtorInvoice + financeVoucher (account 2180) entries from
+--   e-conomic and persist them as invoices. To make that import idempotent
+--   and traceable, two new columns are added:
+--     - economics_entry_number     — the e-conomic entry number for the
+--                                     voucher; used for entry-number dedup
+--                                     (layer 2 of the 4-layer dedup contract).
+--     - economics_accounting_year  — the e-conomic accounting-year identifier
+--                                     (e.g. "2025/2026"); disambiguates
+--                                     entry numbers across years.
+--
+--   One unique index:
+--     - uniq_invoices_economic_entry (companyuuid, economics_entry_number) —
+--       UNIQUE composite. Enforces the entry-number dedup layer at the DB
+--       level so a race between concurrent batchlet runs cannot create
+--       duplicate imports of the same e-conomic voucher.
+--
+-- PR 2 decision (locked 2026-05-13):
+--   Imported revenue rows will use type='PHANTOM' rather than a new
+--   InvoiceType.EXTERNAL enum value. The PHANTOM type was previously used
+--   for an unrelated workaround (broker-billed-not-yet-posted Magnit
+--   revenue) and is being vacated by V339 (DRAFT-conversion of all 18
+--   pre-existing PHANTOMs). After V339, the only PHANTOM rows in the
+--   table will be e-conomic imports, distinguishable by
+--   `economics_entry_number IS NOT NULL`. This avoids enum expansion and
+--   reuses V201's existing revenue filter
+--   (type IN ('INVOICE','PHANTOM') AND status='CREATED').
+--
+-- Archive concept dropped (originally proposed; superseded):
+--   An earlier draft of this migration added an `archived_at DATETIME`
+--   column + idx_invoices_archived index, planning to archive the 90
+--   current-FY invoicenumber=0 workaround rows by setting archived_at=NOW().
+--   That plan also required a separate V340 to add `AND archived_at IS NULL`
+--   to V201. Pre-flight research (phantom-reuse-verification.md, §1)
+--   confirmed that V201 and V209 already filter `status='CREATED'` for
+--   INVOICE/PHANTOM/CREDIT_NOTE — i.e., DRAFT is implicitly excluded
+--   from chart revenue. Therefore V339 demotes the workaround rows to
+--   status='DRAFT' instead, reusing existing status vocabulary. No
+--   archived_at column needed; no V340 needed. Smaller blast radius;
+--   one fewer migration in the train.
+--
+-- MariaDB unique-index NULL semantics (important — do not assume Postgres rules):
+--   In MariaDB / InnoDB, a UNIQUE index permits MULTIPLE rows where any
+--   indexed column is NULL. Existing invoices (which all have
+--   economics_entry_number = NULL after this migration) therefore do NOT
+--   collide with each other under uniq_invoices_economic_entry. The
+--   constraint enforces uniqueness ONLY across rows where
+--   economics_entry_number IS NOT NULL — i.e., future PHANTOM imports
+--   produced by EconomicRevenueImportService. This is the desired behavior.
+--   Do NOT later add NOT NULL or a partial-index predicate without first
+--   auditing existing rows; most will remain NULL forever for non-imported
+--   invoice rows.
+--
+-- Affected rows:
+--   ALTER TABLE invoices — adds 2 nullable columns. Existing rows
+--   (~5,500 in production) are not rewritten; InnoDB instant-add applies
+--   to NULL columns. No data writes from V338 alone. V339 (same release
+--   train) then performs an UPDATE to demote 90 workaround rows.
+--
+-- Deployment note:
+--   Ships with PR 1 of the e-conomic revenue import (V338 schema + V339
+--   DRAFT-conversion). V341 (intercompany cost reclass, already authored)
+--   is queued for the same or a subsequent release; it does NOT depend on
+--   V338/V339 directly, but its EBITDA effect (~12M DKK cost
+--   reclassification) is most naturally deployed alongside the offsetting
+--   PHANTOM-imported revenue in PR 2/3. Standalone deployment of V338+V339
+--   to production is safe: no service code yet reads economics_entry_number
+--   or economics_accounting_year, and V339 simply moves 90 rows out of
+--   revenue scope (~13.0M DKK chart impact, picked up on the next nightly
+--   sp_refresh_fact_tables run).
+--
+-- Side effects:
+--   - Hibernate ORM mapping: the Invoice entity (in PR 2) will gain @Column
+--     mappings for economics_entry_number and economics_accounting_year.
+--     Without those mappings, Hibernate's strict mode would warn on the
+--     unmapped columns; in lax mode they are simply ignored, which is the
+--     PR 1 reality. No PR 1 Java change required.
+--   - fact_company_revenue / fact_client_revenue (V201/V209): NOT touched.
+--     They already filter status='CREATED' for INVOICE+PHANTOM+CREDIT_NOTE.
+--     V339's DRAFT-conversion of the 90 workaround rows propagates through
+--     the views to fact_company_revenue_mat on the next nightly
+--     sp_refresh_fact_tables (block 11; per V336 source).
+--   - InvoiceType enum: no change. EXTERNAL is NOT added (PR 2 reuses
+--     PHANTOM).
+--   - No materialized-table refresh required directly by V338; V339's
+--     downstream effect waits for the nightly batch.
+--
+-- Related Java (post-PR 2):
+--   - dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType
+--     (unchanged — no EXTERNAL value)
+--   - dk.trustworks.intranet.aggregates.finance.services.EconomicRevenueImportService
+--     (new in PR 2; inserts type='PHANTOM' rows with
+--     economics_entry_number populated)
+--   - dk.trustworks.intranet.aggregates.finance.batchlets.EconomicRevenueImportBatchlet
+--     (new in PR 2)
+-- =============================================================================
+
+ALTER TABLE invoices
+  ADD COLUMN economics_entry_number BIGINT NULL,
+  ADD COLUMN economics_accounting_year VARCHAR(20) NULL;
+
+CREATE UNIQUE INDEX uniq_invoices_economic_entry
+  ON invoices (companyuuid, economics_entry_number);
+
+-- Verification (manual, post-deploy):
+--   SHOW CREATE TABLE invoices;
+--   -- Expect: 2 new columns (economics_entry_number BIGINT NULL,
+--   --         economics_accounting_year VARCHAR(20) NULL);
+--   --         UNIQUE KEY uniq_invoices_economic_entry
+--   --         (companyuuid, economics_entry_number) present.
+--
+--   SELECT COUNT(*) AS rows_with_entry_number
+--   FROM invoices
+--   WHERE economics_entry_number IS NOT NULL;
+--   -- Expect: 0 immediately after V338. PR 2 imports populate this column.
