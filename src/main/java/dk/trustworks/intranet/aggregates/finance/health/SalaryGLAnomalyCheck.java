@@ -137,10 +137,16 @@ public class SalaryGLAnomalyCheck {
         LocalDate fromDate = fromYm.atDay(1);
         LocalDate toDate = current.atDay(1); // exclusive — excludes current (in-progress) month
 
+        // fact_salary_monthly is per-employee per-month (one row per useruuid per month),
+        // so we SUM(salary_sum) and GROUP BY company/year/month_number to get the
+        // intended salary total for each (tenant × month) cell. Column names
+        // verified against production schema 2026-05-15: month_number (not month),
+        // salary_sum (not salary). g.gl_salary is included in GROUP BY so the
+        // HAVING comparison sees the correct per-cell GL aggregate.
         String sql = """
-                SELECT fsm.companyuuid, fsm.year, fsm.month,
+                SELECT fsm.companyuuid, fsm.year, fsm.month_number,
                        COALESCE(g.gl_salary, 0) AS gl_salary,
-                       fsm.salary AS intended_salary
+                       SUM(fsm.salary_sum) AS intended_salary
                   FROM fact_salary_monthly fsm
                   LEFT JOIN (
                       SELECT fd.companyuuid,
@@ -157,12 +163,13 @@ public class SalaryGLAnomalyCheck {
                   ) g
                     ON g.companyuuid = fsm.companyuuid
                    AND g.y = fsm.year
-                   AND g.m = fsm.month
-                 WHERE (fsm.year * 100 + fsm.month) >= :fromYm
-                   AND (fsm.year * 100 + fsm.month) <  :toYm
-                   AND fsm.salary > 0
-                   AND COALESCE(g.gl_salary, 0) < fsm.salary * :threshold
-                 ORDER BY fsm.year DESC, fsm.month DESC, fsm.companyuuid
+                   AND g.m = fsm.month_number
+                 WHERE (fsm.year * 100 + fsm.month_number) >= :fromYm
+                   AND (fsm.year * 100 + fsm.month_number) <  :toYm
+                 GROUP BY fsm.companyuuid, fsm.year, fsm.month_number, g.gl_salary
+                HAVING SUM(fsm.salary_sum) > 0
+                   AND COALESCE(g.gl_salary, 0) < SUM(fsm.salary_sum) * :threshold
+                 ORDER BY fsm.year DESC, fsm.month_number DESC, fsm.companyuuid
                 """;
 
         @SuppressWarnings("unchecked")
