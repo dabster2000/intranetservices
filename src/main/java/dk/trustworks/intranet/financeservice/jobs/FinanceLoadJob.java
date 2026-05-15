@@ -2,6 +2,7 @@ package dk.trustworks.intranet.financeservice.jobs;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
+import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup;
@@ -17,10 +18,14 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static dk.trustworks.intranet.utils.DateUtils.getFiscalYearName;
 import static dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear;
@@ -29,11 +34,25 @@ import static dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear;
 @ApplicationScoped
 public class FinanceLoadJob {
 
+    // Per-tenant Slack alert rate limit. Mirrors OpexDistributionRefreshBatchlet's
+    // 6h cadence so the same tenant + period failure doesn't spam the channel
+    // across the multiple FY iterations within a single nightly run.
+    static final Duration ALERT_REPEAT_INTERVAL = Duration.ofHours(6);
+
     @Inject
     EconomicsService economicsService;
 
     @Inject
     InvoiceService invoiceService;
+
+    @Inject
+    SlackService slackService;
+
+    @ConfigProperty(name = "slack.opsAlertChannel", defaultValue = "C0B2VQ2CFU1")
+    String opsAlertChannel;
+
+    // companyUuid → last-sent Instant. Bounded by # of companies (3), no need to evict.
+    final ConcurrentHashMap<String, Instant> lastAlertByCompany = new ConcurrentHashMap<>();
 
     //private final String[] periods = {"2016_6_2017", "2017_6_2018", "2018_6_2019", "2019_6_2020", "2020_6_2021", "2021_6_2022", "2022_6_2023", "2023_6_2024"};
     private final String[] periods = {"2021_6_2022", "2022_6_2023", "2023_6_2024", "2024_6_2025", "2025_6_2026"};
@@ -60,6 +79,7 @@ public class FinanceLoadJob {
                     log.info("Entries for period " + economicsUrlYear + " persisted!");
                 } catch (Exception e) {
                     log.error("Error loading data for company "+company.getUuid(), e);
+                    fireSlackAlertIfNeeded(company, economicsUrlYear, e);
                 }
             }
         }
@@ -104,5 +124,36 @@ public class FinanceLoadJob {
         log.info("The ExpenseLoadJob is starting...");
         //loadEconomicsData();
         //synchronizeInvoices();
+    }
+
+    /**
+     * Posts a Slack alert when a per-tenant load fails. Pre-2026-05-15 this
+     * was a silent `log.error(...)` and per-tenant credential drift or
+     * pagination quirks accumulated for months before being noticed (see the
+     * Feb-Apr 2026 TWC/TWT gap analysis in
+     * docs/superpowers/analysis/2026-05-13-ebitda-gap-final-reconciliation.md).
+     *
+     * <p>Rate-limited to one alert per (companyUuid) per {@link #ALERT_REPEAT_INTERVAL}
+     * so a recurring failure across the per-FY inner loop doesn't spam the
+     * channel — the channel keeper, not Slack, is the rate-limiting authority.
+     */
+    void fireSlackAlertIfNeeded(Company company, String period, Exception e) {
+        Instant now = Instant.now();
+        Instant previous = lastAlertByCompany.get(company.getUuid());
+        if (previous != null
+                && Duration.between(previous, now).compareTo(ALERT_REPEAT_INTERVAL) < 0) {
+            log.debugf("finance-load-economics tenant=%s failure still active — suppressing duplicate Slack alert (last sent %s)",
+                    company.getUuid(), previous);
+            return;
+        }
+        String msg = ":rotating_light: *finance-load-economics: per-tenant failure*\n"
+                + "• company: `" + (company.getName() != null ? company.getName() : "?") + "` (" + company.getUuid() + ")\n"
+                + "• period: " + period + "\n"
+                + "• error: `" + e.getClass().getSimpleName() + ": " + (e.getMessage() != null ? e.getMessage() : "(no message)") + "`\n"
+                + "• impact: finance_details for this tenant is missing entries until the next successful nightly sync (21:00 UTC). "
+                + "EBITDA chart will under-report this tenant's costs.\n"
+                + "• action: check Quarkus production logs for the full stack trace and verify integration_keys credentials for this company.";
+        slackService.sendMessage(opsAlertChannel, msg, "mother");
+        lastAlertByCompany.put(company.getUuid(), now);
     }
 }
