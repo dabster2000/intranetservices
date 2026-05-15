@@ -128,10 +128,13 @@ public class SalaryGLAnomalyCheck {
 
     /**
      * Returns anomalous (companyuuid × year × month) cells over the lookback window.
-     * Exposed package-private so tests can drive it without the scheduler.
+     * Exposed publicly so the executive dashboard's pending-data banner endpoint
+     * (`GET /finance/cxo/salary-gl-anomalies`) can call it on demand, alongside
+     * the scheduled run and the startup probe. Same SQL; same transactional
+     * semantics; the caller decides what to do with the list.
      */
     @Transactional(Transactional.TxType.SUPPORTS)
-    List<Anomaly> detect() {
+    public List<Anomaly> detect() {
         YearMonth current = YearMonth.now();
         YearMonth fromYm = current.minusMonths(lookbackMonths);
         LocalDate fromDate = fromYm.atDay(1);
