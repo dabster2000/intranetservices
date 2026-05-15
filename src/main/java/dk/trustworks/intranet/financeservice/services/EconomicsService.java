@@ -24,6 +24,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -77,9 +78,37 @@ public class EconomicsService {
         } while (url != null);
 
 
+        // In-batch dedup before persist. The e-conomic pagination API has been
+        // observed to return duplicate entries across page boundaries (root
+        // cause of the 2026-04-24 cascade: ConstraintViolationException on
+        // V303's uq_fd_logical_key poisoned the Hibernate session, then all
+        // three tenants failed with AssertionFailure / null identifier and
+        // their data was missing until the next 21:00 UTC run recovered).
+        // Deduping by V303's 5-column logical key here keeps the persist
+        // idempotent against pagination quirks. "Last write wins" matches
+        // the INSERT IGNORE semantics the unique key enforces at the DB.
+        List<FinanceDetails> uniqueFinanceDetails = financeDetails;
+        if (!financeDetails.isEmpty()) {
+            Map<String, FinanceDetails> deduped = new LinkedHashMap<>();
+            for (FinanceDetails fd : financeDetails) {
+                String logicalKey = fd.getCompany().getUuid()
+                        + "|" + fd.getEntrynumber()
+                        + "|" + fd.getAccountnumber()
+                        + "|" + fd.getAmount()
+                        + "|" + fd.getExpensedate();
+                deduped.put(logicalKey, fd);
+            }
+            if (deduped.size() != financeDetails.size()) {
+                log.warnf("In-batch dedup: %d → %d FinanceDetails for company %s period %s (%d duplicate(s) from e-conomic pagination)",
+                        financeDetails.size(), deduped.size(), company.getUuid(), date,
+                        financeDetails.size() - deduped.size());
+                uniqueFinanceDetails = new ArrayList<>(deduped.values());
+            }
+        }
+
         try {
             tm.begin();
-            FinanceDetails.persist(financeDetails);
+            FinanceDetails.persist(uniqueFinanceDetails);
             tm.commit();
         } catch (NotSupportedException | HeuristicRollbackException | SystemException | HeuristicMixedException |
                  RollbackException e) {
