@@ -37,6 +37,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.RevenueYTDDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TTMRevenueGrowthDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.EbitdaSourceDataDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.RevenueSourceDataDTO;
+import dk.trustworks.intranet.aggregates.finance.dto.SalaryGLAnomalyDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelBonusDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelConsultantsDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.CareerLevelEconomicsDTO;
@@ -45,8 +46,10 @@ import dk.trustworks.intranet.aggregates.finance.dto.cxo.CostToRevenueDataPointD
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.GrossMarginTrendDataPointDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.cxo.RevenuePracticeDTO;
 import dk.trustworks.intranet.aggregates.finance.model.CareerLevelBonus;
+import dk.trustworks.intranet.aggregates.finance.health.SalaryGLAnomalyCheck;
 import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsService;
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
+import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.aggregates.finance.usecases.CareerLevelEconomicsUseCase;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
@@ -92,6 +95,9 @@ public class CxoFinanceResource {
 
     @Inject
     CareerLevelEconomicsUseCase careerLevelEconomicsUseCase;
+
+    @Inject
+    SalaryGLAnomalyCheck salaryGLAnomalyCheck;
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
@@ -1832,6 +1838,45 @@ public class CxoFinanceResource {
         log.debugf("GET /finance/cxo/revenue-by-practice: fromDate=%s, toDate=%s, companyIds=%s",
                 fromDate, toDate, companyIds);
         return cxoFinanceService.revenueByPractice(fromDate, toDate, parseCommaSeparated(companyIds));
+    }
+
+    /**
+     * Live salary-GL anomalies — (companyuuid × month) cells where the GL
+     * total in {@code finance_details} on {@code cost_type='SALARIES'} accounts
+     * is materially below the intended salary total from
+     * {@code fact_salary_monthly} over the last few completed months.
+     *
+     * <p>Drives the executive dashboard's pending-data banner on the EBITDA
+     * Forecast chart. Computed on each call (no caching) — the underlying
+     * SalaryGLAnomalyCheck runs the same SQL on its nightly cron at 04:00 UTC
+     * and on app boot, so by the time a dashboard viewer hits this endpoint
+     * the data sources have already settled for the day.
+     *
+     * @return list of anomaly cells, empty when the chart's salary data is
+     *         consistent with the intended payroll.
+     */
+    @GET
+    @Path("/salary-gl-anomalies")
+    public List<SalaryGLAnomalyDTO> getSalaryGLAnomalies() {
+        log.debugf("GET /finance/cxo/salary-gl-anomalies");
+        List<SalaryGLAnomalyCheck.Anomaly> anomalies = salaryGLAnomalyCheck.detect();
+        // Resolve company name once per call. Only 3 tenants, so a full listAll
+        // is cheaper than per-anomaly Company.findById lookups.
+        Map<String, String> companyNameByUuid = Company.<Company>listAll().stream()
+                .collect(Collectors.toMap(Company::getUuid, Company::getName));
+        List<SalaryGLAnomalyDTO> result = anomalies.stream()
+                .map(a -> new SalaryGLAnomalyDTO(
+                        a.companyUuid(),
+                        companyNameByUuid.getOrDefault(a.companyUuid(), a.companyUuid()),
+                        a.year(),
+                        a.month(),
+                        a.glSalary(),
+                        a.intendedSalary(),
+                        a.gapDkk(),
+                        a.coveragePct()))
+                .collect(Collectors.toList());
+        log.debugf("Returning %d salary-gl-anomaly cells", result.size());
+        return result;
     }
 
     /**
