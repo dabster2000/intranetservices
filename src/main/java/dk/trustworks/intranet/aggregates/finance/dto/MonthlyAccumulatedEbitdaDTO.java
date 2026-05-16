@@ -9,9 +9,25 @@ import lombok.NoArgsConstructor;
  * DTO representing one month of accumulated EBITDA data for the fiscal year chart.
  * Used by CxO Executive Dashboard to display Expected Accumulated EBITDA (FY).
  *
- * EBITDA = Revenue - monthlyDirectCostDkk - monthlyInternalInvoiceCostDkk - monthlySalariesDkk - monthlyOpexDkk
+ * <p>EBITDA = monthlyRevenueDkk - monthlyDirectCostDkk - monthlySalariesDkk - monthlyOpexDkk
  *
- * Past months use actuals from GL (cost_type=DIRECT_COSTS) + fact_opex + fact_internal_invoice_cost_mat.
+ * <p><strong>monthlyInternalInvoiceCostDkk is NOT subtracted in EBITDA arithmetic.</strong>
+ * After Phase 4 of the EBITDA chart reconciliation, monthlyDirectCostDkk already
+ * includes intercompany (INTERNAL) invoice cost on the debtor side:
+ * <ul>
+ *   <li>CREATED INTERNALs → booked to debtor's finance_details on 3050/3055/3070/3075/1350
+ *       (cost_type=DIRECT_COSTS) and aggregated into monthlyDirectCostDkk.</li>
+ *   <li>QUEUED INTERNALs → synthesized into monthlyDirectCostDkk on top of the GL,
+ *       attributed to debtor_companyuuid (strict status='QUEUED' filter prevents
+ *       double-count with the CREATED side).</li>
+ * </ul>
+ * monthlyInternalInvoiceCostDkk is therefore informational/exposure only — it
+ * exposes the intercompany cost slice to the frontend for reporting, but is
+ * NOT subtracted from revenue. Reading this field AND summing it into total
+ * cost would double-count with monthlyDirectCostDkk after Phase 4.
+ *
+ * <p>Past months use actuals from GL (cost_type=DIRECT_COSTS, augmented with QUEUED
+ * INTERNAL invoiceitems for the debtor) + fact_opex + fact_internal_invoice_cost_mat.
  * Future months use backlog revenue (fact_backlog) with TTM gross margin to estimate
  * direct costs, and average monthly OPEX (TTM) for opex estimate.
  * Internal invoice cost is not forecast for future months (set to 0.0).
@@ -80,9 +96,16 @@ public class MonthlyAccumulatedEbitdaDTO {
     private double monthlyOpexDkk;
 
     /**
-     * Monthly EBITDA = monthlyRevenueDkk - monthlyDirectCostDkk - monthlyInternalInvoiceCostDkk
-     *                  - monthlySalariesDkk - monthlyOpexDkk.
-     * Can be negative.
+     * Monthly EBITDA = monthlyRevenueDkk - monthlyDirectCostDkk - monthlySalariesDkk - monthlyOpexDkk.
+     *
+     * <p>Note: monthlyInternalInvoiceCostDkk is NOT subtracted here — after Phase 4
+     * of the EBITDA chart reconciliation, intercompany (INTERNAL) invoice costs are
+     * already included in monthlyDirectCostDkk on the debtor side (CREATED via GL,
+     * QUEUED via the synthesized helper). monthlyInternalInvoiceCostDkk remains on
+     * the DTO as informational/exposure only; summing it into total cost would
+     * double-count with monthlyDirectCostDkk.
+     *
+     * <p>Can be negative.
      */
     private double monthlyEbitdaDkk;
 

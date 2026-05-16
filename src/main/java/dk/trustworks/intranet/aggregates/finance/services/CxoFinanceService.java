@@ -583,11 +583,17 @@ public class CxoFinanceService {
         // 4. Query current TTM revenue (company-total from fact_company_revenue_mat)
         // and costs (from fact_project_financials_mat with dimension filters).
         // Revenue KPIs always show company-total — dimension filters do not apply to revenue.
+        //
+        // Phase 4: also add QUEUED INTERNAL cost (debtor-attributed) so this KPI
+        // agrees with the EBITDA chart about which intercompany costs are recognized.
+        // CREATED INTERNALs are already in queryActualCosts via finance_details; the
+        // strict status='QUEUED' filter in the helper prevents double-counting.
         double currentRevenue = queryCompanyRevenue(currentTTMStart, currentTTMEnd, companyIds);
         double currentCost = queryActualCosts(
                 currentTTMStart, currentTTMEnd,
                 sectors, serviceLines, contractTypes, clientId, companyIds
         );
+        currentCost += queryQueuedInternalCostForWindow(currentFromKey, currentToKey, companyIds);
         double currentInternalCost = queryTTMInternalInvoiceCost(currentFromKey, currentToKey, companyIds);
 
         // 5. Query prior TTM revenue (company-total) and costs (dimension-filtered).
@@ -596,6 +602,7 @@ public class CxoFinanceService {
                 priorTTMStart, priorTTMEnd,
                 sectors, serviceLines, contractTypes, clientId, companyIds
         );
+        priorCost += queryQueuedInternalCostForWindow(priorFromKey, priorToKey, companyIds);
         double priorInternalCost = queryTTMInternalInvoiceCost(priorFromKey, priorToKey, companyIds);
 
         // 6. Calculate margin percentages (handle division by zero)
@@ -1230,7 +1237,9 @@ public class CxoFinanceService {
      * @param contractTypes Accepted for compatibility; not applied to GL-based query
      * @param clientId   Accepted for compatibility; not applied to GL-based query
      * @param companyIds Optional company UUID filter; null or empty = all companies
-     * @return Sum of {@code ABS(amount)} for all DIRECT_COSTS GL entries in the period
+     * @return Signed sum of {@code amount} for all DIRECT_COSTS GL entries in the period.
+     *         Credits/reversals are honored — a negative entry nets against positive entries
+     *         in the same period rather than being inflated by {@code ABS()}.
      */
     private double queryActualCosts(
             LocalDate fromDate, LocalDate toDate,
@@ -1241,7 +1250,7 @@ public class CxoFinanceService {
         String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
 
         StringBuilder sql = new StringBuilder(
-                "SELECT COALESCE(SUM(ABS(fd.amount)), 0.0) " +
+                "SELECT COALESCE(SUM(fd.amount), 0.0) " +
                 "FROM finance_details fd " +
                 "INNER JOIN accounting_accounts aa " +
                 "    ON fd.accountnumber = aa.account_code " +
@@ -4526,8 +4535,14 @@ public class CxoFinanceService {
         // 1. TTM gross margin: revenue from fact_company_revenue_mat (company-total),
         //    cost from GL (cost_type=DIRECT_COSTS), company-level only.
         //    Revenue KPIs always show company-total — dimension filters do not apply to revenue.
+        //
+        //    Phase 4: also add QUEUED INTERNAL cost attributed to the debtor. The GL feed
+        //    only sees CREATED INTERNALs (booked to 3050/3055/3070/3075/1350). Treating
+        //    QUEUED ≡ CREATED for cost recognition keeps the chart and the TTM gross-margin
+        //    KPI in agreement and closes the gap to e-conomic mid-month.
         double ttmRevenue = queryCompanyRevenue(ttmStart, ttmEnd, companyIds);
         double ttmCost    = queryActualCosts(ttmStart, ttmEnd, sectors, serviceLines, contractTypes, clientId, companyIds);
+        ttmCost          += queryQueuedInternalCostForWindow(ttmFromKey, ttmToKey, companyIds);
         double ttmGrossMarginPct = (ttmRevenue > 0) ? ((ttmRevenue - ttmCost) / ttmRevenue) * 100.0 : 0.0;
 
         // 2. Average monthly OPEX (OPEX-only, excluding salaries) and average monthly salaries
@@ -4570,6 +4585,24 @@ public class CxoFinanceService {
         // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
         java.util.Map<String, Double> internalCostByMonth = queryMonthlyInternalInvoiceCost(fyFromKey, fyToKey, companyIds);
 
+        // 4c. Phase 4: QUEUED INTERNAL cost attributed to the debtor company, by month.
+        //     Added on top of monthDirectCost so the chart treats QUEUED ≡ CREATED for
+        //     cost recognition. CREATED INTERNAL cost is already inside fyCostByMonth via
+        //     finance_details (debtor's 3050/3055/3070/3075/1350 accounts), so the strict
+        //     status='QUEUED' filter inside the helper prevents double-counting.
+        //
+        //     Also fold the QUEUED-month keys into actualByMonth so a debtor-only filter
+        //     that has QUEUED INTERNAL cost but no revenue or DIRECT_COSTS GL in that
+        //     month still classifies as an "actual" month (otherwise the loop would treat
+        //     it as a future month and apply the TTM-margin estimate instead).
+        java.util.Map<String, Double> queuedInternalCostByMonth =
+                queryMonthlyQueuedInternalCostByMonth(fyFromKey, fyToKey, companyIds);
+        for (String mk : queuedInternalCostByMonth.keySet()) {
+            if (!actualByMonth.containsKey(mk)) {
+                actualByMonth.put(mk, new double[]{0.0, 0.0});
+            }
+        }
+
         // 5. Backlog by month for future months
         java.util.Map<String, Double> backlogByMonth = queryBacklogByMonth(currentMonthKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
@@ -4595,6 +4628,11 @@ public class CxoFinanceService {
                 double[] revCost = actualByMonth.getOrDefault(monthKey, new double[]{0.0, 0.0});
                 monthRevenue       = revCost[0];
                 monthDirectCost    = revCost[1];
+                // Phase 4: add QUEUED INTERNAL cost (debtor-attributed) on top of the
+                // GL-based direct cost. CREATED INTERNALs are already in revCost[1] via
+                // finance_details; the strict QUEUED filter in the helper prevents
+                // double-count.
+                monthDirectCost   += queuedInternalCostByMonth.getOrDefault(monthKey, 0.0);
                 monthInternalCost  = internalCostByMonth.getOrDefault(monthKey, 0.0);
                 monthSalaries      = salariesByMonth.getOrDefault(monthKey, 0.0);
                 monthOpex          = opexByMonth.getOrDefault(monthKey, 0.0);
@@ -4608,8 +4646,11 @@ public class CxoFinanceService {
                 monthOpex         = avgMonthlyOpex;
             }
 
-            // Note: monthInternalCost is NOT subtracted here because GL-based direct costs
-            // are already company-level only and do not overlap with intercompany invoices.
+            // Note: monthInternalCost is NOT subtracted here. As of Phase 4 the QUEUED
+            // + CREATED INTERNAL cost is already inside monthDirectCost (CREATED via GL,
+            // QUEUED via the synthesized helper queryMonthlyQueuedInternalCostByMonth).
+            // Subtracting monthInternalCost would double-count intercompany cost.
+            // See MonthlyAccumulatedEbitdaDTO Javadoc.
             double monthEbitda = monthRevenue - monthDirectCost - monthSalaries - monthOpex;
             accumulated += monthEbitda;
 
@@ -5246,7 +5287,7 @@ public class CxoFinanceService {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
-                "       COALESCE(SUM(ABS(fd.amount)), 0.0) AS cost " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS cost " +
                 "FROM finance_details fd " +
                 "INNER JOIN accounting_accounts aa " +
                 "    ON fd.accountnumber = aa.account_code " +
@@ -5277,6 +5318,135 @@ public class CxoFinanceService {
             result.put(mk, new double[]{cost});
         }
         return result;
+    }
+
+    /**
+     * Helper: Query monthly QUEUED INTERNAL invoice cost, attributed to the debtor
+     * company, by month. Returns map of monthKey → cost_dkk.
+     *
+     * <p><strong>Phase 4 of the EBITDA chart reconciliation.</strong> The chart's
+     * monthly direct-cost feed reads GL entries classified as {@code DIRECT_COSTS}
+     * — but those entries are only present once an INTERNAL invoice has been
+     * <em>booked</em> in e-conomic (i.e. transitioned to {@code status='CREATED'}).
+     * Per Decision Log "QUEUED is final for financial reporting", QUEUED INTERNALs
+     * should also be counted as cost on the debtor side so total group EBITDA
+     * reconciles with e-conomic mid-month (before the bookkeeping run flips
+     * QUEUED→CREATED).
+     *
+     * <p>This helper synthesizes that QUEUED-only cost so the caller can add it
+     * on top of the GL-based direct cost. Strict {@code status='QUEUED'} filter
+     * — CREATED invoices are intentionally excluded because they are already
+     * present in {@code finance_details} via the debtor's 3050/3055/3070/3075/1350
+     * accounts (and thus already in {@code queryMonthlyDirectCostByMonth}).
+     *
+     * <p>The debtor is resolved via {@code invoices.debtor_companyuuid} — stamped
+     * at INTERNAL invoice creation time by {@code IntercompanyClientResolver}
+     * (see SPEC: internal-invoice-billing-client-fix § FR-1). This is the same
+     * column used by {@link #queryInternalInvoices} Part A, ensuring consistent
+     * attribution between the chart and the Excel export.
+     *
+     * <p>Currency conversion mirrors {@link #queryInternalInvoices} Part A:
+     * looked up per-month via the {@code currences} table, defaulting to 1.0
+     * when no row matches (DKK or unknown FX).
+     *
+     * @param fromKey    Start month (YYYYMM, inclusive)
+     * @param toKey      End month (YYYYMM, inclusive)
+     * @param companyIds Optional debtor company filter; null/empty = all debtors
+     * @return Map of monthKey → summed QUEUED INTERNAL cost in DKK, attributed
+     *         to the debtor company. Only months with at least one QUEUED row
+     *         are present (caller should {@code getOrDefault(monthKey, 0.0)}).
+     */
+    private java.util.Map<String, Double> queryMonthlyQueuedInternalCostByMonth(
+            String fromKey, String toKey, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) AS cost " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'QUEUED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND i.debtor_companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            String mk = (String) row.get("month_key");
+            double cost = row.get("cost") != null ? ((Number) row.get("cost")).doubleValue() : 0.0;
+            result.put(mk, cost);
+        }
+        return result;
+    }
+
+    /**
+     * Helper: Query total QUEUED INTERNAL cost over a window (e.g. TTM), attributed
+     * to the debtor company. Used to keep TTM gross margin in sync with the
+     * per-month chart so {@code currentMarginPercent} and the EBITDA chart agree
+     * about which costs are recognized.
+     *
+     * <p>Same semantics as {@link #queryMonthlyQueuedInternalCostByMonth} but with
+     * a single scalar result instead of a per-month map. Strict
+     * {@code status='QUEUED'} filter — see that method's javadoc for the
+     * double-count argument.
+     *
+     * @param fromKey    Start month (YYYYMM, inclusive)
+     * @param toKey      End month (YYYYMM, inclusive)
+     * @param companyIds Optional debtor company filter; null/empty = all debtors
+     * @return Summed QUEUED INTERNAL cost in DKK across the window
+     */
+    private double queryQueuedInternalCostForWindow(
+            String fromKey, String toKey, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'QUEUED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND i.debtor_companyuuid IN (:companyIds) ");
+        }
+
+        Query query = em.createNativeQuery(sql.toString());
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        return ((Number) query.getSingleResult()).doubleValue();
     }
 
     /**
