@@ -194,6 +194,53 @@ class FactCompanyRevenueTest {
         double invoicePhantomDkk = invoicePhantomDkkFor(issuerCompany);
         assertEquals(1500.0, invoicePhantomDkk, 0.001,
                 "A PHANTOM invoice with only CALCULATED lines must allocate 100% to the issuer");
+
+        double issuerNet = netRevenueFor(issuerCompany);
+        assertEquals(1500.0, issuerNet, 0.001,
+                "net_revenue_dkk must also reflect the full PHANTOM amount (no proportional " +
+                "re-split should reduce it)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 7: QUEUED INTERNAL invoice on an issuer with a cross-company
+    //         consultant line — central Phase 3/4 interaction surface.
+    //         This is the case where V344's filter removal matters most:
+    //         the INTERNAL revenue must be fully attributed to the issuer
+    //         even though the consultant's home company is different.
+    //         (Phase 4 will recognize the cost on the debtor side; this
+    //         test is the revenue-side invariant for the cutover.)
+    // -----------------------------------------------------------------------
+    @Test
+    @TestTransaction
+    void queuedInternalInvoiceWithCrossCompanyConsultant_attributesFullAmountToIssuer() {
+        String issuerCompany     = uniqueUuid();
+        String foreignCompany    = uniqueUuid();
+        String foreignConsultant = uniqueUuid();
+
+        String invoiceUuid = persistInvoice(issuerCompany, "INTERNAL", "QUEUED", INVOICE_DATE);
+        persistConsultantLine(invoiceUuid, foreignConsultant, 800.0, 5.0); // 4000
+        em.flush();
+
+        // Consultant's home company is the *foreign* (non-issuing) company.
+        seedConsultantHomeCompany(foreignConsultant, foreignCompany, INVOICE_DATE);
+        em.flush();
+
+        double internalDkk = internalDkkFor(issuerCompany);
+        assertEquals(4000.0, internalDkk, 0.001,
+                "QUEUED INTERNAL with cross-company consultant must attribute the full " +
+                "4000 to the issuer (was 0 under V201 — the consultant line was filtered out).");
+
+        double issuerNet = netRevenueFor(issuerCompany);
+        assertEquals(4000.0, issuerNet, 0.001,
+                "net_revenue_dkk on the issuer must reflect the full INTERNAL amount");
+
+        // Foreign (non-issuer) company must NOT pick up any revenue from this
+        // invoice — issuer-centric attribution means the consultant's home
+        // company is irrelevant for revenue.
+        double foreignNet = netRevenueFor(foreignCompany);
+        assertEquals(0.0, foreignNet, 0.001,
+                "Foreign company must have zero revenue from this invoice — issuer-centric " +
+                "attribution leaves the consultant's home company out of the revenue path");
     }
 
     // =======================================================================
