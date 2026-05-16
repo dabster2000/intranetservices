@@ -24,7 +24,8 @@ public record OpexRow(
         /** Month key in YYYYMM format (e.g., "202601"). */
         String monthKey,
 
-        /** OPEX amount in DKK (always non-negative). */
+        /** OPEX amount in DKK. Signed — net-negative monthly aggregates (refunds, reversals)
+         *  propagate as negative cost on the origin company. */
         double opexAmountDkk,
 
         /** Number of GL entries contributing to this row (from fact_opex_mat or estimated as 1 for distribution). */

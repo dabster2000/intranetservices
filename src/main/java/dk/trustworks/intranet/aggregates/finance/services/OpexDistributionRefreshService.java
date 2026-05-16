@@ -263,11 +263,11 @@ public class OpexDistributionRefreshService {
                                 share.baseToShare.multiply(ratio).setScale(IntercompanyCalcService.SCALE, IntercompanyCalcService.RM)
                         );
                     }
-                    if (payerUuid.equals(originUuid) && share.originRemainder.compareTo(BigDecimal.ZERO) > 0) {
+                    if (payerUuid.equals(originUuid) && share.originRemainder.compareTo(BigDecimal.ZERO) != 0) {
                         allocated = allocated.add(share.originRemainder);
                     }
 
-                    if (allocated.compareTo(BigDecimal.ZERO) <= 0) continue;
+                    if (allocated.compareTo(BigDecimal.ZERO) == 0) continue;
 
                     // Accumulate: payerUuid → costCenterId → expenseCategoryId → isPayroll → amount
                     accumulator
@@ -293,7 +293,7 @@ public class OpexDistributionRefreshService {
                         boolean isPayroll = prEntry.getKey();
                         double amount = prEntry.getValue();
 
-                        if (amount <= 0.0) continue;
+                        if (amount == 0.0) continue;
 
                         rows.add(new OpexRow(
                                 payerUuid,

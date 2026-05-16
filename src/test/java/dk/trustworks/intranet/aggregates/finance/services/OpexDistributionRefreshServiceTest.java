@@ -8,6 +8,8 @@ import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.enums.CostType;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.QuarkusTestProfile;
+import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
@@ -28,19 +30,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests verifying that OPEX distribution preserves the signed sign of GL
- * aggregates inside {@code computeDistributionRowsForMonth} — i.e. that the
- * {@code gl.abs()} call removed in Phase 2 of the EBITDA chart reconciliation
- * no longer inflates refunds/credit-memo entries.
+ * aggregates inside {@code computeDistributionRowsForMonth}. Two end-to-end
+ * invariants are locked in:
  *
- * <p>The previous behaviour wrapped the per-account GL aggregate in
- * {@code .abs()} before calling
- * {@link IntercompanyCalcService#computeDistributionLegacyShareForAccount},
- * which meant negative GL entries (refunds, reversals) were treated as
- * additional positive costs in {@code fact_opex_distribution_mat}. Removing
- * the wrapper allows the downstream method's existing {@code <0 -> 0} clamp
- * (line 170 of IntercompanyCalcService) to correctly suppress net-negative
- * buckets while still letting positive entries net against negatives within
- * a single account.
+ * <ol>
+ *   <li>The upstream {@code gl.abs()} wrapper (removed in Phase 2 of the
+ *       EBITDA chart reconciliation) does not return — refunds inside a
+ *       month's GL aggregate net against same-account costs rather than
+ *       being abs-inflated into phantom positive cost.</li>
+ *   <li>Net-negative GL aggregates propagate as negative {@code originRemainder}
+ *       on the origin company (Phase 5 — clamp at IntercompanyCalcService:170
+ *       removed). For non-shared / non-salary accounts (where the legacy share
+ *       path doesn't engage), the entire negative GL falls into
+ *       {@code originRemainder} and materialises as a single negative-amount
+ *       row on the origin company.</li>
+ * </ol>
  *
  * <p>Tests use a fully synthetic in-memory {@link MonthData} (no DB) and
  * invoke the package-private {@code computeDistributionRowsForMonth} via
@@ -52,7 +56,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * No DB I/O occurs — all inputs to the method under test are built in memory.
  */
 @QuarkusTest
+@TestProfile(OpexDistributionRefreshServiceTest.Profile.class)
 class OpexDistributionRefreshServiceTest {
+
+    public static class Profile implements QuarkusTestProfile {
+        @Override
+        public Map<String, String> getConfigOverrides() {
+            return Map.of(
+                    "quarkus.s3.devservices.enabled", "false",
+                    "cvtool.username", "test-placeholder",
+                    "cvtool.password", "test-placeholder"
+            );
+        }
+    }
 
     private static final YearMonth TEST_MONTH = YearMonth.of(2099, 1);
 
@@ -141,16 +157,17 @@ class OpexDistributionRefreshServiceTest {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: OPEX account with only net-negative postings — result must be
-    //         0 (suppressed). The downstream guard in
-    //         IntercompanyCalcService.computeDistributionLegacyShareForAccount
-    //         clamps {@code glAmount < 0 -> 0} (line 170), so baseToShare and
-    //         originRemainder both become 0; the {@code allocated <= 0 continue}
-    //         guard in computeDistributionRowsForMonth (line 272) then drops
-    //         the row entirely.
+    // Test 3: OPEX account with only net-negative postings (e.g. Barsel.dk
+    //         maternity-allowance refunds on account 3597) — result must be
+    //         a single negative-amount row on the origin company.
+    //
+    //         For shared=false, salary=false accounts the legacy share path
+    //         doesn't engage (baseToShare stays 0), so the entire negative
+    //         GL falls into originRemainder and materialises as one row
+    //         on the origin company. Group total conserved.
     // -----------------------------------------------------------------------
     @Test
-    void opexAccount_netNegative_isSuppressed() throws Exception {
+    void opexAccount_netNegative_propagatesAsRefund() throws Exception {
         Company company = synthCompany("c-opex-neg");
         AccountingAccount opexAccount = synthAccount(company, 4200,
                 CostType.OPEX, /* shared */ false, /* salary */ false);
@@ -165,14 +182,42 @@ class OpexDistributionRefreshServiceTest {
 
         List<OpexRow> rows = invokeComputeDistributionRowsForMonth(TEST_MONTH, md, Map.of());
 
-        // Net-negative bucket → clamped to 0 by IntercompanyCalcService,
-        // then dropped by the allocated<=0 continue guard. No row materialised.
-        // With the old gl.abs() this would have produced a +500 phantom cost row.
         double total = rows.stream().mapToDouble(OpexRow::opexAmountDkk).sum();
-        assertEquals(0.0, total, 0.001,
-                "Net-negative OPEX bucket must be suppressed, not abs-inflated into a +500 phantom cost");
-        assertFalse(rows.stream().anyMatch(r -> r.opexAmountDkk() > 0.0),
-                "Net-negative OPEX bucket must materialise no positive-amount rows");
+        assertEquals(-500.0, total, 0.5,
+                "Net-negative OPEX bucket must propagate as a -500 refund, not be clamped to zero");
+        assertEquals(1, rows.size(),
+                "Net-negative non-shared OPEX bucket must produce exactly one row on origin");
+        assertEquals(company.getUuid(), rows.get(0).companyId(),
+                "Negative OPEX must stay with origin company (legacy share path doesn't engage)");
+        assertFalse(rows.get(0).isPayrollFlag(),
+                "Non-salary account row must not be flagged as payroll");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: Production-shaped scenario — TW A/S Lønrefusion sygeforsikring
+    //         (account 3597) July 2025 = -247,025.38 DKK (Barsel.dk +
+    //         Barselsdagpenge refunds). Verifies that the production residual
+    //         driver flows through end-to-end as a single negative row.
+    // -----------------------------------------------------------------------
+    @Test
+    void opexAccount_lonrefusionRefund_flowsToOrigin() throws Exception {
+        Company twas = synthCompany("tw-as");
+        AccountingAccount lonrefusion = synthAccount(twas, 3597,
+                CostType.OPEX, /* shared */ false, /* salary */ false);
+        AccountingCategory category = synthCategory(OPEX_GROUPNAME, lonrefusion);
+
+        Map<Integer, BigDecimal> glRow = new HashMap<>();
+        glRow.put(lonrefusion.getAccountCode(), BigDecimal.valueOf(-247_025.38));
+        Map<String, Map<Integer, BigDecimal>> gl = new HashMap<>();
+        gl.put(twas.getUuid(), glRow);
+
+        MonthData md = synthMonthData(List.of(twas), List.of(category), gl, Map.of());
+
+        List<OpexRow> rows = invokeComputeDistributionRowsForMonth(TEST_MONTH, md, Map.of());
+
+        double total = rows.stream().mapToDouble(OpexRow::opexAmountDkk).sum();
+        assertEquals(-247_025.38, total, 0.01,
+                "Barsel.dk refund must flow through as exact -247,025.38 negative cost");
     }
 
     // =======================================================================
