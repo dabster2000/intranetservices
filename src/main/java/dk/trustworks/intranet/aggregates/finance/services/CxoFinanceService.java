@@ -4646,8 +4646,11 @@ public class CxoFinanceService {
                 monthOpex         = avgMonthlyOpex;
             }
 
-            // Note: monthInternalCost is NOT subtracted here because GL-based direct costs
-            // are already company-level only and do not overlap with intercompany invoices.
+            // Note: monthInternalCost is NOT subtracted here. As of Phase 4 the QUEUED
+            // + CREATED INTERNAL cost is already inside monthDirectCost (CREATED via GL,
+            // QUEUED via the synthesized helper queryMonthlyQueuedInternalCostByMonth).
+            // Subtracting monthInternalCost would double-count intercompany cost.
+            // See MonthlyAccumulatedEbitdaDTO Javadoc.
             double monthEbitda = monthRevenue - monthDirectCost - monthSalaries - monthOpex;
             accumulated += monthEbitda;
 
