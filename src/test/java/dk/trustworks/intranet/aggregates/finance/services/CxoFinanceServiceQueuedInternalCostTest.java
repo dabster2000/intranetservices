@@ -219,6 +219,73 @@ class CxoFinanceServiceQueuedInternalCostTest {
     }
 
     // -----------------------------------------------------------------------
+    // Test 6b: NO DOUBLE-COUNT across helpers — the production double-count
+    //          vector is orthogonality between two data sources:
+    //
+    //             queryMonthlyQueuedInternalCostByMonth → reads `invoices`
+    //                                                    WHERE status='QUEUED'
+    //             queryMonthlyDirectCostByMonth         → reads `finance_details`
+    //                                                    WHERE cost_type='DIRECT_COSTS'
+    //
+    //          When a CREATED INTERNAL has been booked, it appears in
+    //          finance_details on 3050/3055/3070/3075/1350 — so it MUST NOT
+    //          also be returned by the QUEUED helper. Test 6 already proves
+    //          the helper's strict status filter. This test goes one step
+    //          further and verifies the two helpers are *orthogonal*: each
+    //          reads its own row set, and the EBITDA chart's
+    //          monthDirectCost = directCost + queuedHelper sum is safe by
+    //          construction (not by accidental cancellation).
+    // -----------------------------------------------------------------------
+    @Test
+    @TestTransaction
+    void queuedHelperAndFinanceDetailsDirectCost_noDoubleCount() throws Exception {
+        Company debtor = anyCompany();
+        Company issuer = anyOtherCompany(debtor.getUuid());
+
+        // (1) QUEUED INTERNAL: appears in invoices but NOT in finance_details.
+        //     Must be picked up by queryMonthlyQueuedInternalCostByMonth (10,000)
+        //     and ignored by queryMonthlyDirectCostByMonth.
+        insertInternalInvoice("p4-test6b-q", issuer.getUuid(), debtor.getUuid(),
+                "QUEUED", JAN_2099_DATE);
+        insertInvoiceItem("p4-test6b-q-line", "p4-test6b-q", 1000.0, 10.0);
+
+        // (2) DIRECT_COSTS GL entry: simulates the booked CREATED side — appears
+        //     in finance_details on a 3050-like DIRECT_COSTS-classified account.
+        //     Must be picked up by queryMonthlyDirectCostByMonth (10,000) and
+        //     ignored by queryMonthlyQueuedInternalCostByMonth.
+        AccountingAccount directCostAccount = persistDirectCostAccount(debtor, 3050);
+        persistFinanceDetail(debtor, directCostAccount, 10_000.0, JAN_2099_DATE);
+        em.flush();
+
+        Map<String, Double> queuedResult = invokeQueuedHelper(
+                JAN_2099_KEY, JAN_2099_KEY, debtor.getUuid());
+        Map<String, double[]> directCostResult = invokeQueryMonthlyDirectCostByMonth(
+                JAN_2099_KEY, JAN_2099_KEY, debtor.getUuid());
+
+        // QUEUED helper sees ONLY the QUEUED invoice — the finance_details row is
+        // invisible to it (it queries invoices, not finance_details).
+        assertEquals(10_000.0, queuedResult.getOrDefault(JAN_2099_KEY, 0.0), 0.001,
+                "QUEUED helper must return only the QUEUED invoice amount — "
+                + "it must not see finance_details rows (orthogonal data sources).");
+
+        // Direct-cost helper sees ONLY the finance_details row — the QUEUED
+        // invoice is invisible to it (it queries finance_details, not invoices).
+        assertNotNull(directCostResult.get(JAN_2099_KEY),
+                "Month with DIRECT_COSTS GL entry must appear in direct-cost result");
+        assertEquals(10_000.0, directCostResult.get(JAN_2099_KEY)[0], 0.001,
+                "Direct-cost helper must return only the finance_details amount — "
+                + "it must not see invoices.status='QUEUED' rows (orthogonal data sources).");
+
+        // Together: chart code does `monthDirectCost = directCost + queuedHelper`
+        // → 10,000 + 10,000 = 20,000 across TWO distinct underlying rows. This is
+        // NOT a double-count — it is two separate cost events (one booked CREATED
+        // side, one not-yet-booked QUEUED side) for the same debtor in the same
+        // month. The bug being guarded against is the case where ONE invoice
+        // (status flipped QUEUED→CREATED) would be counted by BOTH helpers; Test 6
+        // proves that does not happen because the QUEUED helper rejects CREATED.
+    }
+
+    // -----------------------------------------------------------------------
     // Test 7: TTM helper — sibling for queryActualCosts callers. Same
     //         semantics as the per-month helper, but a single scalar over
     //         the window. Multi-month sum.
@@ -358,5 +425,71 @@ class CxoFinanceServiceQueuedInternalCostTest {
         Object out = m.invoke(service,
                 fromKey, toKey, java.util.Set.of(debtorCompanyUuid));
         return ((Number) out).doubleValue();
+    }
+
+    /**
+     * Persists a DIRECT_COSTS-classified accounting_account using a synthetic
+     * account_code in the test-only 3000-range. Pattern mirrors
+     * {@code CxoFinanceServiceDirectCostsSignedTest#persistDirectCostAccount}.
+     */
+    private AccountingAccount persistDirectCostAccount(Company company, int accountCode) {
+        AccountingCategory category = new AccountingCategory();
+        category.setUuid(UUID.randomUUID().toString());
+        category.setAccountCode("TST-Q-" + accountCode);
+        category.setAccountname("Test Direct Costs (Phase 4 orth) " + accountCode);
+        em.persist(category);
+
+        AccountingAccount account = new AccountingAccount();
+        account.setUuid(UUID.randomUUID().toString());
+        account.setCompany(company);
+        account.setAccountingCategory(category);
+        account.setAccountCode(accountCode);
+        account.setAccountDescription("Test DIRECT_COSTS account (Phase 4 orth) " + accountCode);
+        account.setShared(false);
+        account.setSalary(false);
+        account.setCostType(CostType.DIRECT_COSTS);
+        em.persist(account);
+        return account;
+    }
+
+    /**
+     * Persists a finance_details row simulating the GL side of a booked
+     * CREATED INTERNAL invoice. Pattern mirrors
+     * {@code CxoFinanceServiceDirectCostsSignedTest#persistFinanceDetail}.
+     */
+    private void persistFinanceDetail(Company company, AccountingAccount account,
+                                      double amount, LocalDate expenseDate) {
+        FinanceDetails fd = new FinanceDetails(
+                company,
+                /* entrynumber  */ (int) (System.nanoTime() & 0x7fffffff),
+                /* accountnumber*/ account.getAccountCode(),
+                /* invoicenumber*/ 0,
+                /* amount       */ amount,
+                /* remainder    */ 0.0,
+                /* expensedate  */ expenseDate,
+                /* text         */ "Phase 4 orthogonality test fixture (CREATED-side GL)"
+        );
+        em.persist(fd);
+    }
+
+    /**
+     * Invokes the private {@code queryMonthlyDirectCostByMonth} for the given
+     * window, scoped to a single company. Used to prove orthogonality with the
+     * QUEUED helper.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, double[]> invokeQueryMonthlyDirectCostByMonth(
+            String fromKey, String toKey, String companyUuid) throws Exception {
+        Method m = CxoFinanceService.class.getDeclaredMethod(
+                "queryMonthlyDirectCostByMonth",
+                String.class, String.class,
+                java.util.Set.class, java.util.Set.class,
+                java.util.Set.class, String.class, java.util.Set.class);
+        m.setAccessible(true);
+        Object out = m.invoke(service,
+                fromKey, toKey,
+                null, null, null, null,
+                java.util.Set.of(companyUuid));
+        return (Map<String, double[]>) out;
     }
 }
