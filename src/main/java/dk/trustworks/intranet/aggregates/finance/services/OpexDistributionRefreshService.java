@@ -243,9 +243,7 @@ public class OpexDistributionRefreshService {
                         .getOrDefault(originUuid, Collections.emptyMap())
                         .getOrDefault(account.getAccountCode(), BigDecimal.ZERO);
 
-                // Use absolute value to match V125 fact_opex which uses SUM(ABS(amount)).
-                // Credit/reversal entries (negative GL) still contribute to OPEX totals.
-                gl = gl.abs();
+                // Use signed GL aggregate; refunds/reversals correctly net against costs.
 
                 BigDecimal lump = lumpsByAccount.getOrDefault(account.getUuid(), BigDecimal.ZERO);
 
