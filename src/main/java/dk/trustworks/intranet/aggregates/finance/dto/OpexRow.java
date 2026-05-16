@@ -54,7 +54,9 @@ public record OpexRow(
     public static final String COST_TYPE_OPEX = "OPEX";
 
     /**
-     * Compact constructor validates non-null invariants and enforces non-negative amounts.
+     * Compact constructor validates non-null invariants. {@code opexAmountDkk}
+     * is signed — negative values represent net-negative monthly aggregates
+     * (refunds, reversals) on non-shared/non-salary accounts.
      */
     public OpexRow {
         if (companyId == null || companyId.isBlank()) {
@@ -68,9 +70,6 @@ public record OpexRow(
         }
         if (monthKey == null || monthKey.length() != 6) {
             throw new IllegalArgumentException("monthKey must be a 6-character YYYYMM string, got: " + monthKey);
-        }
-        if (opexAmountDkk < 0.0) {
-            throw new IllegalArgumentException("opexAmountDkk must not be negative, got: " + opexAmountDkk);
         }
         if (dataSource == null || dataSource.isBlank()) {
             throw new IllegalArgumentException("dataSource must not be blank");
