@@ -1230,7 +1230,9 @@ public class CxoFinanceService {
      * @param contractTypes Accepted for compatibility; not applied to GL-based query
      * @param clientId   Accepted for compatibility; not applied to GL-based query
      * @param companyIds Optional company UUID filter; null or empty = all companies
-     * @return Sum of {@code ABS(amount)} for all DIRECT_COSTS GL entries in the period
+     * @return Signed sum of {@code amount} for all DIRECT_COSTS GL entries in the period.
+     *         Credits/reversals are honored — a negative entry nets against positive entries
+     *         in the same period rather than being inflated by {@code ABS()}.
      */
     private double queryActualCosts(
             LocalDate fromDate, LocalDate toDate,
@@ -1241,7 +1243,7 @@ public class CxoFinanceService {
         String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
 
         StringBuilder sql = new StringBuilder(
-                "SELECT COALESCE(SUM(ABS(fd.amount)), 0.0) " +
+                "SELECT COALESCE(SUM(fd.amount), 0.0) " +
                 "FROM finance_details fd " +
                 "INNER JOIN accounting_accounts aa " +
                 "    ON fd.accountnumber = aa.account_code " +
@@ -5246,7 +5248,7 @@ public class CxoFinanceService {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
-                "       COALESCE(SUM(ABS(fd.amount)), 0.0) AS cost " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS cost " +
                 "FROM finance_details fd " +
                 "INNER JOIN accounting_accounts aa " +
                 "    ON fd.accountnumber = aa.account_code " +
