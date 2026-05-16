@@ -166,8 +166,7 @@ public class IntercompanyCalcService {
         final boolean isShared = aaSrc.isShared();
         final boolean isSalary = aaSrc.isSalary();
 
-        // GL clamp < 0 -> 0
-        if (glAmount.compareTo(BigDecimal.ZERO) < 0) glAmount = BigDecimal.ZERO;
+        // glAmount is signed: refunds/reversals flow through as negative originRemainder.
         glAmount = glAmount.setScale(SCALE, RM);
 
         // lumps deles ikke

@@ -268,7 +268,7 @@ public class DistributionAwareOpexProvider {
         List<OpexRow> result = new ArrayList<>(rows.size());
         for (Tuple row : rows) {
             double amount = row.get("opex_amount") != null ? ((Number) row.get("opex_amount")).doubleValue() : 0.0;
-            if (amount <= 0.0) continue;
+            if (amount == 0.0) continue;
             result.add(new OpexRow(
                     (String) row.get("company_id"),
                     (String) row.get("cost_center_id"),
@@ -338,7 +338,7 @@ public class DistributionAwareOpexProvider {
         for (Tuple row : rows) {
             double amount = row.get("opex_amount") != null
                     ? ((Number) row.get("opex_amount")).doubleValue() : 0.0;
-            if (amount <= 0.0) continue;
+            if (amount == 0.0) continue;
             result.add(new OpexRow(
                     (String) row.get("company_id"),
                     (String) row.get("cost_center_id"),
