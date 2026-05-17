@@ -52,7 +52,7 @@ public class AdminScopeAugmentor implements SecurityIdentityAugmentor {
             "invoices:read", "invoices:write",
 
             // Expenses
-            "expenses:read", "expenses:write",
+            "expenses:read", "expenses:write", "expenses:review",
 
             // Revenue & utilization
             "revenue:read",
