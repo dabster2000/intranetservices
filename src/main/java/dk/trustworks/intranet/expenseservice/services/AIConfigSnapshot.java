@@ -43,7 +43,8 @@ public class AIConfigSnapshot {
         List<RuleView> rules = AIRuleCatalog.<AIRuleCatalog>listAll()
             .stream()
             .filter(r -> r.active)
-            .sorted(Comparator.comparingInt(r -> r.priority))
+            .sorted(Comparator.<AIRuleCatalog>comparingInt(r -> r.priority)
+                              .thenComparing(r -> r.ruleId))
             .map(r -> new RuleView(r.ruleId, r.displayName, r.description,
                                    r.severity, r.resolutionType, r.priority, r.active))
             .toList();
