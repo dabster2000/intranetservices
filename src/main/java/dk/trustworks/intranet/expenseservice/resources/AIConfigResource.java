@@ -3,14 +3,21 @@ package dk.trustworks.intranet.expenseservice.resources;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.expenseservice.dto.AIConfigHistoryEntryDTO;
+import dk.trustworks.intranet.expenseservice.dto.AIDryRunResultDTO;
 import dk.trustworks.intranet.expenseservice.dto.AIParameterDTO;
 import dk.trustworks.intranet.expenseservice.dto.AIPromptTemplateDTO;
 import dk.trustworks.intranet.expenseservice.dto.AIRuleDTO;
+import dk.trustworks.intranet.expenseservice.dto.AIRuleVerdictDTO;
+import dk.trustworks.intranet.expenseservice.events.ExpenseCreatedConsumer;
 import dk.trustworks.intranet.expenseservice.model.AIConfigHistory;
 import dk.trustworks.intranet.expenseservice.model.AIPromptTemplate;
 import dk.trustworks.intranet.expenseservice.model.AIRuleCatalog;
 import dk.trustworks.intranet.expenseservice.model.AIValidationParameter;
+import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.AIConfigService;
+import dk.trustworks.intranet.expenseservice.services.AIConfigSnapshot;
+import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseReviewRoutingService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
@@ -33,6 +40,9 @@ public class AIConfigResource {
 
     @Inject AIConfigService svc;
     @Inject RequestHeaderHolder header;
+    @Inject ExpenseCreatedConsumer consumer;
+    @Inject AIConfigSnapshot snapshot;
+    @Inject ExpenseReviewRoutingService router;
 
     @GET
     @Path("/rules")
@@ -152,5 +162,39 @@ public class AIConfigResource {
         return new AIRuleDTO(r.ruleId, r.displayName, r.description, r.severity,
             r.resolutionType, r.priority, r.active,
             r.updatedAt.atOffset(ZoneOffset.UTC), r.updatedBy);
+    }
+
+    public record DryRunBody(@jakarta.validation.constraints.NotBlank String expenseUuid) {}
+
+    @POST
+    @Path("/dry-run")
+    public AIDryRunResultDTO dryRun(@Valid DryRunBody body) {
+        Expense e = Expense.findById(body.expenseUuid());
+        if (e == null) throw new NotFoundException("expense not found");
+
+        ExpenseAIValidationService.AIResult result = consumer.validateExpense(e);
+        java.util.List<String> firedRuleIds = result.ruleIds() != null
+            ? result.ruleIds()
+            : java.util.List.of();
+
+        java.util.List<AIRuleVerdictDTO> verdicts = snapshot.getRulesByPriority().stream()
+            .map(r -> new AIRuleVerdictDTO(
+                r.ruleId(), r.severity(), r.resolutionType(),
+                firedRuleIds.contains(r.ruleId()),
+                "" // explanation: kept empty in v1
+            ))
+            .toList();
+
+        String routing;
+        if (result.approved()) {
+            routing = "APPROVED";
+        } else {
+            var decision = router.route(firedRuleIds, e.getAiValidationCount());
+            routing = decision.reviewState();
+        }
+
+        // extractedReceiptText is intentionally null in v1 — we'd need a separate call to extract;
+        // v1 ships verdicts + routing only. Wire-through is a Phase 5 follow-up.
+        return new AIDryRunResultDTO(null, verdicts, result.approved(), routing);
     }
 }
