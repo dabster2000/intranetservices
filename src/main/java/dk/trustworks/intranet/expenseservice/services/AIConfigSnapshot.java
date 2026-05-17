@@ -63,6 +63,7 @@ public class AIConfigSnapshot {
 
     public List<RuleView> getRulesByPriority() { return state.get().rulesByPriority; }
     public RuleView       getRule(String ruleId) { return state.get().rulesById.get(ruleId); }
+    public Map<String, String> getParameters() { return state.get().parameters; }
     public String getResolutionType(String ruleId) {
         var r = getRule(ruleId);
         return r == null ? "NONE" : r.resolutionType();

@@ -17,6 +17,9 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @JBossLog
@@ -30,6 +33,7 @@ public class ExpenseAIValidationService {
     AIConfigSnapshot config;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Pattern PARAM_PLACEHOLDER = Pattern.compile("\\{\\{([a-z0-9_]+)\\}\\}");
 
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
@@ -50,12 +54,27 @@ public class ExpenseAIValidationService {
     String buildPolicyValidationPrompt() {
         String template = config.getPromptBody("POLICY_VALIDATION");
         if (template == null) template = "";
+        Map<String, String> params = config.getParameters();
         String rulesBlock = config.getRulesByPriority().stream()
                 .filter(r -> "REJECT".equals(r.severity()) || "OVERRIDE_APPROVE".equals(r.severity()))
                 .map(r -> "- %s (%s, prio=%d): %s".formatted(
-                        r.ruleId(), r.severity(), r.priority(), r.description()))
+                        r.ruleId(), r.severity(), r.priority(), substituteParameters(r.description(), params)))
                 .collect(Collectors.joining("\n"));
         return template.replace("{{RULES_BLOCK}}", rulesBlock);
+    }
+
+    static String substituteParameters(String description, Map<String, String> params) {
+        if (description == null || description.indexOf("{{") < 0) return description;
+        Matcher m = PARAM_PLACEHOLDER.matcher(description);
+        StringBuilder out = new StringBuilder(description.length() + 32);
+        while (m.find()) {
+            String value = params.get(m.group(1));
+            m.appendReplacement(out, value != null
+                    ? Matcher.quoteReplacement(value)
+                    : Matcher.quoteReplacement(m.group()));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     /** Returns the vision-extraction system prompt from the snapshot. */
@@ -777,4 +796,3 @@ public class ExpenseAIValidationService {
 
 
 }
-

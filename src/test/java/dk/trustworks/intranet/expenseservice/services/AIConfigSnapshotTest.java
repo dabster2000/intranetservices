@@ -18,6 +18,9 @@ class AIConfigSnapshotTest {
 
         assertEquals(125,  snapshot.getIntParameter("meal_cost_per_person_dkk", 0));
         assertEquals(3,    snapshot.getIntParameter("max_ai_revalidations",     0));
+        assertEquals("125", snapshot.getParameters().get("meal_cost_per_person_dkk"));
+        assertEquals("500", snapshot.getParameters().get("it_equipment_pre_approval_dkk"));
+        assertEquals("30",  snapshot.getParameters().get("date_mismatch_tolerance_days"));
         assertNotNull(snapshot.getPromptBody("VISION_EXTRACTION"));
     }
 
