@@ -1,20 +1,20 @@
 package dk.trustworks.intranet.exceptions;
 
-import jakarta.persistence.OptimisticLockException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.hibernate.StaleObjectStateException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
-class OptimisticLockExceptionMapperTest {
+class StaleObjectStateExceptionMapperTest {
 
     @Test
-    void maps_OptimisticLockException_to_409_with_friendly_message() {
-        OptimisticLockExceptionMapper mapper = new OptimisticLockExceptionMapper();
+    void maps_StaleObjectStateException_to_409_with_friendly_message() {
+        StaleObjectStateExceptionMapper mapper = new StaleObjectStateExceptionMapper();
 
-        Response response = mapper.toResponse(new OptimisticLockException("simulated stale write"));
+        Response response = mapper.toResponse(new StaleObjectStateException("Expense", "some-uuid"));
 
         assertEquals(409, response.getStatus());
         assertEquals(MediaType.APPLICATION_JSON_TYPE, response.getMediaType());

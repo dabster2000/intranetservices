@@ -13,11 +13,14 @@ import jakarta.ws.rs.ext.Provider;
 @Provider
 public class OptimisticLockExceptionMapper implements ExceptionMapper<OptimisticLockException> {
 
+    public static final String STALE_WRITE_MESSAGE =
+            "This expense was just updated by someone else. Please refresh and try again.";
+
     @Override
     public Response toResponse(OptimisticLockException exception) {
         return Response.status(Response.Status.CONFLICT)
                 .entity(new ErrorResponse(
-                        "This expense was just updated by someone else. Please refresh and try again.",
+                        STALE_WRITE_MESSAGE,
                         Response.Status.CONFLICT.getStatusCode()))
                 .type(MediaType.APPLICATION_JSON)
                 .build();

@@ -17,7 +17,7 @@ public class StaleObjectStateExceptionMapper implements ExceptionMapper<StaleObj
     public Response toResponse(StaleObjectStateException exception) {
         return Response.status(Response.Status.CONFLICT)
                 .entity(new ErrorResponse(
-                        "This expense was just updated by someone else. Please refresh and try again.",
+                        OptimisticLockExceptionMapper.STALE_WRITE_MESSAGE,
                         Response.Status.CONFLICT.getStatusCode()))
                 .type(MediaType.APPLICATION_JSON)
                 .build();
