@@ -96,6 +96,7 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "ai_rule_id")
     private String aiRuleId;
 
+    @JsonIgnore
     @Column(name = "ai_rule_ids_json", columnDefinition = "json")
     private String aiRuleIdsJson;
 
@@ -135,6 +136,27 @@ public class Expense extends PanacheEntityBase {
     @JsonProperty("isLocked")
     public boolean isLocked() {
         return datecreated.isBefore(LocalDate.now());
+    }
+
+    /**
+     * Expose ai_rule_ids_json (raw JSON column) as a typed string array on the wire.
+     * Frontend consumes {@code aiRuleIds: string[]} (see RejectionCard.tsx).
+     * Returns an empty list when the column is null/blank or contains malformed JSON,
+     * so a single bad legacy row cannot crash the API.
+     */
+    @Transient
+    @JsonProperty("aiRuleIds")
+    public java.util.List<String> getAiRuleIds() {
+        if (aiRuleIdsJson == null || aiRuleIdsJson.isBlank()) {
+            return java.util.Collections.emptyList();
+        }
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readerForListOf(String.class)
+                    .readValue(aiRuleIdsJson);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            return java.util.Collections.emptyList();
+        }
     }
 
     /**
