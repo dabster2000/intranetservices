@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.dto.KeyValueDTO;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseDecisionLogEntryDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseJustificationDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
@@ -14,6 +15,7 @@ import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
+import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -60,10 +62,41 @@ public class ExpenseResource {
     @Inject
     dk.trustworks.intranet.security.RequestHeaderHolder header;
 
+    @Inject
+    SecurityIdentity identity;
+
     @GET
     @Path("/{uuid}")
     public Expense findByUuid(@PathParam("uuid") String uuid) {
         return Expense.findById(uuid);
+    }
+
+    @GET
+    @Path("/{uuid}/decision-log")
+    @RolesAllowed({"expenses:read", "expenses:review"})
+    public java.util.List<ExpenseDecisionLogEntryDTO> decisionLog(@PathParam("uuid") String uuid) {
+        Expense e = Expense.findById(uuid);
+        if (e == null) throw new NotFoundException();
+
+        String caller = header.getUserUuid();
+        boolean isHR = identity.hasRole("expenses:review");
+        boolean isOwner = caller != null && caller.equals(e.getUseruuid());
+        if (!isHR && !isOwner) throw new ForbiddenException();
+
+        return logs.findByExpense(uuid).stream().map(l ->
+            new ExpenseDecisionLogEntryDTO(
+                l.uuid,
+                l.occurredAt != null ? l.occurredAt.atOffset(java.time.ZoneOffset.UTC) : null,
+                l.actorRole, l.actorUuid,
+                l.actorUuid != null ? lookupActorName(l.actorUuid) : null,
+                l.action, l.reasonText,
+                l.fromReviewState, l.toReviewState, l.aiRuleId)
+        ).toList();
+    }
+
+    private String lookupActorName(String actorUuid) {
+        User u = User.findById(actorUuid);
+        return u == null ? null : u.getFirstname() + " " + u.getLastname();
     }
 
     @GET
