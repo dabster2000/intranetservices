@@ -121,6 +121,14 @@ public class AIConfigResource {
             query.append(" and entityKey = :e");
             params.put("e", entityKey);
         }
+        if (from != null) {
+            query.append(" and changedAt >= :from");
+            params.put("from", java.time.LocalDate.parse(from).atStartOfDay());
+        }
+        if (to != null) {
+            query.append(" and changedAt < :toExclusive");
+            params.put("toExclusive", java.time.LocalDate.parse(to).plusDays(1).atStartOfDay());
+        }
         List<AIConfigHistory> rows = AIConfigHistory.<AIConfigHistory>find(
             query + " order by changedAt desc", params).list();
         return rows.stream().map(h -> {
