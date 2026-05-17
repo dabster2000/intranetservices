@@ -10,8 +10,6 @@ import dk.trustworks.intranet.apis.openai.OpenAIService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.expenseservice.model.Expense;
-import dk.trustworks.intranet.expenseservice.services.rules.RuleSeverity;
-import dk.trustworks.intranet.expenseservice.services.rules.ValidationRuleDefinition;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -19,6 +17,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @JBossLog
 @ApplicationScoped
@@ -27,215 +26,35 @@ public class ExpenseAIValidationService {
     @Inject
     OpenAIService openAIService;
 
+    @Inject
+    AIConfigSnapshot config;
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
 
-    private static final String VALIDATION_SYSTEM_PROMPT = """
-You are an expense policy validator for Trustworks.
-
-You always:
-- Analyze the extracted receipt description carefully (date, merchant, address, line items, taxes, number of guests, etc.).
-- Use the structured context (expense record, user data, budgets, leave data, company office/home addresses).
-- Apply the validation rules from the catalog strictly and deterministically.
-- Use web search when needed to verify store locations, distances, or venue types.
-
-Severity & decision logic:
-- Each rule has severity in {OVERRIDE_APPROVE, REJECT, WARNING, INFO}.
-- For every rule, decide if it is FAILED, PASSED, or NOT_APPLICABLE.
-- If ANY rule with severity=OVERRIDE_APPROVE has decision=FAILED, the final decision MUST be approved,
-  even if REJECT rules also FAILED.
-- Otherwise, if ANY rule with severity=REJECT has decision=FAILED, the final decision MUST be rejected.
-- Otherwise, the receipt is approved. WARNING and INFO rules never change the approval.
-
-Return ONLY a single JSON object (no markdown, no comments, no code fences) with this shape:
-
-{
-  "approved": boolean,
-  "final_severity": "OVERRIDE_APPROVE" | "REJECT" | "WARNING" | "INFO",
-  "final_rule_id": string | null,
-  "user_message": string,
-  "extracted": {
-    "date": string | null,           // YYYY-MM-DD or null if unreadable
-    "amountInclTax": number | null,  // grand total including tax
-    "issuerCompanyName": string | null,
-    "issuerAddress": string | null,
-    "expenseType": "food_drink" | "it_equipment" | "transportation" | "other"
-  },
-  "rules": [
-    {
-      "id": string,                  // must match one of the rule ids from the catalog
-      "severity": "OVERRIDE_APPROVE" | "REJECT" | "WARNING" | "INFO",
-      "decision": "FAILED" | "PASSED" | "NOT_APPLICABLE",
-      "user_message": string | null  // short explanation when FAILED, otherwise null
+    /**
+     * Returns the policy-validation system prompt with the rule catalog substituted in
+     * place of the {@code {{RULES_BLOCK}}} placeholder. Rules come from {@link AIConfigSnapshot},
+     * filtered to severities that drive the decision (REJECT, OVERRIDE_APPROVE), ordered by
+     * priority ascending and stable on ruleId.
+     */
+    String buildPolicyValidationPrompt() {
+        String template = config.getPromptBody("POLICY_VALIDATION");
+        if (template == null) template = "";
+        String rulesBlock = config.getRulesByPriority().stream()
+                .filter(r -> "REJECT".equals(r.severity()) || "OVERRIDE_APPROVE".equals(r.severity()))
+                .map(r -> "- %s (%s, prio=%d): %s".formatted(
+                        r.ruleId(), r.severity(), r.priority(), r.description()))
+                .collect(Collectors.joining("\n"));
+        return template.replace("{{RULES_BLOCK}}", rulesBlock);
     }
-  ]
-}
 
-Requirements:
-- 'user_message' must be 1–2 short sentences that explain the MAIN reason for approval or rejection,
-  and what the employee should do next (e.g. upload clearer photo, explain weekend expense, etc.).
-- The 'rules' array must contain one entry for EVERY rule in the catalog, reusing the exact id and severity.
-- When information is missing from the extracted description, set it to null in 'extracted' and use NOT_APPLICABLE
-  for rules that depend on that field.
-- Do not add extra top-level fields and do not wrap the JSON in backticks or markdown.
-""";
-
-
-    private static final List<ValidationRuleDefinition> VALIDATION_RULES = List.of(
-
-            // --- OVERRIDE (always approve) ---
-            new ValidationRuleDefinition(
-                    "R_OVERRIDE_WHITELIST_ADDRESS",
-                    "Food & drink at whitelisted addresses are always reimbursed",
-                    """
-                    If the receipt clearly shows a venue located on Nyropsgade or Landgreven
-                    in Copenhagen, mark this rule as FAILED (condition met). This OVERRIDE
-                    means the expense must be approved even if other rules fail.
-                    """,
-                    RuleSeverity.OVERRIDE_APPROVE,
-                    10
-            ),
-
-            // --- Hard rejections ---
-            new ValidationRuleDefinition(
-                    "R_RECEIPT_READABLE",
-                    "Receipt image must be readable",
-                    """
-                    If the receipt image is so blurry, cropped, dark, or low resolution that
-                    you cannot confidently read at least the date and total amount, mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    10
-            ),
-            new ValidationRuleDefinition(
-                    "R_OFFICE_FOOD_DRINK",
-                    "Food/drink near the office is not reimbursable",
-                    """
-                    If the expense is primarily food or drink and the merchant/address appears
-                    to be within roughly 1 km of the office address
-                    "Pustervig 3, 1126 København K" (use web_search if helpful),
-                    mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    20
-            ),
-            new ValidationRuleDefinition(
-                    "R_MEAL_COST_PER_PERSON",
-                    "Meal cost per person must be <= 125 DKK",
-                    """
-                    If the expense is food or drink, estimate the number of people from the
-                    receipt and/or description (e.g. line items, 'for 2', etc.). If the
-                    total including tax divided by number of people is clearly above
-                    125 DKK per person, mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    30
-            ),
-            new ValidationRuleDefinition(
-                    "R_TRANSPORTATION_ELIGIBLE",
-                    "Transportation requires client budget",
-                    """
-                    If the expense is transportation (taxi, train, etc.), mark this rule as
-                    FAILED when there is no client budget for the day (0 budgetsForDay) OR
-                    when the trip clearly happens outside normal work hours (approx. 08–17)
-                    based on context and description.
-                    """,
-                    RuleSeverity.REJECT,
-                    40
-            ),
-            new ValidationRuleDefinition(
-                    "R_WEEKEND_FOOD_DRINK",
-                    "Weekend food/drink is not reimbursable",
-                    """
-                    If the expense is food or drink and the expense date (contextDate) falls
-                    on Saturday or Sunday, mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    50
-            ),
-            new ValidationRuleDefinition(
-                    "R_LEAVE_CONFLICT",
-                    "Expenses during leave are not reimbursable",
-                    """
-                    If any leave/absence hours (vacation, sick, paid leave, unpaid leave,
-                    maternity leave) are > 0 on contextDate AND the expense is food/drink
-                    or transportation, mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    60
-            ),
-            new ValidationRuleDefinition(
-                    "R_IT_EQUIPMENT_LIMIT",
-                    "IT equipment over 500 DKK requires pre‑approval",
-                    """
-                    If the expense is IT equipment and the total including tax is clearly
-                    above 500 DKK, mark this rule as FAILED and explain that pre‑approval
-                    from admin is required.
-                    """,
-                    RuleSeverity.REJECT,
-                    70
-            ),
-            new ValidationRuleDefinition(
-                    "R_DATE_MISMATCH",
-                    "Receipt date must match expensedate within 30 days",
-                    """
-                    Compare the receipt date from the image with the expensedate field in the
-                    expense record. If they differ by more than 30 days in absolute value,
-                    mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    80
-            ),
-            new ValidationRuleDefinition(
-                    "R_ENTERTAINMENT_VENUE",
-                    "Entertainment venues are not reimbursable",
-                    """
-                    Use merchant name and (if needed) web_search to check if the venue is a
-                    bar, nightclub, casino, or similar entertainment venue. If so, mark this
-                    rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    90
-            ),
-            new ValidationRuleDefinition(
-                    "R_MULTI_PERSON_MEAL",
-                    "Multi‑person meals are not reimbursable",
-                    """
-                    If the receipt clearly shows that the food/drink is for multiple people
-                    (multiple full meals, wording like 'for 2', 'group dinner', etc.) and
-                    company policy is 'individual meals only', mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    100
-            ),
-            new ValidationRuleDefinition(
-                    "R_SOFTWARE_LICENSE",
-                    "Software subscriptions must go via IT procurement",
-                    """
-                    If the purchase is clearly a software license or subscription (keywords
-                    such as 'license', 'subscription', 'SaaS', or typical vendors like Adobe,
-                    Microsoft, OpenAI, Anthropic, etc.), mark this rule as FAILED and explain
-                    that software purchases must go via IT procurement.
-                    """,
-                    RuleSeverity.REJECT,
-                    110
-            ),
-            new ValidationRuleDefinition(
-                    "R_HOME_PROXIMITY",
-                    "Purchases near home are treated as private",
-                    """
-                    If the merchant/address appears to be within roughly 1 km of the
-                    employee's home address (use web_search if helpful), and there is no clear
-                    work‑related justification, mark this rule as FAILED.
-                    """,
-                    RuleSeverity.REJECT,
-                    120
-            )
-
-            // You can add WARNING/INFO rules later if needed
-    );
+    /** Returns the vision-extraction system prompt from the snapshot. */
+    String buildVisionExtractionPrompt() {
+        return config.getPromptBody("VISION_EXTRACTION");
+    }
 
 
     /**
@@ -255,56 +74,8 @@ Requirements:
                 return "Receipt image not provided or empty.";
             }
 
-            // System prompt for comprehensive unstructured extraction
-            String system = """
-                You are a receipt analysis assistant for expense validation.
-
-                Analyze the attached receipt image and provide a COMPREHENSIVE description of everything visible.
-                Extract ALL details that could be relevant for expense validation.
-                Do NOT include information about layout, graphics, colors, fonts.
-
-                Include the following information (if visible):
-
-                **Basic Information:**
-                - Receipt date (exact format as shown)
-                - Store/merchant name
-                - Store address (complete, as written)
-                - Receipt number / transaction ID
-
-                **Financial Details:**
-                - Subtotal amount
-                - Tax/VAT amount and percentage
-                - Total amount (grand total including all taxes)
-                - Currency
-                - Payment method (cash, card, etc.)
-
-                **Line Items (if visible):**
-                - List all purchased items with quantities and prices
-                - Item descriptions
-                - Any discount items or promotions
-
-                **Context Indicators:**
-                - Number of guests / people (if indicated by items, quantities, or text like "for 2")
-                - Time of purchase (if shown)
-                - Any notes about the nature of purchase (business meeting, group meal, etc.)
-
-                **Quality Assessment:**
-                - Is the receipt readable and clear?
-                - Are any parts blurry, cropped, or illegible?
-                - Overall image quality
-
-                **Suspicious Elements (if any):**
-                - Altered or edited sections
-                - Missing information that should be present
-                - Unusual formatting or inconsistencies
-
-                **Store Type Classification:**
-                - Type of establishment (restaurant, cafe, electronics store, taxi service, etc.)
-                - Expense category: food_drink, it_equipment, transportation, or other
-
-                Provide the description as natural text with clear sections. Be thorough and objective.
-                Do not make assumptions - only describe what is actually visible in the image.
-                """;
+            // System prompt for comprehensive unstructured extraction (loaded from AIConfigSnapshot)
+            String system = buildVisionExtractionPrompt();
 
             String userInstruction = "Analyze this receipt image and provide a comprehensive description of all visible details.";
 
@@ -549,7 +320,9 @@ Requirements:
             String contextText = buildValidationContext(expense, user, contact, bi,
                     budgetsForDay, contextDate, officeAddress, homeAddress);
 
-            String rulesText = buildRuleCatalogText();
+            // System prompt now carries the full rule catalog (sourced from AIConfigSnapshot);
+            // the user prompt only carries the receipt + structured context.
+            String systemPrompt = buildPolicyValidationPrompt();
 
             StringBuilder userPrompt = new StringBuilder();
             userPrompt.append("""
@@ -568,12 +341,12 @@ Requirements:
                 - Use web search if needed to verify store locations, distances, or venue types.
 
                 """);
-            userPrompt.append(contextText).append("\n\n").append(rulesText)
+            userPrompt.append(contextText)
                     .append("\nNow evaluate all rules and return the JSON result.");
 
             // Use new text-only method with web search and JSON schema
             String aiResponse = openAIService.askWithSchemaAndWebSearch(
-                    VALIDATION_SYSTEM_PROMPT,
+                    systemPrompt,
                     userPrompt.toString(),
                     buildUnifiedValidationJsonSchema(),
                     "ExpenseValidationResult",
@@ -778,25 +551,6 @@ Requirements:
     }
 
 
-
-    private String buildRuleCatalogText() {
-        StringBuilder sb = new StringBuilder("Validation rule catalog:\n");
-        for (ValidationRuleDefinition rule : VALIDATION_RULES) {
-            sb.append("- id=").append(rule.id())
-                    .append(", severity=").append(rule.severity())
-                    .append(", priority=").append(rule.priority())
-                    .append("\n  ")
-                    .append(rule.description().trim())
-                    .append("\n\n");
-        }
-        sb.append("""
-Decision priority:
-- First, consider rules with severity=OVERRIDE_APPROVE in ascending priority.
-- Next, consider rules with severity=REJECT in ascending priority.
-- WARNING and INFO rules never change approval, but their user_message should still help the employee.
-""");
-        return sb.toString();
-    }
 
     private static ObjectNode buildUnifiedValidationJsonSchema() {
         ObjectNode schema = MAPPER.createObjectNode();
