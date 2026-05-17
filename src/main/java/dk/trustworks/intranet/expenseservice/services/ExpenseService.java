@@ -55,6 +55,9 @@ public class ExpenseService {
     EventBus eventBus;
 
     @Inject
+    ExpenseDecisionLogService logs;
+
+    @Inject
     ExpenseCreatedConsumer expenseCreatedConsumer;
 
     public List<Expense> findByUser(String useruuid) {
@@ -432,6 +435,40 @@ public class ExpenseService {
         }
 
         return validationResult.reason();
+    }
+
+    /**
+     * Edit-triggered AI re-validation: if an expense is currently in a review state
+     * waiting on the employee, an edit clears the review flags, logs the edit,
+     * and re-fires the AI validation pipeline.
+     *
+     * <p>Idempotent / safe to call after every PUT — early-returns for non-review states.
+     *
+     * <p>Notes:
+     * <ul>
+     *   <li>aiValidationCount is NOT bumped here; the consumer's persistValidationResult
+     *       increments it when AI completes.</li>
+     *   <li>aiRuleId / aiRuleIdsJson are preserved so the UI can show "previously rejected
+     *       by R_X" while waiting on the re-validation. The consumer overwrites them on the
+     *       next run.</li>
+     * </ul>
+     */
+    @Transactional
+    public void maybeReopenForRevalidation(String uuid, String actorUuid) {
+        Expense e = Expense.findById(uuid);
+        if (e == null) return;
+        String state = e.getReviewState();
+        if (state == null
+            || !java.util.List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION", "HR_SENT_BACK").contains(state)) {
+            return;
+        }
+        // Log the edit BEFORE mutating so fromReviewState captures the original value
+        logs.recordEmployeeEdit(e, actorUuid);
+        e.setReviewState(null);
+        e.setAiValidationApproved(null);
+        e.setAiValidationReason(null);
+        e.setDatemodified(java.time.LocalDate.now());
+        eventBus.publish("expense.validate", uuid);
     }
 }
 

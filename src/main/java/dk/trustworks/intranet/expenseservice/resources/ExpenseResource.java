@@ -272,6 +272,11 @@ public class ExpenseResource {
         params.add(uuid);
 
         Expense.update(updateQuery.toString(), params.toArray());
+
+        // If the row is sitting in a review state waiting on the employee, this edit
+        // counts as a fix attempt: clear the review flags, log the edit, and re-fire
+        // AI validation. No-op for any other review_state.
+        expenseService.maybeReopenForRevalidation(uuid, header.getUserUuid());
     }
 
     @DELETE
