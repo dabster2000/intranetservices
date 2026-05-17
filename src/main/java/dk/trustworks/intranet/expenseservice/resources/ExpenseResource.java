@@ -4,9 +4,11 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.dto.KeyValueDTO;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseJustificationDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import dk.trustworks.intranet.expenseservice.services.EconomicsService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.model.Company;
@@ -51,6 +53,12 @@ public class ExpenseResource {
 
     @Inject
     EconomicsService economicsService;
+
+    @Inject
+    ExpenseDecisionLogService logs;
+
+    @Inject
+    dk.trustworks.intranet.security.RequestHeaderHolder header;
 
     @GET
     @Path("/{uuid}")
@@ -187,6 +195,31 @@ public class ExpenseResource {
         log.info("expense = " + expense);
         expenseService.processExpense(expense);
         return Response.status(Response.Status.CREATED).entity(expense).build();
+    }
+
+    @POST
+    @Path("/{uuid}/justification")
+    @RolesAllowed({"expenses:write"})
+    @Transactional
+    public Response submitJustification(@PathParam("uuid") String uuid,
+                                        @Valid ExpenseJustificationDTO body) {
+        Expense e = Expense.findById(uuid);
+        if (e == null) throw new NotFoundException();
+
+        String caller = header.getUserUuid();
+        if (caller == null || !caller.equals(e.getUseruuid()))
+            throw new ForbiddenException("not the expense owner");
+
+        if (!List.of("NEEDS_JUSTIFICATION", "HR_SENT_BACK").contains(e.getReviewState()))
+            throw new BadRequestException("justification requires NEEDS_JUSTIFICATION or HR_SENT_BACK");
+
+        // Log BEFORE mutating so fromReviewState is captured correctly
+        logs.recordEmployeeJustification(e, caller, body.justification());
+
+        e.setEmployeeJustification(body.justification());
+        e.setReviewState("PENDING_HR");
+        e.setDatemodified(java.time.LocalDate.now());
+        return Response.noContent().build();
     }
 
     @PUT
