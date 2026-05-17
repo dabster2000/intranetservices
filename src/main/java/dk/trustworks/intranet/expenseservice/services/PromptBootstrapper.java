@@ -134,6 +134,8 @@ public class PromptBootstrapper {
             - 'user_message' must be 1–2 short sentences that explain the MAIN reason for approval or rejection,
               and what the employee should do next (e.g. upload clearer photo, explain weekend expense, etc.).
             - The 'rules' array must contain one entry for EVERY rule in the catalog, reusing the exact id and severity.
+              Every REJECT or OVERRIDE_APPROVE rule that actually fired (decision=FAILED) MUST be listed accurately,
+              because downstream routing depends on those IDs to decide review state.
             - When information is missing from the extracted description, set it to null in 'extracted' and use NOT_APPLICABLE
               for rules that depend on that field.
             - Do not add extra top-level fields and do not wrap the JSON in backticks or markdown.

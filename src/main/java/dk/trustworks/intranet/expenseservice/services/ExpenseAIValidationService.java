@@ -33,6 +33,13 @@ public class ExpenseAIValidationService {
 
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
+    /**
+     * Richer result returned by {@link #validateWithExtractedText} so the
+     * consumer can route AI-rejected expenses into the correct review state
+     * based on which rule(s) fired. {@link ValidationDecision} is preserved for
+     * legacy callers (e.g. {@code validateWithContext}, {@code ExpenseService.validateExpenseReceipt}).
+     */
+    public record AIResult(boolean approved, String reason, java.util.List<String> ruleIds) {}
 
     /**
      * Returns the policy-validation system prompt with the rule catalog substituted in
@@ -295,14 +302,14 @@ public class ExpenseAIValidationService {
      * @param contact User contact information (home address for proximity checks)
      * @param bi Business intelligence data for the expense date
      * @param budgetsForDay Client budgets for the expense date
-     * @return ValidationDecision with approval status and reason
+     * @return AIResult with approval status, reason, and IDs of every REJECT/OVERRIDE_APPROVE rule that fired
      */
-    public ValidationDecision validateWithExtractedText(String extractedReceiptText,
-                                                        Expense expense,
-                                                        User user,
-                                                        UserContactinfo contact,
-                                                        BiDataPerDay bi,
-                                                        List<EmployeeBudgetPerDayAggregate> budgetsForDay) {
+    public AIResult validateWithExtractedText(String extractedReceiptText,
+                                              Expense expense,
+                                              User user,
+                                              UserContactinfo contact,
+                                              BiDataPerDay bi,
+                                              List<EmployeeBudgetPerDayAggregate> budgetsForDay) {
         try {
             int textLen = extractedReceiptText == null ? 0 : extractedReceiptText.length();
             log.infof("[AI-Validate] Start (text-based validation). expenseUuid=%s, useruuid=%s, textLen=%d",
@@ -310,7 +317,7 @@ public class ExpenseAIValidationService {
 
             if (extractedReceiptText == null || extractedReceiptText.isBlank()) {
                 log.warn("[AI-Validate] No extracted text provided");
-                return new ValidationDecision(false, "Validation error: No receipt description available");
+                return new AIResult(false, "Validation error: No receipt description available", java.util.List.of());
             }
 
             LocalDate contextDate = deriveContextDate(expense);
@@ -360,7 +367,7 @@ public class ExpenseAIValidationService {
 
             if (resp.isEmpty() || resp.startsWith("Validation error:")) {
                 log.warnf("[AI-Validate] Invalid or empty AI response: %s", respPreview);
-                return new ValidationDecision(false, "AI validation error: invalid OpenAI response");
+                return new AIResult(false, "AI validation error: invalid OpenAI response", java.util.List.of());
             }
 
             JsonNode root = safeParseJson(aiResponse);
@@ -383,25 +390,51 @@ public class ExpenseAIValidationService {
                         extracted.path("expenseType").isNull() ? "null" : extracted.path("expenseType").asText());
             }
 
-            // Optional: log rule decisions
+            // Collect rule IDs that fired (REJECT or OVERRIDE_APPROVE with decision=FAILED).
+            // These drive the routing decision in the consumer. We accept either:
+            //   - top-level "ruleIds": ["R_FOO", ...] (explicit field)
+            //   - "rules": [{id, severity, decision}] (existing schema — derive failed REJECT/OVERRIDE_APPROVE)
+            java.util.List<String> firedRuleIds = new java.util.ArrayList<>();
+            JsonNode explicitRuleIds = root.path("ruleIds");
+            if (explicitRuleIds.isArray()) {
+                explicitRuleIds.forEach(n -> {
+                    if (n != null && !n.isNull()) firedRuleIds.add(n.asText());
+                });
+            }
             JsonNode rulesNode = root.path("rules");
             if (rulesNode.isArray()) {
                 for (JsonNode r : rulesNode) {
+                    String id       = r.path("id").asText(null);
+                    String severity = r.path("severity").asText("");
+                    String decision = r.path("decision").asText("");
                     log.infof("[AI-Validate] Rule %s severity=%s decision=%s msg=%s",
-                            r.path("id").asText(),
-                            r.path("severity").asText(),
-                            r.path("decision").asText(),
+                            id,
+                            severity,
+                            decision,
                             r.path("user_message").asText());
+                    if (id != null
+                            && "FAILED".equals(decision)
+                            && ("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))
+                            && !firedRuleIds.contains(id)) {
+                        firedRuleIds.add(id);
+                    }
                 }
             }
+            // Defensive: include final_rule_id if it isn't already in the list.
+            String finalRuleId = root.path("final_rule_id").isNull()
+                    ? null
+                    : root.path("final_rule_id").asText(null);
+            if (finalRuleId != null && !finalRuleId.isBlank() && !firedRuleIds.contains(finalRuleId)) {
+                firedRuleIds.add(finalRuleId);
+            }
 
-            log.infof("[AI-Validate] Final decision -> approved=%s, userMessage=%s",
-                    approved, userMessage);
-            return new ValidationDecision(approved, userMessage);
+            log.infof("[AI-Validate] Final decision -> approved=%s, userMessage=%s, firedRuleIds=%s",
+                    approved, userMessage, firedRuleIds);
+            return new AIResult(approved, userMessage, java.util.List.copyOf(firedRuleIds));
 
         } catch (Exception e) {
             log.error("Failed to validate expense via OpenAI (text-based validation with web search)", e);
-            return new ValidationDecision(false, "AI validation error: " + e.getMessage());
+            return new AIResult(false, "AI validation error: " + e.getMessage(), java.util.List.of());
         }
     }
 

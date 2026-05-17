@@ -7,7 +7,9 @@ import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseReviewRoutingService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.vertx.ConsumeEvent;
@@ -18,6 +20,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @JBossLog
 @ApplicationScoped
@@ -32,11 +35,20 @@ public class ExpenseCreatedConsumer {
     @Inject
     ExpenseAIValidationService aiValidationService;
 
+    @Inject
+    ExpenseReviewRoutingService router;
+
+    @Inject
+    ExpenseDecisionLogService decisionLogs;
+
     @Scheduled(every = "50m")
     public void expenseSyncJob() {
         // Eager loading to avoid ResultSet timeout during long-running OpenAI processing
-        // Only process expenses that haven't been validated yet (aiValidationApproved = null)
-        List<String> expenseUuids = Expense.find("status = ?1 AND aiValidationApproved IS NULL", ExpenseService.STATUS_CREATED)
+        // Only process expenses that haven't been validated yet (aiValidationApproved IS NULL)
+        // AND that have not already been routed into a review state.
+        List<String> expenseUuids = Expense
+                .find("status = ?1 AND aiValidationApproved IS NULL AND reviewState IS NULL",
+                        ExpenseService.STATUS_CREATED)
                 .stream()
                 .map(e -> ((Expense) e).getUuid())
                 .toList();
@@ -60,15 +72,23 @@ public class ExpenseCreatedConsumer {
             return;  // Actually skip validation when status is not CREATED
         }
 
+        // Idempotency guard: if the expense is already routed into a review state,
+        // do not re-validate. Manual re-validation goes through the edit endpoint.
+        if (expense.getReviewState() != null) {
+            log.infof("Skipping validation for uuid=%s — already in reviewState=%s",
+                    expenseUuid, expense.getReviewState());
+            return;
+        }
+
         // Validate expense with OpenAI (30+ seconds, no transaction held)
-        ExpenseAIValidationService.ValidationDecision decision = validateExpense(expense);
+        ExpenseAIValidationService.AIResult result = validateExpense(expense);
 
         // Persist validation results in separate transaction (fast writes only)
-        persistValidationResult(expense, decision);
+        persistValidationResult(expense, result);
     }
 
     @Transactional
-    void persistValidationResult(Expense expense, ExpenseAIValidationService.ValidationDecision decision) {
+    void persistValidationResult(Expense expense, ExpenseAIValidationService.AIResult result) {
         // Reload expense to ensure fresh entity in transaction context
         Expense managedExpense = Expense.findById(expense.getUuid());
         if (managedExpense == null) {
@@ -76,34 +96,62 @@ public class ExpenseCreatedConsumer {
             return;
         }
 
-        // Skip database update for API/processing errors - allow retry by scheduled job
-        // Detect both "AI validation error:" and "Validation error:" prefixes
-        if (!decision.approved() &&
-            (decision.reason().startsWith("AI validation error:") ||
-             decision.reason().startsWith("Validation error:"))) {
-            log.warnf("Skipping expense %s - Temporary error: %s (will retry later)",
-                      expense.getUuid(), decision.reason());
-            return;  // Early exit - aiValidationApproved stays NULL for retry
+        // Skip database update for API/processing errors — leave aiValidationApproved NULL so the
+        // scheduled sweep retries. Detect both "AI validation error:" and "Validation error:" prefixes.
+        if (!result.approved() && result.reason() != null &&
+                (result.reason().startsWith("AI validation error:") ||
+                 result.reason().startsWith("Validation error:"))) {
+            log.warnf("Skipping expense %s — transient error: %s (will retry later)",
+                    expense.getUuid(), result.reason());
+            return;  // Early exit — aiValidationApproved stays NULL for retry
         }
 
         // Store AI validation result in database (only for legitimate decisions)
-        managedExpense.setAiValidationApproved(decision.approved());
-        managedExpense.setAiValidationReason(decision.reason());
+        managedExpense.setAiValidationApproved(result.approved());
+        managedExpense.setAiValidationReason(result.reason());
+        managedExpense.setAiValidationCount(managedExpense.getAiValidationCount() + 1);
 
-        // Update status based on validation decision (in same transaction)
-        if (decision.approved()) {
+        if (result.approved()) {
+            // Approved → move to VALIDATED, clear any prior review state.
             managedExpense.setStatus(ExpenseService.STATUS_VALIDATED);
-            log.infof("Expense %s APPROVED by AI. Reason: %s", expense.getUuid(), decision.reason());
+            managedExpense.setReviewState(null);
+            decisionLogs.recordAIApproval(managedExpense);
+            log.infof("Expense %s APPROVED by AI. Reason: %s", expense.getUuid(), result.reason());
         } else {
+            // Rejected → stays in CREATED status; routed into a review state instead.
             managedExpense.setStatus(ExpenseService.STATUS_CREATED);
-            log.infof("Expense %s REJECTED by AI. Reason: %s", expense.getUuid(), decision.reason());
+
+            List<String> firedRuleIds = result.ruleIds() != null ? result.ruleIds() : List.of();
+            ExpenseReviewRoutingService.Decision decision =
+                    router.route(firedRuleIds, managedExpense.getAiValidationCount());
+            managedExpense.setReviewState(decision.reviewState());
+            managedExpense.setAiRuleId(decision.primaryRuleId());
+            managedExpense.setAiRuleIdsJson(serializeRuleIds(firedRuleIds));
+            decisionLogs.recordAIRejection(managedExpense,
+                    decision.reviewState(), decision.primaryRuleId(), result.reason());
+            log.infof("Expense %s ROUTED to review state %s (rule=%s). Reason: %s",
+                    expense.getUuid(), decision.reviewState(), decision.primaryRuleId(), result.reason());
         }
 
-        // Persist all changes atomically (validation fields + status)
+        // Persist all changes atomically (validation fields + status + review state)
         managedExpense.persist();
     }
 
-    public ExpenseAIValidationService.ValidationDecision validateExpense(Expense expense) {
+    /**
+     * Serialize a list of rule IDs to a JSON array literal. The column
+     * {@code expenses.ai_rule_ids_json} is typed {@code json}; null/empty lists
+     * become {@code "[]"} so the column always contains valid JSON.
+     */
+    private String serializeRuleIds(List<String> ruleIds) {
+        if (ruleIds == null || ruleIds.isEmpty()) {
+            return "[]";
+        }
+        return ruleIds.stream()
+                .map(r -> "\"" + r.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+                .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    public ExpenseAIValidationService.AIResult validateExpense(Expense expense) {
         try {
             // 1) Fetch attachment (receipt image)
             ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
@@ -132,22 +180,22 @@ public class ExpenseCreatedConsumer {
             }
 
             // 6) Validate expense using extracted text description (not image)
-
             return aiValidationService.validateWithExtractedText(
-                    extractedText,  // NEW: pass extracted text instead of image
+                    extractedText,
                     expense,
                     user,
                     contact,
                     bi,
                     budgets
-            );  // Return the actual decision object
+            );
 
         } catch (Exception e) {
             log.error("Error processing expense created event for uuid=" + expense.getUuid(), e);
             // Return a rejection decision on error instead of null (prevents NPE)
-            return new ExpenseAIValidationService.ValidationDecision(
-                false,
-                "Validation error: " + e.getMessage()
+            return new ExpenseAIValidationService.AIResult(
+                    false,
+                    "Validation error: " + e.getMessage(),
+                    List.of()
             );
         }
     }

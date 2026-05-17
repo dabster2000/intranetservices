@@ -423,15 +423,15 @@ public class ExpenseService {
             return "Expense not found";
         }
 
-        ExpenseAIValidationService.ValidationDecision validationDecision = expenseCreatedConsumer.validateExpense(expense);
+        ExpenseAIValidationService.AIResult validationResult = expenseCreatedConsumer.validateExpense(expense);
 
         // Check for null (happens when OpenAI API fails with HTTP 400/500 or other errors)
-        if (validationDecision == null) {
+        if (validationResult == null) {
             log.warnf("Validation returned null for expense %s - OpenAI API may have failed", expenseUuid);
             return "Validation error: Unable to process receipt. Please try again or contact support.";
         }
 
-        return validationDecision.reason();
+        return validationResult.reason();
     }
 }
 
