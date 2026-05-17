@@ -1,10 +1,15 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewListItemDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.services.AIConfigSnapshot;
 import io.quarkus.panache.common.Sort;
 import jakarta.annotation.security.RolesAllowed;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
@@ -21,6 +26,24 @@ import java.util.List;
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class ExpenseReviewResource {
+
+    private static final ObjectReader AI_PRESET_REASONS_READER =
+            new ObjectMapper().readerForListOf(String.class);
+
+    @Inject
+    AIConfigSnapshot aiConfigSnapshot;
+
+    @GET
+    @Path("/preset-reasons")
+    @RolesAllowed({"expenses:review"})
+    public List<String> presetReasons() {
+        String raw = aiConfigSnapshot.getParameter("hr_approve_reason_presets", "[]");
+        try {
+            return AI_PRESET_REASONS_READER.readValue(raw);
+        } catch (JsonProcessingException ex) {
+            return List.of();
+        }
+    }
 
     @GET
     @RolesAllowed({"expenses:review"})
