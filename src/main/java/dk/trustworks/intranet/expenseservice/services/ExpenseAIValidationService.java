@@ -33,6 +33,9 @@ public class ExpenseAIValidationService {
     @Inject
     AIConfigSnapshot config;
 
+    @Inject
+    MerchantAllowListService merchantAllowList;
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Pattern PARAM_PLACEHOLDER = Pattern.compile("\\{\\{([a-z0-9_]+)\\}\\}");
 
@@ -441,6 +444,16 @@ public class ExpenseAIValidationService {
                             severity,
                             decision,
                             r.path("user_message").asText());
+                    // Merchant allow-list bypass: if the AI fired a R_MERCHANT_ALLOW_* rule
+                    // but the merchant is in the allow-list for that rule, suppress the verdict.
+                    if (id != null
+                            && id.startsWith("R_MERCHANT_ALLOW_")
+                            && "FAILED".equals(decision)
+                            && isAllowListed(id, extractedMerchant)) {
+                        log.infof("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
+                                id, extractedMerchant);
+                        continue;
+                    }
                     if (id != null
                             && "FAILED".equals(decision)
                             && ("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))
@@ -772,6 +785,20 @@ public class ExpenseAIValidationService {
         required.add("rules");
 
         return schema;
+    }
+
+    /**
+     * Returns true if the given merchant matches any active allow-list entry
+     * for the given rule. Used by the merchant allow-list bypass — when a
+     * R_MERCHANT_ALLOW_* rule's verdict identifies a known-allowed merchant,
+     * the verdict is downgraded to "approved" before being persisted.
+     *
+     * @param ruleId   the rule ID being evaluated (typically a R_MERCHANT_ALLOW_* rule)
+     * @param merchant the AI-extracted merchant name from the receipt
+     * @return true if the merchant is allow-listed for this rule
+     */
+    public boolean isAllowListed(String ruleId, String merchant) {
+        return merchantAllowList.matches(ruleId, merchant);
     }
 
     /**
