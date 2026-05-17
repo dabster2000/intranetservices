@@ -4,6 +4,7 @@ import dk.trustworks.intranet.expenseservice.model.AIPromptTemplate;
 import dk.trustworks.intranet.expenseservice.model.AIRuleCatalog;
 import dk.trustworks.intranet.expenseservice.model.AIValidationParameter;
 import io.quarkus.runtime.Startup;
+import io.quarkus.vertx.ConsumeEvent;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
@@ -79,4 +80,7 @@ public class AIConfigSnapshot {
         try { return new java.math.BigDecimal(getParameter(key, fallback.toPlainString())); }
         catch (NumberFormatException e) { return fallback; }
     }
+
+    @ConsumeEvent("ai-config.refresh")
+    public void onRefreshEvent(String ignored) { reload(); }
 }
