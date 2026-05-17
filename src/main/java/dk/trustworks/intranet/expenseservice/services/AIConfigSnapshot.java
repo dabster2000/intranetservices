@@ -81,6 +81,6 @@ public class AIConfigSnapshot {
         catch (NumberFormatException e) { return fallback; }
     }
 
-    @ConsumeEvent("ai-config.refresh")
+    @ConsumeEvent(value = "ai-config.refresh", blocking = true)
     public void onRefreshEvent(String ignored) { reload(); }
 }
