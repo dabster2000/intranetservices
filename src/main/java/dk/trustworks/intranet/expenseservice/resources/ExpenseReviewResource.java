@@ -15,7 +15,6 @@ import jakarta.ws.rs.core.MediaType;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
-import java.util.Arrays;
 import java.util.List;
 
 @Path("/expenses/review")
@@ -59,13 +58,9 @@ public class ExpenseReviewResource {
         String name = u != null ? (u.getFirstname() + " " + u.getLastname()) : null;
         // photoUrl is fetched separately by the frontend via /files/photo/{useruuid}; leave null here
         String photo = null;
-        List<String> ruleIds = e.getAiRuleIdsJson() == null
-                ? List.of()
-                : Arrays.stream(e.getAiRuleIdsJson().replace("[", "").replace("]", "").replace("\"", "").split(","))
-                        .map(String::trim).filter(s -> !s.isEmpty()).toList();
         LocalDate base = e.getDatemodified() != null ? e.getDatemodified() : e.getDatecreated();
         int days = base != null ? (int) ChronoUnit.DAYS.between(base, LocalDate.now()) : 0;
         return new ExpenseReviewListItemDTO(e, name, photo,
-                e.getEmployeeJustification(), e.getAiRuleId(), ruleIds, days);
+                e.getEmployeeJustification(), e.getAiRuleId(), e.getAiRuleIds(), days);
     }
 }

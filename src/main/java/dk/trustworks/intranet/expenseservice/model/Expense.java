@@ -2,6 +2,9 @@ package dk.trustworks.intranet.expenseservice.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
@@ -15,6 +18,8 @@ import lombok.ToString;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 
 @Data
@@ -138,24 +143,20 @@ public class Expense extends PanacheEntityBase {
         return datecreated.isBefore(LocalDate.now());
     }
 
-    /**
-     * Expose ai_rule_ids_json (raw JSON column) as a typed string array on the wire.
-     * Frontend consumes {@code aiRuleIds: string[]} (see RejectionCard.tsx).
-     * Returns an empty list when the column is null/blank or contains malformed JSON,
-     * so a single bad legacy row cannot crash the API.
-     */
+    private static final ObjectReader AI_RULE_IDS_READER =
+            new ObjectMapper().readerForListOf(String.class);
+
+    /** Empty list on malformed legacy rows so one bad row never crashes the API. */
     @Transient
     @JsonProperty("aiRuleIds")
-    public java.util.List<String> getAiRuleIds() {
+    public List<String> getAiRuleIds() {
         if (aiRuleIdsJson == null || aiRuleIdsJson.isBlank()) {
-            return java.util.Collections.emptyList();
+            return Collections.emptyList();
         }
         try {
-            return new com.fasterxml.jackson.databind.ObjectMapper()
-                    .readerForListOf(String.class)
-                    .readValue(aiRuleIdsJson);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-            return java.util.Collections.emptyList();
+            return AI_RULE_IDS_READER.readValue(aiRuleIdsJson);
+        } catch (JsonProcessingException ex) {
+            return Collections.emptyList();
         }
     }
 
