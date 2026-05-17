@@ -123,6 +123,19 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "ai_validation_count", nullable = false)
     private int aiValidationCount = 0;
 
+    @Column(name = "extracted_amount_dkk")
+    private Double extractedAmountDkk;
+
+    @Column(name = "extracted_guest_count")
+    private Integer extractedGuestCount;
+
+    @Column(name = "extracted_merchant_name", length = 200)
+    private String extractedMerchantName;
+
+    /** STORED generated column — computed by DB as extracted_amount_dkk / extracted_guest_count. Read-only in JPA. */
+    @Column(name = "extracted_per_person_dkk", insertable = false, updatable = false)
+    private Double extractedPerPersonDkk;
+
     @jakarta.persistence.Version
     @Column(name = "version", nullable = false)
     private Integer version = 0;

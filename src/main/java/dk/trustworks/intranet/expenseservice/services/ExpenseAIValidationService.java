@@ -12,6 +12,7 @@ import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -398,8 +399,10 @@ public class ExpenseAIValidationService {
                 userMessage = root.path("reason").asText("AI validation error: missing user_message");
             }
 
-            // Optional: log extracted fields for debugging
+            // Parse extracted fields for logging and persistence
             JsonNode extracted = root.path("extracted");
+            Double extractedAmount = null;
+            String extractedMerchant = null;
             if (extracted.isObject()) {
                 log.infof("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, addr=%s, type=%s",
                         extracted.path("date").isNull() ? "null" : extracted.path("date").asText(),
@@ -407,7 +410,14 @@ public class ExpenseAIValidationService {
                         extracted.path("issuerCompanyName").isNull() ? "null" : extracted.path("issuerCompanyName").asText(),
                         extracted.path("issuerAddress").isNull() ? "null" : extracted.path("issuerAddress").asText(),
                         extracted.path("expenseType").isNull() ? "null" : extracted.path("expenseType").asText());
+                JsonNode amountNode = extracted.path("amountInclTax");
+                extractedAmount = (!amountNode.isNull() && amountNode.isNumber()) ? amountNode.asDouble() : null;
+                JsonNode merchantNode = extracted.path("issuerCompanyName");
+                extractedMerchant = (!merchantNode.isNull() && merchantNode.isTextual()) ? merchantNode.asText() : null;
             }
+            // TODO: AI vision response does not currently expose extractedGuestCount in the structured
+            // output schema; persistence is a no-op for that column until the prompt/schema is extended.
+            persistExtractedFacts(expense.getUuid(), extractedAmount, null, extractedMerchant);
 
             // Collect rule IDs that fired (REJECT or OVERRIDE_APPROVE with decision=FAILED).
             // These drive the routing decision in the consumer. We accept either:
@@ -762,6 +772,45 @@ public class ExpenseAIValidationService {
         required.add("rules");
 
         return schema;
+    }
+
+    /**
+     * Persists AI-extracted receipt facts onto the expense row.
+     *
+     * <p>Called automatically from {@link #validateWithExtractedText} after each successful
+     * AI validation run. The three base columns are written; the fourth column
+     * ({@code extracted_per_person_dkk}) is a STORED generated column and is therefore
+     * read-only in JPA — the DB recomputes it whenever the base columns change.
+     *
+     * <p>Extracted-field availability notes:
+     * <ul>
+     *   <li>{@code amountDkk} — populated from {@code extracted.amountInclTax} in the
+     *       unified validation JSON schema response.
+     *   <li>{@code guestCount} — AI vision response does not currently expose a structured
+     *       guest-count field; callers pass {@code null} until the prompt/schema is extended.
+     *       Impact Preview gracefully degrades for the per-person cap rule when this is null.
+     *   <li>{@code merchant} — populated from {@code extracted.issuerCompanyName} in the
+     *       unified validation JSON schema response.
+     * </ul>
+     *
+     * @param expenseUuid UUID of the expense to update
+     * @param amountDkk   AI-extracted receipt total in DKK, or {@code null} if unavailable
+     * @param guestCount  AI-extracted guest count, or {@code null} if unavailable
+     * @param merchant    AI-extracted merchant name, or {@code null} if unavailable
+     */
+    @Transactional
+    public void persistExtractedFacts(String expenseUuid, Double amountDkk, Integer guestCount, String merchant) {
+        Expense e = Expense.findById(expenseUuid);
+        if (e == null) {
+            log.warnf("[AI-Persist] Expense not found for extracted-facts update: %s", expenseUuid);
+            return;
+        }
+        e.setExtractedAmountDkk(amountDkk);
+        e.setExtractedGuestCount(guestCount);
+        e.setExtractedMerchantName(merchant);
+        e.persist();
+        log.infof("[AI-Persist] Persisted extracted facts for expense=%s amount=%s guestCount=%s merchant=%s",
+                expenseUuid, amountDkk, guestCount, merchant);
     }
 
     /**
