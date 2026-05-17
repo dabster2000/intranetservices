@@ -112,23 +112,24 @@ public class ExpenseCreatedConsumer {
         managedExpense.setAiValidationCount(managedExpense.getAiValidationCount() + 1);
 
         if (result.approved()) {
+            // Log the transition FIRST so recordAIApproval sees the pre-mutation state
+            decisionLogs.recordAIApproval(managedExpense);
             // Approved → move to VALIDATED, clear any prior review state.
             managedExpense.setStatus(ExpenseService.STATUS_VALIDATED);
             managedExpense.setReviewState(null);
-            decisionLogs.recordAIApproval(managedExpense);
             log.infof("Expense %s APPROVED by AI. Reason: %s", expense.getUuid(), result.reason());
         } else {
             // Rejected → stays in CREATED status; routed into a review state instead.
-            managedExpense.setStatus(ExpenseService.STATUS_CREATED);
-
             List<String> firedRuleIds = result.ruleIds() != null ? result.ruleIds() : List.of();
             ExpenseReviewRoutingService.Decision decision =
                     router.route(firedRuleIds, managedExpense.getAiValidationCount());
+            // Log the transition FIRST so recordAIRejection sees the pre-mutation state
+            decisionLogs.recordAIRejection(managedExpense,
+                    decision.reviewState(), decision.primaryRuleId(), result.reason());
+            managedExpense.setStatus(ExpenseService.STATUS_CREATED);
             managedExpense.setReviewState(decision.reviewState());
             managedExpense.setAiRuleId(decision.primaryRuleId());
             managedExpense.setAiRuleIdsJson(serializeRuleIds(firedRuleIds));
-            decisionLogs.recordAIRejection(managedExpense,
-                    decision.reviewState(), decision.primaryRuleId(), result.reason());
             log.infof("Expense %s ROUTED to review state %s (rule=%s). Reason: %s",
                     expense.getUuid(), decision.reviewState(), decision.primaryRuleId(), result.reason());
         }

@@ -3,6 +3,7 @@ package dk.trustworks.intranet.expenseservice.events;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseDecisionLog;
 import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
@@ -26,6 +27,7 @@ import static org.mockito.Mockito.when;
 class ExpenseCreatedConsumerRoutingTest {
 
     @InjectMock ExpenseAIValidationService aiSvc;
+    @InjectMock ExpenseFileService fileSvc;
     @Inject     ExpenseCreatedConsumer consumer;
 
     @Test
@@ -40,12 +42,14 @@ class ExpenseCreatedConsumerRoutingTest {
         e.setStatus("CREATED");
         QuarkusTransaction.requiringNew().run(() -> e.persist());
 
+        when(fileSvc.getFileById(any())).thenReturn(null);
+        when(aiSvc.extractExpenseData(any())).thenReturn("placeholder text");
+
         var response = new ExpenseAIValidationService.AIResult(
                 false,
                 "above 125 DKK per person",
                 java.util.List.of("R_MEAL_COST_PER_PERSON"));
         when(aiSvc.validateWithExtractedText(any(), any(), any(), any(), any(), any())).thenReturn(response);
-        when(aiSvc.extractExpenseData(any())).thenReturn("placeholder text");
 
         consumer.onExpenseCreated(e.getUuid());
 
