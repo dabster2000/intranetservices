@@ -1,11 +1,17 @@
 package dk.trustworks.intranet.expenseservice.services;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.expenseservice.dto.AddAllowListEntryRequest;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -17,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @QuarkusTest
 class MerchantAllowListBypassTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Inject ExpenseAIValidationService validation;
     @Inject MerchantAllowListService allowList;
@@ -46,5 +54,136 @@ class MerchantAllowListBypassTest {
     void null_merchant_is_not_allow_listed() {
         boolean bypassed = validation.isAllowListed("R_MERCHANT_ALLOW_OFFICE_FOOD_DRINK", null);
         assertTrue(!bypassed, "Null merchant should not be allow-listed");
+    }
+
+    @Test
+    @Transactional
+    void suppressed_rule_from_rules_and_final_rule_approves() throws Exception {
+        allowList.add(new AddAllowListEntryRequest(
+                "R_MERCHANT_ALLOW_RULES_FINAL",
+                "Allowed Merchant",
+                "CONTAINS",
+                null
+        ));
+
+        ExpenseAIValidationService.AIResult result = validation.normalizePolicyVerdict(
+                json("""
+                    {
+                      "final_rule_id": "R_MERCHANT_ALLOW_RULES_FINAL",
+                      "rules": [
+                        {
+                          "id": "R_MERCHANT_ALLOW_RULES_FINAL",
+                          "severity": "REJECT",
+                          "decision": "FAILED",
+                          "user_message": "Merchant would normally be rejected."
+                        }
+                      ]
+                    }
+                    """),
+                false,
+                "Merchant would normally be rejected.",
+                "Allowed Merchant Copenhagen"
+        );
+
+        assertTrue(result.approved());
+        assertEquals(List.of(), result.ruleIds());
+        assertTrue(result.reason().contains("allow-list"));
+    }
+
+    @Test
+    @Transactional
+    void suppressed_top_level_rule_ids_approve() throws Exception {
+        allowList.add(new AddAllowListEntryRequest(
+                "R_MERCHANT_ALLOW_TOP_LEVEL",
+                "Allowed Top",
+                "CONTAINS",
+                null
+        ));
+
+        ExpenseAIValidationService.AIResult result = validation.normalizePolicyVerdict(
+                json("""
+                    {
+                      "ruleIds": ["R_MERCHANT_ALLOW_TOP_LEVEL"],
+                      "final_rule_id": null,
+                      "rules": []
+                    }
+                    """),
+                false,
+                "Merchant would normally be rejected.",
+                "Allowed Top Merchant"
+        );
+
+        assertTrue(result.approved());
+        assertEquals(List.of(), result.ruleIds());
+    }
+
+    @Test
+    @Transactional
+    void mixed_suppressed_and_non_suppressed_failures_stay_rejected() throws Exception {
+        allowList.add(new AddAllowListEntryRequest(
+                "R_MERCHANT_ALLOW_MIXED",
+                "Allowed Mixed",
+                "CONTAINS",
+                null
+        ));
+
+        ExpenseAIValidationService.AIResult result = validation.normalizePolicyVerdict(
+                json("""
+                    {
+                      "final_rule_id": "R_MEAL_COST_PER_PERSON",
+                      "rules": [
+                        {
+                          "id": "R_MERCHANT_ALLOW_MIXED",
+                          "severity": "REJECT",
+                          "decision": "FAILED",
+                          "user_message": "Merchant would normally be rejected."
+                        },
+                        {
+                          "id": "R_MEAL_COST_PER_PERSON",
+                          "severity": "REJECT",
+                          "decision": "FAILED",
+                          "user_message": "Meal cap exceeded."
+                        }
+                      ]
+                    }
+                    """),
+                false,
+                "Meal cap exceeded.",
+                "Allowed Mixed Merchant"
+        );
+
+        assertFalse(result.approved());
+        assertEquals(List.of("R_MEAL_COST_PER_PERSON"), result.ruleIds());
+        assertEquals("Meal cap exceeded.", result.reason());
+    }
+
+    @Test
+    @Transactional
+    void non_allow_listed_merchant_rule_stays_rejected() throws Exception {
+        ExpenseAIValidationService.AIResult result = validation.normalizePolicyVerdict(
+                json("""
+                    {
+                      "final_rule_id": "R_MERCHANT_ALLOW_NOT_LISTED",
+                      "rules": [
+                        {
+                          "id": "R_MERCHANT_ALLOW_NOT_LISTED",
+                          "severity": "REJECT",
+                          "decision": "FAILED",
+                          "user_message": "Merchant rejected."
+                        }
+                      ]
+                    }
+                    """),
+                false,
+                "Merchant rejected.",
+                "Unknown Merchant"
+        );
+
+        assertFalse(result.approved());
+        assertEquals(List.of("R_MERCHANT_ALLOW_NOT_LISTED"), result.ruleIds());
+    }
+
+    private static JsonNode json(String raw) throws Exception {
+        return MAPPER.readTree(raw);
     }
 }

@@ -436,57 +436,10 @@ public class ExpenseAIValidationService {
                 );
             }
 
-            // Collect rule IDs that fired (REJECT or OVERRIDE_APPROVE with decision=FAILED).
-            // These drive the routing decision in the consumer. We accept either:
-            //   - top-level "ruleIds": ["R_FOO", ...] (explicit field)
-            //   - "rules": [{id, severity, decision}] (existing schema — derive failed REJECT/OVERRIDE_APPROVE)
-            java.util.List<String> firedRuleIds = new java.util.ArrayList<>();
-            JsonNode explicitRuleIds = root.path("ruleIds");
-            if (explicitRuleIds.isArray()) {
-                explicitRuleIds.forEach(n -> {
-                    if (n != null && !n.isNull()) firedRuleIds.add(n.asText());
-                });
-            }
-            JsonNode rulesNode = root.path("rules");
-            if (rulesNode.isArray()) {
-                for (JsonNode r : rulesNode) {
-                    String id       = r.path("id").asText(null);
-                    String severity = r.path("severity").asText("");
-                    String decision = r.path("decision").asText("");
-                    log.infof("[AI-Validate] Rule %s severity=%s decision=%s msg=%s",
-                            id,
-                            severity,
-                            decision,
-                            r.path("user_message").asText());
-                    // Merchant allow-list bypass: if the AI fired a R_MERCHANT_ALLOW_* rule
-                    // but the merchant is in the allow-list for that rule, suppress the verdict.
-                    if (id != null
-                            && id.startsWith("R_MERCHANT_ALLOW_")
-                            && "FAILED".equals(decision)
-                            && isAllowListed(id, extractedMerchant)) {
-                        log.infof("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
-                                id, extractedMerchant);
-                        continue;
-                    }
-                    if (id != null
-                            && "FAILED".equals(decision)
-                            && ("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))
-                            && !firedRuleIds.contains(id)) {
-                        firedRuleIds.add(id);
-                    }
-                }
-            }
-            // Defensive: include final_rule_id if it isn't already in the list.
-            String finalRuleId = root.path("final_rule_id").isNull()
-                    ? null
-                    : root.path("final_rule_id").asText(null);
-            if (finalRuleId != null && !finalRuleId.isBlank() && !firedRuleIds.contains(finalRuleId)) {
-                firedRuleIds.add(finalRuleId);
-            }
-
+            AIResult normalized = normalizePolicyVerdict(root, approved, userMessage, extractedMerchant);
             log.infof("[AI-Validate] Final decision -> approved=%s, userMessage=%s, firedRuleIds=%s",
-                    approved, userMessage, firedRuleIds);
-            return new AIResult(approved, userMessage, java.util.List.copyOf(firedRuleIds));
+                    normalized.approved(), normalized.reason(), normalized.ruleIds());
+            return normalized;
 
         } catch (Exception e) {
             log.error("Failed to validate expense via OpenAI (text-based validation with web search)", e);
@@ -813,6 +766,92 @@ public class ExpenseAIValidationService {
      */
     public boolean isAllowListed(String ruleId, String merchant) {
         return merchantAllowList.matches(ruleId, merchant);
+    }
+
+    AIResult normalizePolicyVerdict(JsonNode root,
+                                    boolean approved,
+                                    String userMessage,
+                                    String extractedMerchant) {
+        // Collect rule IDs that fired. These drive the routing decision in the
+        // consumer. Merchant allow-list suppression must apply consistently to
+        // explicit ruleIds, derived rules[], and final_rule_id.
+        java.util.List<String> firedRuleIds = new java.util.ArrayList<>();
+        java.util.Set<String> suppressedRuleIds = new java.util.LinkedHashSet<>();
+
+        JsonNode explicitRuleIds = root.path("ruleIds");
+        if (explicitRuleIds.isArray()) {
+            explicitRuleIds.forEach(n -> {
+                String id = textOrNull(n);
+                if (id == null) return;
+                addRuleUnlessSuppressed(id, extractedMerchant, firedRuleIds, suppressedRuleIds);
+            });
+        }
+
+        JsonNode rulesNode = root.path("rules");
+        if (rulesNode.isArray()) {
+            for (JsonNode r : rulesNode) {
+                String id       = r.path("id").asText(null);
+                String severity = r.path("severity").asText("");
+                String decision = r.path("decision").asText("");
+                log.infof("[AI-Validate] Rule %s severity=%s decision=%s msg=%s",
+                        id,
+                        severity,
+                        decision,
+                        r.path("user_message").asText());
+                if (id != null
+                        && "FAILED".equals(decision)
+                        && ("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))) {
+                    addRuleUnlessSuppressed(id, extractedMerchant, firedRuleIds, suppressedRuleIds);
+                }
+            }
+        }
+
+        // Defensive: include final_rule_id if it is not already represented,
+        // but do not re-add an allow-listed rule suppressed above.
+        String finalRuleId = textOrNull(root.path("final_rule_id"));
+        if (finalRuleId != null) {
+            addRuleUnlessSuppressed(finalRuleId, extractedMerchant, firedRuleIds, suppressedRuleIds);
+        }
+
+        if (!approved && !suppressedRuleIds.isEmpty() && firedRuleIds.isEmpty()) {
+            log.infof("[AI-Validate] Approving because only allow-listed merchant rules fired: %s",
+                    suppressedRuleIds);
+            return new AIResult(
+                    true,
+                    "Approved because the merchant is on the allow-list for the fired policy rule.",
+                    java.util.List.of()
+            );
+        }
+
+        return new AIResult(approved, userMessage, java.util.List.copyOf(firedRuleIds));
+    }
+
+    private void addRuleUnlessSuppressed(String id,
+                                         String extractedMerchant,
+                                         java.util.List<String> firedRuleIds,
+                                         java.util.Set<String> suppressedRuleIds) {
+        if (id == null || id.isBlank()) return;
+        if (isSuppressedAllowListRule(id, extractedMerchant)) {
+            suppressedRuleIds.add(id);
+            log.infof("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
+                    id, extractedMerchant);
+            return;
+        }
+        if (!firedRuleIds.contains(id)) {
+            firedRuleIds.add(id);
+        }
+    }
+
+    private boolean isSuppressedAllowListRule(String id, String extractedMerchant) {
+        return id != null
+                && id.startsWith("R_MERCHANT_ALLOW_")
+                && isAllowListed(id, extractedMerchant);
+    }
+
+    private static String textOrNull(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return null;
+        String value = node.asText(null);
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**

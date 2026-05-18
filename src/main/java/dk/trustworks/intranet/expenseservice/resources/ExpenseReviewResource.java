@@ -20,6 +20,7 @@ import jakarta.ws.rs.core.MediaType;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 
 @Path("/expenses/review")
@@ -52,28 +53,58 @@ public class ExpenseReviewResource {
             @QueryParam("fromDate") String fromDate,
             @QueryParam("toDate") String toDate) {
 
-        LocalDate from = fromDate != null ? LocalDate.parse(fromDate) : LocalDate.now().minusMonths(6);
-        LocalDate to = toDate != null ? LocalDate.parse(toDate) : LocalDate.now();
+        LocalDate from = fromDate != null ? LocalDate.parse(fromDate) : null;
+        LocalDate to = toDate != null ? LocalDate.parse(toDate) : null;
 
         List<Expense> rows = switch (state == null ? "PENDING_HR" : state) {
-            case "PENDING_HR" -> Expense.list(
-                    "reviewState = ?1 and expensedate between ?2 and ?3",
+            case "PENDING_HR" -> listReviewQueue(
+                    List.of("PENDING_HR"),
                     Sort.by("datemodified", Sort.Direction.Ascending),
-                    "PENDING_HR", from, to);
-            case "HR_SENT_BACK" -> Expense.list(
-                    "reviewState = ?1 and expensedate between ?2 and ?3",
+                    from, to);
+            case "AWAITING_EMPLOYEE" -> listReviewQueue(
+                    List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION", "HR_SENT_BACK"),
+                    Sort.by("datemodified", Sort.Direction.Ascending),
+                    from, to);
+            case "HR_SENT_BACK" -> listReviewQueue(
+                    List.of("HR_SENT_BACK"),
                     Sort.by("datemodified", Sort.Direction.Descending),
-                    "HR_SENT_BACK", from, to);
-            case "STUCK" -> Expense.list(
-                    "reviewState in ?1 and datemodified < ?2",
+                    from, to);
+            case "STUCK" -> listStuckQueue(
                     Sort.by("datemodified", Sort.Direction.Ascending),
-                    List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION"),
-                    LocalDate.now().minusDays(7));
+                    from, to);
             default -> throw new BadRequestException(
-                    "state must be PENDING_HR, HR_SENT_BACK, or STUCK");
+                    "state must be PENDING_HR, AWAITING_EMPLOYEE, HR_SENT_BACK, or STUCK");
         };
 
         return rows.stream().map(this::toDTO).toList();
+    }
+
+    private List<Expense> listReviewQueue(List<String> states, Sort sort, LocalDate from, LocalDate to) {
+        StringBuilder query = new StringBuilder("reviewState in ?1");
+        List<Object> params = new ArrayList<>();
+        params.add(states);
+        appendExpenseDateFilters(query, params, from, to);
+        return Expense.list(query.toString(), sort, params.toArray());
+    }
+
+    private List<Expense> listStuckQueue(Sort sort, LocalDate from, LocalDate to) {
+        StringBuilder query = new StringBuilder("reviewState in ?1 and datemodified < ?2");
+        List<Object> params = new ArrayList<>();
+        params.add(List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION"));
+        params.add(LocalDate.now().minusDays(7));
+        appendExpenseDateFilters(query, params, from, to);
+        return Expense.list(query.toString(), sort, params.toArray());
+    }
+
+    private void appendExpenseDateFilters(StringBuilder query, List<Object> params, LocalDate from, LocalDate to) {
+        if (from != null) {
+            query.append(" and expensedate >= ?").append(params.size() + 1);
+            params.add(from);
+        }
+        if (to != null) {
+            query.append(" and expensedate <= ?").append(params.size() + 1);
+            params.add(to);
+        }
     }
 
     private ExpenseReviewListItemDTO toDTO(Expense e) {

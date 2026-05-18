@@ -35,18 +35,13 @@ public class ExpenseDecisionsService {
         params.put("fromTs", from.atStartOfDay());
         params.put("toTs", to.plusDays(1).atStartOfDay());
 
-        if (outcomes != null && !outcomes.isEmpty()) {
-            where.append("AND l.action IN (:actions) ");
-            params.put("actions", outcomes);
-        }
+        appendOutcomeFilter(where, outcomes);
         if (employeeUuid != null && !employeeUuid.isBlank()) {
             where.append("AND e.useruuid = :empUuid ");
             params.put("empUuid", employeeUuid);
         }
 
-        // Phase 2: extracted_per_person_dkk is NOT selected here — column added by V351 in Task 3.1.
-        // perPersonDkk is returned as null for all rows. Task 3.2 populates the column; Task 3.6 reads it.
-        // SELECT has 11 columns: indices 0-10.
+        // SELECT columns: indices 0-11.
         //   r[0]  = l.uuid
         //   r[1]  = l.expense_uuid
         //   r[2]  = l.occurred_at
@@ -55,14 +50,14 @@ public class ExpenseDecisionsService {
         //   r[5]  = l.ai_rule_id
         //   r[6]  = l.reason_text
         //   r[7]  = e.useruuid
-        //   r[8]  = e.description
+        //   r[8]  = merchant display value: extracted merchant, fallback description
         //   r[9]  = e.amount
         //   r[10] = u.firstname
         //   r[11] = u.lastname
         String sql =
                 "SELECT l.uuid, l.expense_uuid, l.occurred_at, l.action, l.to_review_state, " +
                 "       l.ai_rule_id, l.reason_text, " +
-                "       e.useruuid, e.description, e.amount, " +
+                "       e.useruuid, COALESCE(NULLIF(e.extracted_merchant_name, ''), e.description), e.amount, " +
                 "       u.firstname, u.lastname " +
                 "FROM expense_decision_log l " +
                 "JOIN expenses e ON e.uuid = l.expense_uuid " +
@@ -111,8 +106,8 @@ public class ExpenseDecisionsService {
         Query q = em.createNativeQuery(
                 "SELECT " +
                 "  SUM(CASE WHEN action = 'AI_VALIDATED_APPROVED' THEN 1 ELSE 0 END), " +
-                "  SUM(CASE WHEN to_review_state = 'AWAITING_EMPLOYEE_ACTION' THEN 1 ELSE 0 END), " +
-                "  SUM(CASE WHEN to_review_state = 'PENDING_HR_REVIEW' THEN 1 ELSE 0 END) " +
+                "  SUM(CASE WHEN to_review_state IN ('NEEDS_FIX', 'NEEDS_JUSTIFICATION', 'HR_SENT_BACK', 'AWAITING_EMPLOYEE_ACTION') THEN 1 ELSE 0 END), " +
+                "  SUM(CASE WHEN to_review_state IN ('PENDING_HR', 'PENDING_HR_REVIEW') THEN 1 ELSE 0 END) " +
                 "FROM expense_decision_log " +
                 "WHERE occurred_at >= :fromTs AND occurred_at < :toTs");
         q.setParameter("fromTs", from.atStartOfDay());
@@ -135,10 +130,58 @@ public class ExpenseDecisionsService {
         return ((Number) q.getSingleResult()).intValue();
     }
 
+    private static void appendOutcomeFilter(StringBuilder where, List<String> outcomes) {
+        if (outcomes == null || outcomes.isEmpty()) return;
+
+        List<String> conditions = outcomes.stream()
+                .filter(o -> o != null && !o.isBlank())
+                .distinct()
+                .map(ExpenseDecisionsService::outcomeCondition)
+                .filter(c -> c != null && !c.isBlank())
+                .toList();
+
+        if (conditions.isEmpty()) {
+            where.append("AND 1 = 0 ");
+            return;
+        }
+
+        where.append("AND (")
+                .append(String.join(" OR ", conditions))
+                .append(") ");
+    }
+
+    private static String outcomeCondition(String outcome) {
+        return switch (outcome) {
+            case "APPROVED" -> APPROVED_CONDITION;
+            case "AUTO_FIX" -> AUTO_FIX_CONDITION;
+            case "EXPLAIN" -> EXPLAIN_CONDITION;
+            case "REJECTED" -> REJECTED_CONDITION;
+            case "OTHER" -> OTHER_CONDITION;
+            default -> null;
+        };
+    }
+
+    private static final String APPROVED_CONDITION =
+            "l.action = 'AI_VALIDATED_APPROVED'";
+    private static final String AUTO_FIX_CONDITION =
+            "l.to_review_state = 'NEEDS_FIX'";
+    private static final String EXPLAIN_CONDITION =
+            "l.to_review_state IN ('NEEDS_JUSTIFICATION', 'AWAITING_EMPLOYEE_ACTION')";
+    private static final String REJECTED_CONDITION =
+            "l.to_review_state IN ('PENDING_HR', 'PENDING_HR_REVIEW')";
+    private static final String OTHER_CONDITION =
+            "(l.action IS NULL OR l.action <> 'AI_VALIDATED_APPROVED') " +
+            "AND (l.to_review_state IS NULL OR l.to_review_state NOT IN (" +
+            "'NEEDS_FIX', 'NEEDS_JUSTIFICATION', 'AWAITING_EMPLOYEE_ACTION', " +
+            "'PENDING_HR', 'PENDING_HR_REVIEW'))";
+
     private static String mapOutcome(String action, String toReviewState) {
         if ("AI_VALIDATED_APPROVED".equals(action)) return "APPROVED";
-        if ("AWAITING_EMPLOYEE_ACTION".equals(toReviewState)) return "EXPLAIN";
-        if ("PENDING_HR_REVIEW".equals(toReviewState)) return "REJECTED";
+        if ("NEEDS_FIX".equals(toReviewState)) return "AUTO_FIX";
+        if ("NEEDS_JUSTIFICATION".equals(toReviewState)
+                || "AWAITING_EMPLOYEE_ACTION".equals(toReviewState)) return "EXPLAIN";
+        if ("PENDING_HR".equals(toReviewState)
+                || "PENDING_HR_REVIEW".equals(toReviewState)) return "REJECTED";
         return "OTHER";
     }
 
