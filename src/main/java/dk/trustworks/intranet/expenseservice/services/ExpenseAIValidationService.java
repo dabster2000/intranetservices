@@ -855,19 +855,23 @@ public class ExpenseAIValidationService {
     }
 
     /**
-     * True when the structured extraction returned no usable signal — i.e. all four of
-     * {@code date}, {@code amountInclTax}, {@code issuerCompanyName}, {@code issuerAddress}
-     * are null, missing, or blank. Used to short-circuit the verdict to R_RECEIPT_READABLE
-     * FAILED so an unreadable receipt cannot be silently approved.
+     * True when the structured extraction is missing any core receipt signal —
+     * specifically when ANY of {@code date}, {@code amountInclTax}, or
+     * {@code issuerCompanyName} is null, missing, or blank. A genuine receipt
+     * always carries all three; UI screenshots or non-receipt images typically
+     * populate only one or two of these fields, which previously slipped past
+     * the all-blank gate and were silently approved. The {@code issuerAddress}
+     * field is intentionally not required here — small/handwritten receipts
+     * often omit it. Used to short-circuit the verdict to R_RECEIPT_READABLE
+     * FAILED so an unreadable or non-receipt image cannot be silently approved.
      */
     static boolean isVisionExtractionEmpty(JsonNode extracted) {
         if (extracted == null || !extracted.isObject()) {
             return true;
         }
         return isNullOrBlank(extracted.path("date"))
-                && isNullOrBlank(extracted.path("amountInclTax"))
-                && isNullOrBlank(extracted.path("issuerCompanyName"))
-                && isNullOrBlank(extracted.path("issuerAddress"));
+                || isNullOrBlank(extracted.path("amountInclTax"))
+                || isNullOrBlank(extracted.path("issuerCompanyName"));
     }
 
     private static boolean isNullOrBlank(JsonNode node) {
