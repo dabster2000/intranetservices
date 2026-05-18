@@ -83,7 +83,7 @@ public class ExpenseDecisionsService {
                 .map(r -> new ExpenseDecisionRowDTO(
                         (String) r[0],
                         (String) r[1],
-                        ((java.sql.Timestamp) r[2]).toLocalDateTime(),
+                        (java.time.LocalDateTime) r[2],
                         new ExpenseDecisionRowDTO.EmployeeStub(
                                 (String) r[7],
                                 joinName(r[10], r[11])),

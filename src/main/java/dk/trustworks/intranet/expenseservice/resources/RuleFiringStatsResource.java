@@ -38,7 +38,7 @@ public class RuleFiringStatsResource {
         List<Entry> entries = rows.stream().map(r -> new Entry(
             (String) r[0],
             ((Number) r[1]).intValue(),
-            r[2] == null ? null : ((java.sql.Timestamp) r[2]).toLocalDateTime()
+            r[2] == null ? null : (java.time.LocalDateTime) r[2]
         )).toList();
         return new RuleFiringStatsDTO(entries);
     }
