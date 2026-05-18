@@ -277,6 +277,10 @@ public class ExpenseResource {
             updateQuery.append("account = ?").append(params.size() + 1).append(", ");
             params.add(expense.getAccount());
         }
+        if (expense.getAccountname() != null) {
+            updateQuery.append("accountname = ?").append(params.size() + 1).append(", ");
+            params.add(expense.getAccountname());
+        }
         if (expense.getDescription() != null) {
             updateQuery.append("description = ?").append(params.size() + 1).append(", ");
             params.add(expense.getDescription());
@@ -295,16 +299,21 @@ public class ExpenseResource {
             params.add(expense.getStatus());
         }
 
-        if (updateQuery.isEmpty()) {
-            return; // Nothing to update
+        if (!updateQuery.isEmpty()) {
+            // Remove trailing comma and space
+            updateQuery.setLength(updateQuery.length() - 2);
+            updateQuery.append(" WHERE uuid = ?").append(params.size() + 1);
+            params.add(uuid);
+
+            Expense.update(updateQuery.toString(), params.toArray());
         }
 
-        // Remove trailing comma and space
-        updateQuery.setLength(updateQuery.length() - 2);
-        updateQuery.append(" WHERE uuid = ?").append(params.size() + 1);
-        params.add(uuid);
-
-        Expense.update(updateQuery.toString(), params.toArray());
+        // Receipt replacement: when the client sends a new base64 file, overwrite
+        // the existing S3 object under the same uuid key.
+        if (expense.getExpensefile() != null && !expense.getExpensefile().isEmpty()) {
+            ExpenseFile newFile = new ExpenseFile(uuid, expense.getExpensefile());
+            expenseFileService.saveFile(newFile);
+        }
 
         // If the row is sitting in a review state waiting on the employee, this edit
         // counts as a fix attempt: clear the review flags, log the edit, and re-fire
