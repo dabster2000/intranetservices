@@ -88,7 +88,7 @@ public class ExpenseDecisionsService {
                                 (String) r[7],
                                 joinName(r[10], r[11])),
                         (String) r[8],
-                        r[9] == null ? 0.0 : ((Number) r[9]).doubleValue(),
+                        parseAmount(r[9]),
                         null,                                               // perPersonDkk: V351-dependent
                         mapOutcome((String) r[3], (String) r[4]),
                         r[5] == null ? List.of() : List.of((String) r[5]),
@@ -98,6 +98,13 @@ public class ExpenseDecisionsService {
         int totalCount = countMatching(where.toString(), params);
         ExpenseDecisionsSummaryDTO summary = computeSummary(from, to);
         return new ExpenseDecisionsResponseDTO(decisions, totalCount, summary);
+    }
+
+    private static double parseAmount(Object v) {
+        if (v == null) return 0.0;
+        if (v instanceof Number n) return n.doubleValue();
+        try { return Double.parseDouble(v.toString()); }
+        catch (NumberFormatException e) { return 0.0; }
     }
 
     private ExpenseDecisionsSummaryDTO computeSummary(LocalDate from, LocalDate to) {
