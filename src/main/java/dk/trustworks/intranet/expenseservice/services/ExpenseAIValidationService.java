@@ -422,6 +422,20 @@ public class ExpenseAIValidationService {
             // output schema; persistence is a no-op for that column until the prompt/schema is extended.
             persistExtractedFacts(expense.getUuid(), extractedAmount, null, extractedMerchant);
 
+            // Hard-gate: when the vision step returned no usable receipt data (all four core fields
+            // null/blank), the model often defaults to expenseType='other' and silently approves
+            // because no other rule applies. Override the verdict to R_RECEIPT_READABLE FAILED so the
+            // employee is asked to upload a readable photo.
+            if (isVisionExtractionEmpty(extracted)) {
+                log.warnf("[AI-Validate] Vision extraction empty for expense %s — overriding verdict to R_RECEIPT_READABLE FAILED",
+                        expense.getUuid());
+                return new AIResult(
+                        false,
+                        "We couldn't read the receipt. Please upload a clear photo showing the date, merchant, and total amount.",
+                        java.util.List.of("R_RECEIPT_READABLE")
+                );
+            }
+
             // Collect rule IDs that fired (REJECT or OVERRIDE_APPROVE with decision=FAILED).
             // These drive the routing decision in the consumer. We accept either:
             //   - top-level "ruleIds": ["R_FOO", ...] (explicit field)
@@ -838,6 +852,32 @@ public class ExpenseAIValidationService {
         e.persist();
         log.infof("[AI-Persist] Persisted extracted facts for expense=%s amount=%s guestCount=%s merchant=%s",
                 expenseUuid, amountDkk, guestCount, merchant);
+    }
+
+    /**
+     * True when the structured extraction returned no usable signal — i.e. all four of
+     * {@code date}, {@code amountInclTax}, {@code issuerCompanyName}, {@code issuerAddress}
+     * are null, missing, or blank. Used to short-circuit the verdict to R_RECEIPT_READABLE
+     * FAILED so an unreadable receipt cannot be silently approved.
+     */
+    static boolean isVisionExtractionEmpty(JsonNode extracted) {
+        if (extracted == null || !extracted.isObject()) {
+            return true;
+        }
+        return isNullOrBlank(extracted.path("date"))
+                && isNullOrBlank(extracted.path("amountInclTax"))
+                && isNullOrBlank(extracted.path("issuerCompanyName"))
+                && isNullOrBlank(extracted.path("issuerAddress"));
+    }
+
+    private static boolean isNullOrBlank(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return true;
+        }
+        if (node.isTextual()) {
+            return node.asText().isBlank();
+        }
+        return false;
     }
 
     /**
