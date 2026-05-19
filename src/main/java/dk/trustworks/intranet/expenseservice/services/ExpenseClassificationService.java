@@ -1,0 +1,474 @@
+package dk.trustworks.intranet.expenseservice.services;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.apis.openai.OpenAIService;
+import dk.trustworks.intranet.domain.user.entity.User;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseClassificationDTOs;
+import dk.trustworks.intranet.expenseservice.model.*;
+import dk.trustworks.intranet.model.Company;
+import io.quarkus.panache.common.Sort;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.NotFoundException;
+import lombok.extern.jbosslog.JBossLog;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+@JBossLog
+@ApplicationScoped
+public class ExpenseClassificationService {
+
+    private static final double AI_ACCEPT_THRESHOLD = 0.70;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() {};
+
+    @Inject OpenAIService openAIService;
+    @Inject UserService userService;
+
+    public String activeTreeVersion() {
+        ExpenseClassificationTree tree = ExpenseClassificationTree.find("active = ?1", true).firstResult();
+        if (tree == null) throw new NotFoundException("No active expense classification tree");
+        return tree.treeVersion;
+    }
+
+    public ExpenseClassificationDTOs.TreeResponse getActiveTree() {
+        String version = activeTreeVersion();
+        return new ExpenseClassificationDTOs.TreeResponse(version, treeNodes(version, null));
+    }
+
+    @Transactional
+    public ExpenseClassificationDTOs.AnalyzeResponse analyze(String useruuid, ExpenseClassificationDTOs.AnalyzeRequest request) {
+        if (request == null || request.receiptBase64() == null || request.receiptBase64().isBlank()) {
+            throw new BadRequestException("receiptBase64 is required");
+        }
+        String mime = request.mimeType() == null || request.mimeType().isBlank() ? "image/jpeg" : request.mimeType();
+        if ("application/pdf".equalsIgnoreCase(mime)) {
+            String version = activeTreeVersion();
+            ExpenseClassificationDTOs.AnalyzeResponse response = new ExpenseClassificationDTOs.AnalyzeResponse(
+                    UUID.randomUUID().toString(),
+                    version,
+                    emptyFacts("pdf"),
+                    List.of(),
+                    List.of("PDF receipts start from manual classification in v1."),
+                    "PDF receipt was not analyzed before submission."
+            );
+            persistAnalysis(useruuid, response);
+            return response;
+        }
+
+        String version = activeTreeVersion();
+        String fallback = fallbackAnalysisJson();
+        String raw = openAIService.askWithSchemaAndImage(
+                analysisSystemPrompt(),
+                "Read this employee receipt. Return only facts visible on the receipt and proposed question-tree answers. Do not choose final account numbers.",
+                request.receiptBase64(),
+                mime,
+                analysisSchema(),
+                "expense_receipt_analysis",
+                fallback
+        );
+
+        ExpenseClassificationDTOs.AnalyzeResponse parsed = parseAnalysis(version, raw);
+        persistAnalysis(useruuid, parsed);
+        return parsed;
+    }
+
+    public ExpenseClassificationDTOs.ResolveResponse resolve(String useruuid, ExpenseClassificationDTOs.ResolveRequest request) {
+        String version = request != null && request.treeVersion() != null && !request.treeVersion().isBlank()
+                ? request.treeVersion()
+                : activeTreeVersion();
+        List<ExpenseClassificationDTOs.Answer> accepted = sanitizeAnswers(version, request != null ? request.answers() : List.of());
+        Map<String, String> answerMap = accepted.stream()
+                .collect(Collectors.toMap(
+                        ExpenseClassificationDTOs.Answer::nodeKey,
+                        ExpenseClassificationDTOs.Answer::answerKey,
+                        (previous, next) -> next,
+                        LinkedHashMap::new
+                ));
+
+        List<ExpenseClassificationDTOs.NodeDTO> visibleNodes = visibleTreeNodes(version, answerMap);
+        List<ExpenseClassificationDTOs.NodeDTO> unanswered = visibleNodes.stream()
+                .filter(ExpenseClassificationDTOs.NodeDTO::required)
+                .filter(node -> !answerMap.containsKey(node.nodeKey()))
+                .toList();
+        if (!unanswered.isEmpty()) {
+            return new ExpenseClassificationDTOs.ResolveResponse(
+                    "NEEDS_ANSWERS",
+                    version,
+                    unanswered,
+                    null,
+                    accepted
+            );
+        }
+
+        ExpenseClassificationResult result = findMatchingResult(version, answerMap);
+        if (result == null) {
+            throw new BadRequestException("No classification result matches the provided answers");
+        }
+
+        ExpenseAccountMapping mapping = resolveMapping(result.accountKey, currentCompanyUuid(useruuid));
+        boolean mappingFallback = mapping == null;
+        if (mapping == null) mapping = fallbackMapping();
+
+        ExpenseClassificationDTOs.ResolvedResult resolved = new ExpenseClassificationDTOs.ResolvedResult(
+                result.resultKey,
+                result.employeeLabel,
+                result.employeeSummary,
+                mapping.accountKey,
+                mapping.accountNumber,
+                mapping.accountName,
+                result.taxTreatment,
+                result.requiresFinanceReview || mappingFallback || "finance_review_fallback".equals(mapping.accountKey)
+        );
+
+        return new ExpenseClassificationDTOs.ResolveResponse(
+                "RESOLVED",
+                version,
+                List.of(),
+                resolved,
+                accepted
+        );
+    }
+
+    public ExpenseClassificationDTOs.ResolveResponse resolveSubmission(String useruuid, ExpenseClassificationDTOs.Submission submission) {
+        if (submission == null) throw new BadRequestException("classification is required");
+        ExpenseClassificationDTOs.ResolveRequest request = new ExpenseClassificationDTOs.ResolveRequest(
+                submission.treeVersion(),
+                submission.analysisId(),
+                submission.aiUsed(),
+                submission.aiIgnored(),
+                submission.answers(),
+                submission.ignoredAiAnswers()
+        );
+        ExpenseClassificationDTOs.ResolveResponse response = resolve(useruuid, request);
+        if (response.result() == null) throw new BadRequestException("classification is incomplete");
+        return response;
+    }
+
+    public void applyResolvedAccount(Expense expense) {
+        if (expense.getClassification() == null) return;
+        ExpenseClassificationDTOs.ResolveResponse resolved = resolveSubmission(expense.getUseruuid(), expense.getClassification());
+        expense.setAccount(resolved.result().accountNumber());
+        expense.setAccountname(resolved.result().accountName());
+    }
+
+    @Transactional
+    public void persistSubmittedClassification(Expense expense) {
+        ExpenseClassificationDTOs.Submission submission = expense.getClassification();
+        if (submission == null) return;
+        ExpenseClassificationDTOs.ResolveResponse resolved = resolveSubmission(expense.getUseruuid(), submission);
+
+        ExpenseClassification row = ExpenseClassification.find("expenseUuid", expense.getUuid()).firstResult();
+        if (row == null) {
+            row = new ExpenseClassification();
+            row.uuid = UUID.randomUUID().toString();
+            row.expenseUuid = expense.getUuid();
+            row.createdAt = LocalDateTime.now();
+        }
+        row.useruuid = expense.getUseruuid();
+        row.analysisId = submission.analysisId();
+        row.treeVersion = resolved.treeVersion();
+        row.aiUsed = Boolean.TRUE.equals(submission.aiUsed());
+        row.aiIgnored = Boolean.TRUE.equals(submission.aiIgnored());
+        row.decisionResultKey = resolved.result().resultKey();
+        row.accountKey = resolved.result().accountKey();
+        row.accountNumber = resolved.result().accountNumber();
+        row.accountName = resolved.result().accountName();
+        row.requiresFinanceReview = resolved.result().requiresFinanceReview();
+        row.answersJson = toJson(resolved.acceptedAnswers(), "[]");
+        row.ignoredAiAnswersJson = toJson(submission.ignoredAiAnswers() == null ? List.of() : submission.ignoredAiAnswers(), "[]");
+        row.persist();
+    }
+
+    public boolean requiresFinanceReview(String expenseUuid) {
+        ExpenseClassification row = ExpenseClassification.find("expenseUuid", expenseUuid).firstResult();
+        return row != null && row.requiresFinanceReview;
+    }
+
+    List<ExpenseClassificationDTOs.Answer> sanitizeAnswers(String version, List<ExpenseClassificationDTOs.Answer> answers) {
+        if (answers == null || answers.isEmpty()) return List.of();
+        Map<String, ExpenseClassificationNode> nodes = ExpenseClassificationNode.<ExpenseClassificationNode>list("treeVersion = ?1", version)
+                .stream()
+                .collect(Collectors.toMap(node -> node.nodeKey, Function.identity()));
+        Set<String> validOptionKeys = ExpenseClassificationOption.<ExpenseClassificationOption>list("treeVersion = ?1", version)
+                .stream()
+                .map(option -> option.nodeKey + "\u0000" + option.answerKey)
+                .collect(Collectors.toSet());
+
+        LinkedHashMap<String, ExpenseClassificationDTOs.Answer> deduped = new LinkedHashMap<>();
+        for (ExpenseClassificationDTOs.Answer answer : answers) {
+            if (answer == null || answer.nodeKey() == null || answer.answerKey() == null) continue;
+            if (!nodes.containsKey(answer.nodeKey())) continue;
+            if (!validOptionKeys.contains(answer.nodeKey() + "\u0000" + answer.answerKey())) continue;
+            deduped.put(answer.nodeKey(), answer);
+        }
+        return new ArrayList<>(deduped.values());
+    }
+
+    private List<ExpenseClassificationDTOs.NodeDTO> visibleTreeNodes(String version, Map<String, String> answers) {
+        return treeNodes(version, answers);
+    }
+
+    private List<ExpenseClassificationDTOs.NodeDTO> treeNodes(String version, Map<String, String> answersOrNull) {
+        List<ExpenseClassificationNode> nodes = ExpenseClassificationNode.list(
+                "treeVersion = ?1",
+                Sort.by("sortOrder"),
+                version
+        );
+        Map<String, List<ExpenseClassificationOption>> options = ExpenseClassificationOption.<ExpenseClassificationOption>list(
+                        "treeVersion = ?1",
+                        Sort.by("sortOrder"),
+                        version
+                )
+                .stream()
+                .collect(Collectors.groupingBy(option -> option.nodeKey, LinkedHashMap::new, Collectors.toList()));
+
+        return nodes.stream()
+                .filter(node -> answersOrNull == null || visible(node.visibleWhenJson, answersOrNull))
+                .map(node -> new ExpenseClassificationDTOs.NodeDTO(
+                        node.nodeKey,
+                        node.prompt,
+                        node.answerSourcePolicy,
+                        node.required,
+                        options.getOrDefault(node.nodeKey, List.of()).stream()
+                                .map(option -> new ExpenseClassificationDTOs.OptionDTO(option.answerKey, option.label))
+                                .toList()
+                ))
+                .toList();
+    }
+
+    private boolean visible(String visibleWhenJson, Map<String, String> answers) {
+        Map<String, String> conditions = parseStringMap(visibleWhenJson);
+        for (Map.Entry<String, String> entry : conditions.entrySet()) {
+            if (!entry.getValue().equals(answers.get(entry.getKey()))) return false;
+        }
+        return true;
+    }
+
+    private ExpenseClassificationResult findMatchingResult(String version, Map<String, String> answers) {
+        return ExpenseClassificationResult.<ExpenseClassificationResult>list(
+                        "treeVersion = ?1",
+                        Sort.by("sortOrder"),
+                        version
+                )
+                .stream()
+                .filter(result -> visible(result.conditionsJson, answers))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private ExpenseAccountMapping resolveMapping(String accountKey, String companyuuid) {
+        if (companyuuid != null && !companyuuid.isBlank()) {
+            ExpenseAccountMapping exact = ExpenseAccountMapping.find(
+                    "accountKey = ?1 and companyuuid = ?2 and active = true",
+                    accountKey,
+                    companyuuid
+            ).firstResult();
+            if (exact != null) return exact;
+        }
+        return ExpenseAccountMapping.find(
+                "accountKey = ?1 and companyuuid is null and active = true",
+                accountKey
+        ).firstResult();
+    }
+
+    private ExpenseAccountMapping fallbackMapping() {
+        ExpenseAccountMapping fallback = resolveMapping("finance_review_fallback", null);
+        if (fallback != null) return fallback;
+        ExpenseAccountMapping synthetic = new ExpenseAccountMapping();
+        synthetic.accountKey = "finance_review_fallback";
+        synthetic.accountNumber = "9998";
+        synthetic.accountName = "Finance review";
+        synthetic.active = true;
+        return synthetic;
+    }
+
+    private String currentCompanyUuid(String useruuid) {
+        try {
+            User user = userService.findById(useruuid, false);
+            if (user == null) return null;
+            Company company = userService.getUserStatus(user, LocalDate.now()).getCompany();
+            return company != null ? company.getUuid() : null;
+        } catch (Exception ex) {
+            log.warnf(ex, "Could not resolve company for expense classification useruuid=%s", useruuid);
+            return null;
+        }
+    }
+
+    private void persistAnalysis(String useruuid, ExpenseClassificationDTOs.AnalyzeResponse response) {
+        ExpenseReceiptAnalysis row = new ExpenseReceiptAnalysis();
+        row.analysisId = response.analysisId();
+        row.useruuid = useruuid;
+        row.treeVersion = response.treeVersion();
+        row.createdAt = LocalDateTime.now();
+        row.receiptFactsJson = toJson(response.receiptFacts(), "{}");
+        row.proposedAnswersJson = toJson(response.proposedAnswers(), "[]");
+        row.warningsJson = toJson(response.warnings(), "[]");
+        row.rawModelSummary = response.rawModelSummary();
+        row.persist();
+    }
+
+    private ExpenseClassificationDTOs.AnalyzeResponse parseAnalysis(String version, String raw) {
+        try {
+            JsonNode node = MAPPER.readTree(raw == null || raw.isBlank() ? fallbackAnalysisJson() : raw);
+            String analysisId = UUID.randomUUID().toString();
+            ExpenseClassificationDTOs.ReceiptFacts facts = MAPPER.treeToValue(node.path("receiptFacts"), ExpenseClassificationDTOs.ReceiptFacts.class);
+            List<ExpenseClassificationDTOs.Answer> proposed = new ArrayList<>();
+            JsonNode proposedNode = node.path("proposedAnswers");
+            if (proposedNode.isArray()) {
+                for (JsonNode answerNode : proposedNode) {
+                    ExpenseClassificationDTOs.Answer answer = MAPPER.treeToValue(answerNode, ExpenseClassificationDTOs.Answer.class);
+                    if (answer.confidence() != null && answer.confidence() >= AI_ACCEPT_THRESHOLD) {
+                        proposed.add(answer);
+                    }
+                }
+            }
+            List<String> warnings = new ArrayList<>();
+            JsonNode warningsNode = node.path("warnings");
+            if (warningsNode.isArray()) {
+                warningsNode.forEach(w -> warnings.add(w.asText()));
+            }
+            return new ExpenseClassificationDTOs.AnalyzeResponse(
+                    analysisId,
+                    version,
+                    facts == null ? emptyFacts("receipt") : facts,
+                    sanitizeAnswers(version, proposed),
+                    warnings,
+                    node.path("rawModelSummary").asText("")
+            );
+        } catch (Exception ex) {
+            log.warnf(ex, "Failed to parse expense receipt classification response");
+            return new ExpenseClassificationDTOs.AnalyzeResponse(
+                    UUID.randomUUID().toString(),
+                    version,
+                    emptyFacts("receipt"),
+                    List.of(),
+                    List.of("Receipt analysis was unavailable. Please choose the classification manually."),
+                    ""
+            );
+        }
+    }
+
+    private ExpenseClassificationDTOs.ReceiptFacts emptyFacts(String documentType) {
+        return new ExpenseClassificationDTOs.ReceiptFacts(null, null, null, "DKK", null, null, List.of(), documentType);
+    }
+
+    private Map<String, String> parseStringMap(String json) {
+        if (json == null || json.isBlank()) return Map.of();
+        try {
+            return MAPPER.readValue(json, STRING_MAP);
+        } catch (JsonProcessingException ex) {
+            return Map.of();
+        }
+    }
+
+    private String toJson(Object value, String fallback) {
+        try {
+            return MAPPER.writeValueAsString(value);
+        } catch (JsonProcessingException ex) {
+            return fallback;
+        }
+    }
+
+    private String analysisSystemPrompt() {
+        return """
+                You classify employee receipts for Trustworks before expense submission.
+                Return only facts visible on the receipt and possible answers to the question tree.
+                You may propose root categories and supplier-country answers when visible evidence supports them.
+                Do not output account numbers, tax codes, or final accounting decisions.
+                Valid root answer keys are: food_catering, transport_travel, gift, software, hardware, office_supplies, internet, course_training, other_unsure.
+                """;
+    }
+
+    private ObjectNode analysisSchema() {
+        ObjectNode schema = MAPPER.createObjectNode();
+        schema.put("type", "object");
+        schema.putArray("required").add("receiptFacts").add("proposedAnswers").add("warnings").add("rawModelSummary");
+        schema.put("additionalProperties", false);
+
+        ObjectNode properties = schema.putObject("properties");
+        ObjectNode facts = properties.putObject("receiptFacts");
+        facts.put("type", "object");
+        facts.put("additionalProperties", false);
+        facts.putArray("required")
+                .add("merchantName").add("date").add("amount").add("currency")
+                .add("supplierCountry").add("visibleVatText").add("lineItems").add("documentType");
+        ObjectNode factProps = facts.putObject("properties");
+        nullableString(factProps, "merchantName");
+        nullableString(factProps, "date");
+        nullableNumber(factProps, "amount");
+        nullableString(factProps, "currency");
+        nullableString(factProps, "supplierCountry");
+        nullableString(factProps, "visibleVatText");
+        ObjectNode lineItems = factProps.putObject("lineItems");
+        lineItems.put("type", "array");
+        lineItems.putObject("items").put("type", "string");
+        nullableString(factProps, "documentType");
+
+        ObjectNode proposed = properties.putObject("proposedAnswers");
+        proposed.put("type", "array");
+        ObjectNode answerItem = proposed.putObject("items");
+        answerItem.put("type", "object");
+        answerItem.put("additionalProperties", false);
+        answerItem.putArray("required").add("nodeKey").add("answerKey").add("source").add("confidence").add("evidence").add("accepted");
+        ObjectNode answerProps = answerItem.putObject("properties");
+        answerProps.putObject("nodeKey").put("type", "string");
+        answerProps.putObject("answerKey").put("type", "string");
+        answerProps.putObject("source").put("type", "string");
+        nullableNumber(answerProps, "confidence");
+        nullableString(answerProps, "evidence");
+        ObjectNode accepted = answerProps.putObject("accepted");
+        ArrayNode acceptedTypes = accepted.putArray("type");
+        acceptedTypes.add("boolean").add("null");
+
+        ObjectNode warnings = properties.putObject("warnings");
+        warnings.put("type", "array");
+        warnings.putObject("items").put("type", "string");
+        properties.putObject("rawModelSummary").put("type", "string");
+        return schema;
+    }
+
+    private void nullableString(ObjectNode props, String name) {
+        ObjectNode field = props.putObject(name);
+        ArrayNode types = field.putArray("type");
+        types.add("string").add("null");
+    }
+
+    private void nullableNumber(ObjectNode props, String name) {
+        ObjectNode field = props.putObject(name);
+        ArrayNode types = field.putArray("type");
+        types.add("number").add("null");
+    }
+
+    private String fallbackAnalysisJson() {
+        return """
+                {
+                  "receiptFacts": {
+                    "merchantName": null,
+                    "date": null,
+                    "amount": null,
+                    "currency": "DKK",
+                    "supplierCountry": null,
+                    "visibleVatText": null,
+                    "lineItems": [],
+                    "documentType": "receipt"
+                  },
+                  "proposedAnswers": [],
+                  "warnings": ["Receipt analysis was unavailable. Please choose the classification manually."],
+                  "rawModelSummary": ""
+                }
+                """;
+    }
+}

@@ -17,6 +17,12 @@ public class ExpenseDecisionLogService {
     }
 
     @Transactional
+    public void recordAIApprovalPendingFinanceReview(Expense e, String reason) {
+        append(e, "AI", null, "AI_VALIDATED_APPROVED",
+               e.getStatus(), e.getStatus(), e.getReviewState(), "PENDING_HR", null, reason);
+    }
+
+    @Transactional
     public void recordAIRejection(Expense e, String toReviewState, String primaryRuleId, String reason) {
         append(e, "AI", null, "AI_VALIDATED_REJECTED",
                e.getStatus(), e.getStatus(), e.getReviewState(), toReviewState, primaryRuleId, reason);

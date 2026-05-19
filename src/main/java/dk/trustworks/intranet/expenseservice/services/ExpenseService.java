@@ -84,12 +84,20 @@ public class ExpenseService {
 
     @Transactional
     public void processExpense(Expense expense) throws IOException {
+        processExpense(expense, null);
+    }
+
+    @Transactional
+    public void processExpense(Expense expense, Runnable afterPersistBeforeValidation) throws IOException {
         log.info("Processing new expense " + expense.getUuid());
         try {
             //save expense to db
             expense.setStatus(STATUS_CREATED);
             expense.persist();
             log.info("Expense persisted with status CREATED: " + expense.getUuid());
+            if (afterPersistBeforeValidation != null) {
+                afterPersistBeforeValidation.run();
+            }
 
             //save expense file to AWS
             ExpenseFile expenseFile = new ExpenseFile(expense.getUuid(), expense.getExpensefile());
@@ -471,4 +479,3 @@ public class ExpenseService {
         eventBus.publish("expense.validate", uuid);
     }
 }
-
