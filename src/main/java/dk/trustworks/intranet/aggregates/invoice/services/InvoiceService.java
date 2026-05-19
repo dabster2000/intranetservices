@@ -418,7 +418,7 @@ public class InvoiceService {
         return invoice;
     }
 
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    @Transactional
     public Invoice updateDraftInvoice(Invoice invoice) {
         if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
             return legacyUpdateDraft(invoice);
