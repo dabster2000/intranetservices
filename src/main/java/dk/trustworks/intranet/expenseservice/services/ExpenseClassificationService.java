@@ -88,7 +88,7 @@ public class ExpenseClassificationService {
 
         long startNanos = System.nanoTime();
         String raw = openAIService.askWithSchemaAndImage(
-                analysisSystemPrompt(),
+                analysisSystemPrompt(version),
                 "Read this employee receipt. Return only facts visible on the receipt and proposed question-tree answers. Do not choose final account numbers.",
                 request.receiptBase64(),
                 mime,
@@ -452,15 +452,64 @@ public class ExpenseClassificationService {
         }
     }
 
-    private String analysisSystemPrompt() {
-        return """
+    String analysisSystemPrompt(String treeVersion) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("""
                 You classify employee receipts for Trustworks before expense submission.
-                Return only facts visible on the receipt and possible answers to the question tree.
-                You may propose root categories and supplier-country answers when visible evidence supports them.
+                Return facts visible on the receipt and proposed answers to the question tree.
                 Do not output account numbers, tax codes, or final accounting decisions.
-                Valid root answer keys are: food_catering, transport_travel, gift, software, hardware, office_supplies, internet, course_training, other_unsure.
-                """;
+
+                Each proposedAnswer object MUST set:
+                  - "nodeKey": the exact node identifier from the list below — NEVER the answer string itself
+                  - "answerKey": one of the valid answer values listed for that node
+                  - "confidence": a number 0.0 to 1.0 reflecting visual evidence
+                  - "evidence": a short sentence quoting receipt details that justify the choice
+                  - "source": "receipt"
+
+                You may ONLY propose answers for these AI-allowed nodes (skip a node if you have no evidence):
+                """);
+        for (NodeAnswerOptions node : aiAllowedNodes(treeVersion)) {
+            prompt.append("  - nodeKey \"").append(node.nodeKey).append("\" — ").append(node.prompt).append("\n");
+            prompt.append("      valid answerKey values: ").append(String.join(", ", node.answerKeys)).append("\n");
+        }
+        prompt.append("""
+
+                Always propose an answer for nodeKey "root" when the receipt makes the expense category
+                obvious (e.g. restaurant/cafeteria/grocery receipts ⇒ food_catering; bridge/toll/parking/
+                taxi/train ⇒ transport_travel; flower shop or chocolatier ⇒ gift).
+                """);
+        return prompt.toString();
     }
+
+    /**
+     * Reads the active classification tree and returns the AI-allowed nodes (policy
+     * AI_ALLOWED_USER_CAN_OVERRIDE) with their prompt + valid answer keys. Used to build
+     * the OpenAI system prompt dynamically so it can never drift from the seeded tree.
+     */
+    List<NodeAnswerOptions> aiAllowedNodes(String treeVersion) {
+        List<ExpenseClassificationNode> nodes = ExpenseClassificationNode.list(
+                "treeVersion = ?1 and answerSourcePolicy = ?2",
+                Sort.by("sortOrder"),
+                treeVersion,
+                "AI_ALLOWED_USER_CAN_OVERRIDE"
+        );
+        Map<String, List<ExpenseClassificationOption>> options = ExpenseClassificationOption.<ExpenseClassificationOption>list(
+                        "treeVersion = ?1",
+                        Sort.by("sortOrder"),
+                        treeVersion
+                )
+                .stream()
+                .collect(Collectors.groupingBy(o -> o.nodeKey, LinkedHashMap::new, Collectors.toList()));
+        List<NodeAnswerOptions> result = new ArrayList<>(nodes.size());
+        for (ExpenseClassificationNode node : nodes) {
+            List<String> answerKeys = options.getOrDefault(node.nodeKey, List.of())
+                    .stream().map(o -> o.answerKey).toList();
+            result.add(new NodeAnswerOptions(node.nodeKey, node.prompt, answerKeys));
+        }
+        return result;
+    }
+
+    record NodeAnswerOptions(String nodeKey, String prompt, List<String> answerKeys) {}
 
     private ObjectNode analysisSchema() {
         ObjectNode schema = MAPPER.createObjectNode();
