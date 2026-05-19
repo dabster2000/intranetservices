@@ -7,6 +7,7 @@ import dk.trustworks.intranet.domain.user.entity.UserContactinfo;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseClassificationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseReviewRoutingService;
@@ -40,6 +41,9 @@ public class ExpenseCreatedConsumer {
 
     @Inject
     ExpenseDecisionLogService decisionLogs;
+
+    @Inject
+    ExpenseClassificationService classificationService;
 
     @Scheduled(every = "50m")
     public void expenseSyncJob() {
@@ -112,11 +116,22 @@ public class ExpenseCreatedConsumer {
         managedExpense.setAiValidationCount(managedExpense.getAiValidationCount() + 1);
 
         if (result.approved()) {
-            // Log the transition FIRST so recordAIApproval sees the pre-mutation state
-            decisionLogs.recordAIApproval(managedExpense);
-            // Approved → move to VALIDATED, clear any prior review state.
-            managedExpense.setStatus(ExpenseService.STATUS_VALIDATED);
-            managedExpense.setReviewState(null);
+            if (classificationService.requiresFinanceReview(managedExpense.getUuid())) {
+                // Log the transition FIRST so the pre-mutation state is captured.
+                decisionLogs.recordAIApprovalPendingFinanceReview(
+                        managedExpense,
+                        "AI approved the receipt, but the selected expense route requires Finance review.");
+                managedExpense.setStatus(ExpenseService.STATUS_CREATED);
+                managedExpense.setReviewState("PENDING_HR");
+                log.infof("Expense %s APPROVED by AI but routed to PENDING_HR due to classification fallback.",
+                        expense.getUuid());
+            } else {
+                // Log the transition FIRST so recordAIApproval sees the pre-mutation state
+                decisionLogs.recordAIApproval(managedExpense);
+                // Approved → move to VALIDATED, clear any prior review state.
+                managedExpense.setStatus(ExpenseService.STATUS_VALIDATED);
+                managedExpense.setReviewState(null);
+            }
             log.infof("Expense %s APPROVED by AI. Reason: %s", expense.getUuid(), result.reason());
         } else {
             // Rejected → stays in CREATED status; routed into a review state instead.

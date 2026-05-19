@@ -9,6 +9,7 @@ import dk.trustworks.intranet.expenseservice.dto.ExpenseJustificationDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import dk.trustworks.intranet.expenseservice.services.EconomicsService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseClassificationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
@@ -58,6 +59,9 @@ public class ExpenseResource {
 
     @Inject
     ExpenseDecisionLogService logs;
+
+    @Inject
+    ExpenseClassificationService classificationService;
 
     @Inject
     dk.trustworks.intranet.security.RequestHeaderHolder header;
@@ -226,7 +230,8 @@ public class ExpenseResource {
     public Response saveExpense(@Valid Expense expense) throws IOException {
         log.info("ExpenseResource.saveExpense");
         log.info("expense = " + expense);
-        expenseService.processExpense(expense);
+        classificationService.applyResolvedAccount(expense);
+        expenseService.processExpense(expense, () -> classificationService.persistSubmittedClassification(expense));
         return Response.status(Response.Status.CREATED).entity(expense).build();
     }
 
@@ -263,6 +268,11 @@ public class ExpenseResource {
         Expense existing = Expense.findById(uuid);
         if (existing == null) {
             throw new WebApplicationException("Expense not found", 404);
+        }
+
+        if (expense.getClassification() != null) {
+            expense.setUseruuid(existing.getUseruuid());
+            classificationService.applyResolvedAccount(expense);
         }
 
         // Build dynamic update query based on what's being updated
@@ -313,6 +323,13 @@ public class ExpenseResource {
         if (expense.getExpensefile() != null && !expense.getExpensefile().isEmpty()) {
             ExpenseFile newFile = new ExpenseFile(uuid, expense.getExpensefile());
             expenseFileService.saveFile(newFile);
+        }
+
+        if (expense.getClassification() != null) {
+            existing.setClassification(expense.getClassification());
+            existing.setAccount(expense.getAccount());
+            existing.setAccountname(expense.getAccountname());
+            classificationService.persistSubmittedClassification(existing);
         }
 
         // If the row is sitting in a review state waiting on the employee, this edit

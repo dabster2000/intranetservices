@@ -11,6 +11,7 @@ import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import dk.trustworks.intranet.expenseservice.utils.LocalDateDeserializer;
 import dk.trustworks.intranet.expenseservice.utils.LocalDateSerializer;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseClassificationDTOs;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import lombok.Data;
@@ -65,6 +66,11 @@ public class Expense extends PanacheEntityBase {
     @ToString.Exclude
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String expensefile;
+
+    @Transient
+    @ToString.Exclude
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    private ExpenseClassificationDTOs.Submission classification;
 
     @JsonIgnore
     private int vouchernumber;
