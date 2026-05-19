@@ -30,7 +30,16 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class ExpenseClassificationService {
 
-    private static final double AI_ACCEPT_THRESHOLD = 0.70;
+    // Lowered from 0.70 → 0.40 because the previous cutoff silently discarded usable
+    // suggestions from cheaper vision models and left the UI with zero AI hints. Dropped
+    // answers are now logged so we can tune this number with real evidence.
+    private static final double AI_ACCEPT_THRESHOLD = 0.40;
+    // Vision + strict JSON schema can produce more tokens than the default 4096
+    // budget once the model includes a rich line-item array; bump just for this path.
+    private static final int VISION_MAX_OUTPUT_TOKENS = 8192;
+    private static final String UNREADABLE_WARNING =
+            "We couldn't read the receipt. Try a sharper, well-lit photo showing the date, merchant and total.";
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() {};
 
@@ -56,6 +65,8 @@ public class ExpenseClassificationService {
         String mime = request.mimeType() == null || request.mimeType().isBlank() ? "image/jpeg" : request.mimeType();
         if ("application/pdf".equalsIgnoreCase(mime)) {
             String version = activeTreeVersion();
+            log.infof("[Expense-Classify] PDF receipt; skipping AI extraction. useruuid=%s treeVersion=%s",
+                    useruuid, version);
             ExpenseClassificationDTOs.AnalyzeResponse response = new ExpenseClassificationDTOs.AnalyzeResponse(
                     UUID.randomUUID().toString(),
                     version,
@@ -70,6 +81,12 @@ public class ExpenseClassificationService {
 
         String version = activeTreeVersion();
         String fallback = fallbackAnalysisJson();
+        String visionModel = openAIService.getVisionModel();
+        int base64Len = request.receiptBase64().length();
+        log.infof("[Expense-Classify] Start analyze. useruuid=%s treeVersion=%s mime=%s base64Len=%d model=%s",
+                useruuid, version, mime, base64Len, visionModel);
+
+        long startNanos = System.nanoTime();
         String raw = openAIService.askWithSchemaAndImage(
                 analysisSystemPrompt(),
                 "Read this employee receipt. Return only facts visible on the receipt and proposed question-tree answers. Do not choose final account numbers.",
@@ -77,10 +94,24 @@ public class ExpenseClassificationService {
                 mime,
                 analysisSchema(),
                 "expense_receipt_analysis",
-                fallback
+                fallback,
+                visionModel,
+                VISION_MAX_OUTPUT_TOKENS
         );
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+
+        String rawPreview = raw == null ? "null"
+                : (raw.length() > 500 ? raw.substring(0, 500) + "..." : raw);
+        log.infof("[Expense-Classify] OpenAI returned in %d ms. rawLen=%d preview=%s",
+                elapsedMs, raw == null ? 0 : raw.length(), rawPreview);
 
         ExpenseClassificationDTOs.AnalyzeResponse parsed = parseAnalysis(version, raw);
+        log.infof("[Expense-Classify] Parsed. merchant=%s date=%s amount=%s answersKept=%d warnings=%d",
+                parsed.receiptFacts() == null ? "null" : parsed.receiptFacts().merchantName(),
+                parsed.receiptFacts() == null ? "null" : parsed.receiptFacts().date(),
+                parsed.receiptFacts() == null ? "null" : String.valueOf(parsed.receiptFacts().amount()),
+                parsed.proposedAnswers().size(),
+                parsed.warnings().size());
         persistAnalysis(useruuid, parsed);
         return parsed;
     }
@@ -320,25 +351,48 @@ public class ExpenseClassificationService {
         row.persist();
     }
 
-    private ExpenseClassificationDTOs.AnalyzeResponse parseAnalysis(String version, String raw) {
+    ExpenseClassificationDTOs.AnalyzeResponse parseAnalysis(String version, String raw) {
+        String rawForPersist = raw == null ? "" : raw;
         try {
             JsonNode node = MAPPER.readTree(raw == null || raw.isBlank() ? fallbackAnalysisJson() : raw);
             String analysisId = UUID.randomUUID().toString();
             ExpenseClassificationDTOs.ReceiptFacts facts = MAPPER.treeToValue(node.path("receiptFacts"), ExpenseClassificationDTOs.ReceiptFacts.class);
             List<ExpenseClassificationDTOs.Answer> proposed = new ArrayList<>();
+            int dropped = 0;
             JsonNode proposedNode = node.path("proposedAnswers");
             if (proposedNode.isArray()) {
                 for (JsonNode answerNode : proposedNode) {
                     ExpenseClassificationDTOs.Answer answer = MAPPER.treeToValue(answerNode, ExpenseClassificationDTOs.Answer.class);
                     if (answer.confidence() != null && answer.confidence() >= AI_ACCEPT_THRESHOLD) {
                         proposed.add(answer);
+                    } else {
+                        dropped++;
+                        log.infof("[Expense-Classify] Dropping low-confidence answer node=%s answer=%s confidence=%s threshold=%.2f",
+                                answer.nodeKey(),
+                                answer.answerKey(),
+                                String.valueOf(answer.confidence()),
+                                AI_ACCEPT_THRESHOLD);
                     }
                 }
+            }
+            if (dropped > 0) {
+                log.infof("[Expense-Classify] %d proposed answer(s) below threshold %.2f", dropped, AI_ACCEPT_THRESHOLD);
             }
             List<String> warnings = new ArrayList<>();
             JsonNode warningsNode = node.path("warnings");
             if (warningsNode.isArray()) {
                 warningsNode.forEach(w -> warnings.add(w.asText()));
+            }
+            if (isReceiptUnreadable(facts) && warnings.stream().noneMatch(w -> w != null && w.contains("couldn't read"))) {
+                warnings.add(UNREADABLE_WARNING);
+                log.infof("[Expense-Classify] Receipt facts empty — appending unreadable warning so the UI surfaces it.");
+            }
+            String summary = node.path("rawModelSummary").asText("");
+            // Persist the raw model output (or a slice of it) when the model produced no
+            // useful summary but parsing technically succeeded. Without this, silent-empty
+            // results are unrecoverable after the fact.
+            if (summary == null || summary.isBlank()) {
+                summary = rawForPersist.length() > 4000 ? rawForPersist.substring(0, 4000) : rawForPersist;
             }
             return new ExpenseClassificationDTOs.AnalyzeResponse(
                     analysisId,
@@ -346,19 +400,35 @@ public class ExpenseClassificationService {
                     facts == null ? emptyFacts("receipt") : facts,
                     sanitizeAnswers(version, proposed),
                     warnings,
-                    node.path("rawModelSummary").asText("")
+                    summary
             );
         } catch (Exception ex) {
-            log.warnf(ex, "Failed to parse expense receipt classification response");
+            log.warnf(ex, "[Expense-Classify] Failed to parse expense receipt classification response");
+            String summary = rawForPersist.length() > 4000 ? rawForPersist.substring(0, 4000) : rawForPersist;
             return new ExpenseClassificationDTOs.AnalyzeResponse(
                     UUID.randomUUID().toString(),
                     version,
                     emptyFacts("receipt"),
                     List.of(),
                     List.of("Receipt analysis was unavailable. Please choose the classification manually."),
-                    ""
+                    summary
             );
         }
+    }
+
+    /**
+     * True when {@code facts} carries no meaningful receipt signal — i.e. merchantName,
+     * date and amount are all null/blank. A genuine receipt always carries at least one
+     * of these; if all are missing the analyser either looked at a non-receipt image or
+     * the vision model produced an empty response, and we should ask the user for a
+     * better photo instead of silently approving.
+     */
+    static boolean isReceiptUnreadable(ExpenseClassificationDTOs.ReceiptFacts facts) {
+        if (facts == null) return true;
+        boolean noMerchant = facts.merchantName() == null || facts.merchantName().isBlank();
+        boolean noDate = facts.date() == null || facts.date().isBlank();
+        boolean noAmount = facts.amount() == null;
+        return noMerchant && noDate && noAmount;
     }
 
     private ExpenseClassificationDTOs.ReceiptFacts emptyFacts(String documentType) {

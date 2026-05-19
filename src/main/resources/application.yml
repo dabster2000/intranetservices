@@ -295,6 +295,11 @@ openai:
   api:
     key: ${OPENAI_APIKEY:xx}
   model: gpt-5-nano #gpt-4o-mini
+  # Vision-strong model used only by vision + strict-schema calls (e.g. receipt OCR
+  # in ExpenseClassificationService). Reasoning-class models like gpt-5-nano burn
+  # their output budget on thinking and frequently emit empty structured output for
+  # image+schema requests, so vision is routed through a proven vision model.
+  vision-model: ${OPENAI_VISION_MODEL:gpt-4o-mini}
 # Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
 # so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
 # does, cannot reuse production's idempotency keys.

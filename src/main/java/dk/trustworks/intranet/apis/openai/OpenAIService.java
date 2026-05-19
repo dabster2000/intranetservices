@@ -22,9 +22,16 @@ public class OpenAIService {
     @ConfigProperty(name = "openai.api.key")
     String apiKey;
 
-    // Use a vision-capable model here if you're sending images (e.g., gpt-4o / gpt-4o-mini / gpt-5 models with vision).
+    // Default model used by text and validation paths. Reasoning-class models (e.g. gpt-5-nano)
+    // are fine here because the input is short and the output is plain text or simple JSON.
     @ConfigProperty(name = "openai.model", defaultValue = "gpt-5-nano")
     String model;
+
+    // Dedicated model for vision + strict-schema calls (e.g. receipt OCR in ExpenseClassificationService).
+    // Reasoning-class models burn output tokens on thinking and frequently emit empty structured output
+    // for image+schema requests, so we route vision through a proven vision model by default.
+    @ConfigProperty(name = "openai.vision-model", defaultValue = "gpt-4o-mini")
+    String visionModel;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -571,8 +578,29 @@ public class OpenAIService {
                                         ObjectNode jsonSchema,
                                         String schemaName,
                                         String refusalFallbackJson) {
+        return askWithSchemaAndImage(system, userInstructionText, base64Image, mimeType,
+                jsonSchema, schemaName, refusalFallbackJson, null, 0);
+    }
+
+    /**
+     * Vision-aware structured output with per-call model + token budget overrides.
+     *
+     * @param modelOverride       optional model id to use for this call only (null/blank → fall back to the global {@code openai.model})
+     * @param maxOutputTokensOverride positive value overrides the default 4096 budget — required for vision + schema with reasoning models
+     */
+    public String askWithSchemaAndImage(String system,
+                                        String userInstructionText,
+                                        String base64Image,
+                                        String mimeType,
+                                        ObjectNode jsonSchema,
+                                        String schemaName,
+                                        String refusalFallbackJson,
+                                        String modelOverride,
+                                        int maxOutputTokensOverride) {
+        String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
-            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName);
+            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
+                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
 
             ArrayNode input = req.putArray("input");
             if (system != null && !system.isBlank()) {
@@ -598,28 +626,33 @@ public class OpenAIService {
             user.set("content", content);
 
             String body = objectMapper.writeValueAsString(req);
-            log.debugf("[OpenAIService] Sending response (json_schema + image). model=%s, bodySize=%d", model, body.length());
+            log.debugf("[OpenAIService] Sending response (json_schema + image). model=%s, bodySize=%d", chosenModel, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);
 
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s", http.getStatus(), chosenModel, payload);
                 return "{}";
             }
 
             JsonNode root = objectMapper.readTree(payload);
             String refusal = extractRefusal(root);
             if (refusal != null) {
-                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
                 return refusalFallbackJson != null ? refusalFallbackJson : "{}";
             }
             return extractOutputTextOrEmpty(root);
 
         } catch (Exception e) {
-            log.error("[OpenAIService] Responses request failed (schema + image)", e);
+            log.errorf(e, "[OpenAIService] Responses request failed (schema + image, model=%s)", chosenModel);
             return "{}";
         }
+    }
+
+    /** Exposes the configured vision model so callers can include it in their own logs. */
+    public String getVisionModel() {
+        return visionModel;
     }
 
     /**
@@ -840,9 +873,13 @@ public class OpenAIService {
     /* ----------------- helpers ----------------- */
 
     private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName) {
+        return baseSchemaRequest(jsonSchema, schemaName, model, 4096);
+    }
+
+    private ObjectNode baseSchemaRequest(ObjectNode jsonSchema, String schemaName, String modelOverride, int maxOutputTokens) {
         ObjectNode req = objectMapper.createObjectNode();
-        req.put("model", model);
-        req.put("max_output_tokens", 4096);
+        req.put("model", modelOverride != null && !modelOverride.isBlank() ? modelOverride : model);
+        req.put("max_output_tokens", maxOutputTokens > 0 ? maxOutputTokens : 4096);
 
         // Responses API structured outputs:
         // text: {
