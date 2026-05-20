@@ -477,6 +477,10 @@ public class ExpenseClassificationService {
                 Always propose an answer for nodeKey "root" when the receipt makes the expense category
                 obvious (e.g. restaurant/cafeteria/grocery receipts ⇒ food_catering; bridge/toll/parking/
                 taxi/train ⇒ transport_travel; flower shop or chocolatier ⇒ gift).
+
+                The "date" field in receiptFacts MUST be formatted as ISO yyyy-MM-dd (e.g. 2025-11-07).
+                Convert from any format printed on the receipt (e.g. "07-11-2025", "7/11 2025", "Nov 7,
+                2025"). If you cannot determine a full date, return null.
                 """);
         return prompt.toString();
     }
@@ -526,7 +530,7 @@ public class ExpenseClassificationService {
                 .add("supplierCountry").add("visibleVatText").add("lineItems").add("documentType");
         ObjectNode factProps = facts.putObject("properties");
         nullableString(factProps, "merchantName");
-        nullableString(factProps, "date");
+        nullableIsoDate(factProps, "date");
         nullableNumber(factProps, "amount");
         nullableString(factProps, "currency");
         nullableString(factProps, "supplierCountry");
@@ -569,6 +573,13 @@ public class ExpenseClassificationService {
         ObjectNode field = props.putObject(name);
         ArrayNode types = field.putArray("type");
         types.add("number").add("null");
+    }
+
+    private void nullableIsoDate(ObjectNode props, String name) {
+        ObjectNode field = props.putObject(name);
+        ArrayNode types = field.putArray("type");
+        types.add("string").add("null");
+        field.put("pattern", "^\\d{4}-\\d{2}-\\d{2}$");
     }
 
     private String fallbackAnalysisJson() {
