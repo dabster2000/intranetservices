@@ -18,13 +18,17 @@ import static org.hamcrest.Matchers.not;
 class ExpenseReviewResourceGetTest {
 
     private String seedExpense(String reviewState, java.time.LocalDate expenseDate) {
+        return seedExpense(reviewState, expenseDate, "CREATED");
+    }
+
+    private String seedExpense(String reviewState, java.time.LocalDate expenseDate, String status) {
         Expense e = new Expense();
         e.setUuid(java.util.UUID.randomUUID().toString());
         e.setUseruuid("u");
         e.setAmount(100.0);
         e.setAccount("3585");
         e.setExpensedate(expenseDate);
-        e.setStatus("CREATED");
+        e.setStatus(status);
         e.setReviewState(reviewState);
         e.setAiValidationApproved(false);
         QuarkusTransaction.requiringNew().run(e::persist);
@@ -61,6 +65,22 @@ class ExpenseReviewResourceGetTest {
           .statusCode(200)
           .body("expense.uuid", hasItems(needsFix, needsJustification, sentBack))
           .body("expense.uuid", not(hasItem(pending)));
+    }
+
+    @Test
+    @TestSecurity(user = "accounting-user", roles = {"expenses:review"})
+    void queuesExcludeDeletedRowsEvenWithActionableReviewState() {
+        String deleted = seedExpense("NEEDS_FIX", java.time.LocalDate.now(), "DELETED");
+        String visible = seedExpense("NEEDS_FIX", java.time.LocalDate.now(), "CREATED");
+
+        given()
+          .queryParam("state", "AWAITING_EMPLOYEE")
+        .when()
+          .get("/expenses/review")
+        .then()
+          .statusCode(200)
+          .body("expense.uuid", hasItem(visible))
+          .body("expense.uuid", not(hasItem(deleted)));
     }
 
     @Test

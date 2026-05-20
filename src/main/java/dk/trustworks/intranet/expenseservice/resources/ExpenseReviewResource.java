@@ -30,6 +30,7 @@ public class ExpenseReviewResource {
 
     private static final ObjectReader AI_PRESET_REASONS_READER =
             new ObjectMapper().readerForListOf(String.class);
+    private static final String STATUS_DELETED = "DELETED";
 
     @Inject
     AIConfigSnapshot aiConfigSnapshot;
@@ -80,17 +81,19 @@ public class ExpenseReviewResource {
     }
 
     private List<Expense> listReviewQueue(List<String> states, Sort sort, LocalDate from, LocalDate to) {
-        StringBuilder query = new StringBuilder("reviewState in ?1");
+        StringBuilder query = new StringBuilder("reviewState in ?1 and status <> ?2");
         List<Object> params = new ArrayList<>();
         params.add(states);
+        params.add(STATUS_DELETED);
         appendExpenseDateFilters(query, params, from, to);
         return Expense.list(query.toString(), sort, params.toArray());
     }
 
     private List<Expense> listStuckQueue(Sort sort, LocalDate from, LocalDate to) {
-        StringBuilder query = new StringBuilder("reviewState in ?1 and datemodified < ?2");
+        StringBuilder query = new StringBuilder("reviewState in ?1 and status <> ?2 and datemodified < ?3");
         List<Object> params = new ArrayList<>();
         params.add(List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION"));
+        params.add(STATUS_DELETED);
         params.add(LocalDate.now().minusDays(7));
         appendExpenseDateFilters(query, params, from, to);
         return Expense.list(query.toString(), sort, params.toArray());
