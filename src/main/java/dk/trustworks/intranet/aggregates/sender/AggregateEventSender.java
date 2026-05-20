@@ -48,8 +48,14 @@ public class AggregateEventSender {
     }
 
     private void persistEvent(AggregateRootChangeEvent event) {
-        QuarkusTransaction.requiringNew().run(() -> {
+        // REQUIRED semantics: join the caller's transaction when one is active
+        // (one JDBC connection total), otherwise start a new one. The old
+        // requiringNew() forced a second connection per write, which exhausted
+        // the pool under load (prod 500s on 2026-05-19).
+        if (QuarkusTransaction.isActive()) {
             event.persist();
-        });
+        } else {
+            QuarkusTransaction.requiringNew().run(() -> event.persist());
+        }
     }
 }
