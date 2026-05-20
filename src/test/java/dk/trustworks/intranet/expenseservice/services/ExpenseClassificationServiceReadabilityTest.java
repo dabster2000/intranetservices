@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -58,5 +59,23 @@ class ExpenseClassificationServiceReadabilityTest {
     void nullFactsAreUnreadable() {
         assertTrue(ExpenseClassificationService.isReceiptUnreadable(null),
                 "null facts should never approve silently");
+    }
+
+    @Test
+    void modelProposedAnswersAreLabeledAiForFrontendContract() {
+        ExpenseClassificationDTOs.Answer raw = new ExpenseClassificationDTOs.Answer(
+                "root",
+                "gift",
+                "receipt",
+                0.91,
+                "Flower shop receipt",
+                true);
+
+        ExpenseClassificationDTOs.Answer normalized = ExpenseClassificationService.modelProposedAnswer(raw);
+
+        assertEquals("AI", normalized.source(),
+                "frontend renders accepted model proposals by checking source == AI");
+        assertEquals("root", normalized.nodeKey());
+        assertEquals("gift", normalized.answerKey());
     }
 }

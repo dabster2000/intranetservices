@@ -88,6 +88,41 @@ class ExpenseClassificationServiceTest {
     }
 
     @Test
+    void normalizesModelProposedAnswerSourceToAi() {
+        String raw = """
+                {
+                  "receiptFacts": {
+                    "merchantName": "Bloom",
+                    "date": "2026-05-19",
+                    "amount": 450.0,
+                    "currency": "DKK",
+                    "supplierCountry": "DK",
+                    "visibleVatText": null,
+                    "lineItems": ["Bouquet"],
+                    "documentType": "receipt"
+                  },
+                  "proposedAnswers": [
+                    {
+                      "nodeKey": "root",
+                      "answerKey": "gift",
+                      "source": "receipt",
+                      "confidence": 0.91,
+                      "evidence": "Flower shop receipt",
+                      "accepted": true
+                    }
+                  ],
+                  "warnings": [],
+                  "rawModelSummary": "Flower shop receipt"
+                }
+                """;
+
+        ExpenseClassificationDTOs.AnalyzeResponse response = service.parseAnalysis("2026-05-19.v1", raw);
+
+        assertEquals(1, response.proposedAnswers().size());
+        assertEquals("AI", response.proposedAnswers().getFirst().source());
+    }
+
+    @Test
     @TestTransaction
     void persistsAuditMetadataForSubmittedClassification() {
         Expense expense = new Expense();
