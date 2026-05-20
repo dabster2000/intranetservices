@@ -338,6 +338,9 @@ public class ExpenseService {
                     expense.getIsOrphaned(),
                     expense.getAccountantNotes(),
                     expense.getUuid());
+            if (STATUS_DELETED.equals(status)) {
+                Expense.update("reviewState = null WHERE uuid like ?1", expense.getUuid());
+            }
             log.infof("Updated expense uuid=%s -> status=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
                     expense.getUuid(), status,
                     expense.getJournalnumber(), expense.getAccountingyear(), expense.getVouchernumber(),

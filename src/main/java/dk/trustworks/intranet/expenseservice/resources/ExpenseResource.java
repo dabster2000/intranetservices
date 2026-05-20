@@ -41,6 +41,7 @@ import java.util.List;
 @Consumes("application/json")
 @RolesAllowed({"expenses:read"})
 public class ExpenseResource {
+    private static final String STATUS_DELETED = "DELETED";
 
     @Inject
     ExpenseService expenseService;
@@ -135,21 +136,13 @@ public class ExpenseResource {
         int pageInt = Integer.parseInt(page);
         int limitInt = Integer.parseInt(limit);
 
-        if (includeDeleted) {
-            // Include ALL expenses (including DELETED)
-            return Expense.find("useruuid = ?1", Sort.by("expensedate").descending(), useruuid)
-                    .page(Page.of(pageInt, limitInt))
-                    .list();
-        } else {
-            // Exclude DELETED (current behavior - backward compatible)
-            return Expense.find("useruuid = ?1 and status not like ?2", Sort.by("expensedate").descending(), useruuid, "DELETED")
-                    .page(Page.of(pageInt, limitInt))
-                    .list();
-        }
+        return Expense.find("useruuid = ?1 and status <> ?2", Sort.by("expensedate").descending(), useruuid, STATUS_DELETED)
+                .page(Page.of(pageInt, limitInt))
+                .list();
     }
 
     public List<Expense> findByUser(@PathParam("useruuid") String useruuid) {
-        return Expense.find("useruuid = ?1 and status not like ?2", useruuid, "DELETED").list();
+        return Expense.find("useruuid = ?1 and status <> ?2", useruuid, STATUS_DELETED).list();
     }
 
     @GET
@@ -157,7 +150,8 @@ public class ExpenseResource {
     public List<Expense> findByProjectAndPeriod(@PathParam("projectuuid") String projectuuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        return Expense.find("projectuuid like ?1 and expensedate >= ?2 and expensedate <= ?3", projectuuid, localFromDate, localToDate).list();
+        return Expense.find("projectuuid like ?1 and expensedate >= ?2 and expensedate <= ?3 and status <> ?4",
+                projectuuid, localFromDate, localToDate, STATUS_DELETED).list();
     }
 
     @GET
@@ -165,7 +159,8 @@ public class ExpenseResource {
     public List<Expense> findByUserAndPeriod(@PathParam("useruuid") String useruuid, @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        return Expense.find("useruuid like ?1 and expensedate >= ?2 and expensedate <= ?3", useruuid, localFromDate, localToDate).list();
+        return Expense.find("useruuid like ?1 and expensedate >= ?2 and expensedate <= ?3 and status <> ?4",
+                useruuid, localFromDate, localToDate, STATUS_DELETED).list();
     }
 
     @GET
@@ -173,11 +168,10 @@ public class ExpenseResource {
     public List<Expense> findByPeriod(@QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
         LocalDate localFromDate = LocalDate.parse(fromdate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
         LocalDate localToDate = LocalDate.parse(todate, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        // Return all expenses within date range (by expensedate)
-        // Frontend filters for unpaid (paidOut IS NULL) or paid expenses as needed
-        return Expense.find("expensedate >= ?1 and expensedate <= ?2",
+        return Expense.find("expensedate >= ?1 and expensedate <= ?2 and status <> ?3",
             localFromDate,
-            localToDate).list();
+            localToDate,
+            STATUS_DELETED).list();
     }
 
     @GET
@@ -194,9 +188,13 @@ public class ExpenseResource {
                 queryBuilder.append(", ");
             }
         }
-        queryBuilder.append(")");
+        queryBuilder.append(") and status <> ?").append(statuses.length + 1);
 
-        return Expense.find(queryBuilder.toString(), Sort.by("datecreated").descending(), (Object[]) statuses).list();
+        Object[] params = new Object[statuses.length + 1];
+        System.arraycopy(statuses, 0, params, 0, statuses.length);
+        params[statuses.length] = STATUS_DELETED;
+
+        return Expense.find(queryBuilder.toString(), Sort.by("datecreated").descending(), params).list();
     }
 
     @GET
@@ -367,9 +365,7 @@ public class ExpenseResource {
 
                 // Clear voucher references after successful deletion
                 log.infof("Clearing voucher references for expense %s", uuid);
-                Expense.update("vouchernumber = 0, journalnumber = null, accountingyear = null, " +
-                              "status = ?1, datemodified = ?2 WHERE uuid = ?3",
-                        "DELETED", LocalDate.now(), uuid);
+                markDeleted(expense, true);
 
                 // Verify database update
                 Expense verifyExpense = Expense.findById(uuid);
@@ -380,7 +376,7 @@ public class ExpenseResource {
                 // Missing voucher references - shouldn't happen but handle gracefully
                 log.warnf(e, "Expense %s has vouchernumber but missing other references", uuid);
                 // Proceed with local soft delete
-                Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+                markDeleted(expense, false);
 
                 // Verify database update
                 Expense verifyExpense = Expense.findById(uuid);
@@ -393,9 +389,7 @@ public class ExpenseResource {
                 if (errorMsg != null && errorMsg.contains("404")) {
                     log.warnf("Voucher not found in e-conomic (404) for expense %s - auto-reconciling by soft deleting locally", uuid);
                     // Clear voucher references and soft delete
-                    Expense.update("vouchernumber = 0, journalnumber = null, accountingyear = null, " +
-                                  "status = ?1, datemodified = ?2 WHERE uuid = ?3",
-                            "DELETED", LocalDate.now(), uuid);
+                    markDeleted(expense, true);
 
                     // Verify database update
                     Expense verifyExpense = Expense.findById(uuid);
@@ -410,7 +404,7 @@ public class ExpenseResource {
         } else {
             // No voucher reference - just soft delete locally
             log.infof("Expense %s has no voucher reference - soft deleting locally only", uuid);
-            Expense.update("status = ?1, datemodified = ?2 WHERE uuid = ?3", "DELETED", LocalDate.now(), uuid);
+            markDeleted(expense, false);
 
             // Verify database update
             Expense verifyExpense = Expense.findById(uuid);
@@ -419,6 +413,17 @@ public class ExpenseResource {
         }
 
         log.infof("Expense %s deleted successfully", uuid);
+    }
+
+    private void markDeleted(Expense expense, boolean clearVoucherReferences) {
+        if (clearVoucherReferences) {
+            expense.setVouchernumber(0);
+            expense.setJournalnumber(null);
+            expense.setAccountingyear(null);
+        }
+        expense.setStatus(STATUS_DELETED);
+        expense.setReviewState(null);
+        expense.setDatemodified(LocalDate.now());
     }
 
 }
