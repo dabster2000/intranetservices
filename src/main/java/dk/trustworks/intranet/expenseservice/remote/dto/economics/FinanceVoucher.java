@@ -9,6 +9,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
         "account",
         "text",
         "amount",
+        "vatAccount",
         "contraAccount",
         "date"
 })
@@ -20,6 +21,8 @@ public class FinanceVoucher {
     public String text;
     @JsonProperty("amount")
     public double amount;
+    @JsonProperty("vatAccount")
+    public VatAccount vatAccount;
     @JsonProperty("contraAccount")
     public ContraAccount contraAccount;
     @JsonProperty("date")
@@ -69,6 +72,16 @@ public class FinanceVoucher {
         this.amount = amount;
     }
 
+    @JsonProperty("vatAccount")
+    public VatAccount getVatAccount() {
+        return vatAccount;
+    }
+
+    @JsonProperty("vatAccount")
+    public void setVatAccount(VatAccount vatAccount) {
+        this.vatAccount = vatAccount;
+    }
+
     @JsonProperty("contraAccount")
     public ContraAccount getContraAccount() {
         return contraAccount;
@@ -107,6 +120,7 @@ public class FinanceVoucher {
                 "account='" + account + '\'' +
                 ", text='" + text + '\'' +
                 ", amount='" + amount + '\'' +
+                ", vatAccount=" + vatAccount +
                 ", contraAccount='" + contraAccount + '\'' +
                 ", date='" + date +
                 '}';
