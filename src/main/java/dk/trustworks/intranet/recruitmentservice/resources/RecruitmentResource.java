@@ -706,22 +706,33 @@ public class RecruitmentResource {
         List<RevisionResponse.PdfArtifactRef> pdfRefs = recruitmentS3StorageService.storeTemplatePdfs(
                 pdfs, candidateUuid, RevisionKind.SIGNATURE);
 
+        // Identity-verification schemas live on the document template, not on
+        // individual signers. Fall back to the per-signer config only if the
+        // template has none configured.
+        List<String> signingSchemas = collectTemplateSigningSchemas(dossier.getTemplateUuid());
+        if (signingSchemas.isEmpty()) {
+            signingSchemas = collectSigningSchemas(signers);
+        }
+
         // External calls run before any DB write so a slow NextSign round-trip
         // does not hold a transaction open against candidate_dossier_revisions.
         String caseKey = nextsignSigningService.createMultiDocumentSigningCase(
                 documents,
                 signerInfos,
                 "recruitment-candidate:" + candidate.getUuid(),
-                collectSigningSchemas(signers));
+                signingSchemas);
 
         // Persist the minimal signing-cases row so NextSignStatusSyncBatchlet
-        // tracks status for this recruitment case. The 5th argument is the
-        // literal null: SharePoint upload is owned by the Convert flow, not
-        // by the sync batchlet (whose skip guard fires when the location uuid
-        // is null/blank — see NextSignStatusSyncBatchlet.java:214).
+        // tracks status for this recruitment case. user_uuid must reference
+        // an existing row in `user` (FK), so use the actor who triggered the
+        // send — the candidate UUID is not a system user and breaks the FK.
+        // The 5th argument is the literal null: SharePoint upload is owned by
+        // the Convert flow, not by the sync batchlet (whose skip guard fires
+        // when the location uuid is null/blank — see
+        // NextSignStatusSyncBatchlet.java:214).
         signingService.saveMinimalCase(
                 caseKey,
-                candidate.getUuid(),
+                actor.toString(),
                 "Recruitment: " + fullName(candidate.getFirstName(), candidate.getLastName()),
                 signerInfos.size(),
                 null);
@@ -875,6 +886,24 @@ public class RecruitmentResource {
             }
         }
         return schemas;
+    }
+
+    /**
+     * Resolve the identity-verification schemas configured on the dossier's
+     * document template, in display order. Returns an empty list when the
+     * template has no schemas — callers should fall back to per-signer config
+     * (legacy) or NextSign defaults.
+     */
+    private static List<String> collectTemplateSigningSchemas(String templateUuid) {
+        if (templateUuid == null || templateUuid.isBlank()) {
+            return List.of();
+        }
+        return dk.trustworks.intranet.documentservice.model.TemplateSigningSchemaEntity
+                .<dk.trustworks.intranet.documentservice.model.TemplateSigningSchemaEntity>find(
+                        "template.uuid = ?1 ORDER BY displayOrder", templateUuid)
+                .stream()
+                .map(s -> s.getSchemaType().getUrn())
+                .toList();
     }
 
     private static String firstSignerEmailFromList(List<SignerConfigDto> signers, String fallback) {
