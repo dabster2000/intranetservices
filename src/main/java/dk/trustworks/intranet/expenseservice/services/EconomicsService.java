@@ -101,10 +101,12 @@ public class  EconomicsService {
 
         Journal journal = new Journal(result.expenseJournalNumber());
         String text = "Udlæg | " + userAccount.getUsername() + " | " + expense.getAccountname();
+        Company company = getCompanyFromExpense(expense);
 
-        if(getCompanyFromExpense(expense).getCvr().equals("44232855")) {
+        if("44232855".equals(company.getCvr())) {
             expense.setAccount(String.valueOf(convertKontokode(Integer.parseInt(expense.getAccount()))));
         }
+        String defaultVatCode = resolveDefaultVatCode(result, Integer.parseInt(expense.getAccount()));
 
         try (EconomicsAPI remoteApi = getEconomicsAPI(result)) {
             Voucher voucher = null;
@@ -116,7 +118,7 @@ public class  EconomicsService {
             // and uses a fresh idempotency key so e-conomic's cache treats it as new.
             for (int shift = 0; shift <= MAX_PERIOD_SHIFT_DAYS; shift++) {
                 LocalDate voucherDate = LocalDate.now().plusDays(shift);
-                voucher = buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate);
+                voucher = buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate, defaultVatCode);
                 String json = new ObjectMapper().writeValueAsString(voucher);
                 String idempotencyKey = (shift == 0)
                         ? buildIdempotencyKey(expense)
@@ -337,9 +339,10 @@ public class  EconomicsService {
      * cross the fiscal year boundary land in the correct year.
      */
     public Voucher buildJSONRequestWithDate(Expense expense, UserAccount userAccount, Journal journal, String text, LocalDate voucherDate){
+        return buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate, null);
+    }
 
-        ContraAccount contraAccount = new ContraAccount(userAccount.getEconomics());
-        ExpenseAccount expenseaccount = new ExpenseAccount(Integer.parseInt(expense.getAccount()));
+    public Voucher buildJSONRequestWithDate(Expense expense, UserAccount userAccount, Journal journal, String text, LocalDate voucherDate, String vatCode){
         Company company = getCompanyFromExpense(expense);
         String fiscalYearName = DateUtils.getFiscalYearName(DateUtils.fiscalYearStart(voucherDate), company.getUuid());
         AccountingYear accountingYear = new AccountingYear(fiscalYearName);
@@ -347,7 +350,7 @@ public class  EconomicsService {
 
         String date = voucherDate.format(DateTimeFormatter.ISO_LOCAL_DATE);
 
-        FinanceVoucher financeVoucher1 = new FinanceVoucher(expenseaccount, text, expense.getAmount(), contraAccount, date);
+        FinanceVoucher financeVoucher1 = buildFinanceVoucher(expense, userAccount, text, date, vatCode);
         List<FinanceVoucher> financeVouchers = new ArrayList<>();
         financeVouchers.add(financeVoucher1);
 
@@ -360,6 +363,16 @@ public class  EconomicsService {
         return voucher;
     }
 
+    FinanceVoucher buildFinanceVoucher(Expense expense, UserAccount userAccount, String text, String date, String vatCode) {
+        ContraAccount contraAccount = new ContraAccount(userAccount.getEconomics());
+        ExpenseAccount expenseaccount = new ExpenseAccount(Integer.parseInt(expense.getAccount()));
+        FinanceVoucher financeVoucher = new FinanceVoucher(expenseaccount, text, expense.getAmount(), contraAccount, date);
+        if (vatCode != null && !vatCode.isBlank()) {
+            financeVoucher.setVatAccount(new VatAccount(vatCode.trim()));
+        }
+        return financeVoucher;
+    }
+
     public Boolean validateAccount(Expense expense) {
         int account = Integer.parseInt(expense.getAccount());
         try {
@@ -367,6 +380,53 @@ public class  EconomicsService {
             return true;
         } catch (Exception e){
             return false;
+        }
+    }
+
+    String resolveDefaultVatCode(IntegrationKey.IntegrationKeyValue result, int accountNumber) {
+        try (EconomicsAPIAccount economicsAccountAPI = getEconomicsAccountAPI(result)) {
+            try (Response accountResponse = economicsAccountAPI.getAccount(accountNumber)) {
+                int status = accountResponse.getStatus();
+                if (status < 200 || status >= 300) {
+                    String body = safeRead(accountResponse);
+                    log.warnf("Could not resolve e-conomic VAT default for account %d: status=%d, body=%s. Posting without VAT.",
+                            accountNumber, status, body);
+                    return null;
+                }
+
+                String response = accountResponse.readEntity(String.class);
+                Optional<String> vatCode = extractDefaultVatCode(response);
+                if (vatCode.isEmpty()) {
+                    log.warnf("No e-conomic VAT default returned for account %d. Posting without VAT.", accountNumber);
+                    return null;
+                }
+                return vatCode.get();
+            }
+        } catch (Exception e) {
+            log.warnf(e, "Could not resolve e-conomic VAT default for account %d. Posting without VAT.", accountNumber);
+            return null;
+        }
+    }
+
+    static Optional<String> extractDefaultVatCode(String accountJson) {
+        if (accountJson == null || accountJson.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode vatCodeNode = new ObjectMapper()
+                    .readTree(accountJson)
+                    .path("vatAccount")
+                    .path("vatCode");
+            if (vatCodeNode.isMissingNode() || vatCodeNode.isNull()) {
+                return Optional.empty();
+            }
+            String vatCode = vatCodeNode.asText(null);
+            if (vatCode == null || vatCode.isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(vatCode.trim());
+        } catch (Exception e) {
+            return Optional.empty();
         }
     }
 

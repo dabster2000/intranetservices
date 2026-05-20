@@ -364,7 +364,7 @@ public class ExpenseClassificationService {
                 for (JsonNode answerNode : proposedNode) {
                     ExpenseClassificationDTOs.Answer answer = MAPPER.treeToValue(answerNode, ExpenseClassificationDTOs.Answer.class);
                     if (answer.confidence() != null && answer.confidence() >= AI_ACCEPT_THRESHOLD) {
-                        proposed.add(answer);
+                        proposed.add(modelProposedAnswer(answer));
                     } else {
                         dropped++;
                         log.infof("[Expense-Classify] Dropping low-confidence answer node=%s answer=%s confidence=%s threshold=%.2f",
@@ -464,7 +464,7 @@ public class ExpenseClassificationService {
                   - "answerKey": one of the valid answer values listed for that node
                   - "confidence": a number 0.0 to 1.0 reflecting visual evidence
                   - "evidence": a short sentence quoting receipt details that justify the choice
-                  - "source": "receipt"
+                  - "source": "AI"
 
                 You may ONLY propose answers for these AI-allowed nodes (skip a node if you have no evidence):
                 """);
@@ -549,7 +549,9 @@ public class ExpenseClassificationService {
         ObjectNode answerProps = answerItem.putObject("properties");
         answerProps.putObject("nodeKey").put("type", "string");
         answerProps.putObject("answerKey").put("type", "string");
-        answerProps.putObject("source").put("type", "string");
+        ObjectNode source = answerProps.putObject("source");
+        source.put("type", "string");
+        source.putArray("enum").add("AI");
         nullableNumber(answerProps, "confidence");
         nullableString(answerProps, "evidence");
         ObjectNode accepted = answerProps.putObject("accepted");
@@ -573,6 +575,17 @@ public class ExpenseClassificationService {
         ObjectNode field = props.putObject(name);
         ArrayNode types = field.putArray("type");
         types.add("number").add("null");
+    }
+
+    static ExpenseClassificationDTOs.Answer modelProposedAnswer(ExpenseClassificationDTOs.Answer answer) {
+        return new ExpenseClassificationDTOs.Answer(
+                answer.nodeKey(),
+                answer.answerKey(),
+                "AI",
+                answer.confidence(),
+                answer.evidence(),
+                answer.accepted()
+        );
     }
 
     private void nullableIsoDate(ObjectNode props, String name) {
