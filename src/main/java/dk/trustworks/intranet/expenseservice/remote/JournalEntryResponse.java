@@ -13,17 +13,38 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class JournalEntryResponse {
     public List<Entry> collection;
+    public List<Entry> items;
+    public String cursor;
     public Pagination pagination;
+
+    public List<Entry> entries() {
+        if (items != null) return items;
+        return collection;
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Entry {
         public int entryNumber;
         public int voucherNumber;
+        public int journalNumber;
+        public Integer entryTypeNumber;
         public String objectVersion;
         public Account account;
+        public Integer accountNumber;
         public String text;
         public double amount;
+        public String currency;
+        public Double exchangeRate;
+        public Integer contraAccountNumber;
+        public String supplierInvoiceNumber;
+        public String customerInvoiceNumber;
+        public Integer costTypeNumber;
         public String date;
+
+        public int resolvedAccountNumber() {
+            if (accountNumber != null) return accountNumber;
+            return account != null ? account.accountNumber : 0;
+        }
 
         @JsonIgnoreProperties(ignoreUnknown = true)
         public static class Account {

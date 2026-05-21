@@ -43,6 +43,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.PracticeBenchFteDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAbsenceWaterfallDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.PracticeForecastMonthDTO;
 import dk.trustworks.intranet.utils.TwConstants;
+import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.FiscalYearRange;
@@ -1245,6 +1246,14 @@ public class CxoFinanceService {
             LocalDate fromDate, LocalDate toDate,
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
+        return queryActualCosts(fromDate, toDate, sectors, serviceLines, contractTypes, clientId, companyIds, CostSource.BOOKED);
+    }
+
+    private double queryActualCosts(
+            LocalDate fromDate, LocalDate toDate,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds,
+            CostSource costSource) {
 
         String fromKey = UtilizationCalculationHelper.toMonthKey(fromDate);
         String toKey   = UtilizationCalculationHelper.toMonthKey(toDate);
@@ -1257,7 +1266,8 @@ public class CxoFinanceService {
                 "    AND fd.companyuuid  = aa.companyuuid " +
                 "WHERE aa.cost_type = 'DIRECT_COSTS' " +
                 "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
-                "  AND fd.amount != 0 "
+                "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus IN (:postingStatuses) "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND fd.companyuuid IN (:companyIds) ");
@@ -1266,6 +1276,7 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql.toString());
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
+        query.setParameter("postingStatuses", (costSource == null ? CostSource.BOOKED : costSource).postingStatusNames());
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
         }
@@ -3571,6 +3582,16 @@ public class CxoFinanceService {
             Set<String> costCenters,
             Set<String> expenseCategories,
             Set<String> companyIds) {
+        return getExpenseMixByCategory(fromDate, toDate, costCenters, expenseCategories, companyIds, CostSource.BOOKED);
+    }
+
+    public List<MonthlyExpenseMixDTO> getExpenseMixByCategory(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> costCenters,
+            Set<String> expenseCategories,
+            Set<String> companyIds,
+            CostSource costSource) {
 
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
@@ -3584,7 +3605,7 @@ public class CxoFinanceService {
         // Delegate to DistributionAwareOpexProvider: uses distribution for current-FY months,
         // raw GL (fact_opex_mat) for previous-FY months.
         List<OpexRow> opexRows = opexProvider.getDistributionAwareOpex(
-                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories);
+                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories, costSource);
 
         // Group by month and calculate percentages
         java.util.Map<String, java.util.Map<String, Double>> monthlyData = new java.util.LinkedHashMap<>();
@@ -3632,6 +3653,16 @@ public class CxoFinanceService {
             Set<String> costCenters,
             Set<String> expenseCategories,
             Set<String> companyIds) {
+        return getExpenseMixByCostCenter(fromDate, toDate, costCenters, expenseCategories, companyIds, CostSource.BOOKED);
+    }
+
+    public List<MonthlyCostCenterMixDTO> getExpenseMixByCostCenter(
+            LocalDate fromDate,
+            LocalDate toDate,
+            Set<String> costCenters,
+            Set<String> expenseCategories,
+            Set<String> companyIds,
+            CostSource costSource) {
 
         LocalDate normalizedFromDate = (fromDate != null) ? fromDate.withDayOfMonth(1) : LocalDate.now().minusMonths(11).withDayOfMonth(1);
         LocalDate normalizedToDate = (toDate != null) ? toDate.withDayOfMonth(1) : LocalDate.now();
@@ -3645,7 +3676,7 @@ public class CxoFinanceService {
         // Delegate to DistributionAwareOpexProvider: uses distribution for current-FY months,
         // raw GL (fact_opex_mat) for previous-FY months.
         List<OpexRow> opexRows = opexProvider.getDistributionAwareOpex(
-                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories);
+                fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories, costSource);
 
         // Group by month
         java.util.Map<String, java.util.Map<String, Double>> monthlyData = new java.util.LinkedHashMap<>();
@@ -4508,6 +4539,17 @@ public class CxoFinanceService {
             Set<String> contractTypes,
             String clientId,
             Set<String> companyIds) {
+        return getExpectedAccumulatedEBITDA(asOfDate, sectors, serviceLines, contractTypes, clientId, companyIds, CostSource.BOOKED);
+    }
+
+    public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds,
+            CostSource costSource) {
 
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
         String currentMonthKey = UtilizationCalculationHelper.toMonthKey(today);
@@ -4541,7 +4583,7 @@ public class CxoFinanceService {
         //    QUEUED ≡ CREATED for cost recognition keeps the chart and the TTM gross-margin
         //    KPI in agreement and closes the gap to e-conomic mid-month.
         double ttmRevenue = queryCompanyRevenue(ttmStart, ttmEnd, companyIds);
-        double ttmCost    = queryActualCosts(ttmStart, ttmEnd, sectors, serviceLines, contractTypes, clientId, companyIds);
+        double ttmCost    = queryActualCosts(ttmStart, ttmEnd, sectors, serviceLines, contractTypes, clientId, companyIds, costSource);
         ttmCost          += queryQueuedInternalCostForWindow(ttmFromKey, ttmToKey, companyIds);
         double ttmGrossMarginPct = (ttmRevenue > 0) ? ((ttmRevenue - ttmCost) / ttmRevenue) * 100.0 : 0.0;
 
@@ -4552,7 +4594,7 @@ public class CxoFinanceService {
         //    IntercompanyCalcService.loadFiscalYear (~27k finance_details rows). Halving
         //    the call count cuts the cold-path latency that was timing out at the 60s ALB.
         List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> ttmOpexRows =
-                opexProvider.getDistributionAwareOpex(ttmFromKey, ttmToKey, companyIds, null, null);
+                opexProvider.getDistributionAwareOpex(ttmFromKey, ttmToKey, companyIds, null, null, costSource);
         double avgMonthlyOpex     = averageMonthlyAmount(ttmOpexRows, row -> !row.isPayrollFlag());
         double avgMonthlySalaries = averageMonthlyAmount(ttmOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
 
@@ -4562,7 +4604,7 @@ public class CxoFinanceService {
         // 3. Actual FY revenue from fact_company_revenue_mat (company-total, companyIds only)
         //    and cost from GL (cost_type=DIRECT_COSTS) — merged by month.
         java.util.Map<String, Double> fyRevenueByMonth = queryCompanyRevenueByMonth(fyFromKey, fyToKey, companyIds);
-        java.util.Map<String, double[]> fyCostByMonth  = queryMonthlyDirectCostByMonth(fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+        java.util.Map<String, double[]> fyCostByMonth  = queryMonthlyDirectCostByMonth(fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds, costSource);
 
         // Combine into the actualByMonth map: [revenue, cost] per month.
         // A month is "actual" if it has either revenue or cost data.
@@ -4578,7 +4620,7 @@ public class CxoFinanceService {
         // 4. Actual OPEX (OPEX-only) and salaries by month — separate fields per spec.
         //    Same single-fetch + dual-filter optimization as in step 2 above, but for the FY window.
         List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> fyOpexRows =
-                opexProvider.getDistributionAwareOpex(fyFromKey, fyToKey, companyIds, null, null);
+                opexProvider.getDistributionAwareOpex(fyFromKey, fyToKey, companyIds, null, null, costSource);
         java.util.Map<String, Double> opexByMonth     = sumByMonth(fyOpexRows, row -> !row.isPayrollFlag());
         java.util.Map<String, Double> salariesByMonth = sumByMonth(fyOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
 
@@ -5036,6 +5078,7 @@ public class CxoFinanceService {
                 "FROM finance_details fd " +
                 "WHERE fd.expensedate BETWEEN :fyStart AND :fyEnd " +
                 "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus = 'BOOKED' " +
                 "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -5103,6 +5146,7 @@ public class CxoFinanceService {
                 "    LEFT JOIN companies comp ON comp.uuid = fd.companyuuid " +
                 "WHERE fd.expensedate BETWEEN :fyStart AND :fyEnd " +
                 "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus = 'BOOKED' " +
                 "  AND (aa.account_code >= '3000' AND aa.account_code < '6000') " +
                 "  AND ac.groupname NOT IN ('Varesalg', 'Direkte omkostninger', 'Igangvaerende arbejde') "
         );
@@ -5284,6 +5328,14 @@ public class CxoFinanceService {
             String fromKey, String toKey,
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
+        return queryMonthlyDirectCostByMonth(fromKey, toKey, sectors, serviceLines, contractTypes, clientId, companyIds, CostSource.BOOKED);
+    }
+
+    private java.util.Map<String, double[]> queryMonthlyDirectCostByMonth(
+            String fromKey, String toKey,
+            Set<String> sectors, Set<String> serviceLines,
+            Set<String> contractTypes, String clientId, Set<String> companyIds,
+            CostSource costSource) {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
@@ -5294,7 +5346,8 @@ public class CxoFinanceService {
                 "    AND fd.companyuuid  = aa.companyuuid " +
                 "WHERE aa.cost_type = 'DIRECT_COSTS' " +
                 "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
-                "  AND fd.amount != 0 "
+                "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus IN (:postingStatuses) "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND fd.companyuuid IN (:companyIds) ");
@@ -5304,6 +5357,7 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
+        query.setParameter("postingStatuses", (costSource == null ? CostSource.BOOKED : costSource).postingStatusNames());
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
         }
@@ -6225,6 +6279,7 @@ public class CxoFinanceService {
                 "  SELECT month_key, company_id, SUM(opex_amount_dkk) AS opex_cost " +
                 "  FROM fact_opex_mat " +
                 "  WHERE cost_type = 'OPEX' " +
+                "    AND posting_status = 'BOOKED' " +
                 "    AND month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 companyFilterOpex + " " +
                 "  GROUP BY month_key, company_id " +

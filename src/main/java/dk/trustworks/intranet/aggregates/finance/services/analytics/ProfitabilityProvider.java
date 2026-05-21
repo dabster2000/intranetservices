@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.TeamContributionMarginDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.analytics.CostPerFteDTO;
 import dk.trustworks.intranet.aggregates.finance.services.DistributionAwareOpexProvider;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
+import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -54,6 +55,10 @@ public class ProfitabilityProvider {
      * Replaces BFF route: /api/cxo/cost/cost-per-consultant
      */
     public List<CostPerFteDTO> getCostPerFte(LocalDate fromDate, LocalDate toDate, Set<String> companyIds) {
+        return getCostPerFte(fromDate, toDate, companyIds, CostSource.BOOKED);
+    }
+
+    public List<CostPerFteDTO> getCostPerFte(LocalDate fromDate, LocalDate toDate, Set<String> companyIds, CostSource costSource) {
         String fromKey = toMonthKey(fromDate);
         String toKey = toMonthKey(toDate);
 
@@ -108,7 +113,7 @@ public class ProfitabilityProvider {
 
         // 3. Query OPEX per month via FY-aware provider
         List<OpexRow> opexRows = distributionProvider.getDistributionAwareOpex(
-                fromKey, toKey, companyIds, null, null);
+                fromKey, toKey, companyIds, null, null, costSource);
         Map<String, Double> opexByMonth = new HashMap<>();
         for (OpexRow row : opexRows) {
             if (!row.isPayrollFlag()) {

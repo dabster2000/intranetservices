@@ -51,6 +51,7 @@ import dk.trustworks.intranet.aggregates.finance.services.ConsultantInsightsServ
 import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.aggregates.finance.usecases.CareerLevelEconomicsUseCase;
+import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -1017,17 +1018,19 @@ public class CxoFinanceResource {
             @QueryParam("toDate") LocalDate toDate,
             @QueryParam("costCenters") String costCenters,
             @QueryParam("expenseCategories") String expenseCategories,
-            @QueryParam("companyIds") String companyIds) {
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("costSource") String costSourceParam) {
 
-        log.debugf("GET /finance/cxo/expense-mix-by-category: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s",
-                fromDate, toDate, costCenters, expenseCategories, companyIds);
+        log.debugf("GET /finance/cxo/expense-mix-by-category: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s, costSource=%s",
+                fromDate, toDate, costCenters, expenseCategories, companyIds, costSourceParam);
 
         Set<String> costCenterSet = parseCommaSeparated(costCenters);
         Set<String> expenseCategorySet = parseCommaSeparated(expenseCategories);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         List<MonthlyExpenseMixDTO> result = cxoFinanceService.getExpenseMixByCategory(
-                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet);
+                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet,
+                CostSource.fromQueryParam(costSourceParam));
 
         log.debugf("Returning %d monthly expense mix data points", result.size());
         return result;
@@ -1050,17 +1053,19 @@ public class CxoFinanceResource {
             @QueryParam("toDate") LocalDate toDate,
             @QueryParam("costCenters") String costCenters,
             @QueryParam("expenseCategories") String expenseCategories,
-            @QueryParam("companyIds") String companyIds) {
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("costSource") String costSourceParam) {
 
-        log.debugf("GET /finance/cxo/expense-mix-by-cost-center: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s",
-                fromDate, toDate, costCenters, expenseCategories, companyIds);
+        log.debugf("GET /finance/cxo/expense-mix-by-cost-center: fromDate=%s, toDate=%s, costCenters=%s, expenseCategories=%s, companyIds=%s, costSource=%s",
+                fromDate, toDate, costCenters, expenseCategories, companyIds, costSourceParam);
 
         Set<String> costCenterSet = parseCommaSeparated(costCenters);
         Set<String> expenseCategorySet = parseCommaSeparated(expenseCategories);
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         List<MonthlyCostCenterMixDTO> result = cxoFinanceService.getExpenseMixByCostCenter(
-                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet);
+                fromDate, toDate, costCenterSet, expenseCategorySet, companyIdSet,
+                CostSource.fromQueryParam(costSourceParam));
 
         log.debugf("Returning %d monthly cost center mix data points", result.size());
         return result;
@@ -1258,10 +1263,11 @@ public class CxoFinanceResource {
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
             @QueryParam("clientId") String clientId,
-            @QueryParam("companyIds") String companyIds) {
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("costSource") String costSourceParam) {
 
-        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
-                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s, costSource=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds, costSourceParam);
 
         LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
                 ? LocalDate.parse(asOfDateStr)
@@ -1273,7 +1279,8 @@ public class CxoFinanceResource {
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         List<MonthlyAccumulatedEbitdaDTO> result = cxoFinanceService.getExpectedAccumulatedEBITDA(
-                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet);
+                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet,
+                CostSource.fromQueryParam(costSourceParam));
 
         log.debugf("Returning %d expected accumulated EBITDA data points", result.size());
         return result;

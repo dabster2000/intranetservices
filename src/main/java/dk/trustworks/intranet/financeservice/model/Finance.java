@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
+import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 
 import jakarta.persistence.*;
@@ -30,14 +31,23 @@ public class Finance extends PanacheEntityBase {
 
     private double amount;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "postingstatus", nullable = false, length = 20)
+    private PostingStatus postingstatus = PostingStatus.BOOKED;
+
     public Finance() {
     }
 
     public Finance(LocalDate period, ExcelFinanceType expensetype, double amount) {
+        this(period, expensetype, amount, PostingStatus.BOOKED);
+    }
+
+    public Finance(LocalDate period, ExcelFinanceType expensetype, double amount, PostingStatus postingstatus) {
         this.uuid = UUID.randomUUID().toString();
         this.period = period;
         this.expensetype = expensetype;
         this.amount = amount;
+        this.postingstatus = postingstatus == null ? PostingStatus.BOOKED : postingstatus;
     }
 
     public static List<Finance> findByPeriod(LocalDate period) {
@@ -77,6 +87,14 @@ public class Finance extends PanacheEntityBase {
         this.amount = amount;
     }
 
+    public PostingStatus getPostingstatus() {
+        return postingstatus;
+    }
+
+    public void setPostingstatus(PostingStatus postingstatus) {
+        this.postingstatus = postingstatus == null ? PostingStatus.BOOKED : postingstatus;
+    }
+
     @Override
     public String toString() {
         return "Expense{" +
@@ -84,6 +102,7 @@ public class Finance extends PanacheEntityBase {
                 ", period=" + period +
                 ", expensetype=" + expensetype +
                 ", amount=" + amount +
+                ", postingstatus=" + postingstatus +
                 '}';
     }
 }
