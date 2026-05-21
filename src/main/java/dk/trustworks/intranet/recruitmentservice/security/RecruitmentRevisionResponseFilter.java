@@ -2,6 +2,7 @@ package dk.trustworks.intranet.recruitmentservice.security;
 
 import dk.trustworks.intranet.recruitmentservice.dto.CandidateResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
+import dk.trustworks.intranet.recruitmentservice.dto.SendSignatureResponse;
 import dk.trustworks.intranet.security.ScopeContext;
 import jakarta.annotation.Priority;
 import jakarta.inject.Inject;
@@ -104,6 +105,17 @@ public class RecruitmentRevisionResponseFilter implements ContainerResponseFilte
     private Object walk(Object entity) {
         if (entity instanceof RevisionResponse rev) {
             return redact(rev);
+        }
+        if (entity instanceof SendSignatureResponse send) {
+            // The envelope returned by POST .../send-signature wraps a
+            // RevisionResponse alongside a localPersistenceFailed flag.
+            // Redact the inner revision; the flag is non-sensitive.
+            RevisionResponse inner = send.revision();
+            RevisionResponse redacted = inner == null ? null : redact(inner);
+            if (redacted == inner) {
+                return send;
+            }
+            return new SendSignatureResponse(redacted, send.localPersistenceFailed());
         }
         if (entity instanceof CandidateResponse cand) {
             // CandidateResponse embeds a RevisionSummary, not a RevisionResponse,

@@ -18,6 +18,7 @@ import dk.trustworks.intranet.recruitmentservice.dto.RevisionResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.RevisionSigningStatusSummary;
 import dk.trustworks.intranet.recruitmentservice.dto.SendReviewRequest;
 import dk.trustworks.intranet.recruitmentservice.dto.SendSignatureRequest;
+import dk.trustworks.intranet.recruitmentservice.dto.SendSignatureResponse;
 import dk.trustworks.intranet.recruitmentservice.dto.SignerConfigDto;
 import dk.trustworks.intranet.recruitmentservice.dto.WithdrawRequest;
 import dk.trustworks.intranet.recruitmentservice.model.CandidateDossier;
@@ -79,6 +80,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -114,6 +116,22 @@ import java.util.zip.ZipOutputStream;
 public class RecruitmentResource {
 
     private static final String ADMIN_WILDCARD = "admin:*";
+
+    /**
+     * Set on the {@code sendSignature} response when NextSign accepted the case
+     * but at least one local DB write failed. The BFF surfaces this to the UI as
+     * an "info" / "warning" toast rather than an error, so users do not retry
+     * and create a duplicate NextSign case.
+     */
+    static final String LOCAL_PERSISTENCE_FAILED_HEADER = "X-Local-Persistence-Failed";
+
+    /**
+     * Backoff schedule for {@link #withJdbcRetry(String, Callable)}. 3 attempts
+     * total, 1 s + 3 s + 7 s = 11 s ceiling — well below the BFF's 30 s timeout
+     * and the user-perceived response budget. Tuned to absorb a single Agroal
+     * acquisition-timeout burst (default 5 s, see application.yml).
+     */
+    private static final long[] JDBC_RETRY_BACKOFF_MS = {1_000L, 3_000L, 7_000L};
 
     @Inject
     CandidateService candidateService;
@@ -714,17 +732,61 @@ public class RecruitmentResource {
                 "recruitment-candidate:" + candidate.getUuid(),
                 collectSigningSchemas(signers));
 
+        // From this point on NextSign has irrevocably accepted the case and
+        // dispatched signing emails. Any failure of the local DB writes must
+        // NOT propagate as 5xx — otherwise the UI tells the user nothing was
+        // sent and a retry creates a duplicate NextSign case (root cause of
+        // the 2026-05-21 Kenn Milo incident; see
+        // docs/incidents/2026-05-21-kenn-milo-recovery.sql).
+        String documentName = "Recruitment: " + fullName(candidate.getFirstName(), candidate.getLastName());
+        boolean localPersistenceFailed = false;
+
         // Persist the minimal signing-cases row so NextSignStatusSyncBatchlet
         // tracks status for this recruitment case. The 5th argument is the
         // literal null: SharePoint upload is owned by the Convert flow, not
         // by the sync batchlet (whose skip guard fires when the location uuid
         // is null/blank — see NextSignStatusSyncBatchlet.java:214).
-        signingService.saveMinimalCase(
-                caseKey,
-                candidate.getUuid(),
-                "Recruitment: " + fullName(candidate.getFirstName(), candidate.getLastName()),
-                signerInfos.size(),
-                null);
+        try {
+            withJdbcRetry("saveMinimalCase", () -> {
+                signingService.saveMinimalCase(
+                        caseKey,
+                        candidate.getUuid(),
+                        documentName,
+                        signerInfos.size(),
+                        null);
+                return null;
+            });
+        } catch (Exception e) {
+            log.errorf(e,
+                    "POST-NEXTSIGN LOCAL PERSIST FAILED — caseKey=%s candidate=%s; "
+                            + "NextSign accepted the case but signing_cases row could not be written. "
+                            + "Scheduling async retry; manual repair instructions live in "
+                            + "docs/incidents/2026-05-21-kenn-milo-recovery.sql",
+                    caseKey, candidate.getUuid());
+            localPersistenceFailed = true;
+            final String repairDocumentName = documentName;
+            final int repairTotalSigners = signerInfos.size();
+            final String repairCandidateUuid = candidate.getUuid();
+            managedExecutor.submit(() -> {
+                try {
+                    Thread.sleep(15_000L); // brief delay so the contention that broke us has time to clear
+                    withJdbcRetry("saveMinimalCase(async)", () -> {
+                        signingService.saveMinimalCase(
+                                caseKey,
+                                repairCandidateUuid,
+                                repairDocumentName,
+                                repairTotalSigners,
+                                null);
+                        return null;
+                    });
+                    log.infof("Async repair: signing_cases row backfilled for caseKey=%s", caseKey);
+                } catch (Exception async) {
+                    log.errorf(async,
+                            "Async repair FAILED for caseKey=%s — manual SQL backfill required",
+                            caseKey);
+                }
+            });
+        }
 
         String firstSignerEmail = firstSignerEmailFromList(signers, candidate.getEmail());
         RecipientInfo recipient = new RecipientInfo(
@@ -734,12 +796,53 @@ public class RecruitmentResource {
                 body.note(),
                 caseKey,
                 pdfRefs);
-        CandidateDossierRevision revision = dossierRevisionService.snapshotFromValues(
-                dossier, RevisionKind.SIGNATURE,
-                placeholders, signers, appendices,
-                recipient, actor);
 
-        return Response.ok(dossierRevisionService.toResponse(revision)).build();
+        RevisionResponse revisionResponse;
+        try {
+            CandidateDossierRevision revision = withJdbcRetry("snapshotFromValues", () ->
+                    dossierRevisionService.snapshotFromValues(
+                            dossier, RevisionKind.SIGNATURE,
+                            placeholders, signers, appendices,
+                            recipient, actor));
+            revisionResponse = dossierRevisionService.toResponse(revision);
+        } catch (Exception e) {
+            log.errorf(e,
+                    "POST-NEXTSIGN SNAPSHOT FAILED — caseKey=%s candidate=%s; "
+                            + "NextSign accepted the case but candidate_dossier_revisions row could not be written. "
+                            + "Scheduling async retry.",
+                    caseKey, candidate.getUuid());
+            localPersistenceFailed = true;
+            final CandidateDossier repairDossier = dossier;
+            final Map<String, String> repairPlaceholders = placeholders;
+            final List<SignerConfigDto> repairSigners = signers;
+            final List<AppendixDto> repairAppendices = appendices;
+            final RecipientInfo repairRecipient = recipient;
+            final UUID repairActor = actor;
+            managedExecutor.submit(() -> {
+                try {
+                    Thread.sleep(15_000L);
+                    withJdbcRetry("snapshotFromValues(async)", () ->
+                            dossierRevisionService.snapshotFromValues(
+                                    repairDossier, RevisionKind.SIGNATURE,
+                                    repairPlaceholders, repairSigners, repairAppendices,
+                                    repairRecipient, repairActor));
+                    log.infof("Async repair: revision snapshot backfilled for caseKey=%s", caseKey);
+                } catch (Exception async) {
+                    log.errorf(async,
+                            "Async revision snapshot repair FAILED for caseKey=%s — manual SQL backfill required",
+                            caseKey);
+                }
+            });
+            revisionResponse = degradedRevisionResponse(
+                    dossier, placeholders, signers, appendices, recipient, actor);
+        }
+
+        SendSignatureResponse envelope = new SendSignatureResponse(revisionResponse, localPersistenceFailed);
+        Response.ResponseBuilder ok = Response.ok(envelope);
+        if (localPersistenceFailed) {
+            ok.header(LOCAL_PERSISTENCE_FAILED_HEADER, "true");
+        }
+        return ok.build();
     }
 
     // ---- Helpers --------------------------------------------------------------
@@ -884,6 +987,100 @@ public class RecruitmentResource {
             }
         }
         return fallback;
+    }
+
+    /**
+     * Run a JDBC-touching action with bounded retry-with-backoff for transient
+     * pool / connectivity failures. The backoff schedule lives in
+     * {@link #JDBC_RETRY_BACKOFF_MS}. Non-JDBC exceptions are re-thrown
+     * immediately so genuine bugs (NPEs, validation failures, …) are never
+     * masked. Used by {@code sendSignature} for the two post-NextSign DB writes
+     * — those are the writes that must not lose to a transient Agroal
+     * acquisition timeout, because NextSign has already been told to send.
+     */
+    private static <T> T withJdbcRetry(String label, Callable<T> action) throws Exception {
+        Exception last = null;
+        for (int attempt = 0; attempt <= JDBC_RETRY_BACKOFF_MS.length; attempt++) {
+            try {
+                return action.call();
+            } catch (Exception e) {
+                if (!isTransientJdbcFailure(e)) {
+                    throw e;
+                }
+                last = e;
+                if (attempt == JDBC_RETRY_BACKOFF_MS.length) {
+                    break;
+                }
+                long delay = JDBC_RETRY_BACKOFF_MS[attempt];
+                org.jboss.logging.Logger.getLogger(RecruitmentResource.class)
+                        .warnf("Transient JDBC failure in %s (attempt %d/%d) — retrying in %d ms: %s",
+                                label, attempt + 1, JDBC_RETRY_BACKOFF_MS.length + 1, delay, e.toString());
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+        throw last;
+    }
+
+    /**
+     * True if the throwable (or any cause) is a JDBC failure we expect to be
+     * transient — Agroal pool acquisition timeout, broken connection, etc.
+     * We deliberately do NOT include {@code SQLException} broadly because
+     * constraint violations (e.g. duplicate {@code case_key}) are NOT
+     * transient — those should bubble up so we don't silently double-insert.
+     */
+    private static boolean isTransientJdbcFailure(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof java.sql.SQLTransientException) return true;
+            if (c instanceof java.sql.SQLNonTransientConnectionException) return true;
+            String name = c.getClass().getName();
+            if (name.startsWith("io.agroal.")) return true;
+            String msg = c.getMessage();
+            if (msg != null && msg.contains("Sorry, acquisition timeout")) return true;
+            if (c instanceof org.hibernate.exception.JDBCConnectionException) return true;
+            if (c instanceof org.hibernate.exception.GenericJDBCException
+                    && msg != null && msg.toLowerCase().contains("unable to acquire jdbc connection")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Synthesize a {@link RevisionResponse} for the case where NextSign
+     * succeeded but the {@code candidate_dossier_revisions} insert failed
+     * terminally. The async-retry path will eventually write the row; in the
+     * meantime the BFF gets a body containing the {@code signingCaseKey} so
+     * the UI can mark the dossier as sent. The {@code uuid} field is null
+     * because no DB row exists yet — frontend code already handles missing
+     * revision-uuid (the SendSignatureDialog only reads {@code signingCaseKey}).
+     */
+    private static RevisionResponse degradedRevisionResponse(
+            CandidateDossier dossier,
+            Map<String, String> placeholders,
+            List<SignerConfigDto> signers,
+            List<AppendixDto> appendices,
+            RecipientInfo recipient,
+            UUID actor) {
+        return new RevisionResponse(
+                null,
+                dossier.getUuid(),
+                0,
+                RevisionKind.SIGNATURE,
+                placeholders != null ? placeholders : Map.of(),
+                signers != null ? signers : List.of(),
+                appendices != null ? appendices : List.of(),
+                List.of(),
+                recipient.signingCaseKey(),
+                recipient.recipientEmail(),
+                null,
+                recipient.note(),
+                actor.toString(),
+                java.time.LocalDateTime.now());
     }
 
     /**

@@ -4,14 +4,30 @@ quarkus:
     base-url: ${APPLICATION_BASE_URL:http://127.0.0.1:8080}
   datasource:
     db-kind: mariadb
+    metrics:
+      enabled: true
     jdbc:
       url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?collation=utf8mb4_general_ci}
       driver: org.mariadb.jdbc.Driver
+      # Pool sizing — RDS parameter group mariadb10 allows max_connections=200.
+      # Peak observed RDS connections to date is ~41, so 64 leaves headroom without
+      # crowding other consumers (staging, Lambda, batch jobs).
       min-size: 5
-      max-size: 32
-      idle-removal-interval: PT1M
+      max-size: 64
+      # Wait up to 30s for a connection before failing. The default of 5s combined
+      # with PT1M idle-removal caused cold-start bursts to throw
+      # "Sorry, acquisition timeout!" en masse (1,800+ events in 48h, see
+      # docs/incidents/2026-05-21-kenn-milo-recovery.sql). 30s is safe because we
+      # already extended Narayana's default-transaction-timeout to 600s below.
+      acquisition-timeout: PT30S
+      # Stop aggressively shrinking the pool to min-size every minute. The 1-minute
+      # value caused repeated cold-start storms when traffic spikes arrived right
+      # after a shrink.
+      idle-removal-interval: PT5M
       background-validation-interval: PT2M
-      leak-detection-interval: PT5M
+      # Surface long-held connections (likely @Transactional methods holding pool
+      # connections under load) within 2 minutes. The previous PT5M hid them.
+      leak-detection-interval: PT2M
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
   transaction-manager:
