@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalcula
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.enums.CostType;
+import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -130,11 +131,8 @@ public class OpexDistributionRefreshService {
         LocalDate windowFrom = currentFy.start().minusYears(fyBack);
         LocalDate windowToExclusive = currentFy.end().plusDays(1);
 
-        FiscalYearData fyData = intercompanyCalcService.loadFiscalYear(
-                windowFrom, windowToExclusive, salaryBufferMultiplier);
-
-        List<YearMonth> allMonths = new ArrayList<>(fyData.perMonth.keySet());
-        List<OpexRow> allRows = computeDistributionForMonths(allMonths, fyData);
+        int inserted = 0;
+        LocalDateTime refreshedAt = LocalDateTime.now();
 
         String fromKey = UtilizationCalculationHelper.toMonthKey(windowFrom);
         String toKey = UtilizationCalculationHelper.toMonthKey(windowToExclusive);
@@ -146,7 +144,13 @@ public class OpexDistributionRefreshService {
                 .setParameter("toKey", toKey)
                 .executeUpdate();
 
-        int inserted = bulkInsert(allRows, LocalDateTime.now());
+        for (PostingStatus postingStatus : PostingStatus.values()) {
+            FiscalYearData fyData = intercompanyCalcService.loadFiscalYear(
+                    windowFrom, windowToExclusive, salaryBufferMultiplier, postingStatus);
+            List<YearMonth> allMonths = new ArrayList<>(fyData.perMonth.keySet());
+            List<OpexRow> allRows = computeDistributionForMonths(allMonths, fyData);
+            inserted += bulkInsert(allRows, refreshedAt, postingStatus);
+        }
 
         Duration took = Duration.between(start, Instant.now());
         log.infof("Refreshed fact_opex_distribution_mat: deleted=%d inserted=%d took=%dms window=[%s..%s)",
@@ -342,7 +346,7 @@ public class OpexDistributionRefreshService {
     // Bulk insert
     // -----------------------------------------------------------------------
 
-    private int bulkInsert(List<OpexRow> rows, LocalDateTime refreshedAt) {
+    private int bulkInsert(List<OpexRow> rows, LocalDateTime refreshedAt, PostingStatus postingStatus) {
         if (rows.isEmpty()) return 0;
 
         StringBuilder sql = new StringBuilder(
@@ -382,7 +386,7 @@ public class OpexDistributionRefreshService {
             int fmn = monthVal >= 7 ? monthVal - 6 : monthVal + 6;
             String fmk = String.format("FY%04d-%02d", fyVal, fmn);
             String cost = r.isPayrollFlag() ? OpexRow.COST_TYPE_SALARIES : OpexRow.COST_TYPE_OPEX;
-            String id = r.companyId() + "-" + r.costCenterId() + "-"
+            String id = postingStatus.name() + "-" + r.companyId() + "-" + r.costCenterId() + "-"
                       + r.expenseCategoryId() + "-" + (r.isPayrollFlag() ? "1" : "0")
                       + "-" + r.monthKey();
 

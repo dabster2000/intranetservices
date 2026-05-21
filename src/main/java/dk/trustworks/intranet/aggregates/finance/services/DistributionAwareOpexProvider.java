@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.services;
 
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
+import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -75,9 +76,21 @@ public class DistributionAwareOpexProvider {
             Set<String> companyIds,
             Set<String> costCenters,
             Set<String> expenseCategories) {
+        return getDistributionAwareOpex(fromMonthKey, toMonthKey, companyIds, costCenters, expenseCategories, CostSource.BOOKED);
+    }
 
-        log.debugf("getDistributionAwareOpex: from=%s to=%s companies=%s",
-                fromMonthKey, toMonthKey, companyIds);
+    public List<OpexRow> getDistributionAwareOpex(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> companyIds,
+            Set<String> costCenters,
+            Set<String> expenseCategories,
+            CostSource costSource) {
+
+        CostSource source = costSource == null ? CostSource.BOOKED : costSource;
+
+        log.debugf("getDistributionAwareOpex: from=%s to=%s companies=%s costSource=%s",
+                fromMonthKey, toMonthKey, companyIds, source);
 
         YearMonth from = parseMonthKey(fromMonthKey);
         YearMonth to   = parseMonthKey(toMonthKey);
@@ -102,7 +115,7 @@ public class DistributionAwareOpexProvider {
             String prevFrom = settledKeys.getFirst();
             String prevTo   = settledKeys.getLast();
             List<OpexRow> rawRows = queryFactOpexMat(prevFrom, prevTo,
-                    companyIds, costCenters, expenseCategories);
+                    companyIds, costCenters, expenseCategories, source);
             // Keep only settled months (covers the non-contiguous case).
             for (OpexRow row : rawRows) {
                 if (settledMonths.contains(parseMonthKey(row.monthKey()))) {
@@ -114,7 +127,7 @@ public class DistributionAwareOpexProvider {
             String distFrom = unsettledKeys.getFirst();
             String distTo   = unsettledKeys.getLast();
             List<OpexRow> distRows = queryFactOpexDistributionMat(distFrom, distTo,
-                    companyIds, costCenters, expenseCategories);
+                    companyIds, costCenters, expenseCategories, source);
             // Same non-contiguous filter, in case a settled month sits between
             // two unsettled ones.
             Set<YearMonth> unsettledSet = new HashSet<>();
@@ -148,8 +161,21 @@ public class DistributionAwareOpexProvider {
             String toMonthKey,
             Set<String> companyIds) {
 
-        List<OpexRow> rows = getDistributionAwareOpex(fromMonthKey, toMonthKey, companyIds, null, null);
+        List<OpexRow> rows = getDistributionAwareOpex(fromMonthKey, toMonthKey, companyIds, null, null, CostSource.BOOKED);
+        return totalAndMonthCount(rows);
+    }
 
+    public double[] getOpexTotalAndMonthCount(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> companyIds,
+            CostSource costSource) {
+
+        List<OpexRow> rows = getDistributionAwareOpex(fromMonthKey, toMonthKey, companyIds, null, null, costSource);
+        return totalAndMonthCount(rows);
+    }
+
+    private double[] totalAndMonthCount(List<OpexRow> rows) {
         double total = rows.stream().mapToDouble(OpexRow::opexAmountDkk).sum();
         long distinctMonths = rows.stream().map(OpexRow::monthKey).distinct().count();
         return new double[]{total, (double) distinctMonths};
@@ -170,7 +196,16 @@ public class DistributionAwareOpexProvider {
             String toMonthKey,
             Set<String> companyIds) {
 
-        List<OpexRow> rows = getDistributionAwareOpex(fromMonthKey, toMonthKey, companyIds, null, null);
+        return getMonthlyOpex(fromMonthKey, toMonthKey, companyIds, CostSource.BOOKED);
+    }
+
+    public Map<String, Double> getMonthlyOpex(
+            String fromMonthKey,
+            String toMonthKey,
+            Set<String> companyIds,
+            CostSource costSource) {
+
+        List<OpexRow> rows = getDistributionAwareOpex(fromMonthKey, toMonthKey, companyIds, null, null, costSource);
 
         Map<String, Double> byMonth = new TreeMap<>();
         for (OpexRow row : rows) {
@@ -228,7 +263,8 @@ public class DistributionAwareOpexProvider {
             String toMonthKey,
             Set<String> companyIds,
             Set<String> costCenters,
-            Set<String> expenseCategories) {
+            Set<String> expenseCategories,
+            CostSource costSource) {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT company_id, cost_center_id, expense_category_id, cost_type, month_key, " +
@@ -236,7 +272,8 @@ public class DistributionAwareOpexProvider {
                 "  SUM(invoice_count) AS invoice_count, " +
                 "  MAX(is_payroll_flag) AS is_payroll " +
                 "FROM fact_opex_mat " +
-                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey "
+                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey " +
+                "AND posting_status IN (:postingStatuses) "
         );
 
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -254,6 +291,7 @@ public class DistributionAwareOpexProvider {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromMonthKey", fromMonthKey);
         query.setParameter("toMonthKey", toMonthKey);
+        query.setParameter("postingStatuses", costSource.postingStatusNames());
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
         }
@@ -297,7 +335,8 @@ public class DistributionAwareOpexProvider {
             String toMonthKey,
             Set<String> companyIds,
             Set<String> costCenters,
-            Set<String> expenseCategories) {
+            Set<String> expenseCategories,
+            CostSource costSource) {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT company_id, cost_center_id, expense_category_id, cost_type, month_key, " +
@@ -305,7 +344,8 @@ public class DistributionAwareOpexProvider {
                 "  SUM(invoice_count) AS invoice_count, " +
                 "  MAX(is_payroll_flag) AS is_payroll " +
                 "FROM fact_opex_distribution_mat " +
-                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey "
+                "WHERE month_key >= :fromMonthKey AND month_key <= :toMonthKey " +
+                "AND posting_status IN (:postingStatuses) "
         );
 
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -323,6 +363,7 @@ public class DistributionAwareOpexProvider {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromMonthKey", fromMonthKey);
         query.setParameter("toMonthKey", toMonthKey);
+        query.setParameter("postingStatuses", costSource.postingStatusNames());
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
         }

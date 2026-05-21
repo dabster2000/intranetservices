@@ -6,6 +6,7 @@ import dk.trustworks.intranet.financeservice.model.AccountLumpSum;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.AccountingCategory;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
+import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.panache.common.Sort;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -111,10 +112,10 @@ public class IntercompanyCalcService {
         }
 
         // GL range [from, to)
-        final Map<String, Map<Integer, BigDecimal>> glRange = aggregateGL(from, to);
+        final Map<String, Map<Integer, BigDecimal>> glRange = aggregateGL(from, to, PostingStatus.BOOKED);
 
         // GL præcis dag == from (eksakt lighed — bruges af Invoice)
-        final Map<String, Map<Integer, BigDecimal>> glExact = aggregateGLExactDay(from);
+        final Map<String, Map<Integer, BigDecimal>> glExact = aggregateGLExactDay(from, PostingStatus.BOOKED);
 
         // STAFF-base (BI-afledt) * multiplier (1.02) — afrundet til 2
         final Map<String, BigDecimal> staffBase = staffBaseFromBI(from.getYear(), from.getMonthValue(), salaryBufferMultiplier);
@@ -202,9 +203,9 @@ public class IntercompanyCalcService {
 
     // ---------- Private loaders ----------
 
-    private Map<String, Map<Integer, BigDecimal>> aggregateGL(LocalDate from, LocalDate to) {
+    private Map<String, Map<Integer, BigDecimal>> aggregateGL(LocalDate from, LocalDate to, PostingStatus postingStatus) {
         final List<FinanceDetails> finance =
-                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", from, to);
+                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2 and postingstatus = ?3", from, to, postingStatus);
 
         final Map<String, Map<Integer, BigDecimal>> out = new HashMap<>();
         for (FinanceDetails fd : finance) {
@@ -217,9 +218,9 @@ public class IntercompanyCalcService {
         return out;
     }
 
-    private Map<String, Map<Integer, BigDecimal>> aggregateGLExactDay(LocalDate day) {
+    private Map<String, Map<Integer, BigDecimal>> aggregateGLExactDay(LocalDate day, PostingStatus postingStatus) {
         final List<FinanceDetails> finance =
-                FinanceDetails.list("expensedate = ?1", day);
+                FinanceDetails.list("expensedate = ?1 and postingstatus = ?2", day, postingStatus);
 
         final Map<String, Map<Integer, BigDecimal>> out = new HashMap<>();
         for (FinanceDetails fd : finance) {
@@ -289,6 +290,10 @@ public class IntercompanyCalcService {
 
     // New batch loader
     public FiscalYearData loadFiscalYear(LocalDate from, LocalDate to, double salaryBufferMultiplier) {
+        return loadFiscalYear(from, to, salaryBufferMultiplier, PostingStatus.BOOKED);
+    }
+
+    public FiscalYearData loadFiscalYear(LocalDate from, LocalDate to, double salaryBufferMultiplier, PostingStatus postingStatus) {
         // Static data
         final List<Company> companies = Company.listAll();
         final List<AccountingCategory> categories =
@@ -309,7 +314,7 @@ public class IntercompanyCalcService {
         // -------- GL for entire FY, then group per month ----------
         @SuppressWarnings("unchecked")
         final List<FinanceDetails> financeFull =
-                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2", from, to);
+                FinanceDetails.list("expensedate >= ?1 and expensedate < ?2 and postingstatus = ?3", from, to, postingStatus);
 
         final Map<java.time.YearMonth, Map<String, Map<Integer, BigDecimal>>> glRangeByMonth = new HashMap<>();
         final Map<java.time.YearMonth, Map<String, Map<Integer, BigDecimal>>> glExactByMonth = new HashMap<>();

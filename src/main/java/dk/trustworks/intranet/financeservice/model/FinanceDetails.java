@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
+import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import lombok.Data;
@@ -47,7 +48,30 @@ public class FinanceDetails extends PanacheEntityBase {
 
     private String text;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "postingstatus", nullable = false, length = 20)
+    private PostingStatus postingstatus = PostingStatus.BOOKED;
+
+    private int journalnumber;
+
+    private int vouchernumber;
+
+    private String objectversion;
+
+    private Integer entrytypenumber;
+
+    private String currency;
+
+    private Double exchangerate;
+
     public FinanceDetails(Company company, int entrynumber, int accountnumber, int invoicenumber, double amount, double remainder, LocalDate expensedate, String text) {
+        this(company, entrynumber, accountnumber, invoicenumber, amount, remainder, expensedate, text,
+                PostingStatus.BOOKED, 0, 0, null, null, null, null);
+    }
+
+    public FinanceDetails(Company company, int entrynumber, int accountnumber, int invoicenumber, double amount, double remainder, LocalDate expensedate, String text,
+                          PostingStatus postingstatus, int journalnumber, int vouchernumber, String objectversion,
+                          Integer entrytypenumber, String currency, Double exchangerate) {
         this.company = company;
         this.invoicenumber = invoicenumber;
         this.entrynumber = entrynumber;
@@ -56,6 +80,13 @@ public class FinanceDetails extends PanacheEntityBase {
         this.remainder = remainder;
         this.expensedate = expensedate;
         this.text = text;
+        this.postingstatus = postingstatus == null ? PostingStatus.BOOKED : postingstatus;
+        this.journalnumber = journalnumber;
+        this.vouchernumber = vouchernumber;
+        this.objectversion = objectversion;
+        this.entrytypenumber = entrytypenumber;
+        this.currency = currency;
+        this.exchangerate = exchangerate;
     }
 
     @Override

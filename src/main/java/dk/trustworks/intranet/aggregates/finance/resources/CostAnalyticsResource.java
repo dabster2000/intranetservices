@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.finance.services.DistributionAwareOpexP
 import dk.trustworks.intranet.aggregates.finance.services.analytics.CareerBandMapper;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.SalaryAnalyticsProvider;
+import dk.trustworks.intranet.financeservice.model.enums.CostSource;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -552,13 +553,15 @@ public class CostAnalyticsResource {
     public List<CostPerFteDTO> getCostPerFte(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") Set<String> companyIds,
+            @QueryParam("costSource") String costSourceParam) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return profitabilityProvider.getCostPerFte(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return profitabilityProvider.getCostPerFte(fromDate, toDate, companyIds.isEmpty() ? null : companyIds,
+                CostSource.fromQueryParam(costSourceParam));
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -579,13 +582,15 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-cost-forecast")
     public List<RevenueCostForecastDTO> getRevenueCostForecast(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") Set<String> companyIds,
+            @QueryParam("costSource") String costSourceParam) {
 
         LocalDate today = LocalDate.now();
         String ttmStartKey = toMonthKey(today.minusMonths(12));
         String currentMonthKey = toMonthKey(today);
 
         Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        CostSource costSource = CostSource.fromQueryParam(costSourceParam);
 
         // ── TTM actual data (12 completed months) ────────────────────────
 
@@ -610,7 +615,7 @@ public class CostAnalyticsResource {
         Map<String, Tuple> regMap = indexByMonthKey(regRows);
         Map<String, Tuple> invMap = indexByMonthKey(invRows);
         Map<String, Double> costMap = opexProvider
-                .getMonthlyOpex(ttmStartKey, toMonthKey(today.minusMonths(1)), companies);
+                .getMonthlyOpex(ttmStartKey, toMonthKey(today.minusMonths(1)), companies, costSource);
 
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
@@ -940,6 +945,7 @@ public class CostAnalyticsResource {
                 "SUM(o.opex_amount_dkk) AS opex_amount " +
                 "FROM fact_opex_mat o " +
                 "WHERE o.cost_type = 'OPEX' " +
+                "AND o.posting_status = 'BOOKED' " +
                 "AND o.month_key >= :fromKey AND o.month_key < :toKey " +
                 filter +
                 "GROUP BY o.month_key, o.year, o.month_number ORDER BY o.month_key";
@@ -962,6 +968,7 @@ public class CostAnalyticsResource {
                 "SUM(o.opex_amount_dkk) AS total_opex " +
                 "FROM fact_opex_mat o " +
                 "WHERE o.cost_type = 'OPEX' " +
+                "AND o.posting_status = 'BOOKED' " +
                 "AND o.month_key >= :ttmStart AND o.month_key < :currentMonth " +
                 filter;
     }
@@ -1122,6 +1129,7 @@ public class CostAnalyticsResource {
                     MAX(fd.expensedate) AS latest_expense_date
                 FROM finance_details fd
                 LEFT JOIN companies c ON c.uuid = fd.companyuuid
+                WHERE fd.postingstatus = 'BOOKED'
                 GROUP BY fd.companyuuid, c.name
                 ORDER BY latest_expense_date DESC
                 """, Tuple.class).getResultList();

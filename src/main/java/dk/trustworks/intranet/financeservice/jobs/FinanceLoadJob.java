@@ -6,7 +6,7 @@ import dk.trustworks.intranet.communicationsservice.services.SlackService;
 import dk.trustworks.intranet.dto.InvoiceReference;
 import dk.trustworks.intranet.financeservice.model.FinanceDetails;
 import dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup;
-import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
+import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import dk.trustworks.intranet.financeservice.services.EconomicsService;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -71,7 +71,7 @@ public class FinanceLoadJob {
             for (int i = year; i <= DateUtils.getCurrentFiscalStartDate().getYear(); i++) {
                 String economicsUrlYear = toEconomicsUrlYear(getFiscalYearName(LocalDate.of(i, 6, 1), company.getUuid()));
                 log.info("Load data from periode: "+economicsUrlYear+" for company "+company.getUuid());
-                Map<Range<Integer>, List<Collection>> allEntries;
+                Map<PostingStatus, Map<Range<Integer>, List<EconomicsService.FinanceEntry>>> allEntries;
                 try {
                     allEntries = economicsService.getAllEntries(company, economicsUrlYear);
                     economicsService.persistExpenses(allEntries);
@@ -87,7 +87,7 @@ public class FinanceLoadJob {
         for (String period : periods) {
             for(Company company : companies) {
                 log.info("Load data from periode: "+period);
-                Map<Range<Integer>, List<Collection>> allEntries;
+                Map<PostingStatus, Map<Range<Integer>, List<EconomicsService.FinanceEntry>>> allEntries;
                 allEntries = economicsService.getAllEntries(company, period);
                 economicsService.persistExpenses(allEntries);
                 log.info("allEntries.size() = " + allEntries.size());
