@@ -6,7 +6,7 @@ package dk.trustworks.intranet.aggregates.finance.dto.analytics;
  * <p>For actual months (isForecast=false):
  * registeredRevenueDkk comes from fact_user_day,
  * invoiceRevenueDkk from fact_company_revenue_mat,
- * totalCostDkk from fact_opex_mat (OPEX + SALARIES).
+ * totalCostDkk from DistributionAwareOpexProvider (OPEX + SALARIES).
  *
  * <p>For forecast months (isForecast=true):
  * both revenue fields carry budget + weighted pipeline,

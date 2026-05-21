@@ -52,7 +52,7 @@ public class AggregateEventSender {
         // (one JDBC connection total), otherwise start a new one. The old
         // requiringNew() forced a second connection per write, which exhausted
         // the pool under load (prod 500s on 2026-05-19).
-        if (QuarkusTransaction.isActive()) {
+        if (QuarkusTransaction.getStatus() != Status.STATUS_NO_TRANSACTION) {
             event.persist();
         } else {
             QuarkusTransaction.requiringNew().run(() -> event.persist());

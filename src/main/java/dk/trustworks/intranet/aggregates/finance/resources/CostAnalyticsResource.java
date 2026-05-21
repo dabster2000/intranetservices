@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
 import dk.trustworks.intranet.aggregates.finance.dto.analytics.*;
+import dk.trustworks.intranet.aggregates.finance.services.DistributionAwareOpexProvider;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.CareerBandMapper;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.SalaryAnalyticsProvider;
@@ -43,6 +44,9 @@ public class CostAnalyticsResource {
 
     @Inject
     ProfitabilityProvider profitabilityProvider;
+
+    @Inject
+    DistributionAwareOpexProvider opexProvider;
 
     @Inject
     EntityManager em;
@@ -599,21 +603,14 @@ public class CostAnalyticsResource {
         invQuery.setParameter("currentMonth", currentMonthKey);
         if (companies != null) invQuery.setParameter("companyIds", companies);
 
-        // Q3: Total cost (OPEX + SALARIES) from fact_opex_mat
-        String costSql = buildTotalCostSql(companies);
-        var costQuery = em.createNativeQuery(costSql, Tuple.class);
-        costQuery.setParameter("ttmStart", ttmStartKey);
-        costQuery.setParameter("currentMonth", currentMonthKey);
-        if (companies != null) costQuery.setParameter("companyIds", companies);
-
         @SuppressWarnings("unchecked") List<Tuple> regRows = regQuery.getResultList();
         @SuppressWarnings("unchecked") List<Tuple> invRows = invQuery.getResultList();
-        @SuppressWarnings("unchecked") List<Tuple> costRows = costQuery.getResultList();
 
         // Index by month_key
         Map<String, Tuple> regMap = indexByMonthKey(regRows);
         Map<String, Tuple> invMap = indexByMonthKey(invRows);
-        Map<String, Tuple> costMap = indexByMonthKey(costRows);
+        Map<String, Double> costMap = opexProvider
+                .getMonthlyOpex(ttmStartKey, toMonthKey(today.minusMonths(1)), companies);
 
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
@@ -626,11 +623,11 @@ public class CostAnalyticsResource {
         double totalCostSum = 0;
 
         for (String key : allKeys) {
-            int year = resolveYear(regMap.get(key), invMap.get(key), costMap.get(key));
-            int month = resolveMonth(regMap.get(key), invMap.get(key), costMap.get(key));
+            int year = resolveYear(key, regMap.get(key), invMap.get(key));
+            int month = resolveMonth(key, regMap.get(key), invMap.get(key));
             double regRev = numericValue(regMap.get(key), "registered_revenue");
             double invRev = numericValue(invMap.get(key), "net_revenue");
-            double cost = numericValue(costMap.get(key), "total_cost");
+            double cost = costMap.getOrDefault(key, 0.0);
             totalCostSum += Math.round(cost);
 
             result.add(new RevenueCostForecastDTO(
@@ -914,18 +911,6 @@ public class CostAnalyticsResource {
                 "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
     }
 
-    /** Total cost (OPEX + SALARIES) from fact_opex_mat (TTM window). */
-    private static String buildTotalCostSql(Set<String> companies) {
-        String filter = companies != null ? "AND o.company_id IN (:companyIds) " : "";
-        return "SELECT o.month_key, o.year, o.month_number, " +
-                "SUM(o.opex_amount_dkk) AS total_cost " +
-                "FROM fact_opex_mat o " +
-                "WHERE o.cost_type IN ('OPEX', 'SALARIES') " +
-                "AND o.month_key >= :ttmStart AND o.month_key < :currentMonth " +
-                filter +
-                "GROUP BY o.month_key, o.year, o.month_number ORDER BY o.month_key";
-    }
-
     /** Actual revenue from fact_company_revenue_mat (FY window). */
     private static String buildActualRevenueSql(Set<String> companies) {
         String filter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
@@ -1043,18 +1028,18 @@ public class CostAnalyticsResource {
         return val instanceof Number n ? n.doubleValue() : 0;
     }
 
-    private static int resolveYear(Tuple... sources) {
+    private static int resolveYear(String monthKey, Tuple... sources) {
         for (Tuple t : sources) {
             if (t != null && t.get("year") != null) return ((Number) t.get("year")).intValue();
         }
-        return 0;
+        return Integer.parseInt(monthKey.substring(0, 4));
     }
 
-    private static int resolveMonth(Tuple... sources) {
+    private static int resolveMonth(String monthKey, Tuple... sources) {
         for (Tuple t : sources) {
             if (t != null && t.get("month_number") != null) return ((Number) t.get("month_number")).intValue();
         }
-        return 0;
+        return Integer.parseInt(monthKey.substring(4, 6));
     }
 
     // ═════════════════════════════════════════════════════════════════════
