@@ -51,7 +51,7 @@ public class Finance extends PanacheEntityBase {
     }
 
     public static List<Finance> findByPeriod(LocalDate period) {
-        return find("period", period).list();
+        return find("period = ?1 and postingstatus = ?2", period, PostingStatus.BOOKED).list();
     }
 
     @Transactional
