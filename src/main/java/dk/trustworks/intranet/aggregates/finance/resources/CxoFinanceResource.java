@@ -1314,10 +1314,11 @@ public class CxoFinanceResource {
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
             @QueryParam("clientId") String clientId,
-            @QueryParam("companyIds") String companyIds) {
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("costSource") String costSourceParam) {
 
-        log.debugf("GET /finance/cxo/expected-accumulated-ebitda/source-data: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s",
-                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds);
+        log.debugf("GET /finance/cxo/expected-accumulated-ebitda/source-data: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s, costSource=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds, costSourceParam);
 
         LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
                 ? LocalDate.parse(asOfDateStr)
@@ -1329,7 +1330,8 @@ public class CxoFinanceResource {
         Set<String> companyIdSet    = parseCommaSeparated(companyIds);
 
         EbitdaSourceDataDTO result = cxoFinanceService.getEbitdaSourceData(
-                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet);
+                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet,
+                CostSource.fromQueryParam(costSourceParam));
 
         log.debugf("Returning EBITDA source data: %d invoices, %d creditNotes, %d directCosts, %d internalInvoices, %d opexEntries",
                 result.getInvoices().size(), result.getCreditNotes().size(),
@@ -1799,9 +1801,13 @@ public class CxoFinanceResource {
      */
     @GET
     @Path("/cost-to-revenue")
-    public List<CostToRevenueDataPointDTO> costToRevenue(@QueryParam("companyIds") String companyIds) {
-        log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s", companyIds);
-        return cxoFinanceService.costToRevenue(parseCommaSeparated(companyIds));
+    public List<CostToRevenueDataPointDTO> costToRevenue(
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("costSource") String costSourceParam) {
+        log.debugf("GET /finance/cxo/cost-to-revenue: companyIds=%s, costSource=%s", companyIds, costSourceParam);
+        return cxoFinanceService.costToRevenue(
+                parseCommaSeparated(companyIds),
+                CostSource.fromQueryParam(costSourceParam));
     }
 
     /**
