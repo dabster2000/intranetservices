@@ -569,12 +569,19 @@ public class CostAnalyticsResource {
     // ═════════════════════════════════════════════════════════════════════
 
     /**
-     * Revenue vs. cost trend with TTM actuals and forward-looking forecast.
+     * Revenue vs. cost trend with current-fiscal-year actuals and forward-looking forecast.
      * Replaces BFF route: /api/executive/revenue-cost-trend
+     *
+     * <p>Window choice — fiscal year (July → June), matching {@code getExpectedAccumulatedEBITDA}.
+     * The TTM window is still queried internally because it feeds the gross-margin and
+     * average OPEX/Salary inputs used by the forecast projection (same methodology as the
+     * EBITDA chart). Only months from {@code fyStartKey} onwards appear in the returned list,
+     * so the chart's accumulated "Implied EBITDA" reconciles with the EBITDA chart's
+     * accumulated EBITDA at every point.
      *
      * <p>Returns:
      * <ul>
-     *   <li>12 completed months of actual data (registered revenue, invoice revenue, total cost)</li>
+     *   <li>Actual months of the current fiscal year (registered revenue, invoice revenue, total cost)</li>
      *   <li>Forecast months from current month through fiscal year end
      *       (budget revenue + weighted pipeline vs. flat TTM average cost)</li>
      * </ul>
@@ -589,10 +596,14 @@ public class CostAnalyticsResource {
         String ttmStartKey = toMonthKey(today.minusMonths(12));
         String currentMonthKey = toMonthKey(today);
 
+        // Fiscal year: July 1 → June 30 (matches getExpectedAccumulatedEBITDA in CxoFinanceService).
+        int fyStartYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        String fyStartKey = toMonthKey(fyStartYear, 7);
+
         Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
         CostSource costSource = CostSource.fromQueryParam(costSourceParam);
 
-        // ── TTM actual data (12 completed months) ────────────────────────
+        // ── TTM actual data (queried for projection inputs; display filtered to FY) ──
 
         // Q1: Registered revenue from fact_user_day
         String registeredRevenueSql = buildRegisteredRevenueSql(companies);
@@ -652,12 +663,16 @@ public class CostAnalyticsResource {
         allKeys.addAll(glDirectMap.keySet());
         allKeys.addAll(queuedMap.keySet());
 
-        // Build actual months
+        // Iterate ALL keys in the TTM window so projection inputs (gross margin, avg
+        // OPEX+salary) are computed over a stable 12-month base. Only months within the
+        // current fiscal year are emitted to the result list — that's what aligns the
+        // chart's accumulated trajectory with getExpectedAccumulatedEBITDA.
         List<RevenueCostForecastDTO> result = new ArrayList<>();
         double totalCostSum = 0;
         double totalOpexSalarySum = 0;
         double totalInvoiceRevenueSum = 0;
         double totalDirectCostSum = 0;
+        int ttmMonthCount = 0;
 
         for (String key : allKeys) {
             int year = resolveYear(key, regMap.get(key), invMap.get(key));
@@ -674,6 +689,9 @@ public class CostAnalyticsResource {
             totalOpexSalarySum += Math.round(opexSalary);
             totalInvoiceRevenueSum += invRev;
             totalDirectCostSum += directDelivery;
+            ttmMonthCount++;
+
+            if (key.compareTo(fyStartKey) < 0) continue;
 
             result.add(new RevenueCostForecastDTO(
                     key, year, month,
@@ -684,10 +702,10 @@ public class CostAnalyticsResource {
         }
 
         // Flat TTM average total cost — kept on every row as horizontal reference line
-        Double flatAvgCost = !result.isEmpty() ? Math.round(totalCostSum / result.size()) * 1.0 : null;
+        Double flatAvgCost = ttmMonthCount > 0 ? Math.round(totalCostSum / ttmMonthCount) * 1.0 : null;
         // TTM avg OPEX+Salary — used as the OPEX/Salary forecast component (the
         // direct-delivery forecast component is derived from the gross-margin ratio).
-        double flatAvgOpexSalary = !result.isEmpty() ? totalOpexSalarySum / result.size() : 0;
+        double flatAvgOpexSalary = ttmMonthCount > 0 ? totalOpexSalarySum / ttmMonthCount : 0;
         // TTM gross margin = (revenue - direct cost) / revenue. Same formula the EBITDA
         // chart uses for forecast direct delivery cost projection.
         double ttmGrossMargin = totalInvoiceRevenueSum > 0
