@@ -4752,6 +4752,17 @@ public class CxoFinanceService {
             Set<String> contractTypes,
             String clientId,
             Set<String> companyIds) {
+        return getEbitdaSourceData(asOfDate, sectors, serviceLines, contractTypes, clientId, companyIds, CostSource.BOOKED);
+    }
+
+    public EbitdaSourceDataDTO getEbitdaSourceData(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds,
+            CostSource costSource) {
 
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
 
@@ -4780,10 +4791,10 @@ public class CxoFinanceService {
                 fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
         // 3) Internal invoices: QUEUED from invoices table + CREATED_GL from finance_details
-        List<InternalInvoiceRowDTO> internalInvoices = queryInternalInvoices(fyStart, fyEnd, fyFromKey, fyToKey, companyIds);
+        List<InternalInvoiceRowDTO> internalInvoices = queryInternalInvoices(fyStart, fyEnd, fyFromKey, fyToKey, companyIds, costSource);
 
         // 4) OPEX: raw finance_details GL entries, excluding non-OPEX categories
-        List<OpexRowExportDTO> opexEntries = queryOpexEntries(fyStart, fyEnd, companyIds);
+        List<OpexRowExportDTO> opexEntries = queryOpexEntries(fyStart, fyEnd, companyIds, costSource);
 
         log.debugf("getEbitdaSourceData: %d invoices, %d creditNotes, %d directCosts, %d internalInvoices, %d opexEntries",
                 invoices.size(), creditNotes.size(), directCosts.size(), internalInvoices.size(), opexEntries.size());
@@ -5000,7 +5011,8 @@ public class CxoFinanceService {
     private List<InternalInvoiceRowDTO> queryInternalInvoices(
             LocalDate fyStart, LocalDate fyEnd,
             String fyFromKey, String fyToKey,
-            Set<String> companyIds) {
+            Set<String> companyIds,
+            CostSource costSource) {
 
         List<InternalInvoiceRowDTO> result = new ArrayList<>();
 
@@ -5078,7 +5090,7 @@ public class CxoFinanceService {
                 "FROM finance_details fd " +
                 "WHERE fd.expensedate BETWEEN :fyStart AND :fyEnd " +
                 "  AND fd.amount != 0 " +
-                "  AND fd.postingstatus = 'BOOKED' " +
+                "  AND fd.postingstatus IN (:postingStatuses) " +
                 "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -5089,6 +5101,7 @@ public class CxoFinanceService {
         Query glQuery = em.createNativeQuery(glSql.toString(), Tuple.class);
         glQuery.setParameter("fyStart", fyStart);
         glQuery.setParameter("fyEnd", fyEnd);
+        glQuery.setParameter("postingStatuses", (costSource == null ? CostSource.BOOKED : costSource).postingStatusNames());
         if (companyIds != null && !companyIds.isEmpty()) {
             glQuery.setParameter("companyIds", companyIds);
         }
@@ -5123,7 +5136,8 @@ public class CxoFinanceService {
      */
     private List<OpexRowExportDTO> queryOpexEntries(
             LocalDate fyStart, LocalDate fyEnd,
-            Set<String> companyIds) {
+            Set<String> companyIds,
+            CostSource costSource) {
 
         StringBuilder sql = new StringBuilder(
                 "SELECT " +
@@ -5146,7 +5160,7 @@ public class CxoFinanceService {
                 "    LEFT JOIN companies comp ON comp.uuid = fd.companyuuid " +
                 "WHERE fd.expensedate BETWEEN :fyStart AND :fyEnd " +
                 "  AND fd.amount != 0 " +
-                "  AND fd.postingstatus = 'BOOKED' " +
+                "  AND fd.postingstatus IN (:postingStatuses) " +
                 "  AND (aa.account_code >= '3000' AND aa.account_code < '6000') " +
                 "  AND ac.groupname NOT IN ('Varesalg', 'Direkte omkostninger', 'Igangvaerende arbejde') "
         );
@@ -5158,6 +5172,7 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fyStart", fyStart);
         query.setParameter("fyEnd", fyEnd);
+        query.setParameter("postingStatuses", (costSource == null ? CostSource.BOOKED : costSource).postingStatusNames());
         if (companyIds != null && !companyIds.isEmpty()) {
             query.setParameter("companyIds", companyIds);
         }
@@ -6237,6 +6252,10 @@ public class CxoFinanceService {
      * @return monthly data points ordered by month_key ascending (may be empty)
      */
     public List<CostToRevenueDataPointDTO> costToRevenue(Set<String> companyIds) {
+        return costToRevenue(companyIds, CostSource.BOOKED);
+    }
+
+    public List<CostToRevenueDataPointDTO> costToRevenue(Set<String> companyIds, CostSource costSource) {
         LocalDate today = LocalDate.now();
         LocalDate fromDate = today.withDayOfMonth(1).minusMonths(17);
         int fromYear = fromDate.getYear();
@@ -6279,7 +6298,7 @@ public class CxoFinanceService {
                 "  SELECT month_key, company_id, SUM(opex_amount_dkk) AS opex_cost " +
                 "  FROM fact_opex_mat " +
                 "  WHERE cost_type = 'OPEX' " +
-                "    AND posting_status = 'BOOKED' " +
+                "    AND posting_status IN (:postingStatuses) " +
                 "    AND month_key BETWEEN :fromMonthKey AND :toMonthKey" +
                 companyFilterOpex + " " +
                 "  GROUP BY month_key, company_id " +
@@ -6292,6 +6311,7 @@ public class CxoFinanceService {
         Query query = em.createNativeQuery(sql, Tuple.class);
         query.setParameter("fromMonthKey", fromMonthKey);
         query.setParameter("toMonthKey", toMonthKey);
+        query.setParameter("postingStatuses", (costSource == null ? CostSource.BOOKED : costSource).postingStatusNames());
         if (hasCompanyFilter) {
             query.setParameter("companyIds", companyIds);
         }

@@ -569,12 +569,19 @@ public class CostAnalyticsResource {
     // ═════════════════════════════════════════════════════════════════════
 
     /**
-     * Revenue vs. cost trend with TTM actuals and forward-looking forecast.
+     * Revenue vs. cost trend with current-fiscal-year actuals and forward-looking forecast.
      * Replaces BFF route: /api/executive/revenue-cost-trend
+     *
+     * <p>Window choice — fiscal year (July → June), matching {@code getExpectedAccumulatedEBITDA}.
+     * The TTM window is still queried internally because it feeds the gross-margin and
+     * average OPEX/Salary inputs used by the forecast projection (same methodology as the
+     * EBITDA chart). Only months from {@code fyStartKey} onwards appear in the returned list,
+     * so the chart's accumulated "Implied EBITDA" reconciles with the EBITDA chart's
+     * accumulated EBITDA at every point.
      *
      * <p>Returns:
      * <ul>
-     *   <li>12 completed months of actual data (registered revenue, invoice revenue, total cost)</li>
+     *   <li>Actual months of the current fiscal year (registered revenue, invoice revenue, total cost)</li>
      *   <li>Forecast months from current month through fiscal year end
      *       (budget revenue + weighted pipeline vs. flat TTM average cost)</li>
      * </ul>
@@ -589,10 +596,14 @@ public class CostAnalyticsResource {
         String ttmStartKey = toMonthKey(today.minusMonths(12));
         String currentMonthKey = toMonthKey(today);
 
+        // Fiscal year: July 1 → June 30 (matches getExpectedAccumulatedEBITDA in CxoFinanceService).
+        int fyStartYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        String fyStartKey = toMonthKey(fyStartYear, 7);
+
         Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
         CostSource costSource = CostSource.fromQueryParam(costSourceParam);
 
-        // ── TTM actual data (12 completed months) ────────────────────────
+        // ── TTM actual data (queried for projection inputs; display filtered to FY) ──
 
         // Q1: Registered revenue from fact_user_day
         String registeredRevenueSql = buildRegisteredRevenueSql(companies);
@@ -608,73 +619,98 @@ public class CostAnalyticsResource {
         invQuery.setParameter("currentMonth", currentMonthKey);
         if (companies != null) invQuery.setParameter("companyIds", companies);
 
-        // Q3: GL direct delivery cost (cost_type='DIRECT_COSTS') — same source the EBITDA
-        //     chart uses, so totalCostDkk now matches the cost stack EBITDA subtracts.
-        String directCostSql = buildMonthlyDirectDeliveryCostSql(companies);
-        var directCostQuery = em.createNativeQuery(directCostSql, Tuple.class);
-        directCostQuery.setParameter("fromKey", ttmStartKey);
-        directCostQuery.setParameter("toKey", toMonthKey(today.minusMonths(1)));
-        directCostQuery.setParameter("postingStatuses", costSource.postingStatusNames());
-        if (companies != null) directCostQuery.setParameter("companyIds", companies);
-
         @SuppressWarnings("unchecked") List<Tuple> regRows = regQuery.getResultList();
         @SuppressWarnings("unchecked") List<Tuple> invRows = invQuery.getResultList();
-        @SuppressWarnings("unchecked") List<Tuple> directCostRows = directCostQuery.getResultList();
+
+        String ttmEndKey = toMonthKey(today.minusMonths(1));
 
         // Index by month_key
         Map<String, Tuple> regMap = indexByMonthKey(regRows);
         Map<String, Tuple> invMap = indexByMonthKey(invRows);
-        Map<String, Double> costMap = opexProvider
-                .getMonthlyOpex(ttmStartKey, toMonthKey(today.minusMonths(1)), companies, costSource);
-        Map<String, Double> directCostMap = new HashMap<>();
-        for (Tuple row : directCostRows) {
-            directCostMap.put((String) row.get("month_key"), numericValue(row, "direct_cost"));
+        Map<String, Double> opexSalaryMap = opexProvider
+                .getMonthlyOpex(ttmStartKey, ttmEndKey, companies, costSource);
+
+        // Q3a: GL DIRECT_COSTS by month (signed, costSource-aware)
+        String glDirectSql = buildMonthlyGlDirectCostSql(companies);
+        var glDirectQuery = em.createNativeQuery(glDirectSql, Tuple.class);
+        glDirectQuery.setParameter("fromKey", ttmStartKey);
+        glDirectQuery.setParameter("toKey", ttmEndKey);
+        glDirectQuery.setParameter("postingStatuses", costSource.postingStatusNames());
+        if (companies != null) glDirectQuery.setParameter("companyIds", companies);
+        @SuppressWarnings("unchecked") List<Tuple> glDirectRows = glDirectQuery.getResultList();
+        Map<String, Double> glDirectMap = new HashMap<>();
+        for (Tuple row : glDirectRows) {
+            glDirectMap.put((String) row.get("month_key"), numericValue(row, "gl_direct_cost"));
+        }
+
+        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent)
+        String queuedSql = buildMonthlyQueuedInternalCostSql(companies);
+        var queuedQuery = em.createNativeQuery(queuedSql, Tuple.class);
+        queuedQuery.setParameter("fromKey", ttmStartKey);
+        queuedQuery.setParameter("toKey", ttmEndKey);
+        if (companies != null) queuedQuery.setParameter("companyIds", companies);
+        @SuppressWarnings("unchecked") List<Tuple> queuedRows = queuedQuery.getResultList();
+        Map<String, Double> queuedMap = new HashMap<>();
+        for (Tuple row : queuedRows) {
+            queuedMap.put((String) row.get("month_key"), numericValue(row, "queued_cost"));
         }
 
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
         allKeys.addAll(regMap.keySet());
         allKeys.addAll(invMap.keySet());
-        allKeys.addAll(costMap.keySet());
-        allKeys.addAll(directCostMap.keySet());
+        allKeys.addAll(opexSalaryMap.keySet());
+        allKeys.addAll(glDirectMap.keySet());
+        allKeys.addAll(queuedMap.keySet());
 
-        // Build actual months — totalCostDkk = OPEX+Salaries + direct delivery cost
+        // Iterate ALL keys in the TTM window so projection inputs (gross margin, avg
+        // OPEX+salary) are computed over a stable 12-month base. Only months within the
+        // current fiscal year are emitted to the result list — that's what aligns the
+        // chart's accumulated trajectory with getExpectedAccumulatedEBITDA.
         List<RevenueCostForecastDTO> result = new ArrayList<>();
-        double totalCostSum = 0;            // accumulates full economic cost (for flatAvgCost)
-        double opexSalariesSum = 0;         // accumulates OPEX+Salaries only (for forecast flat avg)
-        double ttmInvoiceRevenueSum = 0;
-        double ttmDirectCostSum = 0;
+        double totalCostSum = 0;
+        double totalOpexSalarySum = 0;
+        double totalInvoiceRevenueSum = 0;
+        double totalDirectCostSum = 0;
+        int ttmMonthCount = 0;
 
         for (String key : allKeys) {
             int year = resolveYear(key, regMap.get(key), invMap.get(key));
             int month = resolveMonth(key, regMap.get(key), invMap.get(key));
             double regRev = numericValue(regMap.get(key), "registered_revenue");
             double invRev = numericValue(invMap.get(key), "net_revenue");
-            double opexSalaries = costMap.getOrDefault(key, 0.0);
-            double directCost = directCostMap.getOrDefault(key, 0.0);
-            double fullCost = opexSalaries + directCost;
+            double opexSalary = opexSalaryMap.getOrDefault(key, 0.0);
+            double glDirect = glDirectMap.getOrDefault(key, 0.0);
+            double queued = queuedMap.getOrDefault(key, 0.0);
+            double directDelivery = glDirect + queued;
+            double totalCost = opexSalary + directDelivery;
 
-            opexSalariesSum += Math.round(opexSalaries);
-            totalCostSum += Math.round(fullCost);
-            ttmInvoiceRevenueSum += invRev;
-            ttmDirectCostSum += directCost;
+            totalCostSum += Math.round(totalCost);
+            totalOpexSalarySum += Math.round(opexSalary);
+            totalInvoiceRevenueSum += invRev;
+            totalDirectCostSum += directDelivery;
+            ttmMonthCount++;
+
+            if (key.compareTo(fyStartKey) < 0) continue;
 
             result.add(new RevenueCostForecastDTO(
                     key, year, month,
                     SalaryAnalyticsProvider.formatMonthLabel(year, month),
-                    Math.round(regRev), Math.round(invRev), Math.round(fullCost),
-                    Math.round(directCost),
+                    Math.round(regRev), Math.round(invRev),
+                    Math.round(totalCost), Math.round(directDelivery),
                     null, false));
         }
 
-        // Flat TTM averages
-        Double flatAvgCost = !result.isEmpty() ? Math.round(totalCostSum / result.size()) * 1.0 : null;
-        double flatAvgOpexSalaries = !result.isEmpty() ? opexSalariesSum / result.size() : 0;
-
-        // TTM gross margin from invoice revenue & GL direct cost — mirrors the EBITDA endpoint.
-        double ttmGrossMarginPct = (ttmInvoiceRevenueSum > 0)
-                ? ((ttmInvoiceRevenueSum - ttmDirectCostSum) / ttmInvoiceRevenueSum) * 100.0
-                : 0.0;
+        // Flat TTM average total cost — kept on every row as horizontal reference line
+        Double flatAvgCost = ttmMonthCount > 0 ? Math.round(totalCostSum / ttmMonthCount) * 1.0 : null;
+        // TTM avg OPEX+Salary — used as the OPEX/Salary forecast component (the
+        // direct-delivery forecast component is derived from the gross-margin ratio).
+        double flatAvgOpexSalary = ttmMonthCount > 0 ? totalOpexSalarySum / ttmMonthCount : 0;
+        // TTM gross margin = (revenue - direct cost) / revenue. Same formula the EBITDA
+        // chart uses for forecast direct delivery cost projection.
+        double ttmGrossMargin = totalInvoiceRevenueSum > 0
+                ? (totalInvoiceRevenueSum - totalDirectCostSum) / totalInvoiceRevenueSum
+                : 0;
 
         List<RevenueCostForecastDTO> withAvg = result.stream()
                 .map(r -> new RevenueCostForecastDTO(r.monthKey(), r.year(), r.monthNumber(),
@@ -725,15 +761,15 @@ public class CostAnalyticsResource {
                 double pipelineRev = pipelineMap.getOrDefault(fKey, 0.0);
                 double forecastRevenue = Math.round(budgetRev + pipelineRev);
 
-                // Direct cost forecast = revenue * (1 - TTM gross margin / 100), matching EBITDA endpoint
-                double forecastDirectCost = Math.round(forecastRevenue * (1.0 - ttmGrossMarginPct / 100.0));
-                double forecastMonthlyCost = Math.round(flatAvgOpexSalaries) + forecastDirectCost;
+                // Forecast direct delivery cost via TTM gross margin (matches EBITDA chart).
+                double forecastDirectDelivery = Math.round(forecastRevenue * (1.0 - ttmGrossMargin));
+                double forecastTotalCost = Math.round(flatAvgOpexSalary + forecastDirectDelivery);
 
                 withAvg.add(new RevenueCostForecastDTO(
                         fKey, fYear, fMonth,
                         SalaryAnalyticsProvider.formatMonthLabel(fYear, fMonth),
-                        forecastRevenue, forecastRevenue, forecastMonthlyCost,
-                        forecastDirectCost,
+                        forecastRevenue, forecastRevenue,
+                        forecastTotalCost, forecastDirectDelivery,
                         flatAvgCost, true));
 
                 fMonth++;
@@ -1008,28 +1044,15 @@ public class CostAnalyticsResource {
                 filter;
     }
 
-    /** Budget revenue from fact_revenue_budget_mat (forecast window). */
-    private static String buildBudgetRevenueSql(Set<String> companies) {
-        String filter = companies != null ? "AND b.company_id IN (:companyIds) " : "";
-        return "SELECT b.month_key, b.year, b.month_number, " +
-                "SUM(b.budget_revenue_dkk) AS budget_revenue " +
-                "FROM fact_revenue_budget_mat b " +
-                "WHERE b.month_key >= :fromKey AND b.month_key <= :toKey " +
-                filter +
-                "GROUP BY b.month_key, b.year, b.month_number ORDER BY b.month_key";
-    }
-
     /**
-     * Monthly GL direct delivery cost (cost_type='DIRECT_COSTS') from finance_details.
-     *
-     * <p>Same source the EBITDA chart subtracts as "direct cost" — keeps the Revenue & Cost
-     * chart's full-economic-cost bar reconcilable with EBITDA. Posting-status filter is
-     * applied at bind time via the :postingStatuses parameter.
+     * Monthly GL DIRECT_COSTS from finance_details (signed sum), parameterized by costSource.
+     * Identical predicate to {@code CxoFinanceService.queryMonthlyDirectCostByMonth} so the
+     * Revenue/Cost chart and EBITDA chart subtract the same direct delivery cost.
      */
-    private static String buildMonthlyDirectDeliveryCostSql(Set<String> companies) {
+    private static String buildMonthlyGlDirectCostSql(Set<String> companies) {
         String filter = companies != null ? "AND fd.companyuuid IN (:companyIds) " : "";
         return "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
-                "       COALESCE(SUM(fd.amount), 0.0) AS direct_cost " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS gl_direct_cost " +
                 "FROM finance_details fd " +
                 "INNER JOIN accounting_accounts aa " +
                 "    ON fd.accountnumber = aa.account_code " +
@@ -1040,6 +1063,44 @@ public class CostAnalyticsResource {
                 "  AND fd.postingstatus IN (:postingStatuses) " +
                 filter +
                 "GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key";
+    }
+
+    /**
+     * Monthly QUEUED INTERNAL invoice cost, attributed to debtor company, in DKK.
+     * Mirrors {@code CxoFinanceService.queryMonthlyQueuedInternalCostByMonth}. QUEUED
+     * INTERNALs aren't yet in the GL, so they're synthesized here. Independent of
+     * costSource (QUEUED rows aren't subject to BOOKED/DRAFT classification).
+     */
+    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
+        return "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) AS queued_cost " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'QUEUED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL " +
+                filter +
+                "GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key";
+    }
+
+    /** Budget revenue from fact_revenue_budget_mat (forecast window). */
+    private static String buildBudgetRevenueSql(Set<String> companies) {
+        String filter = companies != null ? "AND b.company_id IN (:companyIds) " : "";
+        return "SELECT b.month_key, b.year, b.month_number, " +
+                "SUM(b.budget_revenue_dkk) AS budget_revenue " +
+                "FROM fact_revenue_budget_mat b " +
+                "WHERE b.month_key >= :fromKey AND b.month_key <= :toKey " +
+                filter +
+                "GROUP BY b.month_key, b.year, b.month_number ORDER BY b.month_key";
     }
 
     /** Weighted pipeline (excl. WON) from fact_pipeline (forecast window). */
