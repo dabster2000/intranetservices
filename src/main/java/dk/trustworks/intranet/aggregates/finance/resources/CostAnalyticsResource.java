@@ -611,43 +611,93 @@ public class CostAnalyticsResource {
         @SuppressWarnings("unchecked") List<Tuple> regRows = regQuery.getResultList();
         @SuppressWarnings("unchecked") List<Tuple> invRows = invQuery.getResultList();
 
+        String ttmEndKey = toMonthKey(today.minusMonths(1));
+
         // Index by month_key
         Map<String, Tuple> regMap = indexByMonthKey(regRows);
         Map<String, Tuple> invMap = indexByMonthKey(invRows);
-        Map<String, Double> costMap = opexProvider
-                .getMonthlyOpex(ttmStartKey, toMonthKey(today.minusMonths(1)), companies, costSource);
+        Map<String, Double> opexSalaryMap = opexProvider
+                .getMonthlyOpex(ttmStartKey, ttmEndKey, companies, costSource);
+
+        // Q3a: GL DIRECT_COSTS by month (signed, costSource-aware)
+        String glDirectSql = buildMonthlyGlDirectCostSql(companies);
+        var glDirectQuery = em.createNativeQuery(glDirectSql, Tuple.class);
+        glDirectQuery.setParameter("fromKey", ttmStartKey);
+        glDirectQuery.setParameter("toKey", ttmEndKey);
+        glDirectQuery.setParameter("postingStatuses", costSource.postingStatusNames());
+        if (companies != null) glDirectQuery.setParameter("companyIds", companies);
+        @SuppressWarnings("unchecked") List<Tuple> glDirectRows = glDirectQuery.getResultList();
+        Map<String, Double> glDirectMap = new HashMap<>();
+        for (Tuple row : glDirectRows) {
+            glDirectMap.put((String) row.get("month_key"), numericValue(row, "gl_direct_cost"));
+        }
+
+        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent)
+        String queuedSql = buildMonthlyQueuedInternalCostSql(companies);
+        var queuedQuery = em.createNativeQuery(queuedSql, Tuple.class);
+        queuedQuery.setParameter("fromKey", ttmStartKey);
+        queuedQuery.setParameter("toKey", ttmEndKey);
+        if (companies != null) queuedQuery.setParameter("companyIds", companies);
+        @SuppressWarnings("unchecked") List<Tuple> queuedRows = queuedQuery.getResultList();
+        Map<String, Double> queuedMap = new HashMap<>();
+        for (Tuple row : queuedRows) {
+            queuedMap.put((String) row.get("month_key"), numericValue(row, "queued_cost"));
+        }
 
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
         allKeys.addAll(regMap.keySet());
         allKeys.addAll(invMap.keySet());
-        allKeys.addAll(costMap.keySet());
+        allKeys.addAll(opexSalaryMap.keySet());
+        allKeys.addAll(glDirectMap.keySet());
+        allKeys.addAll(queuedMap.keySet());
 
         // Build actual months
         List<RevenueCostForecastDTO> result = new ArrayList<>();
         double totalCostSum = 0;
+        double totalOpexSalarySum = 0;
+        double totalInvoiceRevenueSum = 0;
+        double totalDirectCostSum = 0;
 
         for (String key : allKeys) {
             int year = resolveYear(key, regMap.get(key), invMap.get(key));
             int month = resolveMonth(key, regMap.get(key), invMap.get(key));
             double regRev = numericValue(regMap.get(key), "registered_revenue");
             double invRev = numericValue(invMap.get(key), "net_revenue");
-            double cost = costMap.getOrDefault(key, 0.0);
-            totalCostSum += Math.round(cost);
+            double opexSalary = opexSalaryMap.getOrDefault(key, 0.0);
+            double glDirect = glDirectMap.getOrDefault(key, 0.0);
+            double queued = queuedMap.getOrDefault(key, 0.0);
+            double directDelivery = glDirect + queued;
+            double totalCost = opexSalary + directDelivery;
+
+            totalCostSum += Math.round(totalCost);
+            totalOpexSalarySum += Math.round(opexSalary);
+            totalInvoiceRevenueSum += invRev;
+            totalDirectCostSum += directDelivery;
 
             result.add(new RevenueCostForecastDTO(
                     key, year, month,
                     SalaryAnalyticsProvider.formatMonthLabel(year, month),
-                    Math.round(regRev), Math.round(invRev), Math.round(cost),
+                    Math.round(regRev), Math.round(invRev),
+                    Math.round(totalCost), Math.round(directDelivery),
                     null, false));
         }
 
-        // Flat TTM average cost
+        // Flat TTM average total cost — kept on every row as horizontal reference line
         Double flatAvgCost = !result.isEmpty() ? Math.round(totalCostSum / result.size()) * 1.0 : null;
+        // TTM avg OPEX+Salary — used as the OPEX/Salary forecast component (the
+        // direct-delivery forecast component is derived from the gross-margin ratio).
+        double flatAvgOpexSalary = !result.isEmpty() ? totalOpexSalarySum / result.size() : 0;
+        // TTM gross margin = (revenue - direct cost) / revenue. Same formula the EBITDA
+        // chart uses for forecast direct delivery cost projection.
+        double ttmGrossMargin = totalInvoiceRevenueSum > 0
+                ? (totalInvoiceRevenueSum - totalDirectCostSum) / totalInvoiceRevenueSum
+                : 0;
+
         List<RevenueCostForecastDTO> withAvg = result.stream()
                 .map(r -> new RevenueCostForecastDTO(r.monthKey(), r.year(), r.monthNumber(),
                         r.monthLabel(), r.registeredRevenueDkk(), r.invoiceRevenueDkk(),
-                        r.totalCostDkk(), flatAvgCost, false))
+                        r.totalCostDkk(), r.directDeliveryCostDkk(), flatAvgCost, false))
                 .collect(Collectors.toCollection(ArrayList::new));
 
         // ── Forecast months (current through FY end) ─────────────────────
@@ -658,8 +708,6 @@ public class CostAnalyticsResource {
         String fyEndKey = toMonthKey(fyEndYear, 6);
 
         if (currentMonthKey.compareTo(fyEndKey) <= 0) {
-            double forecastMonthlyCost = flatAvgCost != null ? flatAvgCost : 0;
-
             // Q4: Budget revenue
             String budgetSql = buildBudgetRevenueSql(companies);
             var budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
@@ -695,10 +743,15 @@ public class CostAnalyticsResource {
                 double pipelineRev = pipelineMap.getOrDefault(fKey, 0.0);
                 double forecastRevenue = Math.round(budgetRev + pipelineRev);
 
+                // Forecast direct delivery cost via TTM gross margin (matches EBITDA chart).
+                double forecastDirectDelivery = Math.round(forecastRevenue * (1.0 - ttmGrossMargin));
+                double forecastTotalCost = Math.round(flatAvgOpexSalary + forecastDirectDelivery);
+
                 withAvg.add(new RevenueCostForecastDTO(
                         fKey, fYear, fMonth,
                         SalaryAnalyticsProvider.formatMonthLabel(fYear, fMonth),
-                        forecastRevenue, forecastRevenue, forecastMonthlyCost,
+                        forecastRevenue, forecastRevenue,
+                        forecastTotalCost, forecastDirectDelivery,
                         flatAvgCost, true));
 
                 fMonth++;
@@ -971,6 +1024,54 @@ public class CostAnalyticsResource {
                 "AND o.posting_status = 'BOOKED' " +
                 "AND o.month_key >= :ttmStart AND o.month_key < :currentMonth " +
                 filter;
+    }
+
+    /**
+     * Monthly GL DIRECT_COSTS from finance_details (signed sum), parameterized by costSource.
+     * Identical predicate to {@code CxoFinanceService.queryMonthlyDirectCostByMonth} so the
+     * Revenue/Cost chart and EBITDA chart subtract the same direct delivery cost.
+     */
+    private static String buildMonthlyGlDirectCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND fd.companyuuid IN (:companyIds) " : "";
+        return "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS gl_direct_cost " +
+                "FROM finance_details fd " +
+                "INNER JOIN accounting_accounts aa " +
+                "    ON fd.accountnumber = aa.account_code " +
+                "    AND fd.companyuuid  = aa.companyuuid " +
+                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
+                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus IN (:postingStatuses) " +
+                filter +
+                "GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key";
+    }
+
+    /**
+     * Monthly QUEUED INTERNAL invoice cost, attributed to debtor company, in DKK.
+     * Mirrors {@code CxoFinanceService.queryMonthlyQueuedInternalCostByMonth}. QUEUED
+     * INTERNALs aren't yet in the GL, so they're synthesized here. Independent of
+     * costSource (QUEUED rows aren't subject to BOOKED/DRAFT classification).
+     */
+    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
+        return "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) AS queued_cost " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'QUEUED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL " +
+                filter +
+                "GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key";
     }
 
     /** Budget revenue from fact_revenue_budget_mat (forecast window). */
