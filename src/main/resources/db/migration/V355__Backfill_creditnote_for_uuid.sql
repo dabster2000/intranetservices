@@ -141,13 +141,13 @@ JOIN (
                 ) AS rn
           FROM invoices cn2
           JOIN invoices orig
-            ON orig.invoicenumber = CAST(REGEXP_SUBSTR(cn2.specificdescription, '[0-9]+$') AS UNSIGNED)
+            ON orig.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn2.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND orig.companyuuid = cn2.companyuuid
            AND orig.type        = 'INVOICE'
          WHERE cn2.type               = 'CREDIT_NOTE'
            AND cn2.creditnote_for_uuid IS NULL
            AND cn2.specificdescription IS NOT NULL
-           AND CAST(REGEXP_SUBSTR(cn2.specificdescription, '[0-9]+$') AS UNSIGNED) > 0
+           AND CAST(NULLIF(REGEXP_SUBSTR(cn2.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
       ) ranked
      WHERE ranked.rn = 1
 ) winners ON winners.cn_uuid = cn.uuid
@@ -190,7 +190,7 @@ SELECT cn.uuid, NULL, 'number_zero_or_null'
   FROM invoices cn
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND COALESCE(CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED), 0) = 0;
+   AND COALESCE(CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED), 0) = 0;
 
 -- -----------------------------------------------------------------------------
 -- Step 3c: Audit — skip reason 'original_is_credit_note'.
@@ -203,16 +203,16 @@ SELECT cn.uuid, NULL, 'original_is_credit_note'
   FROM invoices cn
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED) > 0
+   AND CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
    AND EXISTS (
         SELECT 1 FROM invoices x
-         WHERE x.invoicenumber = CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED)
+         WHERE x.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND x.companyuuid = cn.companyuuid
            AND x.type        = 'CREDIT_NOTE'
    )
    AND NOT EXISTS (
         SELECT 1 FROM invoices y
-         WHERE y.invoicenumber = CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED)
+         WHERE y.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND y.companyuuid = cn.companyuuid
            AND y.type        = 'INVOICE'
    );
@@ -228,12 +228,12 @@ INSERT IGNORE INTO creditnote_backfill_audit (uuid, resolved_to_uuid, skip_reaso
 SELECT cn.uuid, NULL, 'tiebreak_loser'
   FROM invoices cn
   JOIN invoices orig
-    ON orig.invoicenumber = CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED)
+    ON orig.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
    AND orig.companyuuid = cn.companyuuid
    AND orig.type        = 'INVOICE'
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED) > 0
+   AND CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
    AND EXISTS (
         SELECT 1
           FROM invoices winner
@@ -252,9 +252,9 @@ SELECT cn.uuid, NULL, 'no_original_match'
   FROM invoices cn
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED) > 0
+   AND CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
    AND NOT EXISTS (
         SELECT 1 FROM invoices any_match
-         WHERE any_match.invoicenumber = CAST(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$') AS UNSIGNED)
+         WHERE any_match.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND any_match.companyuuid = cn.companyuuid
    );
