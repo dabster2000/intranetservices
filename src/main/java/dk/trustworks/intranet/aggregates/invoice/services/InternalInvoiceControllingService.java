@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.CancellingCreditNoteRef;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.ClientWithInternalsDTO;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO;
@@ -124,6 +126,17 @@ public class InternalInvoiceControllingService {
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
+        // Cancelled-by-credit-note filter (spec §6.2, R2 + R3):
+        //   * R2 — Hide a row when the client invoice is cancelled (a CREDIT_NOTE points
+        //          at it via creditnote_for_uuid) AND no active internal invoice exists.
+        //   * R3 — When such a cancelled row DOES have an active internal (QUEUED /
+        //          PENDING_REVIEW / CREATED), keep the row so the controlling page can
+        //          show a warning + corrective actions. The CN columns are projected onto
+        //          the row so the assembly step below can build {@link CancellingCreditNoteRef}.
+        //
+        // cn_pick is bucketed once per source (rank=1 by invoicedate, uuid) — the V72
+        // unique index on creditnote_for_uuid guarantees one CN per source, but the
+        // window guards against any historical violation.
         String pickSql = """
         WITH inv AS (
             SELECT *
@@ -134,7 +147,7 @@ public class InternalInvoiceControllingService {
               AND type   = 'INVOICE'
         ),
         status_pick AS (
-            SELECT 
+            SELECT
                 i.uuid AS invoiceuuid,
                 i.companyuuid AS invoice_companyuuid,
                 ii.consultantuuid,
@@ -144,10 +157,10 @@ public class InternalInvoiceControllingService {
                     ORDER BY us.statusdate DESC
                 ) AS rn
             FROM inv i
-            JOIN invoiceitems ii 
+            JOIN invoiceitems ii
               ON ii.invoiceuuid = i.uuid
              AND ii.consultantuuid IS NOT NULL
-            JOIN userstatus us 
+            JOIN userstatus us
               ON us.useruuid = ii.consultantuuid
              AND us.statusdate <= i.invoicedate
         ),
@@ -160,10 +173,26 @@ public class InternalInvoiceControllingService {
               AND sp.users_companyuuid IS NOT NULL
               AND sp.users_companyuuid <> i.companyuuid
         ),
+        cn_pick AS (
+            SELECT
+                cn.creditnote_for_uuid AS source_uuid,
+                cn.uuid                AS cn_uuid,
+                cn.invoicenumber       AS cn_invoicenumber,
+                cn.invoicedate         AS cn_invoicedate,
+                cn.status              AS cn_status,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cn.creditnote_for_uuid
+                    ORDER BY cn.invoicedate ASC, cn.uuid ASC
+                ) AS cn_rn
+            FROM invoices cn
+            WHERE cn.type = 'CREDIT_NOTE'
+              AND cn.creditnote_for_uuid IS NOT NULL
+        ),
         internal_pick AS (
             SELECT
                 ci.uuid AS client_uuid,
                 ii.uuid AS internal_uuid,
+                ii.status AS internal_status,
                 ROW_NUMBER() OVER (
                    PARTITION BY ci.uuid
                    ORDER BY ii.invoicedate DESC, ii.invoicenumber DESC
@@ -172,28 +201,48 @@ public class InternalInvoiceControllingService {
             JOIN invoices ii
               ON ii.invoice_ref_uuid = ci.uuid
              AND ii.type          = 'INTERNAL'
-             AND ii.status IN ('QUEUED','CREATED')
+             AND ii.status IN ('PENDING_REVIEW','QUEUED','CREATED')
         ),
         skipped_clients AS (
-            SELECT ci.uuid AS client_uuid, CAST(NULL AS CHAR(36)) AS internal_uuid
+            SELECT
+                ci.uuid AS client_uuid,
+                CAST(NULL AS CHAR(36)) AS internal_uuid,
+                cnp.cn_uuid,
+                cnp.cn_invoicenumber,
+                cnp.cn_invoicedate,
+                cnp.cn_status
             FROM cross_clients ci
+            LEFT JOIN cn_pick cnp
+              ON cnp.source_uuid = ci.uuid AND cnp.cn_rn = 1
             WHERE ci.internal_invoice_skip = 1
               AND NOT EXISTS (
                   SELECT 1 FROM invoices ii
                   WHERE ii.invoice_ref_uuid = ci.uuid
                     AND ii.type = 'INTERNAL'
-                    AND ii.status IN ('QUEUED','CREATED')
+                    AND ii.status IN ('PENDING_REVIEW','QUEUED','CREATED')
               )
+              AND cnp.cn_uuid IS NULL
         )
         SELECT
-            ci.uuid       AS client_uuid,
-            COALESCE(ip.internal_uuid, NULL) AS internal_uuid
+            ci.uuid                          AS client_uuid,
+            COALESCE(ip.internal_uuid, NULL) AS internal_uuid,
+            cnp.cn_uuid                      AS cn_uuid,
+            cnp.cn_invoicenumber             AS cn_invoicenumber,
+            cnp.cn_invoicedate               AS cn_invoicedate,
+            cnp.cn_status                    AS cn_status
         FROM cross_clients ci
         LEFT JOIN internal_pick ip
           ON ip.client_uuid = ci.uuid AND ip.r = 1
-        WHERE ci.internal_invoice_skip = 0 OR ip.internal_uuid IS NOT NULL
+        LEFT JOIN cn_pick cnp
+          ON cnp.source_uuid = ci.uuid AND cnp.cn_rn = 1
+        WHERE (ci.internal_invoice_skip = 0 OR ip.internal_uuid IS NOT NULL)
+          AND (
+                cnp.cn_uuid IS NULL
+             OR ip.internal_status IN ('PENDING_REVIEW','QUEUED','CREATED')
+          )
         UNION ALL
-        SELECT client_uuid, internal_uuid FROM skipped_clients
+        SELECT client_uuid, internal_uuid, cn_uuid, cn_invoicenumber, cn_invoicedate, cn_status
+        FROM skipped_clients
         ORDER BY client_uuid
     """;
 
@@ -314,6 +363,14 @@ public class InternalInvoiceControllingService {
             String clientUuid = (String) r[0];
             String internalUuid = (String) r[1];
 
+            // Optional CN projection — only populated when this client invoice has been
+            // cancelled by a CREDIT_NOTE AND its linked internal is still active (R3).
+            CancellingCreditNoteRef cancellingCN = buildCancellingCreditNoteRef(
+                    (String) r[2],
+                    r[3],
+                    r[4] instanceof java.sql.Date d ? d.toLocalDate() : (java.time.LocalDate) r[4],
+                    (String) r[5]);
+
             Invoice client = invoiceById.get(clientUuid);
             if (client == null) continue;
             java.util.List<InvoiceLineDTO> clientLines = linesByInvoice.getOrDefault(clientUuid, java.util.List.of());
@@ -337,7 +394,8 @@ public class InternalInvoiceControllingService {
                     client.isInternalInvoiceSkip(),
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
-                    client.getInternalInvoiceSkipBy()
+                    client.getInternalInvoiceSkipBy(),
+                    cancellingCN
             );
 
             SimpleInvoiceDTO internalDto = null;
@@ -362,6 +420,7 @@ public class InternalInvoiceControllingService {
                             null,
                             null,
                             false,
+                            null,
                             null,
                             null,
                             null
@@ -621,7 +680,8 @@ public class InternalInvoiceControllingService {
                     client.isInternalInvoiceSkip(),
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
-                    client.getInternalInvoiceSkipBy()
+                    client.getInternalInvoiceSkipBy(),
+                    null
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -640,6 +700,7 @@ public class InternalInvoiceControllingService {
                     null,
                     null,
                     false,
+                    null,
                     null,
                     null,
                     null
@@ -718,8 +779,12 @@ public class InternalInvoiceControllingService {
               ON ii.invoice_ref_uuid = ci.uuid
              AND ii.type = 'INTERNAL'
              AND ii.status IN ('QUEUED','CREATED')
+            LEFT JOIN invoices cn
+              ON cn.creditnote_for_uuid = ci.uuid
+             AND cn.type = 'CREDIT_NOTE'
             WHERE ii.uuid IS NULL
               AND ci.internal_invoice_skip = 0
+              AND cn.uuid IS NULL
             ORDER BY ci.invoicedate DESC, ci.invoicenumber DESC
         """;
 
@@ -853,7 +918,8 @@ public class InternalInvoiceControllingService {
                     client.isInternalInvoiceSkip(),
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
-                    client.getInternalInvoiceSkipBy()
+                    client.getInternalInvoiceSkipBy(),
+                    null
             );
             result.add(clientDto);
         }
@@ -1074,7 +1140,8 @@ public class InternalInvoiceControllingService {
                     client.isInternalInvoiceSkip(),
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
-                    client.getInternalInvoiceSkipBy()
+                    client.getInternalInvoiceSkipBy(),
+                    null
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -1093,6 +1160,7 @@ public class InternalInvoiceControllingService {
                     null,
                     null,
                     false,
+                    null,
                     null,
                     null,
                     null
@@ -1298,7 +1366,8 @@ public class InternalInvoiceControllingService {
                     client.isInternalInvoiceSkip(),
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
-                    client.getInternalInvoiceSkipBy()
+                    client.getInternalInvoiceSkipBy(),
+                    null
             );
 
             java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO> internals = new java.util.ArrayList<>();
@@ -1325,6 +1394,7 @@ public class InternalInvoiceControllingService {
                         false,
                         null,
                         null,
+                        null,
                         null
                 ));
             }
@@ -1336,6 +1406,23 @@ public class InternalInvoiceControllingService {
 
         log.debugf("findClientInvoicesWithMultipleInternals: found %d clients with multiple internals for range [%s, %s)", result.size(), from, to);
         return result;
+    }
+
+    /**
+     * Builds the optional {@link CancellingCreditNoteRef} projection for a result row of
+     * {@link #findCrossCompanyInvoicesWithInternal}. Returns {@code null} when the row
+     * has no CREDIT_NOTE cancelling the source invoice — keeping the field absent in
+     * the API response and allowing the frontend to render the row unchanged (AC backward-compat).
+     */
+    private static CancellingCreditNoteRef buildCancellingCreditNoteRef(
+            String cnUuid,
+            Object cnInvoicenumber,
+            java.time.LocalDate cnInvoicedate,
+            String cnStatus) {
+        if (cnUuid == null) return null;
+        int invoicenumber = cnInvoicenumber == null ? 0 : ((Number) cnInvoicenumber).intValue();
+        InvoiceStatus status = cnStatus == null ? null : InvoiceStatus.valueOf(cnStatus);
+        return new CancellingCreditNoteRef(cnUuid, invoicenumber, cnInvoicedate, status);
     }
 
     /**
