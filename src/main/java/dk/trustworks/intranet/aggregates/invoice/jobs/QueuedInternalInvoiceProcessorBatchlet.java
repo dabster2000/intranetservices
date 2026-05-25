@@ -6,11 +6,15 @@ import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.pricing.PriceResult;
+import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceLineGenerator;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
+import dk.trustworks.intranet.aggregates.invoice.services.SourceItemMerger;
 import dk.trustworks.intranet.aggregates.invoice.services.UserCompanyResolver;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
+import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -21,6 +25,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -60,6 +66,9 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
 
     @Inject
     UserCompanyResolver userCompanyResolver;
+
+    @Inject
+    PricingEngine pricingEngine;
 
     @ConfigProperty(name = "feature.invoicing.internal.attribution-driven", defaultValue = "true")
     boolean attributionDrivenInternalInvoices;
@@ -172,8 +181,67 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
         String issuerUuid = queuedInvoice.getCompany() != null
                 ? queuedInvoice.getCompany().getUuid() : null;
 
+        // Merge persisted source items with synthetic CALCULATED items from the pricing
+        // engine (spec §6.4) before regeneration. Required for sources whose CALCULATED
+        // discount/fee lines were never persisted — without the merge the nightly
+        // batchlet would over-bill the issuer.
+        long mergeStartNanos = System.nanoTime();
+        List<InvoiceItem> persisted = sourceInvoice.getInvoiceitems() != null
+                ? sourceInvoice.getInvoiceitems() : List.of();
+        List<InvoiceItem> synthetics;
+        try {
+            Map<String, String> cti = loadContractTypeItems(sourceInvoice.getContractuuid());
+            PriceResult pr = pricingEngine.price(sourceInvoice, cti);
+            synthetics = pr.syntheticItems != null ? pr.syntheticItems : List.of();
+        } catch (Exception e) {
+            log.warnf(e, "Pricing engine failed for source invoice %s — falling back to "
+                    + "persisted items only", sourceInvoice.getUuid());
+            synthetics = List.of();
+        }
+        List<InvoiceItem> mergedItems = SourceItemMerger.merge(persisted, synthetics);
+        long durationMs = (System.nanoTime() - mergeStartNanos) / 1_000_000L;
+
+        // Per spec O7.8 — structured per-source instrumentation so we can detect a
+        // batchlet runtime regression and decide whether the pricing-cache phase
+        // becomes necessary.
+        log.infof("InternalInvoiceMerge: sourceUuid=%s persistedCount=%d syntheticCount=%d "
+                        + "mergedCount=%d durationMs=%d",
+                sourceInvoice.getUuid(), persisted.size(), synthetics.size(),
+                mergedItems.size(), durationMs);
+
+        // Synthesize in-memory attributions for synthetic CALCULATED items so the
+        // generator emits internal lines for them (spec §6.4 option (a)). Without
+        // this step every synthetic CALCULATED line would be silently dropped by
+        // {@link InternalInvoiceLineGenerator}.
+        Set<String> persistedItemUuids = new HashSet<>(persisted.size() * 2);
+        Set<String> baseItemUuids = new HashSet<>();
+        for (InvoiceItem p : persisted) {
+            if (p == null || p.uuid == null) continue;
+            persistedItemUuids.add(p.uuid);
+            if (p.origin == dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.BASE) {
+                baseItemUuids.add(p.uuid);
+            }
+        }
+        List<InvoiceItem> syntheticCalculated = new ArrayList<>();
+        for (InvoiceItem m : mergedItems) {
+            if (m == null || m.uuid == null) continue;
+            if (m.origin != dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin.CALCULATED) continue;
+            if (persistedItemUuids.contains(m.uuid)) continue;
+            syntheticCalculated.add(m);
+        }
+        List<InvoiceItemAttribution> effectiveAttributions = attributions;
+        if (!syntheticCalculated.isEmpty()) {
+            List<InvoiceItemAttribution> syntheticAttrs = SourceItemMerger.synthesizeAttributionsFor(
+                    syntheticCalculated, attributions, baseItemUuids);
+            if (!syntheticAttrs.isEmpty()) {
+                effectiveAttributions = new ArrayList<>(attributions.size() + syntheticAttrs.size());
+                effectiveAttributions.addAll(attributions);
+                effectiveAttributions.addAll(syntheticAttrs);
+            }
+        }
+
         Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
-                sourceCompanyUuid, sourceInvoice.getInvoiceitems(), attributions, userCompanies);
+                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies);
 
         List<InvoiceItem> newLines = grouped.getOrDefault(issuerUuid, List.of());
         long previousCount = queuedInvoice.getInvoiceitems() != null
@@ -208,5 +276,17 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
         log.infof("Regenerated QUEUED invoice %s items: %d -> %d",
                 queuedInvoice.getUuid(), previousCount, newLines.size());
         return true;
+    }
+
+    /**
+     * Load {@code contract_type_items} key/value pairs for the source contract — the
+     * pricing engine consumes these for dynamic discount-parameter resolution.
+     */
+    private Map<String, String> loadContractTypeItems(String contractuuid) {
+        Map<String, String> cti = new HashMap<>();
+        if (contractuuid == null || contractuuid.isBlank()) return cti;
+        ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid)
+                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+        return cti;
     }
 }

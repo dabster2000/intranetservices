@@ -13,6 +13,8 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
+import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -51,6 +53,9 @@ public class InvoiceAttributionService {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    PricingEngine pricingEngine;
 
     @Inject
     com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -1503,8 +1508,21 @@ public class InvoiceAttributionService {
         Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
         String sourceCompanyUuid = source.company != null ? source.company.getUuid() : null;
 
+        // Merge persisted source items with synthetic CALCULATED items from the pricing
+        // engine before regenerating DRAFT/QUEUED linked internals (spec §6.4). Ensures
+        // attribution-driven regeneration matches what {@link InvoiceService#previewInternal}
+        // and {@link InvoiceService#createAllInternalFromAttribution} produce.
+        List<InvoiceItem> mergedItems = mergeSourceItemsForCascade(source);
+
+        // Synthesize in-memory attributions for synthetic CALCULATED items so the
+        // line generator emits internal lines for them. Without this, the generator
+        // silently drops synthetic CALCULATED items because no persisted attribution
+        // row references their fresh UUIDs (qa-report ship-blocker; spec §6.4 option (a)).
+        List<InvoiceItemAttribution> effectiveAttributions =
+                attachSyntheticAttributions(source, mergedItems, attributions);
+
         Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
-                sourceCompanyUuid, source.invoiceitems, attributions, userCompanies);
+                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies);
 
         for (Invoice linkedInvoice : linkedInternals) {
             if (linkedInvoice.status != InvoiceStatus.DRAFT
@@ -1569,5 +1587,76 @@ public class InvoiceAttributionService {
             // Request scope not active — fall through to the default.
         }
         return "system-cascade";
+    }
+
+    /**
+     * Run the pricing engine against the source invoice and merge the synthetic CALCULATED
+     * items with the persisted items so cascade-regeneration sees the same line set the
+     * draft creation path would (spec §6.4). Failures degrade to persisted-only with WARN.
+     */
+    private List<InvoiceItem> mergeSourceItemsForCascade(Invoice source) {
+        List<InvoiceItem> persisted = source.invoiceitems != null
+                ? source.invoiceitems : List.of();
+        try {
+            Map<String, String> cti = new HashMap<>();
+            if (source.contractuuid != null && !source.contractuuid.isBlank()) {
+                ContractTypeItem.<ContractTypeItem>find("contractuuid", source.contractuuid)
+                        .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+            }
+            var priceResult = pricingEngine.price(source, cti);
+            return SourceItemMerger.merge(persisted, priceResult.syntheticItems);
+        } catch (Exception e) {
+            log.warnf(e, "mergeSourceItemsForCascade: pricing engine failed for invoice=%s "
+                    + "— falling back to persisted items only", source.uuid);
+            return persisted;
+        }
+    }
+
+    /**
+     * Build the effective attribution list for {@link InternalInvoiceLineGenerator}:
+     * the persisted attribution rows plus in-memory attributions synthesized for
+     * each synthetic CALCULATED item produced by the pricing engine.
+     *
+     * <p>Without this step the generator silently drops every synthetic CALCULATED
+     * line (no DB attribution row references the synthetic UUID). Spec §6.4
+     * option (a); fix for the qa-report ship-blocker.
+     *
+     * <p>Synthetic attributions are <strong>never persisted</strong> — request-scope only.
+     */
+    private List<InvoiceItemAttribution> attachSyntheticAttributions(
+            Invoice source,
+            List<InvoiceItem> mergedItems,
+            List<InvoiceItemAttribution> persistedAttributions) {
+
+        List<InvoiceItem> persistedItems = source.invoiceitems != null
+                ? source.invoiceitems : List.of();
+        Set<String> persistedItemUuids = new HashSet<>(persistedItems.size() * 2);
+        Set<String> baseItemUuids = new HashSet<>();
+        for (InvoiceItem persisted : persistedItems) {
+            if (persisted == null || persisted.uuid == null) continue;
+            persistedItemUuids.add(persisted.uuid);
+            if (persisted.origin == InvoiceItemOrigin.BASE) {
+                baseItemUuids.add(persisted.uuid);
+            }
+        }
+
+        List<InvoiceItem> syntheticCalculated = new ArrayList<>();
+        for (InvoiceItem item : mergedItems) {
+            if (item == null || item.uuid == null) continue;
+            if (item.origin != InvoiceItemOrigin.CALCULATED) continue;
+            if (persistedItemUuids.contains(item.uuid)) continue;
+            syntheticCalculated.add(item);
+        }
+        if (syntheticCalculated.isEmpty()) return persistedAttributions;
+
+        List<InvoiceItemAttribution> synthetic = SourceItemMerger.synthesizeAttributionsFor(
+                syntheticCalculated, persistedAttributions, baseItemUuids);
+        if (synthetic.isEmpty()) return persistedAttributions;
+
+        List<InvoiceItemAttribution> combined =
+                new ArrayList<>(persistedAttributions.size() + synthetic.size());
+        combined.addAll(persistedAttributions);
+        combined.addAll(synthetic);
+        return combined;
     }
 }

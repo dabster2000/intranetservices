@@ -939,8 +939,21 @@ public class InvoiceService {
         String sourceCompanyUuid = source.getCompany() != null ? source.getCompany().getUuid() : null;
         String sourceCompanyName = source.getCompany() != null ? source.getCompany().getName() : null;
 
+        // Merge persisted items with synthetic CALCULATED items from the pricing engine
+        // so the preview matches what {@link #createAllInternalFromAttribution} persists
+        // (preview === draft parity per spec §6.4 + AC6). Persisted items win on
+        // ruleId / calculationRef collision.
+        List<InvoiceItem> mergedItems = mergeSourceItemsWithSynthetics(source);
+
+        // Synthesize in-memory attributions for synthetic CALCULATED items (spec §6.4
+        // option (a)). Required because the generator drops items with no matching
+        // attribution rows by UUID — without these synthetic rows the merged
+        // CALCULATED discount/fee lines would be silently lost (qa-report ship-blocker).
+        List<InvoiceItemAttribution> effectiveAttributions =
+                attachSyntheticAttributions(source, mergedItems, attributions);
+
         Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
-                sourceCompanyUuid, source.getInvoiceitems(), attributions, userCompanies);
+                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies);
 
         // Resolve issuer company names + consultant display names (single bulk queries).
         Map<String, String> companyNames = lookupCompanyNames(grouped.keySet());
@@ -1050,8 +1063,21 @@ public class InvoiceService {
         Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
         String sourceCompanyUuid = source.getCompany() != null ? source.getCompany().getUuid() : null;
 
+        // Merge persisted items with synthetic CALCULATED items from the pricing engine
+        // before generating internal lines (spec §6.4) — this ensures invoices whose
+        // CALCULATED rows were never persisted (~63% of finalized invoices) still get
+        // the correct proportional discount/fee allocation on the internal-invoice
+        // drafts. Persisted items always win on ruleId / calculationRef collision.
+        List<InvoiceItem> mergedItems = mergeSourceItemsWithSynthetics(source);
+
+        // Synthesize in-memory attributions for synthetic CALCULATED items so the
+        // generator emits internal lines for them (spec §6.4 option (a)). Without
+        // this step the generator silently drops every synthetic CALCULATED line.
+        List<InvoiceItemAttribution> effectiveAttributions =
+                attachSyntheticAttributions(source, mergedItems, attributions);
+
         Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
-                sourceCompanyUuid, source.getInvoiceitems(), attributions, userCompanies);
+                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies);
 
         // Skip issuers that already have a linked internal invoice (any status).
         List<Invoice> existingLinked = Invoice.find(
@@ -1150,6 +1176,99 @@ public class InvoiceService {
         log.infof("createInternalInvoiceFromGenerated: created invoice=%s issuer=%s items=%d",
                 internalInvoice.getUuid(), issuerCompanyUuid, internalInvoice.getInvoiceitems().size());
         return internalInvoice;
+    }
+
+    /**
+     * Run the {@link PricingEngine} against the source invoice and merge its synthetic
+     * CALCULATED items with the persisted items on the invoice (spec §6.4). Used by
+     * every internal-invoice line generator call site so previews and persisted drafts
+     * always operate on the same input set.
+     *
+     * <p>Persisted CALCULATED items take precedence on {@code ruleId} / {@code calculationRef}
+     * collision — see {@link SourceItemMerger#merge}. Pricing failures (e.g. missing rule
+     * set) degrade gracefully: the persisted items are returned unchanged and a WARN is
+     * logged so the operator can investigate without blocking internal-invoice creation.
+     */
+    private List<InvoiceItem> mergeSourceItemsWithSynthetics(Invoice source) {
+        List<InvoiceItem> persisted = source.getInvoiceitems() != null
+                ? source.getInvoiceitems() : List.of();
+        try {
+            Map<String, String> cti = loadContractTypeItemsForInvoice(source.getContractuuid());
+            var priceResult = pricingEngine.price(source, cti);
+            return SourceItemMerger.merge(persisted, priceResult.syntheticItems);
+        } catch (Exception e) {
+            log.warnf(e, "mergeSourceItemsWithSynthetics: pricing engine failed for invoice=%s "
+                    + "— falling back to persisted items only", source.getUuid());
+            return persisted;
+        }
+    }
+
+    /**
+     * Build the effective attribution list for {@link InternalInvoiceLineGenerator}:
+     * the persisted attribution rows plus in-memory attributions synthesized for
+     * each synthetic CALCULATED item that came from the pricing engine (i.e. items
+     * present in {@code mergedItems} but absent from the source's persisted items).
+     *
+     * <p>This closes the qa-report ship-blocker (CALCULATED-without-attribution
+     * gap, spec §6.4 option (a)): without these synthetic attributions the
+     * generator drops every synthetic CALCULATED line because its
+     * {@code attrsByItem.get(src.uuid)} returns {@code null} for the fresh UUIDs
+     * produced by {@code PricingEngine.syntheticLine()}.
+     *
+     * <p>Synthetic attributions are <strong>never persisted</strong> — they live
+     * only for the duration of this request.
+     */
+    private List<InvoiceItemAttribution> attachSyntheticAttributions(
+            Invoice source,
+            List<InvoiceItem> mergedItems,
+            List<InvoiceItemAttribution> persistedAttributions) {
+
+        List<InvoiceItem> persistedItems = source.getInvoiceitems() != null
+                ? source.getInvoiceitems() : List.of();
+        Set<String> persistedItemUuids = new HashSet<>(persistedItems.size() * 2);
+        Set<String> baseItemUuids = new HashSet<>();
+        for (InvoiceItem persisted : persistedItems) {
+            if (persisted == null || persisted.uuid == null) continue;
+            persistedItemUuids.add(persisted.uuid);
+            if (persisted.origin == InvoiceItemOrigin.BASE) {
+                baseItemUuids.add(persisted.uuid);
+            }
+        }
+
+        List<InvoiceItem> syntheticCalculated = new ArrayList<>();
+        for (InvoiceItem item : mergedItems) {
+            if (item == null || item.uuid == null) continue;
+            if (item.origin != InvoiceItemOrigin.CALCULATED) continue;
+            if (persistedItemUuids.contains(item.uuid)) continue; // persisted, already has attributions
+            syntheticCalculated.add(item);
+        }
+        if (syntheticCalculated.isEmpty()) {
+            return persistedAttributions;
+        }
+
+        List<InvoiceItemAttribution> synthetic = SourceItemMerger.synthesizeAttributionsFor(
+                syntheticCalculated, persistedAttributions, baseItemUuids);
+        if (synthetic.isEmpty()) return persistedAttributions;
+
+        List<InvoiceItemAttribution> combined =
+                new ArrayList<>(persistedAttributions.size() + synthetic.size());
+        combined.addAll(persistedAttributions);
+        combined.addAll(synthetic);
+        return combined;
+    }
+
+    /**
+     * Load the {@code contract_type_items} key/value pairs for a contract — used to
+     * resolve dynamic discount parameters in the pricing rule set (mirrors
+     * {@link InvoiceItemRecalculator#loadContractTypeItems}). Inlined here to avoid
+     * a cross-service cyclic injection for what is a 2-line lookup.
+     */
+    private Map<String, String> loadContractTypeItemsForInvoice(String contractuuid) {
+        Map<String, String> cti = new HashMap<>();
+        if (contractuuid == null || contractuuid.isBlank()) return cti;
+        ContractTypeItem.<ContractTypeItem>find("contractuuid", contractuuid)
+                .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
+        return cti;
     }
 
     @SuppressWarnings("unchecked")

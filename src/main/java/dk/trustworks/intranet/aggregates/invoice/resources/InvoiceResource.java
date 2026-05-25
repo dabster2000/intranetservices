@@ -1152,7 +1152,8 @@ public class InvoiceResource {
                 maskedLines, dto.controlStatus(), dto.controlNote(),
                 dto.controlStatusUpdatedAt(), dto.controlStatusUpdatedBy(),
                 dto.internalInvoiceSkip(), dto.internalInvoiceSkipNote(),
-                dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy()
+                dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy(),
+                dto.cancellingCreditNote()
         );
     }
 

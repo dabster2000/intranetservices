@@ -13,6 +13,12 @@ import java.util.List;
  * Lightweight invoice representation for API responses.
  * Contains essential header fields and the list of lines with a per-line
  * cross-company flag.
+ *
+ * <p>{@code cancellingCreditNote} is populated only on the client invoice of a
+ * cross-company pair when the client invoice has been cancelled by a CREDIT_NOTE
+ * AND its linked INTERNAL invoice is still active (status PENDING_REVIEW, QUEUED,
+ * or CREATED). It is {@code null} otherwise — including for internal-invoice DTOs
+ * and for pairs where the pricing pipeline filtered the source out entirely.
  */
 @RegisterForReflection
 public record SimpleInvoiceDTO(
@@ -33,5 +39,6 @@ public record SimpleInvoiceDTO(
         boolean internalInvoiceSkip,
         String internalInvoiceSkipNote,
         LocalDateTime internalInvoiceSkipAt,
-        String internalInvoiceSkipBy
+        String internalInvoiceSkipBy,
+        CancellingCreditNoteRef cancellingCreditNote
 ) {}
