@@ -18,19 +18,23 @@
 --
 --   The frontend filter would otherwise leak old "cancelled" INVOICE rows back
 --   onto the page (because their CN has no link to them). This migration
---   reconstructs the link for historical orphans by parsing the Danish
---   description text the legacy createCreditNote() flow wrote on every CN:
---       specificdescription = "Kreditnota til faktura <prefix>-<invoicenumber>"
---   e.g., "Kreditnota til faktura A-17775".
+--   reconstructs the link for historical orphans by parsing the trailing
+--   invoice number from the legacy createCreditNote() description text, which
+--   appears in several variants across the dataset:
+--       "Kreditnota til faktura <prefix>-<invoicenumber>"     (Danish)
+--       "Kreditnota covering faktura <invoicenumber>"          (English)
+--       "Kreditnota til faktura <invoicenumber>"               (Danish, no prefix code)
+--   Rather than strip the prefix text, the migration extracts the trailing
+--   integer with REGEXP_SUBSTR(..., '[0-9]+$'). This is robust to any leading
+--   phrasing and to letter-prefixed invoice numbers like "A-17775".
 --
 -- Algorithm (single ranked UPDATE; per spec §6.1):
 --   1. Source rows: invoices where type='CREDIT_NOTE' AND creditnote_for_uuid IS NULL.
---   2. Extract the candidate original invoicenumber from specificdescription via
---      REGEXP_REPLACE: strip the leading "Kreditnota til faktura " prefix, then
---      strip the single "-" separator between prefix code and number, then CAST
---      AS UNSIGNED. Any non-matching row yields 0 and is skipped in step 3.
---   3. Discard candidates where the extracted number is 0 or NULL (these are the
---      "Kreditnota til faktura 0" cases — see spec §7 placeholders).
+--   2. Extract the candidate original invoicenumber from specificdescription by
+--      taking the trailing digit run via REGEXP_SUBSTR. CAST to UNSIGNED. Rows
+--      with no trailing digits yield NULL and are skipped in step 3.
+--   3. Discard candidates where the extracted number is 0 or NULL (covers
+--      "Kreditnota til faktura 0" cases and non-conforming descriptions).
 --   4. Join to candidate originals on
 --          orig.invoicenumber = <extracted>
 --      AND orig.companyuuid  = cn.companyuuid     -- company scope (prevents cross-tenant collisions)
@@ -137,25 +141,13 @@ JOIN (
                 ) AS rn
           FROM invoices cn2
           JOIN invoices orig
-            ON orig.invoicenumber = CAST(
-                    REGEXP_REPLACE(
-                        REGEXP_REPLACE(cn2.specificdescription,
-                                       '^Kreditnota til faktura ', ''),
-                        '-', ''
-                    ) AS UNSIGNED
-               )
+            ON orig.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn2.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND orig.companyuuid = cn2.companyuuid
            AND orig.type        = 'INVOICE'
          WHERE cn2.type               = 'CREDIT_NOTE'
            AND cn2.creditnote_for_uuid IS NULL
            AND cn2.specificdescription IS NOT NULL
-           AND CAST(
-                 REGEXP_REPLACE(
-                     REGEXP_REPLACE(cn2.specificdescription,
-                                    '^Kreditnota til faktura ', ''),
-                     '-', ''
-                 ) AS UNSIGNED
-               ) > 0
+           AND CAST(NULLIF(REGEXP_SUBSTR(cn2.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
       ) ranked
      WHERE ranked.rn = 1
 ) winners ON winners.cn_uuid = cn.uuid
@@ -168,6 +160,11 @@ WHERE cn.type = 'CREDIT_NOTE'
 --   Insert one row per CN we just linked. resolved_to_uuid = the chosen orig.
 --   INSERT IGNORE so re-running the migration after the audit already exists
 --   does not error on duplicate PKs.
+--
+--   Filter widened beyond `LIKE 'Kreditnota til faktura %'` so the English
+--   "Kreditnota covering faktura %" variant is also captured. We trust that
+--   any CN successfully linked by Step 2 belongs in the audit regardless of
+--   description phrasing.
 -- -----------------------------------------------------------------------------
 INSERT IGNORE INTO creditnote_backfill_audit (uuid, resolved_to_uuid, skip_reason)
 SELECT cn.uuid, cn.creditnote_for_uuid, NULL
@@ -180,8 +177,7 @@ SELECT cn.uuid, cn.creditnote_for_uuid, NULL
         WHERE orig.uuid          = cn.creditnote_for_uuid
           AND orig.companyuuid   = cn.companyuuid
           AND orig.type          = 'INVOICE'
-   )
-   AND cn.specificdescription LIKE 'Kreditnota til faktura %';
+   );
 
 -- -----------------------------------------------------------------------------
 -- Step 3b: Audit — skip reason 'number_zero_or_null'.
@@ -194,16 +190,7 @@ SELECT cn.uuid, NULL, 'number_zero_or_null'
   FROM invoices cn
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND (
-        cn.specificdescription IS NULL
-     OR COALESCE(CAST(
-            REGEXP_REPLACE(
-                REGEXP_REPLACE(COALESCE(cn.specificdescription,''),
-                               '^Kreditnota til faktura ', ''),
-                '-', ''
-            ) AS UNSIGNED
-        ), 0) = 0
-   );
+   AND COALESCE(CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED), 0) = 0;
 
 -- -----------------------------------------------------------------------------
 -- Step 3c: Audit — skip reason 'original_is_credit_note'.
@@ -216,34 +203,16 @@ SELECT cn.uuid, NULL, 'original_is_credit_note'
   FROM invoices cn
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND CAST(
-         REGEXP_REPLACE(
-             REGEXP_REPLACE(COALESCE(cn.specificdescription,''),
-                            '^Kreditnota til faktura ', ''),
-             '-', ''
-         ) AS UNSIGNED
-       ) > 0
+   AND CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
    AND EXISTS (
         SELECT 1 FROM invoices x
-         WHERE x.invoicenumber = CAST(
-                 REGEXP_REPLACE(
-                     REGEXP_REPLACE(cn.specificdescription,
-                                    '^Kreditnota til faktura ', ''),
-                     '-', ''
-                 ) AS UNSIGNED
-               )
+         WHERE x.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND x.companyuuid = cn.companyuuid
            AND x.type        = 'CREDIT_NOTE'
    )
    AND NOT EXISTS (
         SELECT 1 FROM invoices y
-         WHERE y.invoicenumber = CAST(
-                 REGEXP_REPLACE(
-                     REGEXP_REPLACE(cn.specificdescription,
-                                    '^Kreditnota til faktura ', ''),
-                     '-', ''
-                 ) AS UNSIGNED
-               )
+         WHERE y.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND y.companyuuid = cn.companyuuid
            AND y.type        = 'INVOICE'
    );
@@ -259,24 +228,12 @@ INSERT IGNORE INTO creditnote_backfill_audit (uuid, resolved_to_uuid, skip_reaso
 SELECT cn.uuid, NULL, 'tiebreak_loser'
   FROM invoices cn
   JOIN invoices orig
-    ON orig.invoicenumber = CAST(
-           REGEXP_REPLACE(
-               REGEXP_REPLACE(cn.specificdescription,
-                              '^Kreditnota til faktura ', ''),
-               '-', ''
-           ) AS UNSIGNED
-       )
+    ON orig.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
    AND orig.companyuuid = cn.companyuuid
    AND orig.type        = 'INVOICE'
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND CAST(
-         REGEXP_REPLACE(
-             REGEXP_REPLACE(cn.specificdescription,
-                            '^Kreditnota til faktura ', ''),
-             '-', ''
-         ) AS UNSIGNED
-       ) > 0
+   AND CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
    AND EXISTS (
         SELECT 1
           FROM invoices winner
@@ -295,21 +252,9 @@ SELECT cn.uuid, NULL, 'no_original_match'
   FROM invoices cn
  WHERE cn.type = 'CREDIT_NOTE'
    AND cn.creditnote_for_uuid IS NULL
-   AND CAST(
-         REGEXP_REPLACE(
-             REGEXP_REPLACE(COALESCE(cn.specificdescription,''),
-                            '^Kreditnota til faktura ', ''),
-             '-', ''
-         ) AS UNSIGNED
-       ) > 0
+   AND CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED) > 0
    AND NOT EXISTS (
         SELECT 1 FROM invoices any_match
-         WHERE any_match.invoicenumber = CAST(
-                 REGEXP_REPLACE(
-                     REGEXP_REPLACE(cn.specificdescription,
-                                    '^Kreditnota til faktura ', ''),
-                     '-', ''
-                 ) AS UNSIGNED
-               )
+         WHERE any_match.invoicenumber = CAST(NULLIF(REGEXP_SUBSTR(cn.specificdescription, '[0-9]+$'), '') AS UNSIGNED)
            AND any_match.companyuuid = cn.companyuuid
    );
