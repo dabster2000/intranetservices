@@ -1192,6 +1192,25 @@ public class InvoiceService {
     private List<InvoiceItem> mergeSourceItemsWithSynthetics(Invoice source) {
         List<InvoiceItem> persisted = source.getInvoiceitems() != null
                 ? source.getInvoiceitems() : List.of();
+        // Manual-discount detection: if any persisted BASE row already has a
+        // negative amount, a discount/fee has been manually captured on the
+        // source (e.g. legacy SKI administrationsgebyr entered through the UI
+        // as origin=BASE with no engine metadata). Re-running the pricing
+        // engine on top would double-apply the rule — SourceItemMerger's
+        // collision dedup keys on ruleId/calculationRef and cannot see the
+        // overlap when the manual row carries null keys. Use persisted items
+        // verbatim and skip the engine in that case. For invoices with only
+        // positive BASE rows (spec §6.4 case where CALCULATED was never
+        // persisted) the engine still runs and fills the discount via
+        // synthetics — that path is unchanged.
+        boolean hasManualDiscountRow = persisted.stream()
+                .anyMatch(ii -> ii != null
+                        && ii.getOrigin() == InvoiceItemOrigin.BASE
+                        && !ii.isEffectivelyCalculated()
+                        && ii.getRate() < 0);
+        if (hasManualDiscountRow) {
+            return persisted;
+        }
         try {
             Map<String, String> cti = loadContractTypeItemsForInvoice(source.getContractuuid());
             var priceResult = pricingEngine.price(source, cti);
