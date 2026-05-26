@@ -1438,6 +1438,12 @@ public class InvoiceService {
 
     @Transactional
     public void deleteDraftInvoice(String invoiceuuid) {
+        Invoice invoice = Invoice.findById(invoiceuuid);
+        if (invoice == null) return;
+        if (invoice.getStatus() == PENDING_REVIEW) {
+            orchestrator.cancelFinalization(invoiceuuid);
+        }
+
         // Clean up attribution rows for all items on this invoice
         em.createNativeQuery("""
                 DELETE FROM invoice_item_attributions
