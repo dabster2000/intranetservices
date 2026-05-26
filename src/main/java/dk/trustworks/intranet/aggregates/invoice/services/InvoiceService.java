@@ -907,6 +907,25 @@ public class InvoiceService {
      */
     @Transactional
     public dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview previewInternal(String sourceInvoiceUuid) {
+        return previewInternal(sourceInvoiceUuid, Set.of());
+    }
+
+    /**
+     * Same as {@link #previewInternal(String)} but honors a caller-supplied set of
+     * attribution UUIDs to exclude. Used by the create-internal modal so the user can
+     * deselect individual BASE rows in the preview — CALCULATED rows are re-derived
+     * from the surviving BASE set, and issuer groups that end up empty after exclusion
+     * are dropped from the response so the modal stops rendering hollow cards.
+     *
+     * <p>The exclusion is ephemeral — the {@code invoice_item_attributions} table is
+     * not modified. Note: this code path does NOT go through {@code PricingResource},
+     * so the finalized-invoice bypass and {@code isEffectivelyCalculated()} migration
+     * there are unaffected.
+     */
+    @Transactional
+    public dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview previewInternal(
+            String sourceInvoiceUuid,
+            Set<String> excludedAttributionUuids) {
         Invoice source = Invoice.findById(sourceInvoiceUuid);
         if (source == null) {
             throw new WebApplicationException("Invoice not found: " + sourceInvoiceUuid, Response.Status.NOT_FOUND);
@@ -953,7 +972,8 @@ public class InvoiceService {
                 attachSyntheticAttributions(source, mergedItems, attributions);
 
         Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
-                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies);
+                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies,
+                excludedAttributionUuids == null ? Set.of() : excludedAttributionUuids);
 
         // Resolve issuer company names + consultant display names (single bulk queries).
         Map<String, String> companyNames = lookupCompanyNames(grouped.keySet());
@@ -1034,6 +1054,22 @@ public class InvoiceService {
             String sourceInvoiceUuid,
             Set<String> issuerFilter,
             boolean queue) {
+        return createAllInternalFromAttribution(sourceInvoiceUuid, issuerFilter, queue, Set.of());
+    }
+
+    /**
+     * Same as {@link #createAllInternalFromAttribution(String, Set, boolean)} but honors
+     * a caller-supplied set of attribution UUIDs to exclude. Used by the create-internal
+     * modal when the user has deselected BASE rows in the preview. An issuer whose
+     * generated line list ends up empty after exclusion is skipped (no draft created).
+     * The attribution table is not mutated.
+     */
+    @Transactional
+    public List<String> createAllInternalFromAttribution(
+            String sourceInvoiceUuid,
+            Set<String> issuerFilter,
+            boolean queue,
+            Set<String> excludedAttributionUuids) {
 
         Invoice source = Invoice.findById(sourceInvoiceUuid);
         if (source == null) {
@@ -1077,7 +1113,8 @@ public class InvoiceService {
                 attachSyntheticAttributions(source, mergedItems, attributions);
 
         Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
-                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies);
+                sourceCompanyUuid, mergedItems, effectiveAttributions, userCompanies,
+                excludedAttributionUuids == null ? Set.of() : excludedAttributionUuids);
 
         // Skip issuers that already have a linked internal invoice (any status).
         List<Invoice> existingLinked = Invoice.find(
@@ -1093,6 +1130,10 @@ public class InvoiceService {
         List<String> created = new ArrayList<>();
         for (var entry : grouped.entrySet()) {
             String issuerUuid = entry.getKey();
+            List<InvoiceItem> generatedLines = entry.getValue();
+            if (generatedLines == null || generatedLines.isEmpty()) {
+                continue; // defensive: skip debtors whose lines were all excluded
+            }
             if (issuerFilter != null && !issuerFilter.isEmpty() && !issuerFilter.contains(issuerUuid)) {
                 continue;
             }
@@ -1101,7 +1142,7 @@ public class InvoiceService {
                         issuerUuid);
                 continue;
             }
-            Invoice internalInvoice = createInternalInvoiceFromGenerated(source, issuerUuid, entry.getValue());
+            Invoice internalInvoice = createInternalInvoiceFromGenerated(source, issuerUuid, generatedLines);
             created.add(internalInvoice.getUuid());
             if (queue) {
                 queueInternalInvoice(internalInvoice.getUuid());

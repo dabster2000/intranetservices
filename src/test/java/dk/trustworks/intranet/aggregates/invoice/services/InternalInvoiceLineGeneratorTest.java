@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -190,6 +191,89 @@ class InternalInvoiceLineGeneratorTest {
 
         // With rate=0.01 and hours rounded HALF_UP to 2dp = 0.00 → amount = 0.00 < 0.01 → skipped.
         assertTrue(out.isEmpty() || out.values().stream().allMatch(List::isEmpty));
+    }
+
+    // ── exclusion (per-row deselection in CreateInternalInvoicesModal) ────────
+
+    @Test
+    void excludedAttribution_isSkipped_residualReabsorbedAcrossSurvivors() {
+        // 60/40 split, both to the same cross-company issuer. Exclude the 40% line.
+        // Survivor's hours must reflect only the 60% share — not the full 100h —
+        // because the excluded share simply isn't billed on the internal invoice.
+        InvoiceItem src = base("i1", 1000.0, 100.0);
+        InvoiceItemAttribution sixty = attr("attr-60", "i1", "u1", "60.0000");
+        InvoiceItemAttribution forty = attr("attr-40", "i1", "u2", "40.0000");
+        Map<String, String> users = Map.of("u1", ISSUER_A, "u2", ISSUER_A);
+
+        Map<String, List<InvoiceItem>> out = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(src), List.of(sixty, forty), users,
+                Set.of("attr-40"));
+
+        List<InvoiceItem> lines = out.get(ISSUER_A);
+        assertEquals(1, lines.size(), "Excluded attribution must drop its line");
+        assertEquals("u1", lines.get(0).consultantuuid);
+        // Surviving 60% share: hours == 60.0, residual absorbed across that single line.
+        assertEquals(60.0, lines.get(0).hours, 0.001);
+        assertEquals(1000.0, lines.get(0).rate, 0.001);
+    }
+
+    @Test
+    void allAttributionsForIssuerExcluded_issuerDisappears() {
+        InvoiceItem s1 = base("i1", 500.0, 10.0);
+        InvoiceItem s2 = base("i2", 500.0, 20.0);
+        InvoiceItemAttribution a1 = attr("a1", "i1", "mary", "100.0000");
+        InvoiceItemAttribution a2 = attr("a2", "i2", "bob", "100.0000");
+        Map<String, String> users = Map.of("mary", ISSUER_A, "bob", ISSUER_B);
+
+        Map<String, List<InvoiceItem>> out = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(s1, s2), List.of(a1, a2), users,
+                Set.of("a2"));
+
+        assertTrue(out.containsKey(ISSUER_A));
+        assertFalse(out.containsKey(ISSUER_B), "Issuer with all attributions excluded must not appear");
+    }
+
+    @Test
+    void unknownExclusionUuid_isNoOp() {
+        InvoiceItem src = base("i1", 1000.0, 10.0);
+        InvoiceItemAttribution a = attr("a1", "i1", "mary", "100.0000");
+        Map<String, String> users = Map.of("mary", ISSUER_A);
+
+        Map<String, List<InvoiceItem>> out = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(src), List.of(a), users,
+                Set.of("not-a-real-uuid"));
+
+        assertEquals(1, out.get(ISSUER_A).size(), "Unknown exclusion uuid must be ignored");
+    }
+
+    @Test
+    void emptyExclusion_parityWithDefaultOverload() {
+        InvoiceItem s1 = base("i1", 500.0, 10.0);
+        InvoiceItem s2 = base("i2", 500.0, 20.0);
+        InvoiceItemAttribution a1 = attr("a1", "i1", "mary", "100.0000");
+        InvoiceItemAttribution a2 = attr("a2", "i2", "bob", "100.0000");
+        Map<String, String> users = Map.of("mary", ISSUER_A, "bob", ISSUER_B);
+
+        Map<String, List<InvoiceItem>> withSet = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(s1, s2), List.of(a1, a2), users, Set.of());
+        Map<String, List<InvoiceItem>> noSet = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(s1, s2), List.of(a1, a2), users);
+
+        assertEquals(noSet.keySet(), withSet.keySet());
+        assertEquals(noSet.get(ISSUER_A).size(), withSet.get(ISSUER_A).size());
+        assertEquals(noSet.get(ISSUER_B).size(), withSet.get(ISSUER_B).size());
+    }
+
+    @Test
+    void nullExcludedSet_isTreatedAsEmpty() {
+        InvoiceItem src = base("i1", 1000.0, 10.0);
+        InvoiceItemAttribution a = attr("a1", "i1", "mary", "100.0000");
+        Map<String, String> users = Map.of("mary", ISSUER_A);
+
+        Map<String, List<InvoiceItem>> out = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(src), List.of(a), users, null);
+
+        assertEquals(1, out.get(ISSUER_A).size());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────

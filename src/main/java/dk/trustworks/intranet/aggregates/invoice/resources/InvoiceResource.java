@@ -1082,27 +1082,36 @@ public class InvoiceResource {
      * current attribution state — no persistence. Consumed by the
      * {@code CreateInternalInvoicesModal} on the Next.js frontend.
      *
-     * @return 200 with the projected groupings, 400 for PHANTOM sources, 404 when
-     *         the source invoice does not exist.
+     * <p>Repeating {@code ?excludedAttribution=<uuid>} query parameters tell the
+     * preview to drop those attribution rows during line generation. Used to honor
+     * the modal's per-row BASE deselection. The attribution table is not modified
+     * — exclusion is in-request only.
+     *
+     * @return 200 with the projected groupings, 400 for PHANTOM sources or invalid
+     *         exclusion UUIDs, 404 when the source invoice does not exist.
      */
     @GET
     @Path("/{invoiceuuid}/internal-preview")
     @RolesAllowed({"invoices:read"})
     public dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview previewInternal(
-            @PathParam("invoiceuuid") String invoiceuuid) {
-        return invoiceService.previewInternal(invoiceuuid);
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @QueryParam("excludedAttribution") List<String> excludedAttribution) {
+        return invoiceService.previewInternal(
+                invoiceuuid, validateUuids(excludedAttribution, "excludedAttribution"));
     }
 
     /**
      * Materialize internal invoice DRAFTs for all detected issuers (or a requested
      * subset). When {@code queue == true} the newly-created DRAFTs are transitioned
-     * to QUEUED in the same transaction.
+     * to QUEUED in the same transaction. The optional {@code excludedAttributionUuids}
+     * field skips those attribution rows during line generation; issuers whose
+     * lines end up empty are not materialized.
      *
      * <p>Idempotent per-issuer: issuers that already have a linked internal invoice
      * (any status) are skipped.
      *
-     * @return 200 with the list of created invoice UUIDs. 400 for PHANTOM sources.
-     *         404 when the source invoice does not exist.
+     * @return 200 with the list of created invoice UUIDs. 400 for PHANTOM sources
+     *         or invalid exclusion UUIDs. 404 when the source invoice does not exist.
      */
     @POST
     @Path("/{invoiceuuid}/create-all-internal")
@@ -1115,9 +1124,34 @@ public class InvoiceResource {
                 ? new java.util.HashSet<>(request.issuerCompanyUuids())
                 : null;
         boolean queue = request != null && request.queue();
+        java.util.Set<String> excluded = request != null
+                ? validateUuids(request.excludedAttributionUuids(), "excludedAttributionUuids")
+                : java.util.Set.of();
         List<String> created = invoiceService.createAllInternalFromAttribution(
-                invoiceuuid, issuerFilter, queue);
+                invoiceuuid, issuerFilter, queue, excluded);
         return new dk.trustworks.intranet.aggregates.invoice.dto.CreateAllInternalResponse(created);
+    }
+
+    /**
+     * Validate that each entry parses as a UUID. Returns an immutable set; throws
+     * 400 on the first malformed entry. {@code null} or empty input returns an
+     * empty set (no exclusion).
+     */
+    private static java.util.Set<String> validateUuids(List<String> input, String fieldName) {
+        if (input == null || input.isEmpty()) return java.util.Set.of();
+        java.util.Set<String> out = new java.util.HashSet<>(input.size());
+        for (String s : input) {
+            if (s == null || s.isBlank()) continue;
+            try {
+                java.util.UUID.fromString(s);
+            } catch (IllegalArgumentException ex) {
+                throw new WebApplicationException(
+                        fieldName + " contains an invalid UUID: " + s,
+                        Response.Status.BAD_REQUEST);
+            }
+            out.add(s);
+        }
+        return out;
     }
 
     // ──────────────────────────────────────────────────────────────

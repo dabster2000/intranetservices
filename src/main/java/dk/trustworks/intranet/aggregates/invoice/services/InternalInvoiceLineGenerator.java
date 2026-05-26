@@ -11,6 +11,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Pure-function generator that projects a source invoice's attribution rows into
@@ -67,6 +68,22 @@ public final class InternalInvoiceLineGenerator {
             List<InvoiceItem> sourceItems,
             List<InvoiceItemAttribution> attributions,
             Map<String, String> userCompanies) {
+        return generate(sourceCompanyUuid, sourceItems, attributions, userCompanies, Set.of());
+    }
+
+    /**
+     * Same as {@link #generate(String, List, List, Map)} but accepts a set of
+     * attribution UUIDs to skip. Used by the create-internal flow to honor
+     * per-row deselections the user made in the preview modal. The exclusion is
+     * ephemeral — the {@code invoice_item_attributions} table is not modified.
+     * Rounding residual is re-absorbed across the surviving lines per issuer.
+     */
+    public static Map<String, List<InvoiceItem>> generate(
+            String sourceCompanyUuid,
+            List<InvoiceItem> sourceItems,
+            List<InvoiceItemAttribution> attributions,
+            Map<String, String> userCompanies,
+            Set<String> excludedAttributionUuids) {
 
         if (sourceItems == null || sourceItems.isEmpty()) {
             return Map.of();
@@ -74,6 +91,7 @@ public final class InternalInvoiceLineGenerator {
         if (attributions == null || attributions.isEmpty()) {
             return Map.of();
         }
+        Set<String> excluded = excludedAttributionUuids == null ? Set.of() : excludedAttributionUuids;
 
         // Index source items by uuid for O(1) lookup during attribution iteration.
         Map<String, InvoiceItem> sourceByUuid = new LinkedHashMap<>();
@@ -103,7 +121,7 @@ public final class InternalInvoiceLineGenerator {
         for (InvoiceItem src : sourceItems) {
             List<InvoiceItemAttribution> attrs = attrsByItem.get(src.uuid);
             if (attrs == null || attrs.isEmpty()) continue;
-            generateLinesForSourceItem(sourceCompanyUuid, src, attrs, userCompanies, result);
+            generateLinesForSourceItem(sourceCompanyUuid, src, attrs, userCompanies, excluded, result);
         }
 
         return result;
@@ -114,6 +132,7 @@ public final class InternalInvoiceLineGenerator {
             InvoiceItem src,
             List<InvoiceItemAttribution> attrs,
             Map<String, String> userCompanies,
+            Set<String> excludedAttributionUuids,
             Map<String, List<InvoiceItem>> result) {
 
         // Group by issuer within this source item, so we can absorb rounding residual
@@ -121,6 +140,7 @@ public final class InternalInvoiceLineGenerator {
         Map<String, List<PendingLine>> byIssuer = new LinkedHashMap<>();
 
         for (InvoiceItemAttribution attr : attrs) {
+            if (attr.uuid != null && excludedAttributionUuids.contains(attr.uuid)) continue;
             String consultantCompany = userCompanies.get(attr.consultantUuid);
             if (consultantCompany == null) continue;                        // unresolved
             if (consultantCompany.equals(sourceCompanyUuid)) continue;      // same company — not cross-company
