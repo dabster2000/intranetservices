@@ -2,7 +2,6 @@
 package dk.trustworks.intranet.aggregates.invoice.resources;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
-import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
@@ -62,9 +61,12 @@ public class PricingResource {
         draft.calculationBreakdown = pr.breakdown;
 
         // Til UI preview: vis base + syntetiske (men persistér ikke)
-        // Filter to BASE items only to avoid duplicating persisted CALCULATED items
+        // Filter out effectively-CALCULATED items (origin=CALCULATED OR engine
+        // metadata populated) to avoid duplicating persisted discount/fee lines.
+        // Legacy invoices stored CALCULATED rows with origin=BASE, so the enum
+        // alone misclassifies them — see InvoiceItem.isEffectivelyCalculated().
         var baseItems = draft.getInvoiceitems().stream()
-                .filter(item -> item.origin == InvoiceItemOrigin.BASE)
+                .filter(item -> !item.isEffectivelyCalculated())
                 .collect(Collectors.toCollection(ArrayList::new));
         baseItems.addAll(pr.syntheticItems);
         var combined = baseItems;

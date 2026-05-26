@@ -33,7 +33,7 @@ public class PricingEngine {
         var ruleSet = catalog.select(draft.getContractType(), date);
 
         BigDecimal sumBefore = draft.getInvoiceitems().stream()
-                .filter(ii -> ii.getOrigin() != InvoiceItemOrigin.CALCULATED)
+                .filter(ii -> !ii.isEffectivelyCalculated())
                 .map(ii -> BigDecimal.valueOf(ii.getRate()).multiply(BigDecimal.valueOf(ii.getHours())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
