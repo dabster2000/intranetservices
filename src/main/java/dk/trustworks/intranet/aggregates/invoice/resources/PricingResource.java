@@ -47,6 +47,26 @@ public class PricingResource {
             draft.grandTotal = sum + draft.vatAmount;
             return Response.ok(draft).build();
         }
+        // Finalized invoices: line items are frozen. Re-running the pricing engine
+        // here can double-apply rules whose effect was already captured as a
+        // BASE row (e.g. manually-entered SKI administrationsgebyr on legacy
+        // invoices — origin=BASE with no engine metadata), so the preview just
+        // sums the persisted items and derives totals from them. Drafts still
+        // run the engine so the rule-preview behavior is preserved where it
+        // actually matters (DRAFT / PENDING_REVIEW).
+        if (draft.getStatus() != null
+                && !draft.getStatus().name().equals("DRAFT")
+                && !draft.getStatus().name().equals("PENDING_REVIEW")) {
+            double sum = draft.getInvoiceitems().stream()
+                    .mapToDouble(item -> item.getHours() * item.getRate())
+                    .sum();
+            draft.sumBeforeDiscounts = sum;
+            draft.sumAfterDiscounts = sum;
+            double vatRate = draft.getVat() > 0 ? draft.getVat() : 25.0;
+            draft.vatAmount = sum * (vatRate / 100.0);
+            draft.grandTotal = sum + draft.vatAmount;
+            return Response.ok(draft).build();
+        }
         Map<String, String> cti = new HashMap<>();
         ContractTypeItem.<ContractTypeItem>find("contractuuid", draft.getContractuuid())
                 .list().forEach(ct -> cti.put(ct.getKey(), ct.getValue()));
