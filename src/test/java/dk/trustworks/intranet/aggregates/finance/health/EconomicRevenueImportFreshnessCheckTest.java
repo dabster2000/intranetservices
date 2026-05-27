@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.health;
 
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.Query;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class EconomicRevenueImportFreshnessCheckTest {
 
+    @Mock EntityManagerFactory emf;
     @Mock EntityManager em;
     @Mock Query query;
 
@@ -38,8 +40,9 @@ class EconomicRevenueImportFreshnessCheckTest {
     @BeforeEach
     void setUp() {
         check = new EconomicRevenueImportFreshnessCheck();
-        check.em = em;
+        check.emf = emf;
         check.maxStalenessHours = 25;
+        when(emf.createEntityManager()).thenReturn(em);
     }
 
     /**

@@ -3,7 +3,7 @@ package dk.trustworks.intranet.aggregates.finance.health;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.transaction.Transactional;
+import jakarta.persistence.EntityManagerFactory;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.health.HealthCheck;
@@ -31,29 +31,27 @@ import java.time.LocalDateTime;
 public class OpexDistributionFreshnessCheck implements HealthCheck {
 
     @Inject
-    EntityManager em;
+    EntityManagerFactory emf;
 
     @ConfigProperty(name = "dk.trustworks.intranet.opex-distribution.max-staleness-hours", defaultValue = "30")
     int maxStalenessHours;
 
     @Override
-    @Transactional(Transactional.TxType.SUPPORTS)
     public HealthCheckResponse call() {
         // SmallRye health runs @Readiness checks concurrently on multiple
-        // threads sharing the @Inject EntityManager (request-scoped, but
-        // health-check threads aren't HTTP requests). A second concurrent
-        // check on the same EM can throw ConcurrentModificationException
-        // from Hibernate internals. EconomicRevenueImportFreshnessCheck
-        // received this defensive pattern on 2026-05-13; this check was
-        // missed and caused production tasks to fail the canary health
-        // probe on 2026-05-15 (uncaught CME bubbled to SmallRye → overall
-        // status DOWN → ECS Express deprovisioned new tasks). Treating
-        // transient errors as UP is the right policy here: the readiness
-        // probe does not actually shed load (both tasks share the same
-        // DB) and a false DOWN suppresses legitimate freshness alerting
-        // on a working system.
-        try {
-            Object[] row = (Object[]) em.createNativeQuery(
+        // threads, so we open a fresh EntityManager per call rather than
+        // sharing the @Inject EntityManager (whose request-scope doesn't
+        // isolate per-thread when the caller isn't an HTTP request). This
+        // removes the root cause of the ConcurrentModificationException
+        // observed on staging 2026-05-13/2026-05-15 (CME from Hibernate
+        // internals on concurrent shared-EM access, which previously caused
+        // a canary health-probe failure and ECS Express deprovisioning).
+        // The defensive try/catch remains as a safety net for unexpected
+        // runtime errors — a false DOWN would suppress legitimate freshness
+        // alerting, and both production tasks share the same DB so readiness
+        // does not actually shed load.
+        try (EntityManager localEm = emf.createEntityManager()) {
+            Object[] row = (Object[]) localEm.createNativeQuery(
                     "SELECT MIN(refreshed_at), COUNT(*) FROM fact_opex_distribution_mat")
                     .getSingleResult();
             LocalDateTime oldest = row[0] == null ? null

@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.finance.health;
 
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.Query;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +24,7 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class OpexDistributionFreshnessCheckTest {
 
+    @Mock EntityManagerFactory emf;
     @Mock EntityManager em;
     @Mock Query query;
 
@@ -31,18 +33,24 @@ class OpexDistributionFreshnessCheckTest {
     @BeforeEach
     void setUp() {
         check = new OpexDistributionFreshnessCheck();
-        check.em = em;
+        check.emf = emf;
         check.maxStalenessHours = 30;
+        when(emf.createEntityManager()).thenReturn(em);
     }
 
+    /**
+     * Cold-start: empty table. Production code treats this as UP (not stale,
+     * just not yet populated) per its own javadoc — the nightly refresh job
+     * will populate the table independently.
+     */
     @Test
-    void emptyTable_returnsDown() {
+    void emptyTable_returnsUp() {
         when(em.createNativeQuery(anyString())).thenReturn(query);
         when(query.getSingleResult()).thenReturn(new Object[]{null, 0L});
 
         HealthCheckResponse result = check.call();
 
-        assertEquals(HealthCheckResponse.Status.DOWN, result.getStatus());
+        assertEquals(HealthCheckResponse.Status.UP, result.getStatus());
         assertTrue(result.getData().isPresent(),
                 "expected health-check data to be present");
         assertEquals(0L, result.getData().get().get("rows"));
