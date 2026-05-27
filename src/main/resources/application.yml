@@ -26,10 +26,31 @@ quarkus:
       idle-removal-interval: PT5M
       background-validation-interval: PT2M
       # Surface long-held connections (likely @Transactional methods holding pool
-      # connections under load) within 2 minutes. The previous PT5M hid them.
-      leak-detection-interval: PT2M
+      # connections under load) within 1 minute. The previous PT2M was tightened
+      # to PT1M during Wave 1A pool-starvation remediation (2026-05-27) to give
+      # faster forensic signal under pool pressure.
+      leak-detection-interval: PT1M
+      # Emit per-pool Agroal metrics (active count, awaiting count, blocking time,
+      # acquisition time, etc.) so CloudWatch can alarm on agroal_awaiting_count>0
+      # before the pool actually starves. Wave 1A observability addition.
+      enable-metrics: true
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
+    # Dedicated readiness-probe pool. Reuses the same RDS credentials/URL but lives
+    # in its own tiny isolated pool so that when the default pool starves under
+    # load, /q/health/ready still returns 200 — preventing the ALB from killing
+    # the task and triggering a kill-restart cascade. Wave 1A addition (2026-05-27).
+    "health":
+      db-kind: mariadb
+      jdbc:
+        url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?collation=utf8mb4_general_ci}
+        driver: org.mariadb.jdbc.Driver
+        min-size: 1
+        max-size: 2
+        acquisition-timeout: PT2S
+        background-validation-interval: PT1M
+      username: ${USERNAME:root}
+      password: ${PASSWORD:1606}
   transaction-manager:
     # OpexDistributionRefreshService.refresh() loads ~165k rows from finance_details +
     # fact_user_day and inserts 321 rows in one prepared statement — real duration is
@@ -112,9 +133,13 @@ quarkus:
     economics-journals-api:
       url: https://apis.e-conomic.com/journalsapi/v13.0.1
       scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     economics-customers-api:
       url: https://apis.e-conomic.com/customersapi/v3.1.0
       scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     economics-q2c-api:
       url: https://apis.e-conomic.com/q2capi/v5.1.0
       scope: jakarta.inject.Singleton
@@ -133,9 +158,13 @@ quarkus:
     nextsign:
       url: https://www.nextsign.dk
       scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     nextsign-document:
       url: https://api.nextsign.dk
       scope: jakarta.inject.Singleton
+      connect-timeout: 10000
+      read-timeout: 30000
     nextsign-convert:
       url: https://www.nextsign.dk
       scope: jakarta.inject.Singleton
