@@ -31,8 +31,10 @@ quarkus:
       # faster forensic signal under pool pressure.
       leak-detection-interval: PT1M
       # Emit per-pool Agroal metrics (active count, awaiting count, blocking time,
-      # acquisition time, etc.) so CloudWatch can alarm on agroal_awaiting_count>0
-      # before the pool actually starves. Wave 1A observability addition.
+      # acquisition time, etc.) into the Micrometer registry so that once the
+      # CloudWatch registry is wired (W1A.8 / future), agroal_awaiting_count > 0
+      # can be alarmed before the pool actually starves. Wave 1A observability
+      # addition; today Prometheus is the only configured registry.
       enable-metrics: true
     username: ${USERNAME:root}
     password: ${PASSWORD:1606}
@@ -40,13 +42,16 @@ quarkus:
     # in its own tiny isolated pool so that when the default pool starves under
     # load, /q/health/ready still returns 200 — preventing the ALB from killing
     # the task and triggering a kill-restart cascade. Wave 1A addition (2026-05-27).
+    # max-size=4: ALB readiness probes can stack (cold-start probe storms, dual-listener
+    # configs can put 2-4 in flight). At acquisition-timeout=PT2S, max=2 would fail-fast
+    # a 3rd concurrent probe — exactly the scenario this pool exists to prevent.
     "health":
       db-kind: mariadb
       jdbc:
         url: ${URL:jdbc:mariadb://127.0.0.1:3306/twservices?collation=utf8mb4_general_ci}
         driver: org.mariadb.jdbc.Driver
         min-size: 1
-        max-size: 2
+        max-size: 4
         acquisition-timeout: PT2S
         background-validation-interval: PT1M
       username: ${USERNAME:root}

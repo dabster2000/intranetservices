@@ -18,7 +18,7 @@ import java.sql.Statement;
  * Readiness probe that verifies the dedicated {@code health} datasource pool can
  * acquire a connection and execute a trivial {@code SELECT 1}.
  *
- * <p>The {@code health} pool is sized at min=1/max=2 and exists specifically so
+ * <p>The {@code health} pool is sized at min=1/max=4 and exists specifically so
  * that when the default pool starves under load, this probe still succeeds and
  * the ALB does not kill the task. When the database itself is unreachable —
  * the only scenario in which both pools would fail — readiness will fail
@@ -45,10 +45,18 @@ public class HealthDatasourceCheck implements HealthCheck {
              Statement s = c.createStatement();
              ResultSet rs = s.executeQuery("SELECT 1")) {
             rs.next();
-            return HealthCheckResponse.up("db-health-pool");
+            return HealthCheckResponse.up("health-pool-probe");
         } catch (SQLException ex) {
-            log.warnf(ex, "health datasource probe failed");
-            return HealthCheckResponse.down("db-health-pool");
+            log.warnf(ex, "health datasource probe failed (SQL: sqlState=%s, errorCode=%d)",
+                    ex.getSQLState(), ex.getErrorCode());
+            return HealthCheckResponse.down("health-pool-probe");
+        } catch (RuntimeException ex) {
+            // Defensive net: CDI resolution problems, Agroal wrappers that surface as
+            // unchecked exceptions, or driver-level RuntimeExceptions must not leak
+            // out of call() — SmallRye would still mark DOWN, but without log line or
+            // data payload, defeating the observability purpose of this probe.
+            log.warnf(ex, "health datasource probe failed (runtime)");
+            return HealthCheckResponse.down("health-pool-probe");
         }
     }
 }
