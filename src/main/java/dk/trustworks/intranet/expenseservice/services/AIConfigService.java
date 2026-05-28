@@ -10,15 +10,16 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.NotFoundException;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+@JBossLog
 @ApplicationScoped
 public class AIConfigService {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
+    @Inject ObjectMapper mapper;
     @Inject EventBus bus;
     @Inject AIConfigSnapshot snapshot;
 
@@ -92,8 +93,13 @@ public class AIConfigService {
     }
 
     private String snapshotOf(Object entity) {
-        try { return MAPPER.writeValueAsString(entity); }
-        catch (Exception e) { return "{\"error\":\"serialize_failed\"}"; }
+        try {
+            return mapper.writeValueAsString(entity);
+        } catch (Exception e) {
+            log.warnf(e, "Failed to serialize entity for ai_config_history snapshot: type=%s",
+                entity == null ? "null" : entity.getClass().getSimpleName());
+            return "{\"error\":\"serialize_failed\"}";
+        }
     }
 
     private void publishRefresh() {
