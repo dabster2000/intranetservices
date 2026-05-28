@@ -35,7 +35,13 @@ public class ExpenseReviewDecisionResource {
         Expense e = Expense.findById(uuid);
         requireOverridable(e);
         logs.recordHRApprove(e, header.getUserUuid(), body.reason());
-        e.setStatus("VALIDATED");
+        // Only advance CREATED → VALIDATED. For stranded legacy rows whose status
+        // has already moved past CREATED (e.g. VERIFIED_UNBOOKED via a pre-Phase-4
+        // accountant override) the expense already lives in e-conomic; downgrading
+        // its status would re-queue it for upload and create a duplicate voucher.
+        if ("CREATED".equals(e.getStatus())) {
+            e.setStatus("VALIDATED");
+        }
         e.setReviewState(null);
         e.setHrDecision("APPROVED");
         e.setHrDecisionBy(header.getUserUuid());
