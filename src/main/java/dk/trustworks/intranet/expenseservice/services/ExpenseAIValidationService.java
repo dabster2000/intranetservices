@@ -894,28 +894,30 @@ public class ExpenseAIValidationService {
     }
 
     /**
-     * True when the structured extraction is missing a core receipt signal —
-     * specifically when EITHER {@code amountInclTax} or {@code issuerCompanyName}
-     * is null, missing, or blank. A genuine receipt always carries both; UI
-     * screenshots or non-receipt images typically lack at least one. Used to
-     * short-circuit the verdict to R_RECEIPT_READABLE FAILED so a non-receipt
-     * image cannot be silently approved.
+     * True when the structured extraction has no {@code amountInclTax} —
+     * a real receipt nearly always shows a total, and an image with no
+     * extractable total is almost certainly not a receipt (random photo,
+     * blank page, etc.). Used to short-circuit the verdict to
+     * R_RECEIPT_READABLE FAILED so a non-receipt image cannot be silently
+     * approved.
      *
-     * <p>{@code date} is intentionally NOT required here even though it is a
-     * core receipt field: vision models occasionally fail to parse dates in
-     * non-standard formats (e.g. Danish DD.MM.YY at the end of a transaction
-     * line like {@code BON: 24863314 28.05.26 12.35}). Receipts in that
-     * shape are legitimate, and downstream rules can use the expense record's
-     * own {@code expensedate} (which the employee enters at upload time) as a
-     * fallback for date-dependent checks. {@code issuerAddress} is also not
-     * required — small/handwritten receipts often omit it.
+     * <p>{@code issuerCompanyName} is intentionally NOT gated — vision models
+     * sometimes fail to recognise the merchant (small shops with stylised
+     * logos, handwritten receipts, foreign-script storefronts) on otherwise
+     * perfectly clear photos, and a user has no path forward if their
+     * legitimate receipt can't pass a name-recognition test. {@code date} is
+     * also not gated (non-standard formats like Danish DD.MM.YY trailing a
+     * BON line) — date-dependent rules fall back to the expense record's
+     * own {@code expensedate}. {@code issuerAddress} is also not required —
+     * small/handwritten receipts often omit it. The remaining safety net is
+     * the R_RECEIPT_READABLE policy rule plus the
+     * {@code aiValidationCount} cap that escalates repeated failures to HR.
      */
     static boolean isVisionExtractionEmpty(JsonNode extracted) {
         if (extracted == null || !extracted.isObject()) {
             return true;
         }
-        return isNullOrBlank(extracted.path("amountInclTax"))
-                || isNullOrBlank(extracted.path("issuerCompanyName"));
+        return isNullOrBlank(extracted.path("amountInclTax"));
     }
 
     private static boolean isNullOrBlank(JsonNode node) {
