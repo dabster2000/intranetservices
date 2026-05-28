@@ -81,6 +81,29 @@ class ApplicationYamlNoDuplicateKeysTest {
                         + "environments — re-creating the original journal-15 bug.");
     }
 
+    @Test
+    void healthDatasourceUsesQuotedNamedDatasourceKey() throws Exception {
+        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
+        Map<String, Object> root;
+        try (InputStream in = getClass().getResourceAsStream("/application.yml")) {
+            assertNotNull(in, "application.yml not found on test classpath");
+            root = yaml.load(in);
+        }
+
+        Object unquotedHealth = path(root, "quarkus", "datasource", "health");
+        assertNull(unquotedHealth,
+                "The health datasource must use the literal quoted key "
+                        + "\"health\". An unquoted YAML key flattens to "
+                        + "quarkus.datasource.health.*, which Quarkus ignores "
+                        + "for named datasources.");
+
+        Object healthDbKind = path(root, "quarkus", "datasource", "\"health\"", "db-kind");
+        assertEquals("mariadb", healthDbKind,
+                "The health datasource must flatten to "
+                        + "quarkus.datasource.\"health\".* so @DataSource(\"health\") "
+                        + "gets an isolated readiness pool.");
+    }
+
     @SuppressWarnings("unchecked")
     private static Object path(Map<String, Object> root, String... keys) {
         Object cursor = root;
