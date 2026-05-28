@@ -18,8 +18,13 @@ import java.util.stream.Collectors;
 
 /**
  * ItemReader for expense upload batch job.
- * Loads all VALIDATED expenses and reads them one by one for processing.
+ * Loads all VALIDATED expenses without an open review state and reads them one
+ * by one for processing.
  * Applies filters:
+ * - Status = VALIDATED
+ * - reviewState IS NULL — an expense parked in a Phase-4 review queue (e.g.
+ *   PENDING_HR after the V356 backfill) must wait for Accounting approval
+ *   before it is uploaded
  * - Amount must be greater than 0
  * - Created more than 2 days ago (to avoid processing very recent submissions)
  */
@@ -42,7 +47,8 @@ public class ExpenseItemReader implements ItemReader {
         // Load all VALIDATED expenses with filters
         LocalDate cutoffDate = LocalDate.now().minusDays(2);
 
-        expenses = Expense.<Expense>stream("status", ExpenseService.STATUS_VALIDATED)
+        expenses = Expense.<Expense>stream("status = ?1 AND reviewState IS NULL",
+                        ExpenseService.STATUS_VALIDATED)
                 .filter(e -> e.getAmount() != null && e.getAmount() > 0)
                 .filter(e -> e.getDatecreated() != null && e.getDatecreated().isBefore(cutoffDate))
                 .collect(Collectors.toList());

@@ -175,4 +175,48 @@ class ExpenseReviewResourceDecisionsTest {
         assertEquals("NEEDS_FIX", after.getReviewState());
         assertEquals("CREATED", after.getStatus());
     }
+
+    /**
+     * Stranded pre-Phase-4 AI-rejected rows (V356 backfill) have status already
+     * past CREATED — typically VERIFIED_UNBOOKED with a real voucher in e-conomic.
+     * Approving them must NOT downgrade the status back to VALIDATED, or the upload
+     * batch would re-process them and create a duplicate voucher.
+     */
+    @Test @TestSecurity(user = "hr", roles = {"expenses:review"})
+    void approveOnAdvancedStatusDoesNotDowngradeStatus() {
+        Expense e = new Expense();
+        e.setUuid(java.util.UUID.randomUUID().toString());
+        e.setUseruuid("u");
+        e.setAmount(138.6);
+        e.setAccount("3585");
+        e.setExpensedate(java.time.LocalDate.now().minusDays(20));
+        e.setDatecreated(java.time.LocalDate.now().minusDays(20));
+        e.setStatus("VERIFIED_UNBOOKED");
+        e.setVouchernumber(6037617);
+        e.setJournalnumber(16);
+        e.setAccountingyear("2025_6_2026a");
+        e.setReviewState("PENDING_HR");
+        e.setAiValidationApproved(false);
+        e.setAiValidationReason("R_OFFICE_FOOD_DRINK proximity");
+        io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(e::persist);
+        String uuid = e.getUuid();
+
+        given()
+          .header("X-Requested-By", "hr")
+          .contentType(MediaType.APPLICATION_JSON)
+          .body("{\"reason\":\"Stranded legacy row — voucher already in e-conomic\"}")
+        .when()
+          .post("/expenses/" + uuid + "/review/approve")
+        .then()
+          .statusCode(204);
+
+        Expense after = io.quarkus.narayana.jta.QuarkusTransaction.requiringNew()
+            .call(() -> Expense.findById(uuid));
+        assertEquals("VERIFIED_UNBOOKED", after.getStatus(),
+            "Status must NOT be downgraded — the expense is already in e-conomic");
+        assertNull(after.getReviewState());
+        assertEquals("APPROVED", after.getHrDecision());
+        assertEquals("hr", after.getHrDecisionBy());
+        assertNotNull(after.getHrDecisionAt());
+    }
 }
