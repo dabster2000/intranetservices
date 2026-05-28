@@ -9,9 +9,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The gate treats a receipt as "unreadable" (i.e. either a non-receipt image or
- * a poor-quality scan) whenever ANY of the three core fields date,
- * amountInclTax, or issuerCompanyName is missing. The address is intentionally
- * not required — many small or handwritten receipts omit it.
+ * a poor-quality scan) whenever EITHER amountInclTax or issuerCompanyName is
+ * missing. Date is intentionally NOT gated — vision models occasionally fail
+ * to parse non-standard date formats (e.g. Danish DD.MM.YY trailing a BON
+ * transaction line) and the expense record's own expensedate is a downstream
+ * fallback. Address is also not required — small/handwritten receipts often
+ * omit it.
  */
 class ExpenseAIValidationServiceVisionEmptyGateTest {
 
@@ -58,14 +61,14 @@ class ExpenseAIValidationServiceVisionEmptyGateTest {
                 """);
         assertTrue(ExpenseAIValidationService.isVisionExtractionEmpty(dateOnly));
 
-        // Merchant populated but no date / amount — also unreadable
+        // Merchant populated but no amount — also unreadable
         JsonNode merchantOnly = json("""
                 {"date": null, "amountInclTax": null, "issuerCompanyName": "Netto",
                  "issuerAddress": null, "expenseType": "food_drink"}
                 """);
         assertTrue(ExpenseAIValidationService.isVisionExtractionEmpty(merchantOnly));
 
-        // Amount populated but no date / merchant — also unreadable
+        // Amount populated but no merchant — also unreadable
         JsonNode amountOnly = json("""
                 {"date": null, "amountInclTax": 156.0, "issuerCompanyName": null,
                  "issuerAddress": null, "expenseType": "food_drink"}
@@ -81,9 +84,10 @@ class ExpenseAIValidationServiceVisionEmptyGateTest {
     }
 
     @Test
-    void allCoreFieldsPresent_isNotEmpty() {
-        // Genuine receipt — date, amount, and merchant all present. Address may
-        // be omitted (small / handwritten receipts often skip it).
+    void amountAndMerchantPresent_isNotEmpty() {
+        // Genuine receipt — amount and merchant both present. Date may be
+        // omitted (vision sometimes fails to parse non-standard formats);
+        // address may be omitted (small / handwritten receipts often skip it).
         JsonNode receipt = json("""
                 {"date": "2026-05-18", "amountInclTax": 156.0, "issuerCompanyName": "Netto",
                  "issuerAddress": null, "expenseType": "food_drink"}
@@ -96,6 +100,20 @@ class ExpenseAIValidationServiceVisionEmptyGateTest {
                  "issuerAddress": "Strøget 1, København K", "expenseType": "food_drink"}
                 """);
         assertFalse(ExpenseAIValidationService.isVisionExtractionEmpty(fullReceipt));
+    }
+
+    @Test
+    void dateMissingButAmountAndMerchantPresent_isNotEmpty() {
+        // Regression: REMA 1000 receipt (28.05.26 12.35 on a trailing BON
+        // transaction line). Vision extracted amount=84.77 and merchant
+        // "REMA 1000" successfully but returned null for date. Previously the
+        // gate fired and emitted "We couldn't read the receipt" even though
+        // the image was perfectly clear.
+        JsonNode noDate = json("""
+                {"date": null, "amountInclTax": 84.77, "issuerCompanyName": "REMA 1000",
+                 "issuerAddress": "Rosenørns Allé", "expenseType": "food_drink"}
+                """);
+        assertFalse(ExpenseAIValidationService.isVisionExtractionEmpty(noDate));
     }
 
     @Test

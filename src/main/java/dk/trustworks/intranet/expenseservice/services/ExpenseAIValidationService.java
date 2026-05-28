@@ -894,22 +894,27 @@ public class ExpenseAIValidationService {
     }
 
     /**
-     * True when the structured extraction is missing any core receipt signal —
-     * specifically when ANY of {@code date}, {@code amountInclTax}, or
-     * {@code issuerCompanyName} is null, missing, or blank. A genuine receipt
-     * always carries all three; UI screenshots or non-receipt images typically
-     * populate only one or two of these fields, which previously slipped past
-     * the all-blank gate and were silently approved. The {@code issuerAddress}
-     * field is intentionally not required here — small/handwritten receipts
-     * often omit it. Used to short-circuit the verdict to R_RECEIPT_READABLE
-     * FAILED so an unreadable or non-receipt image cannot be silently approved.
+     * True when the structured extraction is missing a core receipt signal —
+     * specifically when EITHER {@code amountInclTax} or {@code issuerCompanyName}
+     * is null, missing, or blank. A genuine receipt always carries both; UI
+     * screenshots or non-receipt images typically lack at least one. Used to
+     * short-circuit the verdict to R_RECEIPT_READABLE FAILED so a non-receipt
+     * image cannot be silently approved.
+     *
+     * <p>{@code date} is intentionally NOT required here even though it is a
+     * core receipt field: vision models occasionally fail to parse dates in
+     * non-standard formats (e.g. Danish DD.MM.YY at the end of a transaction
+     * line like {@code BON: 24863314 28.05.26 12.35}). Receipts in that
+     * shape are legitimate, and downstream rules can use the expense record's
+     * own {@code expensedate} (which the employee enters at upload time) as a
+     * fallback for date-dependent checks. {@code issuerAddress} is also not
+     * required — small/handwritten receipts often omit it.
      */
     static boolean isVisionExtractionEmpty(JsonNode extracted) {
         if (extracted == null || !extracted.isObject()) {
             return true;
         }
-        return isNullOrBlank(extracted.path("date"))
-                || isNullOrBlank(extracted.path("amountInclTax"))
+        return isNullOrBlank(extracted.path("amountInclTax"))
                 || isNullOrBlank(extracted.path("issuerCompanyName"));
     }
 
