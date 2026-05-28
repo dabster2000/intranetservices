@@ -33,7 +33,7 @@ public class ExpenseReviewDecisionResource {
     public Response approve(@PathParam("uuid") String uuid,
                             @Valid ExpenseReviewApproveDTO body) {
         Expense e = Expense.findById(uuid);
-        requirePendingOrSentBack(e);
+        requireOverridable(e);
         logs.recordHRApprove(e, header.getUserUuid(), body.reason());
         e.setStatus("VALIDATED");
         e.setReviewState(null);
@@ -88,5 +88,13 @@ public class ExpenseReviewDecisionResource {
         if (!List.of("PENDING_HR", "HR_SENT_BACK").contains(e.getReviewState()))
             throw new BadRequestException(
                 "decision requires reviewState in (PENDING_HR, HR_SENT_BACK)");
+    }
+
+    private void requireOverridable(Expense e) {
+        if (e == null) throw new NotFoundException();
+        if (!List.of("PENDING_HR", "HR_SENT_BACK", "NEEDS_FIX", "NEEDS_JUSTIFICATION")
+                .contains(e.getReviewState()))
+            throw new BadRequestException(
+                "approve requires reviewState in (PENDING_HR, HR_SENT_BACK, NEEDS_FIX, NEEDS_JUSTIFICATION)");
     }
 }
