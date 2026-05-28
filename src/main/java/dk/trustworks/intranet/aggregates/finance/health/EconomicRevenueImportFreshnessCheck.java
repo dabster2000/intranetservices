@@ -30,7 +30,7 @@ import java.time.LocalDateTime;
  *
  * <p>Both production tasks share the same DB, so failing readiness does not
  * actually shed load — its purpose is to make staleness visible at
- * {@code /q/health} for alerting.
+ * {@code /health} for alerting.
  */
 @JBossLog
 @Readiness

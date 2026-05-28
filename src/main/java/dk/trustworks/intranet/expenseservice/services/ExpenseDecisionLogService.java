@@ -64,6 +64,12 @@ public class ExpenseDecisionLogService {
                e.getStatus(), "VALIDATED", null, null, e.getAiRuleId(), null);
     }
 
+    @Transactional
+    public void recordAdminForceRevalidate(Expense e, String actorUuid) {
+        append(e, "ADMIN", actorUuid, "ADMIN_FORCE_REVALIDATE",
+               e.getStatus(), e.getStatus(), e.getReviewState(), null, e.getAiRuleId(), null);
+    }
+
     private void append(Expense e, String actorRole, String actorUuid, String action,
                         String fromStatus, String toStatus,
                         String fromReview,  String toReview,

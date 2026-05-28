@@ -481,4 +481,32 @@ public class ExpenseService {
         e.setDatemodified(java.time.LocalDate.now());
         eventBus.publish("expense.validate", uuid);
     }
+
+    /**
+     * Admin force-revalidate: clears all AI review fields and publishes the
+     * validate event to trigger immediate re-validation, regardless of the
+     * current review state. Use case: rule catalog or prompt was edited and a
+     * previously-decided expense should be re-judged under the new policy.
+     *
+     * <p>Unlike {@link #maybeReopenForRevalidation}, this clears {@code aiRuleId}
+     * and {@code aiRuleIdsJson} too — the next AI run overwrites them anyway,
+     * and the prior values are preserved in the expense_decision_log row this
+     * method writes.
+     */
+    @Transactional
+    public void adminForceRevalidate(String uuid, String actorUuid) {
+        Expense e = Expense.findById(uuid);
+        if (e == null) {
+            throw new jakarta.ws.rs.NotFoundException("expense not found: " + uuid);
+        }
+        // Log BEFORE mutating so fromReviewState + aiRuleId capture pre-reset values
+        logs.recordAdminForceRevalidate(e, actorUuid);
+        e.setReviewState(null);
+        e.setAiValidationApproved(null);
+        e.setAiValidationReason(null);
+        e.setAiRuleId(null);
+        e.setAiRuleIdsJson(null);
+        e.setDatemodified(java.time.LocalDate.now());
+        eventBus.publish("expense.validate", uuid);
+    }
 }

@@ -43,6 +43,7 @@ public class AIConfigResource {
     @Inject ExpenseCreatedConsumer consumer;
     @Inject AIConfigSnapshot snapshot;
     @Inject ExpenseReviewRoutingService router;
+    @Inject dk.trustworks.intranet.expenseservice.services.ExpenseService expenseService;
 
     @GET
     @Path("/rules")
@@ -196,5 +197,19 @@ public class AIConfigResource {
         // extractedReceiptText is intentionally null in v1 — we'd need a separate call to extract;
         // v1 ships verdicts + routing only. Wire-through is a Phase 5 follow-up.
         return new AIDryRunResultDTO(null, verdicts, result.approved(), routing);
+    }
+
+    /**
+     * Force-revalidate a previously-decided expense under the current rule
+     * catalog / prompt. Clears AI review fields, writes an
+     * {@code ADMIN_FORCE_REVALIDATE} entry to {@code expense_decision_log},
+     * and publishes the {@code expense.validate} event so the consumer runs
+     * the full vision + policy pipeline immediately. Returns 204 on success.
+     */
+    @POST
+    @Path("/revalidate/{expenseUuid}")
+    public jakarta.ws.rs.core.Response revalidateExpense(@PathParam("expenseUuid") String expenseUuid) {
+        expenseService.adminForceRevalidate(expenseUuid, header.getUserUuid());
+        return jakarta.ws.rs.core.Response.noContent().build();
     }
 }
