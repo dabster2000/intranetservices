@@ -309,11 +309,6 @@ public class ExpenseResource {
             updateQuery.append("expensedate = ?").append(params.size() + 1).append(", ");
             params.add(expense.getExpensedate());
         }
-        // Allow HR/ADMIN to update status (for retry functionality)
-        if (expense.getStatus() != null) {
-            updateQuery.append("status = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getStatus());
-        }
 
         if (!updateQuery.isEmpty()) {
             // Remove trailing comma and space
@@ -342,52 +337,6 @@ public class ExpenseResource {
         // counts as a fix attempt: clear the review flags, log the edit, and re-fire
         // AI validation. No-op for any other review_state.
         expenseService.maybeReopenForRevalidation(uuid, header.getUserUuid());
-
-        // The dynamic bulk UPDATE above (and the legacy status edit) bypass the
-        // @PreUpdate syncDerivedState() hook, leaving the unified state/attention_owner/
-        // attention_kind columns stale. Re-derive them from the row's authoritative
-        // post-update values. Runs last (after maybeReopenForRevalidation) and reads
-        // straight from the DB so it reflects the final committed status + review_state.
-        resyncDerivedState(uuid);
-    }
-
-    /**
-     * Recompute the unified {@code state}/{@code attention_owner}/{@code attention_kind}
-     * columns from the row's current authoritative values and persist them. Used after
-     * bulk JPQL updates that bypass the {@code @PreUpdate} hook in {@link Expense}.
-     *
-     * <p>Reads via a native SELECT (not the persistence context) because the preceding
-     * bulk update does not refresh managed entities. The native query also auto-flushes
-     * any pending managed-entity changes first, so the values read are the final ones.
-     * Idempotent — safe to call even when state was already correct.
-     */
-    private void resyncDerivedState(String uuid) {
-        List<?> rows = em.createNativeQuery(
-                        "SELECT status, review_state, ai_validation_approved, hr_decision " +
-                        "FROM expenses WHERE uuid = ?1")
-                .setParameter(1, uuid)
-                .getResultList();
-        if (rows.isEmpty()) return;            // row deleted mid-request; outer handler already guards 404
-        Object[] row = (Object[]) rows.get(0);
-        String status = (String) row[0];
-        String reviewState = (String) row[1];
-        // ai_validation_approved is a nullable boolean (TINYINT(1)); the driver may
-        // hand it back as Boolean or as a Number, so handle both.
-        Boolean aiValidationApproved;
-        if (row[2] == null) {
-            aiValidationApproved = null;
-        } else if (row[2] instanceof Boolean b) {
-            aiValidationApproved = b;
-        } else {
-            aiValidationApproved = ((Number) row[2]).intValue() != 0;
-        }
-        String hrDecision = (String) row[3];
-
-        ExpenseStateDeriver.DerivedState derived =
-                ExpenseStateDeriver.derive(status, reviewState, aiValidationApproved, hrDecision);
-
-        Expense.update("state = ?1, attentionOwner = ?2, attentionKind = ?3 where uuid = ?4",
-                derived.state(), derived.owner(), derived.kind(), uuid);
     }
 
     @DELETE
