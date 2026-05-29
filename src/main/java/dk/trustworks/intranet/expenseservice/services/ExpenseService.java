@@ -483,16 +483,22 @@ public class ExpenseService {
     public void maybeReopenForRevalidation(String uuid, String actorUuid) {
         Expense e = Expense.findById(uuid);
         if (e == null) return;
-        String state = e.getReviewState();
-        if (state == null
-            || !java.util.List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION", "HR_SENT_BACK").contains(state)) {
+        // Only employee-owned exceptions reopen on edit.
+        if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState())
+            || !ExpenseStateDeriver.OWNER_EMPLOYEE.equals(e.getAttentionOwner())) {
             return;
         }
-        // Log the edit BEFORE mutating so fromReviewState captures the original value
+        // Log the edit BEFORE mutating so the audit captures the pre-reset values.
         logs.recordEmployeeEdit(e, actorUuid);
-        e.setReviewState(null);
+        e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setReviewState(null);                      // vestigial
         e.setAiValidationApproved(null);
         e.setAiValidationReason(null);
+        e.setAiOutcome(null);
+        e.setAiConfidence(null);
+        e.setSoftFlags(null);
         e.setDatemodified(java.time.LocalDate.now());
         eventBus.publish("expense.validate", uuid);
     }
@@ -514,13 +520,18 @@ public class ExpenseService {
         if (e == null) {
             throw new jakarta.ws.rs.NotFoundException("expense not found: " + uuid);
         }
-        // Log BEFORE mutating so fromReviewState + aiRuleId capture pre-reset values
         logs.recordAdminForceRevalidate(e, actorUuid);
-        e.setReviewState(null);
+        e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setReviewState(null);                      // vestigial
         e.setAiValidationApproved(null);
         e.setAiValidationReason(null);
         e.setAiRuleId(null);
         e.setAiRuleIdsJson(null);
+        e.setAiOutcome(null);
+        e.setAiConfidence(null);
+        e.setSoftFlags(null);
         e.setDatemodified(java.time.LocalDate.now());
         eventBus.publish("expense.validate", uuid);
     }
