@@ -142,6 +142,26 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "extracted_per_person_dkk", insertable = false, updatable = false)
     private Double extractedPerPersonDkk;
 
+    // ---- Unified state model (Phase 0). Derived mirror; see ExpenseStateDeriver. ----
+    @Column(name = "state")
+    private String state;
+
+    @Column(name = "attention_owner")
+    private String attentionOwner;
+
+    @Column(name = "attention_kind")
+    private String attentionKind;
+
+    @Column(name = "ai_outcome")
+    private String aiOutcome;
+
+    @Column(name = "ai_confidence")
+    private Double aiConfidence;
+
+    @JsonIgnore
+    @Column(name = "soft_flags", columnDefinition = "json")
+    private String softFlags;
+
     @jakarta.persistence.Version
     @Column(name = "version", nullable = false)
     private Integer version = 0;
@@ -154,6 +174,21 @@ public class Expense extends PanacheEntityBase {
 
     public boolean isPaidOut() {
         return paidOut != null;
+    }
+
+    /**
+     * Keep the unified {@code state} (+ attention owner/kind) in sync with the legacy
+     * status/review_state/ai/hr fields on every insert and update. Phase 0: state is a
+     * derived mirror so existing write paths need no changes.
+     */
+    @PrePersist
+    @PreUpdate
+    void syncDerivedState() {
+        ExpenseStateDeriver.DerivedState d =
+                ExpenseStateDeriver.derive(status, reviewState, aiValidationApproved, hrDecision);
+        this.state = d.state();
+        this.attentionOwner = d.owner();
+        this.attentionKind = d.kind();
     }
 
     @Transient
