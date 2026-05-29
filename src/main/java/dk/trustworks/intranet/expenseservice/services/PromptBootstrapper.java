@@ -118,14 +118,16 @@ public class PromptBootstrapper {
                 "amountInclTax": number | null,  // grand total including tax
                 "issuerCompanyName": string | null,
                 "issuerAddress": string | null,
-                "expenseType": "food_drink" | "it_equipment" | "transportation" | "other"
+                "expenseType": "food_drink" | "it_equipment" | "transportation" | "other",
+                "guestCount": number | null      // number of people the receipt covers, or null
               },
               "rules": [
                 {
                   "id": string,                  // must match one of the rule ids from the catalog
                   "severity": "OVERRIDE_APPROVE" | "REJECT" | "WARNING" | "INFO",
                   "decision": "FAILED" | "PASSED" | "NOT_APPLICABLE",
-                  "user_message": string | null  // short explanation when FAILED, otherwise null
+                  "user_message": string | null, // short explanation when FAILED, otherwise null
+                  "confidence": number           // 0.0-1.0 confidence this rule's decision is correct
                 }
               ]
             }
@@ -139,6 +141,11 @@ public class PromptBootstrapper {
             - When information is missing from the extracted description, set it to null in 'extracted' and use NOT_APPLICABLE
               for rules that depend on that field.
             - Do not add extra top-level fields and do not wrap the JSON in backticks or markdown.
+            - For every rule, set 'confidence' to a calibrated 0.0-1.0 value: how sure you are the
+              decision (FAILED/PASSED) is correct given the evidence. Use lower values when the
+              receipt is ambiguous or data is missing.
+            - Set 'guestCount' from the receipt (covers / "for N" / item counts) when food/drink;
+              null when not indicated.
 
             Validation rule catalog:
             {{RULES_BLOCK}}
