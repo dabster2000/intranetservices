@@ -15,6 +15,12 @@ public class AIRuleCatalog extends PanacheEntityBase {
     @Column(name = "resolution_type") public String resolutionType;
     public int    priority;
     public boolean active;
+    @Column(name = "outcome_mode")         public String outcomeMode;
+    @Column(name = "confidence_threshold") public Double confidenceThreshold;
     @Column(name = "updated_at")      public LocalDateTime updatedAt;
     @Column(name = "updated_by")      public String updatedBy;
+
+    public static final String OUTCOME_MODE_BLOCK     = "BLOCK";
+    public static final String OUTCOME_MODE_SOFT_FLAG = "SOFT_FLAG";
+    public static final String OUTCOME_MODE_OFF       = "OFF";
 }

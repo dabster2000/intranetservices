@@ -45,6 +45,8 @@ public class AIConfigService {
         existing.resolutionType = incoming.resolutionType;
         existing.priority       = incoming.priority;
         existing.active         = incoming.active;
+        existing.outcomeMode = incoming.outcomeMode;
+        existing.confidenceThreshold = incoming.confidenceThreshold;
         existing.updatedAt = LocalDateTime.now();
         existing.updatedBy = actor;
         appendHistory("RULE", existing.ruleId,
