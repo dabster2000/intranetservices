@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.UUID;
 
 @Data
+@lombok.EqualsAndHashCode(of = "uuid", callSuper = false)
 @Entity
 @Table(name = "expenses")
 public class Expense extends PanacheEntityBase {
