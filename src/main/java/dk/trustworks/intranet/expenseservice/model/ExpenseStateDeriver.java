@@ -30,6 +30,7 @@ public final class ExpenseStateDeriver {
     public static final String KIND_JUSTIFICATION = "JUSTIFICATION";
     public static final String KIND_POLICY        = "POLICY";
     public static final String KIND_TECHNICAL     = "TECHNICAL";
+    public static final String KIND_AMOUNT_MISMATCH = "AMOUNT_MISMATCH";
 
     private ExpenseStateDeriver() {}
 
@@ -77,6 +78,69 @@ public final class ExpenseStateDeriver {
             default:
                 // PDF / unknown legacy statuses → treat as submitted (inert; not surfaced as exception).
                 return new DerivedState(SUBMITTED, null, null);
+        }
+    }
+
+    /**
+     * Tail-only derivation: e-conomic PIPELINE status (+ the unambiguous VALIDATED bridge)
+     * → unified state. Phase 1 boundary: POSTING/POSTED/BOOKED + technical-failure
+     * NEEDS_ATTENTION are status-derived; the SUBMITTED/NEEDS_ATTENTION/APPROVED head and the
+     * REJECTED/DELETED terminals are written directly by the workflow and preserved by the
+     * entity hook. {@code review_state}/{@code hr_decision} are intentionally NOT consulted here.
+     */
+    public static DerivedState deriveFromStatus(String status) {
+        if (status == null) return new DerivedState(SUBMITTED, null, null);
+        switch (status) {
+            case "VERIFIED_BOOKED":   return new DerivedState(BOOKED, null, null);
+            case "VERIFIED_UNBOOKED": return new DerivedState(POSTED, null, null);
+            case "UPLOADED":
+            case "VOUCHER_CREATED":
+            case "PROCESSING":        return new DerivedState(POSTING, null, null);
+            case "UP_FAILED":
+            case "NO_FILE":
+            case "NO_USER":           return new DerivedState(NEEDS_ATTENTION, OWNER_ACCOUNTING, KIND_TECHNICAL);
+            case "VALIDATED":         return new DerivedState(APPROVED, null, null);
+            case "DELETED":           return new DerivedState(DELETED, null, null);
+            default:                  return new DerivedState(SUBMITTED, null, null);
+        }
+    }
+
+    /**
+     * True when {@code state} is derived from {@code status} (the "tail" + the unambiguous
+     * VALIDATED bridge). For head/terminal statuses (CREATED, DELETED, null, unknown) the
+     * state is authoritative — set directly by the workflow and preserved by the entity hook.
+     */
+    public static boolean isStatusDerivedState(String status) {
+        if (status == null) return false;
+        switch (status) {
+            case "PROCESSING":
+            case "UPLOADED":
+            case "VOUCHER_CREATED":
+            case "VERIFIED_UNBOOKED":
+            case "VERIFIED_BOOKED":
+            case "UP_FAILED":
+            case "NO_FILE":
+            case "NO_USER":
+            case "VALIDATED":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Maps an {@code attention_kind} to the legacy {@code review_state} value, so the head
+     * writers can keep dual-writing {@code review_state} for one release (rollback safety +
+     * the {@code expense_decision_log} audit trail). Dropped in Phase 3.
+     */
+    public static String mapAttentionKindToLegacyReviewState(String kind) {
+        if (kind == null) return null;
+        switch (kind) {
+            case KIND_RECEIPT:
+            case KIND_AMOUNT_MISMATCH: return "NEEDS_FIX";
+            case KIND_JUSTIFICATION:   return "NEEDS_JUSTIFICATION";
+            case KIND_POLICY:          return "PENDING_HR";
+            default:                   return null; // TECHNICAL has no employee-facing review_state
         }
     }
 }

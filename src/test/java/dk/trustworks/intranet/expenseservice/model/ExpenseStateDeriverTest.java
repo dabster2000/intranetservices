@@ -93,4 +93,50 @@ class ExpenseStateDeriverTest {
     @Test void unknownLegacyStatus_isSubmitted() {
         assertEquals(SUBMITTED, derive("PDF", null, null, null).state());
     }
+
+    // ---- Phase 1: tail-only derivation + boundary predicate ----
+
+    @Test void deriveFromStatus_pipelineMapsToTail() {
+        assertEquals(BOOKED, deriveFromStatus("VERIFIED_BOOKED").state());
+        assertEquals(POSTED, deriveFromStatus("VERIFIED_UNBOOKED").state());
+        assertEquals(POSTING, deriveFromStatus("UPLOADED").state());
+        assertEquals(POSTING, deriveFromStatus("VOUCHER_CREATED").state());
+        assertEquals(POSTING, deriveFromStatus("PROCESSING").state());
+        assertEquals(APPROVED, deriveFromStatus("VALIDATED").state());
+    }
+
+    @Test void deriveFromStatus_technicalFailureIsAccountingTechnical() {
+        for (String s : new String[]{"UP_FAILED", "NO_FILE", "NO_USER"}) {
+            DerivedState d = deriveFromStatus(s);
+            assertEquals(NEEDS_ATTENTION, d.state(), s);
+            assertEquals(OWNER_ACCOUNTING, d.owner(), s);
+            assertEquals(KIND_TECHNICAL, d.kind(), s);
+        }
+    }
+
+    @Test void deriveFromStatus_deletedIsDeleted_noHrSplit() {
+        // Tail DELETED is the e-conomic/employee delete; accounting REJECT is an
+        // authoritative head write, never routed through this method.
+        assertEquals(DELETED, deriveFromStatus("DELETED").state());
+    }
+
+    @Test void isStatusDerivedState_trueForPipelineAndValidated_falseForHeadTerminal() {
+        for (String s : new String[]{"PROCESSING","UPLOADED","VOUCHER_CREATED",
+                "VERIFIED_UNBOOKED","VERIFIED_BOOKED","UP_FAILED","NO_FILE","NO_USER","VALIDATED"}) {
+            assertTrue(isStatusDerivedState(s), s);
+        }
+        for (String s : new String[]{"CREATED","DELETED"}) {
+            assertFalse(isStatusDerivedState(s), s);
+        }
+        assertFalse(isStatusDerivedState(null));
+        assertFalse(isStatusDerivedState("PDF"));
+    }
+
+    @Test void amountMismatchKindMapsToNeedsFixLegacyReviewState() {
+        assertEquals("NEEDS_FIX", mapAttentionKindToLegacyReviewState(KIND_AMOUNT_MISMATCH));
+        assertEquals("NEEDS_FIX", mapAttentionKindToLegacyReviewState(KIND_RECEIPT));
+        assertEquals("NEEDS_JUSTIFICATION", mapAttentionKindToLegacyReviewState(KIND_JUSTIFICATION));
+        assertEquals("PENDING_HR", mapAttentionKindToLegacyReviewState(KIND_POLICY));
+        assertNull(mapAttentionKindToLegacyReviewState(KIND_TECHNICAL));
+    }
 }
