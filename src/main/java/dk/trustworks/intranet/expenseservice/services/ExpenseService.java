@@ -317,11 +317,10 @@ public class ExpenseService {
 
     public void updateStatus(Expense expense, String status, String errorMessage) {
         QuarkusTransaction.requiringNew().run(() -> {
-            // When status=DELETED the second statement clears reviewState, so derive
-            // with reviewState=null to match the final persisted value.
-            String effectiveReviewState = STATUS_DELETED.equals(status) ? null : expense.getReviewState();
-            ExpenseStateDeriver.DerivedState derived = ExpenseStateDeriver.derive(
-                    status, effectiveReviewState, expense.getAiValidationApproved(), expense.getHrDecision());
+            // Phase 1: updateStatus only ever moves an expense through the e-conomic pipeline
+            // tail (PROCESSING…BOOKED, UP_FAILED/NO_FILE/NO_USER, DELETED). The unified state
+            // for those is derived purely from status — review_state/hr_decision are not read.
+            ExpenseStateDeriver.DerivedState derived = ExpenseStateDeriver.deriveFromStatus(status);
 
             // Positional params: ?1–?10 = existing fields, ?11 = uuid (WHERE), ?12–?14 = derived state columns.
             // ?12–?14 intentionally appear in SET before ?11 in WHERE; binding is by ordinal, not text order.
