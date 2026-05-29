@@ -89,4 +89,8 @@ class ExpenseStateDeriverTest {
     @Test void nullStatus_isSubmitted() {
         assertEquals(SUBMITTED, derive(null, null, null, null).state());
     }
+
+    @Test void unknownLegacyStatus_isSubmitted() {
+        assertEquals(SUBMITTED, derive("PDF", null, null, null).state());
+    }
 }

@@ -36,7 +36,7 @@ public final class ExpenseStateDeriver {
     public record DerivedState(String state, String owner, String kind) {}
 
     public static DerivedState derive(String status, String reviewState,
-                                      Boolean aiApproved, String hrDecision) {
+                                      Boolean aiValidationApproved, String hrDecision) {
         if (status == null) {
             return new DerivedState(SUBMITTED, null, null);
         }
@@ -69,7 +69,7 @@ public final class ExpenseStateDeriver {
                 if ("PENDING_HR".equals(reviewState)) {
                     return new DerivedState(NEEDS_ATTENTION, OWNER_ACCOUNTING, KIND_POLICY);
                 }
-                if (Boolean.FALSE.equals(aiApproved)) {
+                if (Boolean.FALSE.equals(aiValidationApproved)) {
                     // Legacy AI-rejected, never routed into review → needs an accounting decision.
                     return new DerivedState(NEEDS_ATTENTION, OWNER_ACCOUNTING, KIND_POLICY);
                 }
