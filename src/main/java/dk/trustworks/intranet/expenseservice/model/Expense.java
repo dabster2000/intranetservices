@@ -237,16 +237,17 @@ public class Expense extends PanacheEntityBase {
     }
 
     private static final ObjectReader SOFT_FLAGS_READER =
-            new ObjectMapper().readerForListOf(java.util.Map.class);
+            new ObjectMapper().readerForListOf(String.class);
 
     /**
-     * Parsed soft-flag findings (non-blocking AI concerns) for optional accounting spot-check.
+     * Parsed soft-flag finding labels (non-blocking AI concerns) for optional accounting
+     * spot-check. The raw {@code soft_flags} column holds a JSON array of label strings.
      * Empty list on null/malformed JSON so one bad row never crashes the API. Mirrors
      * {@link #getAiRuleIds()}.
      */
     @Transient
     @JsonProperty("softFlags")
-    public List<java.util.Map<String, Object>> getSoftFlagsList() {
+    public List<String> getSoftFlagsList() {
         if (softFlags == null || softFlags.isBlank()) {
             return Collections.emptyList();
         }
