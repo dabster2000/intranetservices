@@ -152,15 +152,17 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "attention_kind")
     private String attentionKind;
 
-    // Populated from Phase 1 (AI tiers); @JsonIgnore until then so the API isn't polluted with always-null fields.
-    @JsonIgnore
+    // Unified AI tiers (Phase 1). Now populated, so serialized to the API.
     @Column(name = "ai_outcome")
     private String aiOutcome;
 
-    @JsonIgnore
     @Column(name = "ai_confidence")
     private Double aiConfidence;
 
+    /**
+     * Raw JSON array of non-blocking AI findings. Write-only on the entity (set by the
+     * AI service); the parsed list is exposed read-only via {@link #getSoftFlagsList()}.
+     */
     @JsonIgnore
     @Column(name = "soft_flags", columnDefinition = "json")
     private String softFlags;
@@ -180,18 +182,35 @@ public class Expense extends PanacheEntityBase {
     }
 
     /**
-     * Keep the unified {@code state} (+ attention owner/kind) in sync with the legacy
-     * status/review_state/ai/hr fields on every insert and update. Phase 0: state is a
-     * derived mirror so existing write paths need no changes.
+     * Phase 1: keep the unified {@code state} correct on every write WITHOUT clobbering a
+     * directly-written head/terminal value.
+     *
+     * <ul>
+     *   <li><b>Tail</b> ({@link ExpenseStateDeriver#isStatusDerivedState}: the e-conomic
+     *       pipeline statuses + the VALIDATED bridge): {@code state} is derived from
+     *       {@code status} — the e-conomic pipeline owns it.</li>
+     *   <li><b>Head/terminal</b> (CREATED, DELETED, null, unknown): {@code state} is
+     *       authoritative — the AI/routing/decision code writes it directly and the hook
+     *       preserves it. A fresh row with no {@code state} yet falls back to the full
+     *       legacy deriver once (covers brand-new inserts + any legacy path).</li>
+     * </ul>
      */
     @PrePersist
     @PreUpdate
     void syncDerivedState() {
-        ExpenseStateDeriver.DerivedState d =
-                ExpenseStateDeriver.derive(status, reviewState, aiValidationApproved, hrDecision);
-        this.state = d.state();
-        this.attentionOwner = d.owner();
-        this.attentionKind = d.kind();
+        if (ExpenseStateDeriver.isStatusDerivedState(status)) {
+            ExpenseStateDeriver.DerivedState d = ExpenseStateDeriver.deriveFromStatus(status);
+            this.state = d.state();
+            this.attentionOwner = d.owner();
+            this.attentionKind = d.kind();
+        } else if (this.state == null) {
+            ExpenseStateDeriver.DerivedState d =
+                    ExpenseStateDeriver.derive(status, reviewState, aiValidationApproved, hrDecision);
+            this.state = d.state();
+            this.attentionOwner = d.owner();
+            this.attentionKind = d.kind();
+        }
+        // else: head/terminal with an authoritative state already set → preserve.
     }
 
     @Transient
@@ -212,6 +231,27 @@ public class Expense extends PanacheEntityBase {
         }
         try {
             return AI_RULE_IDS_READER.readValue(aiRuleIdsJson);
+        } catch (JsonProcessingException ex) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static final ObjectReader SOFT_FLAGS_READER =
+            new ObjectMapper().readerForListOf(java.util.Map.class);
+
+    /**
+     * Parsed soft-flag findings (non-blocking AI concerns) for optional accounting spot-check.
+     * Empty list on null/malformed JSON so one bad row never crashes the API. Mirrors
+     * {@link #getAiRuleIds()}.
+     */
+    @Transient
+    @JsonProperty("softFlags")
+    public List<java.util.Map<String, Object>> getSoftFlagsList() {
+        if (softFlags == null || softFlags.isBlank()) {
+            return Collections.emptyList();
+        }
+        try {
+            return SOFT_FLAGS_READER.readValue(softFlags);
         } catch (JsonProcessingException ex) {
             return Collections.emptyList();
         }
