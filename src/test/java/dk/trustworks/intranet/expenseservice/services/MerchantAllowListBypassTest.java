@@ -82,7 +82,8 @@ class MerchantAllowListBypassTest {
                     """),
                 false,
                 "Merchant would normally be rejected.",
-                "Allowed Merchant Copenhagen"
+                "Allowed Merchant Copenhagen",
+                null, null
         );
 
         assertTrue(result.approved());
@@ -110,7 +111,8 @@ class MerchantAllowListBypassTest {
                     """),
                 false,
                 "Merchant would normally be rejected.",
-                "Allowed Top Merchant"
+                "Allowed Top Merchant",
+                null, null
         );
 
         assertTrue(result.approved());
@@ -149,7 +151,8 @@ class MerchantAllowListBypassTest {
                     """),
                 false,
                 "Meal cap exceeded.",
-                "Allowed Mixed Merchant"
+                "Allowed Mixed Merchant",
+                null, null
         );
 
         assertFalse(result.approved());
@@ -176,7 +179,8 @@ class MerchantAllowListBypassTest {
                     """),
                 false,
                 "Merchant rejected.",
-                "Unknown Merchant"
+                "Unknown Merchant",
+                null, null
         );
 
         assertFalse(result.approved());

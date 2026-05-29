@@ -73,4 +73,25 @@ class ExpenseAIOutcomeCombinerTest {
         assertNull(o.attentionOwner(), "policy block routes via the rule router, not amount-mismatch");
         assertTrue(o.softFlags().contains("AMOUNT_MISMATCH"));
     }
+
+    @Test void classifyAmount_nullExtracted_isNone() {
+        assertEquals(AmountSignal.NONE, classifyAmount(null, 100.0, 0.15, 0.40));
+    }
+
+    @Test void classifyAmount_nullOrZeroEntered_isNone() {
+        assertEquals(AmountSignal.NONE, classifyAmount(120.0, null, 0.15, 0.40));
+        assertEquals(AmountSignal.NONE, classifyAmount(120.0, 0.0, 0.15, 0.40));
+    }
+
+    @Test void classifyAmount_withinSoft_isNone() {
+        assertEquals(AmountSignal.NONE, classifyAmount(105.0, 100.0, 0.15, 0.40)); // 5% delta
+    }
+
+    @Test void classifyAmount_overSoft_isSoft() {
+        assertEquals(AmountSignal.SOFT, classifyAmount(125.0, 100.0, 0.15, 0.40)); // 25% delta
+    }
+
+    @Test void classifyAmount_overBlock_isBlock() {
+        assertEquals(AmountSignal.BLOCK, classifyAmount(200.0, 100.0, 0.15, 0.40)); // 100% delta
+    }
 }

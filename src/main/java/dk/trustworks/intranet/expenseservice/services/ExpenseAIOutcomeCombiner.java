@@ -76,4 +76,19 @@ public final class ExpenseAIOutcomeCombiner {
         }
         return new Outcome(OUTCOME_APPROVE, null, List.of(), List.of(), null, null);
     }
+
+    /**
+     * Classify the delta between the AI-extracted receipt total and the employee-entered amount.
+     * The receipt is evidence, not the data source (the employee already typed the amount), so an
+     * unreadable receipt (null extracted) is NOT a signal here — it is a soft photo nudge handled
+     * elsewhere. Returns NONE when there is nothing to compare.
+     */
+    public static AmountSignal classifyAmount(Double extracted, Double entered,
+                                              double softPct, double blockPct) {
+        if (extracted == null || entered == null || entered == 0.0) return AmountSignal.NONE;
+        double delta = Math.abs(extracted - entered) / Math.abs(entered);
+        if (delta >= blockPct) return AmountSignal.BLOCK;
+        if (delta >= softPct) return AmountSignal.SOFT;
+        return AmountSignal.NONE;
+    }
 }
