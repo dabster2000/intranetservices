@@ -35,7 +35,13 @@ class V357BackfillIT {
         "  WHEN status = 'CREATED' AND review_state = 'NEEDS_FIX' THEN 'EMPLOYEE' " +
         "  WHEN status = 'CREATED' AND review_state IN ('NEEDS_JUSTIFICATION','HR_SENT_BACK') THEN 'EMPLOYEE' " +
         "  WHEN status = 'CREATED' AND review_state = 'PENDING_HR' THEN 'ACCOUNTING' " +
-        "  WHEN status = 'CREATED' AND ai_validation_approved = 0 THEN 'ACCOUNTING' ELSE NULL END " +
+        "  WHEN status = 'CREATED' AND ai_validation_approved = 0 THEN 'ACCOUNTING' ELSE NULL END, " +
+        " attention_kind = CASE " +
+        "  WHEN status IN ('UP_FAILED','NO_FILE','NO_USER') THEN 'TECHNICAL' " +
+        "  WHEN status = 'CREATED' AND review_state = 'NEEDS_FIX' THEN 'RECEIPT' " +
+        "  WHEN status = 'CREATED' AND review_state IN ('NEEDS_JUSTIFICATION','HR_SENT_BACK') THEN 'JUSTIFICATION' " +
+        "  WHEN status = 'CREATED' AND review_state = 'PENDING_HR' THEN 'POLICY' " +
+        "  WHEN status = 'CREATED' AND ai_validation_approved = 0 THEN 'POLICY' ELSE NULL END " +
         "WHERE uuid LIKE 'v357it-%'";
 
     private void seed(String uuid, String status, String reviewState, Integer aiApproved, String hrDecision) {
@@ -57,6 +63,11 @@ class V357BackfillIT {
 
     private String ownerOf(String uuid) {
         return (String) em.createNativeQuery("SELECT attention_owner FROM expenses WHERE uuid = ?1")
+            .setParameter(1, uuid).getSingleResult();
+    }
+
+    private String kindOf(String uuid) {
+        return (String) em.createNativeQuery("SELECT attention_kind FROM expenses WHERE uuid = ?1")
             .setParameter(1, uuid).getSingleResult();
     }
 
@@ -83,5 +94,10 @@ class V357BackfillIT {
 
         assertEquals("NEEDS_ATTENTION", stateOf("v357it-pending"));
         assertEquals("ACCOUNTING", ownerOf("v357it-pending"));
+
+        assertNull(kindOf("v357it-fiction"));
+        assertEquals("RECEIPT",   kindOf("v357it-fix"));
+        assertEquals("TECHNICAL", kindOf("v357it-tech"));
+        assertEquals("POLICY",    kindOf("v357it-pending"));
     }
 }

@@ -27,7 +27,8 @@ class V357SchemaTest {
     void unified_state_columns_exist() {
         @SuppressWarnings("unchecked")
         List<Object> cols = em.createNativeQuery(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'expenses'"
+            "SELECT column_name FROM information_schema.columns " +
+            "WHERE table_schema = DATABASE() AND table_name = 'expenses'"
         ).getResultList();
         List<String> names = cols.stream().map(Object::toString).toList();
         assertTrue(names.contains("state"),           "state missing");
@@ -44,7 +45,7 @@ class V357SchemaTest {
         @SuppressWarnings("unchecked")
         List<Object> idx = em.createNativeQuery(
             "SELECT index_name FROM information_schema.statistics " +
-            "WHERE table_name = 'expenses' AND index_name = 'idx_expenses_state'"
+            "WHERE table_schema = DATABASE() AND table_name = 'expenses' AND index_name = 'idx_expenses_state'"
         ).getResultList();
         assertTrue(!idx.isEmpty(), "idx_expenses_state missing");
     }
