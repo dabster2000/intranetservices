@@ -323,6 +323,9 @@ public class ExpenseService {
             ExpenseStateDeriver.DerivedState derived = ExpenseStateDeriver.derive(
                     status, effectiveReviewState, expense.getAiValidationApproved(), expense.getHrDecision());
 
+            // Positional params: ?1–?10 = existing fields, ?11 = uuid (WHERE), ?12–?14 = derived state columns.
+            // ?12–?14 intentionally appear in SET before ?11 in WHERE; binding is by ordinal, not text order.
+            // If you add a field, do NOT renumber ?11–?14 without updating both the SQL and the argument order.
             Expense.update("status = ?1, " +
                     "vouchernumber = ?2, " +
                     "journalnumber = ?3, " +

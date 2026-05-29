@@ -355,11 +355,13 @@ public class ExpenseResource {
      * Idempotent — safe to call even when state was already correct.
      */
     private void resyncDerivedState(String uuid) {
-        Object[] row = (Object[]) em.createNativeQuery(
+        List<?> rows = em.createNativeQuery(
                         "SELECT status, review_state, ai_validation_approved, hr_decision " +
                         "FROM expenses WHERE uuid = ?1")
                 .setParameter(1, uuid)
-                .getSingleResult();
+                .getResultList();
+        if (rows.isEmpty()) return;            // row deleted mid-request; outer handler already guards 404
+        Object[] row = (Object[]) rows.get(0);
         String status = (String) row[0];
         String reviewState = (String) row[1];
         // ai_validation_approved is a nullable boolean (TINYINT(1)); the driver may
