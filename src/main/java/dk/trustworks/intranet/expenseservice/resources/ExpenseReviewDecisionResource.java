@@ -4,6 +4,7 @@ import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewApproveDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewRejectDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewSendBackDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
@@ -16,7 +17,6 @@ import jakarta.ws.rs.core.Response;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Path("/expenses/{uuid}/review")
 @Produces(MediaType.APPLICATION_JSON)
@@ -33,17 +33,19 @@ public class ExpenseReviewDecisionResource {
     public Response approve(@PathParam("uuid") String uuid,
                             @Valid ExpenseReviewApproveDTO body) {
         Expense e = Expense.findById(uuid);
-        requireOverridable(e);
+        requireNeedsAttention(e);
         logs.recordHRApprove(e, header.getUserUuid(), body.reason());
-        // Only advance CREATED → VALIDATED. For stranded legacy rows whose status
-        // has already moved past CREATED (e.g. VERIFIED_UNBOOKED via a pre-Phase-4
-        // accountant override) the expense already lives in e-conomic; downgrading
-        // its status would re-queue it for upload and create a duplicate voucher.
+        // Only advance CREATED → VALIDATED. Stranded rows whose status already moved past
+        // CREATED (e.g. VERIFIED_UNBOOKED) already live in e-conomic; downgrading would
+        // re-queue them and create a duplicate voucher.
         if ("CREATED".equals(e.getStatus())) {
             e.setStatus("VALIDATED");
         }
-        e.setReviewState(null);
-        e.setHrDecision("APPROVED");
+        e.setState(ExpenseStateDeriver.APPROVED);   // authoritative head write
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setReviewState(null);                     // vestigial
+        e.setHrDecision("APPROVED");                // vestigial
         e.setHrDecisionBy(header.getUserUuid());
         e.setHrDecisionAt(LocalDateTime.now());
         e.setDatemodified(LocalDate.now());
@@ -57,13 +59,15 @@ public class ExpenseReviewDecisionResource {
     public Response sendBack(@PathParam("uuid") String uuid,
                              @Valid ExpenseReviewSendBackDTO body) {
         Expense e = Expense.findById(uuid);
-        if (e == null) throw new NotFoundException();
-        if (!"PENDING_HR".equals(e.getReviewState()))
-            throw new BadRequestException("send-back requires PENDING_HR");
+        requireAccountingOwned(e);
         logs.recordHRSendBack(e, header.getUserUuid(), body.comment());
-        e.setReviewState("HR_SENT_BACK");
+        // Hand the ball back to the employee for a justification.
+        e.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
+        e.setAttentionOwner(ExpenseStateDeriver.OWNER_EMPLOYEE);
+        e.setAttentionKind(ExpenseStateDeriver.KIND_JUSTIFICATION);
+        e.setReviewState("HR_SENT_BACK");           // vestigial
         e.setHrComment(body.comment());
-        e.setHrDecision("SENT_BACK");
+        e.setHrDecision("SENT_BACK");               // vestigial
         e.setHrDecisionBy(header.getUserUuid());
         e.setHrDecisionAt(LocalDateTime.now());
         e.setDatemodified(LocalDate.now());
@@ -77,30 +81,33 @@ public class ExpenseReviewDecisionResource {
     public Response reject(@PathParam("uuid") String uuid,
                            @Valid ExpenseReviewRejectDTO body) {
         Expense e = Expense.findById(uuid);
-        requirePendingOrSentBack(e);
+        requireNeedsAttention(e);
         logs.recordHRReject(e, header.getUserUuid(), body.reason());
-        e.setStatus("DELETED");
-        e.setReviewState(null);
+        e.setStatus("DELETED");                      // excludes from pipelines (status<>DELETED)
+        e.setState(ExpenseStateDeriver.REJECTED);    // authoritative terminal (survives hr_decision drop)
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setReviewState(null);                      // vestigial
         e.setHrComment(body.reason());
-        e.setHrDecision("REJECTED");
+        e.setHrDecision("REJECTED");                 // vestigial
         e.setHrDecisionBy(header.getUserUuid());
         e.setHrDecisionAt(LocalDateTime.now());
         e.setDatemodified(LocalDate.now());
         return Response.noContent().build();
     }
 
-    private void requirePendingOrSentBack(Expense e) {
+    /** approve and reject are allowed on any item awaiting a decision. */
+    private void requireNeedsAttention(Expense e) {
         if (e == null) throw new NotFoundException();
-        if (!List.of("PENDING_HR", "HR_SENT_BACK").contains(e.getReviewState()))
-            throw new BadRequestException(
-                "decision requires reviewState in (PENDING_HR, HR_SENT_BACK)");
+        if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState()))
+            throw new BadRequestException("decision requires state=NEEDS_ATTENTION");
     }
 
-    private void requireOverridable(Expense e) {
+    /** send-back only makes sense when accounting currently owns the item. */
+    private void requireAccountingOwned(Expense e) {
         if (e == null) throw new NotFoundException();
-        if (!List.of("PENDING_HR", "HR_SENT_BACK", "NEEDS_FIX", "NEEDS_JUSTIFICATION")
-                .contains(e.getReviewState()))
-            throw new BadRequestException(
-                "approve requires reviewState in (PENDING_HR, HR_SENT_BACK, NEEDS_FIX, NEEDS_JUSTIFICATION)");
+        if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState())
+                || !ExpenseStateDeriver.OWNER_ACCOUNTING.equals(e.getAttentionOwner()))
+            throw new BadRequestException("send-back requires state=NEEDS_ATTENTION owned by ACCOUNTING");
     }
 }
