@@ -4,6 +4,7 @@ import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.events.ExpenseCreatedConsumer;
 import dk.trustworks.intranet.expenseservice.exceptions.ExpenseUploadException;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.AccountingYear;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Entries;
@@ -316,6 +317,12 @@ public class ExpenseService {
 
     public void updateStatus(Expense expense, String status, String errorMessage) {
         QuarkusTransaction.requiringNew().run(() -> {
+            // When status=DELETED the second statement clears reviewState, so derive
+            // with reviewState=null to match the final persisted value.
+            String effectiveReviewState = STATUS_DELETED.equals(status) ? null : expense.getReviewState();
+            ExpenseStateDeriver.DerivedState derived = ExpenseStateDeriver.derive(
+                    status, effectiveReviewState, expense.getAiValidationApproved(), expense.getHrDecision());
+
             Expense.update("status = ?1, " +
                     "vouchernumber = ?2, " +
                     "journalnumber = ?3, " +
@@ -325,7 +332,10 @@ public class ExpenseService {
                     "retryCount = ?7, " +
                     "lastRetryAt = ?8, " +
                     "isOrphaned = ?9, " +
-                    "accountantNotes = ?10 " +
+                    "accountantNotes = ?10, " +
+                    "state = ?12, " +
+                    "attentionOwner = ?13, " +
+                    "attentionKind = ?14 " +
                     "WHERE uuid like ?11 ",
                     status,
                     expense.getVouchernumber(),
@@ -337,12 +347,15 @@ public class ExpenseService {
                     expense.getLastRetryAt(),
                     expense.getIsOrphaned(),
                     expense.getAccountantNotes(),
-                    expense.getUuid());
+                    expense.getUuid(),
+                    derived.state(),
+                    derived.owner(),
+                    derived.kind());
             if (STATUS_DELETED.equals(status)) {
                 Expense.update("reviewState = null WHERE uuid like ?1", expense.getUuid());
             }
-            log.infof("Updated expense uuid=%s -> status=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
-                    expense.getUuid(), status,
+            log.infof("Updated expense uuid=%s -> status=%s, state=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
+                    expense.getUuid(), status, derived.state(),
                     expense.getJournalnumber(), expense.getAccountingyear(), expense.getVouchernumber(),
                     expense.getSafeRetryCount(), expense.getIsOrphaned(),
                     errorMessage != null ? ", error=" + errorMessage : "");
