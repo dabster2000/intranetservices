@@ -697,12 +697,20 @@ public class ExpenseAIValidationService {
         expenseTypeEnum.add("transportation");
         expenseTypeEnum.add("other");
 
+        // extracted.guestCount: integer | null (revives R_MEAL_COST_PER_PERSON + Impact Preview)
+        ObjectNode guestCount = extractedProps.putObject("guestCount");
+        guestCount.put("description", "Number of guests/people the receipt covers, or null if not indicated.");
+        ArrayNode guestCountAnyOf = guestCount.putArray("anyOf");
+        guestCountAnyOf.addObject().put("type", "integer");
+        guestCountAnyOf.addObject().put("type", "null");
+
         ArrayNode extractedRequired = extracted.putArray("required");
         extractedRequired.add("date");
         extractedRequired.add("amountInclTax");
         extractedRequired.add("issuerCompanyName");
         extractedRequired.add("issuerAddress");
         extractedRequired.add("expenseType");
+        extractedRequired.add("guestCount");
 
         // rules: array of rule evaluation objects
         ObjectNode rules = props.putObject("rules");
@@ -750,11 +758,20 @@ public class ExpenseAIValidationService {
         ruleUserMsgAnyOf.addObject().put("type", "string");
         ruleUserMsgAnyOf.addObject().put("type", "null");
 
+        // rules[*].confidence: number 0..1 (drives the BLOCK/SOFT_FLAG tier in the combiner)
+        ObjectNode ruleConfidence = ruleProps.putObject("confidence");
+        ruleConfidence.put("type", "number");
+        ruleConfidence.put("description",
+                "Model confidence (0.0-1.0) that this rule's decision is correct.");
+        ruleConfidence.put("minimum", 0);
+        ruleConfidence.put("maximum", 1);
+
         ArrayNode ruleRequired = ruleItem.putArray("required");
         ruleRequired.add("id");
         ruleRequired.add("severity");
         ruleRequired.add("decision");
         ruleRequired.add("user_message");
+        ruleRequired.add("confidence");
 
         // top-level required fields
         ArrayNode required = schema.putArray("required");
@@ -960,14 +977,16 @@ public class ExpenseAIValidationService {
             "amountInclTax": null,
             "issuerCompanyName": null,
             "issuerAddress": null,
-            "expenseType": "other"
+            "expenseType": "other",
+            "guestCount": null
           },
           "rules": [
             {
               "id": "R_FALLBACK",
               "severity": "REJECT",
               "decision": "FAILED",
-              "user_message": "AI validation failed internally; this expense must be reviewed manually."
+              "user_message": "AI validation failed internally; this expense must be reviewed manually.",
+              "confidence": 1.0
             }
           ]
         }
