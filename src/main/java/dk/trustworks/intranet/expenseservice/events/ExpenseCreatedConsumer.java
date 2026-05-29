@@ -52,7 +52,7 @@ public class ExpenseCreatedConsumer {
         // Phase 1: the un-validated head is exactly state=SUBMITTED with no AI decision yet.
         List<String> expenseUuids = Expense
                 .find("state = ?1 AND aiValidationApproved IS NULL",
-                        dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver.SUBMITTED)
+                        ExpenseStateDeriver.SUBMITTED)
                 .stream()
                 .map(e -> ((Expense) e).getUuid())
                 .toList();
@@ -78,7 +78,7 @@ public class ExpenseCreatedConsumer {
 
         // Idempotency guard: only validate expenses still in the un-decided head (SUBMITTED).
         // Re-validation (employee edit / admin force) resets state to SUBMITTED first.
-        if (!dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver.SUBMITTED.equals(expense.getState())) {
+        if (!ExpenseStateDeriver.SUBMITTED.equals(expense.getState())) {
             log.infof("Skipping validation for uuid=%s — state=%s (not SUBMITTED)",
                     expenseUuid, expense.getState());
             return;
@@ -105,6 +105,13 @@ public class ExpenseCreatedConsumer {
                  result.reason().startsWith("Validation error:"))) {
             log.warnf("Skipping expense %s — transient error: %s (will retry later)",
                     expense.getUuid(), result.reason());
+            return;
+        }
+
+        // Defensive: a null outcome would NPE the switch below. Treat like a transient
+        // error — leave the AI fields null so the SUBMITTED sweep retries it.
+        if (result.outcome() == null) {
+            log.warnf("Skipping expense %s — null AI outcome (will retry later)", expense.getUuid());
             return;
         }
 
