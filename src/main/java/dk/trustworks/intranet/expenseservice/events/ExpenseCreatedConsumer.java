@@ -208,11 +208,7 @@ public class ExpenseCreatedConsumer {
         } catch (Exception e) {
             log.error("Error processing expense created event for uuid=" + expense.getUuid(), e);
             // Return a rejection decision on error instead of null (prevents NPE)
-            return new ExpenseAIValidationService.AIResult(
-                    false,
-                    "Validation error: " + e.getMessage(),
-                    List.of()
-            );
+            return ExpenseAIValidationService.AIResult.error("Validation error: " + e.getMessage());
         }
     }
 }

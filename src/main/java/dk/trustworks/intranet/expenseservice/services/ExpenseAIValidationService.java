@@ -42,12 +42,26 @@ public class ExpenseAIValidationService {
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
     /**
-     * Richer result returned by {@link #validateWithExtractedText} so the
-     * consumer can route AI-rejected expenses into the correct review state
-     * based on which rule(s) fired. {@link ValidationDecision} is preserved for
-     * legacy callers (e.g. {@code validateWithContext}, {@code ExpenseService.validateExpenseReceipt}).
+     * Result of AI validation. Phase 1 adds the 3-outcome tier ({@code outcome}),
+     * {@code confidence}, {@code softFlags} (non-blocking finding labels), and an optional
+     * pre-set {@code attentionOwner}/{@code attentionKind} (used only for the AMOUNT_MISMATCH
+     * block, where routing is not rule-driven). {@code approved}/{@code reason}/{@code ruleIds}
+     * are retained for back-compat with {@code validateExpenseReceipt} and the dry-run.
      */
-    public record AIResult(boolean approved, String reason, java.util.List<String> ruleIds) {}
+    public record AIResult(boolean approved, String reason, java.util.List<String> ruleIds,
+                           String outcome, Double confidence, java.util.List<String> softFlags,
+                           String attentionOwner, String attentionKind) {
+
+        public static final String OUTCOME_APPROVE   = "APPROVE";
+        public static final String OUTCOME_SOFT_FLAG = "SOFT_FLAG";
+        public static final String OUTCOME_BLOCK     = "BLOCK";
+
+        /** Transient/processing error: leave AI fields NULL so the sweep retries. */
+        public static AIResult error(String reason) {
+            return new AIResult(false, reason, java.util.List.of(), null, null,
+                    java.util.List.of(), null, null);
+        }
+    }
 
     /**
      * Returns the policy-validation system prompt with the rule catalog substituted in
@@ -340,7 +354,7 @@ public class ExpenseAIValidationService {
 
             if (extractedReceiptText == null || extractedReceiptText.isBlank()) {
                 log.warn("[AI-Validate] No extracted text provided");
-                return new AIResult(false, "Validation error: No receipt description available", java.util.List.of());
+                return AIResult.error("Validation error: No receipt description available");
             }
 
             LocalDate contextDate = deriveContextDate(expense);
@@ -390,7 +404,7 @@ public class ExpenseAIValidationService {
 
             if (resp.isEmpty() || resp.startsWith("Validation error:")) {
                 log.warnf("[AI-Validate] Invalid or empty AI response: %s", respPreview);
-                return new AIResult(false, "AI validation error: invalid OpenAI response", java.util.List.of());
+                return AIResult.error("AI validation error: invalid OpenAI response");
             }
 
             JsonNode root = safeParseJson(aiResponse);
@@ -443,7 +457,7 @@ public class ExpenseAIValidationService {
 
         } catch (Exception e) {
             log.error("Failed to validate expense via OpenAI (text-based validation with web search)", e);
-            return new AIResult(false, "AI validation error: " + e.getMessage(), java.util.List.of());
+            return AIResult.error("AI validation error: " + e.getMessage());
         }
     }
 
