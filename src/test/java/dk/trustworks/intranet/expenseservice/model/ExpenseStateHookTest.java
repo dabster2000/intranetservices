@@ -35,6 +35,8 @@ class ExpenseStateHookTest {
         e.setStatus("CREATED");
         e.setReviewState("PENDING_HR");
         e.persist();
+        Expense.getEntityManager().flush();
+        Expense.getEntityManager().clear();
 
         Expense round = Expense.findById(e.getUuid());
         assertEquals("NEEDS_ATTENTION", round.getState());

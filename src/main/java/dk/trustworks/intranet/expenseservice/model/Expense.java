@@ -152,9 +152,12 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "attention_kind")
     private String attentionKind;
 
+    // Populated from Phase 1 (AI tiers); @JsonIgnore until then so the API isn't polluted with always-null fields.
+    @JsonIgnore
     @Column(name = "ai_outcome")
     private String aiOutcome;
 
+    @JsonIgnore
     @Column(name = "ai_confidence")
     private Double aiConfidence;
 
