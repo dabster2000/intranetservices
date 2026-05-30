@@ -133,7 +133,7 @@ public class ExpenseAIValidationService {
 
             String result = description == null ? "" : description.trim();
             String resultPreview = result.length() > 500 ? result.substring(0, 500) + "..." : result;
-            log.infof("[AI-Extract] OpenAI comprehensive description preview=%s", resultPreview);
+            log.debugf("[AI-Extract] OpenAI comprehensive description preview=%s", resultPreview);
 
             // Validate response
             if (result.isEmpty() || result.equals("{}") || result.startsWith("Validation error:")) {
@@ -179,9 +179,9 @@ public class ExpenseAIValidationService {
                     contact.getCity() == null ? "" : contact.getCity())
                     : null;
 
-            log.infof("[AI-Validate] Start. expenseUuid=%s, useruuid=%s, user=%s",
-                    expense.getUuid(), expense.getUseruuid(), user != null ? user.getFullname() : "null");
-            log.infof("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, issuerAddressPresent=%s, type=%s",
+            log.infof("[AI-Validate] Start. expenseUuid=%s, useruuid=%s, userPresent=%s",
+                    expense.getUuid(), expense.getUseruuid(), user != null);
+            log.debugf("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, issuerAddressPresent=%s, type=%s",
                     String.valueOf(extracted.date()),
                     String.valueOf(extracted.amountInclTax()),
                     extracted.issuerCompanyName(),
@@ -400,7 +400,7 @@ public class ExpenseAIValidationService {
 
             String resp = aiResponse == null ? "" : aiResponse.trim();
             String respPreview = resp.length() > 500 ? resp.substring(0, 500) + "..." : resp;
-            log.infof("[AI-Validate] OpenAI raw response preview=%s", respPreview);
+            log.debugf("[AI-Validate] OpenAI raw response preview=%s", respPreview);
 
             if (resp.isEmpty() || resp.startsWith("Validation error:")) {
                 log.warnf("[AI-Validate] Invalid or empty AI response: %s", respPreview);
@@ -421,7 +421,7 @@ public class ExpenseAIValidationService {
             Double extractedAmount = null;
             String extractedMerchant = null;
             if (extracted.isObject()) {
-                log.infof("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, addr=%s, type=%s",
+                log.debugf("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, addr=%s, type=%s",
                         extracted.path("date").isNull() ? "null" : extracted.path("date").asText(),
                         extracted.path("amountInclTax").isNull() ? "null" : extracted.path("amountInclTax").asText(),
                         extracted.path("issuerCompanyName").isNull() ? "null" : extracted.path("issuerCompanyName").asText(),
@@ -816,7 +816,7 @@ public class ExpenseAIValidationService {
                 if (!("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))) continue;
                 if (isSuppressedAllowListRule(id, extractedMerchant)) {
                     suppressedRuleIds.add(id);
-                    log.infof("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
+                    log.debugf("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
                             id, extractedMerchant);
                     continue;
                 }
@@ -834,6 +834,29 @@ public class ExpenseAIValidationService {
                             AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
                 }
                 fired.add(new ExpenseAIOutcomeCombiner.FiredRule(id, confidence, mode, threshold));
+            }
+        }
+
+        if (!approved) {
+            JsonNode explicitRuleIds = root.path("ruleIds");
+            if (explicitRuleIds.isArray()) {
+                for (JsonNode n : explicitRuleIds) {
+                    String id = textOrNull(n);
+                    if (addFallbackRuleUnlessSuppressed(id, extractedMerchant,
+                            suppressedRuleIds, seen, fired)) {
+                        return new AIResult(true,
+                                "Approved by override rule " + id, java.util.List.of(),
+                                AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
+                    }
+                }
+            }
+
+            String finalRuleId = textOrNull(root.path("final_rule_id"));
+            if (addFallbackRuleUnlessSuppressed(finalRuleId, extractedMerchant,
+                    suppressedRuleIds, seen, fired)) {
+                return new AIResult(true,
+                        "Approved by override rule " + finalRuleId, java.util.List.of(),
+                        AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
             }
         }
 
@@ -855,6 +878,11 @@ public class ExpenseAIValidationService {
         ExpenseAIOutcomeCombiner.Outcome o = ExpenseAIOutcomeCombiner.combine(fired, amountSignal);
 
         boolean isApproved = !AIResult.OUTCOME_BLOCK.equals(o.outcome());
+        if (!approved && AIResult.OUTCOME_APPROVE.equals(o.outcome())) {
+            o = new ExpenseAIOutcomeCombiner.Outcome(AIResult.OUTCOME_BLOCK, null,
+                    java.util.List.of(), java.util.List.of(), null, null);
+            isApproved = false;
+        }
         String reason = userMessage != null && !userMessage.isBlank()
                 ? userMessage
                 : (AIResult.OUTCOME_BLOCK.equals(o.outcome())
@@ -868,6 +896,39 @@ public class ExpenseAIValidationService {
         return id != null
                 && id.startsWith("R_MERCHANT_ALLOW_")
                 && isAllowListed(id, extractedMerchant);
+    }
+
+    private boolean addFallbackRuleUnlessSuppressed(String id,
+                                                    String extractedMerchant,
+                                                    java.util.Set<String> suppressedRuleIds,
+                                                    java.util.Set<String> seen,
+                                                    java.util.List<ExpenseAIOutcomeCombiner.FiredRule> fired) {
+        if (id == null || id.isBlank()) return false;
+        if (isSuppressedAllowListRule(id, extractedMerchant)) {
+            suppressedRuleIds.add(id);
+            log.debugf("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
+                    id, extractedMerchant);
+            return false;
+        }
+        if (!seen.add(id)) return false;
+
+        AIConfigSnapshot.RuleView view = config.getRule(id);
+        if (view != null && "OVERRIDE_APPROVE".equals(view.severity())) {
+            log.infof("[AI-Validate] OVERRIDE_APPROVE fallback rule fired: %s — approving.", id);
+            return true;
+        }
+        String mode = view != null && view.outcomeMode() != null
+                ? view.outcomeMode() : "BLOCK";
+        double threshold = view != null && view.confidenceThreshold() != null
+                ? view.confidenceThreshold() : 0.0;
+        fired.add(new ExpenseAIOutcomeCombiner.FiredRule(id, 1.0, mode, threshold));
+        return false;
+    }
+
+    private static String textOrNull(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return null;
+        String value = node.asText(null);
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**
@@ -905,7 +966,7 @@ public class ExpenseAIValidationService {
         e.setExtractedGuestCount(guestCount);
         e.setExtractedMerchantName(merchant);
         e.persist();
-        log.infof("[AI-Persist] Persisted extracted facts for expense=%s amount=%s guestCount=%s merchant=%s",
+        log.debugf("[AI-Persist] Persisted extracted facts for expense=%s amount=%s guestCount=%s merchant=%s",
                 expenseUuid, amountDkk, guestCount, merchant);
     }
 

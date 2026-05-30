@@ -105,8 +105,16 @@ class MerchantAllowListBypassTest {
                 json("""
                     {
                       "ruleIds": ["R_MERCHANT_ALLOW_TOP_LEVEL"],
-                      "final_rule_id": null,
-                      "rules": []
+                      "final_rule_id": "R_MERCHANT_ALLOW_TOP_LEVEL",
+                      "rules": [
+                        {
+                          "id": "R_MERCHANT_ALLOW_TOP_LEVEL",
+                          "severity": "REJECT",
+                          "decision": "FAILED",
+                          "confidence": 0.95,
+                          "user_message": "Merchant would normally be rejected."
+                        }
+                      ]
                     }
                     """),
                 false,
@@ -116,6 +124,49 @@ class MerchantAllowListBypassTest {
         );
 
         assertTrue(result.approved());
+        assertEquals(List.of(), result.ruleIds());
+        assertTrue(result.reason().contains("allow-list"));
+    }
+
+    @Test
+    @Transactional
+    void top_level_final_rule_id_blocks_when_rules_array_is_empty() throws Exception {
+        ExpenseAIValidationService.AIResult result = validation.normalizePolicyVerdict(
+                json("""
+                    {
+                      "final_rule_id": "R_MEAL_COST_PER_PERSON",
+                      "rules": []
+                    }
+                    """),
+                false,
+                "Meal cap exceeded.",
+                "Unknown Merchant",
+                null, null
+        );
+
+        assertFalse(result.approved());
+        assertEquals(ExpenseAIValidationService.AIResult.OUTCOME_BLOCK, result.outcome());
+        assertEquals(List.of("R_MEAL_COST_PER_PERSON"), result.ruleIds());
+    }
+
+    @Test
+    @Transactional
+    void approved_false_with_no_parseable_rule_blocks_defensively() throws Exception {
+        ExpenseAIValidationService.AIResult result = validation.normalizePolicyVerdict(
+                json("""
+                    {
+                      "final_rule_id": null,
+                      "rules": []
+                    }
+                    """),
+                false,
+                "Manual review needed.",
+                "Unknown Merchant",
+                null, null
+        );
+
+        assertFalse(result.approved());
+        assertEquals(ExpenseAIValidationService.AIResult.OUTCOME_BLOCK, result.outcome());
         assertEquals(List.of(), result.ruleIds());
     }
 
