@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseDecisionLog;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import java.time.LocalDateTime;
@@ -13,49 +14,49 @@ public class ExpenseDecisionLogService {
     @Transactional
     public void recordAIApproval(Expense e) {
         append(e, "AI", null, "AI_VALIDATED_APPROVED",
-               e.getStatus(), "VALIDATED", e.getReviewState(), null, null, null);
+               e.getStatus(), "VALIDATED", e.getState(), null, null, null);
     }
 
     @Transactional
     public void recordAIApprovalPendingFinanceReview(Expense e, String reason) {
         append(e, "AI", null, "AI_VALIDATED_APPROVED",
-               e.getStatus(), e.getStatus(), e.getReviewState(), "PENDING_HR", null, reason);
+               e.getStatus(), e.getStatus(), e.getState(), ExpenseStateDeriver.KIND_POLICY, null, reason);
     }
 
     @Transactional
     public void recordAIRejection(Expense e, String toReviewState, String primaryRuleId, String reason) {
         append(e, "AI", null, "AI_VALIDATED_REJECTED",
-               e.getStatus(), e.getStatus(), e.getReviewState(), toReviewState, primaryRuleId, reason);
+               e.getStatus(), e.getStatus(), e.getState(), toReviewState, primaryRuleId, reason);
     }
 
     @Transactional
     public void recordEmployeeEdit(Expense e, String actorUuid) {
         append(e, "EMPLOYEE", actorUuid, "EMPLOYEE_FIX_SUBMITTED",
-               e.getStatus(), e.getStatus(), e.getReviewState(), null, null, null);
+               e.getStatus(), e.getStatus(), e.getState(), null, null, null);
     }
 
     @Transactional
     public void recordEmployeeJustification(Expense e, String actorUuid, String justification) {
         append(e, "EMPLOYEE", actorUuid, "EMPLOYEE_JUSTIFICATION_SUBMITTED",
-               e.getStatus(), e.getStatus(), e.getReviewState(), "PENDING_HR", null, justification);
+               e.getStatus(), e.getStatus(), e.getState(), "PENDING_HR", null, justification);
     }
 
     @Transactional
     public void recordHRApprove(Expense e, String actorUuid, String reason) {
         append(e, "HR", actorUuid, "HR_APPROVED",
-               e.getStatus(), "VALIDATED", e.getReviewState(), null, e.getAiRuleId(), reason);
+               e.getStatus(), "VALIDATED", e.getState(), null, e.getAiRuleId(), reason);
     }
 
     @Transactional
     public void recordHRSendBack(Expense e, String actorUuid, String comment) {
         append(e, "HR", actorUuid, "HR_SENT_BACK",
-               e.getStatus(), e.getStatus(), e.getReviewState(), "HR_SENT_BACK", e.getAiRuleId(), comment);
+               e.getStatus(), e.getStatus(), e.getState(), ExpenseStateDeriver.KIND_JUSTIFICATION, e.getAiRuleId(), comment);
     }
 
     @Transactional
     public void recordHRReject(Expense e, String actorUuid, String reason) {
         append(e, "HR", actorUuid, "HR_REJECTED",
-               e.getStatus(), "DELETED", e.getReviewState(), null, e.getAiRuleId(), reason);
+               e.getStatus(), "DELETED", e.getState(), null, e.getAiRuleId(), reason);
     }
 
     @Transactional
@@ -67,7 +68,7 @@ public class ExpenseDecisionLogService {
     @Transactional
     public void recordAdminForceRevalidate(Expense e, String actorUuid) {
         append(e, "ADMIN", actorUuid, "ADMIN_FORCE_REVALIDATE",
-               e.getStatus(), e.getStatus(), e.getReviewState(), null, e.getAiRuleId(), null);
+               e.getStatus(), e.getStatus(), e.getState(), null, e.getAiRuleId(), null);
     }
 
     private void append(Expense e, String actorRole, String actorUuid, String action,

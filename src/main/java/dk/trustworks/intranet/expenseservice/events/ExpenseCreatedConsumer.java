@@ -164,7 +164,7 @@ public class ExpenseCreatedConsumer {
                     legacyReviewState = route.legacyReviewState();
                     primaryRuleId = route.primaryRuleId();
                 }
-                decisionLogs.recordAIRejection(managedExpense, legacyReviewState, primaryRuleId, result.reason());
+                decisionLogs.recordAIRejection(managedExpense, kind, primaryRuleId, result.reason());
                 managedExpense.setStatus(ExpenseService.STATUS_CREATED);
                 managedExpense.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
                 managedExpense.setAttentionOwner(owner);
