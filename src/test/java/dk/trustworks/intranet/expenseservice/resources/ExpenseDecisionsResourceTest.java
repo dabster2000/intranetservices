@@ -85,6 +85,15 @@ class ExpenseDecisionsResourceTest {
                 "AI_VALIDATED_REJECTED", "PENDING_HR", "R_MEAL_COST_PER_PERSON");
         String legacyRejected = seedDecision(day, "Legacy rejected", null,
                 "AI_VALIDATED_REJECTED", "PENDING_HR_REVIEW", "R_MEAL_COST_PER_PERSON");
+        // Phase 3A: new rows carry the unified attention_kind vocabulary.
+        String unifiedReceipt = seedDecision(day, "Unified receipt", null,
+                "AI_VALIDATED_REJECTED", "RECEIPT", "R_RECEIPT_READABLE");
+        String unifiedAmount = seedDecision(day, "Unified amount", null,
+                "AI_VALIDATED_REJECTED", "AMOUNT_MISMATCH", "R_AMOUNT_MISMATCH");
+        String unifiedJustification = seedDecision(day, "Unified justification", null,
+                "AI_VALIDATED_REJECTED", "JUSTIFICATION", "R_MEAL_COST_PER_PERSON");
+        String unifiedPolicy = seedDecision(day, "Unified policy", null,
+                "AI_VALIDATED_REJECTED", "POLICY", "R_MEAL_COST_PER_PERSON");
 
         given()
             .header("X-Requested-By", "00000000-0000-0000-0000-000000000001")
@@ -100,7 +109,11 @@ class ExpenseDecisionsResourceTest {
             .body("decisions.find { it.expenseUuid == '" + explain + "' }.outcome", is("EXPLAIN"))
             .body("decisions.find { it.expenseUuid == '" + legacyExplain + "' }.outcome", is("EXPLAIN"))
             .body("decisions.find { it.expenseUuid == '" + rejected + "' }.outcome", is("REJECTED"))
-            .body("decisions.find { it.expenseUuid == '" + legacyRejected + "' }.outcome", is("REJECTED"));
+            .body("decisions.find { it.expenseUuid == '" + legacyRejected + "' }.outcome", is("REJECTED"))
+            .body("decisions.find { it.expenseUuid == '" + unifiedReceipt + "' }.outcome", is("AUTO_FIX"))
+            .body("decisions.find { it.expenseUuid == '" + unifiedAmount + "' }.outcome", is("AUTO_FIX"))
+            .body("decisions.find { it.expenseUuid == '" + unifiedJustification + "' }.outcome", is("EXPLAIN"))
+            .body("decisions.find { it.expenseUuid == '" + unifiedPolicy + "' }.outcome", is("REJECTED"));
     }
 
     @Test

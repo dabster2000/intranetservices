@@ -133,7 +133,6 @@ public class ExpenseCreatedConsumer {
                     managedExpense.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
                     managedExpense.setAttentionOwner(ExpenseStateDeriver.OWNER_ACCOUNTING);
                     managedExpense.setAttentionKind(ExpenseStateDeriver.KIND_POLICY);
-                    managedExpense.setReviewState("PENDING_HR"); // vestigial dual-write
                     log.infof("Expense %s cleared by AI but routed to ACCOUNTING/POLICY (finance review).",
                             expense.getUuid());
                 } else {
@@ -142,34 +141,30 @@ public class ExpenseCreatedConsumer {
                     managedExpense.setState(ExpenseStateDeriver.APPROVED);
                     managedExpense.setAttentionOwner(null);
                     managedExpense.setAttentionKind(null);
-                    managedExpense.setReviewState(null); // vestigial
                     log.infof("Expense %s APPROVED by AI (outcome=%s). Reason: %s",
                             expense.getUuid(), result.outcome(), result.reason());
                 }
             }
             case ExpenseAIValidationService.AIResult.OUTCOME_BLOCK -> {
                 List<String> firedRuleIds = result.ruleIds() != null ? result.ruleIds() : List.of();
-                String owner, kind, legacyReviewState, primaryRuleId;
+                String owner, kind, primaryRuleId;
                 if (result.attentionOwner() != null) {
                     // AI pre-determined routing (e.g. AMOUNT_MISMATCH).
                     owner = result.attentionOwner();
                     kind = result.attentionKind();
-                    legacyReviewState = ExpenseStateDeriver.mapAttentionKindToLegacyReviewState(kind);
                     primaryRuleId = firedRuleIds.isEmpty() ? null : firedRuleIds.get(0);
                 } else {
                     ExpenseReviewRoutingService.RouteResult route =
                             router.route(firedRuleIds, managedExpense.getAiValidationCount());
                     owner = route.owner();
                     kind = route.kind();
-                    legacyReviewState = route.legacyReviewState();
                     primaryRuleId = route.primaryRuleId();
                 }
-                decisionLogs.recordAIRejection(managedExpense, legacyReviewState, primaryRuleId, result.reason());
+                decisionLogs.recordAIRejection(managedExpense, kind, primaryRuleId, result.reason());
                 managedExpense.setStatus(ExpenseService.STATUS_CREATED);
                 managedExpense.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
                 managedExpense.setAttentionOwner(owner);
                 managedExpense.setAttentionKind(kind);
-                managedExpense.setReviewState(legacyReviewState); // vestigial dual-write
                 managedExpense.setAiRuleId(primaryRuleId);
                 managedExpense.setAiRuleIdsJson(serializeRuleIds(firedRuleIds));
                 log.infof("Expense %s BLOCKED → NEEDS_ATTENTION %s/%s (rule=%s). Reason: %s",

@@ -106,8 +106,8 @@ public class ExpenseDecisionsService {
         Query q = em.createNativeQuery(
                 "SELECT " +
                 "  SUM(CASE WHEN action = 'AI_VALIDATED_APPROVED' THEN 1 ELSE 0 END), " +
-                "  SUM(CASE WHEN to_review_state IN ('NEEDS_FIX', 'NEEDS_JUSTIFICATION', 'HR_SENT_BACK', 'AWAITING_EMPLOYEE_ACTION') THEN 1 ELSE 0 END), " +
-                "  SUM(CASE WHEN to_review_state IN ('PENDING_HR', 'PENDING_HR_REVIEW') THEN 1 ELSE 0 END) " +
+                "  SUM(CASE WHEN to_review_state IN ('NEEDS_FIX', 'NEEDS_JUSTIFICATION', 'HR_SENT_BACK', 'AWAITING_EMPLOYEE_ACTION', 'RECEIPT', 'AMOUNT_MISMATCH', 'JUSTIFICATION') THEN 1 ELSE 0 END), " +
+                "  SUM(CASE WHEN to_review_state IN ('PENDING_HR', 'PENDING_HR_REVIEW', 'POLICY') THEN 1 ELSE 0 END) " +
                 "FROM expense_decision_log " +
                 "WHERE occurred_at >= :fromTs AND occurred_at < :toTs");
         q.setParameter("fromTs", from.atStartOfDay());
@@ -164,24 +164,29 @@ public class ExpenseDecisionsService {
     private static final String APPROVED_CONDITION =
             "l.action = 'AI_VALIDATED_APPROVED'";
     private static final String AUTO_FIX_CONDITION =
-            "l.to_review_state = 'NEEDS_FIX'";
+            "l.to_review_state IN ('NEEDS_FIX', 'RECEIPT', 'AMOUNT_MISMATCH')";
     private static final String EXPLAIN_CONDITION =
-            "l.to_review_state IN ('NEEDS_JUSTIFICATION', 'AWAITING_EMPLOYEE_ACTION')";
+            "l.to_review_state IN ('NEEDS_JUSTIFICATION', 'AWAITING_EMPLOYEE_ACTION', 'JUSTIFICATION')";
     private static final String REJECTED_CONDITION =
-            "l.to_review_state IN ('PENDING_HR', 'PENDING_HR_REVIEW')";
+            "l.to_review_state IN ('PENDING_HR', 'PENDING_HR_REVIEW', 'POLICY')";
     private static final String OTHER_CONDITION =
             "(l.action IS NULL OR l.action <> 'AI_VALIDATED_APPROVED') " +
             "AND (l.to_review_state IS NULL OR l.to_review_state NOT IN (" +
             "'NEEDS_FIX', 'NEEDS_JUSTIFICATION', 'AWAITING_EMPLOYEE_ACTION', " +
-            "'PENDING_HR', 'PENDING_HR_REVIEW'))";
+            "'PENDING_HR', 'PENDING_HR_REVIEW', " +
+            "'RECEIPT', 'AMOUNT_MISMATCH', 'JUSTIFICATION', 'POLICY'))";
 
     private static String mapOutcome(String action, String toReviewState) {
         if ("AI_VALIDATED_APPROVED".equals(action)) return "APPROVED";
-        if ("NEEDS_FIX".equals(toReviewState)) return "AUTO_FIX";
+        if ("NEEDS_FIX".equals(toReviewState)
+                || "RECEIPT".equals(toReviewState)
+                || "AMOUNT_MISMATCH".equals(toReviewState)) return "AUTO_FIX";
         if ("NEEDS_JUSTIFICATION".equals(toReviewState)
-                || "AWAITING_EMPLOYEE_ACTION".equals(toReviewState)) return "EXPLAIN";
+                || "AWAITING_EMPLOYEE_ACTION".equals(toReviewState)
+                || "JUSTIFICATION".equals(toReviewState)) return "EXPLAIN";
         if ("PENDING_HR".equals(toReviewState)
-                || "PENDING_HR_REVIEW".equals(toReviewState)) return "REJECTED";
+                || "PENDING_HR_REVIEW".equals(toReviewState)
+                || "POLICY".equals(toReviewState)) return "REJECTED";
         return "OTHER";
     }
 

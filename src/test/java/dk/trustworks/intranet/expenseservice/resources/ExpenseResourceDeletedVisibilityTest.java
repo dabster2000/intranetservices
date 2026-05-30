@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 @QuarkusTest
 class ExpenseResourceDeletedVisibilityTest {
 
-    private Expense seedExpense(String useruuid, String projectuuid, String status, String reviewState) {
+    private Expense seedExpense(String useruuid, String projectuuid, String status) {
         Expense e = new Expense();
         e.setUuid(UUID.randomUUID().toString());
         e.setUseruuid(useruuid);
@@ -31,7 +31,6 @@ class ExpenseResourceDeletedVisibilityTest {
         e.setDatecreated(LocalDate.of(2099, 5, 20));
         e.setDatemodified(LocalDate.of(2099, 5, 20));
         e.setStatus(status);
-        e.setReviewState(reviewState);
         QuarkusTransaction.requiringNew().run(e::persist);
         return e;
     }
@@ -41,8 +40,8 @@ class ExpenseResourceDeletedVisibilityTest {
     void listAndPeriodEndpointsExcludeDeletedRows() {
         String useruuid = "user-" + UUID.randomUUID();
         String projectuuid = "project-" + UUID.randomUUID();
-        Expense visible = seedExpense(useruuid, projectuuid, "CREATED", null);
-        Expense deleted = seedExpense(useruuid, projectuuid, "DELETED", "NEEDS_FIX");
+        Expense visible = seedExpense(useruuid, projectuuid, "CREATED");
+        Expense deleted = seedExpense(useruuid, projectuuid, "DELETED");
 
         given()
           .queryParam("limit", "20")
@@ -88,8 +87,8 @@ class ExpenseResourceDeletedVisibilityTest {
 
     @Test
     @TestSecurity(user = "writer", roles = {"expenses:write"})
-    void deleteClearsReviewState() {
-        Expense expense = seedExpense("user-" + UUID.randomUUID(), "", "CREATED", "NEEDS_FIX");
+    void deleteMovesToDeletedTerminalState() {
+        Expense expense = seedExpense("user-" + UUID.randomUUID(), "", "CREATED");
 
         given()
         .when()
@@ -100,6 +99,7 @@ class ExpenseResourceDeletedVisibilityTest {
         Expense after = QuarkusTransaction.requiringNew()
                 .call(() -> Expense.findById(expense.getUuid()));
         assertEquals("DELETED", after.getStatus());
-        assertNull(after.getReviewState());
+        assertEquals("DELETED", after.getState());
+        assertNull(after.getAttentionOwner());
     }
 }

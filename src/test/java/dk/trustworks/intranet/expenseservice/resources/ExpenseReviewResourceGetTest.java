@@ -17,11 +17,17 @@ import static org.hamcrest.Matchers.not;
 @QuarkusTest
 class ExpenseReviewResourceGetTest {
 
-    private String seedExpense(String reviewState, java.time.LocalDate expenseDate) {
-        return seedExpense(reviewState, expenseDate, "CREATED");
+    /**
+     * Seeds a NEEDS_ATTENTION row owned by {@code attentionOwner} (EMPLOYEE / ACCOUNTING).
+     * The review GET queue filters on the unified state/owner, so we seed those directly —
+     * the entity hook no longer derives them from the retired review_state column.
+     */
+    private String seedExpense(String attentionOwner, String attentionKind, java.time.LocalDate expenseDate) {
+        return seedExpense(attentionOwner, attentionKind, expenseDate, "CREATED");
     }
 
-    private String seedExpense(String reviewState, java.time.LocalDate expenseDate, String status) {
+    private String seedExpense(String attentionOwner, String attentionKind,
+                               java.time.LocalDate expenseDate, String status) {
         Expense e = new Expense();
         e.setUuid(java.util.UUID.randomUUID().toString());
         e.setUseruuid("u");
@@ -29,7 +35,9 @@ class ExpenseReviewResourceGetTest {
         e.setAccount("3585");
         e.setExpensedate(expenseDate);
         e.setStatus(status);
-        e.setReviewState(reviewState);
+        e.setState("NEEDS_ATTENTION");
+        e.setAttentionOwner(attentionOwner);
+        e.setAttentionKind(attentionKind);
         e.setAiValidationApproved(false);
         QuarkusTransaction.requiringNew().run(e::persist);
         return e.getUuid();
@@ -52,10 +60,10 @@ class ExpenseReviewResourceGetTest {
     @Test
     @TestSecurity(user = "accounting-user", roles = {"expenses:review"})
     void awaitingEmployeeQueueIncludesAllEmployeeActionStatesWithoutDefaultDateCutoff() {
-        String needsFix = seedExpense("NEEDS_FIX", java.time.LocalDate.of(2024, 1, 15));
-        String needsJustification = seedExpense("NEEDS_JUSTIFICATION", java.time.LocalDate.now());
-        String sentBack = seedExpense("HR_SENT_BACK", java.time.LocalDate.now());
-        String pending = seedExpense("PENDING_HR", java.time.LocalDate.now());
+        String needsFix = seedExpense("EMPLOYEE", "RECEIPT", java.time.LocalDate.of(2024, 1, 15));
+        String needsJustification = seedExpense("EMPLOYEE", "JUSTIFICATION", java.time.LocalDate.now());
+        String sentBack = seedExpense("EMPLOYEE", "JUSTIFICATION", java.time.LocalDate.now());
+        String pending = seedExpense("ACCOUNTING", "POLICY", java.time.LocalDate.now());
 
         given()
           .queryParam("state", "AWAITING_EMPLOYEE")
@@ -70,8 +78,8 @@ class ExpenseReviewResourceGetTest {
     @Test
     @TestSecurity(user = "accounting-user", roles = {"expenses:review"})
     void queuesExcludeDeletedRowsEvenWithActionableReviewState() {
-        String deleted = seedExpense("NEEDS_FIX", java.time.LocalDate.now(), "DELETED");
-        String visible = seedExpense("NEEDS_FIX", java.time.LocalDate.now(), "CREATED");
+        String deleted = seedExpense("EMPLOYEE", "RECEIPT", java.time.LocalDate.now(), "DELETED");
+        String visible = seedExpense("EMPLOYEE", "RECEIPT", java.time.LocalDate.now(), "CREATED");
 
         given()
           .queryParam("state", "AWAITING_EMPLOYEE")

@@ -6,7 +6,6 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,7 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code GET /expenses/user/{useruuid}}, and {@code GET /expenses/search/period}:
  * </p>
  * <ul>
- *   <li>All new review-workflow fields (reviewState, aiRuleId, hr*, etc.) are emitted.</li>
+ *   <li>The unified-state fields (state, attentionOwner, attentionKind, aiOutcome) and
+ *       {@code aiRuleId} are emitted.</li>
  *   <li>{@code aiRuleIdsJson} (raw column) is {@code @JsonIgnore} and NOT on the wire.</li>
  *   <li>{@code aiRuleIds} is a typed string array, parsed from the raw JSON column.</li>
  *   <li>Null / blank / malformed JSON degrades to an empty array (no API crash).</li>
@@ -48,21 +48,24 @@ class ExpenseSerializationTest {
     @Test
     void allReviewFieldsSerialize() throws Exception {
         Expense e = baseExpense();
-        e.setReviewState("NEEDS_JUSTIFICATION");
+        // Unified-state wire contract (Phase 3 source of truth).
+        e.setState("NEEDS_ATTENTION");
+        e.setAttentionOwner("EMPLOYEE");
+        e.setAttentionKind("JUSTIFICATION");
+        e.setAiOutcome("BLOCK");
         e.setAiRuleId("R_MEAL_COST_PER_PERSON");
         e.setAiRuleIdsJson("[\"R_MEAL_COST_PER_PERSON\",\"R_RECEIPT_QUALITY\"]");
         e.setEmployeeJustification("Client lunch");
-        e.setHrComment("OK");
-        e.setHrDecision("APPROVED");
-        e.setHrDecisionBy("hr-user-uuid");
-        e.setHrDecisionAt(LocalDateTime.of(2026, 5, 17, 12, 0, 0));
         e.setAiValidationCount(2);
         e.setVersion(7);
 
         String json = mapper().writeValueAsString(e);
         JsonNode node = mapper().readTree(json);
 
-        assertEquals("NEEDS_JUSTIFICATION", node.get("reviewState").asText());
+        assertEquals("NEEDS_ATTENTION", node.get("state").asText());
+        assertEquals("EMPLOYEE", node.get("attentionOwner").asText());
+        assertEquals("JUSTIFICATION", node.get("attentionKind").asText());
+        assertEquals("BLOCK", node.get("aiOutcome").asText());
         assertEquals("R_MEAL_COST_PER_PERSON", node.get("aiRuleId").asText());
 
         assertTrue(node.get("aiRuleIds").isArray(), "aiRuleIds must serialize as an array");
@@ -71,10 +74,6 @@ class ExpenseSerializationTest {
         assertEquals("R_RECEIPT_QUALITY", node.get("aiRuleIds").get(1).asText());
 
         assertEquals("Client lunch", node.get("employeeJustification").asText());
-        assertEquals("OK", node.get("hrComment").asText());
-        assertEquals("APPROVED", node.get("hrDecision").asText());
-        assertEquals("hr-user-uuid", node.get("hrDecisionBy").asText());
-        assertTrue(node.has("hrDecisionAt"), "hrDecisionAt must be present on the wire");
         assertEquals(2, node.get("aiValidationCount").asInt());
         assertEquals(7, node.get("version").asInt());
 

@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.expenseservice.batch;
 
 import dk.trustworks.intranet.expenseservice.model.Expense;
-import dk.trustworks.intranet.expenseservice.services.ExpenseService;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import jakarta.batch.api.chunk.ItemReader;
 import jakarta.batch.runtime.context.StepContext;
 import jakarta.enterprise.context.Dependent;
@@ -18,13 +18,13 @@ import java.util.stream.Collectors;
 
 /**
  * ItemReader for expense upload batch job.
- * Loads all VALIDATED expenses without an open review state and reads them one
- * by one for processing.
+ * Loads all APPROVED expenses and reads them one by one for processing.
  * Applies filters:
- * - Status = VALIDATED
- * - reviewState IS NULL — an expense parked in a Phase-4 review queue (e.g.
- *   PENDING_HR after the V356 backfill) must wait for Accounting approval
- *   before it is uploaded
+ * - state = APPROVED — the unified head state for "cleared for the e-conomic
+ *   pipeline". An expense parked in a review queue (NEEDS_ATTENTION) must wait
+ *   for its decision before it reaches APPROVED, so it is never picked up here.
+ *   (Pre-Phase-3 this was {@code status = VALIDATED AND reviewState IS NULL};
+ *   status=VALIDATED is equivalent to state=APPROVED.)
  * - Amount must be greater than 0
  * - Created more than 2 days ago (to avoid processing very recent submissions)
  */
@@ -44,22 +44,21 @@ public class ExpenseItemReader implements ItemReader {
     public void open(Serializable checkpoint) throws Exception {
         index = (checkpoint instanceof Integer) ? (Integer) checkpoint : 0;
 
-        // Load all VALIDATED expenses with filters
+        // Load all APPROVED expenses with filters
         LocalDate cutoffDate = LocalDate.now().minusDays(2);
 
-        expenses = Expense.<Expense>stream("status = ?1 AND reviewState IS NULL",
-                        ExpenseService.STATUS_VALIDATED)
+        expenses = Expense.<Expense>stream("state = ?1", ExpenseStateDeriver.APPROVED)
                 .filter(e -> e.getAmount() != null && e.getAmount() > 0)
                 .filter(e -> e.getDatecreated() != null && e.getDatecreated().isBefore(cutoffDate))
                 .collect(Collectors.toList());
 
         if (expenses.isEmpty()) {
-            log.info("No VALIDATED expenses found for processing");
+            log.info("No APPROVED expenses found for processing");
             expenses = new ArrayList<>();
             return;
         }
 
-        log.info("ExpenseItemReader opened: found " + expenses.size() + " validated expenses to process");
+        log.info("ExpenseItemReader opened: found " + expenses.size() + " approved expenses to process");
     }
 
     @Override

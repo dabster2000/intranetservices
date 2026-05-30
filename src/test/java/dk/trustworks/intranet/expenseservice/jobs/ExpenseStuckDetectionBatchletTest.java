@@ -23,7 +23,11 @@ class ExpenseStuckDetectionBatchletTest {
         e.setDatecreated(java.time.LocalDate.now().minusDays(10));
         e.setDatemodified(java.time.LocalDate.now().minusDays(10));
         e.setStatus("CREATED");
-        e.setReviewState("NEEDS_FIX");
+        // Seed the unified state directly — countStuck() queries state/attentionOwner,
+        // and the hook no longer derives NEEDS_ATTENTION from the legacy review_state.
+        e.setState("NEEDS_ATTENTION");
+        e.setAttentionOwner("EMPLOYEE");
+        e.setAttentionKind("RECEIPT");
         e.persist();
 
         long stuck = job.countStuck();
