@@ -94,6 +94,24 @@ public class ExpenseService {
         try {
             //save expense to db
             expense.setStatus(STATUS_CREATED);
+            // SECURITY: the server owns the workflow head, the AI verdict, and the decision
+            // metadata at creation. Never trust client-supplied values for these — clear them
+            // so a freshly-created CREATED expense derives a clean SUBMITTED state via the hook.
+            expense.setState(null);                 // hook derives SUBMITTED from CREATED + null legacy fields
+            expense.setAttentionOwner(null);
+            expense.setAttentionKind(null);
+            expense.setAiOutcome(null);
+            expense.setAiConfidence(null);
+            expense.setSoftFlags(null);
+            expense.setAiValidationApproved(null);
+            expense.setAiValidationReason(null);
+            expense.setReviewState(null);
+            expense.setHrDecision(null);
+            expense.setHrDecisionBy(null);
+            expense.setHrDecisionAt(null);
+            expense.setHrComment(null);
+            expense.setAiRuleId(null);
+            expense.setAiRuleIdsJson(null);
             expense.persist();
             log.info("Expense persisted with status CREATED: " + expense.getUuid());
             if (afterPersistBeforeValidation != null) {

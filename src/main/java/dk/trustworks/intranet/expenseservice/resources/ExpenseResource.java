@@ -182,6 +182,9 @@ public class ExpenseResource {
             return List.of();
         }
         String[] statuses = statusesParam.split(",");
+        if (statuses.length > 20) {
+            throw new BadRequestException("too many status values (max 20)");
+        }
         StringBuilder queryBuilder = new StringBuilder("status IN (");
         for (int i = 0; i < statuses.length; i++) {
             queryBuilder.append("?").append(i + 1);

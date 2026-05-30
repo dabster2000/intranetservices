@@ -144,19 +144,26 @@ public class Expense extends PanacheEntityBase {
     private Double extractedPerPersonDkk;
 
     // ---- Unified state model (Phase 0). Derived mirror; see ExpenseStateDeriver. ----
+    // SECURITY (H-1): READ_ONLY — these serialize OUT (GET responses) but are ignored on
+    // deserialize, so a client cannot inject a fake state / AI verdict via POST /expenses.
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "state")
     private String state;
 
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "attention_owner")
     private String attentionOwner;
 
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "attention_kind")
     private String attentionKind;
 
     // Unified AI tiers (Phase 1). Now populated, so serialized to the API.
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "ai_outcome")
     private String aiOutcome;
 
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @Column(name = "ai_confidence")
     private Double aiConfidence;
 
