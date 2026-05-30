@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.expenseservice.jobs;
 
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
@@ -15,14 +16,15 @@ public class ExpenseStuckDetectionBatchlet {
     @Transactional
     public void runNightly() {
         long stuck = countStuck();
-        LOG.infof("Expense stuck-detection: %d rows in NEEDS_FIX/NEEDS_JUSTIFICATION older than 7 days", stuck);
+        LOG.infof("Expense stuck-detection: %d employee-owned NEEDS_ATTENTION rows older than 7 days", stuck);
         if (stuck > 50) LOG.warnf("More than 50 stuck expenses — investigate employee engagement");
     }
 
     public long countStuck() {
         return Expense.count(
-            "reviewState in ?1 and datemodified < ?2",
-            java.util.List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION"),
+            "state = ?1 and attentionOwner = ?2 and datemodified < ?3",
+            ExpenseStateDeriver.NEEDS_ATTENTION,
+            ExpenseStateDeriver.OWNER_EMPLOYEE,
             java.time.LocalDate.now().minusDays(7));
     }
 }

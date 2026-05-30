@@ -59,7 +59,9 @@ class ExpenseCreatedConsumerRoutingTest {
         Expense refreshed = QuarkusTransaction.requiringNew()
                 .call(() -> Expense.findById(e.getUuid()));
         assertEquals("CREATED", refreshed.getStatus());
-        assertEquals("NEEDS_JUSTIFICATION", refreshed.getReviewState());
+        assertEquals("NEEDS_ATTENTION", refreshed.getState());
+        assertEquals("EMPLOYEE", refreshed.getAttentionOwner());
+        assertEquals("JUSTIFICATION", refreshed.getAttentionKind());
         assertEquals("R_MEAL_COST_PER_PERSON", refreshed.getAiRuleId());
         assertEquals(Boolean.FALSE, refreshed.getAiValidationApproved());
         assertEquals(1, refreshed.getAiValidationCount());
@@ -113,7 +115,9 @@ class ExpenseCreatedConsumerRoutingTest {
         Expense refreshed = QuarkusTransaction.requiringNew()
                 .call(() -> Expense.findById(e.getUuid()));
         assertEquals("CREATED", refreshed.getStatus());
-        assertEquals("PENDING_HR", refreshed.getReviewState());
+        assertEquals("NEEDS_ATTENTION", refreshed.getState());
+        assertEquals("ACCOUNTING", refreshed.getAttentionOwner());
+        assertEquals("POLICY", refreshed.getAttentionKind());
         assertEquals(Boolean.TRUE, refreshed.getAiValidationApproved());
     }
 }

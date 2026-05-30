@@ -20,16 +20,20 @@ class ExpenseFieldsTest {
         e.setDatecreated(java.time.LocalDate.now());
         e.setStatus("CREATED");
 
-        e.setReviewState("NEEDS_JUSTIFICATION");
+        // Unified state (Phase 3 source of truth) — written directly and preserved by the hook.
+        e.setState("NEEDS_ATTENTION");
+        e.setAttentionOwner("EMPLOYEE");
+        e.setAttentionKind("JUSTIFICATION");
         e.setAiRuleId("R_MEAL_COST_PER_PERSON");
         e.setAiRuleIdsJson("[\"R_MEAL_COST_PER_PERSON\"]");
         e.setEmployeeJustification("for the client");
-        e.setHrDecision(null);
         e.setAiValidationCount(1);
 
         e.persist();
         Expense round = Expense.findById(e.getUuid());
-        assertEquals("NEEDS_JUSTIFICATION", round.getReviewState());
+        assertEquals("NEEDS_ATTENTION", round.getState());
+        assertEquals("EMPLOYEE", round.getAttentionOwner());
+        assertEquals("JUSTIFICATION", round.getAttentionKind());
         assertEquals("R_MEAL_COST_PER_PERSON", round.getAiRuleId());
         assertEquals(1, round.getAiValidationCount());
         assertNotNull(round.getVersion());

@@ -9,7 +9,6 @@ import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 /**
  * The single source of expense override decisions (Phase 2). Both the single-decision
@@ -39,10 +38,6 @@ public class ExpenseReviewDecisionService {
         e.setState(ExpenseStateDeriver.APPROVED);   // authoritative head write
         e.setAttentionOwner(null);
         e.setAttentionKind(null);
-        e.setReviewState(null);                     // vestigial
-        e.setHrDecision("APPROVED");                // vestigial
-        e.setHrDecisionBy(actorUuid);
-        e.setHrDecisionAt(LocalDateTime.now());
         e.setDatemodified(LocalDate.now());
     }
 
@@ -55,11 +50,6 @@ public class ExpenseReviewDecisionService {
         e.setState(ExpenseStateDeriver.REJECTED);    // authoritative terminal (survives hr_decision drop)
         e.setAttentionOwner(null);
         e.setAttentionKind(null);
-        e.setReviewState(null);                      // vestigial
-        e.setHrComment(reason);
-        e.setHrDecision("REJECTED");                 // vestigial
-        e.setHrDecisionBy(actorUuid);
-        e.setHrDecisionAt(LocalDateTime.now());
         e.setDatemodified(LocalDate.now());
     }
 

@@ -36,6 +36,12 @@ public final class ExpenseStateDeriver {
 
     public record DerivedState(String state, String owner, String kind) {}
 
+    /**
+     * @deprecated Retained only as the documented V357 backfill reference (mirrors the
+     * migration SQL). No longer called at runtime after Phase 3A — the entity hook now
+     * derives brand-new rows from status alone via {@link #deriveFromStatus(String)}.
+     */
+    @Deprecated
     public static DerivedState derive(String status, String reviewState,
                                       Boolean aiValidationApproved, String hrDecision) {
         if (status == null) {

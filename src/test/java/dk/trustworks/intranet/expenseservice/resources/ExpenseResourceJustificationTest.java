@@ -21,7 +21,11 @@ class ExpenseResourceJustificationTest {
         e.setExpensedate(java.time.LocalDate.now());
         e.setDatecreated(java.time.LocalDate.now());
         e.setStatus("CREATED");
-        e.setReviewState("NEEDS_JUSTIFICATION");
+        // Employee-owned JUSTIFICATION item — seed unified state directly (hook no longer
+        // derives it from the legacy review_state).
+        e.setState("NEEDS_ATTENTION");
+        e.setAttentionOwner("EMPLOYEE");
+        e.setAttentionKind("JUSTIFICATION");
         e.setAiRuleId("R_MEAL_COST_PER_PERSON");
         io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(e::persist);
         return e.getUuid();
@@ -41,7 +45,9 @@ class ExpenseResourceJustificationTest {
 
         Expense after = io.quarkus.narayana.jta.QuarkusTransaction.requiringNew()
             .call(() -> Expense.findById(uuid));
-        assertEquals("PENDING_HR", after.getReviewState());
+        assertEquals("NEEDS_ATTENTION", after.getState());
+        assertEquals("ACCOUNTING", after.getAttentionOwner());
+        assertEquals("POLICY", after.getAttentionKind());
         assertEquals("Quarterly review with Customer X", after.getEmployeeJustification());
     }
 

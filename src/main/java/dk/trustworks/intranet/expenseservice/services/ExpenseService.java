@@ -97,7 +97,7 @@ public class ExpenseService {
             // SECURITY: the server owns the workflow head, the AI verdict, and the decision
             // metadata at creation. Never trust client-supplied values for these — clear them
             // so a freshly-created CREATED expense derives a clean SUBMITTED state via the hook.
-            expense.setState(null);                 // hook derives SUBMITTED from CREATED + null legacy fields
+            expense.setState(null);                 // hook derives SUBMITTED from CREATED
             expense.setAttentionOwner(null);
             expense.setAttentionKind(null);
             expense.setAiOutcome(null);
@@ -105,11 +105,6 @@ public class ExpenseService {
             expense.setSoftFlags(null);
             expense.setAiValidationApproved(null);
             expense.setAiValidationReason(null);
-            expense.setReviewState(null);
-            expense.setHrDecision(null);
-            expense.setHrDecisionBy(null);
-            expense.setHrDecisionAt(null);
-            expense.setHrComment(null);
             expense.setAiRuleId(null);
             expense.setAiRuleIdsJson(null);
             expense.persist();
@@ -371,9 +366,6 @@ public class ExpenseService {
                     derived.state(),
                     derived.owner(),
                     derived.kind());
-            if (STATUS_DELETED.equals(status)) {
-                Expense.update("reviewState = null WHERE uuid like ?1", expense.getUuid());
-            }
             log.infof("Updated expense uuid=%s -> status=%s, state=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
                     expense.getUuid(), status, derived.state(),
                     expense.getJournalnumber(), expense.getAccountingyear(), expense.getVouchernumber(),
@@ -511,7 +503,6 @@ public class ExpenseService {
         e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
         e.setAttentionOwner(null);
         e.setAttentionKind(null);
-        e.setReviewState(null);                      // vestigial
         e.setAiValidationApproved(null);
         e.setAiValidationReason(null);
         e.setAiOutcome(null);
@@ -542,7 +533,6 @@ public class ExpenseService {
         e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
         e.setAttentionOwner(null);
         e.setAttentionKind(null);
-        e.setReviewState(null);                      // vestigial
         e.setAiValidationApproved(null);
         e.setAiValidationReason(null);
         e.setAiRuleId(null);
