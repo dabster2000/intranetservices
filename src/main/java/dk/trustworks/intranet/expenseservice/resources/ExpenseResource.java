@@ -8,6 +8,7 @@ import dk.trustworks.intranet.expenseservice.dto.ExpenseDecisionLogEntryDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseJustificationDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.EconomicsService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseClassificationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
@@ -181,6 +182,9 @@ public class ExpenseResource {
             return List.of();
         }
         String[] statuses = statusesParam.split(",");
+        if (statuses.length > 20) {
+            throw new BadRequestException("too many status values (max 20)");
+        }
         StringBuilder queryBuilder = new StringBuilder("status IN (");
         for (int i = 0; i < statuses.length; i++) {
             queryBuilder.append("?").append(i + 1);
@@ -246,14 +250,21 @@ public class ExpenseResource {
         if (caller == null || !caller.equals(e.getUseruuid()))
             throw new ForbiddenException("not the expense owner");
 
-        if (!List.of("NEEDS_JUSTIFICATION", "HR_SENT_BACK").contains(e.getReviewState()))
-            throw new BadRequestException("justification requires NEEDS_JUSTIFICATION or HR_SENT_BACK");
+        if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState())
+                || !ExpenseStateDeriver.OWNER_EMPLOYEE.equals(e.getAttentionOwner())
+                || !ExpenseStateDeriver.KIND_JUSTIFICATION.equals(e.getAttentionKind())) {
+            throw new BadRequestException("justification requires an employee-owned JUSTIFICATION item");
+        }
 
-        // Log BEFORE mutating so fromReviewState is captured correctly
+        // Log BEFORE mutating so fromReviewState is captured correctly.
         logs.recordEmployeeJustification(e, caller, body.justification());
 
         e.setEmployeeJustification(body.justification());
-        e.setReviewState("PENDING_HR");
+        // Hand to accounting for a decision.
+        e.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
+        e.setAttentionOwner(ExpenseStateDeriver.OWNER_ACCOUNTING);
+        e.setAttentionKind(ExpenseStateDeriver.KIND_POLICY);
+        e.setReviewState("PENDING_HR");              // vestigial
         e.setDatemodified(java.time.LocalDate.now());
         return Response.noContent().build();
     }
@@ -300,11 +311,6 @@ public class ExpenseResource {
         if (expense.getExpensedate() != null) {
             updateQuery.append("expensedate = ?").append(params.size() + 1).append(", ");
             params.add(expense.getExpensedate());
-        }
-        // Allow HR/ADMIN to update status (for retry functionality)
-        if (expense.getStatus() != null) {
-            updateQuery.append("status = ?").append(params.size() + 1).append(", ");
-            params.add(expense.getStatus());
         }
 
         if (!updateQuery.isEmpty()) {
@@ -422,7 +428,10 @@ public class ExpenseResource {
             expense.setAccountingyear(null);
         }
         expense.setStatus(STATUS_DELETED);
-        expense.setReviewState(null);
+        expense.setState(ExpenseStateDeriver.DELETED);   // authoritative terminal (employee/e-conomic delete)
+        expense.setAttentionOwner(null);
+        expense.setAttentionKind(null);
+        expense.setReviewState(null);                    // vestigial
         expense.setDatemodified(LocalDate.now());
     }
 

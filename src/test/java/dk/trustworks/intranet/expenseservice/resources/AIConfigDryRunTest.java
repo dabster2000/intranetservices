@@ -36,7 +36,9 @@ class AIConfigDryRunTest {
         // Mock the consumer's validateExpense to return a rejection
         when(consumer.validateExpense(any(Expense.class))).thenReturn(
             new ExpenseAIValidationService.AIResult(false, "above 125 DKK/person",
-                java.util.List.of("R_MEAL_COST_PER_PERSON")));
+                java.util.List.of("R_MEAL_COST_PER_PERSON"),
+                ExpenseAIValidationService.AIResult.OUTCOME_BLOCK, null,
+                java.util.List.of(), null, null));
 
         given()
           .header("X-Requested-By", "admin")

@@ -18,7 +18,8 @@ public class AIConfigSnapshot {
 
     public record RuleView(String ruleId, String displayName, String description,
                            String severity, String resolutionType,
-                           int priority, boolean active) {}
+                           int priority, boolean active,
+                           String outcomeMode, Double confidenceThreshold) {}
 
     private static final class State {
         final List<RuleView> rulesByPriority;
@@ -47,7 +48,9 @@ public class AIConfigSnapshot {
             .sorted(Comparator.<AIRuleCatalog>comparingInt(r -> r.priority)
                               .thenComparing(r -> r.ruleId))
             .map(r -> new RuleView(r.ruleId, r.displayName, r.description,
-                                   r.severity, r.resolutionType, r.priority, r.active))
+                                   r.severity, r.resolutionType, r.priority, r.active,
+                                   r.outcomeMode != null ? r.outcomeMode : "BLOCK",
+                                   r.confidenceThreshold != null ? r.confidenceThreshold : 0.0))
             .toList();
 
         Map<String,String> params = new HashMap<>();

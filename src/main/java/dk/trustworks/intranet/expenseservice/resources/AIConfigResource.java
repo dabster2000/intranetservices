@@ -157,11 +157,15 @@ public class AIConfigResource {
         r.resolutionType = d.resolutionType();
         r.priority = d.priority();
         r.active = d.active();
+        r.outcomeMode = d.outcomeMode() != null ? d.outcomeMode() : "BLOCK";
+        r.confidenceThreshold = d.confidenceThreshold() != null ? d.confidenceThreshold() : 0.0;
     }
 
     private AIRuleDTO toDTO(AIRuleCatalog r) {
         return new AIRuleDTO(r.ruleId, r.displayName, r.description, r.severity,
             r.resolutionType, r.priority, r.active,
+            r.outcomeMode != null ? r.outcomeMode : "BLOCK",
+            r.confidenceThreshold != null ? r.confidenceThreshold : 0.0,
             r.updatedAt.atOffset(ZoneOffset.UTC), r.updatedBy);
     }
 
@@ -191,7 +195,7 @@ public class AIConfigResource {
             routing = "APPROVED";
         } else {
             var decision = router.route(firedRuleIds, e.getAiValidationCount());
-            routing = decision.reviewState();
+            routing = decision.legacyReviewState();
         }
 
         // extractedReceiptText is intentionally null in v1 — we'd need a separate call to extract;

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectReader;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewListItemDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.AIConfigSnapshot;
 import io.quarkus.panache.common.Sort;
 import jakarta.annotation.security.RolesAllowed;
@@ -50,53 +51,62 @@ public class ExpenseReviewResource {
     @GET
     @RolesAllowed({"expenses:review"})
     public List<ExpenseReviewListItemDTO> queue(
-            @QueryParam("state") String state,
+            @QueryParam("segment") String segment,
+            @QueryParam("state") String legacyState, // back-compat until Phase 2 re-points the BFF
             @QueryParam("fromDate") String fromDate,
             @QueryParam("toDate") String toDate) {
 
         LocalDate from = fromDate != null ? LocalDate.parse(fromDate) : null;
         LocalDate to = toDate != null ? LocalDate.parse(toDate) : null;
 
-        List<Expense> rows = switch (state == null ? "PENDING_HR" : state) {
-            case "PENDING_HR" -> listReviewQueue(
-                    List.of("PENDING_HR"),
-                    Sort.by("datemodified", Sort.Direction.Ascending),
-                    from, to);
-            case "AWAITING_EMPLOYEE" -> listReviewQueue(
-                    List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION", "HR_SENT_BACK"),
-                    Sort.by("datemodified", Sort.Direction.Ascending),
-                    from, to);
-            case "HR_SENT_BACK" -> listReviewQueue(
-                    List.of("HR_SENT_BACK"),
-                    Sort.by("datemodified", Sort.Direction.Descending),
-                    from, to);
-            case "STUCK" -> listStuckQueue(
-                    Sort.by("datemodified", Sort.Direction.Ascending),
-                    from, to);
+        // Forward param is `segment`; fall back to the legacy param so the current FE still works.
+        String seg = segment != null ? segment : legacyState;
+        if (seg == null) seg = "ACCOUNTING";
+        // Backward-compat: map the pre-Phase-1 review_state labels to the new segments.
+        switch (seg) {
+            case "PENDING_HR"        -> seg = "ACCOUNTING";
+            case "AWAITING_EMPLOYEE",
+                 "HR_SENT_BACK"      -> seg = "EMPLOYEE";
+            case "STUCK"             -> seg = "OVERDUE";
+            default -> { /* already a new segment or invalid */ }
+        }
+
+        List<Expense> rows = switch (seg) {
+            // Your decision: accounting-owned exceptions.
+            case "ACCOUNTING" -> listInbox(ExpenseStateDeriver.OWNER_ACCOUNTING, null, from, to);
+            // Waiting on employee: read-only context for accounting.
+            case "EMPLOYEE"   -> listInbox(ExpenseStateDeriver.OWNER_EMPLOYEE, null, from, to);
+            // Overdue: anything in the inbox older than 7 days (replaces "STUCK").
+            case "OVERDUE"    -> listInbox(null, LocalDate.now().minusDays(7), from, to);
+            // All open exceptions.
+            case "ALL"        -> listInbox(null, null, from, to);
             default -> throw new BadRequestException(
-                    "state must be PENDING_HR, AWAITING_EMPLOYEE, HR_SENT_BACK, or STUCK");
+                    "segment must be ACCOUNTING, EMPLOYEE, OVERDUE, or ALL");
         };
 
         return rows.stream().map(this::toDTO).toList();
     }
 
-    private List<Expense> listReviewQueue(List<String> states, Sort sort, LocalDate from, LocalDate to) {
-        StringBuilder query = new StringBuilder("reviewState in ?1 and status <> ?2");
+    /**
+     * One inbox query over {@code state=NEEDS_ATTENTION}. {@code owner} filters by
+     * attention_owner when non-null; {@code olderThan} adds a datemodified ceiling
+     * (overdue) when non-null. Always excludes DELETED defensively.
+     */
+    private List<Expense> listInbox(String owner, LocalDate olderThan, LocalDate from, LocalDate to) {
+        StringBuilder query = new StringBuilder("state = ?1 and status <> ?2");
         List<Object> params = new ArrayList<>();
-        params.add(states);
+        params.add(ExpenseStateDeriver.NEEDS_ATTENTION);
         params.add(STATUS_DELETED);
+        if (owner != null) {
+            query.append(" and attentionOwner = ?").append(params.size() + 1);
+            params.add(owner);
+        }
+        if (olderThan != null) {
+            query.append(" and datemodified < ?").append(params.size() + 1);
+            params.add(olderThan);
+        }
         appendExpenseDateFilters(query, params, from, to);
-        return Expense.list(query.toString(), sort, params.toArray());
-    }
-
-    private List<Expense> listStuckQueue(Sort sort, LocalDate from, LocalDate to) {
-        StringBuilder query = new StringBuilder("reviewState in ?1 and status <> ?2 and datemodified < ?3");
-        List<Object> params = new ArrayList<>();
-        params.add(List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION"));
-        params.add(STATUS_DELETED);
-        params.add(LocalDate.now().minusDays(7));
-        appendExpenseDateFilters(query, params, from, to);
-        return Expense.list(query.toString(), sort, params.toArray());
+        return Expense.list(query.toString(), Sort.by("datemodified", Sort.Direction.Ascending), params.toArray());
     }
 
     private void appendExpenseDateFilters(StringBuilder query, List<Object> params, LocalDate from, LocalDate to) {
