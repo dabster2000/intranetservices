@@ -6,6 +6,7 @@ import dk.trustworks.intranet.expenseservice.dto.ExpenseReviewSendBackDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseReviewDecisionService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
@@ -24,31 +25,15 @@ import java.time.LocalDateTime;
 public class ExpenseReviewDecisionResource {
 
     @Inject ExpenseDecisionLogService logs;
+    @Inject ExpenseReviewDecisionService decisions;
     @Inject RequestHeaderHolder header;
 
     @POST
     @Path("/approve")
     @RolesAllowed({"expenses:review"})
-    @Transactional
     public Response approve(@PathParam("uuid") String uuid,
                             @Valid ExpenseReviewApproveDTO body) {
-        Expense e = Expense.findById(uuid);
-        requireNeedsAttention(e);
-        logs.recordHRApprove(e, header.getUserUuid(), body.reason());
-        // Only advance CREATED → VALIDATED. Stranded rows whose status already moved past
-        // CREATED (e.g. VERIFIED_UNBOOKED) already live in e-conomic; downgrading would
-        // re-queue them and create a duplicate voucher.
-        if ("CREATED".equals(e.getStatus())) {
-            e.setStatus("VALIDATED");
-        }
-        e.setState(ExpenseStateDeriver.APPROVED);   // authoritative head write
-        e.setAttentionOwner(null);
-        e.setAttentionKind(null);
-        e.setReviewState(null);                     // vestigial
-        e.setHrDecision("APPROVED");                // vestigial
-        e.setHrDecisionBy(header.getUserUuid());
-        e.setHrDecisionAt(LocalDateTime.now());
-        e.setDatemodified(LocalDate.now());
+        decisions.approve(uuid, header.getUserUuid(), body.reason());
         return Response.noContent().build();
     }
 
@@ -77,30 +62,10 @@ public class ExpenseReviewDecisionResource {
     @POST
     @Path("/reject")
     @RolesAllowed({"expenses:review"})
-    @Transactional
     public Response reject(@PathParam("uuid") String uuid,
                            @Valid ExpenseReviewRejectDTO body) {
-        Expense e = Expense.findById(uuid);
-        requireNeedsAttention(e);
-        logs.recordHRReject(e, header.getUserUuid(), body.reason());
-        e.setStatus("DELETED");                      // excludes from pipelines (status<>DELETED)
-        e.setState(ExpenseStateDeriver.REJECTED);    // authoritative terminal (survives hr_decision drop)
-        e.setAttentionOwner(null);
-        e.setAttentionKind(null);
-        e.setReviewState(null);                      // vestigial
-        e.setHrComment(body.reason());
-        e.setHrDecision("REJECTED");                 // vestigial
-        e.setHrDecisionBy(header.getUserUuid());
-        e.setHrDecisionAt(LocalDateTime.now());
-        e.setDatemodified(LocalDate.now());
+        decisions.reject(uuid, header.getUserUuid(), body.reason());
         return Response.noContent().build();
-    }
-
-    /** approve and reject are allowed on any item awaiting a decision. */
-    private void requireNeedsAttention(Expense e) {
-        if (e == null) throw new NotFoundException();
-        if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState()))
-            throw new BadRequestException("decision requires state=NEEDS_ATTENTION");
     }
 
     /** send-back only makes sense when accounting currently owns the item. */
