@@ -17,7 +17,6 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 @Path("/expenses/{uuid}/review")
 @Produces(MediaType.APPLICATION_JSON)
@@ -50,11 +49,6 @@ public class ExpenseReviewDecisionResource {
         e.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
         e.setAttentionOwner(ExpenseStateDeriver.OWNER_EMPLOYEE);
         e.setAttentionKind(ExpenseStateDeriver.KIND_JUSTIFICATION);
-        e.setReviewState("HR_SENT_BACK");           // vestigial
-        e.setHrComment(body.comment());
-        e.setHrDecision("SENT_BACK");               // vestigial
-        e.setHrDecisionBy(header.getUserUuid());
-        e.setHrDecisionAt(LocalDateTime.now());
         e.setDatemodified(LocalDate.now());
         return Response.noContent().build();
     }

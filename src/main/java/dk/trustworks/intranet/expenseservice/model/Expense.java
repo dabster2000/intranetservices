@@ -212,8 +212,10 @@ public class Expense extends PanacheEntityBase {
             this.attentionOwner = d.owner();
             this.attentionKind = d.kind();
         } else if (this.state == null) {
-            ExpenseStateDeriver.DerivedState d =
-                    ExpenseStateDeriver.derive(status, reviewState, aiValidationApproved, hrDecision);
+            // Phase 3: review_state/hr_decision are no longer consulted (the legacy
+            // four-field tangle was retired). A brand-new row with no state yet derives
+            // from status alone; all pre-existing rows were backfilled in Phase 0.
+            ExpenseStateDeriver.DerivedState d = ExpenseStateDeriver.deriveFromStatus(status);
             this.state = d.state();
             this.attentionOwner = d.owner();
             this.attentionKind = d.kind();

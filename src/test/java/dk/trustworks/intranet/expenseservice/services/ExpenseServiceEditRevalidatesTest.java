@@ -18,7 +18,7 @@ class ExpenseServiceEditRevalidatesTest {
     @InjectMock EventBus bus;
 
     @Test
-    void editingClearsReviewStateAndPublishesEvent() {
+    void editingResetsToSubmittedAndPublishesEvent() {
         Expense e = new Expense();
         e.setUuid(java.util.UUID.randomUUID().toString());
         e.setUseruuid("user-1");
@@ -27,7 +27,10 @@ class ExpenseServiceEditRevalidatesTest {
         e.setExpensedate(java.time.LocalDate.now());
         e.setDatecreated(java.time.LocalDate.now());
         e.setStatus("CREATED");
-        e.setReviewState("NEEDS_FIX");
+        // Employee-owned NEEDS_ATTENTION drives the reopen path; seed unified state directly.
+        e.setState("NEEDS_ATTENTION");
+        e.setAttentionOwner("EMPLOYEE");
+        e.setAttentionKind("RECEIPT");
         e.setAiRuleId("R_RECEIPT_READABLE");
         io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(e::persist);
 
@@ -35,7 +38,8 @@ class ExpenseServiceEditRevalidatesTest {
 
         Expense after = io.quarkus.narayana.jta.QuarkusTransaction.requiringNew()
             .call(() -> Expense.findById(e.getUuid()));
-        assertNull(after.getReviewState());
+        assertEquals("SUBMITTED", after.getState());
+        assertNull(after.getAttentionOwner());
         assertNull(after.getAiValidationApproved());
         verify(bus).publish(eq("expense.validate"), eq(e.getUuid()));
     }

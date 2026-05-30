@@ -264,7 +264,6 @@ public class ExpenseResource {
         e.setState(ExpenseStateDeriver.NEEDS_ATTENTION);
         e.setAttentionOwner(ExpenseStateDeriver.OWNER_ACCOUNTING);
         e.setAttentionKind(ExpenseStateDeriver.KIND_POLICY);
-        e.setReviewState("PENDING_HR");              // vestigial
         e.setDatemodified(java.time.LocalDate.now());
         return Response.noContent().build();
     }
@@ -431,7 +430,6 @@ public class ExpenseResource {
         expense.setState(ExpenseStateDeriver.DELETED);   // authoritative terminal (employee/e-conomic delete)
         expense.setAttentionOwner(null);
         expense.setAttentionKind(null);
-        expense.setReviewState(null);                    // vestigial
         expense.setDatemodified(LocalDate.now());
     }
 
