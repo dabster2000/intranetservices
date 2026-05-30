@@ -42,12 +42,26 @@ public class ExpenseAIValidationService {
     public record ExtractedExpenseData(LocalDate date, Double amountInclTax, String issuerCompanyName, String issuerAddress, String expenseType) {}
     public record ValidationDecision(boolean approved, String reason) {}
     /**
-     * Richer result returned by {@link #validateWithExtractedText} so the
-     * consumer can route AI-rejected expenses into the correct review state
-     * based on which rule(s) fired. {@link ValidationDecision} is preserved for
-     * legacy callers (e.g. {@code validateWithContext}, {@code ExpenseService.validateExpenseReceipt}).
+     * Result of AI validation. Phase 1 adds the 3-outcome tier ({@code outcome}),
+     * {@code confidence}, {@code softFlags} (non-blocking finding labels), and an optional
+     * pre-set {@code attentionOwner}/{@code attentionKind} (used only for the AMOUNT_MISMATCH
+     * block, where routing is not rule-driven). {@code approved}/{@code reason}/{@code ruleIds}
+     * are retained for back-compat with {@code validateExpenseReceipt} and the dry-run.
      */
-    public record AIResult(boolean approved, String reason, java.util.List<String> ruleIds) {}
+    public record AIResult(boolean approved, String reason, java.util.List<String> ruleIds,
+                           String outcome, Double confidence, java.util.List<String> softFlags,
+                           String attentionOwner, String attentionKind) {
+
+        public static final String OUTCOME_APPROVE   = "APPROVE";
+        public static final String OUTCOME_SOFT_FLAG = "SOFT_FLAG";
+        public static final String OUTCOME_BLOCK     = "BLOCK";
+
+        /** Transient/processing error: leave AI fields NULL so the sweep retries. */
+        public static AIResult error(String reason) {
+            return new AIResult(false, reason, java.util.List.of(), null, null,
+                    java.util.List.of(), null, null);
+        }
+    }
 
     /**
      * Returns the policy-validation system prompt with the rule catalog substituted in
@@ -119,7 +133,7 @@ public class ExpenseAIValidationService {
 
             String result = description == null ? "" : description.trim();
             String resultPreview = result.length() > 500 ? result.substring(0, 500) + "..." : result;
-            log.infof("[AI-Extract] OpenAI comprehensive description preview=%s", resultPreview);
+            log.debugf("[AI-Extract] OpenAI comprehensive description preview=%s", resultPreview);
 
             // Validate response
             if (result.isEmpty() || result.equals("{}") || result.startsWith("Validation error:")) {
@@ -165,9 +179,9 @@ public class ExpenseAIValidationService {
                     contact.getCity() == null ? "" : contact.getCity())
                     : null;
 
-            log.infof("[AI-Validate] Start. expenseUuid=%s, useruuid=%s, user=%s",
-                    expense.getUuid(), expense.getUseruuid(), user != null ? user.getFullname() : "null");
-            log.infof("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, issuerAddressPresent=%s, type=%s",
+            log.infof("[AI-Validate] Start. expenseUuid=%s, useruuid=%s, userPresent=%s",
+                    expense.getUuid(), expense.getUseruuid(), user != null);
+            log.debugf("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, issuerAddressPresent=%s, type=%s",
                     String.valueOf(extracted.date()),
                     String.valueOf(extracted.amountInclTax()),
                     extracted.issuerCompanyName(),
@@ -340,7 +354,7 @@ public class ExpenseAIValidationService {
 
             if (extractedReceiptText == null || extractedReceiptText.isBlank()) {
                 log.warn("[AI-Validate] No extracted text provided");
-                return new AIResult(false, "Validation error: No receipt description available", java.util.List.of());
+                return AIResult.error("Validation error: No receipt description available");
             }
 
             LocalDate contextDate = deriveContextDate(expense);
@@ -386,11 +400,11 @@ public class ExpenseAIValidationService {
 
             String resp = aiResponse == null ? "" : aiResponse.trim();
             String respPreview = resp.length() > 500 ? resp.substring(0, 500) + "..." : resp;
-            log.infof("[AI-Validate] OpenAI raw response preview=%s", respPreview);
+            log.debugf("[AI-Validate] OpenAI raw response preview=%s", respPreview);
 
             if (resp.isEmpty() || resp.startsWith("Validation error:")) {
                 log.warnf("[AI-Validate] Invalid or empty AI response: %s", respPreview);
-                return new AIResult(false, "AI validation error: invalid OpenAI response", java.util.List.of());
+                return AIResult.error("AI validation error: invalid OpenAI response");
             }
 
             JsonNode root = safeParseJson(aiResponse);
@@ -407,7 +421,7 @@ public class ExpenseAIValidationService {
             Double extractedAmount = null;
             String extractedMerchant = null;
             if (extracted.isObject()) {
-                log.infof("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, addr=%s, type=%s",
+                log.debugf("[AI-Validate] Extracted -> date=%s, amount=%s, issuer=%s, addr=%s, type=%s",
                         extracted.path("date").isNull() ? "null" : extracted.path("date").asText(),
                         extracted.path("amountInclTax").isNull() ? "null" : extracted.path("amountInclTax").asText(),
                         extracted.path("issuerCompanyName").isNull() ? "null" : extracted.path("issuerCompanyName").asText(),
@@ -418,32 +432,28 @@ public class ExpenseAIValidationService {
                 JsonNode merchantNode = extracted.path("issuerCompanyName");
                 extractedMerchant = (!merchantNode.isNull() && merchantNode.isTextual()) ? merchantNode.asText() : null;
             }
-            // TODO: AI vision response does not currently expose extractedGuestCount in the structured
-            // output schema; persistence is a no-op for that column until the prompt/schema is extended.
-            persistExtractedFacts(expense.getUuid(), extractedAmount, null, extractedMerchant);
-
-            // Hard-gate: when the vision step returned no usable receipt data (all four core fields
-            // null/blank), the model often defaults to expenseType='other' and silently approves
-            // because no other rule applies. Override the verdict to R_RECEIPT_READABLE FAILED so the
-            // employee is asked to upload a readable photo.
-            if (isVisionExtractionEmpty(extracted)) {
-                log.warnf("[AI-Validate] Vision extraction empty for expense %s — overriding verdict to R_RECEIPT_READABLE FAILED",
-                        expense.getUuid());
-                return new AIResult(
-                        false,
-                        "We couldn't read the receipt. Please upload a clear photo showing the date, merchant, and total amount.",
-                        java.util.List.of("R_RECEIPT_READABLE")
-                );
+            // Parse guestCount (revives the per-person rule + Impact Preview).
+            Integer extractedGuestCount = null;
+            if (extracted.isObject()) {
+                JsonNode gcNode = extracted.path("guestCount");
+                extractedGuestCount = (!gcNode.isNull() && gcNode.isInt()) ? gcNode.asInt() : null;
             }
+            persistExtractedFacts(expense.getUuid(), extractedAmount, extractedGuestCount, extractedMerchant);
 
-            AIResult normalized = normalizePolicyVerdict(root, approved, userMessage, extractedMerchant);
-            log.infof("[AI-Validate] Final decision -> approved=%s, userMessage=%s, firedRuleIds=%s",
-                    normalized.approved(), normalized.reason(), normalized.ruleIds());
+            // Phase 1: the receipt is audit evidence, not the data source. An unreadable photo no
+            // longer hard-blocks; the real signal is extracted != entered amount (AMOUNT_MISMATCH),
+            // handled inside normalizePolicyVerdict via the outcome combiner.
+            AIResult normalized = normalizePolicyVerdict(
+                    root, approved, userMessage, extractedMerchant,
+                    extractedAmount, expense.getAmount());
+            log.infof("[AI-Validate] Final decision -> outcome=%s, approved=%s, confidence=%s, msg=%s, ruleIds=%s, soft=%s",
+                    normalized.outcome(), normalized.approved(), normalized.confidence(),
+                    normalized.reason(), normalized.ruleIds(), normalized.softFlags());
             return normalized;
 
         } catch (Exception e) {
             log.error("Failed to validate expense via OpenAI (text-based validation with web search)", e);
-            return new AIResult(false, "AI validation error: " + e.getMessage(), java.util.List.of());
+            return AIResult.error("AI validation error: " + e.getMessage());
         }
     }
 
@@ -683,12 +693,20 @@ public class ExpenseAIValidationService {
         expenseTypeEnum.add("transportation");
         expenseTypeEnum.add("other");
 
+        // extracted.guestCount: integer | null (revives R_MEAL_COST_PER_PERSON + Impact Preview)
+        ObjectNode guestCount = extractedProps.putObject("guestCount");
+        guestCount.put("description", "Number of guests/people the receipt covers, or null if not indicated.");
+        ArrayNode guestCountAnyOf = guestCount.putArray("anyOf");
+        guestCountAnyOf.addObject().put("type", "integer");
+        guestCountAnyOf.addObject().put("type", "null");
+
         ArrayNode extractedRequired = extracted.putArray("required");
         extractedRequired.add("date");
         extractedRequired.add("amountInclTax");
         extractedRequired.add("issuerCompanyName");
         extractedRequired.add("issuerAddress");
         extractedRequired.add("expenseType");
+        extractedRequired.add("guestCount");
 
         // rules: array of rule evaluation objects
         ObjectNode rules = props.putObject("rules");
@@ -736,11 +754,20 @@ public class ExpenseAIValidationService {
         ruleUserMsgAnyOf.addObject().put("type", "string");
         ruleUserMsgAnyOf.addObject().put("type", "null");
 
+        // rules[*].confidence: number 0..1 (drives the BLOCK/SOFT_FLAG tier in the combiner)
+        ObjectNode ruleConfidence = ruleProps.putObject("confidence");
+        ruleConfidence.put("type", "number");
+        ruleConfidence.put("description",
+                "Model confidence (0.0-1.0) that this rule's decision is correct.");
+        ruleConfidence.put("minimum", 0);
+        ruleConfidence.put("maximum", 1);
+
         ArrayNode ruleRequired = ruleItem.putArray("required");
         ruleRequired.add("id");
         ruleRequired.add("severity");
         ruleRequired.add("decision");
         ruleRequired.add("user_message");
+        ruleRequired.add("confidence");
 
         // top-level required fields
         ArrayNode required = schema.putArray("required");
@@ -771,21 +798,12 @@ public class ExpenseAIValidationService {
     AIResult normalizePolicyVerdict(JsonNode root,
                                     boolean approved,
                                     String userMessage,
-                                    String extractedMerchant) {
-        // Collect rule IDs that fired. These drive the routing decision in the
-        // consumer. Merchant allow-list suppression must apply consistently to
-        // explicit ruleIds, derived rules[], and final_rule_id.
-        java.util.List<String> firedRuleIds = new java.util.ArrayList<>();
+                                    String extractedMerchant,
+                                    Double extractedAmount,
+                                    Double enteredAmount) {
         java.util.Set<String> suppressedRuleIds = new java.util.LinkedHashSet<>();
-
-        JsonNode explicitRuleIds = root.path("ruleIds");
-        if (explicitRuleIds.isArray()) {
-            explicitRuleIds.forEach(n -> {
-                String id = textOrNull(n);
-                if (id == null) return;
-                addRuleUnlessSuppressed(id, extractedMerchant, firedRuleIds, suppressedRuleIds);
-            });
-        }
+        java.util.List<ExpenseAIOutcomeCombiner.FiredRule> fired = new java.util.ArrayList<>();
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
 
         JsonNode rulesNode = root.path("rules");
         if (rulesNode.isArray()) {
@@ -793,59 +811,118 @@ public class ExpenseAIValidationService {
                 String id       = r.path("id").asText(null);
                 String severity = r.path("severity").asText("");
                 String decision = r.path("decision").asText("");
-                log.infof("[AI-Validate] Rule %s severity=%s decision=%s msg=%s",
-                        id,
-                        severity,
-                        decision,
-                        r.path("user_message").asText());
-                if (id != null
-                        && "FAILED".equals(decision)
-                        && ("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))) {
-                    addRuleUnlessSuppressed(id, extractedMerchant, firedRuleIds, suppressedRuleIds);
+                double confidence = r.path("confidence").isNumber() ? r.path("confidence").asDouble() : 1.0;
+                if (id == null || !"FAILED".equals(decision)) continue;
+                if (!("REJECT".equals(severity) || "OVERRIDE_APPROVE".equals(severity))) continue;
+                if (isSuppressedAllowListRule(id, extractedMerchant)) {
+                    suppressedRuleIds.add(id);
+                    log.debugf("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
+                            id, extractedMerchant);
+                    continue;
                 }
+                if (!seen.add(id)) continue;
+                AIConfigSnapshot.RuleView view = config.getRule(id);
+                String mode = view != null && view.outcomeMode() != null
+                        ? view.outcomeMode() : "BLOCK";
+                double threshold = view != null && view.confidenceThreshold() != null
+                        ? view.confidenceThreshold() : 0.0;
+                // OVERRIDE_APPROVE rules approve the expense — never a blocking finding.
+                if ("OVERRIDE_APPROVE".equals(severity)) {
+                    log.infof("[AI-Validate] OVERRIDE_APPROVE rule fired: %s — approving.", id);
+                    return new AIResult(true,
+                            "Approved by override rule " + id, java.util.List.of(),
+                            AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
+                }
+                fired.add(new ExpenseAIOutcomeCombiner.FiredRule(id, confidence, mode, threshold));
             }
         }
 
-        // Defensive: include final_rule_id if it is not already represented,
-        // but do not re-add an allow-listed rule suppressed above.
-        String finalRuleId = textOrNull(root.path("final_rule_id"));
-        if (finalRuleId != null) {
-            addRuleUnlessSuppressed(finalRuleId, extractedMerchant, firedRuleIds, suppressedRuleIds);
+        if (!approved) {
+            JsonNode explicitRuleIds = root.path("ruleIds");
+            if (explicitRuleIds.isArray()) {
+                for (JsonNode n : explicitRuleIds) {
+                    String id = textOrNull(n);
+                    if (addFallbackRuleUnlessSuppressed(id, extractedMerchant,
+                            suppressedRuleIds, seen, fired)) {
+                        return new AIResult(true,
+                                "Approved by override rule " + id, java.util.List.of(),
+                                AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
+                    }
+                }
+            }
+
+            String finalRuleId = textOrNull(root.path("final_rule_id"));
+            if (addFallbackRuleUnlessSuppressed(finalRuleId, extractedMerchant,
+                    suppressedRuleIds, seen, fired)) {
+                return new AIResult(true,
+                        "Approved by override rule " + finalRuleId, java.util.List.of(),
+                        AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
+            }
         }
 
-        if (!approved && !suppressedRuleIds.isEmpty() && firedRuleIds.isEmpty()) {
-            log.infof("[AI-Validate] Approving because only allow-listed merchant rules fired: %s",
-                    suppressedRuleIds);
-            return new AIResult(
-                    true,
+        // Merchant allow-list: if only allow-listed rules fired, approve (preserves prior behavior).
+        if (fired.isEmpty() && !suppressedRuleIds.isEmpty()) {
+            log.infof("[AI-Validate] Approving — only allow-listed merchant rules fired: %s", suppressedRuleIds);
+            return new AIResult(true,
                     "Approved because the merchant is on the allow-list for the fired policy rule.",
-                    java.util.List.of()
-            );
+                    java.util.List.of(), AIResult.OUTCOME_APPROVE, null, java.util.List.of(), null, null);
         }
 
-        return new AIResult(approved, userMessage, java.util.List.copyOf(firedRuleIds));
-    }
+        double softPct = config.getDecimalParameter("amount_mismatch_soft_pct",
+                new java.math.BigDecimal("0.15")).doubleValue();
+        double blockPct = config.getDecimalParameter("amount_mismatch_block_pct",
+                new java.math.BigDecimal("0.40")).doubleValue();
+        ExpenseAIOutcomeCombiner.AmountSignal amountSignal =
+                ExpenseAIOutcomeCombiner.classifyAmount(extractedAmount, enteredAmount, softPct, blockPct);
 
-    private void addRuleUnlessSuppressed(String id,
-                                         String extractedMerchant,
-                                         java.util.List<String> firedRuleIds,
-                                         java.util.Set<String> suppressedRuleIds) {
-        if (id == null || id.isBlank()) return;
-        if (isSuppressedAllowListRule(id, extractedMerchant)) {
-            suppressedRuleIds.add(id);
-            log.infof("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
-                    id, extractedMerchant);
-            return;
+        ExpenseAIOutcomeCombiner.Outcome o = ExpenseAIOutcomeCombiner.combine(fired, amountSignal);
+
+        boolean isApproved = !AIResult.OUTCOME_BLOCK.equals(o.outcome());
+        if (!approved && AIResult.OUTCOME_APPROVE.equals(o.outcome())) {
+            o = new ExpenseAIOutcomeCombiner.Outcome(AIResult.OUTCOME_BLOCK, null,
+                    java.util.List.of(), java.util.List.of(), null, null);
+            isApproved = false;
         }
-        if (!firedRuleIds.contains(id)) {
-            firedRuleIds.add(id);
-        }
+        String reason = userMessage != null && !userMessage.isBlank()
+                ? userMessage
+                : (AIResult.OUTCOME_BLOCK.equals(o.outcome())
+                    ? "This expense needs attention before it can be processed."
+                    : "Approved.");
+        return new AIResult(isApproved, reason, o.blockingRuleIds(),
+                o.outcome(), o.confidence(), o.softFlags(), o.attentionOwner(), o.attentionKind());
     }
 
     private boolean isSuppressedAllowListRule(String id, String extractedMerchant) {
         return id != null
                 && id.startsWith("R_MERCHANT_ALLOW_")
                 && isAllowListed(id, extractedMerchant);
+    }
+
+    private boolean addFallbackRuleUnlessSuppressed(String id,
+                                                    String extractedMerchant,
+                                                    java.util.Set<String> suppressedRuleIds,
+                                                    java.util.Set<String> seen,
+                                                    java.util.List<ExpenseAIOutcomeCombiner.FiredRule> fired) {
+        if (id == null || id.isBlank()) return false;
+        if (isSuppressedAllowListRule(id, extractedMerchant)) {
+            suppressedRuleIds.add(id);
+            log.debugf("[AI-Validate] Suppressing allow-listed merchant verdict for rule=%s merchant=%s",
+                    id, extractedMerchant);
+            return false;
+        }
+        if (!seen.add(id)) return false;
+
+        AIConfigSnapshot.RuleView view = config.getRule(id);
+        if (view != null && "OVERRIDE_APPROVE".equals(view.severity())) {
+            log.infof("[AI-Validate] OVERRIDE_APPROVE fallback rule fired: %s — approving.", id);
+            return true;
+        }
+        String mode = view != null && view.outcomeMode() != null
+                ? view.outcomeMode() : "BLOCK";
+        double threshold = view != null && view.confidenceThreshold() != null
+                ? view.confidenceThreshold() : 0.0;
+        fired.add(new ExpenseAIOutcomeCombiner.FiredRule(id, 1.0, mode, threshold));
+        return false;
     }
 
     private static String textOrNull(JsonNode node) {
@@ -889,45 +966,8 @@ public class ExpenseAIValidationService {
         e.setExtractedGuestCount(guestCount);
         e.setExtractedMerchantName(merchant);
         e.persist();
-        log.infof("[AI-Persist] Persisted extracted facts for expense=%s amount=%s guestCount=%s merchant=%s",
+        log.debugf("[AI-Persist] Persisted extracted facts for expense=%s amount=%s guestCount=%s merchant=%s",
                 expenseUuid, amountDkk, guestCount, merchant);
-    }
-
-    /**
-     * True when the structured extraction has no {@code amountInclTax} —
-     * a real receipt nearly always shows a total, and an image with no
-     * extractable total is almost certainly not a receipt (random photo,
-     * blank page, etc.). Used to short-circuit the verdict to
-     * R_RECEIPT_READABLE FAILED so a non-receipt image cannot be silently
-     * approved.
-     *
-     * <p>{@code issuerCompanyName} is intentionally NOT gated — vision models
-     * sometimes fail to recognise the merchant (small shops with stylised
-     * logos, handwritten receipts, foreign-script storefronts) on otherwise
-     * perfectly clear photos, and a user has no path forward if their
-     * legitimate receipt can't pass a name-recognition test. {@code date} is
-     * also not gated (non-standard formats like Danish DD.MM.YY trailing a
-     * BON line) — date-dependent rules fall back to the expense record's
-     * own {@code expensedate}. {@code issuerAddress} is also not required —
-     * small/handwritten receipts often omit it. The remaining safety net is
-     * the R_RECEIPT_READABLE policy rule plus the
-     * {@code aiValidationCount} cap that escalates repeated failures to HR.
-     */
-    static boolean isVisionExtractionEmpty(JsonNode extracted) {
-        if (extracted == null || !extracted.isObject()) {
-            return true;
-        }
-        return isNullOrBlank(extracted.path("amountInclTax"));
-    }
-
-    private static boolean isNullOrBlank(JsonNode node) {
-        if (node == null || node.isNull() || node.isMissingNode()) {
-            return true;
-        }
-        if (node.isTextual()) {
-            return node.asText().isBlank();
-        }
-        return false;
     }
 
     /**
@@ -946,14 +986,16 @@ public class ExpenseAIValidationService {
             "amountInclTax": null,
             "issuerCompanyName": null,
             "issuerAddress": null,
-            "expenseType": "other"
+            "expenseType": "other",
+            "guestCount": null
           },
           "rules": [
             {
               "id": "R_FALLBACK",
               "severity": "REJECT",
               "decision": "FAILED",
-              "user_message": "AI validation failed internally; this expense must be reviewed manually."
+              "user_message": "AI validation failed internally; this expense must be reviewed manually.",
+              "confidence": 1.0
             }
           ]
         }

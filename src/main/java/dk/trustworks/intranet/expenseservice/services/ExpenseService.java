@@ -4,6 +4,7 @@ import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.events.ExpenseCreatedConsumer;
 import dk.trustworks.intranet.expenseservice.exceptions.ExpenseUploadException;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.AccountingYear;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Entries;
@@ -93,6 +94,24 @@ public class ExpenseService {
         try {
             //save expense to db
             expense.setStatus(STATUS_CREATED);
+            // SECURITY: the server owns the workflow head, the AI verdict, and the decision
+            // metadata at creation. Never trust client-supplied values for these — clear them
+            // so a freshly-created CREATED expense derives a clean SUBMITTED state via the hook.
+            expense.setState(null);                 // hook derives SUBMITTED from CREATED + null legacy fields
+            expense.setAttentionOwner(null);
+            expense.setAttentionKind(null);
+            expense.setAiOutcome(null);
+            expense.setAiConfidence(null);
+            expense.setSoftFlags(null);
+            expense.setAiValidationApproved(null);
+            expense.setAiValidationReason(null);
+            expense.setReviewState(null);
+            expense.setHrDecision(null);
+            expense.setHrDecisionBy(null);
+            expense.setHrDecisionAt(null);
+            expense.setHrComment(null);
+            expense.setAiRuleId(null);
+            expense.setAiRuleIdsJson(null);
             expense.persist();
             log.info("Expense persisted with status CREATED: " + expense.getUuid());
             if (afterPersistBeforeValidation != null) {
@@ -316,6 +335,14 @@ public class ExpenseService {
 
     public void updateStatus(Expense expense, String status, String errorMessage) {
         QuarkusTransaction.requiringNew().run(() -> {
+            // Phase 1: updateStatus only ever moves an expense through the e-conomic pipeline
+            // tail (PROCESSING…BOOKED, UP_FAILED/NO_FILE/NO_USER, DELETED). The unified state
+            // for those is derived purely from status — review_state/hr_decision are not read.
+            ExpenseStateDeriver.DerivedState derived = ExpenseStateDeriver.deriveFromStatus(status);
+
+            // Positional params: ?1–?10 = existing fields, ?11 = uuid (WHERE), ?12–?14 = derived state columns.
+            // ?12–?14 intentionally appear in SET before ?11 in WHERE; binding is by ordinal, not text order.
+            // If you add a field, do NOT renumber ?11–?14 without updating both the SQL and the argument order.
             Expense.update("status = ?1, " +
                     "vouchernumber = ?2, " +
                     "journalnumber = ?3, " +
@@ -325,7 +352,10 @@ public class ExpenseService {
                     "retryCount = ?7, " +
                     "lastRetryAt = ?8, " +
                     "isOrphaned = ?9, " +
-                    "accountantNotes = ?10 " +
+                    "accountantNotes = ?10, " +
+                    "state = ?12, " +
+                    "attentionOwner = ?13, " +
+                    "attentionKind = ?14 " +
                     "WHERE uuid like ?11 ",
                     status,
                     expense.getVouchernumber(),
@@ -337,12 +367,15 @@ public class ExpenseService {
                     expense.getLastRetryAt(),
                     expense.getIsOrphaned(),
                     expense.getAccountantNotes(),
-                    expense.getUuid());
+                    expense.getUuid(),
+                    derived.state(),
+                    derived.owner(),
+                    derived.kind());
             if (STATUS_DELETED.equals(status)) {
                 Expense.update("reviewState = null WHERE uuid like ?1", expense.getUuid());
             }
-            log.infof("Updated expense uuid=%s -> status=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
-                    expense.getUuid(), status,
+            log.infof("Updated expense uuid=%s -> status=%s, state=%s, triple=%s/%s-%d, retry=%d, orphaned=%s%s",
+                    expense.getUuid(), status, derived.state(),
                     expense.getJournalnumber(), expense.getAccountingyear(), expense.getVouchernumber(),
                     expense.getSafeRetryCount(), expense.getIsOrphaned(),
                     errorMessage != null ? ", error=" + errorMessage : "");
@@ -468,16 +501,22 @@ public class ExpenseService {
     public void maybeReopenForRevalidation(String uuid, String actorUuid) {
         Expense e = Expense.findById(uuid);
         if (e == null) return;
-        String state = e.getReviewState();
-        if (state == null
-            || !java.util.List.of("NEEDS_FIX", "NEEDS_JUSTIFICATION", "HR_SENT_BACK").contains(state)) {
+        // Only employee-owned exceptions reopen on edit.
+        if (!ExpenseStateDeriver.NEEDS_ATTENTION.equals(e.getState())
+            || !ExpenseStateDeriver.OWNER_EMPLOYEE.equals(e.getAttentionOwner())) {
             return;
         }
-        // Log the edit BEFORE mutating so fromReviewState captures the original value
+        // Log the edit BEFORE mutating so the audit captures the pre-reset values.
         logs.recordEmployeeEdit(e, actorUuid);
-        e.setReviewState(null);
+        e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setReviewState(null);                      // vestigial
         e.setAiValidationApproved(null);
         e.setAiValidationReason(null);
+        e.setAiOutcome(null);
+        e.setAiConfidence(null);
+        e.setSoftFlags(null);
         e.setDatemodified(java.time.LocalDate.now());
         eventBus.publish("expense.validate", uuid);
     }
@@ -499,13 +538,18 @@ public class ExpenseService {
         if (e == null) {
             throw new jakarta.ws.rs.NotFoundException("expense not found: " + uuid);
         }
-        // Log BEFORE mutating so fromReviewState + aiRuleId capture pre-reset values
         logs.recordAdminForceRevalidate(e, actorUuid);
-        e.setReviewState(null);
+        e.setState(ExpenseStateDeriver.SUBMITTED);   // authoritative head reset
+        e.setAttentionOwner(null);
+        e.setAttentionKind(null);
+        e.setReviewState(null);                      // vestigial
         e.setAiValidationApproved(null);
         e.setAiValidationReason(null);
         e.setAiRuleId(null);
         e.setAiRuleIdsJson(null);
+        e.setAiOutcome(null);
+        e.setAiConfidence(null);
+        e.setSoftFlags(null);
         e.setDatemodified(java.time.LocalDate.now());
         eventBus.publish("expense.validate", uuid);
     }

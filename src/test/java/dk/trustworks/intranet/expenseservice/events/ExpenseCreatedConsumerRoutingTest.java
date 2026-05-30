@@ -49,7 +49,9 @@ class ExpenseCreatedConsumerRoutingTest {
         var response = new ExpenseAIValidationService.AIResult(
                 false,
                 "above 125 DKK per person",
-                java.util.List.of("R_MEAL_COST_PER_PERSON"));
+                java.util.List.of("R_MEAL_COST_PER_PERSON"),
+                ExpenseAIValidationService.AIResult.OUTCOME_BLOCK, null,
+                java.util.List.of(), null, null);
         when(aiSvc.validateWithExtractedText(any(), any(), any(), any(), any(), any())).thenReturn(response);
 
         consumer.onExpenseCreated(e.getUuid());
@@ -102,7 +104,9 @@ class ExpenseCreatedConsumerRoutingTest {
         when(fileSvc.getFileById(any())).thenReturn(null);
         when(aiSvc.extractExpenseData(any())).thenReturn("placeholder text");
         when(aiSvc.validateWithExtractedText(any(), any(), any(), any(), any(), any()))
-                .thenReturn(new ExpenseAIValidationService.AIResult(true, "ok", java.util.List.of()));
+                .thenReturn(new ExpenseAIValidationService.AIResult(true, "ok", java.util.List.of(),
+                        ExpenseAIValidationService.AIResult.OUTCOME_APPROVE, null,
+                        java.util.List.of(), null, null));
 
         consumer.onExpenseCreated(e.getUuid());
 

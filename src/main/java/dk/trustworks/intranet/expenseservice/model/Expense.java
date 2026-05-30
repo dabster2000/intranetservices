@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.UUID;
 
 @Data
+@lombok.EqualsAndHashCode(of = "uuid", callSuper = false)
 @Entity
 @Table(name = "expenses")
 public class Expense extends PanacheEntityBase {
@@ -142,6 +143,38 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "extracted_per_person_dkk", insertable = false, updatable = false)
     private Double extractedPerPersonDkk;
 
+    // ---- Unified state model (Phase 0). Derived mirror; see ExpenseStateDeriver. ----
+    // SECURITY (H-1): READ_ONLY — these serialize OUT (GET responses) but are ignored on
+    // deserialize, so a client cannot inject a fake state / AI verdict via POST /expenses.
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "state")
+    private String state;
+
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "attention_owner")
+    private String attentionOwner;
+
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "attention_kind")
+    private String attentionKind;
+
+    // Unified AI tiers (Phase 1). Now populated, so serialized to the API.
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "ai_outcome")
+    private String aiOutcome;
+
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    @Column(name = "ai_confidence")
+    private Double aiConfidence;
+
+    /**
+     * Raw JSON array of non-blocking AI findings. Write-only on the entity (set by the
+     * AI service); the parsed list is exposed read-only via {@link #getSoftFlagsList()}.
+     */
+    @JsonIgnore
+    @Column(name = "soft_flags", columnDefinition = "json")
+    private String softFlags;
+
     @jakarta.persistence.Version
     @Column(name = "version", nullable = false)
     private Integer version = 0;
@@ -154,6 +187,38 @@ public class Expense extends PanacheEntityBase {
 
     public boolean isPaidOut() {
         return paidOut != null;
+    }
+
+    /**
+     * Phase 1: keep the unified {@code state} correct on every write WITHOUT clobbering a
+     * directly-written head/terminal value.
+     *
+     * <ul>
+     *   <li><b>Tail</b> ({@link ExpenseStateDeriver#isStatusDerivedState}: the e-conomic
+     *       pipeline statuses + the VALIDATED bridge): {@code state} is derived from
+     *       {@code status} — the e-conomic pipeline owns it.</li>
+     *   <li><b>Head/terminal</b> (CREATED, DELETED, null, unknown): {@code state} is
+     *       authoritative — the AI/routing/decision code writes it directly and the hook
+     *       preserves it. A fresh row with no {@code state} yet falls back to the full
+     *       legacy deriver once (covers brand-new inserts + any legacy path).</li>
+     * </ul>
+     */
+    @PrePersist
+    @PreUpdate
+    void syncDerivedState() {
+        if (ExpenseStateDeriver.isStatusDerivedState(status)) {
+            ExpenseStateDeriver.DerivedState d = ExpenseStateDeriver.deriveFromStatus(status);
+            this.state = d.state();
+            this.attentionOwner = d.owner();
+            this.attentionKind = d.kind();
+        } else if (this.state == null) {
+            ExpenseStateDeriver.DerivedState d =
+                    ExpenseStateDeriver.derive(status, reviewState, aiValidationApproved, hrDecision);
+            this.state = d.state();
+            this.attentionOwner = d.owner();
+            this.attentionKind = d.kind();
+        }
+        // else: head/terminal with an authoritative state already set → preserve.
     }
 
     @Transient
@@ -174,6 +239,28 @@ public class Expense extends PanacheEntityBase {
         }
         try {
             return AI_RULE_IDS_READER.readValue(aiRuleIdsJson);
+        } catch (JsonProcessingException ex) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static final ObjectReader SOFT_FLAGS_READER =
+            new ObjectMapper().readerForListOf(String.class);
+
+    /**
+     * Parsed soft-flag finding labels (non-blocking AI concerns) for optional accounting
+     * spot-check. The raw {@code soft_flags} column holds a JSON array of label strings.
+     * Empty list on null/malformed JSON so one bad row never crashes the API. Mirrors
+     * {@link #getAiRuleIds()}.
+     */
+    @Transient
+    @JsonProperty("softFlags")
+    public List<String> getSoftFlagsList() {
+        if (softFlags == null || softFlags.isBlank()) {
+            return Collections.emptyList();
+        }
+        try {
+            return SOFT_FLAGS_READER.readValue(softFlags);
         } catch (JsonProcessingException ex) {
             return Collections.emptyList();
         }
