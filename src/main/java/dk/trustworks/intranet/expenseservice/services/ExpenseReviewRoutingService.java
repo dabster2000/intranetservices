@@ -11,10 +11,9 @@ public class ExpenseReviewRoutingService {
 
     /**
      * Phase 1 routing result for an AI BLOCK. {@code state} is always NEEDS_ATTENTION when
-     * routing; this carries the owner/kind (the new authoritative head attributes), the legacy
-     * {@code review_state} (kept for the vestigial dual-write + audit log), and the primary rule.
+     * routing; this carries the owner/kind (the new authoritative head attributes) and the primary rule.
      */
-    public record RouteResult(String owner, String kind, String legacyReviewState, String primaryRuleId) {}
+    public record RouteResult(String owner, String kind, String primaryRuleId) {}
 
     @Inject AIConfigSnapshot config;
 
@@ -44,15 +43,13 @@ public class ExpenseReviewRoutingService {
         }
         if (!autoFixes.isEmpty()) {
             String ruleId = autoFixes.get(0).ruleId();
-            return new RouteResult(ExpenseStateDeriver.OWNER_EMPLOYEE, ExpenseStateDeriver.KIND_RECEIPT,
-                    "NEEDS_FIX", ruleId);
+            return new RouteResult(ExpenseStateDeriver.OWNER_EMPLOYEE, ExpenseStateDeriver.KIND_RECEIPT, ruleId);
         }
         // No matching rules → defensive default (employee justification).
         return justification(null);
     }
 
     private RouteResult justification(String ruleId) {
-        return new RouteResult(ExpenseStateDeriver.OWNER_EMPLOYEE, ExpenseStateDeriver.KIND_JUSTIFICATION,
-                "NEEDS_JUSTIFICATION", ruleId);
+        return new RouteResult(ExpenseStateDeriver.OWNER_EMPLOYEE, ExpenseStateDeriver.KIND_JUSTIFICATION, ruleId);
     }
 }
