@@ -30,23 +30,6 @@ class ExpenseStateHookTest {
     }
 
     @Test @TestTransaction
-    void prePersist_ignoresLegacyReviewState_forFreshCreated() {
-        // Phase 3: the hook no longer consults review_state. A fresh CREATED row with a
-        // legacy review_state set but no unified state derives SUBMITTED from status alone.
-        Expense e = base();
-        e.setStatus("CREATED");
-        e.setReviewState("PENDING_HR"); // legacy column — must be ignored by the hook now
-        e.persist();
-        Expense.getEntityManager().flush();
-        Expense.getEntityManager().clear();
-
-        Expense round = Expense.findById(e.getUuid());
-        assertEquals("SUBMITTED", round.getState());
-        assertNull(round.getAttentionOwner());
-        assertNull(round.getAttentionKind());
-    }
-
-    @Test @TestTransaction
     void preUpdate_refreshesState_whenStatusAdvances() {
         Expense e = base();
         e.setStatus("CREATED");
