@@ -195,7 +195,7 @@ public class AIConfigResource {
             routing = "APPROVED";
         } else {
             var decision = router.route(firedRuleIds, e.getAiValidationCount());
-            routing = decision.legacyReviewState();
+            routing = decision.kind();
         }
 
         // extractedReceiptText is intentionally null in v1 — we'd need a separate call to extract;

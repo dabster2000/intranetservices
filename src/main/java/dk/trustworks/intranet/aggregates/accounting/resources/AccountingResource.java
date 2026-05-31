@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailability
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.dto.DateAccountCategoriesDTO;
 import dk.trustworks.intranet.dto.ExpenseFile;
+import dk.trustworks.intranet.expenseservice.dto.CreateExpenseDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.model.UserAccountDTO;
@@ -1310,7 +1311,21 @@ public class AccountingResource {
     @RolesAllowed({"accounting:write"})
     public void save(Expense expense) throws IOException, InterruptedException {
         if(expense.getUseruuid().equals("173ee0b6-4ee5-11e7-b114-b2f933d5fe66")) return;
-        expenseAPI.saveExpense(expense);
+        // saveExpense now binds CreateExpenseDTO; map the client-writable fields across.
+        CreateExpenseDTO dto = new CreateExpenseDTO();
+        dto.setUseruuid(expense.getUseruuid());
+        dto.setAmount(expense.getAmount());
+        dto.setAccount(expense.getAccount());
+        dto.setAccountname(expense.getAccountname());
+        dto.setDescription(expense.getDescription());
+        dto.setAccountantNotes(expense.getAccountantNotes());
+        dto.setProjectuuid(expense.getProjectuuid());
+        dto.setDatecreated(expense.getDatecreated());
+        dto.setExpensedate(expense.getExpensedate());
+        dto.setCustomerexpense(expense.isCustomerexpense());
+        dto.setExpensefile(expense.getExpensefile());
+        dto.setClassification(expense.getClassification());
+        expenseAPI.saveExpense(dto);
     }
 
     @PUT

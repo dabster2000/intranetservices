@@ -34,7 +34,6 @@ class ExpenseReviewRoutingServiceTest {
         var r = svc.route(List.of("R_DATE_MISMATCH"), 0);
         assertEquals(ExpenseStateDeriver.OWNER_EMPLOYEE, r.owner());
         assertEquals(ExpenseStateDeriver.KIND_RECEIPT, r.kind());
-        assertEquals("NEEDS_FIX", r.legacyReviewState());
         assertEquals("R_DATE_MISMATCH", r.primaryRuleId());
     }
 
@@ -43,7 +42,6 @@ class ExpenseReviewRoutingServiceTest {
         var r = svc.route(List.of("R_OFFICE_FOOD_DRINK"), 0);
         assertEquals(ExpenseStateDeriver.OWNER_EMPLOYEE, r.owner());
         assertEquals(ExpenseStateDeriver.KIND_JUSTIFICATION, r.kind());
-        assertEquals("NEEDS_JUSTIFICATION", r.legacyReviewState());
         assertEquals("R_OFFICE_FOOD_DRINK", r.primaryRuleId());
     }
 
@@ -51,7 +49,6 @@ class ExpenseReviewRoutingServiceTest {
         var svc = routerWith(rule("R_DATE_MISMATCH", "AUTO_FIX", 80));
         var r = svc.route(List.of("R_DATE_MISMATCH"), 3); // at cap
         assertEquals(ExpenseStateDeriver.KIND_JUSTIFICATION, r.kind());
-        assertEquals("NEEDS_JUSTIFICATION", r.legacyReviewState());
     }
 
     @Test void noMatchingRules_defaultsToJustification_nullRule() {
@@ -59,7 +56,6 @@ class ExpenseReviewRoutingServiceTest {
         var r = svc.route(List.of("R_UNKNOWN"), 0);
         assertEquals(ExpenseStateDeriver.OWNER_EMPLOYEE, r.owner());
         assertEquals(ExpenseStateDeriver.KIND_JUSTIFICATION, r.kind());
-        assertEquals("NEEDS_JUSTIFICATION", r.legacyReviewState());
         assertNull(r.primaryRuleId());
     }
 
@@ -72,7 +68,6 @@ class ExpenseReviewRoutingServiceTest {
         var r = svc.route(List.of("R_DATE_MISMATCH", "R_OFFICE_FOOD_DRINK"), 0);
         assertEquals(ExpenseStateDeriver.OWNER_EMPLOYEE, r.owner());
         assertEquals(ExpenseStateDeriver.KIND_JUSTIFICATION, r.kind());
-        assertEquals("NEEDS_JUSTIFICATION", r.legacyReviewState());
         assertEquals("R_OFFICE_FOOD_DRINK", r.primaryRuleId());
     }
 }
