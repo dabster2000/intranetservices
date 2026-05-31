@@ -102,9 +102,6 @@ public class Expense extends PanacheEntityBase {
     @Column(name = "is_orphaned")
     private Boolean isOrphaned = false;
 
-    @Column(name = "review_state")
-    private String reviewState;
-
     @Column(name = "ai_rule_id")
     private String aiRuleId;
 
@@ -114,18 +111,6 @@ public class Expense extends PanacheEntityBase {
 
     @Column(name = "employee_justification")
     private String employeeJustification;
-
-    @Column(name = "hr_decision")
-    private String hrDecision;
-
-    @Column(name = "hr_decision_by")
-    private String hrDecisionBy;
-
-    @Column(name = "hr_decision_at")
-    private java.time.LocalDateTime hrDecisionAt;
-
-    @Column(name = "hr_comment")
-    private String hrComment;
 
     @Column(name = "ai_validation_count", nullable = false)
     private int aiValidationCount = 0;
