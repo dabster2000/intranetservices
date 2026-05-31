@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.users.services.UserService;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.dto.KeyValueDTO;
+import dk.trustworks.intranet.expenseservice.dto.CreateExpenseDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseDecisionLogEntryDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseJustificationDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
@@ -229,8 +230,24 @@ public class ExpenseResource {
     @POST
     @RolesAllowed({"expenses:write"})
     @Transactional
-    public Response saveExpense(@Valid Expense expense) throws IOException {
+    public Response saveExpense(@Valid CreateExpenseDTO dto) throws IOException {
         log.info("ExpenseResource.saveExpense");
+        // Map the client-writable request DTO onto a fresh entity. Server-managed fields
+        // (status/state/AI verdict/voucher triple/version/…) are absent from the DTO, so
+        // they are structurally unbindable; processExpense still owns the workflow head.
+        Expense expense = new Expense();
+        expense.setUseruuid(dto.getUseruuid());
+        expense.setAmount(dto.getAmount());
+        expense.setAccount(dto.getAccount());
+        expense.setAccountname(dto.getAccountname());
+        if (dto.getDescription() != null) expense.setDescription(dto.getDescription());
+        expense.setAccountantNotes(dto.getAccountantNotes());
+        if (dto.getProjectuuid() != null) expense.setProjectuuid(dto.getProjectuuid());
+        if (dto.getDatecreated() != null) expense.setDatecreated(dto.getDatecreated());
+        expense.setExpensedate(dto.getExpensedate());
+        expense.setCustomerexpense(dto.isCustomerexpense());
+        expense.setExpensefile(dto.getExpensefile());
+        expense.setClassification(dto.getClassification());
         log.info("expense = " + expense);
         classificationService.applyResolvedAccount(expense);
         expenseService.processExpense(expense, () -> classificationService.persistSubmittedClassification(expense));
