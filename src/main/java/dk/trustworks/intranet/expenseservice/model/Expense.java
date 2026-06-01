@@ -214,6 +214,18 @@ public class Expense extends PanacheEntityBase {
         return datecreated.isBefore(LocalDate.now());
     }
 
+    @Transient
+    @JsonProperty("canDelete")
+    public boolean isCanDelete() {
+        return ExpenseDeletePolicy.canDelete(this);
+    }
+
+    @Transient
+    @JsonProperty("deleteBlockedReason")
+    public String getDeleteBlockedReason() {
+        return ExpenseDeletePolicy.blockedReason(this);
+    }
+
     private static final ObjectReader AI_RULE_IDS_READER =
             new ObjectMapper().readerForListOf(String.class);
 

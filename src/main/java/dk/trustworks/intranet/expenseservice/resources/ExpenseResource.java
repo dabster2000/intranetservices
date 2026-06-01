@@ -8,9 +8,9 @@ import dk.trustworks.intranet.expenseservice.dto.CreateExpenseDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseDecisionLogEntryDTO;
 import dk.trustworks.intranet.expenseservice.dto.ExpenseJustificationDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import dk.trustworks.intranet.expenseservice.model.ExpenseDeletePolicy;
 import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
-import dk.trustworks.intranet.expenseservice.services.EconomicsService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseClassificationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
@@ -56,9 +56,6 @@ public class ExpenseResource {
 
     @Inject
     EntityManager em;
-
-    @Inject
-    EconomicsService economicsService;
 
     @Inject
     ExpenseDecisionLogService logs;
@@ -369,80 +366,27 @@ public class ExpenseResource {
             throw new WebApplicationException("Expense not found", 404);
         }
 
-        // Check if expense has voucher in e-conomic (vouchernumber > 0)
-        if (expense.getVouchernumber() > 0) {
-            log.infof("Expense %s has voucher reference: journal=%d, voucher=%d, year=%s, status=%s",
-                    uuid, expense.getJournalnumber(), expense.getVouchernumber(), expense.getAccountingyear(), expense.getStatus());
-
-            // Prevent deletion of booked vouchers
-            if ("VERIFIED_BOOKED".equals(expense.getStatus())) {
-                log.errorf("Cannot delete expense %s: voucher has been booked to ledger", uuid);
-                throw new WebApplicationException("Cannot delete booked expense - voucher has been posted to ledger", 400);
-            }
-
-            // Delete voucher from e-conomic
-            try {
-                log.infof("Deleting voucher from e-conomic for expense %s", uuid);
-                economicsService.deleteVoucher(expense);
-
-                // Clear voucher references after successful deletion
-                log.infof("Clearing voucher references for expense %s", uuid);
-                markDeleted(expense, true);
-
-                // Verify database update
-                Expense verifyExpense = Expense.findById(uuid);
-                log.infof("Verification: expense %s status=%s (after successful e-conomic delete)",
-                    uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
-
-            } catch (IllegalArgumentException e) {
-                // Missing voucher references - shouldn't happen but handle gracefully
-                log.warnf(e, "Expense %s has vouchernumber but missing other references", uuid);
-                // Proceed with local soft delete
-                markDeleted(expense, false);
-
-                // Verify database update
-                Expense verifyExpense = Expense.findById(uuid);
-                log.infof("Verification: expense %s status=%s (after IllegalArgumentException)",
-                    uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
-
-            } catch (Exception e) {
-                // Check if it's a 404 (voucher not found) - auto-reconcile
-                String errorMsg = e.getMessage();
-                if (errorMsg != null && errorMsg.contains("404")) {
-                    log.warnf("Voucher not found in e-conomic (404) for expense %s - auto-reconciling by soft deleting locally", uuid);
-                    // Clear voucher references and soft delete
-                    markDeleted(expense, true);
-
-                    // Verify database update
-                    Expense verifyExpense = Expense.findById(uuid);
-                    log.infof("Verification: expense %s status=%s (after 404 auto-reconcile)",
-                        uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
-                } else {
-                    // Other errors - rethrow
-                    log.errorf(e, "Failed to delete voucher from e-conomic for expense %s", uuid);
-                    throw new WebApplicationException("Failed to delete voucher from e-conomic: " + e.getMessage(), 500);
-                }
-            }
-        } else {
-            // No voucher reference - just soft delete locally
-            log.infof("Expense %s has no voucher reference - soft deleting locally only", uuid);
-            markDeleted(expense, false);
-
-            // Verify database update
-            Expense verifyExpense = Expense.findById(uuid);
-            log.infof("Verification: expense %s status=%s (no voucher reference)",
-                uuid, verifyExpense != null ? verifyExpense.getStatus() : "NOT_FOUND");
+        String actorUuid = header.getUserUuid();
+        boolean isAccountingReviewer = identity.hasRole("expenses:review");
+        if (!isAccountingReviewer && (actorUuid == null || !actorUuid.equals(expense.getUseruuid()))) {
+            throw new ForbiddenException("not the expense owner");
         }
 
+        String blockedReason = ExpenseDeletePolicy.blockedReason(expense);
+        if (blockedReason != null) {
+            log.warnf("Cannot delete expense %s: %s status=%s, journal=%s, voucher=%d, year=%s",
+                    uuid, blockedReason, expense.getStatus(), expense.getJournalnumber(),
+                    expense.getVouchernumber(), expense.getAccountingyear());
+            throw new BadRequestException(blockedReason);
+        }
+
+        String actorRole = isAccountingReviewer ? "ACCOUNTING" : "EMPLOYEE";
+        logs.recordExpenseDeleted(expense, actorUuid, actorRole, "Deleted before e-conomic upload");
+        markDeleted(expense);
         log.infof("Expense %s deleted successfully", uuid);
     }
 
-    private void markDeleted(Expense expense, boolean clearVoucherReferences) {
-        if (clearVoucherReferences) {
-            expense.setVouchernumber(0);
-            expense.setJournalnumber(null);
-            expense.setAccountingyear(null);
-        }
+    private void markDeleted(Expense expense) {
         expense.setStatus(STATUS_DELETED);
         expense.setState(ExpenseStateDeriver.DELETED);   // authoritative terminal (employee/e-conomic delete)
         expense.setAttentionOwner(null);

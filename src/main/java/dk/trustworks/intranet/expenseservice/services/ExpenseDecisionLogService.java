@@ -60,6 +60,12 @@ public class ExpenseDecisionLogService {
     }
 
     @Transactional
+    public void recordExpenseDeleted(Expense e, String actorUuid, String actorRole, String reason) {
+        append(e, actorRole, actorUuid, "EXPENSE_DELETED",
+               e.getStatus(), "DELETED", e.getState(), ExpenseStateDeriver.DELETED, e.getAiRuleId(), reason);
+    }
+
+    @Transactional
     public void recordLegacyOverride(Expense e, String actorUuid) {
         append(e, "HR", actorUuid, "LEGACY_OVERRIDE",
                e.getStatus(), "VALIDATED", null, null, e.getAiRuleId(), null);
