@@ -106,4 +106,24 @@ class ExpenseSerializationTest {
         assertEquals(0, node.get("aiRuleIds").size());
         assertFalse(node.has("aiRuleIdsJson"));
     }
+
+    @Test
+    void deletionAffordanceFieldsSerialize() throws Exception {
+        Expense e = baseExpense();
+        e.setStatus("CREATED");
+
+        JsonNode node = mapper().readTree(mapper().writeValueAsString(e));
+
+        assertTrue(node.get("canDelete").asBoolean());
+        assertTrue(node.get("deleteBlockedReason").isNull());
+
+        e.setStatus("VERIFIED_UNBOOKED");
+        node = mapper().readTree(mapper().writeValueAsString(e));
+
+        assertFalse(node.get("canDelete").asBoolean());
+        assertEquals(
+                "Expense has already entered the e-conomic upload flow.",
+                node.get("deleteBlockedReason").asText()
+        );
+    }
 }

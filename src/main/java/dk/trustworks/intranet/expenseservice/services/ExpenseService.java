@@ -171,6 +171,17 @@ public class ExpenseService {
      * @throws IOException if processing fails
      */
     public void processExpenseItem(Expense expense) throws IOException {
+        Expense current = Expense.findById(expense.getUuid());
+        if (current == null || STATUS_DELETED.equals(current.getStatus()) || ExpenseStateDeriver.DELETED.equals(current.getState())) {
+            log.infof("Skipping expense %s because it was deleted before upload processing", expense.getUuid());
+            return;
+        }
+        if (!ExpenseStateDeriver.APPROVED.equals(current.getState())) {
+            log.infof("Skipping expense %s because state is %s, not APPROVED", current.getUuid(), current.getState());
+            return;
+        }
+        expense = current;
+
         log.infof("Processing expense %s (retry count: %d, orphaned: %s)",
             expense.getUuid(), expense.getSafeRetryCount(), expense.getIsOrphaned());
 

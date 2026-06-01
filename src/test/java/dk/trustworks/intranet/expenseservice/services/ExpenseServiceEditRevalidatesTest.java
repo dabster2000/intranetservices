@@ -43,4 +43,30 @@ class ExpenseServiceEditRevalidatesTest {
         assertNull(after.getAiValidationApproved());
         verify(bus).publish(eq("expense.validate"), eq(e.getUuid()));
     }
+
+    @Test
+    void processExpenseItemSkipsRowDeletedAfterBatchSelection() {
+        Expense selected = new Expense();
+        selected.setUuid(java.util.UUID.randomUUID().toString());
+        selected.setUseruuid("user-1");
+        selected.setAmount(100.0);
+        selected.setAccount("3585");
+        selected.setExpensedate(java.time.LocalDate.now().minusDays(5));
+        selected.setDatecreated(java.time.LocalDate.now().minusDays(5));
+        selected.setStatus("VALIDATED");
+        io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(selected::persist);
+
+        io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(() -> {
+            Expense current = Expense.findById(selected.getUuid());
+            current.setStatus("DELETED");
+            current.setState("DELETED");
+        });
+
+        assertDoesNotThrow(() -> svc.processExpenseItem(selected));
+
+        Expense after = io.quarkus.narayana.jta.QuarkusTransaction.requiringNew()
+            .call(() -> Expense.findById(selected.getUuid()));
+        assertEquals("DELETED", after.getStatus());
+        assertEquals("DELETED", after.getState());
+    }
 }
