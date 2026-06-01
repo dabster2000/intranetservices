@@ -40,6 +40,13 @@ public class ExpenseClassificationService {
     private static final String UNREADABLE_WARNING =
             "We couldn't read the receipt. Try a sharper, well-lit photo showing the date, merchant and total.";
 
+    // The AI must never auto-select the "Other / not sure" catch-all. When the model cannot
+    // confidently place the receipt in a real category we want the employee to choose, not have
+    // the expense silently routed to the 9998 Finance-review fallback. Employees may still pick
+    // "Other / not sure" manually in the wizard — this only suppresses the AI's *proposal* of it.
+    private static final String ROOT_NODE_KEY = "root";
+    private static final Set<String> AI_SUPPRESSED_ROOT_ANSWERS = Set.of("other_unsure");
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() {};
 
@@ -363,6 +370,11 @@ public class ExpenseClassificationService {
             if (proposedNode.isArray()) {
                 for (JsonNode answerNode : proposedNode) {
                     ExpenseClassificationDTOs.Answer answer = MAPPER.treeToValue(answerNode, ExpenseClassificationDTOs.Answer.class);
+                    if (isAiSuppressedAnswer(answer.nodeKey(), answer.answerKey())) {
+                        log.infof("[Expense-Classify] Suppressing AI catch-all proposal node=%s answer=%s — employee must choose.",
+                                answer.nodeKey(), answer.answerKey());
+                        continue;
+                    }
                     if (answer.confidence() != null && answer.confidence() >= AI_ACCEPT_THRESHOLD) {
                         proposed.add(modelProposedAnswer(answer));
                     } else {
@@ -478,11 +490,25 @@ public class ExpenseClassificationService {
                 obvious (e.g. restaurant/cafeteria/grocery receipts ⇒ food_catering; bridge/toll/parking/
                 taxi/train ⇒ transport_travel; flower shop or chocolatier ⇒ gift).
 
+                Never invent a catch-all answer. If none of the listed categories clearly fits the
+                receipt, do NOT answer the "root" node — leave it out of proposedAnswers so the
+                employee selects the category themselves.
+
                 The "date" field in receiptFacts MUST be formatted as ISO yyyy-MM-dd (e.g. 2025-11-07).
                 Convert from any format printed on the receipt (e.g. "07-11-2025", "7/11 2025", "Nov 7,
                 2025"). If you cannot determine a full date, return null.
                 """);
         return prompt.toString();
+    }
+
+    /**
+     * True when an AI-proposed answer is a catch-all the model is not allowed to choose on the
+     * employee's behalf (currently the root "Other / not sure" route). Suppressing these forces an
+     * unanswered required node so the wizard asks the employee instead of silently routing to the
+     * Finance-review fallback. The same answer remains valid when a human submits it.
+     */
+    private boolean isAiSuppressedAnswer(String nodeKey, String answerKey) {
+        return ROOT_NODE_KEY.equals(nodeKey) && AI_SUPPRESSED_ROOT_ANSWERS.contains(answerKey);
     }
 
     /**
@@ -507,7 +533,9 @@ public class ExpenseClassificationService {
         List<NodeAnswerOptions> result = new ArrayList<>(nodes.size());
         for (ExpenseClassificationNode node : nodes) {
             List<String> answerKeys = options.getOrDefault(node.nodeKey, List.of())
-                    .stream().map(o -> o.answerKey).toList();
+                    .stream().map(o -> o.answerKey)
+                    .filter(answerKey -> !isAiSuppressedAnswer(node.nodeKey, answerKey))
+                    .toList();
             result.add(new NodeAnswerOptions(node.nodeKey, node.prompt, answerKeys));
         }
         return result;
