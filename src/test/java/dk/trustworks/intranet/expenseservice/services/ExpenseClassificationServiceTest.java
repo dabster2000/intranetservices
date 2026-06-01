@@ -123,6 +123,66 @@ class ExpenseClassificationServiceTest {
     }
 
     @Test
+    void dropsAiProposedOtherUnsureSoEmployeeMustChoose() {
+        String raw = """
+                {
+                  "receiptFacts": {
+                    "merchantName": "Some Shop",
+                    "date": "2026-05-19",
+                    "amount": 200.0,
+                    "currency": "DKK",
+                    "supplierCountry": "DK",
+                    "visibleVatText": null,
+                    "lineItems": ["Misc item"],
+                    "documentType": "receipt"
+                  },
+                  "proposedAnswers": [
+                    {
+                      "nodeKey": "root",
+                      "answerKey": "other_unsure",
+                      "source": "AI",
+                      "confidence": 0.95,
+                      "evidence": "Could not determine a category",
+                      "accepted": true
+                    }
+                  ],
+                  "warnings": [],
+                  "rawModelSummary": "Ambiguous receipt"
+                }
+                """;
+
+        ExpenseClassificationDTOs.AnalyzeResponse response = service.parseAnalysis("2026-05-19.v1", raw);
+
+        // The AI catch-all must never reach the employee — root stays unanswered so the wizard asks.
+        assertTrue(response.proposedAnswers().stream()
+                        .noneMatch(answer -> "root".equals(answer.nodeKey()) && "other_unsure".equals(answer.answerKey())),
+                "AI-proposed 'other_unsure' must be suppressed");
+        assertTrue(response.proposedAnswers().isEmpty(), "no root answer should remain");
+    }
+
+    @Test
+    void userCanStillManuallySelectOtherUnsure() {
+        ExpenseClassificationDTOs.ResolveResponse response = service.resolve(
+                "missing-user",
+                new ExpenseClassificationDTOs.ResolveRequest(
+                        "2026-05-19.v1",
+                        null,
+                        false,
+                        false,
+                        List.of(new ExpenseClassificationDTOs.Answer("root", "other_unsure", "USER", null, null, true)),
+                        List.of()
+                )
+        );
+
+        assertEquals("RESOLVED", response.state());
+        assertNotNull(response.result());
+        assertEquals("OTHER_OR_UNCLEAR", response.result().resultKey());
+        assertEquals("finance_review_fallback", response.result().accountKey());
+        assertEquals("9998", response.result().accountNumber());
+        assertTrue(response.result().requiresFinanceReview());
+    }
+
+    @Test
     @TestTransaction
     void persistsAuditMetadataForSubmittedClassification() {
         Expense expense = new Expense();
