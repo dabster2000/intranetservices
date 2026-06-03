@@ -17,6 +17,16 @@
   </properties>
   <dependencyManagement>
     <dependencies>
+      <!-- Override the Quarkus-managed Mockito (5.21.0 in quarkus-bom 3.32.2) with 5.23.0 for all
+           org.mockito:* artifacts. Declared BEFORE the Quarkus BOMs so its managed versions win. -->
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-bom</artifactId>
+        <version>5.23.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+
       <dependency>
         <groupId>${quarkus.platform.group-id}</groupId>
         <artifactId>${quarkus.platform.artifact-id}</artifactId>
@@ -307,7 +317,7 @@
     <dependency>
       <groupId>net.coobird</groupId>
       <artifactId>thumbnailator</artifactId>
-      <version>0.4.20</version>
+      <version>0.4.21</version>
     </dependency>
 
 
@@ -340,7 +350,7 @@
     <dependency>
       <groupId>org.apache.commons</groupId>
       <artifactId>commons-lang3</artifactId>
-      <version>3.18.0</version>
+      <version>3.20.0</version>
     </dependency>
     <dependency>
       <groupId>com.google.guava</groupId>
@@ -355,7 +365,7 @@
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>
-      <version>1.18.38</version>
+      <version>1.18.46</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -371,7 +381,7 @@
     <dependency>
       <groupId>org.apache.pdfbox</groupId>
       <artifactId>pdfbox</artifactId>
-      <version>3.0.4</version>
+      <version>3.0.7</version>
     </dependency>
 
     <!-- TESTING -->
@@ -520,7 +530,7 @@
             <path>
               <groupId>org.projectlombok</groupId>
               <artifactId>lombok</artifactId>
-              <version>1.18.38</version>
+              <version>1.18.46</version>
             </path>
           </annotationProcessorPaths>
         </configuration>
