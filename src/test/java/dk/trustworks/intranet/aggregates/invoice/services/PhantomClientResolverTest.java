@@ -1,8 +1,15 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import dk.trustworks.intranet.aggregates.invoice.model.dto.PhantomClientSuggestion;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.SuggestionMethod;
+import dk.trustworks.intranet.dao.crm.model.Client;
+import dk.trustworks.intranet.dao.crm.services.ClientService;
 import org.junit.jupiter.api.Test;
 
+import java.util.Optional;
+
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 /** Pure unit test for the static prefix-strip helper — no CDI, no DB. */
 class PhantomClientResolverTest {
@@ -31,5 +38,62 @@ class PhantomClientResolverTest {
     void nullAndBlankAreSafe() {
         assertEquals("", PhantomClientResolver.stripKnownPrefixes(null));
         assertEquals("", PhantomClientResolver.stripKnownPrefixes("   "));
+    }
+
+    private static Client client(String uuid, String name) {
+        Client c = new Client();
+        c.setUuid(uuid);
+        c.setName(name);
+        return c;
+    }
+
+    @Test
+    void exactMatch_onStrippedLabel_givesConfidenceOne() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase("Energinet"))
+                .thenReturn(client("16e3ccad-aaaa", "Energinet"));
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("Konsulenthonorar Energinet");
+
+        assertEquals(SuggestionMethod.EXACT, s.method());
+        assertEquals("16e3ccad-aaaa", s.suggestedClientUuid());
+        assertEquals(1.0, s.confidence(), 0.0001);
+    }
+
+    @Test
+    void fuzzyMatch_whenNoExact() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase("Vattenfall")).thenReturn(null);
+        when(cs.findFuzzyMatch("Vattenfall"))
+                .thenReturn(Optional.of(client("2cbb7f5e-bbbb", "VATTENFALL VINDKRAFT A/S")));
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("Konsulenthonorar Vattenfall");
+
+        assertEquals(SuggestionMethod.FUZZY, s.method());
+        assertEquals("2cbb7f5e-bbbb", s.suggestedClientUuid());
+        assertTrue(s.confidence() >= 0.9 && s.confidence() <= 1.0);
+    }
+
+    @Test
+    void noCandidate_givesNone() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
+        when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("Magnit Global");
+
+        assertEquals(SuggestionMethod.NONE, s.method());
+        assertNull(s.suggestedClientUuid());
+    }
+
+    @Test
+    void blankLabel_givesNone() {
+        ClientService cs = mock(ClientService.class);
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        assertEquals(SuggestionMethod.NONE, resolver.suggest("   ").method());
+        verifyNoInteractions(cs);
     }
 }
