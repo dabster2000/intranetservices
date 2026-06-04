@@ -6,6 +6,7 @@ import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.crm.services.ClientService;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -95,5 +96,72 @@ class PhantomClientResolverTest {
         PhantomClientResolver resolver = new PhantomClientResolver(cs);
         assertEquals(SuggestionMethod.NONE, resolver.suggest("   ").method());
         verifyNoInteractions(cs);
+    }
+
+    @Test
+    void containsMatch_whenNoExactOrFuzzy() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
+        when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
+        when(cs.findByActiveTrue())
+                .thenReturn(List.of(client("c-magnit", "Magnit Global Solutions A/S")));
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("Magnit");
+
+        assertEquals(SuggestionMethod.CONTAINS, s.method());
+        assertEquals("c-magnit", s.suggestedClientUuid());
+        assertEquals("Magnit Global Solutions A/S", s.suggestedClientName());
+        assertEquals(0.5, s.confidence(), 0.0001);
+    }
+
+    @Test
+    void containsMatch_isCaseInsensitive_andSkipsNullName() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
+        when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
+        // First client has a null name (must be skipped, not NPE); second matches case-insensitively.
+        when(cs.findByActiveTrue()).thenReturn(List.of(
+                client("c-null-name", null),
+                client("c-acme", "ACME MAGNIT COMPANY")));
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("magnit");
+
+        assertEquals(SuggestionMethod.CONTAINS, s.method());
+        assertEquals("c-acme", s.suggestedClientUuid());
+    }
+
+    @Test
+    void noContainsMatch_withPopulatedList_givesNone() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
+        when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
+        when(cs.findByActiveTrue()).thenReturn(List.of(
+                client("c-other", "Other Corp"),
+                client("c-another", "Another Inc")));
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("Magnit");
+
+        assertEquals(SuggestionMethod.NONE, s.method());
+        assertNull(s.suggestedClientUuid());
+    }
+
+    @Test
+    void containsMatch_skipsClientWithNullUuid() {
+        ClientService cs = mock(ClientService.class);
+        when(cs.findByExactNameIgnoreCase(anyString())).thenReturn(null);
+        when(cs.findFuzzyMatch(anyString())).thenReturn(Optional.empty());
+        // A name match with a null uuid must NOT be returned as a "found" suggestion.
+        when(cs.findByActiveTrue()).thenReturn(List.of(
+                client(null, "Magnit Global"),
+                client("c-real", "Magnit Holdings")));
+
+        PhantomClientResolver resolver = new PhantomClientResolver(cs);
+        PhantomClientSuggestion s = resolver.suggest("Magnit");
+
+        assertEquals(SuggestionMethod.CONTAINS, s.method());
+        assertEquals("c-real", s.suggestedClientUuid());
     }
 }

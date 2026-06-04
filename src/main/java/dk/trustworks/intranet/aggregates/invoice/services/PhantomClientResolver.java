@@ -54,10 +54,13 @@ public class PhantomClientResolver {
         }
 
         // 3. Last-resort substring/contains over all clients (low confidence).
+        //    Returns the first active client (DB order) whose name contains the
+        //    label. A "found" suggestion must carry a real uuid, so a name match
+        //    with a null uuid is skipped rather than returned as a candidate.
         String needle = stripped.toLowerCase(Locale.ROOT);
         for (Client c : clientService.findByActiveTrue()) {
             String name = c.getName();
-            if (name != null && name.toLowerCase(Locale.ROOT).contains(needle)) {
+            if (name != null && c.getUuid() != null && name.toLowerCase(Locale.ROOT).contains(needle)) {
                 return new PhantomClientSuggestion(c.getUuid(), c.getName(), 0.5, SuggestionMethod.CONTAINS);
             }
         }
