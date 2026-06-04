@@ -661,6 +661,17 @@ public class InvoiceService {
         // single issuer company (companyuuid) so we filter to just that issuer and do NOT
         // queue — matches the legacy contract ("create DRAFT only").
         if (attributionDrivenInternalInvoices) {
+            // PHANTOM sources are settled through the dedicated internal-invoice preview /
+            // create-all flow (which derives attribution from registered work) — not through
+            // this legacy single-issuer entry point. Phase 5 lifted the PHANTOM guard from
+            // createAllInternalFromAttribution to enable that dedicated flow; re-assert it
+            // here so this endpoint keeps rejecting phantoms as it did before.
+            if (invoice.getType() == InvoiceType.PHANTOM) {
+                throw new WebApplicationException(
+                        "PHANTOM source invoices are not supported by this endpoint; "
+                                + "use the internal-invoice preview / create-all flow.",
+                        Response.Status.BAD_REQUEST);
+            }
             createAllInternalFromAttribution(invoice.getUuid(), Set.of(companyuuid), false);
             return;
         }
@@ -738,6 +749,18 @@ public class InvoiceService {
         // requested issuer, with queue=true. Returns the single created internal invoice
         // (or throws if no cross-company work is detected for the requested issuer).
         if (attributionDrivenInternalInvoices) {
+            // PHANTOM sources are settled through the dedicated internal-invoice preview /
+            // create-all flow — not auto-created/queued here. Phase 5 lifted the PHANTOM
+            // guard from createAllInternalFromAttribution; re-assert it here so this legacy
+            // entry point keeps rejecting phantoms (as it did in attribution-driven mode
+            // before). The findById is L1-cached and reused by the delegate below.
+            Invoice phantomCheck = Invoice.findById(clientInvoiceUuid);
+            if (phantomCheck != null && phantomCheck.getType() == InvoiceType.PHANTOM) {
+                throw new WebApplicationException(
+                        "PHANTOM source invoices are not supported by this endpoint; "
+                                + "use the internal-invoice preview / create-all flow.",
+                        Response.Status.BAD_REQUEST);
+            }
             List<String> created = createAllInternalFromAttribution(
                     clientInvoiceUuid,
                     Set.of(issuerCompanyUuid),
