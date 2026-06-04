@@ -156,6 +156,23 @@ public class InvoiceAttributionService {
         return rows.stream().map(this::mapRowToAttribution).toList();
     }
 
+    /**
+     * Re-read attributions in a fresh transaction so the read gets a new
+     * REPEATABLE READ snapshot. Required when the rows were just persisted by a
+     * {@code REQUIRES_NEW} sibling — e.g. {@link PhantomAttributionService#deriveForPhantom} —
+     * whose commit lands on a different connection and is therefore invisible to the
+     * caller's already-fixed snapshot. Calling this through the CDI proxy suspends the
+     * caller's transaction and runs the SELECT under a snapshot taken after that commit,
+     * so the freshly-derived rows are seen on the first invocation rather than only on a
+     * second call. (The non-phantom path uses the plain {@link #getInvoiceAttributions}
+     * because {@code computeAttributions} joins the caller's transaction — its writes are
+     * already visible to the same snapshot.)
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public List<InvoiceItemAttribution> getInvoiceAttributionsInNewTx(String invoiceUuid) {
+        return getInvoiceAttributions(invoiceUuid);
+    }
+
     private InvoiceItemAttribution mapRowToAttribution(Object[] row) {
         var attr = new InvoiceItemAttribution();
         attr.uuid            = (String) row[0];

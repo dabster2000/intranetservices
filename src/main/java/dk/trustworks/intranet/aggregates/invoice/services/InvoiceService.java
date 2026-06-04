@@ -79,6 +79,9 @@ public class InvoiceService {
     @Inject
     InvoiceAttributionService invoiceAttributionService;
 
+    @Inject
+    PhantomAttributionService phantomAttributionService;
+
     /**
      * Post-commit signal that an invoice's line items changed and its attributions
      * must be recomputed. Observed by {@code InvoiceAttributionDirtyObserver},
@@ -900,10 +903,11 @@ public class InvoiceService {
      *
      * <p>If the source invoice has no attribution rows yet (common for newly-created
      * invoices that haven't been through the finalization wizard), attributions are
-     * computed lazily inside the same transaction.
+     * computed lazily. For a {@code PHANTOM} source they are instead derived from
+     * registered work; an unmapped / no-work / excluded phantom simply yields an empty
+     * preview (no error).
      *
-     * @throws WebApplicationException 404 if the source invoice does not exist,
-     *                                 400 if the source is of type PHANTOM.
+     * @throws WebApplicationException 404 if the source invoice does not exist.
      */
     @Transactional
     public dk.trustworks.intranet.aggregates.invoice.dto.InternalInvoicePreview previewInternal(String sourceInvoiceUuid) {
@@ -930,19 +934,26 @@ public class InvoiceService {
         if (source == null) {
             throw new WebApplicationException("Invoice not found: " + sourceInvoiceUuid, Response.Status.NOT_FOUND);
         }
-        if (source.getType() == InvoiceType.PHANTOM) {
-            throw new WebApplicationException(
-                    "Internal invoices cannot be created from PHANTOM source invoices.",
-                    Response.Status.BAD_REQUEST);
-        }
-
         // Lazy-compute: if the source has no attributions, compute them now so the
         // preview reflects up-to-date distribution. Cheap when already computed.
         List<InvoiceItemAttribution> attributions =
                 invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
         if (attributions.isEmpty()) {
-            invoiceAttributionService.computeAttributions(sourceInvoiceUuid);
-            attributions = invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+            if (source.getType() == InvoiceType.PHANTOM) {
+                // Phantom attribution is derived from registered work (per-consultant
+                // shares of the imported e-conomic revenue), not from the source's own
+                // line items. An unmapped / no-work / excluded phantom leaves the table
+                // empty here -> empty preview, never a 400.
+                phantomAttributionService.deriveForPhantom(sourceInvoiceUuid);
+                // deriveForPhantom commits in its own (REQUIRES_NEW) transaction, so its
+                // rows are invisible to this transaction's already-fixed REPEATABLE READ
+                // snapshot — re-read in a fresh transaction so the just-derived rows are
+                // seen on the first call (not only on a subsequent request).
+                attributions = invoiceAttributionService.getInvoiceAttributionsInNewTx(sourceInvoiceUuid);
+            } else {
+                invoiceAttributionService.computeAttributions(sourceInvoiceUuid);
+                attributions = invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+            }
         }
 
         // Resolve all attribution consultants' companies as-of the source's invoicedate.
@@ -1042,7 +1053,9 @@ public class InvoiceService {
      * are skipped — only missing issuers are created. This matches the "create all
      * drafts" UX where re-clicking should fill gaps, not duplicate rows.
      *
-     * @param sourceInvoiceUuid the source invoice UUID. 404 if missing. 400 if PHANTOM.
+     * @param sourceInvoiceUuid the source invoice UUID (404 if missing). A {@code PHANTOM}
+     *                          source derives attribution from registered work; if it is
+     *                          unmapped / has no work / is excluded, nothing is created.
      * @param issuerFilter      optional set restricting which issuers to materialize.
      *                          {@code null} or empty means "all detected issuers".
      * @param queue             when {@code true}, newly-created drafts are transitioned
@@ -1075,18 +1088,23 @@ public class InvoiceService {
         if (source == null) {
             throw new WebApplicationException("Invoice not found: " + sourceInvoiceUuid, Response.Status.NOT_FOUND);
         }
-        if (source.getType() == InvoiceType.PHANTOM) {
-            throw new WebApplicationException(
-                    "Internal invoices cannot be created from PHANTOM source invoices.",
-                    Response.Status.BAD_REQUEST);
-        }
-
-        // Lazy-compute attribution if missing.
+        // Lazy-compute attribution if missing. PHANTOM sources derive their attribution
+        // rows from registered work (see previewInternal); an unmapped / no-work /
+        // excluded phantom leaves the table empty -> empty create result, never a 400.
         List<InvoiceItemAttribution> attributions =
                 invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
         if (attributions.isEmpty()) {
-            invoiceAttributionService.computeAttributions(sourceInvoiceUuid);
-            attributions = invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+            if (source.getType() == InvoiceType.PHANTOM) {
+                phantomAttributionService.deriveForPhantom(sourceInvoiceUuid);
+                // deriveForPhantom commits in its own (REQUIRES_NEW) transaction; re-read
+                // in a fresh transaction so the just-derived rows are visible to this call
+                // rather than being masked by this transaction's REPEATABLE READ snapshot
+                // (see previewInternal for the full rationale).
+                attributions = invoiceAttributionService.getInvoiceAttributionsInNewTx(sourceInvoiceUuid);
+            } else {
+                invoiceAttributionService.computeAttributions(sourceInvoiceUuid);
+                attributions = invoiceAttributionService.getInvoiceAttributions(sourceInvoiceUuid);
+            }
         }
 
         Set<String> consultantUuids = new HashSet<>();
