@@ -5,6 +5,7 @@ import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
 import dk.trustworks.intranet.dto.DateValueDTO;
+import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import dk.trustworks.intranet.utils.DateUtils;
 import io.quarkus.cache.CacheInvalidateAll;
 import io.quarkus.panache.common.Page;
@@ -271,6 +272,50 @@ public class WorkService {
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")
                 )).toList();
+    }
+
+    /**
+     * Per-consultant registered work for a client in a single calendar month,
+     * read off the work_full view (clientuuid + contract rate pre-resolved).
+     * Returns hours (Σ workduration) and revenue (Σ workduration × rate),
+     * one row per useruuid. Filters workduration > 0 (rate = 0 rows still
+     * contribute hours, for the hours-fallback basis upstream).
+     *
+     * @param clientUuid resolved client uuid
+     * @param year       calendar year of the period
+     * @param month      calendar month (1–12)
+     */
+    @SuppressWarnings("unchecked")
+    public List<ConsultantWorkRevenue> findRevenueByClientAndMonth(String clientUuid, int year, int month) {
+        LocalDate periodStart = LocalDate.of(year, month, 1);
+        LocalDate periodEnd = periodStart.plusMonths(1);
+
+        String sql = "SELECT wf.useruuid AS useruuid, " +
+                "       SUM(wf.workduration)               AS hours, " +
+                "       SUM(wf.workduration * wf.rate)     AS revenue " +
+                "FROM work_full wf " +
+                "WHERE wf.clientuuid = :clientUuid " +
+                "  AND wf.registered >= :periodStart " +
+                "  AND wf.registered <  :periodEnd " +
+                "  AND wf.workduration > 0 " +
+                "GROUP BY wf.useruuid";
+
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("clientUuid", clientUuid)
+                .setParameter("periodStart", periodStart)
+                .setParameter("periodEnd", periodEnd)
+                .getResultList()).stream()
+                .map(t -> new ConsultantWorkRevenue(
+                        t.get("useruuid", String.class),
+                        toBigDecimal(t.get("hours")),
+                        toBigDecimal(t.get("revenue"))))
+                .toList();
+    }
+
+    private static java.math.BigDecimal toBigDecimal(Object o) {
+        if (o == null) return java.math.BigDecimal.ZERO;
+        if (o instanceof java.math.BigDecimal bd) return bd;
+        return new java.math.BigDecimal(((Number) o).toString());
     }
 
     public DateValueDTO findWorkRevenueByUserAndDay(String useruuid, LocalDate day) {
