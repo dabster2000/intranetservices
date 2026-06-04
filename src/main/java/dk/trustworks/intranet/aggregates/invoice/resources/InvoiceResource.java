@@ -96,6 +96,9 @@ public class InvoiceResource {
     InvoiceAttributionService invoiceAttributionService;
 
     @Inject
+    dk.trustworks.intranet.aggregates.invoice.services.PhantomAttributionService phantomAttributionService;
+
+    @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator internalInvoiceOrchestrator;
 
     @GET
@@ -1132,6 +1135,74 @@ public class InvoiceResource {
         List<String> created = invoiceService.createAllInternalFromAttribution(
                 invoiceuuid, issuerFilter, queue, excluded);
         return new dk.trustworks.intranet.aggregates.invoice.dto.CreateAllInternalResponse(created);
+    }
+
+    // ── Phantom attribution: review queue, mapping, derive ─────────────────
+
+    @GET
+    @Path("/phantoms/attribution-review")
+    @RolesAllowed({"invoices:read"})
+    @Produces(MediaType.APPLICATION_JSON)
+    public List<dk.trustworks.intranet.aggregates.invoice.model.dto.PhantomAttributionReviewDTO> phantomAttributionReview() {
+        return phantomAttributionService.buildReviewQueue();
+    }
+
+    @PUT
+    @Path("/phantoms/client-map")
+    @RolesAllowed({"invoices:write"})
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response upsertPhantomClientMap(
+            @HeaderParam("X-Requested-By") String userUuid,
+            dk.trustworks.intranet.aggregates.invoice.resources.dto.PhantomClientMapRequest request) {
+
+        if (userUuid == null || userUuid.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "X-Requested-By header is required")).build();
+        }
+        if (request == null || request.clientname() == null || request.clientname().isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "clientname is required")).build();
+        }
+        boolean excluded = request.excluded() != null && request.excluded();
+        if (!excluded && (request.clientUuid() == null || request.clientUuid().isBlank())) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "clientUuid is required unless excluded=true")).build();
+        }
+        Map<dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus, Integer> result =
+                phantomAttributionService.upsertClientMapAndRederive(request, userUuid);
+        return Response.ok(result).build();
+    }
+
+    @POST
+    @Path("/{invoiceuuid}/phantom-attribution/derive")
+    @RolesAllowed({"invoices:write"})
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response derivePhantomAttribution(
+            @PathParam("invoiceuuid") String invoiceuuid,
+            @HeaderParam("X-Requested-By") String userUuid) {
+
+        if (userUuid == null || userUuid.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "X-Requested-By header is required")).build();
+        }
+        dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus status =
+                phantomAttributionService.deriveForPhantom(invoiceuuid);
+        return Response.ok(Map.of("status", status.name())).build();
+    }
+
+    @POST
+    @Path("/phantoms/attribution/derive-all")
+    @RolesAllowed({"invoices:write"})
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response derivePhantomAttributionAll(@HeaderParam("X-Requested-By") String userUuid) {
+        if (userUuid == null || userUuid.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "X-Requested-By header is required")).build();
+        }
+        Map<dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus, Integer> result =
+                phantomAttributionService.deriveAllInScope();
+        return Response.ok(result).build();
     }
 
     /**
