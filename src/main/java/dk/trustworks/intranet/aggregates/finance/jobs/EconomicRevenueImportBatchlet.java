@@ -60,6 +60,9 @@ public class EconomicRevenueImportBatchlet {
     EconomicRevenueImportService refreshService;
 
     @Inject
+    dk.trustworks.intranet.aggregates.invoice.services.PhantomAttributionService phantomAttributionService;
+
+    @Inject
     SlackService slackService;
 
     @Inject
@@ -88,6 +91,16 @@ public class EconomicRevenueImportBatchlet {
                     outcome.perAccountDkk(),
                     outcome.skippedByLayer(),
                     from, to);
+
+            // Derive per-consultant attribution for in-scope phantoms (decision #3).
+            // Isolated from the import: a derivation failure must not fail/alert the import.
+            try {
+                var attribution = phantomAttributionService.deriveAllInScope();
+                log.infof("phantom attribution derivation complete: %s", attribution);
+            } catch (Exception de) {
+                log.errorf(de, "phantom attribution derivation failed (import itself succeeded)");
+            }
+
             lastAlertSent.set(null);
         } catch (Exception e) {
             log.errorf(e, "e-conomic revenue import failed");
