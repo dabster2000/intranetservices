@@ -49,7 +49,8 @@ public class PhantomAttributionService {
      * Self-injection so deriveAllInScope() invokes deriveForPhantom() / the
      * read through the CDI client proxy — required for @Transactional(REQUIRES_NEW)
      * and @Transactional to engage (a plain this.method() self-call bypasses the
-     * interceptor). Mirrors the per-voucher isolation in EconomicRevenueImportService.
+     * Arc interceptor, leaving the nested transaction a no-op). This gives each
+     * phantom its own transaction so one failure cannot roll back the whole batch.
      */
     @Inject
     PhantomAttributionService self;
@@ -67,6 +68,11 @@ public class PhantomAttributionService {
         if (inv.getType() != InvoiceType.PHANTOM) return false;
         if (inv.getStatus() != InvoiceStatus.CREATED) return false;
         if (inv.internalInvoiceSkip) return false;
+        // Guard a malformed period (e.g. an unset month=0 on a manually-created
+        // phantom): an out-of-range month/year would make LocalDate.of throw, and
+        // because isInScope runs inside listInScopeUuids()'s stream filter — OUTSIDE
+        // deriveAllInScope()'s per-phantom try/catch — that would abort the whole batch.
+        if (inv.getYear() < 1 || inv.getMonth() < 1 || inv.getMonth() > 12) return false;
         LocalDate period = LocalDate.of(inv.getYear(), inv.getMonth(), 1);
         return !period.isBefore(fyStart) && period.isBefore(fyEnd);
     }
@@ -156,12 +162,18 @@ public class PhantomAttributionService {
             return PhantomDerivationStatus.OUT_OF_SCOPE;
         }
 
-        InvoiceItem item = phantom.getInvoiceitems() == null
-                ? null
-                : phantom.getInvoiceitems().stream().findFirst().orElse(null);
+        List<InvoiceItem> items = phantom.getInvoiceitems();
+        InvoiceItem item = (items == null) ? null : items.stream().findFirst().orElse(null);
         if (item == null) {
             log.warnf("deriveForPhantom: phantom has no invoiceitem uuid=%s", invoiceUuid);
             return PhantomDerivationStatus.NO_WORK;
+        }
+        if (items.size() > 1) {
+            // Auto-imported phantoms carry exactly one item; a multi-item phantom can
+            // only come from the manual createPhantomInvoice path. Surface the unexpected
+            // shape — attribution uses only the first item's total.
+            log.warnf("deriveForPhantom: phantom uuid=%s has %d invoiceitems; attributing only the first",
+                    invoiceUuid, items.size());
         }
 
         // Preserve MANUAL overrides (decision #7): recalc amount only, never replace.

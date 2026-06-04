@@ -74,6 +74,76 @@ class PhantomAttributionServiceMathTest {
     }
 
     @Test
+    void residual_goesToLargestShare_notSmallestUuid() {
+        // a,b small (16.67% each), z large (66.67%); per-row rounding overshoots the
+        // total by 0.01, so the residual is NEGATIVE and must land on the LARGEST-share
+        // consultant z — NOT row 0 (the smallest uuid 'a'). The original equal-share
+        // residual test could not tell these apart (a buggy "always index 0" passes it).
+        Map<String, WorkAgg> w = work("a", 1, 1, "b", 1, 1, "z", 1, 4);
+        BigDecimal total = new BigDecimal("100.00");
+        List<ShareRow> rows = PhantomAttributionService.computeShares(w, total);
+
+        BigDecimal sum = rows.stream().map(ShareRow::attributedAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, sum.compareTo(total), "amounts must sum exactly to the phantom total");
+
+        ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
+        ShareRow z = rows.stream().filter(r -> r.consultantUuid().equals("z")).findFirst().orElseThrow();
+        assertEquals(0, z.attributedAmount().compareTo(new BigDecimal("66.66")),
+                "negative residual absorbed by the LARGEST-share consultant z — proves sharePct drives selection");
+        assertEquals(0, a.attributedAmount().compareTo(new BigDecimal("16.67")),
+                "the smallest-uuid (small-share) consultant keeps its rounded amount");
+    }
+
+    @Test
+    void residual_tieForLargestShare_goesToSmallerUuidOfTheTie() {
+        // a small (9.09%), m & z tie for the largest share (45.45% each); rounding
+        // undershoots by 0.01, so the +0.01 residual goes to the smaller-uuid member
+        // of the LARGEST-share tie (m), not to the global smallest uuid 'a'.
+        Map<String, WorkAgg> w = work("a", 1, 1, "m", 1, 5, "z", 1, 5);
+        BigDecimal total = new BigDecimal("100.00");
+        List<ShareRow> rows = PhantomAttributionService.computeShares(w, total);
+
+        BigDecimal sum = rows.stream().map(ShareRow::attributedAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, sum.compareTo(total), "amounts must sum exactly to the phantom total");
+
+        ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
+        ShareRow m = rows.stream().filter(r -> r.consultantUuid().equals("m")).findFirst().orElseThrow();
+        assertEquals(0, m.attributedAmount().compareTo(new BigDecimal("45.46")),
+                "tie among the largest share resolves to the smaller uuid (m)");
+        assertEquals(0, a.attributedAmount().compareTo(new BigDecimal("9.09")),
+                "the global-smallest uuid 'a' does NOT absorb the residual (it is not in the largest-share tie)");
+    }
+
+    @Test
+    void mixedRevenue_zeroRevenueConsultantGetsZeroShare() {
+        // Any positive total revenue => revenue basis; a consultant with revenue=0 is
+        // zero-weighted (0%), NOT hours-weighted. Pins the basis-switch boundary between
+        // the two extreme cases above.
+        Map<String, WorkAgg> w = work("a", 10, 1000, "b", 10, 0);
+        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("1000.00"));
+
+        ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
+        ShareRow b = rows.stream().filter(r -> r.consultantUuid().equals("b")).findFirst().orElseThrow();
+        assertEquals(0, a.sharePct().compareTo(new BigDecimal("100.0000")));
+        assertEquals(0, a.attributedAmount().compareTo(new BigDecimal("1000.00")));
+        assertEquals(0, b.sharePct().compareTo(new BigDecimal("0.0000")),
+                "revenue=0 consultant is zero-weighted under revenue basis");
+        assertEquals(0, b.attributedAmount().compareTo(new BigDecimal("0.00")));
+    }
+
+    @Test
+    void scope_malformedPeriodIsOutOfScope() {
+        // An unset/garbage month (int default 0, or >12) or year<1 would make
+        // LocalDate.of throw; isInScope must treat these as out-of-scope so a single
+        // malformed phantom cannot abort the whole deriveAllInScope batch.
+        assertFalse(PhantomAttributionService.isInScope(phantom(InvoiceType.PHANTOM, InvoiceStatus.CREATED, 2025, 0, false), FY_START, FY_END), "month=0 out");
+        assertFalse(PhantomAttributionService.isInScope(phantom(InvoiceType.PHANTOM, InvoiceStatus.CREATED, 2025, 13, false), FY_START, FY_END), "month=13 out");
+        assertFalse(PhantomAttributionService.isInScope(phantom(InvoiceType.PHANTOM, InvoiceStatus.CREATED, 0, 9, false), FY_START, FY_END), "year=0 out");
+    }
+
+    @Test
     void singleConsultant_getsFullTotal() {
         List<ShareRow> rows = PhantomAttributionService.computeShares(
                 work("solo", 12, 500), new BigDecimal("12345.67"));
