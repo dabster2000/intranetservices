@@ -4,15 +4,21 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.PhantomClientMap;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.PhantomAttributionReviewDTO;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.PhantomClientSuggestion;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus;
+import dk.trustworks.intranet.aggregates.invoice.resources.dto.PhantomClientMapRequest;
+import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import dk.trustworks.intranet.utils.DateUtils;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Tuple;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -54,6 +60,12 @@ public class PhantomAttributionService {
      */
     @Inject
     PhantomAttributionService self;
+
+    @Inject
+    EntityManager em;
+
+    @Inject
+    PhantomClientResolver phantomClientResolver;
 
     /** Per-consultant work aggregate for a client+month. */
     public record WorkAgg(BigDecimal hours, BigDecimal revenue) {}
@@ -268,6 +280,125 @@ public class PhantomAttributionService {
     /** Test/diagnostic passthrough to the work query. */
     List<ConsultantWorkRevenue> findWork(String clientUuid, int year, int month) {
         return workService.findRevenueByClientAndMonth(clientUuid, year, month);
+    }
+
+    /**
+     * Build the review queue: in-scope phantoms with ZERO attribution rows,
+     * grouped by clientname label, with the current mapping state and (when
+     * unmapped) an auto-suggestion. Labels marked excluded are omitted.
+     */
+    @Transactional
+    public List<PhantomAttributionReviewDTO> buildReviewQueue() {
+        LocalDate fyStart = DateUtils.getCurrentFiscalStartDate();
+        LocalDate fyEnd = fyStart.plusYears(1);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT i.clientname AS clientname, COUNT(*) AS cnt, SUM(t.total) AS total
+                FROM invoices i
+                JOIN (SELECT ii.invoiceuuid AS invoiceuuid, SUM(ABS(ii.hours * ii.rate)) AS total
+                      FROM invoiceitems ii GROUP BY ii.invoiceuuid) t ON t.invoiceuuid = i.uuid
+                WHERE i.type = 'PHANTOM' AND i.status = 'CREATED' AND i.internal_invoice_skip = 0
+                  AND (MAKEDATE(i.year, 1) + INTERVAL (i.month - 1) MONTH) >= :fyStart
+                  AND (MAKEDATE(i.year, 1) + INTERVAL (i.month - 1) MONTH) <  :fyEnd
+                  AND NOT EXISTS (
+                      SELECT 1 FROM invoice_item_attributions a
+                      JOIN invoiceitems ii2 ON a.invoiceitem_uuid = ii2.uuid
+                      WHERE ii2.invoiceuuid = i.uuid)
+                GROUP BY i.clientname
+                ORDER BY total DESC
+                """, Tuple.class)
+                .setParameter("fyStart", fyStart)
+                .setParameter("fyEnd", fyEnd)
+                .getResultList();
+
+        List<PhantomAttributionReviewDTO> queue = new ArrayList<>();
+        for (Tuple r : rows) {
+            String clientname = r.get("clientname", String.class);
+            long cnt = ((Number) r.get("cnt")).longValue();
+            BigDecimal total = r.get("total") == null ? BigDecimal.ZERO : new BigDecimal(r.get("total").toString());
+
+            PhantomClientMap map = PhantomClientMap.findById(clientname);
+            if (map != null && map.excluded) {
+                continue; // excluded -> not in the queue
+            }
+            String mappedClientUuid = map != null ? trimToNull(map.clientUuid) : null;
+            String mappedClientName = null;
+            PhantomClientSuggestion suggestion;
+            if (mappedClientUuid != null) {
+                Client c = Client.findById(mappedClientUuid);
+                mappedClientName = c != null ? c.getName() : null;
+                suggestion = PhantomClientSuggestion.none(); // mapped already (likely NO_WORK)
+            } else {
+                suggestion = phantomClientResolver.suggest(clientname);
+            }
+            queue.add(new PhantomAttributionReviewDTO(
+                    clientname, cnt, total, mappedClientUuid, mappedClientName, false, suggestion));
+        }
+        return queue;
+    }
+
+    /** Upsert one label->client mapping in its own committed transaction. */
+    @Transactional
+    public void upsertClientMap(PhantomClientMapRequest req, String userUuid) {
+        boolean excluded = req.excluded() != null && req.excluded();
+        String clientUuid = excluded ? null : trimToNull(req.clientUuid());
+        LocalDateTime now = LocalDateTime.now();
+
+        PhantomClientMap map = PhantomClientMap.findById(req.clientname());
+        if (map == null) {
+            map = new PhantomClientMap(req.clientname(), clientUuid, excluded, req.note(), userUuid);
+            map.persist();
+        } else {
+            map.clientUuid = clientUuid;
+            map.excluded = excluded;
+            map.note = req.note();
+            map.confirmedBy = userUuid;
+            map.confirmedAt = now;
+            map.updatedAt = now;
+        }
+    }
+
+    /**
+     * Confirm/exclude a label, then re-derive every in-scope phantom with that
+     * label. The mapping is committed first (via the self proxy) so the
+     * REQUIRES_NEW derives see it. Returns the re-derive status histogram.
+     */
+    public Map<PhantomDerivationStatus, Integer> upsertClientMapAndRederive(
+            PhantomClientMapRequest req, String userUuid) {
+        self.upsertClientMap(req, userUuid); // committed
+        if (req.excluded() != null && req.excluded()) {
+            return new EnumMap<>(PhantomDerivationStatus.class); // excluded -> nothing to derive
+        }
+        return rederiveLabel(req.clientname());
+    }
+
+    /** Re-derive all in-scope phantoms carrying {@code clientname}. */
+    public Map<PhantomDerivationStatus, Integer> rederiveLabel(String clientname) {
+        List<String> uuids = self.listInScopeUuidsForLabel(clientname);
+        Map<PhantomDerivationStatus, Integer> counts = new EnumMap<>(PhantomDerivationStatus.class);
+        for (String uuid : uuids) {
+            try {
+                counts.merge(self.deriveForPhantom(uuid), 1, Integer::sum);
+            } catch (RuntimeException e) {
+                log.errorf(e, "rederiveLabel: derive failed for phantom=%s", uuid);
+            }
+        }
+        log.infof("rederiveLabel '%s': %s", clientname, counts);
+        return counts;
+    }
+
+    /** In-scope phantom uuids for one label (read via self proxy for a session). */
+    @Transactional
+    public List<String> listInScopeUuidsForLabel(String clientname) {
+        LocalDate fyStart = DateUtils.getCurrentFiscalStartDate();
+        LocalDate fyEnd = fyStart.plusYears(1);
+        return Invoice.<Invoice>list("type = ?1 and status = ?2 and clientname = ?3",
+                        InvoiceType.PHANTOM, InvoiceStatus.CREATED, clientname)
+                .stream()
+                .filter(p -> isInScope(p, fyStart, fyEnd))
+                .map(Invoice::getUuid)
+                .toList();
     }
 
     private static String trimToNull(String s) {
