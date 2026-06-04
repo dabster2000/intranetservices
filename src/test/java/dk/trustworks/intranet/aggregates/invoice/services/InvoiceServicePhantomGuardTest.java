@@ -6,6 +6,8 @@ import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -33,10 +35,11 @@ class InvoiceServicePhantomGuardTest {
 
     /**
      * Minimal overrides so the CDI context boots in tests (S3 dev services off, placeholder
-     * cvtool credentials). Note: the {@code internal-preview}/{@code create-all-internal}
-     * methods under test do NOT read {@code feature.invoicing.internal.attribution-driven}
-     * (only the legacy {@code createInternalInvoiceDraft}/{@code autoCreateAndQueueInternal}
-     * entry points do), so no flag override is needed here.
+     * cvtool credentials). {@code feature.invoicing.internal.attribution-driven=true} is set so
+     * {@code autoCreateAndQueueInternal} takes the attribution-driven branch — the one whose
+     * re-asserted PHANTOM guard this test exercises. The {@code internal-preview} /
+     * {@code create-all-internal} methods do not read that flag; it is only relevant to the
+     * legacy auto-create path.
      */
     public static class BootProfile implements QuarkusTestProfile {
         @Override
@@ -44,7 +47,8 @@ class InvoiceServicePhantomGuardTest {
             return Map.of(
                     "quarkus.s3.devservices.enabled", "false",
                     "cvtool.username", "test-placeholder",
-                    "cvtool.password", "test-placeholder"
+                    "cvtool.password", "test-placeholder",
+                    "feature.invoicing.internal.attribution-driven", "true"
             );
         }
     }
@@ -93,5 +97,20 @@ class InvoiceServicePhantomGuardTest {
         List<String> created =
                 assertDoesNotThrow(() -> invoiceService.createAllInternalFromAttribution(uuid, null, false, Set.of()));
         assertTrue(created.isEmpty(), "no issuers -> no internal invoices created");
+    }
+
+    @Test
+    void autoCreateAndQueueInternal_onPhantom_throws400() {
+        String uuid = findCreatedPhantomUuid();
+        assumeTrue(uuid != null, "no CREATED phantom in this DB — skipping (exercise via the staging probe)");
+
+        // The legacy auto-create endpoint must keep REJECTING PHANTOM (Phase 5 re-asserted the
+        // guard in its attribution-driven branch, since the shared createAllInternalFromAttribution
+        // no longer 400s on phantoms). The guard throws right after loading the phantom, before any
+        // derive/create — so this asserts the 400 with no side effects on the shared DB.
+        WebApplicationException ex = assertThrows(WebApplicationException.class,
+                () -> invoiceService.autoCreateAndQueueInternal(uuid, "any-issuer-company-uuid"));
+        assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), ex.getResponse().getStatus(),
+                "legacy autoCreateAndQueueInternal must reject a PHANTOM source with 400");
     }
 }
