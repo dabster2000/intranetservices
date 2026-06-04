@@ -67,6 +67,19 @@ class PhantomAttributionReviewTest {
         }
     }
 
+    @Test
+    void rederiveLabel_onUnknownLabel_isEmptyNoOp() {
+        // Exercises the re-derive path wiring (resetAutoStateForLabel ->
+        // listInScopeUuidsForLabel -> derive loop) for a label with no phantoms:
+        // it must reset nothing, derive nothing, and return an empty histogram
+        // without throwing. The behavioral re-map correction (a label re-pointed
+        // from client A to B actually re-attributes to B) is verified by the
+        // staging API/SQL probe — it needs registered work for two clients.
+        Map<?, ?> result = service.rederiveLabel("ZZZ-phantom-test-label-" + System.identityHashCode(this));
+        assertNotNull(result);
+        assertTrue(result.isEmpty(), "no phantoms for an unknown label -> empty re-derive histogram");
+    }
+
     @Transactional
     void deleteMap(String clientname) {
         PhantomClientMap.deleteById(clientname);

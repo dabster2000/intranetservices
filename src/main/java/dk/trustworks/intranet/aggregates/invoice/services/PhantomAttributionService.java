@@ -362,7 +362,10 @@ public class PhantomAttributionService {
     /**
      * Confirm/exclude a label, then re-derive every in-scope phantom with that
      * label. The mapping is committed first (via the self proxy) so the
-     * REQUIRES_NEW derives see it. Returns the re-derive status histogram.
+     * REQUIRES_NEW derives see it. A freshly-confirmed mapping always wins: the
+     * re-derive clears any stale AUTO state first (see {@link #rederiveLabel}),
+     * so correcting a label to a different client actually re-points it. Returns
+     * the re-derive status histogram.
      */
     public Map<PhantomDerivationStatus, Integer> upsertClientMapAndRederive(
             PhantomClientMapRequest req, String userUuid) {
@@ -373,8 +376,19 @@ public class PhantomAttributionService {
         return rederiveLabel(req.clientname());
     }
 
-    /** Re-derive all in-scope phantoms carrying {@code clientname}. */
+    /**
+     * Re-derive all in-scope phantoms carrying {@code clientname}. Clears any
+     * stale AUTO state (a previously-stamped billing_client_uuid + AUTO rows)
+     * for the label's non-MANUAL phantoms FIRST, in its own committed
+     * transaction (via the self proxy), so the REQUIRES_NEW derives fall through
+     * to the just-confirmed mapping instead of short-circuiting on the old
+     * stamp. This makes a confirmed mapping authoritative on re-derive (an admin
+     * can correct a mis-mapped label). MANUAL-overridden phantoms are untouched
+     * (they return SKIPPED_MANUAL). Single-derive + nightly derive-all keep their
+     * stamp-preserving idempotency — only this label re-derive path resets.
+     */
     public Map<PhantomDerivationStatus, Integer> rederiveLabel(String clientname) {
+        self.resetAutoStateForLabel(clientname); // committed before the REQUIRES_NEW derives read
         List<String> uuids = self.listInScopeUuidsForLabel(clientname);
         Map<PhantomDerivationStatus, Integer> counts = new EnumMap<>(PhantomDerivationStatus.class);
         for (String uuid : uuids) {
@@ -386,6 +400,35 @@ public class PhantomAttributionService {
         }
         log.infof("rederiveLabel '%s': %s", clientname, counts);
         return counts;
+    }
+
+    /**
+     * Clear stale AUTO derivation state for a label's in-scope phantoms so a
+     * re-derive honors a freshly-confirmed mapping: for each in-scope phantom
+     * without a MANUAL attribution, delete its AUTO attribution rows and null
+     * its billing_client_uuid stamp. Phantoms carrying a MANUAL override are
+     * left untouched (deriveForPhantom returns SKIPPED_MANUAL for them, so their
+     * stamp must be preserved). Committed in its own transaction (called via the
+     * self proxy) so the subsequent REQUIRES_NEW derives read the cleared state.
+     */
+    @Transactional
+    public void resetAutoStateForLabel(String clientname) {
+        LocalDate fyStart = DateUtils.getCurrentFiscalStartDate();
+        LocalDate fyEnd = fyStart.plusYears(1);
+        List<Invoice> phantoms = Invoice.list("type = ?1 and status = ?2 and clientname = ?3",
+                InvoiceType.PHANTOM, InvoiceStatus.CREATED, clientname);
+        for (Invoice phantom : phantoms) {
+            if (!isInScope(phantom, fyStart, fyEnd)) continue;
+            List<InvoiceItem> items = phantom.getInvoiceitems();
+            InvoiceItem item = (items == null) ? null : items.stream().findFirst().orElse(null);
+            if (item == null) continue;
+            long manual = InvoiceItemAttribution.count("invoiceitemUuid = ?1 and source = ?2",
+                    item.uuid, AttributionSource.MANUAL);
+            if (manual > 0) continue; // preserve MANUAL overrides
+            InvoiceItemAttribution.delete("invoiceitemUuid = ?1 and source = ?2",
+                    item.uuid, AttributionSource.AUTO);
+            phantom.setBillingClientUuid(null); // managed entity -> flushed on commit
+        }
     }
 
     /** In-scope phantom uuids for one label (read via self proxy for a session). */
