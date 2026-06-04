@@ -1087,8 +1087,9 @@ public class InvoiceResource {
      * the modal's per-row BASE deselection. The attribution table is not modified
      * — exclusion is in-request only.
      *
-     * @return 200 with the projected groupings, 400 for PHANTOM sources or invalid
-     *         exclusion UUIDs, 404 when the source invoice does not exist.
+     * @return 200 with the projected groupings (empty for an unmapped / no-work /
+     *         excluded PHANTOM source — never a 400), 400 for invalid exclusion UUIDs,
+     *         404 when the source invoice does not exist.
      */
     @GET
     @Path("/{invoiceuuid}/internal-preview")
@@ -1110,8 +1111,9 @@ public class InvoiceResource {
      * <p>Idempotent per-issuer: issuers that already have a linked internal invoice
      * (any status) are skipped.
      *
-     * @return 200 with the list of created invoice UUIDs. 400 for PHANTOM sources
-     *         or invalid exclusion UUIDs. 404 when the source invoice does not exist.
+     * @return 200 with the list of created invoice UUIDs (empty for an unmapped /
+     *         no-work / excluded PHANTOM source — never a 400). 400 for invalid
+     *         exclusion UUIDs. 404 when the source invoice does not exist.
      */
     @POST
     @Path("/{invoiceuuid}/create-all-internal")
