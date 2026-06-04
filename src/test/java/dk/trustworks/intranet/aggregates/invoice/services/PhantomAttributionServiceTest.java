@@ -1,0 +1,139 @@
+package dk.trustworks.intranet.aggregates.invoice.services;
+
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
+import dk.trustworks.intranet.aggregates.invoice.model.PhantomClientMap;
+import dk.trustworks.intranet.aggregates.invoice.model.dto.PhantomClientSuggestion;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus;
+import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
+import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.QuarkusTestProfile;
+import io.quarkus.test.junit.TestProfile;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Tuple;
+import jakarta.transaction.Transactional;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@QuarkusTest
+@TestProfile(PhantomAttributionServiceTest.NoDevServicesProfile.class)
+class PhantomAttributionServiceTest {
+
+    public static class NoDevServicesProfile implements QuarkusTestProfile {
+        @Override
+        public Map<String, String> getConfigOverrides() {
+            return Map.of(
+                    "quarkus.s3.devservices.enabled", "false",
+                    "cvtool.username", "test-placeholder",
+                    "cvtool.password", "test-placeholder"
+            );
+        }
+    }
+
+    @Inject PhantomAttributionService service;
+    @Inject PhantomClientResolver resolver;
+    @Inject EntityManager em;
+
+    @Test
+    void deriveForPhantom_attributesAndSumsExactly_thenIdempotent() {
+        // Find a viable CREATED 'Konsulenthonorar%' phantom: resolver suggests a client
+        // AND that client has work in the phantom's month.
+        @SuppressWarnings("unchecked")
+        List<Tuple> phantoms = em.createNativeQuery("""
+                SELECT i.uuid AS uuid, i.clientname AS clientname, i.year AS yr, i.month AS mo,
+                       (SELECT ii.uuid FROM invoiceitems ii WHERE ii.invoiceuuid = i.uuid LIMIT 1) AS itemuuid,
+                       (SELECT ABS(ii.hours * ii.rate) FROM invoiceitems ii WHERE ii.invoiceuuid = i.uuid LIMIT 1) AS total
+                FROM invoices i
+                WHERE i.type = 'PHANTOM' AND i.status = 'CREATED'
+                  AND i.clientname LIKE 'Konsulenthonorar%'
+                ORDER BY i.year DESC, i.month DESC
+                LIMIT 25
+                """, Tuple.class).getResultList();
+
+        String pickUuid = null, pickItem = null, pickClient = null;
+        BigDecimal pickTotal = null;
+        for (Tuple t : phantoms) {
+            String clientname = t.get("clientname", String.class);
+            PhantomClientSuggestion s = resolver.suggest(clientname);
+            if (s.suggestedClientUuid() == null) continue;
+            int yr = ((Number) t.get("yr")).intValue();
+            int mo = ((Number) t.get("mo")).intValue();
+            List<ConsultantWorkRevenue> work =
+                    service.findWork(s.suggestedClientUuid(), yr, mo); // see helper below
+            if (work.isEmpty()) continue;
+            pickUuid = t.get("uuid", String.class);
+            pickItem = t.get("itemuuid", String.class);
+            pickClient = s.suggestedClientUuid();
+            pickTotal = t.get("total") == null ? null : new BigDecimal(t.get("total").toString());
+            break;
+        }
+        if (pickUuid == null) return; // no viable phantom locally — skip gracefully
+
+        // Capture + clean prior state, install a temp mapping.
+        String priorBilling = currentBillingClientUuid(pickUuid);
+        String clientname = clientnameOf(pickUuid);
+        cleanupAuto(pickItem);
+        upsertMap(clientname, pickClient);
+        try {
+            PhantomDerivationStatus st = service.deriveForPhantom(pickUuid);
+            assertEquals(PhantomDerivationStatus.ATTRIBUTED, st);
+
+            List<InvoiceItemAttribution> rows = InvoiceItemAttribution.list("invoiceitemUuid", pickItem);
+            assertFalse(rows.isEmpty());
+            assertTrue(rows.stream().allMatch(r -> r.source == AttributionSource.AUTO));
+            BigDecimal sum = rows.stream().map(r -> r.attributedAmount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            assertEquals(0, sum.setScale(2).compareTo(pickTotal.setScale(2)),
+                    "attributed amounts must sum exactly to the phantom total");
+            assertEquals(pickClient, currentBillingClientUuid(pickUuid), "billing_client_uuid stamped");
+
+            int firstCount = rows.size();
+            assertEquals(PhantomDerivationStatus.ATTRIBUTED, service.deriveForPhantom(pickUuid));
+            assertEquals(firstCount, InvoiceItemAttribution.<InvoiceItemAttribution>list("invoiceitemUuid", pickItem).size(),
+                    "idempotent: same row count on re-derive");
+        } finally {
+            cleanupAuto(pickItem);
+            deleteMap(clientname);
+            restoreBilling(pickUuid, priorBilling);
+        }
+    }
+
+    @Transactional
+    void cleanupAuto(String itemUuid) {
+        InvoiceItemAttribution.delete("invoiceitemUuid = ?1 AND source = ?2", itemUuid, AttributionSource.AUTO);
+    }
+
+    @Transactional
+    void upsertMap(String clientname, String clientUuid) {
+        deleteMap(clientname);
+        new PhantomClientMap(clientname, clientUuid, false, "test", "test").persist();
+    }
+
+    @Transactional
+    void deleteMap(String clientname) {
+        PhantomClientMap.deleteById(clientname);
+    }
+
+    @Transactional
+    void restoreBilling(String invoiceUuid, String prior) {
+        em.createNativeQuery("UPDATE invoices SET billing_client_uuid = :v WHERE uuid = :u")
+                .setParameter("v", prior).setParameter("u", invoiceUuid).executeUpdate();
+    }
+
+    String currentBillingClientUuid(String invoiceUuid) {
+        Object v = em.createNativeQuery("SELECT billing_client_uuid FROM invoices WHERE uuid = :u")
+                .setParameter("u", invoiceUuid).getSingleResult();
+        return v == null ? null : v.toString();
+    }
+
+    String clientnameOf(String invoiceUuid) {
+        return (String) em.createNativeQuery("SELECT clientname FROM invoices WHERE uuid = :u")
+                .setParameter("u", invoiceUuid).getSingleResult();
+    }
+}
