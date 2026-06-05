@@ -600,6 +600,48 @@ public class InvoiceResource {
     }
 
     /**
+     * Returns in-scope PHANTOM invoices (e-conomic auto-imports representing
+     * cross-company revenue) paired to their active INTERNAL invoice — plus
+     * skip-flagged phantoms with no active internal (rendered "Skipped" on the FE).
+     * Consultant lines are sourced from invoice_item_attributions because phantom
+     * invoiceitems have consultantuuid = NULL.
+     *
+     * Date window semantics: from inclusive, to exclusive (matches /cross-company/*).
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate   end date (exclusive), format yyyy-MM-dd
+     */
+    @GET
+    @Path("/cross-company/phantoms/with-internal")
+    public List<CrossCompanyInvoicePairDTO> findPhantomsWithInternal(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate) {
+        List<CrossCompanyInvoicePairDTO> result =
+                internalInvoiceControllingService.findPhantomsWithInternal(dateIt(fromdate), dateIt(todate));
+        return maskCrossCompanyPairs(result);
+    }
+
+    /**
+     * Returns in-scope PHANTOM invoices with NO active INTERNAL and not skip-flagged.
+     * Each pair's client is the phantom (consultant lines from attributions; empty
+     * when the phantom's label is unmapped) and internal is null.
+     *
+     * Date window semantics: from inclusive, to exclusive (matches /cross-company/*).
+     *
+     * @param fromdate start date (inclusive), format yyyy-MM-dd
+     * @param todate   end date (exclusive), format yyyy-MM-dd
+     */
+    @GET
+    @Path("/cross-company/phantoms/without-internal")
+    public List<CrossCompanyInvoicePairDTO> findPhantomsWithoutInternal(
+            @QueryParam("fromdate") String fromdate,
+            @QueryParam("todate") String todate) {
+        List<CrossCompanyInvoicePairDTO> result =
+                internalInvoiceControllingService.findPhantomsWithoutInternal(dateIt(fromdate), dateIt(todate));
+        return maskCrossCompanyPairs(result);
+    }
+
+    /**
      * Returns client invoices (type INVOICE) that have more than one INTERNAL invoice
      * (status in QUEUED/CREATED) referencing them via invoice_ref. The date window applies
      * to the client's invoicedate and follows from inclusive, to exclusive semantics.
