@@ -371,6 +371,7 @@ public class PhantomAttributionService {
             PhantomClientMapRequest req, String userUuid) {
         self.upsertClientMap(req, userUuid); // committed
         if (req.excluded() != null && req.excluded()) {
+            self.resetAutoStateForLabel(req.clientname()); // excluded labels must not keep stale AUTO rows
             return new EnumMap<>(PhantomDerivationStatus.class); // excluded -> nothing to derive
         }
         return rederiveLabel(req.clientname());
