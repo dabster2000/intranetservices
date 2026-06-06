@@ -698,9 +698,10 @@ public class EconomicRevenueImportService {
     /**
      * Inserts one {@code invoices} row (type=PHANTOM, status=CREATED,
      * invoicenumber=0) and one synthesized {@code invoiceitems} row
-     * (hours=1, rate=ABS(amount), origin=BASE) so
-     * {@code Invoice.getSumNoTax()} returns ABS(amount) — Option A of
-     * pr2-locked-decisions §"Decision 2".
+     * (hours=1, rate=amount (signed), origin=BASE) so
+     * {@code Invoice.getSumNoTax()} returns the signed amount — Option A of
+     * pr2-locked-decisions §"Decision 2". A reversing (credit-note) voucher
+     * therefore imports as a negative-total PHANTOM so revenue/settlement net.
      *
      * <p>{@link jakarta.transaction.Transactional.TxType#REQUIRES_NEW}: each
      * insert is its own transaction so a single failing voucher does not
@@ -719,7 +720,7 @@ public class EconomicRevenueImportService {
         String itemUuid = UUID.randomUUID().toString();
         LocalDate invoiceDate = v.entryDate() != null ? v.entryDate() : LocalDate.now();
         LocalDate dueDate = invoiceDate;          // no payment terms on auto-imports
-        BigDecimal rate = v.sumAmount().abs().setScale(2, RoundingMode.HALF_UP);
+        BigDecimal rate = v.sumAmount().setScale(2, RoundingMode.HALF_UP);
         String description = "e-conomic entry " + v.minEntryNumber();
 
         try {

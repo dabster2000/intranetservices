@@ -395,8 +395,8 @@ class EconomicRevenueImportServiceTest {
     }
 
     @Test
-    @DisplayName("Negative amount: rate parameter equals ABS(sumAmount) when net is negative")
-    void testNegativeAmountUsesAbs() throws Exception {
+    @DisplayName("Negative amount: rate parameter preserves the negative sign (credit-note voucher)")
+    void testNegativeAmountPreservesSign() throws Exception {
         Query invoiceQ = mock(Query.class);
         Query itemQ = mock(Query.class);
         when(invoiceQ.setParameter(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(invoiceQ);
@@ -418,8 +418,8 @@ class EconomicRevenueImportServiceTest {
         verify(itemQ, atLeastOnce()).setParameter(n.capture(), v.capture());
         Map<String, Object> params = paramMap(n.getAllValues(), v.getAllValues());
 
-        assertEquals(new BigDecimal("12345.67"), params.get("rate"),
-                "rate must be absolute value of the negative sum");
+        assertEquals(new BigDecimal("-12345.67"), params.get("rate"),
+                "rate must preserve the negative sign for a credit-note (reversed) voucher");
     }
 
     @Test
