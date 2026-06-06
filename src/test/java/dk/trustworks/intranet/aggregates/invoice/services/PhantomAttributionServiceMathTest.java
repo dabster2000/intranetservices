@@ -169,6 +169,26 @@ class PhantomAttributionServiceMathTest {
         assertFalse(PhantomAttributionService.isInScope(phantom(InvoiceType.PHANTOM, InvoiceStatus.CREATED, 2025, 9, true), FY_START, FY_END), "skip-flagged out");
     }
 
+    @Test
+    void negativeTotal_yieldsNegativeSharesSummingExactly() {
+        // A credit-note phantom: a negative total must distribute to negative shares
+        // that sum EXACTLY to the total. share_pct stays positive (it is a weight ratio).
+        Map<String, WorkAgg> w = work("a", 30, 3000, "b", 10, 1000); // 75% / 25%
+        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("-4000.00"));
+
+        ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
+        ShareRow b = rows.stream().filter(r -> r.consultantUuid().equals("b")).findFirst().orElseThrow();
+
+        assertEquals(0, a.attributedAmount().compareTo(new BigDecimal("-3000.00")));
+        assertEquals(0, b.attributedAmount().compareTo(new BigDecimal("-1000.00")));
+        assertEquals(0, a.sharePct().compareTo(new BigDecimal("75.0000")), "share_pct is a positive ratio");
+
+        BigDecimal sum = rows.stream().map(ShareRow::attributedAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertEquals(0, sum.compareTo(new BigDecimal("-4000.00")),
+                "negative shares must sum exactly to the negative phantom total");
+    }
+
     private static Invoice phantom(InvoiceType type, InvoiceStatus status, int year, int month, boolean skip) {
         Invoice i = new Invoice();
         i.type = type;
