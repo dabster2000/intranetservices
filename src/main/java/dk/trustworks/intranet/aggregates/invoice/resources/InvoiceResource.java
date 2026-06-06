@@ -101,6 +101,9 @@ public class InvoiceResource {
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator internalInvoiceOrchestrator;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.invoice.services.PhantomSettlementService phantomSettlementService;
+
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
@@ -1245,6 +1248,21 @@ public class InvoiceResource {
         Map<dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus, Integer> result =
                 phantomAttributionService.deriveAllInScope();
         return Response.ok(result).build();
+    }
+
+    /**
+     * One-time, idempotent backfill (Decision D5): stamp the settlement-group key and
+     * write phantom-link rows onto already-issued phantom-linked internals so the
+     * controlling settlement view is uniform. Safe to re-run (ALREADY_DONE).
+     * Human-invoked; run on staging first, then production after verification.
+     *
+     * @return counts keyed by outcome (STAMPED / ALREADY_DONE / SKIPPED_* / ERROR)
+     */
+    @POST
+    @Path("/cross-company/phantoms/settlement/backfill")
+    @RolesAllowed({"invoices:write"})
+    public Map<String, Integer> backfillPhantomSettlement() {
+        return phantomSettlementService.backfillExistingInternals();
     }
 
     /**
