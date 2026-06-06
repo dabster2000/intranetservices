@@ -192,7 +192,7 @@ public class PhantomAttributionService {
         List<InvoiceItemAttribution> existing = InvoiceItemAttribution.list("invoiceitemUuid", item.uuid);
         boolean hasManual = existing.stream().anyMatch(a -> a.source == AttributionSource.MANUAL);
         if (hasManual) {
-            double itemTotal = Math.abs(item.hours * item.rate);
+            double itemTotal = item.hours * item.rate;
             for (InvoiceItemAttribution attr : existing) {
                 attr.recalculateAmount(itemTotal);
                 attr.updatedAt = LocalDateTime.now();
@@ -227,7 +227,7 @@ public class PhantomAttributionService {
             byConsultant.put(r.useruuid(), new WorkAgg(r.hours(), r.revenue()));
         }
 
-        BigDecimal phantomTotal = BigDecimal.valueOf(Math.abs(item.hours * item.rate))
+        BigDecimal phantomTotal = BigDecimal.valueOf(item.hours * item.rate)
                 .setScale(AMT_SCALE, RoundingMode.HALF_UP);
         List<ShareRow> rows = computeShares(byConsultant, phantomTotal);
         if (rows.isEmpty()) {
