@@ -1670,11 +1670,11 @@ public class InternalInvoiceControllingService {
         return result;
     }
 
-    /** Σ ABS(hours*rate) per invoice over invoiceitems (phantom item rate is already ABS(amount); ABS is a no-op for internals). */
+    /** Sum signed hours*rate per invoice over invoiceitems; credit-note phantoms must stay negative. */
     private java.util.Map<String, Double> loadItemTotals(java.util.Set<String> invoiceUuids) {
         if (invoiceUuids.isEmpty()) return java.util.Map.of();
         String sql = ("""
-            SELECT invoiceuuid, COALESCE(SUM(ABS(hours * rate)), 0) AS total
+            SELECT invoiceuuid, COALESCE(SUM(hours * rate), 0) AS total
             FROM invoiceitems
             WHERE invoiceuuid IN (%s)
             GROUP BY invoiceuuid

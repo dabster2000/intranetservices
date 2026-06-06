@@ -1,9 +1,19 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.InvoiceLineDTO;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
+
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Pure unit test (no DB, no Quarkus boot) for the phantom line mapper that turns
@@ -36,5 +46,25 @@ class InternalInvoiceControllingServicePhantomTest {
                 "attr-2", "John Roe", null, 100.005, "consultant-2");
         assertEquals(100.01, line.amountNoTax());         // round2 HALF_UP
         assertNull(line.hours());
+    }
+
+    @Test
+    void loadItemTotals_preservesSignedCreditNoteTotals() throws Exception {
+        EntityManager em = mock(EntityManager.class);
+        Query query = mock(Query.class);
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.setParameter(1, "phantom-credit")).thenReturn(query);
+        when(query.getResultList()).thenReturn(Collections.singletonList(new Object[]{"phantom-credit", -4000.0}));
+
+        InternalInvoiceControllingService service = new InternalInvoiceControllingService();
+        service.em = em;
+
+        Method loadItemTotals = InternalInvoiceControllingService.class
+                .getDeclaredMethod("loadItemTotals", Set.class);
+        loadItemTotals.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<String, Double> totals = (Map<String, Double>) loadItemTotals.invoke(service, Set.of("phantom-credit"));
+
+        assertEquals(-4000.0, totals.get("phantom-credit"));
     }
 }
