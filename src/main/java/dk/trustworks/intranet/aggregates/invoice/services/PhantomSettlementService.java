@@ -1,9 +1,12 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
+import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupPreview;
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupRow;
 import dk.trustworks.intranet.aggregates.invoice.model.InternalInvoicePhantomLink;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -56,6 +59,16 @@ public class PhantomSettlementService {
      */
     @Inject
     PhantomSettlementService self;
+
+    // Phase 4 (preview) collaborators — same beans InvoiceService.previewInternal uses.
+    @Inject
+    InvoiceAttributionService invoiceAttributionService;
+
+    @Inject
+    PhantomAttributionService phantomAttributionService;
+
+    @Inject
+    UserCompanyResolver userCompanyResolver;
 
     /** Outcome of backfilling one internal — keys of the returned counts map. */
     public enum BackfillOutcome { STAMPED, ALREADY_DONE, SKIPPED_UNMAPPED, SKIPPED_NO_PHANTOM, SKIPPED_NO_INTERNAL, ERROR }
@@ -263,6 +276,138 @@ public class PhantomSettlementService {
         if (companyUuids.isEmpty()) return out;
         List<Company> companies = Company.list("uuid in ?1", companyUuids);
         for (Company c : companies) out.put(c.getUuid(), c.getName());
+        return out;
+    }
+
+    /** In-scope, mapped phantom uuids for a group (read; own tx via self for a fresh snapshot). */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public List<String> listGroupPhantomUuids(SettlementGroupKey key) {
+        @SuppressWarnings("unchecked")
+        List<String> ids = em.createNativeQuery("""
+                SELECT uuid FROM invoices
+                WHERE type='PHANTOM' AND status='CREATED' AND economics_entry_number IS NOT NULL
+                  AND billing_client_uuid = :client AND companyuuid = :company
+                  AND year = :year AND month = :month
+                ORDER BY uuid
+                """)
+                .setParameter("client", key.billingClientUuid())
+                .setParameter("company", key.debtorCompanyUuid())
+                .setParameter("year", key.year())
+                .setParameter("month", key.month())
+                .getResultList();
+        return ids;
+    }
+
+    /** Settled per (issuer, consultant) from the group's live internals' lines (signed). */
+    @Transactional
+    public List<SettlementDeltaCalculator.SettledLine> settledLinesForGroup(SettlementGroupKey key) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT s.companyuuid AS issuer, ii.consultantuuid AS consultant,
+                       COALESCE(SUM(ii.hours*ii.rate),0) AS amount
+                FROM invoices s
+                JOIN invoiceitems ii ON ii.invoiceuuid = s.uuid
+                WHERE s.type IN ('INTERNAL','INTERNAL_SERVICE')
+                  AND s.status IN ('PENDING_REVIEW','QUEUED','CREATED')
+                  AND s.settlement_billing_client_uuid = :client
+                  AND s.settlement_debtor_companyuuid = :company
+                  AND s.settlement_year = :year AND s.settlement_month = :month
+                  AND ii.consultantuuid IS NOT NULL
+                GROUP BY s.companyuuid, ii.consultantuuid
+                """)
+                .setParameter("client", key.billingClientUuid())
+                .setParameter("company", key.debtorCompanyUuid())
+                .setParameter("year", key.year())
+                .setParameter("month", key.month())
+                .getResultList();
+        List<SettlementDeltaCalculator.SettledLine> out = new ArrayList<>(rows.size());
+        for (Object[] r : rows) {
+            out.add(new SettlementDeltaCalculator.SettledLine((String) r[0], (String) r[1], toBig(r[2])));
+        }
+        return out;
+    }
+
+    /**
+     * Per-(issuer, consultant) target/settled/delta for a group's Settle dialog. Read-only:
+     * gathers the group's phantoms, lazily derives each (REQUIRES_NEW + fresh re-read to dodge
+     * the REPEATABLE-READ snapshot trap), unions items+attributions, runs the existing pure
+     * InternalInvoiceLineGenerator to map consultants to issuer companies, folds line totals to
+     * targets, pairs with settled, and delegates the math to SettlementDeltaCalculator.
+     */
+    @Transactional
+    public SettlementGroupPreview previewGroup(SettlementGroupKey key, Set<String> excludedAttributionUuids) {
+        Set<String> excluded = (excludedAttributionUuids != null) ? excludedAttributionUuids : Set.of();
+        List<String> phantomUuids = self.listGroupPhantomUuids(key);
+
+        List<InvoiceItem> unionItems = new ArrayList<>();
+        List<InvoiceItemAttribution> unionAttrs = new ArrayList<>();
+        LocalDate asOf = null;
+        for (String pid : phantomUuids) {
+            Invoice phantom = Invoice.findById(pid);
+            if (phantom == null) continue;
+            if (asOf == null) asOf = phantom.getInvoicedate();
+            List<InvoiceItemAttribution> attrs = invoiceAttributionService.getInvoiceAttributions(pid);
+            if (attrs.isEmpty()) {
+                phantomAttributionService.deriveForPhantom(pid);
+                attrs = invoiceAttributionService.getInvoiceAttributionsInNewTx(pid);
+            }
+            if (phantom.getInvoiceitems() != null) unionItems.addAll(phantom.getInvoiceitems());
+            unionAttrs.addAll(attrs);
+        }
+
+        // Resolve consultant companies as-of the period — mirror InvoiceService.previewInternal.
+        Set<String> consultantUuids = new HashSet<>();
+        for (InvoiceItemAttribution a : unionAttrs) {
+            if (a.consultantUuid != null && !a.consultantUuid.isBlank()) consultantUuids.add(a.consultantUuid);
+        }
+        if (asOf == null) asOf = LocalDate.now();   // resolveCompanies throws on null asOf
+        Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
+
+        // Issuer-grouped target lines via the existing pure generator (debtor company = group company).
+        // Phantoms carry no CALCULATED discount/fee synthetic lines, so the raw items+attributions are the
+        // full source (unlike InvoiceService.previewInternal, which merges synthetics in first).
+        Map<String, List<InvoiceItem>> byIssuer =
+                InternalInvoiceLineGenerator.generate(key.debtorCompanyUuid(), unionItems, unionAttrs, userCompanies, excluded);
+
+        List<SettlementDeltaCalculator.TargetLine> targets = new ArrayList<>();
+        for (Map.Entry<String, List<InvoiceItem>> e : byIssuer.entrySet()) {
+            String issuer = e.getKey();
+            for (InvoiceItem line : e.getValue()) {
+                // Reconstruct the line amount in BigDecimal per operand (line.rate/line.hours are double)
+                // to match the generator's scale-2 amounts and avoid binary-float drift.
+                BigDecimal amt = BigDecimal.valueOf(line.rate).multiply(BigDecimal.valueOf(line.hours))
+                        .setScale(2, RoundingMode.HALF_UP);
+                targets.add(new SettlementDeltaCalculator.TargetLine(issuer, line.consultantuuid, amt));
+            }
+        }
+
+        // allResolved mirrors previewInternal (InvoiceService:1047): every cross-company consultant must
+        // map to a company. The generator silently drops unmapped consultants, so a null-line check alone
+        // would falsely report "all resolved".
+        boolean allResolved = consultantUuids.stream().allMatch(userCompanies::containsKey);
+
+        List<SettlementDeltaCalculator.SettledLine> settled = settledLinesForGroup(key);
+
+        // Names for the DTO.
+        Map<String, String> consultantNames = resolveConsultantNames(consultantUuids);
+        Set<String> companyUuids = new HashSet<>(byIssuer.keySet());
+        companyUuids.add(key.debtorCompanyUuid());
+        for (SettlementDeltaCalculator.SettledLine s : settled) companyUuids.add(s.issuerCompanyUuid());
+        Map<String, String> companyNames = resolveCompanyNames(companyUuids);
+
+        return SettlementDeltaCalculator.compute(key, key.debtorCompanyUuid(), targets, settled,
+                consultantNames, companyNames, allResolved);
+    }
+
+    /** Bulk consultant uuid -> "First Last". */
+    private Map<String, String> resolveConsultantNames(Set<String> userUuids) {
+        Map<String, String> out = new HashMap<>();
+        if (userUuids.isEmpty()) return out;
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT uuid, CONCAT(firstname,' ',lastname) FROM user WHERE uuid IN (:ids)")
+                .setParameter("ids", userUuids).getResultList();
+        for (Object[] r : rows) out.put((String) r[0], (String) r[1]);
         return out;
     }
 }
