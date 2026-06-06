@@ -5,7 +5,6 @@ import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupPreview;
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupRow;
 import dk.trustworks.intranet.aggregates.invoice.model.InternalInvoicePhantomLink;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
-import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.model.Company;
@@ -164,9 +163,19 @@ public class PhantomSettlementService {
 
     /**
      * One row per settlement group in the window. target = Σ attributed_amount over the
-     * group's phantom attributions (signed). settled = Σ signed (hours*rate) over live
-     * internals stamped with the group key (Phase-2 columns; historical internals require
+     * group's phantom attributions (signed, Decision D1). settled = Σ signed (hours*rate) over
+     * live internals stamped with the group key (Phase-2 columns; historical internals require
      * the Phase-3 backfill to be counted). Read-only.
+     *
+     * <p>NOTE — this group target is intentionally COARSER than {@link #previewGroup}'s total:
+     * it is the full D1 figure (every phantom attribution, including consultants whose own
+     * company is the debtor company, and consultants whose company cannot be resolved as-of the
+     * period). previewGroup's totalTarget is the cross-company-only settleable amount (it drops
+     * same-company and unmapped consultants, because a company never transfer-prices to itself).
+     * The two therefore do NOT reconcile line-for-line for groups that contain same-company or
+     * unmapped labour — the FE must not present {@code SettlementGroupRow.outstanding} and
+     * {@code SettlementGroupPreview.totalDelta} as the same number. The Settle dialog total is
+     * the authoritative settleable amount.
      */
     @Transactional
     public List<SettlementGroupRow> listSettlementGroups(LocalDate fromdate, LocalDate todate) {
@@ -179,6 +188,7 @@ public class PhantomSettlementService {
                        MAX(clientname) AS client_name, COUNT(*) AS phantom_count
                 FROM invoices
                 WHERE type='PHANTOM' AND status='CREATED' AND economics_entry_number IS NOT NULL
+                  AND internal_invoice_skip = 0
                   AND billing_client_uuid IS NOT NULL
                   AND invoicedate >= :from AND invoicedate < :to
                 GROUP BY billing_client_uuid, companyuuid, year, month
@@ -190,6 +200,7 @@ public class PhantomSettlementService {
                 JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
                 JOIN invoice_item_attributions iia ON iia.invoiceitem_uuid = ii.uuid
                 WHERE p.type='PHANTOM' AND p.status='CREATED' AND p.economics_entry_number IS NOT NULL
+                  AND p.internal_invoice_skip = 0
                   AND p.billing_client_uuid IS NOT NULL
                   AND p.invoicedate >= :from AND p.invoicedate < :to
                 GROUP BY p.billing_client_uuid, p.companyuuid, p.year, p.month
@@ -201,6 +212,7 @@ public class PhantomSettlementService {
                            CASE WHEN COALESCE(SUM(ii.hours*ii.rate),0) < 0 THEN 1 ELSE 0 END AS is_neg
                     FROM invoices p JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
                     WHERE p.type='PHANTOM' AND p.status='CREATED' AND p.economics_entry_number IS NOT NULL
+                      AND p.internal_invoice_skip = 0
                       AND p.billing_client_uuid IS NOT NULL
                       AND p.invoicedate >= :from AND p.invoicedate < :to
                     GROUP BY p.uuid, p.billing_client_uuid, p.companyuuid, p.year, p.month
@@ -286,6 +298,7 @@ public class PhantomSettlementService {
         List<String> ids = em.createNativeQuery("""
                 SELECT uuid FROM invoices
                 WHERE type='PHANTOM' AND status='CREATED' AND economics_entry_number IS NOT NULL
+                  AND internal_invoice_skip = 0
                   AND billing_client_uuid = :client AND companyuuid = :company
                   AND year = :year AND month = :month
                 ORDER BY uuid
@@ -328,70 +341,78 @@ public class PhantomSettlementService {
     }
 
     /**
-     * Per-(issuer, consultant) target/settled/delta for a group's Settle dialog. Read-only:
-     * gathers the group's phantoms, lazily derives each (REQUIRES_NEW + fresh re-read to dodge
-     * the REPEATABLE-READ snapshot trap), unions items+attributions, runs the existing pure
-     * InternalInvoiceLineGenerator to map consultants to issuer companies, folds line totals to
-     * targets, pairs with settled, and delegates the math to SettlementDeltaCalculator.
+     * Per-(issuer, consultant) target/settled/delta for a group's Settle dialog. LAZY-COMPUTE,
+     * not strictly read-only: for any group phantom with no attributions yet it calls
+     * deriveForPhantom (REQUIRES_NEW), which persists AUTO attribution rows + stamps the phantom's
+     * billing client — the same lazy-compute precedent as InvoiceService.previewInternal. MANUAL
+     * attributions are never overwritten and re-running is idempotent. No settlement document is issued.
+     *
+     * <p>target is summed DIRECTLY from the signed persisted attributed_amount (Decision D1), keyed by
+     * (issuer = consultant's company as-of the period, consultant) — NOT reconstructed through
+     * InternalInvoiceLineGenerator. Phantom items are synthesized with hours=1, so the generator would
+     * round the share FRACTION to 2dp and drift ~1% from Σ attributed_amount; summing the persisted
+     * amounts makes the preview reconcile exactly with D1 for the cross-company portion. (The generator
+     * is still the right tool for the Phase-5 settle WRITE path, where line shaping matters.) settled is
+     * Σ signed line totals of the group's live internals. The fold (delta = target - settled, rollups)
+     * is delegated to the pure SettlementDeltaCalculator. The REPEATABLE-READ snapshot trap is avoided
+     * by re-reading just-derived rows via getInvoiceAttributionsInNewTx (a fresh tx), never a plain
+     * outer-snapshot re-read.
      */
     @Transactional
     public SettlementGroupPreview previewGroup(SettlementGroupKey key, Set<String> excludedAttributionUuids) {
         Set<String> excluded = (excludedAttributionUuids != null) ? excludedAttributionUuids : Set.of();
         List<String> phantomUuids = self.listGroupPhantomUuids(key);
 
-        List<InvoiceItem> unionItems = new ArrayList<>();
         List<InvoiceItemAttribution> unionAttrs = new ArrayList<>();
-        LocalDate asOf = null;
         for (String pid : phantomUuids) {
             Invoice phantom = Invoice.findById(pid);
             if (phantom == null) continue;
-            if (asOf == null) asOf = phantom.getInvoicedate();
             List<InvoiceItemAttribution> attrs = invoiceAttributionService.getInvoiceAttributions(pid);
             if (attrs.isEmpty()) {
                 phantomAttributionService.deriveForPhantom(pid);
                 attrs = invoiceAttributionService.getInvoiceAttributionsInNewTx(pid);
             }
-            if (phantom.getInvoiceitems() != null) unionItems.addAll(phantom.getInvoiceitems());
             unionAttrs.addAll(attrs);
         }
 
-        // Resolve consultant companies as-of the period — mirror InvoiceService.previewInternal.
+        // Resolve consultant companies as-of the group's period. The group key IS a (year, month), so
+        // resolve against the first day of that month — deterministic and historically correct (no
+        // dependence on which phantom sorts first, and no LocalDate.now() fallback for historical groups).
         Set<String> consultantUuids = new HashSet<>();
         for (InvoiceItemAttribution a : unionAttrs) {
             if (a.consultantUuid != null && !a.consultantUuid.isBlank()) consultantUuids.add(a.consultantUuid);
         }
-        if (asOf == null) asOf = LocalDate.now();   // resolveCompanies throws on null asOf
+        LocalDate asOf = LocalDate.of(key.year(), key.month(), 1);
         Map<String, String> userCompanies = userCompanyResolver.resolveCompanies(consultantUuids, asOf);
 
-        // Issuer-grouped target lines via the existing pure generator (debtor company = group company).
-        // Phantoms carry no CALCULATED discount/fee synthetic lines, so the raw items+attributions are the
-        // full source (unlike InvoiceService.previewInternal, which merges synthetics in first).
-        Map<String, List<InvoiceItem>> byIssuer =
-                InternalInvoiceLineGenerator.generate(key.debtorCompanyUuid(), unionItems, unionAttrs, userCompanies, excluded);
-
+        // Target lines DIRECTLY from the persisted, signed attributed_amount (Decision D1), keyed by
+        // (issuer = consultant's company, consultant). Drop rules mirror InternalInvoiceLineGenerator:
+        // skip excluded attributions, unmapped consultants, and same-company consultants (a company never
+        // transfer-prices to itself). Summing attributed_amount (not generator line.rate*line.hours)
+        // avoids the hours=1 rounding amplification and reconciles exactly with the group row's D1 target.
         List<SettlementDeltaCalculator.TargetLine> targets = new ArrayList<>();
-        for (Map.Entry<String, List<InvoiceItem>> e : byIssuer.entrySet()) {
-            String issuer = e.getKey();
-            for (InvoiceItem line : e.getValue()) {
-                // Reconstruct the line amount in BigDecimal per operand (line.rate/line.hours are double)
-                // to match the generator's scale-2 amounts and avoid binary-float drift.
-                BigDecimal amt = BigDecimal.valueOf(line.rate).multiply(BigDecimal.valueOf(line.hours))
-                        .setScale(2, RoundingMode.HALF_UP);
-                targets.add(new SettlementDeltaCalculator.TargetLine(issuer, line.consultantuuid, amt));
-            }
+        for (InvoiceItemAttribution a : unionAttrs) {
+            if (a.uuid != null && excluded.contains(a.uuid)) continue;
+            if (a.consultantUuid == null || a.consultantUuid.isBlank()) continue;
+            if (a.attributedAmount == null) continue;
+            String issuer = userCompanies.get(a.consultantUuid);
+            if (issuer == null) continue;                            // unmapped consultant
+            if (issuer.equals(key.debtorCompanyUuid())) continue;    // same-company: not cross-company billable
+            targets.add(new SettlementDeltaCalculator.TargetLine(
+                    issuer, a.consultantUuid, a.attributedAmount.setScale(2, RoundingMode.HALF_UP)));
         }
 
-        // allResolved mirrors previewInternal (InvoiceService:1047): every cross-company consultant must
-        // map to a company. The generator silently drops unmapped consultants, so a null-line check alone
-        // would falsely report "all resolved".
+        // allResolved mirrors previewInternal (InvoiceService:1047): every consultant must map to a
+        // company (resolveCompanies omits unresolved consultants from the map).
         boolean allResolved = consultantUuids.stream().allMatch(userCompanies::containsKey);
 
         List<SettlementDeltaCalculator.SettledLine> settled = settledLinesForGroup(key);
 
         // Names for the DTO.
         Map<String, String> consultantNames = resolveConsultantNames(consultantUuids);
-        Set<String> companyUuids = new HashSet<>(byIssuer.keySet());
+        Set<String> companyUuids = new HashSet<>();
         companyUuids.add(key.debtorCompanyUuid());
+        for (SettlementDeltaCalculator.TargetLine tline : targets) companyUuids.add(tline.issuerCompanyUuid());
         for (SettlementDeltaCalculator.SettledLine s : settled) companyUuids.add(s.issuerCompanyUuid());
         Map<String, String> companyNames = resolveCompanyNames(companyUuids);
 

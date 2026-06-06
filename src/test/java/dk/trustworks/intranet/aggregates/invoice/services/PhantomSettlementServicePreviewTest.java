@@ -15,9 +15,11 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Read-only settlement preview against the real schema. DB-gated — executes only where a
- * MariaDB is present (CI/staging); locally the gate is test-COMPILE (the @QuarkusTest will
- * not boot without a DB, per the project's @QuarkusTest posture).
+ * Settlement preview against the real schema. (previewGroup is lazy-compute, not strictly
+ * read-only — it may persist AUTO attributions on first view; these unknown-key/empty-window
+ * cases touch no phantoms so no derive runs.) DB-gated — executes only where a MariaDB is
+ * present (CI/staging); locally the gate is test-COMPILE (the @QuarkusTest will not boot
+ * without a DB, per the project's @QuarkusTest posture).
  *
  * The assertions are SEED-INDEPENDENT invariants so they are meaningful on any database
  * (no false-green placeholder): an unknown settlement-group key produces an empty preview
