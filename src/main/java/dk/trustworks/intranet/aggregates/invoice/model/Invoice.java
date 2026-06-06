@@ -119,6 +119,18 @@ public class Invoice extends PanacheEntityBase {
     @Column(name = "billing_client_uuid", length = 36)
     public String billingClientUuid;
 
+    @Column(name = "settlement_billing_client_uuid")
+    public String settlementBillingClientUuid;
+
+    @Column(name = "settlement_debtor_companyuuid")
+    public String settlementDebtorCompanyuuid;
+
+    @Column(name = "settlement_year")
+    public Integer settlementYear;   // nullable — only set on settled INTERNAL/credit-note rows
+
+    @Column(name = "settlement_month")
+    public Integer settlementMonth;  // nullable
+
     @Column(name = "economics_draft_number")
     public Integer economicsDraftNumber;
 
