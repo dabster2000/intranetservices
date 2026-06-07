@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.economics.draft;
 import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 /**
@@ -17,6 +18,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
  * SPEC-INV-001 §6.1.
  */
 @RegisterRestClient(configKey = "economics-q2c-api")
+@RegisterProvider(EconomicsDraftErrorMapper.class)
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public interface EconomicsDraftInvoiceApiClient {
