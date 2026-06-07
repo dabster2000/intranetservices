@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupRow;
 import dk.trustworks.intranet.aggregates.invoice.model.InternalInvoicePhantomLink;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.model.Company;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -68,6 +69,13 @@ public class PhantomSettlementService {
 
     @Inject
     UserCompanyResolver userCompanyResolver;
+
+    // Phase 5 (settle/write) collaborators.
+    @Inject
+    InvoiceService invoiceService;
+
+    @Inject
+    InternalInvoiceOrchestrator internalInvoiceOrchestrator;
 
     /** Outcome of backfilling one internal — keys of the returned counts map. */
     public enum BackfillOutcome { STAMPED, ALREADY_DONE, SKIPPED_UNMAPPED, SKIPPED_NO_PHANTOM, SKIPPED_NO_INTERNAL, ERROR }
@@ -451,5 +459,112 @@ public class PhantomSettlementService {
             if (all || issuerFilter.contains(i.issuerCompanyUuid())) out.add(i);
         }
         return out;
+    }
+
+    /**
+     * Human-initiated settlement (Decision D4). Emits ONE document per issuer with a non-zero
+     * current delta: an invoice (delta &gt; 0) or an internal credit note (delta &lt; 0) for that
+     * delta. Idempotent (delta 0 =&gt; nothing) and convergent — each settle drives settled toward
+     * target because the next previewGroup counts the just-issued internals. NOT @Transactional:
+     * each createSettlementInternal commits in its own tx, so the per-issuer guard and the next
+     * preview re-read a fresh snapshot (the REPEATABLE-READ trap is structurally avoided — every
+     * read goes through the {@code self} proxy or a cross-bean call, never an outer @Transactional
+     * snapshot). previewGroup is invoked via {@code self} so its @Transactional interceptor engages
+     * (a plain this-call would bypass Arc and run its reads with no active transaction).
+     *
+     * <p>Partial settlement is at issuer grain ({@code issuerCompanyUuids} filter); each chosen
+     * issuer settles every non-zero consultant delta. Per-consultant deselect is a follow-up.
+     *
+     * @param issuerCompanyUuids optional issuer filter (null/empty =&gt; all non-zero issuers).
+     * @param queue              true =&gt; create QUEUED docs (finalize later via Force-create);
+     *                           false =&gt; finalize now via the orchestrator.
+     * @return created internal uuids
+     */
+    public List<String> settleGroup(SettlementGroupKey key, Set<String> issuerCompanyUuids, boolean queue) {
+        SettlementGroupPreview preview = self.previewGroup(key, Set.of());
+        List<SettlementGroupPreview.IssuerDelta> toSettle = issuersToSettle(preview, issuerCompanyUuids);
+        if (toSettle.isEmpty()) {
+            log.infof("settleGroup: nothing to settle for group=%s (all deltas zero)", key.asString());
+            return List.of();
+        }
+        List<String> phantomUuids = self.listGroupPhantomUuids(key);
+        if (phantomUuids.isEmpty()) return List.of();
+        String representative = phantomUuids.get(0);
+
+        List<String> created = new ArrayList<>();
+        for (SettlementGroupPreview.IssuerDelta issuer : toSettle) {
+            // Double-settlement guard: skip if an un-finalized QUEUED doc already exists for (group, issuer).
+            if (self.hasOpenQueuedInternal(key, issuer.issuerCompanyUuid())) {
+                log.warnf("settleGroup: open QUEUED internal for group=%s issuer=%s; skipping",
+                        key.asString(), issuer.issuerCompanyUuid());
+                continue;
+            }
+            List<InvoiceService.SettlementLineInput> lines = issuer.consultants().stream()
+                    .filter(c -> c.delta().signum() != 0)
+                    .map(c -> new InvoiceService.SettlementLineInput(c.consultantUuid(), c.consultantName(), c.delta()))
+                    .toList();
+            if (lines.isEmpty()) continue;
+
+            String internalUuid = invoiceService.createSettlementInternal(
+                    representative, issuer.issuerCompanyUuid(), key.debtorCompanyUuid(), lines,
+                    key.billingClientUuid(), key.year(), key.month(), queue);
+
+            self.writePhantomLinks(internalUuid, key);
+
+            if (!queue) {
+                internalInvoiceOrchestrator.finalizeAutomatically(internalUuid);
+            }
+            created.add(internalUuid);
+        }
+        log.infof("settleGroup: group=%s created=%d (queue=%s)", key.asString(), created.size(), queue);
+        return created;
+    }
+
+    /**
+     * True if an un-finalized QUEUED internal already exists for (group, issuer) — prevents
+     * duplicate settlement of the same issuer. REQUIRES_NEW so a call from the non-transactional
+     * settleGroup sees a fresh snapshot after the prior issuer's createSettlementInternal commit.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public boolean hasOpenQueuedInternal(SettlementGroupKey key, String issuerCompanyUuid) {
+        return Invoice.count("type in ?1 and status = ?2 and settlementBillingClientUuid = ?3 "
+                        + "and settlementDebtorCompanyuuid = ?4 and settlementYear = ?5 and settlementMonth = ?6 "
+                        + "and company.uuid = ?7",
+                List.of(InvoiceType.INTERNAL, InvoiceType.INTERNAL_SERVICE), InvoiceStatus.QUEUED,
+                key.billingClientUuid(), key.debtorCompanyUuid(), key.year(), key.month(), issuerCompanyUuid) > 0;
+    }
+
+    /**
+     * Audit: one link row per covered phantom in the group, amount = the phantom's signed group
+     * contribution (Σ attributed_amount) captured at issue time. Idempotent per (internal, phantom).
+     * REQUIRES_NEW so the read sees the attributions previewGroup just derived (committed) and the
+     * write commits independently of the non-transactional orchestration.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void writePhantomLinks(String internalUuid, SettlementGroupKey key) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT p.uuid, COALESCE(SUM(iia.attributed_amount),0)
+                FROM invoices p
+                JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
+                JOIN invoice_item_attributions iia ON iia.invoiceitem_uuid = ii.uuid
+                WHERE p.type='PHANTOM' AND p.status='CREATED' AND p.economics_entry_number IS NOT NULL
+                  AND p.internal_invoice_skip = 0
+                  AND p.billing_client_uuid = :client AND p.companyuuid = :company
+                  AND p.year = :year AND p.month = :month
+                GROUP BY p.uuid
+                """)
+                .setParameter("client", key.billingClientUuid())
+                .setParameter("company", key.debtorCompanyUuid())
+                .setParameter("year", key.year())
+                .setParameter("month", key.month())
+                .getResultList();
+        for (Object[] r : rows) {
+            String phantomUuid = (String) r[0];
+            if (InternalInvoicePhantomLink.count("internalUuid = ?1 and phantomUuid = ?2", internalUuid, phantomUuid) == 0) {
+                new InternalInvoicePhantomLink(internalUuid, phantomUuid,
+                        toBig(r[1]).setScale(2, RoundingMode.HALF_UP)).persist();
+            }
+        }
     }
 }
