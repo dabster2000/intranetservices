@@ -1279,13 +1279,19 @@ public class InvoiceService {
      * {@code settlement_*} columns are stamped so {@code listSettlementGroups}/{@code previewGroup}
      * find this document and re-settlement converges (delta &rarr; 0).
      *
-     * <p>When {@code queue} is true the document is created directly in {@link InvoiceStatus#QUEUED}
-     * rather than via {@link #queueInternalInvoice}: that method's duplicate guard keys on
+     * <p>The document is always created directly in {@link InvoiceStatus#QUEUED} rather than via
+     * {@link #queueInternalInvoice}: that method's duplicate guard keys on
      * {@code (invoice_ref_uuid, debtor_companyuuid)} and would 409-CONFLICT for a second issuer in
      * the same group (every issuer shares the representative phantom + debtor). Settlement
      * de-duplication is settlement-column + issuer scoped instead
-     * (see {@code PhantomSettlementService.hasOpenQueuedInternal}). When {@code queue} is false the
-     * document is left DRAFT for the caller to finalize via the orchestrator.
+     * (see {@code PhantomSettlementService.hasOpenQueuedInternal}). Creating QUEUED (never DRAFT)
+     * also means a committed settlement internal is always counted by the group's {@code settled}
+     * total, so re-settlement converges and a failed downstream finalize leaves a recoverable
+     * QUEUED document rather than an orphaned, uncounted DRAFT. The caller decides whether to
+     * finalize now (via the orchestrator) or leave it queued for manual Force-create.
+     *
+     * <p>Fail-closed like {@link #queueInternalInvoice}: the debtor company must have an
+     * intercompany Client (FR-2) and a configured internal-journal-number, else BAD_REQUEST.
      *
      * @return the created internal invoice uuid
      */
@@ -1296,8 +1302,7 @@ public class InvoiceService {
                                            List<SettlementLineInput> lines,
                                            String settlementClientUuid,
                                            int settlementYear,
-                                           int settlementMonth,
-                                           boolean queue) {
+                                           int settlementMonth) {
         Invoice source = Invoice.findById(representativePhantomUuid);
         if (source == null) {
             throw new WebApplicationException("Representative phantom not found: " + representativePhantomUuid,
@@ -1308,8 +1313,28 @@ public class InvoiceService {
             throw new WebApplicationException("Issuer company not found: " + issuerCompanyUuid,
                     Response.Status.BAD_REQUEST);
         }
+        Company debtorCompany = Company.findById(debtorCompanyUuid);
+        if (debtorCompany == null) {
+            throw new WebApplicationException("Debtor company not found: " + debtorCompanyUuid,
+                    Response.Status.BAD_REQUEST);
+        }
         // INTERNAL billing entity = the debtor company's intercompany Client (fail-closed, FR-2).
         Client intercompanyClient = requireIntercompanyClient(debtorCompanyUuid);
+        // Fail closed at creation if the debtor lacks an internal-journal-number (mirrors
+        // queueInternalInvoice) — a QUEUED settlement doc must be finalizable on the debtor side.
+        try {
+            IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(debtorCompany);
+            if (keys.internalJournalNumber() <= 0) {
+                throw new WebApplicationException("Debtor company " + debtorCompany.getName()
+                        + " does not have internal-journal-number configured", Response.Status.BAD_REQUEST);
+            }
+        } catch (WebApplicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WebApplicationException(
+                    "Failed to validate debtor company integration keys: " + e.getMessage(),
+                    Response.Status.BAD_REQUEST);
+        }
 
         String description = "Settlement " + settlementYear + "-" + String.format("%02d", settlementMonth);
 
@@ -1347,9 +1372,9 @@ public class InvoiceService {
         internal.setSettlementDebtorCompanyuuid(debtorCompanyUuid);
         internal.setSettlementYear(settlementYear);
         internal.setSettlementMonth(settlementMonth);
-        if (queue) {
-            internal.setStatus(InvoiceStatus.QUEUED);
-        }
+        // Always QUEUED (never DRAFT): a committed settlement internal is then always counted by the
+        // group's `settled` total, so re-settlement converges and a failed finalize is recoverable.
+        internal.setStatus(InvoiceStatus.QUEUED);
 
         // One delta line per consultant: hours=1, rate=signed delta (negative => credit note).
         int position = 1;
@@ -1371,8 +1396,8 @@ public class InvoiceService {
             InvoiceItem.persist(item);
         }
 
-        log.infof("createSettlementInternal: created internal=%s issuer=%s debtor=%s lines=%d queue=%s",
-                internal.getUuid(), issuerCompanyUuid, debtorCompanyUuid, lines.size(), queue);
+        log.infof("createSettlementInternal: created QUEUED internal=%s issuer=%s debtor=%s lines=%d",
+                internal.getUuid(), issuerCompanyUuid, debtorCompanyUuid, lines.size());
         return internal.getUuid();
     }
 
