@@ -16,8 +16,11 @@ import jakarta.transaction.Transactional;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+
+import static dk.trustworks.intranet.utils.DateUtils.getCurrentFiscalStartDate;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -104,9 +107,68 @@ class PhantomAttributionServiceTest {
         }
     }
 
+    @Test
+    void excludingMappedLabel_clearsExistingAutoRowsAndBillingStamp() {
+        LocalDate fyStart = getCurrentFiscalStartDate();
+        LocalDate fyEnd = fyStart.plusYears(1);
+        @SuppressWarnings("unchecked")
+        List<Tuple> phantoms = em.createNativeQuery("""
+                SELECT i.uuid AS uuid, i.clientname AS clientname,
+                       (SELECT ii.uuid FROM invoiceitems ii WHERE ii.invoiceuuid = i.uuid LIMIT 1) AS itemuuid
+                FROM invoices i
+                WHERE i.type = 'PHANTOM' AND i.status = 'CREATED'
+                  AND (MAKEDATE(i.year, 1) + INTERVAL (i.month - 1) MONTH) >= :fyStart
+                  AND (MAKEDATE(i.year, 1) + INTERVAL (i.month - 1) MONTH) <  :fyEnd
+                  AND (SELECT ii.uuid FROM invoiceitems ii WHERE ii.invoiceuuid = i.uuid LIMIT 1) IS NOT NULL
+                ORDER BY i.year DESC, i.month DESC
+                LIMIT 1
+                """, Tuple.class)
+                .setParameter("fyStart", fyStart)
+                .setParameter("fyEnd", fyEnd)
+                .getResultList();
+        if (phantoms.isEmpty()) return; // no viable phantom locally — skip gracefully
+
+        Tuple t = phantoms.getFirst();
+        String invoiceUuid = t.get("uuid", String.class);
+        String clientname = t.get("clientname", String.class);
+        String itemUuid = t.get("itemuuid", String.class);
+        String priorBilling = currentBillingClientUuid(invoiceUuid);
+
+        cleanupAuto(itemUuid);
+        stampBilling(invoiceUuid, "stale-client");
+        seedAutoAttribution(itemUuid);
+
+        try {
+            Map<?, ?> result = service.upsertClientMapAndRederive(
+                    new dk.trustworks.intranet.aggregates.invoice.resources.dto.PhantomClientMapRequest(
+                            clientname, null, true, "test exclude"),
+                    "test-user");
+
+            assertTrue(result.isEmpty(), "excluded label has nothing to derive");
+            assertEquals(0, InvoiceItemAttribution.count("invoiceitemUuid = ?1 AND source = ?2",
+                    itemUuid, AttributionSource.AUTO));
+            assertNull(currentBillingClientUuid(invoiceUuid), "exclude clears stale billing_client_uuid");
+        } finally {
+            cleanupAuto(itemUuid);
+            deleteMap(clientname);
+            restoreBilling(invoiceUuid, priorBilling);
+        }
+    }
+
     @Transactional
     void cleanupAuto(String itemUuid) {
         InvoiceItemAttribution.delete("invoiceitemUuid = ?1 AND source = ?2", itemUuid, AttributionSource.AUTO);
+    }
+
+    @Transactional
+    void seedAutoAttribution(String itemUuid) {
+        new InvoiceItemAttribution(
+                itemUuid,
+                "consultant-for-exclude-test",
+                new BigDecimal("100.0000"),
+                new BigDecimal("123.45"),
+                new BigDecimal("1.00"),
+                AttributionSource.AUTO).persist();
     }
 
     @Transactional
@@ -124,6 +186,12 @@ class PhantomAttributionServiceTest {
     void restoreBilling(String invoiceUuid, String prior) {
         em.createNativeQuery("UPDATE invoices SET billing_client_uuid = :v WHERE uuid = :u")
                 .setParameter("v", prior).setParameter("u", invoiceUuid).executeUpdate();
+    }
+
+    @Transactional
+    void stampBilling(String invoiceUuid, String value) {
+        em.createNativeQuery("UPDATE invoices SET billing_client_uuid = :v WHERE uuid = :u")
+                .setParameter("v", value).setParameter("u", invoiceUuid).executeUpdate();
     }
 
     String currentBillingClientUuid(String invoiceUuid) {
