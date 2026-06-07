@@ -45,5 +45,30 @@ public class IntegrationKey extends PanacheEntityBase {
     }
 
     public record IntegrationKeyValue(String url, String appSecretToken, String agreementGrantToken, int expenseJournalNumber, int invoiceJournalNumber, int invoiceAccountNumber, int internalJournalNumber, int invoiceProductNumber) {
+
+        /**
+         * Masks the e-conomic secret tokens so they never reach the logs. The
+         * record was previously logged at INFO via its auto-generated toString
+         * (e.g. {@code EconomicsInvoiceService}), leaking the live appSecret and
+         * agreementGrant tokens into CloudWatch. Keeps a 4-char prefix + length
+         * hint for debugging without exposing the secret.
+         */
+        @Override
+        public String toString() {
+            return "IntegrationKeyValue[url=" + url
+                    + ", appSecretToken=" + mask(appSecretToken)
+                    + ", agreementGrantToken=" + mask(agreementGrantToken)
+                    + ", expenseJournalNumber=" + expenseJournalNumber
+                    + ", invoiceJournalNumber=" + invoiceJournalNumber
+                    + ", invoiceAccountNumber=" + invoiceAccountNumber
+                    + ", internalJournalNumber=" + internalJournalNumber
+                    + ", invoiceProductNumber=" + invoiceProductNumber + "]";
+        }
+
+        private static String mask(String secret) {
+            if (secret == null || secret.isBlank()) return "<unset>";
+            int keep = Math.min(4, secret.length());
+            return secret.substring(0, keep) + "…(" + secret.length() + " chars, redacted)";
+        }
     }
 }
