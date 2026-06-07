@@ -432,4 +432,24 @@ public class PhantomSettlementService {
         for (Object[] r : rows) out.put((String) r[0], (String) r[1]);
         return out;
     }
+
+    // ── Phase 5: settle (write path) ──────────────────────────────────────────
+
+    /**
+     * Issuers to emit a settlement document for: those with a non-zero current delta,
+     * optionally restricted to a caller-supplied filter set. Pure (no DB) — the settle
+     * decision over a computed preview. A null/empty filter means "all non-zero issuers";
+     * a non-empty filter keeps only the listed issuer companies (still excluding zero-delta).
+     * Negative deltas are included (they become internal credit notes).
+     */
+    static List<SettlementGroupPreview.IssuerDelta> issuersToSettle(SettlementGroupPreview preview,
+                                                                    Set<String> issuerFilter) {
+        boolean all = (issuerFilter == null || issuerFilter.isEmpty());
+        List<SettlementGroupPreview.IssuerDelta> out = new ArrayList<>();
+        for (SettlementGroupPreview.IssuerDelta i : preview.issuers()) {
+            if (i.delta().signum() == 0) continue;
+            if (all || issuerFilter.contains(i.issuerCompanyUuid())) out.add(i);
+        }
+        return out;
+    }
 }
