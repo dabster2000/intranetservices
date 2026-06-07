@@ -10,6 +10,11 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
+import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
+import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupPreview;
+import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupRow;
+import dk.trustworks.intranet.aggregates.invoice.dto.SettlementPreviewRequest;
+import dk.trustworks.intranet.aggregates.invoice.dto.SettlementSettleRequest;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsRequest;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
@@ -1265,6 +1270,35 @@ public class InvoiceResource {
         return phantomSettlementService.backfillExistingInternals();
     }
 
+    /** All settlement groups in the window (one controlling row each). Signed amounts. */
+    @GET
+    @Path("/cross-company/phantoms/settlement")
+    public List<SettlementGroupRow> listSettlementGroups(
+            @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
+        return phantomSettlementService.listSettlementGroups(dateIt(fromdate), dateIt(todate));
+    }
+
+    /** Per-(issuer, consultant) target/settled/delta for one group's Settle dialog. Read-only. */
+    @POST
+    @Path("/cross-company/phantoms/settlement/preview")
+    public SettlementGroupPreview previewSettlementGroup(SettlementPreviewRequest req) {
+        SettlementGroupKey key = SettlementGroupKey.from(
+                req.billingClientUuid(), req.debtorCompanyUuid(), req.year(), req.month());
+        if (key == null) throw new WebApplicationException("Invalid settlement group key", Response.Status.BAD_REQUEST);
+        return maskSettlementPreview(phantomSettlementService.previewGroup(key, req.excludedAttributionUuids()));
+    }
+
+    /** Human-initiated settle (Decision D4): emit one document per non-zero issuer delta. */
+    @POST
+    @Path("/cross-company/phantoms/settlement/settle")
+    @RolesAllowed({"invoices:write"})
+    public List<String> settleSettlementGroup(SettlementSettleRequest req) {
+        SettlementGroupKey key = SettlementGroupKey.from(
+                req.billingClientUuid(), req.debtorCompanyUuid(), req.year(), req.month());
+        if (key == null) throw new WebApplicationException("Invalid settlement group key", Response.Status.BAD_REQUEST);
+        return phantomSettlementService.settleGroup(key, req.issuerCompanyUuids(), req.queue());
+    }
+
     /**
      * Validate that each entry parses as a UUID. Returns an immutable set; throws
      * 400 on the first malformed entry. {@code null} or empty input returns an
@@ -1322,6 +1356,28 @@ public class InvoiceResource {
                 dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy(),
                 dto.cancellingCreditNote()
         );
+    }
+
+    /**
+     * Strip consultant identity from the settlement preview when the caller lacks
+     * {@code users:read} (mirrors {@link #maskCrossCompanyPairs}). Per-consultant
+     * deltas are preserved; only the consultant uuid/name are nulled.
+     */
+    private SettlementGroupPreview maskSettlementPreview(SettlementGroupPreview p) {
+        if (scopeContext.hasScope("users:read")) {
+            return p;
+        }
+        List<SettlementGroupPreview.IssuerDelta> issuers = p.issuers().stream()
+                .map(i -> new SettlementGroupPreview.IssuerDelta(
+                        i.issuerCompanyUuid(), i.issuerCompanyName(),
+                        i.consultants().stream()
+                                .map(c -> new SettlementGroupPreview.ConsultantDelta(
+                                        null, null, c.target(), c.settled(), c.delta()))
+                                .toList(),
+                        i.target(), i.settled(), i.delta()))
+                .toList();
+        return new SettlementGroupPreview(p.key(), p.debtorCompanyUuid(), p.debtorCompanyName(), issuers,
+                p.totalTarget(), p.totalSettled(), p.totalDelta(), p.allResolved());
     }
 
     // ──────────────────────────────────────────────────────────────
