@@ -30,6 +30,11 @@ import java.util.Set;
  *   <li>CALCULATED items: {@code rate = HALF_UP(sharePct/100 × source.rate, 2)},
  *       {@code hours = 1.0}. {@code calculationRef}, {@code ruleId}, {@code label}
  *       are copied from source.</li>
+ *   <li>Each line's {@code itemname} is the ATTRIBUTED consultant's name
+ *       ({@code attribution.consultantName}), so split lines are labeled by their
+ *       own consultant rather than the source line's. Falls back to
+ *       {@code source.itemname} when the attributed consultant's name is unknown
+ *       (e.g. synthetic CALCULATED attributions that carry no name).</li>
  *   <li>Zero-rounding rows ({@code |rate × hours| < 0.01}) are skipped.</li>
  *   <li>Rounding residual absorbed into the largest-share line within the
  *       source item's per-issuer group; ties broken lexicographically by
@@ -167,7 +172,18 @@ public final class InternalInvoiceLineGenerator {
 
                 InvoiceItem line = new InvoiceItem();
                 line.consultantuuid = pl.attribution.consultantUuid;
-                line.itemname = src.itemname;
+                // Label the line with ITS attributed consultant — not the source line's
+                // consultant. When one source line is split across multiple consultants
+                // via attribution, each generated line must show its own consultant's name
+                // (the source name would mislabel every split line; bug: inv 56a632a3 showed
+                // both Tanja's and Alexander's lines as "Tanja Bøggild Kaufmann").
+                // Fall back to the source item name when the attributed consultant's name is
+                // unknown (e.g. synthetic CALCULATED rows carry no name) — preserves prior
+                // behavior and never NPEs.
+                line.itemname = (pl.attribution.consultantName != null
+                        && !pl.attribution.consultantName.isBlank())
+                        ? pl.attribution.consultantName
+                        : src.itemname;
                 line.description = src.description;
                 line.rate = pl.rate.doubleValue();
                 line.hours = pl.hours.doubleValue();

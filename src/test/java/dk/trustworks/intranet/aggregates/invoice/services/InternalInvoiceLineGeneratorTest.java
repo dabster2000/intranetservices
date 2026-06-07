@@ -193,6 +193,59 @@ class InternalInvoiceLineGeneratorTest {
         assertTrue(out.isEmpty() || out.values().stream().allMatch(List::isEmpty));
     }
 
+    // ── itemname labeled by ATTRIBUTED consultant (split-line mislabel bug) ──
+
+    @Test
+    void splitAcrossTwoConsultants_eachLineLabeledByItsOwnConsultantName() {
+        // Repro of prod inv 56a632a3: one source line (consultant "Tanja", 162.5h) split
+        // by attribution into Tanja 144h (88.6154%) + Alexander 18.5h (11.3846%), both
+        // cross-company. Before the fix, BOTH generated lines carried the source line's
+        // name "Tanja Bøggild Kaufmann". Each line must now show ITS consultant's name.
+        InvoiceItem src = base("item-1", 1000.0, 162.5);
+        src.itemname = "Tanja Bøggild Kaufmann"; // source line's consultant name
+
+        InvoiceItemAttribution tanja = attr("attr-t", "item-1", "tanja", "88.6154");
+        tanja.consultantName = "Tanja Bøggild Kaufmann";
+        InvoiceItemAttribution alex = attr("attr-a", "item-1", "alex", "11.3846");
+        alex.consultantName = "Alexander Fetterlein Hansen";
+        Map<String, String> users = Map.of("tanja", ISSUER_A, "alex", ISSUER_A);
+
+        Map<String, List<InvoiceItem>> out = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(src), List.of(tanja, alex), users);
+
+        List<InvoiceItem> lines = out.get(ISSUER_A);
+        assertEquals(2, lines.size());
+
+        InvoiceItem tanjaLine = lines.stream()
+                .filter(l -> "tanja".equals(l.consultantuuid))
+                .findFirst().orElseThrow();
+        InvoiceItem alexLine = lines.stream()
+                .filter(l -> "alex".equals(l.consultantuuid))
+                .findFirst().orElseThrow();
+
+        assertEquals("Tanja Bøggild Kaufmann", tanjaLine.itemname);
+        assertEquals("Alexander Fetterlein Hansen", alexLine.itemname,
+                "Split line must be labeled with its own consultant, not the source line's");
+    }
+
+    @Test
+    void blankConsultantName_fallsBackToSourceItemName() {
+        // A synthetic CALCULATED attribution carries no consultantName (null) — the line
+        // must fall back to the source item's name rather than emit null.
+        InvoiceItem src = calculated("i1", -200.0);
+        src.itemname = "Spring discount";
+        InvoiceItemAttribution noName = attr("a-null", "i1", "mary", "40.0000"); // consultantName left null
+        InvoiceItemAttribution blankName = attr("a-blank", "i1", "bob", "60.0000");
+        blankName.consultantName = "   "; // blank → also falls back
+        Map<String, String> users = Map.of("mary", ISSUER_A, "bob", ISSUER_B);
+
+        Map<String, List<InvoiceItem>> out = InternalInvoiceLineGenerator.generate(
+                SOURCE_COMPANY, List.of(src), List.of(noName, blankName), users);
+
+        assertEquals("Spring discount", out.get(ISSUER_A).get(0).itemname);
+        assertEquals("Spring discount", out.get(ISSUER_B).get(0).itemname);
+    }
+
     // ── exclusion (per-row deselection in CreateInternalInvoicesModal) ────────
 
     @Test
