@@ -1282,9 +1282,8 @@ public class InvoiceResource {
     @POST
     @Path("/cross-company/phantoms/settlement/preview")
     public SettlementGroupPreview previewSettlementGroup(SettlementPreviewRequest req) {
-        SettlementGroupKey key = SettlementGroupKey.from(
+        SettlementGroupKey key = settlementKeyOrBadRequest(
                 req.billingClientUuid(), req.debtorCompanyUuid(), req.year(), req.month());
-        if (key == null) throw new WebApplicationException("Invalid settlement group key", Response.Status.BAD_REQUEST);
         return maskSettlementPreview(phantomSettlementService.previewGroup(key, req.excludedAttributionUuids()));
     }
 
@@ -1293,10 +1292,24 @@ public class InvoiceResource {
     @Path("/cross-company/phantoms/settlement/settle")
     @RolesAllowed({"invoices:write"})
     public List<String> settleSettlementGroup(SettlementSettleRequest req) {
-        SettlementGroupKey key = SettlementGroupKey.from(
+        SettlementGroupKey key = settlementKeyOrBadRequest(
                 req.billingClientUuid(), req.debtorCompanyUuid(), req.year(), req.month());
-        if (key == null) throw new WebApplicationException("Invalid settlement group key", Response.Status.BAD_REQUEST);
         return phantomSettlementService.settleGroup(key, req.issuerCompanyUuids(), req.queue());
+    }
+
+    /**
+     * Build a settlement-group key or throw 400. Rejects a missing/blank client or
+     * company (via {@link SettlementGroupKey#from}) and an out-of-range month/year,
+     * so a malformed request body yields a clean 400 rather than a 500 from the
+     * downstream {@code LocalDate.of(year, month, 1)}.
+     */
+    private SettlementGroupKey settlementKeyOrBadRequest(String billingClientUuid, String debtorCompanyUuid,
+                                                         int year, int month) {
+        SettlementGroupKey key = SettlementGroupKey.from(billingClientUuid, debtorCompanyUuid, year, month);
+        if (key == null || month < 1 || month > 12 || year < 1 || year > 9999) {
+            throw new WebApplicationException("Invalid settlement group key", Response.Status.BAD_REQUEST);
+        }
+        return key;
     }
 
     /**
