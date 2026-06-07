@@ -105,6 +105,7 @@ public class PhantomSettlementService {
             FROM invoices i
             JOIN invoices p ON p.uuid = i.invoice_ref_uuid
             WHERE i.type IN ('INTERNAL','INTERNAL_SERVICE')
+              AND i.status IN ('PENDING_REVIEW','QUEUED','CREATED')
               AND i.invoice_ref_uuid IS NOT NULL
               AND p.type = 'PHANTOM'
               AND p.economics_entry_number IS NOT NULL
