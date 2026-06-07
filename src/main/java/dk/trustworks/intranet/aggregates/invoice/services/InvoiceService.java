@@ -1260,6 +1260,122 @@ public class InvoiceService {
         return internalInvoice;
     }
 
+    /** One delta line for a settlement document: one cross-company consultant, signed amount. */
+    public record SettlementLineInput(String consultantUuid, String consultantName, BigDecimal amount) {}
+
+    /**
+     * Create ONE internal settlement document for a single issuer against a phantom group
+     * (Phase 5 of consolidated PHANTOM settlement). An invoice when its delta lines sum
+     * positive; an internal credit note when they sum negative — negative line amounts flow
+     * through {@link InternalInvoiceOrchestrator} unchanged and post a supplier credit on the
+     * debtor side (see that class's javadoc). The header MIRRORS
+     * {@link #createInternalInvoiceFromGenerated} exactly — same {@link Invoice} constructor,
+     * same intercompany billing-client resolution and {@code vat} — substituting the
+     * representative phantom for the source, the chosen issuer {@link Company}, and a settlement
+     * description. {@code invoice_ref_uuid} is set to the representative phantom so the existing
+     * pairing / not-null validations stay satisfied (master plan R1).
+     *
+     * <p>Lines are one per consultant: {@code hours=1, rate=signed delta}, origin BASE. The four
+     * {@code settlement_*} columns are stamped so {@code listSettlementGroups}/{@code previewGroup}
+     * find this document and re-settlement converges (delta &rarr; 0).
+     *
+     * <p>When {@code queue} is true the document is created directly in {@link InvoiceStatus#QUEUED}
+     * rather than via {@link #queueInternalInvoice}: that method's duplicate guard keys on
+     * {@code (invoice_ref_uuid, debtor_companyuuid)} and would 409-CONFLICT for a second issuer in
+     * the same group (every issuer shares the representative phantom + debtor). Settlement
+     * de-duplication is settlement-column + issuer scoped instead
+     * (see {@code PhantomSettlementService.hasOpenQueuedInternal}). When {@code queue} is false the
+     * document is left DRAFT for the caller to finalize via the orchestrator.
+     *
+     * @return the created internal invoice uuid
+     */
+    @Transactional
+    public String createSettlementInternal(String representativePhantomUuid,
+                                           String issuerCompanyUuid,
+                                           String debtorCompanyUuid,
+                                           List<SettlementLineInput> lines,
+                                           String settlementClientUuid,
+                                           int settlementYear,
+                                           int settlementMonth,
+                                           boolean queue) {
+        Invoice source = Invoice.findById(representativePhantomUuid);
+        if (source == null) {
+            throw new WebApplicationException("Representative phantom not found: " + representativePhantomUuid,
+                    Response.Status.NOT_FOUND);
+        }
+        Company issuerCompany = Company.findById(issuerCompanyUuid);
+        if (issuerCompany == null) {
+            throw new WebApplicationException("Issuer company not found: " + issuerCompanyUuid,
+                    Response.Status.BAD_REQUEST);
+        }
+        // INTERNAL billing entity = the debtor company's intercompany Client (fail-closed, FR-2).
+        Client intercompanyClient = requireIntercompanyClient(debtorCompanyUuid);
+
+        String description = "Settlement " + settlementYear + "-" + String.format("%02d", settlementMonth);
+
+        Invoice internal = new Invoice(
+                source.getUuid(),
+                source.getInvoicenumber(),
+                InvoiceType.INTERNAL,
+                source.getContractuuid(),
+                source.getProjectuuid(),
+                source.getProjectname(),
+                source.getDiscount(),
+                source.getYear(),
+                source.getMonth(),
+                source.getCompany() != null ? source.getCompany().getName() : null,
+                source.getCompany() != null ? source.getCompany().getAddress() : null,
+                "",
+                source.getCompany() != null ? source.getCompany().getZipcode() : null,
+                "",
+                source.getCompany() != null ? source.getCompany().getCvr() : null,
+                internalInvoiceDefaultContactName,
+                LocalDate.now(),
+                LocalDate.now().plusMonths(1),
+                source.getProjectref(),
+                source.getContractref(),
+                source.contractType,
+                issuerCompany,
+                source.getCurrency(),
+                description,
+                debtorCompanyUuid);
+        internal.setBillingClientUuid(intercompanyClient.getUuid());
+        internal.setVat(source.getVat());
+
+        // Stamp the settlement-group key so the group can find this document.
+        internal.setSettlementBillingClientUuid(settlementClientUuid);
+        internal.setSettlementDebtorCompanyuuid(debtorCompanyUuid);
+        internal.setSettlementYear(settlementYear);
+        internal.setSettlementMonth(settlementMonth);
+        if (queue) {
+            internal.setStatus(InvoiceStatus.QUEUED);
+        }
+
+        // One delta line per consultant: hours=1, rate=signed delta (negative => credit note).
+        int position = 1;
+        for (SettlementLineInput line : lines) {
+            InvoiceItem item = new InvoiceItem(
+                    line.consultantUuid(),
+                    line.consultantName(),
+                    description,
+                    line.amount().doubleValue(),
+                    1.0,
+                    position++,
+                    internal.getUuid(),
+                    BASE);
+            internal.getInvoiceitems().add(item);
+        }
+
+        Invoice.persist(internal);
+        for (InvoiceItem item : internal.getInvoiceitems()) {
+            InvoiceItem.persist(item);
+        }
+
+        log.infof("createSettlementInternal: created internal=%s issuer=%s debtor=%s lines=%d queue=%s",
+                internal.getUuid(), issuerCompanyUuid, debtorCompanyUuid, lines.size(), queue);
+        return internal.getUuid();
+    }
+
     /**
      * Run the {@link PricingEngine} against the source invoice and merge its synthetic
      * CALCULATED items with the persisted items on the invoice (spec §6.4). Used by
