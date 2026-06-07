@@ -133,6 +133,29 @@ public class EconomicsAgreementResolver {
     }
 
     /**
+     * Returns the e-conomic payment-term number for IMMEDIATE settlement in the
+     * issuer company's own agreement.
+     *
+     * <p>INTERNAL / INTERNAL_SERVICE invoices are finalized only after the external
+     * client has paid, so the intermediary settles right away. Crucially, the term
+     * must exist in the ISSUER's agreement — the debtor contract's term number often
+     * does not (issuers carry only the low numbers, e.g. 1–5, while the debtor uses
+     * 8 = "Netto 30 dage"). Sending a non-existent number makes e-conomic reject the
+     * draft with HTTP 400. This picks the issuer's NET term with the fewest days
+     * (0 = "Netto kontant" / "Til omgående betaling").
+     *
+     * @throws BadRequestException when the issuer has no NET payment term configured.
+     */
+    public int immediatePaymentTermFor(String issuerCompanyUuid) {
+        return paymentTermsRepo.findMostImmediateNet(issuerCompanyUuid)
+                .map(PaymentTermsMapping::getEconomicsPaymentTermsNumber)
+                .orElseThrow(() -> new BadRequestException(
+                        "No immediate (NET, e.g. 'Netto kontant') payment term is configured for company "
+                        + issuerCompanyUuid + ". Internal invoices settle immediately and require one — "
+                        + "add a NET payment-terms mapping for this company and try again."));
+    }
+
+    /**
      * Returns the internal journal number used for inter-company (supplier) voucher posting
      * to the debtor company's e-conomic agreement.
      *

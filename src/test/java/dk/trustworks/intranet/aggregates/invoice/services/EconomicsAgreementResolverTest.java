@@ -60,6 +60,27 @@ class EconomicsAgreementResolverTest {
     }
 
     @Test
+    void immediatePaymentTermFor_returnsIssuersMostImmediateNetTerm() {
+        dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMapping kontant =
+                new dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMapping();
+        kontant.setEconomicsPaymentTermsNumber(3);
+        when(paymentTermsRepo.findMostImmediateNet("issuer-co")).thenReturn(Optional.of(kontant));
+
+        assertEquals(3, resolver.immediatePaymentTermFor("issuer-co"),
+                "Internal invoices must use the issuer's own immediate NET term number");
+    }
+
+    @Test
+    void immediatePaymentTermFor_throwsWhenIssuerHasNoNetTerm() {
+        when(paymentTermsRepo.findMostImmediateNet("issuer-co")).thenReturn(Optional.empty());
+
+        BadRequestException ex = assertThrows(BadRequestException.class,
+                () -> resolver.immediatePaymentTermFor("issuer-co"));
+        assertTrue(ex.getMessage().toLowerCase().contains("payment term"));
+        assertTrue(ex.getMessage().contains("issuer-co"));
+    }
+
+    @Test
     void vatZoneDetailsForReturnsNumberAndRate() {
         VatZoneMapping m = new VatZoneMapping();
         m.setEconomicsVatZoneNumber(7);
