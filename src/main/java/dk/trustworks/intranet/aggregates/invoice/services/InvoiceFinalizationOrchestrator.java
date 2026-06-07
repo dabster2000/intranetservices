@@ -149,12 +149,25 @@ public class InvoiceFinalizationOrchestrator {
         String companyUuid = inv.getCompany().getUuid();
         EconomicsAgreementResolver.Tokens tokens = agreements.tokens(companyUuid);
 
+        // INTERNAL / INTERNAL_SERVICE invoices are issued only after the external
+        // client has paid, so the intermediary settles immediately. Their payment
+        // term must also be valid in the ISSUER's own e-conomic agreement — the
+        // debtor contract's term number frequently is not (subsidiaries carry only
+        // the low numbers while the debtor uses e.g. 8 = "Netto 30 dage"), which
+        // otherwise makes e-conomic reject the draft with HTTP 400. Regular invoices
+        // keep the contract's payment term.
+        boolean internal = inv.getType() == InvoiceType.INTERNAL
+                || inv.getType() == InvoiceType.INTERNAL_SERVICE;
+        int termOfPaymentNumber = internal
+                ? agreements.immediatePaymentTermFor(companyUuid)
+                : agreements.paymentTermFor(bc.contract());
+
         DraftContext ctx = new DraftContext(
                 inv,
                 bc.contract(),
                 bc.billingClient(),
                 agreements.layoutNumber(companyUuid),
-                agreements.paymentTermFor(bc.contract()),
+                termOfPaymentNumber,
                 agreements.vatZoneFor(inv.getCurrency(), companyUuid),
                 agreements.productNumber(companyUuid)
         );

@@ -25,4 +25,18 @@ public class PaymentTermsMappingRepository implements PanacheRepositoryBase<Paym
         return find("paymentTermsType = ?1 and paymentDays = ?2 and company.uuid = ?3",
                 type, days, companyUuid).firstResultOptional();
     }
+
+    /**
+     * Returns the company's most-immediate NET payment term — the NET mapping
+     * with the fewest days (0 = "Netto kontant" / "Til omgående betaling"),
+     * tie-broken by the lowest e-conomic number. Used for INTERNAL /
+     * INTERNAL_SERVICE invoices, which settle immediately and must use a term
+     * that exists in the ISSUER's own agreement.
+     */
+    public Optional<PaymentTermsMapping> findMostImmediateNet(String companyUuid) {
+        if (companyUuid == null) throw new IllegalArgumentException("companyUuid is required");
+        return find("company.uuid = ?1 and paymentTermsType = ?2 and paymentDays is not null "
+                        + "order by paymentDays asc, economicsPaymentTermsNumber asc",
+                companyUuid, PaymentTermsType.NET).firstResultOptional();
+    }
 }

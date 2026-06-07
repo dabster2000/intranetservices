@@ -70,7 +70,9 @@ class InvoiceFinalizationOrchestratorInternalTest {
         when(billingResolver.resolve(inv)).thenReturn(new BillingContext(inv, contract, intercompanyClient));
         when(agreements.tokens("issuer-co")).thenReturn(new EconomicsAgreementResolver.Tokens("APP", "GRANT"));
         when(agreements.layoutNumber("issuer-co")).thenReturn(22);
-        when(agreements.paymentTermFor(any())).thenReturn(5);
+        // INTERNAL invoices settle immediately on the ISSUER's own NET/0 term,
+        // not the debtor contract's term (which may not exist in the issuer agreement).
+        when(agreements.immediatePaymentTermFor("issuer-co")).thenReturn(3);
         when(agreements.vatZoneFor(any(), any())).thenReturn(1);
         when(agreements.productNumber("issuer-co")).thenReturn("1");
 
@@ -90,6 +92,9 @@ class InvoiceFinalizationOrchestratorInternalTest {
         verify(mapper).toDraft(ctxCap.capture());
         assertSame(intercompanyClient, ctxCap.getValue().billingClient(),
                 "Mapper must receive the intercompany Client (not the contract's external client)");
+        assertEquals(3, ctxCap.getValue().termOfPaymentNumber(),
+                "INTERNAL invoices must settle on the issuer's immediate (NET/0) term, "
+                + "not the debtor contract's payment term");
 
         // AC-9: the null-guard did NOT overwrite the pre-stamped billingClientUuid.
         assertEquals("intercompany-client-uuid", out.getBillingClientUuid(),
