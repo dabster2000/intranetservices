@@ -44,7 +44,7 @@ class PhantomAttributionServiceTest {
     @Inject EntityManager em;
 
     @Test
-    void deriveForPhantom_attributesAndSumsExactly_thenIdempotent() {
+    void deriveForPhantom_attributesWorkValue_thenIdempotent() {
         // Find a viable CREATED 'Konsulenthonorar%' phantom: resolver suggests a client
         // AND that client has work in the phantom's month.
         @SuppressWarnings("unchecked")
@@ -60,7 +60,7 @@ class PhantomAttributionServiceTest {
                 """, Tuple.class).getResultList();
 
         String pickUuid = null, pickItem = null, pickClient = null;
-        BigDecimal pickTotal = null;
+        int pickYr = 0, pickMo = 0;
         for (Tuple t : phantoms) {
             String clientname = t.get("clientname", String.class);
             PhantomClientSuggestion s = resolver.suggest(clientname);
@@ -73,7 +73,8 @@ class PhantomAttributionServiceTest {
             pickUuid = t.get("uuid", String.class);
             pickItem = t.get("itemuuid", String.class);
             pickClient = s.suggestedClientUuid();
-            pickTotal = t.get("total") == null ? null : new BigDecimal(t.get("total").toString());
+            pickYr = yr;
+            pickMo = mo;
             break;
         }
         if (pickUuid == null) return; // no viable phantom locally — skip gracefully
@@ -92,8 +93,15 @@ class PhantomAttributionServiceTest {
             assertTrue(rows.stream().allMatch(r -> r.source == AttributionSource.AUTO));
             BigDecimal sum = rows.stream().map(r -> r.attributedAmount)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            assertEquals(0, sum.setScale(2).compareTo(pickTotal.setScale(2)),
-                    "attributed amounts must sum exactly to the phantom total");
+            // Amount basis is each consultant's own work value (hours×rate), NOT the self-billed
+            // phantom total. Expected = Σ per-consultant work value (each rounded to 2dp as
+            // computeShares does); compared in magnitude so a credit-note phantom (negated) still matches.
+            BigDecimal expectedWorkValue = service.findWork(pickClient, pickYr, pickMo).stream()
+                    .map(r -> r.revenue() == null ? BigDecimal.ZERO
+                            : r.revenue().setScale(2, java.math.RoundingMode.HALF_UP))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            assertEquals(0, sum.abs().setScale(2).compareTo(expectedWorkValue),
+                    "attributed amounts sum to the consultants' work value, not the phantom total");
             assertEquals(pickClient, currentBillingClientUuid(pickUuid), "billing_client_uuid stamped");
 
             int firstCount = rows.size();

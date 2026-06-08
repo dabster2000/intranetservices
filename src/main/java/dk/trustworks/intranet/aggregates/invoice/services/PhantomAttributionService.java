@@ -90,11 +90,20 @@ public class PhantomAttributionService {
     }
 
     /**
-     * Compute attribution shares for one phantom. Basis = registered revenue
-     * (Σ hours×rate); falls back to hours when total revenue is 0. Shares are
-     * rounded to PCT_SCALE; amounts to AMT_SCALE; the rounding residual is
-     * absorbed into the largest-share consultant (ties → smallest consultant
-     * uuid) so amounts sum EXACTLY to {@code phantomTotal}. Pure.
+     * Compute attribution rows for one phantom. The intercompany transfer price for each consultant
+     * is their <b>own logged work value</b> (Σ hours×rate) — i.e. what a normal client draft invoice
+     * would bill — NOT a share of the self-billed phantom revenue.
+     *
+     * <p>The self-billed "Konsulenthonorar …" revenue ({@code phantomTotal}) is decoupled from the
+     * consultants' logged work (it carries the client margin and timing noise), so distributing it
+     * by work-share produced transfer prices that were wrong by the phantom/work ratio (Vattenfall
+     * ~2.5× over, Energinet ~0.5× under). The margin (phantomTotal − Σ work value) is intentionally
+     * left with the contract-holding company and is not attributed to anyone.
+     *
+     * <p>{@code phantomTotal} is consulted only for its <b>sign</b>: a credit-note phantom (negative
+     * total) reverses the transfer, yielding negative amounts. {@code sharePct} is retained for
+     * display (the consultant's share of the group's work, revenue-weighted, hours-fallback) but no
+     * longer drives the amount, so there is no rounding residual to redistribute. Pure.
      */
     public static List<ShareRow> computeShares(Map<String, WorkAgg> byConsultant, BigDecimal phantomTotal) {
         if (byConsultant == null || byConsultant.isEmpty() || phantomTotal == null) {
@@ -112,44 +121,26 @@ public class PhantomAttributionService {
         }
 
         boolean revenueBasis = totalRevenue.signum() > 0;
-        BigDecimal totalWeight = revenueBasis ? totalRevenue : totalHours;
+        BigDecimal totalWeight = revenueBasis ? totalRevenue : totalHours; // sharePct (display) basis
         if (totalWeight.signum() <= 0) {
-            return List.of();
+            return List.of(); // no work at all (neither revenue nor hours)
         }
 
-        BigDecimal total = phantomTotal.setScale(AMT_SCALE, RoundingMode.HALF_UP);
+        // Credit-note phantoms (negative total) reverse the transfer; otherwise the amount is the
+        // work value. Relies on work revenue (Σ hours×rate) being non-negative — findRevenueByClientAndMonth
+        // filters workduration>0 — so negate yields the credit direction without a double-negative.
+        boolean negate = phantomTotal.signum() < 0;
         List<ShareRow> rows = new ArrayList<>(consultants.size());
-        BigDecimal sumAmount = BigDecimal.ZERO;
         for (String c : consultants) {
             WorkAgg w = byConsultant.get(c);
             BigDecimal weight = revenueBasis ? nz(w.revenue()) : nz(w.hours());
             BigDecimal sharePct = weight.multiply(HUNDRED).divide(totalWeight, PCT_SCALE, RoundingMode.HALF_UP);
-            BigDecimal amount = sharePct.divide(HUNDRED, 10, RoundingMode.HALF_UP)
-                    .multiply(total).setScale(AMT_SCALE, RoundingMode.HALF_UP);
+            BigDecimal workValue = nz(w.revenue()).setScale(AMT_SCALE, RoundingMode.HALF_UP);
+            BigDecimal amount = negate ? workValue.negate() : workValue;
             BigDecimal hours = nz(w.hours()).setScale(AMT_SCALE, RoundingMode.HALF_UP);
             rows.add(new ShareRow(c, sharePct, amount, hours));
-            sumAmount = sumAmount.add(amount);
-        }
-
-        BigDecimal residual = total.subtract(sumAmount);
-        if (residual.signum() != 0) {
-            int idx = pickAbsorbingIndex(rows);
-            ShareRow r = rows.get(idx);
-            rows.set(idx, new ShareRow(r.consultantUuid(), r.sharePct(),
-                    r.attributedAmount().add(residual), r.originalHours()));
         }
         return rows;
-    }
-
-    /** Largest sharePct; ties resolved to the smallest consultant uuid (rows are uuid-sorted). */
-    private static int pickAbsorbingIndex(List<ShareRow> rows) {
-        int best = 0;
-        for (int i = 1; i < rows.size(); i++) {
-            if (rows.get(i).sharePct().compareTo(rows.get(best).sharePct()) > 0) {
-                best = i;
-            }
-        }
-        return best;
     }
 
     private static BigDecimal nz(BigDecimal v) {
@@ -232,6 +223,12 @@ public class PhantomAttributionService {
         List<ShareRow> rows = computeShares(byConsultant, phantomTotal);
         if (rows.isEmpty()) {
             return PhantomDerivationStatus.NO_WORK;
+        }
+        // Rate=0 work has no monetary transfer-price basis -> every amount is 0. Surface it so an
+        // accountant can add the missing rate; we never fabricate a price (work value is the basis).
+        if (phantomTotal.signum() != 0 && rows.stream().allMatch(r -> r.attributedAmount().signum() == 0)) {
+            log.warnf("deriveForPhantom: phantom=%s client=%s has logged hours but zero work value "
+                    + "(missing rate) -> attribution is 0; manual rate review needed", invoiceUuid, resolvedClientUuid);
         }
 
         // Idempotent AUTO replace (mirror computeBaseItemAttribution — enum bound directly).
