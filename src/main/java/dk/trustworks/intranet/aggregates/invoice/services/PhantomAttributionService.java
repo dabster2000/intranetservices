@@ -253,8 +253,9 @@ public class PhantomAttributionService {
      * Signed Σ of phantom item totals over the settlement group — the denominator that apportions
      * each consultant's work value across the group's phantoms (see {@link #computeShares}). The
      * settlement engine groups its target by {@code billing_client_uuid}, so this denominator MUST
-     * cover the same set: all phantoms (company + period) whose import label ({@code clientname})
-     * maps to {@code resolvedClientUuid}, OR that are already stamped to it. Grouping by the
+     * cover the same set: all in-scope (CREATED, economics-imported, not skip-flagged) phantoms
+     * (company + period) whose import label ({@code clientname}) maps to {@code resolvedClientUuid},
+     * OR that are already stamped to it. The status/scope filters match the settlement engine's exactly. Grouping by the
      * label-SET (not a single label) keeps R consistent with the settlement target even if two
      * e-conomic labels map to the same client — otherwise each label's slice would divide by its own
      * label's R while settlement sums both, re-introducing inflation one level up. Label-based (not
@@ -265,7 +266,8 @@ public class PhantomAttributionService {
         Object res = em.createNativeQuery("""
                 SELECT COALESCE(SUM(ii.hours*ii.rate),0)
                 FROM invoices p JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
-                WHERE p.type='PHANTOM' AND p.economics_entry_number IS NOT NULL AND p.internal_invoice_skip = 0
+                WHERE p.type='PHANTOM' AND p.status='CREATED'
+                  AND p.economics_entry_number IS NOT NULL AND p.internal_invoice_skip = 0
                   AND p.companyuuid = :co AND p.year = :y AND p.month = :m
                   AND ( p.clientname = :myLabel
                         OR p.billing_client_uuid = :client
