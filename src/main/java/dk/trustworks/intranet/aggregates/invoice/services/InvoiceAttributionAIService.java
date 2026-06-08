@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 import com.openai.client.OpenAIClient;
 import com.openai.client.okhttp.OpenAIOkHttpClient;
 import com.openai.models.ChatCompletionCreateParams;
+import com.openai.errors.PermissionDeniedException;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.ResolvedItem;
 import jakarta.annotation.PostConstruct;
@@ -20,7 +21,8 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Wraps OpenAI GPT-4.1 for analyzing ambiguous invoice attributions.
+ * Wraps an OpenAI chat model (default {@code gpt-4o}, configurable via
+ * {@code openai.attribution-model}) for analyzing ambiguous invoice attributions.
  * When users edit invoice line items (consolidate, split, restructure),
  * this service proposes how to re-attribute revenue to consultants.
  * <p>
@@ -32,7 +34,6 @@ import java.util.stream.Collectors;
 public class InvoiceAttributionAIService {
 
     private static final Logger LOG = Logger.getLogger(InvoiceAttributionAIService.class);
-    private static final String MODEL = "gpt-4.1";
 
     private static final String STRICT_RULES = """
         STRICT RULES (must obey without exception):
@@ -69,6 +70,16 @@ public class InvoiceAttributionAIService {
 
     @ConfigProperty(name = "openai.api.key", defaultValue = "")
     String apiKey;
+
+    /**
+     * OpenAI chat model for attribution analysis. Configurable so the model can change without a
+     * redeploy (e.g. if the OpenAI project's model access changes). Default {@code gpt-4o}: it
+     * accepts the low temperature this service sets and returns reliable JSON. The gpt-5 family
+     * rejects non-default temperature, so do not point this at a gpt-5* model without also
+     * removing the temperature override in {@link #analyzeAttributions}.
+     */
+    @ConfigProperty(name = "openai.attribution-model", defaultValue = "gpt-4o")
+    String model;
 
     @Inject
     ObjectMapper objectMapper;
@@ -137,7 +148,7 @@ public class InvoiceAttributionAIService {
     // ── Public API ───────────────────────────────────────────────────
 
     /**
-     * Analyze ambiguous items using GPT-4.1. Returns updated ResolvedItems
+     * Analyze ambiguous items using the configured OpenAI model. Returns updated ResolvedItems
      * with AI-proposed attributions, confidence, and reasoning.
      * On failure, returns the input items unchanged (user resolves manually).
      */
@@ -151,7 +162,7 @@ public class InvoiceAttributionAIService {
             String prompt = buildPrompt(context);
 
             ChatCompletionCreateParams params = ChatCompletionCreateParams.builder()
-                .model(MODEL)
+                .model(model)
                 .addUserMessage(prompt)
                 .temperature(0.1)  // Low temperature for deterministic output
                 .build();
@@ -184,6 +195,15 @@ public class InvoiceAttributionAIService {
             }
             return validated;
 
+        } catch (PermissionDeniedException e) {
+            // Configuration problem — the OpenAI project/key cannot access the configured model —
+            // not a transient runtime error. The service still degrades gracefully to manual
+            // resolution, so log a concise, actionable WARN once per call instead of a per-call
+            // ERROR with a stack trace (which otherwise floods the production error taxonomy).
+            LOG.warnf("OpenAI attribution unavailable: the configured OpenAI project cannot access model '%s'. "
+                    + "Set openai.attribution-model to a model the project can access, or grant access in the "
+                    + "OpenAI dashboard. Falling back to manual resolution.", model);
+            return context.needsResolution();
         } catch (Exception e) {
             LOG.error("OpenAI attribution analysis failed -- falling back to manual", e);
             return context.needsResolution();

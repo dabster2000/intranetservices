@@ -345,6 +345,11 @@ openai:
   api:
     key: ${OPENAI_APIKEY:xx}
   model: gpt-5-nano #gpt-4o-mini
+  # Model for invoice-attribution AI (InvoiceAttributionAIService). Kept separate from openai.model
+  # because attribution sets a low temperature, which the gpt-5 family rejects with HTTP 400 — so
+  # this defaults to a gpt-4o-family model the project can access. Override per env with
+  # OPENAI_ATTRIBUTION_MODEL.
+  attribution-model: ${OPENAI_ATTRIBUTION_MODEL:gpt-4o}
   # Vision-strong model used only by vision + strict-schema calls (e.g. receipt OCR
   # in ExpenseClassificationService). Reasoning-class models like gpt-5-nano burn
   # their output budget on thinking and frequently emit empty structured output for

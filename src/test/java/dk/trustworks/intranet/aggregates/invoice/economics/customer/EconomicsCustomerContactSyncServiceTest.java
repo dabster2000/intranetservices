@@ -255,6 +255,38 @@ class EconomicsCustomerContactSyncServiceTest {
                 org.mockito.ArgumentMatchers.anyString());
     }
 
+    @Test
+    void on_405_method_not_allowed_skips_without_recording_or_throwing() {
+        // e-conomic rejects the contact-update PUT with 405 for this agreement (observed in prod).
+        // 405 is permanent: the sync must skip gracefully — not throw, not record a failure (which
+        // would churn the shared customer/contact retry row), and not persist a mapping update.
+        Contract ct = makeContract("Thomas", "thomas@x.dk");
+        Client billing = makeClient("c-uuid");
+        when(customerRepo.findByClientAndCompany("c-uuid", COMPANY))
+                .thenReturn(Optional.of(makeCustomerMapping("c-uuid", COMPANY, 101)));
+
+        ClientEconomicsContact existing = new ClientEconomicsContact();
+        existing.setUuid("m");
+        existing.setClientUuid("c-uuid");
+        existing.setCompanyUuid(COMPANY);
+        existing.setContactName("Thomas");
+        existing.setCustomerContactNumber(777);
+        when(contactRepo.findByClientCompanyAndName("c-uuid", COMPANY, "Thomas"))
+                .thenReturn(Optional.of(existing));
+
+        EconomicsContactDto fresh = new EconomicsContactDto();
+        fresh.setCustomerContactNumber(777);
+        fresh.setObjectVersion("v1");
+        when(api.getContact(777)).thenReturn(fresh);
+        doThrow(new WebApplicationException(Response.status(405).build()))
+                .when(api).updateContact(eq(777), any());
+
+        service.syncContactToCompany(ct, billing, COMPANY);
+
+        verify(failureRecorder, never()).record(any(), any(), any());
+        verify(contactRepo, never()).persist(any(ClientEconomicsContact.class));
+    }
+
     // ----------------------- helpers -----------------------
 
     private static Contract makeContract(String attention, String email) {
