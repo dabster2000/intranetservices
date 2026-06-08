@@ -101,8 +101,9 @@ public class PhantomAttributionService {
      * by the phantom's own total: {@code amount = workValue × (phantomTotal ÷ |groupTotal|)}, where
      * {@code phantomTotal} is THIS phantom's signed total and {@code groupTotal} is the signed total
      * of ALL phantoms in the group. This makes each consultant's amounts SUM across the group's
-     * phantoms to exactly their work value (group target = Σ work value), instead of work value ×
-     * phantomCount. Dividing by the ABSOLUTE group total preserves credit-note direction: a
+     * phantoms to their work value (up to per-phantom 2-dp rounding — a residual bounded by
+     * ~phantomCount/2 øre), instead of work value × phantomCount. Dividing by the ABSOLUTE group
+     * total preserves credit-note direction: a
      * credit-note group (negative groupTotal) yields negative amounts, and a lone credit-note phantom
      * inside a positive group contributes a negative slice. The margin (group revenue − Σ work value)
      * is intentionally not attributed. {@code sharePct} is retained for display only. Pure.
@@ -225,7 +226,7 @@ public class PhantomAttributionService {
 
         BigDecimal phantomTotal = BigDecimal.valueOf(item.hours * item.rate)
                 .setScale(AMT_SCALE, RoundingMode.HALF_UP);
-        BigDecimal groupTotal = groupPhantomTotal(phantom);
+        BigDecimal groupTotal = groupPhantomTotal(phantom, resolvedClientUuid);
         List<ShareRow> rows = computeShares(byConsultant, phantomTotal, groupTotal);
         if (rows.isEmpty()) {
             return PhantomDerivationStatus.NO_WORK;
@@ -250,23 +251,32 @@ public class PhantomAttributionService {
 
     /**
      * Signed Σ of phantom item totals over the settlement group — the denominator that apportions
-     * each consultant's work value across the group's phantoms (see {@link #computeShares}). Grouped
-     * by the e-conomic import label ({@code clientname}) + company + period: the label is stable
-     * before {@code billing_client_uuid} is stamped, and each label maps to one client, so this
-     * matches the billing-client grouping the settlement engine uses.
+     * each consultant's work value across the group's phantoms (see {@link #computeShares}). The
+     * settlement engine groups its target by {@code billing_client_uuid}, so this denominator MUST
+     * cover the same set: all phantoms (company + period) whose import label ({@code clientname})
+     * maps to {@code resolvedClientUuid}, OR that are already stamped to it. Grouping by the
+     * label-SET (not a single label) keeps R consistent with the settlement target even if two
+     * e-conomic labels map to the same client — otherwise each label's slice would divide by its own
+     * label's R while settlement sums both, re-introducing inflation one level up. Label-based (not
+     * billing_client_uuid-based) so R is stable before sibling phantoms are stamped during derive.
      */
-    BigDecimal groupPhantomTotal(Invoice phantom) {
+    BigDecimal groupPhantomTotal(Invoice phantom, String resolvedClientUuid) {
         String companyUuid = phantom.getCompany() != null ? phantom.getCompany().getUuid() : null;
         Object res = em.createNativeQuery("""
                 SELECT COALESCE(SUM(ii.hours*ii.rate),0)
                 FROM invoices p JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
                 WHERE p.type='PHANTOM' AND p.economics_entry_number IS NOT NULL AND p.internal_invoice_skip = 0
-                  AND p.clientname = :cn AND p.companyuuid = :co AND p.year = :y AND p.month = :m
+                  AND p.companyuuid = :co AND p.year = :y AND p.month = :m
+                  AND ( p.clientname = :myLabel
+                        OR p.billing_client_uuid = :client
+                        OR p.clientname IN (SELECT m.clientname FROM phantom_client_map m
+                                            WHERE m.client_uuid = :client AND (m.excluded = 0 OR m.excluded IS NULL)) )
                 """)
-                .setParameter("cn", phantom.getClientname())
                 .setParameter("co", companyUuid)
                 .setParameter("y", phantom.getYear())
                 .setParameter("m", phantom.getMonth())
+                .setParameter("myLabel", phantom.getClientname())
+                .setParameter("client", resolvedClientUuid)
                 .getSingleResult();
         if (res == null) return BigDecimal.ZERO;
         return (res instanceof BigDecimal b) ? b : BigDecimal.valueOf(((Number) res).doubleValue());

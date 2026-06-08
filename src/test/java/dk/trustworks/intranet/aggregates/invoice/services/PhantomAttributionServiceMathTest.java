@@ -194,6 +194,22 @@ class PhantomAttributionServiceMathTest {
                 .compareTo(new BigDecimal("250.00")));
     }
 
+    @Test
+    void multiPhantomGroup_roundingResidualIsBounded() {
+        // 3 equal phantoms over a work value of 100: each slice = 100 × 1/3 = 33.3333… → 33.33, so
+        // the group sum is 99.99 — a 1-øre residual from independent per-phantom 2dp rounding (NOT
+        // exact). The residual stays within a few øre of the work value (~phantomCount/2 øre).
+        Map<String, WorkAgg> w = work("a", 10, 100); // work value = 100
+        BigDecimal R = new BigDecimal("3.00");
+        BigDecimal sum = BigDecimal.ZERO;
+        for (int i = 0; i < 3; i++) {
+            sum = sum.add(amt(PhantomAttributionService.computeShares(w, new BigDecimal("1.00"), R), "a"));
+        }
+        assertEquals(0, sum.compareTo(new BigDecimal("99.99")), "per-phantom 2dp rounding leaves a small residual");
+        assertTrue(sum.subtract(new BigDecimal("100.00")).abs().compareTo(new BigDecimal("0.05")) <= 0,
+                "residual stays within a few øre of the work value");
+    }
+
     private static BigDecimal amt(List<ShareRow> rows, String consultant) {
         return rows.stream().filter(r -> r.consultantUuid().equals(consultant))
                 .findFirst().orElseThrow().attributedAmount();
