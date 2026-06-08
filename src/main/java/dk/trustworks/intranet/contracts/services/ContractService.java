@@ -385,14 +385,16 @@ public class ContractService {
                         "billingAttention = ?7, " +
                         "billingEmail = ?8, " +
                         "billingRef = ?9, " +
-                        "paymentTermsUuid = ?10 " +
-                        "WHERE uuid like ?11 ",
+                        "paymentTermsUuid = ?10, " +
+                        "name = ?11 " +
+                        "WHERE uuid like ?12 ",
                 contract.getAmount(), contract.getStatus(),
                 contract.getNote(),
                 contract.getCompany(), contract.getSalesconsultant(),
                 contract.getBillingClientUuid(), contract.getBillingAttention(),
                 contract.getBillingEmail(), contract.getBillingRef(),
                 contract.getPaymentTermsUuid(),
+                contract.getName(),
                 contract.getUuid());
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
 
@@ -413,6 +415,10 @@ public class ContractService {
             if (!Objects.equals(oldContract.getNote(), contract.getNote())) {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
                         "note", oldContract.getNote(), contract.getNote());
+            }
+            if (!Objects.equals(oldContract.getName(), contract.getName())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "name", oldContract.getName(), contract.getName());
             }
         }
 

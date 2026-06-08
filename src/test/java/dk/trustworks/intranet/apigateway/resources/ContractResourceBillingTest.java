@@ -78,6 +78,28 @@ class ContractResourceBillingTest {
         }
     }
 
+    @Test
+    void contract_service_update_method_persists_the_name_column() throws Exception {
+        // Regression guard: the update() JPQL bulk-UPDATE must SET the `name` column.
+        // It was previously omitted from the SET clause, so PUT /contracts silently
+        // dropped contract renames on every save. We assert on the "name = ?" SET
+        // assignment specifically, because the literal word "name" also appears in
+        // the method via entityName / getName() and would give a false pass.
+        String serviceSource = java.nio.file.Files.readString(
+                java.nio.file.Path.of(
+                        System.getProperty("user.dir"),
+                        "src/main/java/dk/trustworks/intranet/contracts/services/ContractService.java"));
+
+        int methodIdx = serviceSource.indexOf("public void update(Contract contract)");
+        assertTrue(methodIdx > 0, "Could not locate update(Contract) in ContractService source");
+        int methodEnd = indexOfMethodEnd(serviceSource, methodIdx);
+        String updateBody = serviceSource.substring(methodIdx, methodEnd);
+
+        assertTrue(updateBody.contains("name = ?"),
+                "ContractService.update must SET the name column (e.g. \"name = ?11\") — " +
+                "without it PUT /contracts silently drops contract renames.");
+    }
+
     private static int indexOfMethodEnd(String source, int methodStart) {
         int braceDepth = 0;
         boolean seen = false;
