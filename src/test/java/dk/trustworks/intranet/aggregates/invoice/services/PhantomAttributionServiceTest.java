@@ -44,7 +44,7 @@ class PhantomAttributionServiceTest {
     @Inject EntityManager em;
 
     @Test
-    void deriveForPhantom_attributesAndSumsExactly_thenIdempotent() {
+    void deriveForPhantom_attributesWorkValue_thenIdempotent() {
         // Find a viable CREATED 'Konsulenthonorar%' phantom: resolver suggests a client
         // AND that client has work in the phantom's month.
         @SuppressWarnings("unchecked")
@@ -60,7 +60,6 @@ class PhantomAttributionServiceTest {
                 """, Tuple.class).getResultList();
 
         String pickUuid = null, pickItem = null, pickClient = null;
-        BigDecimal pickTotal = null;
         for (Tuple t : phantoms) {
             String clientname = t.get("clientname", String.class);
             PhantomClientSuggestion s = resolver.suggest(clientname);
@@ -73,7 +72,6 @@ class PhantomAttributionServiceTest {
             pickUuid = t.get("uuid", String.class);
             pickItem = t.get("itemuuid", String.class);
             pickClient = s.suggestedClientUuid();
-            pickTotal = t.get("total") == null ? null : new BigDecimal(t.get("total").toString());
             break;
         }
         if (pickUuid == null) return; // no viable phantom locally — skip gracefully
@@ -90,10 +88,10 @@ class PhantomAttributionServiceTest {
             List<InvoiceItemAttribution> rows = InvoiceItemAttribution.list("invoiceitemUuid", pickItem);
             assertFalse(rows.isEmpty());
             assertTrue(rows.stream().allMatch(r -> r.source == AttributionSource.AUTO));
-            BigDecimal sum = rows.stream().map(r -> r.attributedAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            assertEquals(0, sum.setScale(2).compareTo(pickTotal.setScale(2)),
-                    "attributed amounts must sum exactly to the phantom total");
+            // Each amount is the consultant's revenue-weighted slice of the group's work value; the
+            // exact apportionment math (per-phantom slice, multi-phantom summing to work value,
+            // credit-note signs, rounding) is covered by PhantomAttributionServiceMathTest. This
+            // integration test asserts the persistence contract: AUTO rows, client stamp, idempotency.
             assertEquals(pickClient, currentBillingClientUuid(pickUuid), "billing_client_uuid stamped");
 
             int firstCount = rows.size();
