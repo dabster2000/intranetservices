@@ -90,23 +90,26 @@ public class PhantomAttributionService {
     }
 
     /**
-     * Compute attribution rows for one phantom. The intercompany transfer price for each consultant
-     * is their <b>own logged work value</b> (Σ hours×rate) — i.e. what a normal client draft invoice
-     * would bill — NOT a share of the self-billed phantom revenue.
+     * Compute attribution rows for one phantom within its settlement group. The intercompany
+     * transfer price for each consultant is their <b>own logged work value</b> (Σ hours×rate) — i.e.
+     * what a normal client draft invoice would bill — NOT a share of the self-billed phantom revenue
+     * (which carries the client margin/timing noise; distributing it was wrong by the phantom/work
+     * ratio, ~2.5× over for Vattenfall, ~0.5× under for Energinet).
      *
-     * <p>The self-billed "Konsulenthonorar …" revenue ({@code phantomTotal}) is decoupled from the
-     * consultants' logged work (it carries the client margin and timing noise), so distributing it
-     * by work-share produced transfer prices that were wrong by the phantom/work ratio (Vattenfall
-     * ~2.5× over, Energinet ~0.5× under). The margin (phantomTotal − Σ work value) is intentionally
-     * left with the contract-holding company and is not attributed to anyone.
-     *
-     * <p>{@code phantomTotal} is consulted only for its <b>sign</b>: a credit-note phantom (negative
-     * total) reverses the transfer, yielding negative amounts. {@code sharePct} is retained for
-     * display (the consultant's share of the group's work, revenue-weighted, hours-fallback) but no
-     * longer drives the amount, so there is no rounding residual to redistribute. Pure.
+     * <p>A settlement group has MANY phantoms (one per e-conomic entry) that all see the same
+     * group-level work. So each phantom carries only its <b>share</b> of the work value, apportioned
+     * by the phantom's own total: {@code amount = workValue × (phantomTotal ÷ |groupTotal|)}, where
+     * {@code phantomTotal} is THIS phantom's signed total and {@code groupTotal} is the signed total
+     * of ALL phantoms in the group. This makes each consultant's amounts SUM across the group's
+     * phantoms to exactly their work value (group target = Σ work value), instead of work value ×
+     * phantomCount. Dividing by the ABSOLUTE group total preserves credit-note direction: a
+     * credit-note group (negative groupTotal) yields negative amounts, and a lone credit-note phantom
+     * inside a positive group contributes a negative slice. The margin (group revenue − Σ work value)
+     * is intentionally not attributed. {@code sharePct} is retained for display only. Pure.
      */
-    public static List<ShareRow> computeShares(Map<String, WorkAgg> byConsultant, BigDecimal phantomTotal) {
-        if (byConsultant == null || byConsultant.isEmpty() || phantomTotal == null) {
+    public static List<ShareRow> computeShares(Map<String, WorkAgg> byConsultant,
+                                               BigDecimal phantomTotal, BigDecimal groupTotal) {
+        if (byConsultant == null || byConsultant.isEmpty() || phantomTotal == null || groupTotal == null) {
             return List.of();
         }
         List<String> consultants = new ArrayList<>(byConsultant.keySet());
@@ -126,17 +129,19 @@ public class PhantomAttributionService {
             return List.of(); // no work at all (neither revenue nor hours)
         }
 
-        // Credit-note phantoms (negative total) reverse the transfer; otherwise the amount is the
-        // work value. Relies on work revenue (Σ hours×rate) being non-negative — findRevenueByClientAndMonth
-        // filters workduration>0 — so negate yields the credit direction without a double-negative.
-        boolean negate = phantomTotal.signum() < 0;
+        // This phantom's slice of the group: signed phantomTotal over the ABSOLUTE group total. The
+        // per-consultant amounts therefore sum across the group's phantoms to their work value, and a
+        // credit-note (negative) total reverses the transfer. groupTotal==0 (net-zero group) -> 0.
+        BigDecimal absGroup = groupTotal.abs();
+        BigDecimal fraction = absGroup.signum() == 0
+                ? BigDecimal.ZERO
+                : phantomTotal.divide(absGroup, 10, RoundingMode.HALF_UP);
         List<ShareRow> rows = new ArrayList<>(consultants.size());
         for (String c : consultants) {
             WorkAgg w = byConsultant.get(c);
             BigDecimal weight = revenueBasis ? nz(w.revenue()) : nz(w.hours());
             BigDecimal sharePct = weight.multiply(HUNDRED).divide(totalWeight, PCT_SCALE, RoundingMode.HALF_UP);
-            BigDecimal workValue = nz(w.revenue()).setScale(AMT_SCALE, RoundingMode.HALF_UP);
-            BigDecimal amount = negate ? workValue.negate() : workValue;
+            BigDecimal amount = nz(w.revenue()).multiply(fraction).setScale(AMT_SCALE, RoundingMode.HALF_UP);
             BigDecimal hours = nz(w.hours()).setScale(AMT_SCALE, RoundingMode.HALF_UP);
             rows.add(new ShareRow(c, sharePct, amount, hours));
         }
@@ -220,7 +225,8 @@ public class PhantomAttributionService {
 
         BigDecimal phantomTotal = BigDecimal.valueOf(item.hours * item.rate)
                 .setScale(AMT_SCALE, RoundingMode.HALF_UP);
-        List<ShareRow> rows = computeShares(byConsultant, phantomTotal);
+        BigDecimal groupTotal = groupPhantomTotal(phantom);
+        List<ShareRow> rows = computeShares(byConsultant, phantomTotal, groupTotal);
         if (rows.isEmpty()) {
             return PhantomDerivationStatus.NO_WORK;
         }
@@ -237,9 +243,33 @@ public class PhantomAttributionService {
             new InvoiceItemAttribution(item.uuid, row.consultantUuid(), row.sharePct(),
                     row.attributedAmount(), row.originalHours(), AttributionSource.AUTO).persist();
         }
-        log.infof("deriveForPhantom: attributed phantom=%s client=%s consultants=%d total=%s",
-                invoiceUuid, resolvedClientUuid, rows.size(), phantomTotal);
+        log.infof("deriveForPhantom: attributed phantom=%s client=%s consultants=%d phantomTotal=%s groupTotal=%s",
+                invoiceUuid, resolvedClientUuid, rows.size(), phantomTotal, groupTotal);
         return PhantomDerivationStatus.ATTRIBUTED;
+    }
+
+    /**
+     * Signed Σ of phantom item totals over the settlement group — the denominator that apportions
+     * each consultant's work value across the group's phantoms (see {@link #computeShares}). Grouped
+     * by the e-conomic import label ({@code clientname}) + company + period: the label is stable
+     * before {@code billing_client_uuid} is stamped, and each label maps to one client, so this
+     * matches the billing-client grouping the settlement engine uses.
+     */
+    BigDecimal groupPhantomTotal(Invoice phantom) {
+        String companyUuid = phantom.getCompany() != null ? phantom.getCompany().getUuid() : null;
+        Object res = em.createNativeQuery("""
+                SELECT COALESCE(SUM(ii.hours*ii.rate),0)
+                FROM invoices p JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
+                WHERE p.type='PHANTOM' AND p.economics_entry_number IS NOT NULL AND p.internal_invoice_skip = 0
+                  AND p.clientname = :cn AND p.companyuuid = :co AND p.year = :y AND p.month = :m
+                """)
+                .setParameter("cn", phantom.getClientname())
+                .setParameter("co", companyUuid)
+                .setParameter("y", phantom.getYear())
+                .setParameter("m", phantom.getMonth())
+                .getSingleResult();
+        if (res == null) return BigDecimal.ZERO;
+        return (res instanceof BigDecimal b) ? b : BigDecimal.valueOf(((Number) res).doubleValue());
     }
 
     /** Read the in-scope phantom uuids in a short transaction (called via self proxy). */

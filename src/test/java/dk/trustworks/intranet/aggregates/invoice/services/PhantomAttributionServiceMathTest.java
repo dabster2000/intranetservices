@@ -15,7 +15,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Pure unit test — no CDI, no DB. Attribution amount = consultant work value (not phantom share); scope predicate. */
+/** Pure unit test — no CDI, no DB. Attribution amount = consultant work value, apportioned per phantom across the group; scope predicate. */
 class PhantomAttributionServiceMathTest {
 
     private static final LocalDate FY_START = LocalDate.of(2025, 7, 1);
@@ -31,11 +31,16 @@ class PhantomAttributionServiceMathTest {
         return m;
     }
 
+    /** Single-phantom convenience: the group IS this one phantom, so groupTotal == phantomTotal. */
+    private static List<ShareRow> shares(Map<String, WorkAgg> w, String total) {
+        return PhantomAttributionService.computeShares(w, new BigDecimal(total), new BigDecimal(total));
+    }
+
     @Test
     void revenueBasis_proportionalToRevenue() {
         // a: 30h @ revenue 3000 ; b: 10h @ revenue 1000 ; total 4000
         Map<String, WorkAgg> w = work("a", 30, 3000, "b", 10, 1000);
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("4000.00"));
+        List<ShareRow> rows = shares(w, "4000.00");
 
         ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
         ShareRow b = rows.stream().filter(r -> r.consultantUuid().equals("b")).findFirst().orElseThrow();
@@ -52,7 +57,7 @@ class PhantomAttributionServiceMathTest {
         // is flagged for manual rate review in deriveForPhantom). sharePct is still computed by
         // hours, for display only.
         Map<String, WorkAgg> w = work("a", 30, 0, "b", 10, 0);
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("4000.00"));
+        List<ShareRow> rows = shares(w, "4000.00");
 
         ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
         assertEquals(0, a.sharePct().compareTo(new BigDecimal("75.0000")), "sharePct still hours-based for display");
@@ -60,8 +65,8 @@ class PhantomAttributionServiceMathTest {
     }
 
     // NOTE: the former residual* tests were removed — amounts are now each consultant's own work
-    // value (not a distribution of phantomTotal), so there is no rounding residual to redistribute
-    // and no "amounts sum to phantomTotal" invariant. See sumOfAttributions_equalsTotalWorkValue_notPhantomTotal.
+    // value (apportioned per phantom), not a distribution of phantomTotal, so there is no rounding
+    // residual to redistribute. See sumOfAttributions_* and multiPhantomGroup_* for the invariants.
 
     @Test
     void mixedRevenue_zeroRevenueConsultantGetsZeroShare() {
@@ -69,7 +74,7 @@ class PhantomAttributionServiceMathTest {
         // zero-weighted (0%), NOT hours-weighted. Pins the basis-switch boundary between
         // the two extreme cases above.
         Map<String, WorkAgg> w = work("a", 10, 1000, "b", 10, 0);
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("1000.00"));
+        List<ShareRow> rows = shares(w, "1000.00");
 
         ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
         ShareRow b = rows.stream().filter(r -> r.consultantUuid().equals("b")).findFirst().orElseThrow();
@@ -92,10 +97,9 @@ class PhantomAttributionServiceMathTest {
 
     @Test
     void singleConsultant_getsOwnWorkValue_notPhantomTotal() {
-        // The clearest expression of the bug: a consultant with 500 of logged work was attributed
-        // the entire 12,345.67 self-billed phantom. The transfer price is their OWN work value.
-        List<ShareRow> rows = PhantomAttributionService.computeShares(
-                work("solo", 12, 500), new BigDecimal("12345.67"));
+        // The clearest expression of the original bug: a consultant with 500 of logged work was
+        // attributed the entire 12,345.67 self-billed phantom. The transfer price is their work value.
+        List<ShareRow> rows = shares(work("solo", 12, 500), "12345.67");
         assertEquals(1, rows.size());
         assertEquals(0, rows.get(0).sharePct().compareTo(new BigDecimal("100.0000")));
         assertEquals(0, rows.get(0).attributedAmount().compareTo(new BigDecimal("500.00")),
@@ -112,7 +116,7 @@ class PhantomAttributionServiceMathTest {
         Map<String, WorkAgg> w = work(
                 "michelle", 141.5, 162725,
                 "rest",    1000.0, 1117625);   // 162,725 + 1,117,625 = 1,280,350 total work value
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("3198984.00"));
+        List<ShareRow> rows = shares(w, "3198984.00");
 
         ShareRow m = rows.stream().filter(r -> r.consultantUuid().equals("michelle")).findFirst().orElseThrow();
         assertEquals(0, m.attributedAmount().compareTo(new BigDecimal("162725.00")),
@@ -127,7 +131,7 @@ class PhantomAttributionServiceMathTest {
         Map<String, WorkAgg> w = work(
                 "julie", 100.0, 132652,
                 "rest",  300.0, 424669);    // 132,652 + 424,669 = 557,321 total work value
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("455630.00"));
+        List<ShareRow> rows = shares(w, "455630.00");
 
         ShareRow j = rows.stream().filter(r -> r.consultantUuid().equals("julie")).findFirst().orElseThrow();
         assertEquals(0, j.attributedAmount().compareTo(new BigDecimal("132652.00")),
@@ -136,10 +140,10 @@ class PhantomAttributionServiceMathTest {
 
     @Test
     void attribution_independentOfPhantomMagnitude() {
-        // The amount must not change when only the phantom total changes.
+        // For a single-phantom group the amount is the work value regardless of the phantom's size.
         Map<String, WorkAgg> w = work("a", 10, 1000, "b", 20, 2000);
-        List<ShareRow> small = PhantomAttributionService.computeShares(w, new BigDecimal("3000.00"));
-        List<ShareRow> huge  = PhantomAttributionService.computeShares(w, new BigDecimal("999999.00"));
+        List<ShareRow> small = shares(w, "3000.00");
+        List<ShareRow> huge  = shares(w, "999999.00");
         assertEquals(0, amt(small, "a").compareTo(amt(huge, "a")), "amount must not scale with phantom revenue");
         assertEquals(0, amt(small, "b").compareTo(amt(huge, "b")));
         assertEquals(0, amt(small, "a").compareTo(new BigDecimal("1000.00")));
@@ -151,10 +155,43 @@ class PhantomAttributionServiceMathTest {
         // The margin (phantom revenue − work value) is intentionally NOT attributed to anyone;
         // it stays with the contract-holding company.
         Map<String, WorkAgg> w = work("a", 10, 1000, "b", 20, 2000); // work value total = 3000
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("9000.00"));
+        List<ShareRow> rows = shares(w, "9000.00");
         BigDecimal sum = rows.stream().map(ShareRow::attributedAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         assertEquals(0, sum.compareTo(new BigDecimal("3000.00")),
                 "attributions sum to the work value, not the self-billed phantom total");
+    }
+
+    @Test
+    void multiPhantomGroup_sumsToWorkValuePerConsultant_notMultiplied() {
+        // A settlement group has MANY phantoms (one per e-conomic entry). deriveForPhantom runs
+        // per phantom with the SAME group-level work data, so each phantom carries only its share
+        // (phantomTotal / |groupTotal|) and a consultant's amounts SUM across the group to their
+        // work value — NOT work value x phantomCount (the bug the staging probe caught).
+        Map<String, WorkAgg> w = work("michelle", 50, 1000, "rest", 150, 3000); // W = 4000
+        BigDecimal R = new BigDecimal("4000.00");                                // 2 phantoms: 3000 + 1000
+        BigDecimal[] phantomTotals = { new BigDecimal("3000.00"), new BigDecimal("1000.00") };
+
+        BigDecimal michelle = BigDecimal.ZERO, rest = BigDecimal.ZERO;
+        for (BigDecimal r : phantomTotals) {
+            List<ShareRow> rows = PhantomAttributionService.computeShares(w, r, R);
+            michelle = michelle.add(amt(rows, "michelle"));
+            rest = rest.add(amt(rows, "rest"));
+        }
+        assertEquals(0, michelle.compareTo(new BigDecimal("1000.00")),
+                "consultant's amounts across the group's phantoms must equal their work value, not work value x N");
+        assertEquals(0, rest.compareTo(new BigDecimal("3000.00")));
+    }
+
+    @Test
+    void multiPhantomGroup_perPhantomIsRevenueWeightedSlice() {
+        // Each phantom carries its revenue-weighted slice of the work value: phantom of 3000/4000
+        // gives michelle 1000 x 3/4 = 750; phantom of 1000/4000 gives 250.
+        Map<String, WorkAgg> w = work("michelle", 50, 1000, "rest", 150, 3000);
+        BigDecimal R = new BigDecimal("4000.00");
+        assertEquals(0, amt(PhantomAttributionService.computeShares(w, new BigDecimal("3000.00"), R), "michelle")
+                .compareTo(new BigDecimal("750.00")));
+        assertEquals(0, amt(PhantomAttributionService.computeShares(w, new BigDecimal("1000.00"), R), "michelle")
+                .compareTo(new BigDecimal("250.00")));
     }
 
     private static BigDecimal amt(List<ShareRow> rows, String consultant) {
@@ -164,10 +201,18 @@ class PhantomAttributionServiceMathTest {
 
     @Test
     void noWork_emptyResult() {
-        assertTrue(PhantomAttributionService.computeShares(Map.of(), new BigDecimal("100.00")).isEmpty());
+        assertTrue(shares(Map.of(), "100.00").isEmpty());
         // all weights zero -> empty
-        assertTrue(PhantomAttributionService.computeShares(
-                work("a", 0, 0), new BigDecimal("100.00")).isEmpty());
+        assertTrue(shares(work("a", 0, 0), "100.00").isEmpty());
+    }
+
+    @Test
+    void zeroGroupTotal_yieldsZeroAmounts() {
+        // A net-zero group (e.g. an invoice + its credit note) cannot apportion -> amounts are 0.
+        Map<String, WorkAgg> w = work("a", 30, 3000, "b", 10, 1000);
+        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("3000.00"), BigDecimal.ZERO);
+        assertEquals(0, amt(rows, "a").compareTo(new BigDecimal("0.00")), "groupTotal=0 -> amount 0");
+        assertEquals(0, amt(rows, "b").compareTo(new BigDecimal("0.00")));
     }
 
     @Test
@@ -181,10 +226,10 @@ class PhantomAttributionServiceMathTest {
 
     @Test
     void negativeTotal_yieldsNegativeSharesSummingExactly() {
-        // A credit-note phantom: a negative total must distribute to negative shares
-        // that sum EXACTLY to the total. share_pct stays positive (it is a weight ratio).
+        // A credit-note single-phantom group: a negative total reverses to negative amounts that
+        // sum to the negated work value. share_pct stays positive (it is a weight ratio).
         Map<String, WorkAgg> w = work("a", 30, 3000, "b", 10, 1000); // 75% / 25%
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("-4000.00"));
+        List<ShareRow> rows = shares(w, "-4000.00");
 
         ShareRow a = rows.stream().filter(r -> r.consultantUuid().equals("a")).findFirst().orElseThrow();
         ShareRow b = rows.stream().filter(r -> r.consultantUuid().equals("b")).findFirst().orElseThrow();
@@ -196,7 +241,7 @@ class PhantomAttributionServiceMathTest {
         BigDecimal sum = rows.stream().map(ShareRow::attributedAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         assertEquals(0, sum.compareTo(new BigDecimal("-4000.00")),
-                "negative shares must sum exactly to the negative phantom total");
+                "negative amounts must sum to the negated work value");
     }
 
     @Test
@@ -205,7 +250,7 @@ class PhantomAttributionServiceMathTest {
         // must be the NEGATED work value (-3000 / -1000), NOT a share of the phantom (-6750 / -2250).
         // The test above uses revenue == |total|, so it cannot distinguish the two; this one can.
         Map<String, WorkAgg> w = work("a", 30, 3000, "b", 10, 1000); // work value total = 4000
-        List<ShareRow> rows = PhantomAttributionService.computeShares(w, new BigDecimal("-9000.00"));
+        List<ShareRow> rows = shares(w, "-9000.00");
         assertEquals(0, amt(rows, "a").compareTo(new BigDecimal("-3000.00")),
                 "credit note negates the consultant's work value, not a share of the phantom total");
         assertEquals(0, amt(rows, "b").compareTo(new BigDecimal("-1000.00")));

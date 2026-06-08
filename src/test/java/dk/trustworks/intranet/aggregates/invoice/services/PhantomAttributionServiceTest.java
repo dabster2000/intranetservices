@@ -60,7 +60,6 @@ class PhantomAttributionServiceTest {
                 """, Tuple.class).getResultList();
 
         String pickUuid = null, pickItem = null, pickClient = null;
-        int pickYr = 0, pickMo = 0;
         for (Tuple t : phantoms) {
             String clientname = t.get("clientname", String.class);
             PhantomClientSuggestion s = resolver.suggest(clientname);
@@ -73,8 +72,6 @@ class PhantomAttributionServiceTest {
             pickUuid = t.get("uuid", String.class);
             pickItem = t.get("itemuuid", String.class);
             pickClient = s.suggestedClientUuid();
-            pickYr = yr;
-            pickMo = mo;
             break;
         }
         if (pickUuid == null) return; // no viable phantom locally — skip gracefully
@@ -91,17 +88,10 @@ class PhantomAttributionServiceTest {
             List<InvoiceItemAttribution> rows = InvoiceItemAttribution.list("invoiceitemUuid", pickItem);
             assertFalse(rows.isEmpty());
             assertTrue(rows.stream().allMatch(r -> r.source == AttributionSource.AUTO));
-            BigDecimal sum = rows.stream().map(r -> r.attributedAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            // Amount basis is each consultant's own work value (hours×rate), NOT the self-billed
-            // phantom total. Expected = Σ per-consultant work value (each rounded to 2dp as
-            // computeShares does); compared in magnitude so a credit-note phantom (negated) still matches.
-            BigDecimal expectedWorkValue = service.findWork(pickClient, pickYr, pickMo).stream()
-                    .map(r -> r.revenue() == null ? BigDecimal.ZERO
-                            : r.revenue().setScale(2, java.math.RoundingMode.HALF_UP))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            assertEquals(0, sum.abs().setScale(2).compareTo(expectedWorkValue),
-                    "attributed amounts sum to the consultants' work value, not the phantom total");
+            // Each amount is the consultant's revenue-weighted slice of the group's work value; the
+            // exact apportionment math (per-phantom slice, multi-phantom summing to work value,
+            // credit-note signs, rounding) is covered by PhantomAttributionServiceMathTest. This
+            // integration test asserts the persistence contract: AUTO rows, client stamp, idempotency.
             assertEquals(pickClient, currentBillingClientUuid(pickUuid), "billing_client_uuid stamped");
 
             int firstCount = rows.size();
