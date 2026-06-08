@@ -130,7 +130,19 @@ public class EconomicsCustomerContactSyncService {
             // REQUIRES_NEW — see EconomicsCustomerSyncService for rationale.
             failureRecorder.clear(billingClient.getUuid(), companyUuid);
         } catch (WebApplicationException e) {
-            String status = e.getResponse() == null ? "?" : Integer.toString(e.getResponse().getStatus());
+            int status = e.getResponse() == null ? 0 : e.getResponse().getStatus();
+            // 405 Method Not Allowed is permanent: e-conomic rejects the contact-update (PUT) for
+            // this agreement. Retrying never helps, and recording it would churn the shared
+            // customer/contact failure row — which can stall customer-sync retries for the same
+            // (client, company). Skip with one concise WARN instead of recording + re-throwing on
+            // every contract save. The underlying 405 needs an e-conomic-side fix.
+            if (status == Response.Status.METHOD_NOT_ALLOWED.getStatusCode()) {
+                LOG.warnf("e-conomic returned 405 (Method Not Allowed) updating the contact for client %s / "
+                        + "company %s — contact updates appear unsupported for this agreement; skipping "
+                        + "(existing e-conomic contact left unchanged).",
+                        billingClient.getUuid(), companyUuid);
+                return;
+            }
             failureRecorder.record(billingClient.getUuid(), companyUuid,
                     "Contact sync HTTP " + status + ": " + safeMessage(e));
             throw new SyncFailedException("Contact sync failed for "
