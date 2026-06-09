@@ -190,12 +190,12 @@ public class SelfBilledImportService {
                             SelfBilledLineStatus status, LocalDateTime now) {
         if (l == null) return;
         SelfBilledLine row = SelfBilledLine.findByEntry(l.entry());
-        if (row == null) {
+        boolean isNew = (row == null);
+        if (isNew) {
             row = new SelfBilledLine();
             row.uuid = UUID.randomUUID().toString();
             row.entryNumber = l.entry();
             row.createdAt = now;
-            row.persist();
         }
         row.sourceUuid = source.uuid;
         row.clientUuid = source.clientUuid;
@@ -212,5 +212,8 @@ public class SelfBilledImportService {
         row.sourceText = l.text() != null && l.text().length() > 255 ? l.text().substring(0, 255) : l.text();
         row.status = status;                                      // voucher-level
         row.refreshedAt = now;
+        // NOT NULL columns (source_uuid, client_uuid, debtor_company_uuid, account_number,
+        // voucher_number, amount, status) must be populated BEFORE persist() on the create path.
+        if (isNew) row.persist();
     }
 }

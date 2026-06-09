@@ -37,16 +37,17 @@ public class SelfBilledCodeResolver {
     public void confirmMapping(String agreementCompanyUuid, int accountNumber, String code,
                               String consultantUuid, String createdBy) {
         SelfBilledCodeMap m = SelfBilledCodeMap.findMapping(agreementCompanyUuid, accountNumber, code);
-        if (m == null) {
+        boolean isNew = (m == null);
+        if (isNew) {
             m = new SelfBilledCodeMap();
             m.uuid = UUID.randomUUID().toString();
             m.agreementCompanyUuid = agreementCompanyUuid;
             m.accountNumber = accountNumber;
             m.code = code;
             m.createdAt = LocalDateTime.now();
-            m.persist();
         }
-        m.consultantUuid = consultantUuid;
+        m.consultantUuid = consultantUuid;   // NOT NULL — must be set BEFORE persist() on the create path
         m.createdBy = createdBy;
+        if (isNew) m.persist();
     }
 }
