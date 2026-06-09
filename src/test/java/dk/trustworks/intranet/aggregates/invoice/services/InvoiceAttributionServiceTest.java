@@ -75,6 +75,48 @@ class InvoiceAttributionServiceTest {
     }
 
     @Test
+    void attributeNonConsultantLines_attributesUnattributedDiscountLine() {
+        // Find a CREATED INVOICE that has an attributable consultant BASE line AND a
+        // non-consultant discount/fee line (CALCULATED, or BASE with a null consultant).
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = InvoiceItemAttribution.getEntityManager().createNativeQuery("""
+                SELECT i.uuid, disc.uuid
+                FROM invoices i
+                JOIN invoiceitems base ON base.invoiceuuid = i.uuid
+                     AND base.origin = 'BASE' AND base.consultantuuid IS NOT NULL
+                JOIN invoiceitems disc ON disc.invoiceuuid = i.uuid
+                     AND ( disc.origin = 'CALCULATED'
+                           OR (disc.origin = 'BASE' AND (disc.consultantuuid IS NULL OR disc.consultantuuid = '')) )
+                WHERE i.status = 'CREATED' AND i.type = 'INVOICE'
+                LIMIT 1
+                """).getResultList();
+
+        if (rows.isEmpty()) return; // No suitable test data — skip gracefully
+
+        String invoiceUuid = (String) rows.get(0)[0];
+        String discountItemUuid = (String) rows.get(0)[1];
+
+        // Establish a BASE consultant distribution to mirror, then make the discount unattributed.
+        attributionService.computeAttributions(invoiceUuid);
+        InvoiceItemAttribution.getEntityManager().createNativeQuery(
+                        "DELETE FROM invoice_item_attributions WHERE invoiceitem_uuid = :u")
+                .setParameter("u", discountItemUuid).executeUpdate();
+        assertTrue(attributionService.getAttributions(discountItemUuid).isEmpty(),
+                "precondition: discount line starts unattributed");
+
+        // Act: the creation-time pass must re-attribute the non-consultant discount line.
+        attributionService.attributeNonConsultantLines(invoiceUuid);
+
+        // Assert: discount line now carries an attribution mirrored from the BASE distribution.
+        List<InvoiceItemAttribution> after = attributionService.getAttributions(discountItemUuid);
+        assertFalse(after.isEmpty(), "non-consultant discount line should be attributed at creation");
+        for (InvoiceItemAttribution a : after) {
+            assertNotNull(a.consultantUuid, "consultant_uuid should be set");
+            assertNotNull(a.sharePct, "share_pct should be set");
+        }
+    }
+
+    @Test
     void findUnattributedItems_returnsItemsWithNoAttributions() {
         var from = java.time.LocalDate.of(2025, 7, 1);
         var to = java.time.LocalDate.now();

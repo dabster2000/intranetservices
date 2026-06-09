@@ -144,6 +144,16 @@ public class InvoiceFinalizationOrchestrator {
             attributionService.computeAttributions(invoiceUuid);
         }
 
+        // Attribute the non-consultant discount/fee lines (null-consultant BASE + CALCULATED)
+        // that the resolve pipeline skips, so they flow into internal invoices without a manual
+        // "Recompute attributions". Idempotent (no-op if the fallback above already attributed
+        // them) and best-effort: a failure here must not block draft creation.
+        try {
+            attributionService.attributeNonConsultantLines(invoiceUuid);
+        } catch (Exception e) {
+            log.warnf(e, "createDraft: non-consultant attribution pass failed for %s", invoiceUuid);
+        }
+
         // Resolve billing context (contract + billing client)
         BillingContext bc = billingResolver.resolve(inv);
         String companyUuid = inv.getCompany().getUuid();
