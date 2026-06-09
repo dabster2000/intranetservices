@@ -1448,29 +1448,20 @@ public class InvoiceService {
 
         List<InvoiceItem> persistedItems = source.getInvoiceitems() != null
                 ? source.getInvoiceitems() : List.of();
-        Set<String> persistedItemUuids = new HashSet<>(persistedItems.size() * 2);
         Set<String> baseItemUuids = new HashSet<>();
         for (InvoiceItem persisted : persistedItems) {
             if (persisted == null || persisted.uuid == null) continue;
-            persistedItemUuids.add(persisted.uuid);
             if (persisted.origin == InvoiceItemOrigin.BASE) {
                 baseItemUuids.add(persisted.uuid);
             }
         }
 
-        List<InvoiceItem> syntheticCalculated = new ArrayList<>();
-        for (InvoiceItem item : mergedItems) {
-            if (item == null || item.uuid == null) continue;
-            if (item.origin != InvoiceItemOrigin.CALCULATED) continue;
-            if (persistedItemUuids.contains(item.uuid)) continue; // persisted, already has attributions
-            syntheticCalculated.add(item);
-        }
-        if (syntheticCalculated.isEmpty()) {
-            return persistedAttributions;
-        }
-
-        List<InvoiceItemAttribution> synthetic = SourceItemMerger.synthesizeAttributionsFor(
-                syntheticCalculated, persistedAttributions, baseItemUuids);
+        // Synthesize in-memory attributions for EVERY merged item that has no attribution row —
+        // synthetic CALCULATED items (fresh UUIDs) AND persisted-but-unattributed discount/fee
+        // lines (hand-keyed BASE-null or never-attributed CALCULATED) that the generator would
+        // otherwise silently drop. See SourceItemMerger#synthesizeMissingAttributions.
+        List<InvoiceItemAttribution> synthetic = SourceItemMerger.synthesizeMissingAttributions(
+                mergedItems, persistedAttributions, baseItemUuids);
         if (synthetic.isEmpty()) return persistedAttributions;
 
         List<InvoiceItemAttribution> combined =

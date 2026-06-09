@@ -261,6 +261,136 @@ class SourceItemMergerTest {
         assertTrue(out.isEmpty());
     }
 
+    // ── synthesizeMissingAttributions (defense-in-depth: never drop a billable line) ──
+
+    private static InvoiceItem baseWithConsultant(String uuid, String consultantUuid, double rate, double hours) {
+        InvoiceItem ii = base("consultant-line", rate, hours);
+        ii.uuid = uuid;
+        ii.consultantuuid = consultantUuid;
+        return ii;
+    }
+
+    private static InvoiceItem baseNullConsultant(String uuid, double rate, double hours) {
+        InvoiceItem ii = base("SKI rabat", rate, hours);
+        ii.uuid = uuid;
+        ii.consultantuuid = null;
+        return ii;
+    }
+
+    private static InvoiceItem persistedCalc(String uuid, double rate, String ruleId) {
+        InvoiceItem ii = calculated("admin fee", rate, ruleId, "calc-ref-" + uuid);
+        ii.uuid = uuid;
+        return ii;
+    }
+
+    /** A persisted CALCULATED discount with NO attribution row must get a synthesized mirror (28006). */
+    @Test
+    void synthesizeMissing_persistedCalculatedWithoutAttribution_mirrorsBaseDistribution() {
+        InvoiceItem base = baseWithConsultant("base-1", "mikal", 1361.0, 45.5);
+        InvoiceItem calc = persistedCalc("calc-1", -2477.02, "ski21525-admin");
+        InvoiceItemAttribution baseAttr = attr("base-1", "mikal", 100.0, 61925.5);
+
+        List<InvoiceItemAttribution> out = SourceItemMerger.synthesizeMissingAttributions(
+                List.of(base, calc), List.of(baseAttr), Set.of("base-1"));
+
+        assertEquals(1, out.size(), "the unattributed persisted CALCULATED must be synthesized");
+        assertEquals("calc-1", out.get(0).invoiceitemUuid);
+        assertEquals("mikal", out.get(0).consultantUuid);
+        assertEquals(0, out.get(0).sharePct.compareTo(BigDecimal.valueOf(100)));
+    }
+
+    /** A persisted BASE line with NULL consultant and NO attribution must get a synthesized mirror (28000). */
+    @Test
+    void synthesizeMissing_baseNullConsultantWithoutAttribution_mirrorsBaseDistribution() {
+        InvoiceItem base = baseWithConsultant("base-1", "jacob", 1291.66, 114.0);
+        InvoiceItem discount = baseNullConsultant("disc-1", -4417.48, 1.0);
+        InvoiceItemAttribution baseAttr = attr("base-1", "jacob", 100.0, 147249.24);
+
+        List<InvoiceItemAttribution> out = SourceItemMerger.synthesizeMissingAttributions(
+                List.of(base, discount), List.of(baseAttr), Set.of("base-1"));
+
+        assertEquals(1, out.size());
+        assertEquals("disc-1", out.get(0).invoiceitemUuid);
+        assertEquals("jacob", out.get(0).consultantUuid);
+        assertEquals(0, out.get(0).sharePct.compareTo(BigDecimal.valueOf(100)));
+    }
+
+    /** Items that already have an attribution are left untouched — no double synthesis. */
+    @Test
+    void synthesizeMissing_itemWithExistingAttribution_isSkipped() {
+        InvoiceItem base = baseWithConsultant("base-1", "mikal", 1361.0, 45.5);
+        InvoiceItem calc = persistedCalc("calc-1", -2477.02, "ski21525-admin");
+        InvoiceItemAttribution baseAttr = attr("base-1", "mikal", 100.0, 61925.5);
+        InvoiceItemAttribution calcAttr = attr("calc-1", "mikal", 100.0, -2477.02);
+
+        List<InvoiceItemAttribution> out = SourceItemMerger.synthesizeMissingAttributions(
+                List.of(base, calc), List.of(baseAttr, calcAttr), Set.of("base-1"));
+
+        assertTrue(out.isEmpty(), "both items already attributed — nothing to synthesize");
+    }
+
+    /** A consultant BASE line with no attribution gets 100% to its own consultant (not a mirror). */
+    @Test
+    void synthesizeMissing_consultantBaseWithoutAttribution_attributesOneHundredToOwnConsultant() {
+        InvoiceItem base = baseWithConsultant("base-1", "henriette", 1500.0, 20.0);
+
+        List<InvoiceItemAttribution> out = SourceItemMerger.synthesizeMissingAttributions(
+                List.of(base), List.of(), Set.of("base-1"));
+
+        assertEquals(1, out.size());
+        assertEquals("base-1", out.get(0).invoiceitemUuid);
+        assertEquals("henriette", out.get(0).consultantUuid);
+        assertEquals(0, out.get(0).sharePct.compareTo(BigDecimal.valueOf(100)));
+    }
+
+    /** Zero-amount lines never need an internal line, so they are not synthesized. */
+    @Test
+    void synthesizeMissing_zeroAmountLine_isSkipped() {
+        InvoiceItem base = baseWithConsultant("base-1", "mikal", 1361.0, 45.5);
+        InvoiceItem zero = persistedCalc("calc-zero", 0.0, "rounding");
+        InvoiceItemAttribution baseAttr = attr("base-1", "mikal", 100.0, 61925.5);
+
+        List<InvoiceItemAttribution> out = SourceItemMerger.synthesizeMissingAttributions(
+                List.of(base, zero), List.of(baseAttr), Set.of("base-1"));
+
+        assertTrue(out.isEmpty());
+    }
+
+    /**
+     * End-to-end for the 28006 case: a persisted CALCULATED discount with NO attribution
+     * must still appear on the internal invoice once run through the missing-attribution
+     * synthesis + generator.
+     */
+    @Test
+    void synthesizeMissing_thenGenerate_persistedUnattributedDiscountReachesInternal() {
+        String sourceCompanyUuid = "company-debtor";
+        String issuerCompanyUuid = "company-issuer-x";
+        String mikal = "mikal";
+
+        InvoiceItem base = baseWithConsultant("base-1", mikal, 1361.0, 45.5);
+        InvoiceItem calc = persistedCalc("calc-1", -2477.02, "ski21525-admin");
+        InvoiceItemAttribution baseAttr = attr("base-1", mikal, 100.0, 61925.5);
+
+        List<InvoiceItem> merged = List.of(base, calc);
+        List<InvoiceItemAttribution> synthesized = SourceItemMerger.synthesizeMissingAttributions(
+                merged, List.of(baseAttr), Set.of("base-1"));
+
+        List<InvoiceItemAttribution> effective = new java.util.ArrayList<>();
+        effective.add(baseAttr);
+        effective.addAll(synthesized);
+
+        Map<String, String> userCompanies = Map.of(mikal, issuerCompanyUuid);
+        Map<String, List<InvoiceItem>> grouped = InternalInvoiceLineGenerator.generate(
+                sourceCompanyUuid, merged, effective, userCompanies);
+
+        assertTrue(grouped.containsKey(issuerCompanyUuid), "issuer must receive lines");
+        List<InvoiceItem> lines = grouped.get(issuerCompanyUuid);
+        assertEquals(2, lines.size(), "issuer must get BOTH the consultant line and the discount");
+        boolean hasDiscount = lines.stream().anyMatch(l ->
+                l.origin == InvoiceItemOrigin.CALCULATED && Math.abs(l.rate - (-2477.02)) < 0.001);
+        assertTrue(hasDiscount, "the previously-dropped CALCULATED discount must now be present");
+    }
+
     // ── End-to-end (merge → synthesize → generate) — concretizes AC6 ─────
 
     /**

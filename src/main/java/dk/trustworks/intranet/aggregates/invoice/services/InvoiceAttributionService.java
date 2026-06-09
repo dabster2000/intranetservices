@@ -265,6 +265,54 @@ public class InvoiceAttributionService {
         cascadeToLinkedInternals(invoiceUuid, changedItemUuids);
     }
 
+    // ── Attribute non-consultant lines at draft creation ──────────────
+
+    /**
+     * Attribute the non-consultant lines that the AI resolve pipeline
+     * ({@link #resolveAttributions}) intentionally skips: hand-keyed BASE lines with a null
+     * consultant (e.g. {@code "SKI rabat"}) and CALCULATED discount/fee lines. Each is
+     * mirrored onto the invoice's BASE consultant distribution (via the same helpers the
+     * recompute path uses) so it flows into internal invoices without a manual
+     * "Recompute attributions".
+     *
+     * <p>Consultant BASE lines (already attributed by resolve) and any line that already
+     * carries a MANUAL or AUTO attribution are left untouched, so AI-refined splits are
+     * preserved. Best-effort and idempotent — re-running once attributed is a no-op.
+     *
+     * <p>Called from {@link InvoiceFinalizationOrchestrator#createDraft} right after the
+     * resolve pass. No cascade is triggered: at draft creation no linked internal exists yet.
+     */
+    @Transactional
+    public void attributeNonConsultantLines(String invoiceUuid) {
+        Invoice invoice = Invoice.findById(invoiceUuid);
+        if (invoice == null) {
+            log.warnf("attributeNonConsultantLines: invoice not found uuid=%s", invoiceUuid);
+            return;
+        }
+
+        Map<String, BigDecimal> baseDistribution = computeBaseDistribution(invoiceUuid);
+
+        int attributed = 0;
+        for (InvoiceItem item : invoice.invoiceitems) {
+            boolean calculated = item.isEffectivelyCalculated();
+            boolean baseNullConsultant = !calculated
+                    && (item.consultantuuid == null || item.consultantuuid.isBlank());
+            if (!calculated && !baseNullConsultant) continue;    // consultant BASE — handled by resolve
+
+            if (!getAttributions(item.uuid).isEmpty()) continue; // already attributed — don't disturb
+
+            if (calculated) {
+                computeCalculatedItemAttribution(item, baseDistribution);
+            } else {
+                computeBaseItemAttribution(item, invoice);
+            }
+            attributed++;
+        }
+
+        log.infof("attributeNonConsultantLines: invoice=%s attributed %d non-consultant line(s)",
+                invoiceUuid, attributed);
+    }
+
     // ── Recompute amounts from stable shares ──────────────────────────
 
     @Transactional
@@ -1647,27 +1695,19 @@ public class InvoiceAttributionService {
 
         List<InvoiceItem> persistedItems = source.invoiceitems != null
                 ? source.invoiceitems : List.of();
-        Set<String> persistedItemUuids = new HashSet<>(persistedItems.size() * 2);
         Set<String> baseItemUuids = new HashSet<>();
         for (InvoiceItem persisted : persistedItems) {
             if (persisted == null || persisted.uuid == null) continue;
-            persistedItemUuids.add(persisted.uuid);
             if (persisted.origin == InvoiceItemOrigin.BASE) {
                 baseItemUuids.add(persisted.uuid);
             }
         }
 
-        List<InvoiceItem> syntheticCalculated = new ArrayList<>();
-        for (InvoiceItem item : mergedItems) {
-            if (item == null || item.uuid == null) continue;
-            if (item.origin != InvoiceItemOrigin.CALCULATED) continue;
-            if (persistedItemUuids.contains(item.uuid)) continue;
-            syntheticCalculated.add(item);
-        }
-        if (syntheticCalculated.isEmpty()) return persistedAttributions;
-
-        List<InvoiceItemAttribution> synthetic = SourceItemMerger.synthesizeAttributionsFor(
-                syntheticCalculated, persistedAttributions, baseItemUuids);
+        // Synthesize in-memory attributions for EVERY merged item that has no attribution row —
+        // synthetic CALCULATED items AND persisted-but-unattributed discount/fee lines that the
+        // generator would otherwise silently drop. See SourceItemMerger#synthesizeMissingAttributions.
+        List<InvoiceItemAttribution> synthetic = SourceItemMerger.synthesizeMissingAttributions(
+                mergedItems, persistedAttributions, baseItemUuids);
         if (synthetic.isEmpty()) return persistedAttributions;
 
         List<InvoiceItemAttribution> combined =
