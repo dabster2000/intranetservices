@@ -227,28 +227,6 @@ public class SelfBilledSettlementService {
         return stale;
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Legacy no-op shims — keep SelfBilledMigrationService compiling. The old machine-matching
-    // settle path was retired by the workbench (V365 removed status='RESOLVED'); Phase 5 (Task 13)
-    // deletes these together with SelfBilledMigrationService.
-    // ---------------------------------------------------------------------------------------------
-
-    /** @deprecated legacy machine-matching path — retired; use the self-billed workbench. */
-    @Deprecated
-    public List<SettlementGroupKey> inScopeGroups(int fromYm, int toYm) {
-        log.warnf("inScopeGroups(%d, %d): legacy self-billed settle path is retired — use the workbench "
-                + "(settleConsultantPeriod)", fromYm, toYm);
-        return List.of();
-    }
-
-    /** @deprecated legacy machine-matching path — retired; use the self-billed workbench. */
-    @Deprecated
-    public List<String> settleGroup(SettlementGroupKey key, boolean queue) {
-        log.warnf("settleGroup(%s, queue=%s): legacy self-billed settle path is retired — use the workbench "
-                + "(settleConsultantPeriod)", key == null ? null : key.asString(), queue);
-        return List.of();
-    }
-
     /** Representative phantom for invoice_ref_uuid (kept from the prior service — same semantics). */
     String representativePhantom(String billingClientUuid) {
         @SuppressWarnings("unchecked")
