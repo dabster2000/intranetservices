@@ -84,6 +84,16 @@ public class SelfBilledDeltaQuery {
      * finance_details row yields a {@code null} remainder (fail closed — never auto-finalize on missing
      * evidence). Returns one {@link SelfBilledPaidGate.VoucherRemainder} per backing voucher (empty when
      * the group has no assigned vouchers).
+     *
+     * <p>FISCAL-YEAR ANCHOR (I-1): voucher numbers are NOT globally unique — e-conomic resets them per
+     * accounting year (the codebase's own uniqueness domain is {@code (vouchernumber, journalnumber,
+     * accountingyear)}, see Expense / ExpenseOrphanDetectionBatchlet), and FinanceLoadJob loads several
+     * fiscal years concurrently, so a same-numbered 8610 row from a DIFFERENT year is co-resident. Without
+     * a year constraint a collision could fail OPEN (real row missing + foreign-year row with remainder 0
+     * → allPaid → auto-finalize an UNPAID group). We therefore constrain the 8610 row's {@code expensedate}
+     * to the SAME fiscal year (Jul 1 → Jun 30, the project-wide convention) as the voucher's
+     * {@code selfbilled_line.booking_date} — the exact uniqueness domain (a fiscal-year WINDOW, not exact-
+     * date equality, so correction entries booked on other days within the year still match).
      */
     public List<SelfBilledPaidGate.VoucherRemainder> voucherRemainders(
             String clientUuid, String debtorCompanyUuid, String consultantUuid, int workYear, int workMonth) {
@@ -91,16 +101,20 @@ public class SelfBilledDeltaQuery {
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT v.voucher_number, fd.remainder
                 FROM (
-                    SELECT DISTINCT l.voucher_number
+                    SELECT l.voucher_number, MIN(l.booking_date) AS booking_date
                     FROM selfbilled_assignment a
                     JOIN selfbilled_line l ON l.uuid = a.selfbilled_line_uuid
                     WHERE l.client_uuid = :c AND a.consultant_uuid = :u
                       AND a.work_year = :y AND a.work_month = :m
+                    GROUP BY l.voucher_number
                 ) v
                 LEFT JOIN finance_details fd
                        ON fd.vouchernumber = v.voucher_number
                       AND fd.companyuuid = :debtor
                       AND fd.accountnumber = 8610
+                      AND fd.expensedate BETWEEN
+                            DATE(CONCAT(YEAR(v.booking_date) - (MONTH(v.booking_date) < 7), '-07-01'))
+                        AND DATE(CONCAT(YEAR(v.booking_date) + (MONTH(v.booking_date) >= 7), '-06-30'))
                 """).setParameter("c", clientUuid).setParameter("u", consultantUuid)
                 .setParameter("y", workYear).setParameter("m", workMonth)
                 .setParameter("debtor", debtorCompanyUuid)

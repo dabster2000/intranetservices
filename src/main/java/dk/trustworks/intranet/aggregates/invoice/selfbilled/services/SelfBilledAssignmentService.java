@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -372,8 +373,10 @@ public class SelfBilledAssignmentService {
                                              List<String> lineUuids, String actor) {
         Map<String, SameCompanyCandidate> byLine = new HashMap<>();
         for (SameCompanyCandidate c : sameCompanyCandidates(clientUuid, from, to)) byLine.put(c.lineUuid(), c);
+        // De-dupe (M-3): a uuid sent twice must not double-assign the same voucher / inflate accepted.
+        Set<String> requested = new LinkedHashSet<>(lineUuids);
         int accepted = 0, skipped = 0;
-        for (String lineUuid : lineUuids) {
+        for (String lineUuid : requested) {
             SameCompanyCandidate c = byLine.get(lineUuid);
             if (c == null) { skipped++; continue; }   // no longer same-company / not UNASSIGNED / unknown
             assignVoucher(c.lineUuid(), List.of(new AssignmentInput(
@@ -381,8 +384,8 @@ public class SelfBilledAssignmentService {
                     actor, AssignmentSourceType.AUTO_SAMECOMPANY);
             accepted++;
         }
-        log.infof("acceptSuggestedLines client=%s requested=%d accepted=%d skipped=%d by=%s",
-                clientUuid, lineUuids.size(), accepted, skipped, actor);
+        log.infof("acceptSuggestedLines client=%s requested=%d unique=%d accepted=%d skipped=%d by=%s",
+                clientUuid, lineUuids.size(), requested.size(), accepted, skipped, actor);
         return new AcceptResult(accepted, skipped);
     }
 
