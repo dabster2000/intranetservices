@@ -118,6 +118,27 @@ class BillingContextResolverTest {
         assertThrows(BadRequestException.class, () -> resolver.resolve(inv));
     }
 
+    @Test
+    void resolve_whenContractReferenceIsNull_throwsBadRequest_withoutLookup() {
+        // Settlement internals from phantom representatives must have the contract stamped at
+        // creation; a null reference must 400 cleanly, never reach Panache findById(null) (500).
+        Invoice inv = regularInvoice("inv-1", null);
+
+        BadRequestException thrown = assertThrows(BadRequestException.class,
+                () -> resolver.resolve(inv));
+        assertTrue(thrown.getMessage().contains("no contract reference"),
+                "Error should explain the missing contract, got: " + thrown.getMessage());
+        verify(contractService, never()).findByUuid(any());
+    }
+
+    @Test
+    void resolve_whenContractReferenceIsBlank_throwsBadRequest_withoutLookup() {
+        Invoice inv = regularInvoice("inv-1", "   ");
+
+        assertThrows(BadRequestException.class, () -> resolver.resolve(inv));
+        verify(contractService, never()).findByUuid(any());
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private Invoice regularInvoice(String uuid, String contractUuid) {
