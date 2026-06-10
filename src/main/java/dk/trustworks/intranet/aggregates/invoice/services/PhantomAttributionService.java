@@ -36,7 +36,8 @@ import java.util.Map;
 /**
  * Derives per-consultant attribution for e-conomic-imported PHANTOM invoices
  * from registered work, persisting invoice_item_attributions (source=AUTO,
- * preserving MANUAL). The share math and scope predicate are pure static
+ * preserving MANUAL; items with SELFBILLED_ASSIGNMENT rows are skipped
+ * entirely — AC10). The share math and scope predicate are pure static
  * methods (unit-tested with no DB); persistence mirrors
  * {@link InvoiceAttributionService#computeBaseItemAttribution}.
  */
@@ -73,6 +74,20 @@ public class PhantomAttributionService {
     /** A computed attribution row (pre-persist). */
     public record ShareRow(String consultantUuid, BigDecimal sharePct,
                            BigDecimal attributedAmount, BigDecimal originalHours) {}
+
+    /** What the existing attribution rows of an item allow the estimator to do. */
+    public enum ExistingAttributionState { EMPTY, AUTO_ONLY, MANUAL, SELFBILLED }
+
+    /** SELFBILLED_ASSIGNMENT (human truth, §6.3) outranks MANUAL outranks AUTO. Pure. */
+    static ExistingAttributionState classifyExisting(List<InvoiceItemAttribution> existing) {
+        if (existing.stream().anyMatch(a -> a.source == AttributionSource.SELFBILLED_ASSIGNMENT)) {
+            return ExistingAttributionState.SELFBILLED;
+        }
+        if (existing.stream().anyMatch(a -> a.source == AttributionSource.MANUAL)) {
+            return ExistingAttributionState.MANUAL;
+        }
+        return existing.isEmpty() ? ExistingAttributionState.EMPTY : ExistingAttributionState.AUTO_ONLY;
+    }
 
     /** In-scope = a CREATED PHANTOM, not skip-flagged, whose month is in [fyStart, fyEnd). */
     static boolean isInScope(Invoice inv, LocalDate fyStart, LocalDate fyEnd) {
@@ -155,7 +170,9 @@ public class PhantomAttributionService {
 
     /**
      * Derive (or re-derive) attribution for a single phantom in its own
-     * transaction. Preserves MANUAL rows; replaces AUTO rows idempotently.
+     * transaction. Preserves MANUAL rows; replaces AUTO rows idempotently;
+     * skips items with SELFBILLED_ASSIGNMENT rows entirely (AC10 — no recalc,
+     * the mirrored amounts are the human truth).
      * Stamps invoices.billing_client_uuid with the resolved client.
      */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
@@ -185,16 +202,23 @@ public class PhantomAttributionService {
                     invoiceUuid, items.size());
         }
 
-        // Preserve MANUAL overrides (decision #7): recalc amount only, never replace.
         List<InvoiceItemAttribution> existing = InvoiceItemAttribution.list("invoiceitemUuid", item.uuid);
-        boolean hasManual = existing.stream().anyMatch(a -> a.source == AttributionSource.MANUAL);
-        if (hasManual) {
-            double itemTotal = item.hours * item.rate;
-            for (InvoiceItemAttribution attr : existing) {
-                attr.recalculateAmount(itemTotal);
-                attr.updatedAt = LocalDateTime.now();
+        switch (classifyExisting(existing)) {
+            case SELFBILLED:
+                // AC10: the rows mirror a human self-billed assignment — never replace,
+                // never recalc (recalculateAmount would corrupt the assigned amounts).
+                return PhantomDerivationStatus.SKIPPED_SELFBILLED;
+            case MANUAL: {
+                // Preserve MANUAL overrides (decision #7): recalc amount only, never replace.
+                double itemTotal = item.hours * item.rate;
+                for (InvoiceItemAttribution attr : existing) {
+                    attr.recalculateAmount(itemTotal);
+                    attr.updatedAt = LocalDateTime.now();
+                }
+                return PhantomDerivationStatus.SKIPPED_MANUAL;
             }
-            return PhantomDerivationStatus.SKIPPED_MANUAL;
+            case EMPTY, AUTO_ONLY:
+                break; // -> derive below
         }
 
         // Resolve client: prefer an already-set billing_client_uuid, else the confirmed map.
@@ -445,11 +469,13 @@ public class PhantomAttributionService {
     /**
      * Clear stale AUTO derivation state for a label's in-scope phantoms so a
      * re-derive honors a freshly-confirmed mapping: for each in-scope phantom
-     * without a MANUAL attribution, delete its AUTO attribution rows and null
-     * its billing_client_uuid stamp. Phantoms carrying a MANUAL override are
-     * left untouched (deriveForPhantom returns SKIPPED_MANUAL for them, so their
-     * stamp must be preserved). Committed in its own transaction (called via the
-     * self proxy) so the subsequent REQUIRES_NEW derives read the cleared state.
+     * whose attribution is absent or AUTO-only, delete its AUTO attribution rows
+     * and null its billing_client_uuid stamp. Phantoms carrying a MANUAL override
+     * or SELFBILLED_ASSIGNMENT rows are left untouched (deriveForPhantom returns
+     * SKIPPED_MANUAL / SKIPPED_SELFBILLED for them BEFORE the client-resolution
+     * block, so their stamp would never be restored — it must be preserved here).
+     * Committed in its own transaction (called via the self proxy) so the
+     * subsequent REQUIRES_NEW derives read the cleared state.
      */
     @Transactional
     public void resetAutoStateForLabel(String clientname) {
@@ -462,9 +488,14 @@ public class PhantomAttributionService {
             List<InvoiceItem> items = phantom.getInvoiceitems();
             InvoiceItem item = (items == null) ? null : items.stream().findFirst().orElse(null);
             if (item == null) continue;
-            long manual = InvoiceItemAttribution.count("invoiceitemUuid = ?1 and source = ?2",
-                    item.uuid, AttributionSource.MANUAL);
-            if (manual > 0) continue; // preserve MANUAL overrides
+            List<InvoiceItemAttribution> existing =
+                    InvoiceItemAttribution.list("invoiceitemUuid", item.uuid);
+            switch (classifyExisting(existing)) {
+                case MANUAL, SELFBILLED:
+                    continue; // skip statuses keep their stamp (never re-resolved on derive)
+                case EMPTY, AUTO_ONLY:
+                    break; // safe to reset below
+            }
             InvoiceItemAttribution.delete("invoiceitemUuid = ?1 and source = ?2",
                     item.uuid, AttributionSource.AUTO);
             phantom.setBillingClientUuid(null); // managed entity -> flushed on commit
