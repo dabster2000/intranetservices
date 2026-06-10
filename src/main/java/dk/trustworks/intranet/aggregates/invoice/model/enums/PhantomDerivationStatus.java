@@ -7,5 +7,7 @@ public enum PhantomDerivationStatus {
     EXCLUDED,          // label mapped excluded=1 (e.g. canteen) -> skipped, not in queue
     NO_WORK,           // resolved, but no registered work for client+month -> review queue
     SKIPPED_MANUAL,    // MANUAL override present -> left untouched (amount recalculated only)
+    /** SELFBILLED_ASSIGNMENT rows present -> left fully untouched (AC10 skip-guard). */
+    SKIPPED_SELFBILLED,
     OUT_OF_SCOPE       // not a CREATED PHANTOM in the current FY, or skip-flagged
 }

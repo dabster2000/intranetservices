@@ -1,11 +1,17 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.model;
 
-/** Voucher-level resolution state stamped onto each captured line. */
+/** Voucher-level workflow status stamped onto each captured line (V365 vocabulary). */
 public enum SelfBilledLineStatus {
-    /** Voucher parsed and its code mapped to a consultant. */
-    RESOLVED,
-    /** Voucher parsed, but the code is not in selfbilled_code_map. */
-    UNMAPPED_CODE,
-    /** Voucher has no parseable line at all (a pure-correction orphan). */
-    UNPARSEABLE
+    /** Legacy parse-state values — removed in the capture-retarget task. */
+    RESOLVED, UNMAPPED_CODE, UNPARSEABLE,
+    /** Captured, no human decision yet. */
+    UNASSIGNED,
+    /** Human-assigned to >=1 cross-company (consultant, work-period); awaiting settle. */
+    ASSIGNED,
+    /** Needs no internal: issuer == debtor (computed from assignments, or sticky human mark). */
+    SAME_COMPANY,
+    /** Every cross-company group of the voucher's assignments has |delta| <= 1 kr. */
+    SETTLED,
+    /** Out of scope (net-zero voucher, or sticky human mark). Reversible until settled. */
+    IGNORED
 }
