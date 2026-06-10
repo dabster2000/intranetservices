@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.HistoryRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.LinkRequest;
@@ -164,6 +165,21 @@ public class HistoryReconciliationService {
         if (debtor == null) {
             throw new WebApplicationException("Client is not a configured self-billed source",
                     Response.Status.BAD_REQUEST);
+        }
+        // Stamp must equal the client's agreement company, or settled() (filters client+debtor)
+        // never counts this internal while historyRows (client only) shows it — the Consultants
+        // tab would keep an unsettled delta and the next settle books a duplicate.
+        if (!debtor.equals(internal.getDebtorCompanyuuid())) {
+            throw new WebApplicationException("Internal's debtor company does not match the client's agreement company",
+                    Response.Status.CONFLICT);
+        }
+        // Same live-statuses allowlist as the discovery query — a DRAFT internal would be
+        // stamped yet never counted by settled().
+        if (internal.getStatus() != InvoiceStatus.PENDING_REVIEW
+                && internal.getStatus() != InvoiceStatus.QUEUED
+                && internal.getStatus() != InvoiceStatus.CREATED) {
+            throw new WebApplicationException("Internal is not in a live status (PENDING_REVIEW/QUEUED/CREATED) — cannot link",
+                    Response.Status.CONFLICT);
         }
         List<InvoiceItem> items = internal.getInvoiceitems();
         if (items == null || items.isEmpty()) {

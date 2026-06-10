@@ -105,8 +105,11 @@ public class SelfBilledSettlementService {
     /**
      * Human-clicked settle for ONE (client, consultant, work-period). NOT @Transactional:
      * createSettlementInternal commits in its own tx; the guard reads a fresh snapshot
-     * (same structure as PhantomSettlementService.settleGroup). Returns created uuids
-     * (empty on no-op).
+     * (same structure as PhantomSettlementService.settleGroup). Contract: empty list =
+     * delta within threshold (nothing to book, idempotent success); 409 = stale voucher
+     * OR open QUEUED internal (human must act in the workbench first); a created-but-not-
+     * finalized internal is still returned (finalize failure is logged, never swallowed
+     * into a silent no-op).
      */
     public List<String> settleConsultantPeriod(SettleRequest req, String actor) {
         String debtor = requireDebtor(req.clientUuid());
@@ -131,7 +134,10 @@ public class SelfBilledSettlementService {
         if (phantomSettlementService.hasOpenQueuedInternal(key, issuer)) {
             log.warnf("settleConsultantPeriod: open QUEUED internal for key=%s issuer=%s — skipping",
                     key.asString(), issuer);
-            return List.of();
+            throw new WebApplicationException(
+                    "An open QUEUED internal already exists for " + key.asString() + " issuer " + issuer
+                            + " — force-create or delete it before settling again.",
+                    Response.Status.CONFLICT);
         }
         assertVouchersUnchanged(req.clientUuid(), req.consultantUuid(), req.workYear(), req.workMonth());
         String representative = representativePhantom(req.clientUuid());
@@ -145,7 +151,16 @@ public class SelfBilledSettlementService {
                 representative, issuer, debtor,
                 List.of(new InvoiceService.SettlementLineInput(req.consultantUuid(), name, delta)),
                 req.clientUuid(), req.workYear(), req.workMonth());
-        if (!req.queue()) orchestrator.finalizeAutomatically(internalUuid);
+        if (!req.queue()) {
+            // The QUEUED doc is durable at this point — on finalize failure still recompute and
+            // return the uuid, or the retry hits the open-QUEUED 409 with no trace of why.
+            try {
+                orchestrator.finalizeAutomatically(internalUuid);
+            } catch (Exception e) {
+                log.errorf(e, "settleConsultantPeriod: finalize failed for internal=%s key=%s — "
+                        + "document remains QUEUED", internalUuid, key.asString());
+            }
+        }
 
         assignmentService.recomputeForGroup(req.clientUuid(), req.consultantUuid(), req.workYear(), req.workMonth());
         log.infof("settleConsultantPeriod: created %s delta=%s key=%s consultant=%s by=%s queue=%s",
