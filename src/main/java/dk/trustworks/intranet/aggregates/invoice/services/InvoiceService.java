@@ -119,6 +119,9 @@ public class InvoiceService {
     InvoiceFinalizationOrchestrator orchestrator;
 
     @Inject
+    dk.trustworks.intranet.contracts.services.ContractService contractService;
+
+    @Inject
     JPAStreamer jpaStreamer;
     @Inject
     WorkService workService;
@@ -1338,11 +1341,33 @@ public class InvoiceService {
 
         String description = "Settlement " + settlementYear + "-" + String.format("%02d", settlementMonth);
 
+        // PHANTOM representatives imported from e-conomic carry no contract, but finalization
+        // (BillingContextResolver) requires one. Resolve the client's active contract for the
+        // settled consultant in the work period — fail closed: a QUEUED settlement doc must be
+        // finalizable. Legacy INVOICE-sourced representatives keep their own contract.
+        String contractUuid = source.getContractuuid();
+        if (contractUuid == null || contractUuid.isBlank()) {
+            String consultantUuid = lines.isEmpty() ? null : lines.get(0).consultantUuid();
+            LocalDate periodStart = LocalDate.of(settlementYear, settlementMonth, 1);
+            contractUuid = (consultantUuid == null
+                    ? java.util.Optional.<dk.trustworks.intranet.contracts.model.Contract>empty()
+                    : contractService.findActiveContractByClientAndUserAndDate(settlementClientUuid, consultantUuid, periodStart)
+                        .or(() -> contractService.findActiveContractByClientAndUserAndDate(
+                                settlementClientUuid, consultantUuid, periodStart.withDayOfMonth(periodStart.lengthOfMonth()))))
+                    .map(dk.trustworks.intranet.contracts.model.Contract::getUuid)
+                    .orElseThrow(() -> new WebApplicationException(
+                            "No active contract found for client " + settlementClientUuid
+                            + " and consultant " + consultantUuid + " in " + settlementYear + "-"
+                            + String.format("%02d", settlementMonth)
+                            + " — the settlement internal would not be finalizable",
+                            Response.Status.BAD_REQUEST));
+        }
+
         Invoice internal = new Invoice(
                 source.getUuid(),
                 source.getInvoicenumber(),
                 InvoiceType.INTERNAL,
-                source.getContractuuid(),
+                contractUuid,
                 source.getProjectuuid(),
                 source.getProjectname(),
                 source.getDiscount(),

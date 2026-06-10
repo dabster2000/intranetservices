@@ -199,6 +199,9 @@ public class PhantomSettlementService {
                 WHERE type='PHANTOM' AND status='CREATED' AND economics_entry_number IS NOT NULL
                   AND internal_invoice_skip = 0
                   AND billing_client_uuid IS NOT NULL
+                  -- Self-billed clients settle via the workbench (pass-through basis), never
+                  -- via this work-value grid (spec §8 hand-off).
+                  AND billing_client_uuid NOT IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1)
                   AND invoicedate >= :from AND invoicedate < :to
                 GROUP BY billing_client_uuid, companyuuid, year, month
             ),

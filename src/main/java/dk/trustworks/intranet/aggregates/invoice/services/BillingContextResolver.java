@@ -42,6 +42,14 @@ public class BillingContextResolver {
      * @throws BadRequestException when the contract or billing client cannot be found.
      */
     public BillingContext resolve(Invoice invoice) {
+        // Guard before findByUuid: Panache findById(null) throws a raw IllegalArgumentException
+        // (500). A draft without a contract reference can only exist by a creation bug — fail
+        // with an actionable 400 instead.
+        if (invoice.getContractuuid() == null || invoice.getContractuuid().isBlank()) {
+            throw new BadRequestException(
+                    "This draft has no contract reference and cannot be finalized. "
+                    + "Settlement internals must have the contract stamped at creation — contact finance.");
+        }
         Contract contract = contractService.findByUuid(invoice.getContractuuid());
         if (contract == null) {
             throw new BadRequestException(
