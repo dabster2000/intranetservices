@@ -198,9 +198,25 @@ public class SelfBilledResource {
         }
     }
 
+    /**
+     * Validate a yyyyMM settlement window. fromYm/toYm are primitive query params, so an omitted or
+     * non-numeric value arrives as 0; without this guard a malformed value would silently widen or
+     * empty the BETWEEN filter (information disclosure / silent-empty results), and a reversed window
+     * would return nothing. Mirrors requireWorkPeriod's plausibility-check idiom.
+     */
     private static void requireYmWindow(int fromYm, int toYm) {
-        if (fromYm == 0 || toYm == 0) {
-            throw new WebApplicationException("fromYm and toYm are required (yyyyMM)", Response.Status.BAD_REQUEST);
+        requireYm(fromYm, "fromYm");
+        requireYm(toYm, "toYm");
+        if (fromYm > toYm) {
+            throw new WebApplicationException("fromYm must be <= toYm (yyyyMM)", Response.Status.BAD_REQUEST);
+        }
+    }
+
+    private static void requireYm(int ym, String name) {
+        int month = ym % 100;
+        if (ym < 197001 || ym > 209912 || month < 1 || month > 12) {
+            throw new WebApplicationException(name + " is required (yyyyMM, 197001-209912)",
+                    Response.Status.BAD_REQUEST);
         }
     }
 

@@ -100,7 +100,16 @@ public class HistoryReconciliationService {
                 h.internalUuids())).toList();
     }
 
-    /** Loose read-only discovery (spec §6.2/§8): unstamped live cross-company internals to in-scope debtors. */
+    /**
+     * Loose read-only discovery (spec §6.2/§8): unstamped live cross-company internals to in-scope debtors.
+     *
+     * <p>Global by design (security review L-1): this queue spans ALL enabled self-billed clients and
+     * cannot be scoped to a single client. An unlinked internal has no settlement key yet, so it carries
+     * no client linkage until a human links it; and enabled sources can share a debtor company, so a
+     * per-client filter could not discriminate between them. The result is therefore scoped only to
+     * enabled self-billed debtors ({@code selfbilled_source.enabled = 1}). Consultant identity is masked
+     * downstream for callers lacking the {@code users:read} scope.
+     */
     @Transactional
     public List<UnlinkedInternalRow> unlinkedInternals() {
         @SuppressWarnings("unchecked")
