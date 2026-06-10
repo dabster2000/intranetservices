@@ -46,6 +46,8 @@ public class SelfBilledLine extends PanacheEntityBase {
 
     @Column(name = "created_at", updatable = false) public LocalDateTime createdAt;
     @Column(name = "refreshed_at")                  public LocalDateTime refreshedAt;
+    @Column(name = "marked_by")                     public String markedBy;
+    @Column(name = "marked_at")                     public LocalDateTime markedAt;
 
     public SelfBilledLine() {}
 
