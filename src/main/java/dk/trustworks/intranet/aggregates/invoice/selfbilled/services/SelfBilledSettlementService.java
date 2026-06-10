@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignContextDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SettleRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledAssignment;
@@ -100,6 +101,32 @@ public class SelfBilledSettlementService {
                     work.doubleValue(), delta.abs().compareTo(THRESHOLD) > 0, unlinked));
         }
         return out;
+    }
+
+    /**
+     * Assign-modal context for the SELECTED (client, consultant, work-period) — which may differ
+     * from the row's suggestion. Read-only composition: same debtor resolution as settle, the
+     * issuer resolved as-of the work period (null when unresolvable), the cross-company verdict,
+     * both company names, and the registered-work CROSS-CHECK value (never a settlement basis — AC1).
+     * No @Transactional needed: pure reads through the same helpers consultantRows uses.
+     */
+    public AssignContextDTO assignContext(String clientUuid, String consultantUuid, int year, int month) {
+        String debtor = requireDebtor(clientUuid);
+        String issuer = codeResolver.resolveIssuerCompany(consultantUuid, year, month);
+        boolean crossCompany = issuer != null && !issuer.equals(debtor);
+
+        Set<String> companyUuids = new HashSet<>();
+        companyUuids.add(debtor);
+        if (issuer != null) companyUuids.add(issuer);
+        Map<String, String> companies = companyNames(companyUuids);
+
+        double workValue = workValues(clientUuid, year, month)
+                .getOrDefault(consultantUuid, BigDecimal.ZERO).doubleValue();
+
+        return new AssignContextDTO(crossCompany,
+                issuer, issuer == null ? null : companies.getOrDefault(issuer, issuer),
+                debtor, companies.getOrDefault(debtor, debtor),
+                workValue);
     }
 
     /**

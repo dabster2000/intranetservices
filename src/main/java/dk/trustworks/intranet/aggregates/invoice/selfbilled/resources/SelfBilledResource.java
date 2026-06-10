@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignContextDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.HistoryRow;
@@ -140,6 +141,28 @@ public class SelfBilledResource {
         requireClient(client);
         requireYmWindow(fromYm, toYm);
         return maskConsultants(settlementService.consultantRows(client, fromYm, toYm));
+    }
+
+    /**
+     * Assign-modal consequence preview for the SELECTED (consultant, work-period) — which may differ
+     * from the row's suggestion: cross-company verdict, issuer/debtor companies, and the registered-work
+     * cross-check. No masking is applied: the response ties a CALLER-SUPPLIED consultant uuid to a work
+     * value and a company — the uuid is the caller's own input, never resolved to a name here, so no
+     * identity is leaked (uuid→identity resolution still requires users:read elsewhere). Mirrors the
+     * data-boundary reasoning of maskConsultants without needing to strip anything.
+     */
+    @GET @Path("/assign-context")
+    @RolesAllowed({"invoices:read"})
+    public AssignContextDTO assignContext(@QueryParam("client") String client,
+                                          @QueryParam("consultant") String consultant,
+                                          @QueryParam("year") int year,
+                                          @QueryParam("month") int month) {
+        requireClient(client);
+        if (consultant == null || consultant.isBlank()) {
+            throw new WebApplicationException("consultant is required", Response.Status.BAD_REQUEST);
+        }
+        requireWorkPeriod(year, month);
+        return settlementService.assignContext(client, consultant, year, month);
     }
 
     /** Book the pass-through internal / credit note for one (consultant, work-period). */
