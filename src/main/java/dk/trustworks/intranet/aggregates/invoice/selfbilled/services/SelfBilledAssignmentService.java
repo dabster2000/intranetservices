@@ -1,22 +1,36 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignmentInput;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledAssignmentDTO;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledCoverage;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentDTO;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentsResponse;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledSourceDTO;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledTieOut;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.AssignmentSourceType;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledAssignment;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLine;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLineStatus;
+import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -36,6 +50,8 @@ public class SelfBilledAssignmentService {
     @Inject SelfBilledCodeResolver codeResolver;          // issuer-as-of-period resolution
     @Inject SelfBilledDeltaQuery deltaQuery;
     @Inject SelfBilledAttributionMirror mirror;
+    @Inject EntityManager em;
+    @Inject WorkService workService;
 
     /** Replace the voucher's assignment set (1 = assign/edit, N = split). Cross-company allowed — this IS the human gate. */
     @Transactional
@@ -220,5 +236,203 @@ public class SelfBilledAssignmentService {
         if (line == null) throw new WebApplicationException("Unknown document line: " + lineUuid,
                 Response.Status.NOT_FOUND);
         return line;
+    }
+
+    // ── reads (worklist) ─────────────────────────────────────────────
+
+    /** Workbench roster. */
+    public List<SelfBilledSourceDTO> sources() {
+        return dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledSource.listEnabled().stream()
+                .map(s -> new SelfBilledSourceDTO(s.clientUuid, s.label, s.accountNumber, s.agreementCompanyUuid))
+                .toList();
+    }
+
+    /**
+     * Worklist for client + BOOKING window [from,to]. Lines without booking_date
+     * (captured before V365) are excluded — run a capture first (runbook step 1).
+     */
+    @Transactional
+    public SelfBilledDocumentsResponse documents(String clientUuid, LocalDate from, LocalDate to) {
+        List<SelfBilledLine> lines = SelfBilledLine.list(
+                "clientUuid = ?1 and bookingDate >= ?2 and bookingDate <= ?3 order by voucherNumber, entryNumber",
+                clientUuid, from, to);
+
+        // Group by voucher (account|voucher) preserving order.
+        Map<String, List<SelfBilledLine>> byVoucher = new LinkedHashMap<>();
+        for (SelfBilledLine l : lines) {
+            byVoucher.computeIfAbsent(l.accountNumber + "|" + l.voucherNumber, k -> new ArrayList<>()).add(l);
+        }
+
+        Map<String, String> priorByCode = priorConsultantByCode(clientUuid);
+        Map<Integer, Map<String, BigDecimal>> workCache = new HashMap<>();   // ym -> consultant -> value
+        List<SelfBilledDocumentDTO> docs = new ArrayList<>(byVoucher.size());
+        Set<String> nameLookups = new HashSet<>();
+
+        for (List<SelfBilledLine> siblings : byVoucher.values()) {
+            SelfBilledLine anchor = siblings.stream().filter(l -> l.code != null).findFirst()
+                    .orElse(siblings.get(0));
+            BigDecimal voucherNet = net(siblings);
+            List<SelfBilledAssignment> assignments =
+                    SelfBilledAssignment.findByLines(siblings.stream().map(l -> l.uuid).toList());
+
+            // Suggestion (only meaningful while unplaced; harmless otherwise).
+            AssignmentSuggester.Suggestion best = null;
+            if (anchor.workYear != null && anchor.workMonth != null) {
+                Integer anchorWorkYear = anchor.workYear;
+                Integer anchorWorkMonth = anchor.workMonth;
+                Map<String, BigDecimal> work = workCache.computeIfAbsent(
+                        anchorWorkYear * 100 + anchorWorkMonth,
+                        ym -> workValues(clientUuid, anchorWorkYear, anchorWorkMonth));
+                List<AssignmentSuggester.Suggestion> ranked = AssignmentSuggester.suggest(
+                        new AssignmentSuggester.SuggesterInput(anchor.code, anchor.workYear, anchor.workMonth,
+                                anchor.consultantUuid, voucherNet.negate(), work, priorByCode));
+                best = ranked.isEmpty() ? null : ranked.get(0);
+            }
+            if (best != null) nameLookups.add(best.consultantUuid());
+            assignments.forEach(a -> nameLookups.add(a.consultantUuid));
+
+            boolean crossCompany = isCrossCompany(anchor, assignments, best);
+            docs.add(new SelfBilledDocumentDTO(
+                    anchor.uuid, anchor.voucherNumber,
+                    anchor.bookingDate == null ? null : anchor.bookingDate.format(DateTimeFormatter.ISO_DATE),
+                    voucherNet.negate().doubleValue(), anchor.sourceText, anchor.fakturaNumber,
+                    anchor.code, anchor.workYear, anchor.workMonth,
+                    best == null ? null : best.consultantUuid(), null /* name filled below */,
+                    best == null ? 0 : best.confidence(), best == null ? null : best.reason(),
+                    anchor.status.name(), crossCompany, siblings.size(),
+                    assignments.stream().map(a -> new SelfBilledAssignmentDTO(a.uuid, a.consultantUuid,
+                            null, a.workYear, a.workMonth, a.shareAmount.negate().doubleValue(),
+                            a.source.name(), a.assignedBy,
+                            a.assignedAt == null ? null : a.assignedAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))).toList()));
+        }
+
+        Map<String, String> names = consultantNames(nameLookups);
+        List<SelfBilledDocumentDTO> withNames = docs.stream().map(d -> new SelfBilledDocumentDTO(
+                d.lineUuid(), d.voucherNumber(), d.bookingDate(), d.amount(), d.sourceText(), d.fakturaNumber(),
+                d.suggestedCode(), d.suggestedWorkYear(), d.suggestedWorkMonth(),
+                d.suggestedConsultantUuid(), names.get(d.suggestedConsultantUuid()),
+                d.suggestionConfidence(), d.suggestionReason(), d.status(), d.crossCompany(), d.entryCount(),
+                d.assignments().stream().map(a -> new SelfBilledAssignmentDTO(a.uuid(), a.consultantUuid(),
+                        names.get(a.consultantUuid()), a.workYear(), a.workMonth(), a.shareAmount(),
+                        a.source(), a.assignedBy(), a.assignedAt())).toList())).toList();
+
+        return new SelfBilledDocumentsResponse(withNames, coverage(lines), tieOut(lines));
+    }
+
+    /**
+     * Bulk-accept high-confidence SAME-COMPANY suggestions (AC2: cross-company is
+     * never auto-assigned). Returns the number of vouchers placed.
+     */
+    @Transactional
+    public int acceptSuggestedSameCompany(String clientUuid, LocalDate from, LocalDate to, String actor) {
+        SelfBilledDocumentsResponse current = documents(clientUuid, from, to);
+        int accepted = 0;
+        for (SelfBilledDocumentDTO d : current.documents()) {
+            if (!SelfBilledLineStatus.UNASSIGNED.name().equals(d.status())) continue;
+            if (d.suggestedConsultantUuid() == null
+                    || d.suggestionConfidence() < AssignmentSuggester.HIGH_CONFIDENCE) continue;
+            String issuer = codeResolver.resolveIssuerCompany(
+                    d.suggestedConsultantUuid(), d.suggestedWorkYear(), d.suggestedWorkMonth());
+            SelfBilledLine anchor = SelfBilledLine.findById(d.lineUuid());
+            if (issuer == null || !issuer.equals(anchor.debtorCompanyUuid)) continue;   // cross-company -> human
+            assignVoucher(d.lineUuid(), List.of(new AssignmentInput(
+                    d.suggestedConsultantUuid(), d.suggestedWorkYear(), d.suggestedWorkMonth(), null)),
+                    actor, AssignmentSourceType.AUTO_SAMECOMPANY);
+            accepted++;
+        }
+        log.infof("acceptSuggestedSameCompany client=%s window=%s..%s accepted=%d by=%s",
+                clientUuid, from, to, accepted, actor);
+        return accepted;
+    }
+
+    // ── read helpers ─────────────────────────────────────────────────
+
+    private SelfBilledCoverage coverage(List<SelfBilledLine> lines) {
+        double captured = 0, assigned = 0, same = 0, unassigned = 0, ignored = 0;
+        Set<String> vouchers = new HashSet<>(), placed = new HashSet<>();
+        for (SelfBilledLine l : lines) {
+            double v = l.amount.negate().doubleValue();
+            captured += v;
+            switch (l.status) {
+                case ASSIGNED, SETTLED -> assigned += v;
+                case SAME_COMPANY -> same += v;
+                case IGNORED -> ignored += v;
+                default -> unassigned += v;
+            }
+            String key = l.accountNumber + "|" + l.voucherNumber;
+            vouchers.add(key);
+            if (l.status != SelfBilledLineStatus.UNASSIGNED) placed.add(key);
+        }
+        return new SelfBilledCoverage(captured, assigned, same, unassigned, ignored,
+                vouchers.size(), placed.size());
+    }
+
+    /** AC9: Σ captured net vs PHANTOM-imported item totals for the SAME entry numbers. */
+    private SelfBilledTieOut tieOut(List<SelfBilledLine> lines) {
+        if (lines.isEmpty()) return new SelfBilledTieOut(0, 0, 0, 0, 0, true);
+        List<Long> entries = lines.stream().map(l -> l.entryNumber).toList();
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT COUNT(DISTINCT p.uuid), COALESCE(SUM(ii.hours*ii.rate), 0)
+                FROM invoices p JOIN invoiceitems ii ON ii.invoiceuuid = p.uuid
+                WHERE p.type = 'PHANTOM' AND p.economics_entry_number IN (:entries)
+                """).setParameter("entries", entries).getResultList();
+        double phantomImported = ((Number) rows.get(0)[1]).doubleValue();
+        int matched = ((Number) rows.get(0)[0]).intValue();
+        double capturedNet = lines.stream().map(l -> l.amount).reduce(BigDecimal.ZERO, BigDecimal::add)
+                .negate().doubleValue();
+        double delta = capturedNet - phantomImported;
+        return new SelfBilledTieOut(capturedNet, phantomImported, delta,
+                entries.size(), matched, Math.abs(delta) <= 1.0);
+    }
+
+    /** Most recent human assignment per code (suggester signal 4). */
+    private Map<String, String> priorConsultantByCode(String clientUuid) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT l.code, a.consultant_uuid
+                FROM selfbilled_assignment a
+                JOIN selfbilled_line l ON l.uuid = a.selfbilled_line_uuid
+                WHERE l.client_uuid = :c AND l.code IS NOT NULL
+                ORDER BY a.assigned_at ASC
+                """).setParameter("c", clientUuid).getResultList();
+        Map<String, String> out = new HashMap<>();
+        for (Object[] r : rows) out.put((String) r[0], (String) r[1]);   // later rows win
+        return out;
+    }
+
+    /** Registered work value per consultant via the task->project->client join (spec §5.1 work cross-check). */
+    private Map<String, BigDecimal> workValues(String clientUuid, int year, int month) {
+        Map<String, BigDecimal> out = new HashMap<>();
+        for (ConsultantWorkRevenue r : workService.findRevenueByClientAndMonth(clientUuid, year, month)) {
+            out.put(r.useruuid(), r.revenue() == null ? BigDecimal.ZERO : r.revenue());
+        }
+        return out;
+    }
+
+    private boolean isCrossCompany(SelfBilledLine anchor, List<SelfBilledAssignment> assignments,
+                                   AssignmentSuggester.Suggestion best) {
+        if (!assignments.isEmpty()) {
+            return assignments.stream().anyMatch(a -> {
+                String issuer = codeResolver.resolveIssuerCompany(a.consultantUuid, a.workYear, a.workMonth);
+                return issuer != null && !issuer.equals(anchor.debtorCompanyUuid);
+            });
+        }
+        if (best != null) {
+            String issuer = codeResolver.resolveIssuerCompany(best.consultantUuid(), best.workYear(), best.workMonth());
+            return issuer != null && !issuer.equals(anchor.debtorCompanyUuid);
+        }
+        return false;
+    }
+
+    private Map<String, String> consultantNames(Set<String> uuids) {
+        Map<String, String> out = new HashMap<>();
+        if (uuids.isEmpty()) return out;
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                        "SELECT uuid, CONCAT(firstname,' ',lastname) FROM user WHERE uuid IN (:ids)")
+                .setParameter("ids", uuids).getResultList();
+        for (Object[] r : rows) out.put((String) r[0], (String) r[1]);
+        return out;
     }
 }
