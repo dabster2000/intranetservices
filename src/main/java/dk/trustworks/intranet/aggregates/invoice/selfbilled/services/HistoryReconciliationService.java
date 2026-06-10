@@ -157,6 +157,13 @@ public class HistoryReconciliationService {
         if (internal.getType() != InvoiceType.INTERNAL && internal.getType() != InvoiceType.INTERNAL_SERVICE) {
             throw new WebApplicationException("Not an internal invoice", Response.Status.BAD_REQUEST);
         }
+        // Belt-and-braces (public method): a 0/out-of-range work period would stamp settlement_year=0,
+        // month=0 — silently removing the internal from the unlinked queue while never counting toward
+        // any real period's settled(), so the Consultants tab keeps the delta and the next settle double-books.
+        if (req.workYear() < 1 || req.workYear() > 9999 || req.workMonth() < 1 || req.workMonth() > 12) {
+            throw new WebApplicationException("workYear and workMonth are required (workMonth 1-12)",
+                    Response.Status.BAD_REQUEST);
+        }
         if (internal.getSettlementYear() != null) {
             throw new WebApplicationException("Internal already carries a settlement stamp",
                     Response.Status.CONFLICT);

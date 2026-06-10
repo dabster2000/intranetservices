@@ -150,6 +150,7 @@ public class SelfBilledResource {
             throw new WebApplicationException("clientUuid and consultantUuid are required",
                     Response.Status.BAD_REQUEST);
         }
+        requireWorkPeriod(req.workYear(), req.workMonth());
         return settlementService.settleConsultantPeriod(req, requireActor());
     }
 
@@ -167,7 +168,7 @@ public class SelfBilledResource {
     @GET @Path("/internals/unlinked")
     @RolesAllowed({"invoices:read"})
     public List<UnlinkedInternalRow> unlinked() {
-        return historyService.unlinkedInternals();
+        return maskUnlinked(historyService.unlinkedInternals());
     }
 
     @POST @Path("/internals/{invoiceUuid}/link")
@@ -177,6 +178,7 @@ public class SelfBilledResource {
             throw new WebApplicationException("clientUuid and consultantUuid are required",
                     Response.Status.BAD_REQUEST);
         }
+        requireWorkPeriod(req.workYear(), req.workMonth());
         historyService.linkInternal(invoiceUuid, req, requireActor());
     }
 
@@ -202,6 +204,19 @@ public class SelfBilledResource {
         }
     }
 
+    /**
+     * Validate a body-supplied work period. workYear/workMonth are primitive ints, so a JSON
+     * body omitting them deserializes to 0; without this guard settle would build LocalDate.of(0,0,1)
+     * (500) and link would stamp settlement_year=0/month=0 — orphaning the internal from any real
+     * period's settled(). Mirrors InvoiceResource.settlementKeyOrBadRequest's plausibility check.
+     */
+    private static void requireWorkPeriod(int workYear, int workMonth) {
+        if (workYear < 1 || workYear > 9999 || workMonth < 1 || workMonth > 12) {
+            throw new WebApplicationException("workYear and workMonth are required (workMonth 1-12)",
+                    Response.Status.BAD_REQUEST);
+        }
+    }
+
     private static LocalDate parseDate(String value, String name) {
         if (value == null || value.isBlank()) {
             throw new WebApplicationException(name + " is required (yyyy-MM-dd)", Response.Status.BAD_REQUEST);
@@ -214,6 +229,8 @@ public class SelfBilledResource {
     }
 
     // Data boundary: strip consultant identity without users:read (mirrors maskSettlementPreview).
+    // sourceText/fakturaNumber/suggestedCode are raw e-conomic free text and may inherently carry
+    // initials — that is the issuer's own booking text, not our resolved identity (accepted boundary).
     private SelfBilledDocumentsResponse maskDocuments(SelfBilledDocumentsResponse r) {
         if (scopeContext.hasScope("users:read")) return r;
         List<SelfBilledDocumentDTO> docs = r.documents().stream().map(d -> new SelfBilledDocumentDTO(
@@ -238,5 +255,15 @@ public class SelfBilledResource {
         if (scopeContext.hasScope("users:read")) return rows;
         return rows.stream().map(h -> new HistoryRow(null, null, h.workYear(), h.workMonth(),
                 h.booked(), h.assigned(), h.proposedDelta(), h.internalUuids())).toList();
+    }
+
+    // itemNames carry the attributed consultant's FULL NAME (InternalInvoiceLineGenerator labels
+    // each line with attribution.consultantName); description (specificdescription) is free text
+    // that may also name the consultant. Strip both without users:read; keep every other component.
+    private List<UnlinkedInternalRow> maskUnlinked(List<UnlinkedInternalRow> rows) {
+        if (scopeContext.hasScope("users:read")) return rows;
+        return rows.stream().map(u -> new UnlinkedInternalRow(u.invoiceUuid(), u.invoicenumber(),
+                u.type(), u.status(), u.issuerCompanyName(), u.debtorCompanyName(), u.invoicedate(),
+                null, u.total(), List.of())).toList();
     }
 }
