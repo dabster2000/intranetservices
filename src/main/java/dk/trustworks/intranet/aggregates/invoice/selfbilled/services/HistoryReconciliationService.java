@@ -101,14 +101,24 @@ public class HistoryReconciliationService {
     }
 
     /**
-     * Loose read-only discovery (spec §6.2/§8): unstamped live cross-company internals to in-scope debtors.
+     * Loose read-only discovery (spec §6.2/§8): unstamped live cross-company internals to in-scope debtors,
+     * NARROWED (Feature 2a) to internals that are self-billed-related.
      *
-     * <p>Global by design (security review L-1): this queue spans ALL enabled self-billed clients and
-     * cannot be scoped to a single client. An unlinked internal has no settlement key yet, so it carries
-     * no client linkage until a human links it; and enabled sources can share a debtor company, so a
-     * per-client filter could not discriminate between them. The result is therefore scoped only to
-     * enabled self-billed debtors ({@code selfbilled_source.enabled = 1}). Consultant identity is masked
-     * downstream for callers lacking the {@code users:read} scope.
+     * <p>Scope (security review L-1): still spans ALL enabled self-billed clients — an unlinked internal
+     * has no settlement key yet, so it carries no client linkage until a human links it, and enabled
+     * sources can share a debtor company. The queue therefore stays scoped only to enabled self-billed
+     * debtors ({@code selfbilled_source.enabled = 1}). On top of that the Feature 2a filter EXCLUDES any
+     * internal whose referenced source invoice belongs to a client that is NOT an enabled self-billed
+     * source: an internal is kept when it has no source ref ({@code invoice_ref_uuid IS NULL}), its source
+     * row is missing, OR its source's self-billed client is enabled. Settlement internals reference a
+     * PHANTOM source, and a phantom carries its synthetic self-billed client in {@code billing_client_uuid}
+     * (legacy/non-phantom sources may instead carry it in {@code clientuuid}); the filter matches EITHER
+     * column against {@code selfbilled_source.client_uuid} so both shapes are kept. Consultant identity is
+     * masked downstream for callers lacking the {@code users:read} scope.
+     *
+     * <p>Prefill (Feature 2b): the suggested consultant is the internal's own item consultant when ALL
+     * items carry the same non-null {@code consultantuuid} (else null — never guessed), and the suggested
+     * work period is the source invoice's {@code year}/{@code month} when the source exists (else null).
      */
     @Transactional
     public List<UnlinkedInternalRow> unlinkedInternals() {
@@ -116,28 +126,47 @@ public class HistoryReconciliationService {
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT i.uuid, i.invoicenumber, i.type, i.status, ic.name, dc.name, i.invoicedate,
                        i.specificdescription, COALESCE(SUM(ii.hours*ii.rate), 0),
-                       GROUP_CONCAT(DISTINCT ii.itemname SEPARATOR ' | ')
+                       GROUP_CONCAT(DISTINCT ii.itemname SEPARATOR ' | '),
+                       CASE WHEN COUNT(DISTINCT ii.consultantuuid) = 1 THEN MAX(ii.consultantuuid) END,
+                       src.year, src.month
                 FROM invoices i
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 LEFT JOIN companies ic ON ic.uuid = i.companyuuid
                 LEFT JOIN companies dc ON dc.uuid = i.debtor_companyuuid
+                LEFT JOIN invoices src ON src.uuid = i.invoice_ref_uuid
                 WHERE i.type IN ('INTERNAL','INTERNAL_SERVICE')
                   AND i.status IN ('PENDING_REVIEW','QUEUED','CREATED')
                   AND i.settlement_year IS NULL
                   AND i.companyuuid <> i.debtor_companyuuid
                   AND i.debtor_companyuuid IN (SELECT agreement_company_uuid FROM selfbilled_source WHERE enabled = 1)
-                GROUP BY i.uuid, i.invoicenumber, i.type, i.status, ic.name, dc.name, i.invoicedate, i.specificdescription
+                  AND (i.invoice_ref_uuid IS NULL
+                       OR src.uuid IS NULL
+                       OR COALESCE(src.billing_client_uuid, src.clientuuid)
+                            IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1))
+                GROUP BY i.uuid, i.invoicenumber, i.type, i.status, ic.name, dc.name, i.invoicedate,
+                         i.specificdescription, src.year, src.month
                 ORDER BY i.invoicedate DESC
                 """).getResultList();
         List<UnlinkedInternalRow> out = new ArrayList<>(rows.size());
         for (Object[] r : rows) {
+            String consultant = (String) r[10];   // null unless all items share one consultant
+            Integer year = r[11] == null ? null : ((Number) r[11]).intValue();
+            Integer month = r[12] == null ? null : ((Number) r[12]).intValue();
             out.add(new UnlinkedInternalRow((String) r[0], r[1] == null ? 0 : ((Number) r[1]).intValue(),
                     (String) r[2], (String) r[3], (String) r[4], (String) r[5],
                     r[6] == null ? null : r[6].toString(), (String) r[7],
                     toBig(r[8]).doubleValue(),
-                    r[9] == null ? List.of() : List.of(((String) r[9]).split(" \\| "))));
+                    r[9] == null ? List.of() : List.of(((String) r[9]).split(" \\| ")),
+                    consultant, null /* name filled below */, year, month));
         }
-        return out;
+        Set<String> ids = new HashSet<>();
+        out.forEach(u -> { if (u.suggestedConsultantUuid() != null) ids.add(u.suggestedConsultantUuid()); });
+        Map<String, String> names = consultantNames(ids);
+        return out.stream().map(u -> new UnlinkedInternalRow(u.invoiceUuid(), u.invoicenumber(), u.type(),
+                u.status(), u.issuerCompanyName(), u.debtorCompanyName(), u.invoicedate(), u.description(),
+                u.total(), u.itemNames(), u.suggestedConsultantUuid(),
+                u.suggestedConsultantUuid() == null ? null : names.get(u.suggestedConsultantUuid()),
+                u.suggestedWorkYear(), u.suggestedWorkMonth())).toList();
     }
 
     /** Count only — feeds the Consultants-tab "unlinked candidates exist" warning (AC8). */

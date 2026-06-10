@@ -332,11 +332,13 @@ public class SelfBilledResource {
 
     // itemNames carry the attributed consultant's FULL NAME (InternalInvoiceLineGenerator labels
     // each line with attribution.consultantName); description (specificdescription) is free text
-    // that may also name the consultant. Strip both without users:read; keep every other component.
+    // that may also name the consultant; the Feature 2b prefill resolves the item consultant uuid
+    // to a name. Strip all three (uuid + name) without users:read; periods are not identity and stay.
     private List<UnlinkedInternalRow> maskUnlinked(List<UnlinkedInternalRow> rows) {
         if (scopeContext.hasScope("users:read")) return rows;
         return rows.stream().map(u -> new UnlinkedInternalRow(u.invoiceUuid(), u.invoicenumber(),
                 u.type(), u.status(), u.issuerCompanyName(), u.debtorCompanyName(), u.invoicedate(),
-                null, u.total(), List.of())).toList();
+                null, u.total(), List.of(),
+                null, null, u.suggestedWorkYear(), u.suggestedWorkMonth())).toList();
     }
 }
