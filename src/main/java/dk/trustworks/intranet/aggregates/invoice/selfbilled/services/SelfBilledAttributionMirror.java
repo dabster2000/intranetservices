@@ -12,7 +12,9 @@ import org.jboss.logging.Logger;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * §6.3 attribution write-back: mirrors human assignments onto the imported PHANTOM
@@ -51,8 +53,18 @@ public class SelfBilledAttributionMirror {
     public static List<MirrorRow> computeMirrorRows(BigDecimal phantomItemTotal, BigDecimal voucherNet,
                                                     List<SelfBilledAssignment> assignments) {
         if (voucherNet == null || voucherNet.signum() == 0 || assignments.isEmpty()) return List.of();
-        BigDecimal shareSum = assignments.stream()
-                .map(a -> a.shareAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        // Group by consultant FIRST: invoice_item_attributions is unique on
+        // (invoiceitem_uuid, consultant_uuid), so a voucher split to the SAME consultant
+        // across two work periods must collapse to ONE row (MirrorRow has no period
+        // component — summing the shares loses nothing). Order is first-seen (deterministic).
+        Map<String, BigDecimal> sharesByConsultant = new LinkedHashMap<>();
+        for (SelfBilledAssignment a : assignments) {
+            sharesByConsultant.merge(a.consultantUuid, a.shareAmount, BigDecimal::add);
+        }
+        List<Map.Entry<String, BigDecimal>> grouped = new ArrayList<>(sharesByConsultant.entrySet());
+
+        BigDecimal shareSum = grouped.stream()
+                .map(Map.Entry::getValue).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal drift = voucherNet.subtract(shareSum);
         boolean proportional = drift.abs().compareTo(DRIFT_TOLERANCE) > 0;
         if (proportional) {
@@ -60,12 +72,13 @@ public class SelfBilledAttributionMirror {
                             + "falling back to proportional mode (no rounding absorption)",
                     shareSum, voucherNet, drift);
         }
-        List<MirrorRow> rows = new ArrayList<>(assignments.size());
+        List<MirrorRow> rows = new ArrayList<>(grouped.size());
         BigDecimal allocated = BigDecimal.ZERO;
-        for (int i = 0; i < assignments.size(); i++) {
-            SelfBilledAssignment a = assignments.get(i);
-            BigDecimal fraction = a.shareAmount.divide(voucherNet, 8, RoundingMode.HALF_UP);
-            boolean absorbingLast = !proportional && i == assignments.size() - 1;
+        for (int i = 0; i < grouped.size(); i++) {
+            Map.Entry<String, BigDecimal> g = grouped.get(i);
+            BigDecimal consultantShare = g.getValue();
+            BigDecimal fraction = consultantShare.divide(voucherNet, 8, RoundingMode.HALF_UP);
+            boolean absorbingLast = !proportional && i == grouped.size() - 1;
             BigDecimal amount = absorbingLast
                     ? phantomItemTotal.subtract(allocated).setScale(2, RoundingMode.HALF_UP)
                     : phantomItemTotal.multiply(fraction).setScale(2, RoundingMode.HALF_UP);
@@ -75,7 +88,7 @@ public class SelfBilledAttributionMirror {
             BigDecimal sharePct = (absorbingLast && phantomItemTotal.signum() != 0)
                     ? amount.multiply(BigDecimal.valueOf(100)).divide(phantomItemTotal, 2, RoundingMode.HALF_UP)
                     : fraction.multiply(BigDecimal.valueOf(100)).setScale(2, RoundingMode.HALF_UP);
-            rows.add(new MirrorRow(a.consultantUuid, sharePct, amount));
+            rows.add(new MirrorRow(g.getKey(), sharePct, amount));
         }
         return rows;
     }

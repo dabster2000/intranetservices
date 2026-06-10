@@ -12,10 +12,14 @@ import static org.junit.jupiter.api.Assertions.*;
 class SelfBilledAttributionMirrorTest {
 
     private static SelfBilledAssignment assignment(String consultant, String share) {
+        return assignment(consultant, 2025, 8, share);
+    }
+
+    private static SelfBilledAssignment assignment(String consultant, int year, int month, String share) {
         SelfBilledAssignment a = new SelfBilledAssignment();
-        a.uuid = "a-" + consultant;
+        a.uuid = "a-" + consultant + "-" + year + "-" + month;
         a.consultantUuid = consultant;
-        a.workYear = 2025; a.workMonth = 8;
+        a.workYear = year; a.workMonth = month;
         a.shareAmount = new BigDecimal(share);    // signed as posted (revenue negative)
         a.source = AssignmentSourceType.HUMAN;
         return a;
@@ -60,6 +64,23 @@ class SelfBilledAttributionMirrorTest {
                 List.of(assignment("a", "100.00")));
         assertEquals(1, rows.size());
         assertEquals(0, new BigDecimal("-100.00").compareTo(rows.get(0).attributedAmount()));
+        assertEquals(0, new BigDecimal("100.00").compareTo(rows.get(0).sharePct()));
+    }
+
+    @Test
+    void same_consultant_split_collapses_to_one_row_summed() {
+        // A voucher split to the SAME consultant across two work periods. uq_iia_item_consultant
+        // forbids two attribution rows on one item for one consultant, so the two shares must
+        // collapse into ONE MirrorRow carrying their sum (the full phantom total here).
+        var rows = SelfBilledAttributionMirror.computeMirrorRows(
+                new BigDecimal("153525.00"),               // phantom item total
+                new BigDecimal("-153525.00"),              // voucher net (signed)
+                List.of(assignment("michelle", 2025, 8, "-100000.00"),
+                        assignment("michelle", 2025, 9, "-53525.00")));
+        assertEquals(1, rows.size(), "two same-consultant assignments collapse to one row");
+        assertEquals("michelle", rows.get(0).consultantUuid());
+        assertEquals(0, new BigDecimal("153525.00").compareTo(rows.get(0).attributedAmount()),
+                "summed share maps to the full phantom total");
         assertEquals(0, new BigDecimal("100.00").compareTo(rows.get(0).sharePct()));
     }
 
