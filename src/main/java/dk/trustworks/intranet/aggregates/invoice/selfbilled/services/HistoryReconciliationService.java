@@ -108,13 +108,20 @@ public class HistoryReconciliationService {
      * has no settlement key yet, so it carries no client linkage until a human links it, and enabled
      * sources can share a debtor company. The queue therefore stays scoped only to enabled self-billed
      * debtors ({@code selfbilled_source.enabled = 1}). On top of that the Feature 2a filter EXCLUDES any
-     * internal whose referenced source invoice belongs to a client that is NOT an enabled self-billed
-     * source: an internal is kept when it has no source ref ({@code invoice_ref_uuid IS NULL}), its source
-     * row is missing, OR its source's self-billed client is enabled. Settlement internals reference a
-     * PHANTOM source, and a phantom carries its synthetic self-billed client in {@code billing_client_uuid}
-     * (legacy/non-phantom sources may instead carry it in {@code clientuuid}); the filter matches EITHER
-     * column against {@code selfbilled_source.client_uuid} so both shapes are kept. Consultant identity is
-     * masked downstream for callers lacking the {@code users:read} scope.
+     * internal whose referenced source invoice belongs to a work client that is NOT an enabled self-billed
+     * source. An internal is kept when it has no source ref ({@code invoice_ref_uuid IS NULL}), its source
+     * row is missing, OR its source resolves to an enabled self-billed client by either rule below:
+     * <ul>
+     *   <li>an INVOICE source's REAL work client is its {@code project.clientuuid} (joined via
+     *       {@code src.projectuuid}); an INVOICE's {@code billing_client_uuid} is the contract billing
+     *       entity (e.g. a broker), never the work client, so it is NOT used for INVOICE sources;</li>
+     *   <li>a PHANTOM source has no project but carries its synthetic self-billed client in
+     *       {@code billing_client_uuid} — kept as the phantom-shaped fallback.</li>
+     * </ul>
+     * The {@code invoices} table has NO {@code clientuuid} column (only {@code billing_client_uuid} and the
+     * denormalized {@code clientname}); the work client is reachable only through the project join — using
+     * {@code src.clientuuid} would throw SQL 1054. Consultant identity is masked downstream for callers
+     * lacking the {@code users:read} scope.
      *
      * <p>Prefill (Feature 2b): the suggested consultant is the internal's own item consultant when ALL
      * items carry the same non-null {@code consultantuuid} (else null — never guessed), and the suggested
@@ -134,6 +141,7 @@ public class HistoryReconciliationService {
                 LEFT JOIN companies ic ON ic.uuid = i.companyuuid
                 LEFT JOIN companies dc ON dc.uuid = i.debtor_companyuuid
                 LEFT JOIN invoices src ON src.uuid = i.invoice_ref_uuid
+                LEFT JOIN project p ON p.uuid = src.projectuuid
                 WHERE i.type IN ('INTERNAL','INTERNAL_SERVICE')
                   AND i.status IN ('PENDING_REVIEW','QUEUED','CREATED')
                   AND i.settlement_year IS NULL
@@ -141,8 +149,8 @@ public class HistoryReconciliationService {
                   AND i.debtor_companyuuid IN (SELECT agreement_company_uuid FROM selfbilled_source WHERE enabled = 1)
                   AND (i.invoice_ref_uuid IS NULL
                        OR src.uuid IS NULL
-                       OR COALESCE(src.billing_client_uuid, src.clientuuid)
-                            IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1))
+                       OR p.clientuuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1)
+                       OR src.billing_client_uuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1))
                 GROUP BY i.uuid, i.invoicenumber, i.type, i.status, ic.name, dc.name, i.invoicedate,
                          i.specificdescription, src.year, src.month
                 ORDER BY i.invoicedate DESC
