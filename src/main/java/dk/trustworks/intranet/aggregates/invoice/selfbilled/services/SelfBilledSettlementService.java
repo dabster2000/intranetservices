@@ -1,15 +1,21 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
-import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupPreview;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SettleRequest;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledAssignment;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLine;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.aggregates.invoice.services.PhantomSettlementService;
-import dk.trustworks.intranet.aggregates.invoice.services.SettlementDeltaCalculator;
+import dk.trustworks.intranet.dao.workservice.services.WorkService;
+import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
 import java.math.BigDecimal;
@@ -22,11 +28,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Settles the self-billed clients from selfbilled_line (parallel to PhantomSettlementService,
- * left inert for these clients). target = voucher-netted self-billed per (issuer, consultant),
- * cross-company only; settled = work-period-stamped live internals; delta drives one internal /
- * credit note per issuer, threshold |delta| >= 1 kr, with the existing double-settlement guard.
- * Only work-periods with >=1 self-billed line are processed (D6b).
+ * Pass-through settlement from HUMAN assignments (spec §6.1): for one
+ * (client, consultant, work-period), target = -Σ assigned share, settled =
+ * Σ stamped live internals for that consultant, delta books ONE internal
+ * (delta > +1) or credit note (delta < -1) at the delta amount. The work-value
+ * estimate can never enter (AC1). Reuses representativePhantom + the
+ * createSettlementInternal plumbing + the open-QUEUED guard unchanged.
  */
 @ApplicationScoped
 public class SelfBilledSettlementService {
@@ -37,93 +44,197 @@ public class SelfBilledSettlementService {
     @Inject EntityManager em;
     @Inject InvoiceService invoiceService;
     @Inject InternalInvoiceOrchestrator orchestrator;
-    @Inject PhantomSettlementService phantomSettlementService;   // reuse settled + duplicate-guard logic (R1)
-    @Inject SelfBilledSettlementService self;
+    @Inject PhantomSettlementService phantomSettlementService;   // settled side + duplicate guard (reuse, §8)
+    @Inject SelfBilledDeltaQuery deltaQuery;
+    @Inject SelfBilledCodeResolver codeResolver;
+    @Inject SelfBilledAssignmentService assignmentService;
+    @Inject HistoryReconciliationService historyService;         // unlinked-candidate count (AC8 warning)
+    @Inject WorkService workService;
 
-    /** (client, debtor, year, month) keys with >=1 self-billed line in the work window [fromYm,toYm]. */
+    /** Consultants-tab rows: per cross-company (consultant, work-period) in the work window [fromYm,toYm]. */
     @Transactional
-    public List<SettlementGroupKey> inScopeGroups(int fromYm, int toYm) {
+    public List<ConsultantPeriodRow> consultantRows(String clientUuid, int fromYm, int toYm) {
+        String debtor = requireDebtor(clientUuid);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
-                SELECT client_uuid, debtor_company_uuid, work_year, work_month
-                FROM selfbilled_line
-                WHERE status = 'RESOLVED' AND work_year IS NOT NULL
-                  AND (work_year*100 + work_month) BETWEEN :from AND :to
-                GROUP BY client_uuid, debtor_company_uuid, work_year, work_month
-                ORDER BY work_year, work_month
-                """).setParameter("from", fromYm).setParameter("to", toYm).getResultList();
-        List<SettlementGroupKey> keys = new ArrayList<>();
+                SELECT a.consultant_uuid, a.work_year, a.work_month, COALESCE(-SUM(a.share_amount), 0)
+                FROM selfbilled_assignment a
+                JOIN selfbilled_line l ON l.uuid = a.selfbilled_line_uuid
+                WHERE l.client_uuid = :c AND (a.work_year*100 + a.work_month) BETWEEN :from AND :to
+                GROUP BY a.consultant_uuid, a.work_year, a.work_month
+                ORDER BY a.work_year, a.work_month, a.consultant_uuid
+                """).setParameter("c", clientUuid).setParameter("from", fromYm).setParameter("to", toYm)
+                .getResultList();
+
+        int unlinked = historyService.unlinkedCandidateCount();
+        Map<Integer, Map<String, BigDecimal>> workCache = new HashMap<>();
+        Set<String> consultantUuids = new HashSet<>();
+        Set<String> companyUuids = new HashSet<>();
+        List<Object[]> kept = new ArrayList<>();
+
         for (Object[] r : rows) {
-            keys.add(new SettlementGroupKey((String) r[0], (String) r[1],
-                    ((Number) r[2]).intValue(), ((Number) r[3]).intValue()));
+            String consultant = (String) r[0];
+            int y = ((Number) r[1]).intValue(), m = ((Number) r[2]).intValue();
+            String issuer = codeResolver.resolveIssuerCompany(consultant, y, m);
+            if (issuer == null || issuer.equals(debtor)) continue;   // same-company/unresolved -> not a settle row
+            kept.add(new Object[]{consultant, y, m, r[3], issuer});
+            consultantUuids.add(consultant);
+            companyUuids.add(issuer);
         }
-        return keys;
+        Map<String, String> names = consultantNames(consultantUuids);
+        Map<String, String> companies = companyNames(companyUuids);
+
+        List<ConsultantPeriodRow> out = new ArrayList<>(kept.size());
+        for (Object[] r : kept) {
+            String consultant = (String) r[0];
+            int y = (Integer) r[1], m = (Integer) r[2];
+            BigDecimal assigned = toBig(r[3]).setScale(2, RoundingMode.HALF_UP);
+            String issuer = (String) r[4];
+            BigDecimal settled = deltaQuery.settled(new SettlementGroupKey(clientUuid, debtor, y, m), consultant);
+            BigDecimal delta = assigned.subtract(settled);
+            BigDecimal work = workCache.computeIfAbsent(y * 100 + m, ym -> workValues(clientUuid, y, m))
+                    .getOrDefault(consultant, BigDecimal.ZERO);
+            out.add(new ConsultantPeriodRow(consultant, names.getOrDefault(consultant, consultant), y, m,
+                    issuer, companies.getOrDefault(issuer, issuer),
+                    assigned.doubleValue(), settled.doubleValue(), delta.doubleValue(),
+                    work.doubleValue(), delta.abs().compareTo(THRESHOLD) > 0, unlinked));
+        }
+        return out;
     }
 
-    /** Preview one work-period group: cross-company target vs work-period-stamped settled. Read-only. */
-    @Transactional
-    public SettlementGroupPreview previewGroup(SettlementGroupKey key) {
-        // Cross-company target, sign-flipped to positive, straight from SQL (R2): -SUM(amount) with
-        // issuer <> debtor. GROUP BY already nets per (issuer, consultant) — no separate calc class.
+    /**
+     * Human-clicked settle for ONE (client, consultant, work-period). NOT @Transactional:
+     * createSettlementInternal commits in its own tx; the guard reads a fresh snapshot
+     * (same structure as PhantomSettlementService.settleGroup). Returns created uuids
+     * (empty on no-op).
+     */
+    public List<String> settleConsultantPeriod(SettleRequest req, String actor) {
+        String debtor = requireDebtor(req.clientUuid());
+        String issuer = codeResolver.resolveIssuerCompany(req.consultantUuid(), req.workYear(), req.workMonth());
+        if (issuer == null) {
+            throw new WebApplicationException("Consultant has no company as-of the work period",
+                    Response.Status.BAD_REQUEST);
+        }
+        if (issuer.equals(debtor)) {
+            throw new WebApplicationException("Same-company — no internal invoice applies",
+                    Response.Status.BAD_REQUEST);
+        }
+        SettlementGroupKey key = new SettlementGroupKey(req.clientUuid(), debtor, req.workYear(), req.workMonth());
+        BigDecimal target = deltaQuery.target(req.clientUuid(), req.consultantUuid(), req.workYear(), req.workMonth());
+        BigDecimal settled = deltaQuery.settled(key, req.consultantUuid());
+        BigDecimal delta = target.subtract(settled);
+        if (delta.abs().compareTo(THRESHOLD) <= 0) {
+            log.infof("settleConsultantPeriod: delta %s within threshold — nothing to book (key=%s consultant=%s)",
+                    delta, key.asString(), req.consultantUuid());
+            return List.of();
+        }
+        if (phantomSettlementService.hasOpenQueuedInternal(key, issuer)) {
+            log.warnf("settleConsultantPeriod: open QUEUED internal for key=%s issuer=%s — skipping",
+                    key.asString(), issuer);
+            return List.of();
+        }
+        assertVouchersUnchanged(req.clientUuid(), req.consultantUuid(), req.workYear(), req.workMonth());
+        String representative = representativePhantom(req.clientUuid());
+        if (representative == null) {
+            throw new WebApplicationException("No imported phantom exists for this client",
+                    Response.Status.CONFLICT);
+        }
+        String name = consultantNames(Set.of(req.consultantUuid()))
+                .getOrDefault(req.consultantUuid(), req.consultantUuid());
+        String internalUuid = invoiceService.createSettlementInternal(
+                representative, issuer, debtor,
+                List.of(new InvoiceService.SettlementLineInput(req.consultantUuid(), name, delta)),
+                req.clientUuid(), req.workYear(), req.workMonth());
+        if (!req.queue()) orchestrator.finalizeAutomatically(internalUuid);
+
+        assignmentService.recomputeForGroup(req.clientUuid(), req.consultantUuid(), req.workYear(), req.workMonth());
+        log.infof("settleConsultantPeriod: created %s delta=%s key=%s consultant=%s by=%s queue=%s",
+                internalUuid, delta, key.asString(), req.consultantUuid(), actor, req.queue());
+        return List.of(internalUuid);
+    }
+
+    /**
+     * Revalidation guard (Phase 1 review amendment): e-conomic may book new lines into an
+     * already-assigned voucher (e.g. a reversing correction) — the assignment shares then
+     * still target the OLD net. For every voucher backing this group, the Σ of ALL
+     * assignment shares on the voucher's lines (across all consultants/periods) must still
+     * ≈ the voucher's CURRENT net, else the human must re-confirm in the workbench.
+     */
+    private void assertVouchersUnchanged(String clientUuid, String consultantUuid, int workYear, int workMonth) {
         @SuppressWarnings("unchecked")
-        List<Object[]> tgt = em.createNativeQuery("""
-                SELECT issuer_company_uuid, consultant_uuid, -COALESCE(SUM(amount),0)
-                FROM selfbilled_line
-                WHERE status='RESOLVED' AND client_uuid=:c AND debtor_company_uuid=:d
-                  AND work_year=:y AND work_month=:m
-                  AND issuer_company_uuid IS NOT NULL
-                  AND issuer_company_uuid <> debtor_company_uuid
-                GROUP BY issuer_company_uuid, consultant_uuid
-                """).setParameter("c", key.billingClientUuid()).setParameter("d", key.debtorCompanyUuid())
-                .setParameter("y", key.year()).setParameter("m", key.month()).getResultList();
-        List<SettlementDeltaCalculator.TargetLine> targets = new ArrayList<>();
-        for (Object[] r : tgt) {
-            targets.add(new SettlementDeltaCalculator.TargetLine((String) r[0], (String) r[1],
-                    toBig(r[2]).setScale(2, RoundingMode.HALF_UP)));
+        List<Object[]> vouchers = em.createNativeQuery("""
+                SELECT DISTINCT l.account_number, l.voucher_number
+                FROM selfbilled_assignment a
+                JOIN selfbilled_line l ON l.uuid = a.selfbilled_line_uuid
+                WHERE l.client_uuid = :c AND a.consultant_uuid = :u
+                  AND a.work_year = :y AND a.work_month = :m
+                """).setParameter("c", clientUuid).setParameter("u", consultantUuid)
+                .setParameter("y", workYear).setParameter("m", workMonth).getResultList();
+
+        Map<String, BigDecimal> currentNet = new HashMap<>();
+        Map<String, BigDecimal> assignedTotal = new HashMap<>();
+        for (Object[] v : vouchers) {
+            int account = ((Number) v[0]).intValue(), voucher = ((Number) v[1]).intValue();
+            String voucherKey = account + ":" + voucher;
+            List<SelfBilledLine> siblings = SelfBilledLine.findVoucherSiblings(account, voucher);
+            BigDecimal net = BigDecimal.ZERO;
+            List<String> lineUuids = new ArrayList<>(siblings.size());
+            for (SelfBilledLine line : siblings) {
+                net = net.add(line.amount == null ? BigDecimal.ZERO : line.amount);
+                lineUuids.add(line.uuid);
+            }
+            BigDecimal shares = BigDecimal.ZERO;
+            for (SelfBilledAssignment a : SelfBilledAssignment.findByLines(lineUuids)) {
+                shares = shares.add(a.shareAmount == null ? BigDecimal.ZERO : a.shareAmount);
+            }
+            currentNet.put(voucherKey, net);
+            assignedTotal.put(voucherKey, shares);
         }
-
-        // Settled side reused from PhantomSettlementService (R1) — one source of truth, identical query.
-        List<SettlementDeltaCalculator.SettledLine> settled = phantomSettlementService.settledLinesForGroup(key);
-
-        Map<String, String> consultantNames = resolveConsultantNames(targets, settled);
-        Map<String, String> companyNames = resolveCompanyNames(key, targets, settled);
-        return SettlementDeltaCalculator.compute(key, key.debtorCompanyUuid(), targets, settled,
-                consultantNames, companyNames, true);
+        List<String> stale = staleVoucherNumbers(currentNet, assignedTotal);
+        if (!stale.isEmpty()) {
+            throw new WebApplicationException(
+                    "Self-billed document(s) changed in e-conomic since assignment — re-confirm them in the "
+                            + "workbench before settling. Stale voucher(s) (account:voucher): "
+                            + String.join(", ", stale),
+                    Response.Status.CONFLICT);
+        }
     }
 
-    /** Settle one group: one document per issuer whose |delta| >= 1 kr, skipping issuers with an open QUEUED doc. */
+    /** Pure comparison: voucher keys whose current net differs from the assigned total by more than 1 kr. */
+    static List<String> staleVoucherNumbers(Map<String, BigDecimal> currentNet,
+                                            Map<String, BigDecimal> assignedTotal) {
+        List<String> stale = new ArrayList<>();
+        for (Map.Entry<String, BigDecimal> e : currentNet.entrySet()) {
+            BigDecimal assigned = assignedTotal.getOrDefault(e.getKey(), BigDecimal.ZERO);
+            if (e.getValue().subtract(assigned).abs().compareTo(THRESHOLD) > 0) stale.add(e.getKey());
+        }
+        stale.sort(String::compareTo);
+        return stale;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Legacy no-op shims — keep SelfBilledMigrationService compiling. The old machine-matching
+    // settle path was retired by the workbench (V365 removed status='RESOLVED'); Phase 5 (Task 13)
+    // deletes these together with SelfBilledMigrationService.
+    // ---------------------------------------------------------------------------------------------
+
+    /** @deprecated legacy machine-matching path — retired; use the self-billed workbench. */
+    @Deprecated
+    public List<SettlementGroupKey> inScopeGroups(int fromYm, int toYm) {
+        log.warnf("inScopeGroups(%d, %d): legacy self-billed settle path is retired — use the workbench "
+                + "(settleConsultantPeriod)", fromYm, toYm);
+        return List.of();
+    }
+
+    /** @deprecated legacy machine-matching path — retired; use the self-billed workbench. */
+    @Deprecated
     public List<String> settleGroup(SettlementGroupKey key, boolean queue) {
-        SettlementGroupPreview preview = self.previewGroup(key);
-        String representative = representativePhantom(key.billingClientUuid());
-        if (representative == null) { log.warnf("settleGroup: no representative phantom for client=%s", key.billingClientUuid()); return List.of(); }
-
-        List<String> created = new ArrayList<>();
-        for (SettlementGroupPreview.IssuerDelta issuer : preview.issuers()) {
-            if (issuer.delta().abs().compareTo(THRESHOLD) < 0) continue;   // threshold: skip øre-rounding
-            if (phantomSettlementService.hasOpenQueuedInternal(key, issuer.issuerCompanyUuid())) {   // reused guard (R1/#2)
-                log.warnf("settleGroup: open QUEUED internal for group=%s issuer=%s; skipping", key.asString(), issuer.issuerCompanyUuid());
-                continue;
-            }
-            List<InvoiceService.SettlementLineInput> lines = new ArrayList<>();
-            for (SettlementGroupPreview.ConsultantDelta c : issuer.consultants()) {
-                if (c.delta().abs().compareTo(THRESHOLD) < 0) continue;
-                lines.add(new InvoiceService.SettlementLineInput(c.consultantUuid(), c.consultantName(), c.delta()));
-            }
-            if (lines.isEmpty()) continue;
-            try {
-                String internalUuid = invoiceService.createSettlementInternal(
-                        representative, issuer.issuerCompanyUuid(), key.debtorCompanyUuid(), lines,
-                        key.billingClientUuid(), key.year(), key.month());
-                created.add(internalUuid);
-                if (!queue) orchestrator.finalizeAutomatically(internalUuid);
-            } catch (RuntimeException e) {
-                log.errorf(e, "settleGroup: issuer=%s group=%s failed; skipping", issuer.issuerCompanyUuid(), key.asString());
-            }
-        }
-        log.infof("settleGroup group=%s created=%d queue=%s", key.asString(), created.size(), queue);
-        return created;
+        log.warnf("settleGroup(%s, queue=%s): legacy self-billed settle path is retired — use the workbench "
+                + "(settleConsultantPeriod)", key == null ? null : key.asString(), queue);
+        return List.of();
     }
 
+    /** Representative phantom for invoice_ref_uuid (kept from the prior service — same semantics). */
     String representativePhantom(String billingClientUuid) {
         @SuppressWarnings("unchecked")
         List<String> ids = em.createNativeQuery("""
@@ -134,16 +245,24 @@ public class SelfBilledSettlementService {
         return ids.isEmpty() ? null : ids.get(0);
     }
 
-    private static BigDecimal toBig(Object o) {
-        if (o == null) return BigDecimal.ZERO;
-        return (o instanceof BigDecimal b) ? b : BigDecimal.valueOf(((Number) o).doubleValue());
+    private String requireDebtor(String clientUuid) {
+        String debtor = deltaQuery.debtorFor(clientUuid);
+        if (debtor == null) {
+            throw new WebApplicationException("Client is not a configured self-billed source",
+                    Response.Status.BAD_REQUEST);
+        }
+        return debtor;
     }
 
-    private Map<String, String> resolveConsultantNames(List<SettlementDeltaCalculator.TargetLine> t,
-                                                       List<SettlementDeltaCalculator.SettledLine> s) {
-        Set<String> ids = new HashSet<>();
-        for (var x : t) ids.add(x.consultantUuid());
-        for (var x : s) ids.add(x.consultantUuid());
+    private Map<String, BigDecimal> workValues(String clientUuid, int year, int month) {
+        Map<String, BigDecimal> out = new HashMap<>();
+        for (ConsultantWorkRevenue r : workService.findRevenueByClientAndMonth(clientUuid, year, month)) {
+            out.put(r.useruuid(), r.revenue() == null ? BigDecimal.ZERO : r.revenue());
+        }
+        return out;
+    }
+
+    private Map<String, String> consultantNames(Set<String> ids) {
         Map<String, String> out = new HashMap<>();
         if (ids.isEmpty()) return out;
         @SuppressWarnings("unchecked")
@@ -154,18 +273,18 @@ public class SelfBilledSettlementService {
         return out;
     }
 
-    private Map<String, String> resolveCompanyNames(SettlementGroupKey key,
-                                                    List<SettlementDeltaCalculator.TargetLine> t,
-                                                    List<SettlementDeltaCalculator.SettledLine> s) {
-        Set<String> ids = new HashSet<>();
-        ids.add(key.debtorCompanyUuid());
-        for (var x : t) ids.add(x.issuerCompanyUuid());
-        for (var x : s) ids.add(x.issuerCompanyUuid());
+    private Map<String, String> companyNames(Set<String> ids) {
         Map<String, String> out = new HashMap<>();
+        if (ids.isEmpty()) return out;
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("SELECT uuid, name FROM companies WHERE uuid IN (:ids)")
                 .setParameter("ids", ids).getResultList();
         for (Object[] r : rows) out.put((String) r[0], (String) r[1]);
         return out;
+    }
+
+    private static BigDecimal toBig(Object o) {
+        if (o == null) return BigDecimal.ZERO;
+        return (o instanceof BigDecimal b) ? b : BigDecimal.valueOf(((Number) o).doubleValue());
     }
 }
