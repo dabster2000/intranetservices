@@ -11,7 +11,9 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /** One captured e-conomic debtor line. Idempotent on entry_number. Period/code/consultant are voucher-resolved (D10). */
 @Getter
@@ -29,6 +31,7 @@ public class SelfBilledLine extends PanacheEntityBase {
     @Column(name = "account_number")       public int accountNumber;
     @Column(name = "voucher_number")       public int voucherNumber;
     @Column(name = "entry_number")         public long entryNumber;
+    @Column(name = "booking_date")         public LocalDate bookingDate;
     @Column(name = "faktura_number")       public String fakturaNumber;
     @Column(name = "work_year")            public Integer workYear;
     @Column(name = "work_month")           public Integer workMonth;
@@ -49,5 +52,10 @@ public class SelfBilledLine extends PanacheEntityBase {
     /** Existing row for an entry number (idempotency), or null. */
     public static SelfBilledLine findByEntry(long entryNumber) {
         return find("entryNumber", entryNumber).firstResult();
+    }
+
+    /** All sibling lines of a voucher (the netting unit). */
+    public static List<SelfBilledLine> findVoucherSiblings(int accountNumber, int voucherNumber) {
+        return list("accountNumber = ?1 and voucherNumber = ?2", accountNumber, voucherNumber);
     }
 }

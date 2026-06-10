@@ -163,20 +163,26 @@ public class SelfBilledImportService {
         LocalDateTime now = LocalDateTime.now();
         for (SelfBilledVoucherAggregator.VoucherNet v : vouchers) {
             String consultantUuid = null, issuerCompanyUuid = null;
-            SelfBilledLineStatus status;
-            if (!v.resolved()) {
-                status = SelfBilledLineStatus.UNPARSEABLE;
-            } else {
+            if (v.resolved()) {
                 consultantUuid = codeResolver.resolve(source.agreementCompanyUuid, source.accountNumber, v.code());
-                if (consultantUuid == null) {
-                    status = SelfBilledLineStatus.UNMAPPED_CODE;
-                } else {
+                if (consultantUuid != null) {
                     issuerCompanyUuid = codeResolver.resolveIssuerCompany(consultantUuid, v.workYear(), v.workMonth());
-                    status = SelfBilledLineStatus.RESOLVED;
                 }
             }
+            // Workflow status for NEW rows / refreshable rows: a net-zero voucher is out of
+            // scope (IGNORED); everything else awaits a human (UNASSIGNED). Human statuses
+            // (ASSIGNED/SETTLED/SAME_COMPANY) always survive re-capture in upsertLine;
+            // UNASSIGNED/IGNORED are only re-stamped when the voucher net changed.
+            SelfBilledLineStatus capturedStatus = (v.signedAmount().signum() == 0)
+                    ? SelfBilledLineStatus.IGNORED
+                    : SelfBilledLineStatus.UNASSIGNED;
+            List<SelfBilledLine> existingSiblings = SelfBilledLine.findVoucherSiblings(source.accountNumber, v.voucher());
+            BigDecimal priorNet = existingSiblings.stream()
+                    .map(x -> x.amount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            boolean netChanged = existingSiblings.isEmpty() || priorNet.compareTo(v.signedAmount()) != 0;
             for (Long entry : v.entries()) {
-                upsertLine(source, v, byEntry.get(entry), consultantUuid, issuerCompanyUuid, status, now);
+                upsertLine(source, v, byEntry.get(entry), consultantUuid, issuerCompanyUuid, capturedStatus, netChanged, now);
                 upserts++;
             }
         }
@@ -184,10 +190,15 @@ public class SelfBilledImportService {
         return upserts;
     }
 
-    /** Upsert one entry. Period/code/consultant/issuer/status are VOUCHER-resolved (stamped on every sibling); only faktura is per-line. */
+    /**
+     * Upsert one entry. Period/code/consultant/issuer are VOUCHER-resolved (stamped on every sibling);
+     * only faktura and bookingDate are per-line. status is voucher-level workflow state; human statuses
+     * survive re-capture: ASSIGNED/SETTLED/SAME_COMPANY always, and sticky IGNORED until the voucher
+     * net changes (netChanged).
+     */
     private void upsertLine(SelfBilledSource source, SelfBilledVoucherAggregator.VoucherNet v, RawLine l,
                             String consultantUuid, String issuerCompanyUuid,
-                            SelfBilledLineStatus status, LocalDateTime now) {
+                            SelfBilledLineStatus status, boolean netChanged, LocalDateTime now) {
         if (l == null) return;
         SelfBilledLine row = SelfBilledLine.findByEntry(l.entry());
         boolean isNew = (row == null);
@@ -202,6 +213,7 @@ public class SelfBilledImportService {
         row.debtorCompanyUuid = source.agreementCompanyUuid;
         row.accountNumber = l.account();
         row.voucherNumber = l.voucher();
+        row.bookingDate = l.date();                               // NEW: the e-conomic entry date
         row.fakturaNumber = SelfBilledTextParser.parse(l.text()).map(ParsedLine::faktura).orElse(null); // per-line audit
         row.workYear = v.resolved() ? v.workYear() : null;        // VOUCHER-resolved (corrections inherit) — F1 fix
         row.workMonth = v.resolved() ? v.workMonth() : null;
@@ -210,7 +222,14 @@ public class SelfBilledImportService {
         row.issuerCompanyUuid = issuerCompanyUuid;                // voucher-level
         row.amount = l.amount();                                  // per-line signed amount (SUM nets the voucher)
         row.sourceText = l.text() != null && l.text().length() > 255 ? l.text().substring(0, 255) : l.text();
-        row.status = status;                                      // voucher-level
+        // Human statuses are authoritative: ASSIGNED/SETTLED/SAME_COMPANY always survive
+        // re-capture. UNASSIGNED/IGNORED are machine-flippable, but only when the voucher
+        // net actually changed — so a human "Ignore" of a non-zero voucher survives stable
+        // re-captures and re-opens only if the document's financial content changes.
+        if (isNew || ((row.status == SelfBilledLineStatus.UNASSIGNED
+                || row.status == SelfBilledLineStatus.IGNORED) && netChanged)) {
+            row.status = status;
+        }
         row.refreshedAt = now;
         // NOT NULL columns (source_uuid, client_uuid, debtor_company_uuid, account_number,
         // voucher_number, amount, status) must be populated BEFORE persist() on the create path.
