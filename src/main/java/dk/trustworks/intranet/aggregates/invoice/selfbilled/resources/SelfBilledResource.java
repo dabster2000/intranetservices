@@ -1,8 +1,11 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AcceptResult;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AcceptSuggestedRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignContextDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SameCompanyCandidateDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.HistoryRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.LinkRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledAssignmentDTO;
@@ -110,16 +113,38 @@ public class SelfBilledResource {
         assignmentService.unmark(lineUuid, requireActor());
     }
 
-    /** Bulk-accept high-confidence SAME-COMPANY suggestions only (AC2). Returns {accepted: n}. */
+    /**
+     * Preview ALL same-company candidates in the window (any confidence) — UNASSIGNED vouchers
+     * whose suggested consultant is same-company as the source's debtor (AC2). Read-only; the
+     * human reviews the long tail before an explicit accept (POST below with a lineUuids body).
+     */
+    @GET @Path("/assignments/accept-suggested/preview")
+    @RolesAllowed({"invoices:read"})
+    public List<SameCompanyCandidateDTO> acceptSuggestedPreview(@QueryParam("client") String client,
+                                                               @QueryParam("from") String from,
+                                                               @QueryParam("to") String to) {
+        requireClient(client);
+        return maskCandidates(assignmentService.sameCompanyCandidatePreview(
+                client, parseDate(from, "from"), parseDate(to, "to")));
+    }
+
+    /**
+     * Bulk-accept SAME-COMPANY suggestions only (AC2). No body = the original ≥90 auto-sweep;
+     * a {@code {"lineUuids":[...]}} body = accept exactly those lines (each re-checked server-side:
+     * still same-company AND still UNASSIGNED). Returns {accepted, skipped} in both modes.
+     */
     @POST @Path("/assignments/accept-suggested")
     @RolesAllowed({"invoices:write"})
-    public Map<String, Integer> acceptSuggested(@QueryParam("client") String client,
-                                                @QueryParam("from") String from,
-                                                @QueryParam("to") String to) {
+    public AcceptResult acceptSuggested(@QueryParam("client") String client,
+                                        @QueryParam("from") String from,
+                                        @QueryParam("to") String to,
+                                        AcceptSuggestedRequest req) {
         requireClient(client);
-        int n = assignmentService.acceptSuggestedSameCompany(client, parseDate(from, "from"),
-                parseDate(to, "to"), requireActor());
-        return Map.of("accepted", n);
+        LocalDate fromDate = parseDate(from, "from"), toDate = parseDate(to, "to");
+        if (req != null && req.lineUuids() != null && !req.lineUuids().isEmpty()) {
+            return assignmentService.acceptSuggestedLines(client, fromDate, toDate, req.lineUuids(), requireActor());
+        }
+        return assignmentService.acceptSuggestedSameCompany(client, fromDate, toDate, requireActor());
     }
 
     /** Confirm one code→consultant mapping (kept from the capture stack). */
@@ -281,6 +306,15 @@ public class SelfBilledResource {
                         a.workYear(), a.workMonth(), a.shareAmount(), a.source(), null, a.assignedAt())).toList()))
                 .toList();
         return new SelfBilledDocumentsResponse(docs, r.coverage(), r.tieOut());
+    }
+
+    // Same boundary as maskDocuments: strip the resolved consultant uuid + name without
+    // users:read. suggestedCode is the issuer's own e-conomic booking text (accepted boundary).
+    private List<SameCompanyCandidateDTO> maskCandidates(List<SameCompanyCandidateDTO> rows) {
+        if (scopeContext.hasScope("users:read")) return rows;
+        return rows.stream().map(c -> new SameCompanyCandidateDTO(c.lineUuid(), c.voucherNumber(),
+                c.bookingDate(), c.amount(), c.suggestedCode(), null, null,
+                c.workYear(), c.workMonth(), c.confidence())).toList();
     }
 
     private List<ConsultantPeriodRow> maskConsultants(List<ConsultantPeriodRow> rows) {
