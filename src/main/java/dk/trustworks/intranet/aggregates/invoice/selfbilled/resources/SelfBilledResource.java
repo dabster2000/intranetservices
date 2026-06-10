@@ -1,9 +1,14 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AcceptResult;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AcceptSuggestedRequest;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignContextDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SameCompanyCandidateDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.HistoryRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.LinkRequest;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.QueuedInternalRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledAssignmentDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentsResponse;
@@ -109,16 +114,38 @@ public class SelfBilledResource {
         assignmentService.unmark(lineUuid, requireActor());
     }
 
-    /** Bulk-accept high-confidence SAME-COMPANY suggestions only (AC2). Returns {accepted: n}. */
+    /**
+     * Preview ALL same-company candidates in the window (any confidence) — UNASSIGNED vouchers
+     * whose suggested consultant is same-company as the source's debtor (AC2). Read-only; the
+     * human reviews the long tail before an explicit accept (POST below with a lineUuids body).
+     */
+    @GET @Path("/assignments/accept-suggested/preview")
+    @RolesAllowed({"invoices:read"})
+    public List<SameCompanyCandidateDTO> acceptSuggestedPreview(@QueryParam("client") String client,
+                                                               @QueryParam("from") String from,
+                                                               @QueryParam("to") String to) {
+        requireClient(client);
+        return maskCandidates(assignmentService.sameCompanyCandidatePreview(
+                client, parseDate(from, "from"), parseDate(to, "to")));
+    }
+
+    /**
+     * Bulk-accept SAME-COMPANY suggestions only (AC2). No body = the original ≥90 auto-sweep;
+     * a {@code {"lineUuids":[...]}} body = accept exactly those lines (each re-checked server-side:
+     * still same-company AND still UNASSIGNED). Returns {accepted, skipped} in both modes.
+     */
     @POST @Path("/assignments/accept-suggested")
     @RolesAllowed({"invoices:write"})
-    public Map<String, Integer> acceptSuggested(@QueryParam("client") String client,
-                                                @QueryParam("from") String from,
-                                                @QueryParam("to") String to) {
+    public AcceptResult acceptSuggested(@QueryParam("client") String client,
+                                        @QueryParam("from") String from,
+                                        @QueryParam("to") String to,
+                                        AcceptSuggestedRequest req) {
         requireClient(client);
-        int n = assignmentService.acceptSuggestedSameCompany(client, parseDate(from, "from"),
-                parseDate(to, "to"), requireActor());
-        return Map.of("accepted", n);
+        LocalDate fromDate = parseDate(from, "from"), toDate = parseDate(to, "to");
+        if (req != null && req.lineUuids() != null && !req.lineUuids().isEmpty()) {
+            return assignmentService.acceptSuggestedLines(client, fromDate, toDate, req.lineUuids(), requireActor());
+        }
+        return assignmentService.acceptSuggestedSameCompany(client, fromDate, toDate, requireActor());
     }
 
     /** Confirm one code→consultant mapping (kept from the capture stack). */
@@ -140,6 +167,28 @@ public class SelfBilledResource {
         requireClient(client);
         requireYmWindow(fromYm, toYm);
         return maskConsultants(settlementService.consultantRows(client, fromYm, toYm));
+    }
+
+    /**
+     * Assign-modal consequence preview for the SELECTED (consultant, work-period) — which may differ
+     * from the row's suggestion: cross-company verdict, issuer/debtor companies, and the registered-work
+     * cross-check. No masking is applied: the response ties a CALLER-SUPPLIED consultant uuid to a work
+     * value and a company — the uuid is the caller's own input, never resolved to a name here, so no
+     * identity is leaked (uuid→identity resolution still requires users:read elsewhere). Mirrors the
+     * data-boundary reasoning of maskConsultants without needing to strip anything.
+     */
+    @GET @Path("/assign-context")
+    @RolesAllowed({"invoices:read"})
+    public AssignContextDTO assignContext(@QueryParam("client") String client,
+                                          @QueryParam("consultant") String consultant,
+                                          @QueryParam("year") int year,
+                                          @QueryParam("month") int month) {
+        requireClient(client);
+        if (consultant == null || consultant.isBlank()) {
+            throw new WebApplicationException("consultant is required", Response.Status.BAD_REQUEST);
+        }
+        requireWorkPeriod(year, month);
+        return settlementService.assignContext(client, consultant, year, month);
     }
 
     /** Book the pass-through internal / credit note for one (consultant, work-period). */
@@ -169,6 +218,21 @@ public class SelfBilledResource {
     @RolesAllowed({"invoices:read"})
     public List<UnlinkedInternalRow> unlinked() {
         return maskUnlinked(historyService.unlinkedInternals());
+    }
+
+    /**
+     * Queued-lane read (Feature 3b): settlement-stamped QUEUED INTERNALs for the client whose settlement
+     * period is in the window, each carrying paid/outstanding from the underlying self-billing vouchers'
+     * 8610 remainder. Consultant identity masked without users:read.
+     */
+    @GET @Path("/internals/queued")
+    @RolesAllowed({"invoices:read"})
+    public List<QueuedInternalRow> queuedInternals(@QueryParam("client") String client,
+                                                   @QueryParam("fromYm") int fromYm,
+                                                   @QueryParam("toYm") int toYm) {
+        requireClient(client);
+        requireYmWindow(fromYm, toYm);
+        return maskQueued(settlementService.queuedInternals(client, fromYm, toYm));
     }
 
     @POST @Path("/internals/{invoiceUuid}/link")
@@ -260,11 +324,27 @@ public class SelfBilledResource {
         return new SelfBilledDocumentsResponse(docs, r.coverage(), r.tieOut());
     }
 
+    // Same boundary as maskDocuments: strip the resolved consultant uuid + name without
+    // users:read. suggestedCode is the issuer's own e-conomic booking text (accepted boundary).
+    private List<SameCompanyCandidateDTO> maskCandidates(List<SameCompanyCandidateDTO> rows) {
+        if (scopeContext.hasScope("users:read")) return rows;
+        return rows.stream().map(c -> new SameCompanyCandidateDTO(c.lineUuid(), c.voucherNumber(),
+                c.bookingDate(), c.amount(), c.suggestedCode(), null, null,
+                c.workYear(), c.workMonth(), c.confidence())).toList();
+    }
+
     private List<ConsultantPeriodRow> maskConsultants(List<ConsultantPeriodRow> rows) {
         if (scopeContext.hasScope("users:read")) return rows;
         return rows.stream().map(c -> new ConsultantPeriodRow(null, null, c.workYear(), c.workMonth(),
                 c.issuerCompanyUuid(), c.issuerCompanyName(), c.assigned(), c.settled(), c.delta(),
                 c.workValue(), c.canSettle(), c.unlinkedCandidates())).toList();
+    }
+
+    // Strip consultant uuid + name without users:read; paid/outstanding/total/period are not identity.
+    private List<QueuedInternalRow> maskQueued(List<QueuedInternalRow> rows) {
+        if (scopeContext.hasScope("users:read")) return rows;
+        return rows.stream().map(q -> new QueuedInternalRow(q.invoiceUuid(), null, null,
+                q.workYear(), q.workMonth(), q.total(), q.paid(), q.outstanding())).toList();
     }
 
     private List<HistoryRow> maskHistory(List<HistoryRow> rows) {
@@ -275,11 +355,13 @@ public class SelfBilledResource {
 
     // itemNames carry the attributed consultant's FULL NAME (InternalInvoiceLineGenerator labels
     // each line with attribution.consultantName); description (specificdescription) is free text
-    // that may also name the consultant. Strip both without users:read; keep every other component.
+    // that may also name the consultant; the Feature 2b prefill resolves the item consultant uuid
+    // to a name. Strip all three (uuid + name) without users:read; periods are not identity and stay.
     private List<UnlinkedInternalRow> maskUnlinked(List<UnlinkedInternalRow> rows) {
         if (scopeContext.hasScope("users:read")) return rows;
         return rows.stream().map(u -> new UnlinkedInternalRow(u.invoiceUuid(), u.invoicenumber(),
                 u.type(), u.status(), u.issuerCompanyName(), u.debtorCompanyName(), u.invoicedate(),
-                null, u.total(), List.of())).toList();
+                null, u.total(), List.of(),
+                null, null, u.suggestedWorkYear(), u.suggestedWorkMonth())).toList();
     }
 }

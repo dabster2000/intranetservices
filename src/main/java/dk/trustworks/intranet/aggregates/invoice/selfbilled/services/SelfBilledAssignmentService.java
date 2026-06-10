@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AcceptResult;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignmentInput;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SameCompanyCandidateDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledAssignmentDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledCoverage;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentDTO;
@@ -29,6 +31,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -320,29 +323,100 @@ public class SelfBilledAssignmentService {
     }
 
     /**
-     * Bulk-accept high-confidence SAME-COMPANY suggestions (AC2: cross-company is
-     * never auto-assigned). Returns the number of vouchers placed.
+     * Bulk-accept high-confidence SAME-COMPANY suggestions (AC2: cross-company is never
+     * auto-assigned). Sweeps the window's same-company candidates (any confidence) but
+     * places only those at or above {@link AssignmentSuggester#HIGH_CONFIDENCE}; the long
+     * tail is left for {@link #acceptSuggestedLines} after a human reviews the preview.
+     * Returns {accepted = vouchers placed, skipped = same-company candidates below the gate}.
      */
     @Transactional
-    public int acceptSuggestedSameCompany(String clientUuid, LocalDate from, LocalDate to, String actor) {
-        SelfBilledDocumentsResponse current = documents(clientUuid, from, to);
-        int accepted = 0;
-        for (SelfBilledDocumentDTO d : current.documents()) {
-            if (!SelfBilledLineStatus.UNASSIGNED.name().equals(d.status())) continue;
-            if (d.suggestedConsultantUuid() == null
-                    || d.suggestionConfidence() < AssignmentSuggester.HIGH_CONFIDENCE) continue;
-            String issuer = codeResolver.resolveIssuerCompany(
-                    d.suggestedConsultantUuid(), d.suggestedWorkYear(), d.suggestedWorkMonth());
-            SelfBilledLine anchor = SelfBilledLine.findById(d.lineUuid());
-            if (issuer == null || !issuer.equals(anchor.debtorCompanyUuid)) continue;   // cross-company -> human
-            assignVoucher(d.lineUuid(), List.of(new AssignmentInput(
-                    d.suggestedConsultantUuid(), d.suggestedWorkYear(), d.suggestedWorkMonth(), null)),
+    public AcceptResult acceptSuggestedSameCompany(String clientUuid, LocalDate from, LocalDate to, String actor) {
+        int accepted = 0, skipped = 0;
+        for (SameCompanyCandidate c : sameCompanyCandidates(clientUuid, from, to)) {
+            if (c.confidence() < AssignmentSuggester.HIGH_CONFIDENCE) { skipped++; continue; }
+            assignVoucher(c.lineUuid(), List.of(new AssignmentInput(
+                    c.consultantUuid(), c.workYear(), c.workMonth(), null)),
                     actor, AssignmentSourceType.AUTO_SAMECOMPANY);
             accepted++;
         }
-        log.infof("acceptSuggestedSameCompany client=%s window=%s..%s accepted=%d by=%s",
-                clientUuid, from, to, accepted, actor);
-        return accepted;
+        log.infof("acceptSuggestedSameCompany client=%s window=%s..%s accepted=%d skipped=%d by=%s",
+                clientUuid, from, to, accepted, skipped, actor);
+        return new AcceptResult(accepted, skipped);
+    }
+
+    /**
+     * Feature 1a preview: ALL same-company candidates in the window (any confidence) —
+     * UNASSIGNED vouchers carrying a suggestion whose suggested consultant's company
+     * (as-of the suggested period) equals the source's debtor company. Names resolved;
+     * masking applied at the resource. Read-only; reuses the SAME suggestion machinery
+     * as {@link #documents} via {@link #sameCompanyCandidates}.
+     */
+    @Transactional
+    public List<SameCompanyCandidateDTO> sameCompanyCandidatePreview(String clientUuid, LocalDate from, LocalDate to) {
+        List<SameCompanyCandidate> candidates = sameCompanyCandidates(clientUuid, from, to);
+        Map<String, String> names = consultantNames(
+                candidates.stream().map(SameCompanyCandidate::consultantUuid).collect(java.util.stream.Collectors.toSet()));
+        return candidates.stream().map(c -> new SameCompanyCandidateDTO(
+                c.lineUuid(), c.voucherNumber(), c.bookingDate(), c.amount(), c.suggestedCode(),
+                c.consultantUuid(), names.get(c.consultantUuid()), c.workYear(), c.workMonth(), c.confidence()))
+                .toList();
+    }
+
+    /**
+     * Feature 1b explicit accept: place exactly these voucher anchor lines, each re-checked
+     * server-side — the suggestion is recomputed and applied ONLY if it is still same-company
+     * and the voucher is still UNASSIGNED (skip silently and count otherwise). Same assignment
+     * semantics as the ≥90 path (source AUTO_SAMECOMPANY, mirror sync, status recompute).
+     */
+    @Transactional
+    public AcceptResult acceptSuggestedLines(String clientUuid, LocalDate from, LocalDate to,
+                                             List<String> lineUuids, String actor) {
+        Map<String, SameCompanyCandidate> byLine = new HashMap<>();
+        for (SameCompanyCandidate c : sameCompanyCandidates(clientUuid, from, to)) byLine.put(c.lineUuid(), c);
+        // De-dupe (M-3): a uuid sent twice must not double-assign the same voucher / inflate accepted.
+        Set<String> requested = new LinkedHashSet<>(lineUuids);
+        int accepted = 0, skipped = 0;
+        for (String lineUuid : requested) {
+            SameCompanyCandidate c = byLine.get(lineUuid);
+            if (c == null) { skipped++; continue; }   // no longer same-company / not UNASSIGNED / unknown
+            assignVoucher(c.lineUuid(), List.of(new AssignmentInput(
+                    c.consultantUuid(), c.workYear(), c.workMonth(), null)),
+                    actor, AssignmentSourceType.AUTO_SAMECOMPANY);
+            accepted++;
+        }
+        log.infof("acceptSuggestedLines client=%s requested=%d unique=%d accepted=%d skipped=%d by=%s",
+                clientUuid, lineUuids.size(), requested.size(), accepted, skipped, actor);
+        return new AcceptResult(accepted, skipped);
+    }
+
+    /** Internal same-company candidate (pre-name-resolution) — the shared shape of 1a/1b/the ≥90 sweep. */
+    private record SameCompanyCandidate(String lineUuid, int voucherNumber, String bookingDate, double amount,
+                                        String suggestedCode, String consultantUuid, int workYear, int workMonth,
+                                        int confidence) {}
+
+    /**
+     * The shared same-company filter behind {@link #acceptSuggestedSameCompany},
+     * {@link #sameCompanyCandidatePreview}, and {@link #acceptSuggestedLines}: from the window's
+     * documents keep every UNASSIGNED voucher that carries a suggestion whose suggested consultant's
+     * company (via {@code resolveIssuerCompany} for the suggested period) equals the source's debtor
+     * company. amounts are already normalized positive on the document DTO.
+     */
+    private List<SameCompanyCandidate> sameCompanyCandidates(String clientUuid, LocalDate from, LocalDate to) {
+        SelfBilledDocumentsResponse current = documents(clientUuid, from, to);
+        List<SameCompanyCandidate> out = new ArrayList<>();
+        for (SelfBilledDocumentDTO d : current.documents()) {
+            if (!SelfBilledLineStatus.UNASSIGNED.name().equals(d.status())) continue;
+            if (d.suggestedConsultantUuid() == null
+                    || d.suggestedWorkYear() == null || d.suggestedWorkMonth() == null) continue;
+            String issuer = codeResolver.resolveIssuerCompany(
+                    d.suggestedConsultantUuid(), d.suggestedWorkYear(), d.suggestedWorkMonth());
+            SelfBilledLine anchor = SelfBilledLine.findById(d.lineUuid());
+            if (anchor == null || issuer == null || !issuer.equals(anchor.debtorCompanyUuid)) continue;
+            out.add(new SameCompanyCandidate(d.lineUuid(), d.voucherNumber(), d.bookingDate(), d.amount(),
+                    d.suggestedCode(), d.suggestedConsultantUuid(), d.suggestedWorkYear(), d.suggestedWorkMonth(),
+                    d.suggestionConfidence()));
+        }
+        return out;
     }
 
     // ── read helpers ─────────────────────────────────────────────────
