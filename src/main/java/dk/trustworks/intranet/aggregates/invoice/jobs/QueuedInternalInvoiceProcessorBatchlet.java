@@ -13,12 +13,15 @@ import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchest
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceAttributionService;
 import dk.trustworks.intranet.aggregates.invoice.services.SourceItemMerger;
 import dk.trustworks.intranet.aggregates.invoice.services.UserCompanyResolver;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.services.SelfBilledDeltaQuery;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.services.SelfBilledPaidGate;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -69,6 +72,12 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
 
     @Inject
     PricingEngine pricingEngine;
+
+    @Inject
+    SelfBilledDeltaQuery selfBilledDeltaQuery;
+
+    @Inject
+    EntityManager em;
 
     @ConfigProperty(name = "feature.invoicing.internal.attribution-driven", defaultValue = "true")
     boolean attributionDrivenInternalInvoices;
@@ -149,7 +158,97 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
         log.infof("QueuedInternalInvoiceProcessorBatchlet completed: total=%d, processed=%d, skipped=%d, failed=%d",
                 queuedInvoices.size(), processed, skipped, failed);
 
+        processSettlementInternals();
+
         return "COMPLETED";
+    }
+
+    /**
+     * Second pass (Feature 3c): auto-finalize QUEUED settlement INTERNALs that reference a PHANTOM source.
+     *
+     * <p>These never match the first pass — a settlement internal references a PHANTOM (not a real source
+     * invoice with {@code economics_status = PAID}), and it carries DELTA lines that must NOT be regenerated
+     * from source attribution (that would re-derive the full amount and over-book). Instead they go through
+     * the self-billed paid-gate: a settlement internal may finalize only when the client has paid every
+     * self-billing voucher backing its (client, consultant, work-period) group — i.e. every backing
+     * voucher's 8610 'Samlekonto debitorer' remainder is exactly 0 (reusing
+     * {@link SelfBilledDeltaQuery#voucherRemainders} + {@link SelfBilledPaidGate#allPaid}, the SAME lookup
+     * as the workbench {@code /internals/queued} read — no duplicated SQL). Fail-closed: a voucher with no
+     * 8610 row (null remainder) or an empty backing set means NOT paid -> skip. No item regeneration.
+     */
+    private void processSettlementInternals() {
+        // Native, parameter-bound discovery (selfbilled idiom): QUEUED settlement INTERNALs whose
+        // invoice_ref_uuid points at a PHANTOM source. A separate native query keeps the PHANTOM-type
+        // join out of HQL (no Panache active-record subquery precedent in this codebase).
+        @SuppressWarnings("unchecked")
+        List<String> uuids = em.createNativeQuery("""
+                SELECT i.uuid
+                FROM invoices i
+                JOIN invoices src ON src.uuid = i.invoice_ref_uuid
+                WHERE i.type = 'INTERNAL' AND i.status = 'QUEUED'
+                  AND i.settlement_billing_client_uuid IS NOT NULL
+                  AND i.settlement_year IS NOT NULL AND i.settlement_month IS NOT NULL
+                  AND src.type = 'PHANTOM'
+                """).getResultList();
+        List<Invoice> settlementInternals = uuids.isEmpty()
+                ? List.of()
+                : Invoice.list("uuid in ?1", uuids);
+
+        log.infof("Found %d queued settlement internals (PHANTOM-referenced) to evaluate", settlementInternals.size());
+
+        int processed = 0, skipped = 0, failed = 0;
+        for (Invoice internal : settlementInternals) {
+            try {
+                String consultant = settlementConsultant(internal);
+                if (consultant == null) {
+                    log.warnf("Settlement internal %s has no single item consultant — skipping", internal.getUuid());
+                    skipped++;
+                    continue;
+                }
+                List<SelfBilledPaidGate.VoucherRemainder> remainders = selfBilledDeltaQuery.voucherRemainders(
+                        internal.getSettlementBillingClientUuid(), internal.getSettlementDebtorCompanyuuid(),
+                        consultant, internal.getSettlementYear(), internal.getSettlementMonth());
+
+                if (!SelfBilledPaidGate.allPaid(remainders)) {
+                    log.debugf("Settlement internal %s not yet paid (client=%s consultant=%s %d-%02d, "
+                                    + "backingVouchers=%d) — skipping",
+                            internal.getUuid(), internal.getSettlementBillingClientUuid(), consultant,
+                            internal.getSettlementYear(), internal.getSettlementMonth(), remainders.size());
+                    skipped++;
+                    continue;
+                }
+
+                internal.setInvoicedate(LocalDate.now());
+                internal.setDuedate(LocalDate.now().plusDays(1));
+                log.infof("Auto-finalizing settlement internal %s (self-billing vouchers paid)", internal.getUuid());
+                internalOrchestrator.finalizeAutomatically(internal.getUuid());
+                log.infof("Successfully auto-finalized settlement internal %s", internal.getUuid());
+                processed++;
+            } catch (Exception e) {
+                log.warnf(e, "Auto-finalize failed for settlement internal %s", internal.getUuid());
+                failed++;
+            }
+        }
+
+        log.infof("QueuedInternalInvoiceProcessorBatchlet settlement pass completed: total=%d, processed=%d, "
+                        + "skipped=%d, failed=%d",
+                settlementInternals.size(), processed, skipped, failed);
+    }
+
+    /** The single consultant on a settlement internal's items, or null if items carry zero or >1 consultants. */
+    private String settlementConsultant(Invoice internal) {
+        List<InvoiceItem> items = internal.getInvoiceitems();
+        if (items == null || items.isEmpty()) return null;
+        String consultant = null;
+        for (InvoiceItem item : items) {
+            if (item.consultantuuid == null || item.consultantuuid.isBlank()) continue;
+            if (consultant == null) {
+                consultant = item.consultantuuid;
+            } else if (!consultant.equals(item.consultantuuid)) {
+                return null;   // ambiguous — never guess
+            }
+        }
+        return consultant;
     }
 
     /**

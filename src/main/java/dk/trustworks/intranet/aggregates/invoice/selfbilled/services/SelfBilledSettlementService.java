@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignContextDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.QueuedInternalRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SettleRequest;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledAssignment;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLine;
@@ -99,6 +100,57 @@ public class SelfBilledSettlementService {
                     issuer, companies.getOrDefault(issuer, issuer),
                     assigned.doubleValue(), settled.doubleValue(), delta.doubleValue(),
                     work.doubleValue(), delta.abs().compareTo(THRESHOLD) > 0, unlinked));
+        }
+        return out;
+    }
+
+    /**
+     * Queued-lane read (Feature 3b): settlement-stamped QUEUED INTERNAL invoices for the client whose
+     * settlement period (settlement_year*100 + settlement_month) falls in the window [fromYm,toYm]. Per
+     * invoice: total = Σ items (hours*rate), consultant = the items' consultant, and paid/outstanding from
+     * the underlying self-billing vouchers' 8610 remainder (via {@link SelfBilledDeltaQuery#voucherRemainders}
+     * + {@link SelfBilledPaidGate#allPaid}) — paid when every backing voucher's 8610 remainder is exactly 0
+     * (the client paid the self-billing invoice). Consultant identity is masked at the resource.
+     */
+    @Transactional
+    public List<QueuedInternalRow> queuedInternals(String clientUuid, int fromYm, int toYm) {
+        String debtor = requireDebtor(clientUuid);
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                SELECT i.uuid, MAX(ii.consultantuuid), i.settlement_year, i.settlement_month,
+                       COALESCE(SUM(ii.hours*ii.rate), 0)
+                FROM invoices i
+                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                WHERE i.type = 'INTERNAL' AND i.status = 'QUEUED'
+                  AND i.settlement_billing_client_uuid = :c
+                  AND i.settlement_year IS NOT NULL AND i.settlement_month IS NOT NULL
+                  AND (i.settlement_year*100 + i.settlement_month) BETWEEN :from AND :to
+                  AND ii.consultantuuid IS NOT NULL
+                GROUP BY i.uuid, i.settlement_year, i.settlement_month
+                ORDER BY i.settlement_year, i.settlement_month
+                """).setParameter("c", clientUuid).setParameter("from", fromYm).setParameter("to", toYm)
+                .getResultList();
+
+        Set<String> consultantUuids = new HashSet<>();
+        for (Object[] r : rows) consultantUuids.add((String) r[1]);
+        Map<String, String> names = consultantNames(consultantUuids);
+
+        List<QueuedInternalRow> out = new ArrayList<>(rows.size());
+        for (Object[] r : rows) {
+            String invoiceUuid = (String) r[0];
+            String consultant = (String) r[1];
+            int y = ((Number) r[2]).intValue(), m = ((Number) r[3]).intValue();
+            double total = toBig(r[4]).setScale(2, RoundingMode.HALF_UP).doubleValue();
+            List<SelfBilledPaidGate.VoucherRemainder> remainders =
+                    deltaQuery.voucherRemainders(clientUuid, debtor, consultant, y, m);
+            boolean paid = SelfBilledPaidGate.allPaid(remainders);
+            BigDecimal outstanding = remainders.stream()
+                    .map(SelfBilledPaidGate.VoucherRemainder::remainder)
+                    .filter(rem -> rem != null && rem.signum() > 0)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add)
+                    .setScale(2, RoundingMode.HALF_UP);
+            out.add(new QueuedInternalRow(invoiceUuid, consultant, names.getOrDefault(consultant, consultant),
+                    y, m, total, paid, outstanding.doubleValue()));
         }
         return out;
     }

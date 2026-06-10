@@ -8,6 +8,7 @@ import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriod
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SameCompanyCandidateDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.HistoryRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.LinkRequest;
+import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.QueuedInternalRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledAssignmentDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.SelfBilledDocumentsResponse;
@@ -219,6 +220,21 @@ public class SelfBilledResource {
         return maskUnlinked(historyService.unlinkedInternals());
     }
 
+    /**
+     * Queued-lane read (Feature 3b): settlement-stamped QUEUED INTERNALs for the client whose settlement
+     * period is in the window, each carrying paid/outstanding from the underlying self-billing vouchers'
+     * 8610 remainder. Consultant identity masked without users:read.
+     */
+    @GET @Path("/internals/queued")
+    @RolesAllowed({"invoices:read"})
+    public List<QueuedInternalRow> queuedInternals(@QueryParam("client") String client,
+                                                   @QueryParam("fromYm") int fromYm,
+                                                   @QueryParam("toYm") int toYm) {
+        requireClient(client);
+        requireYmWindow(fromYm, toYm);
+        return maskQueued(settlementService.queuedInternals(client, fromYm, toYm));
+    }
+
     @POST @Path("/internals/{invoiceUuid}/link")
     @RolesAllowed({"invoices:write"})
     public void link(@PathParam("invoiceUuid") String invoiceUuid, LinkRequest req) {
@@ -322,6 +338,13 @@ public class SelfBilledResource {
         return rows.stream().map(c -> new ConsultantPeriodRow(null, null, c.workYear(), c.workMonth(),
                 c.issuerCompanyUuid(), c.issuerCompanyName(), c.assigned(), c.settled(), c.delta(),
                 c.workValue(), c.canSettle(), c.unlinkedCandidates())).toList();
+    }
+
+    // Strip consultant uuid + name without users:read; paid/outstanding/total/period are not identity.
+    private List<QueuedInternalRow> maskQueued(List<QueuedInternalRow> rows) {
+        if (scopeContext.hasScope("users:read")) return rows;
+        return rows.stream().map(q -> new QueuedInternalRow(q.invoiceUuid(), null, null,
+                q.workYear(), q.workMonth(), q.total(), q.paid(), q.outstanding())).toList();
     }
 
     private List<HistoryRow> maskHistory(List<HistoryRow> rows) {
