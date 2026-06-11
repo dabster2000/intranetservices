@@ -14,7 +14,7 @@ import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledAssi
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledLine;
 import dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
-import dk.trustworks.intranet.aggregates.invoice.services.PhantomSettlementService;
+import dk.trustworks.intranet.aggregates.invoice.services.SettlementQueryService;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
 import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -52,7 +52,7 @@ public class SelfBilledSettlementService {
     @Inject EntityManager em;
     @Inject InvoiceService invoiceService;
     @Inject InternalInvoiceOrchestrator orchestrator;
-    @Inject PhantomSettlementService phantomSettlementService;   // settled side + duplicate guard (reuse, §8)
+    @Inject SettlementQueryService settlementQueryService;       // settled side + duplicate guard (reuse, §8)
     @Inject SelfBilledDeltaQuery deltaQuery;
     @Inject SelfBilledCodeResolver codeResolver;
     @Inject SelfBilledAssignmentService assignmentService;
@@ -190,7 +190,7 @@ public class SelfBilledSettlementService {
     /**
      * Human-clicked settle for ONE (client, consultant, work-period). NOT @Transactional:
      * createSettlementInternal commits in its own tx; the guard reads a fresh snapshot
-     * (same structure as PhantomSettlementService.settleGroup). Contract: empty list =
+     * (via SettlementQueryService.hasOpenQueuedInternal, REQUIRES_NEW). Contract: empty list =
      * delta within threshold (nothing to book, idempotent success); 409 = stale voucher
      * OR open QUEUED internal (human must act in the workbench first); a created-but-not-
      * finalized internal is still returned (finalize failure is logged, never swallowed
@@ -216,7 +216,7 @@ public class SelfBilledSettlementService {
                     delta, key.asString(), req.consultantUuid());
             return List.of();
         }
-        if (phantomSettlementService.hasOpenQueuedInternal(key, issuer)) {
+        if (settlementQueryService.hasOpenQueuedInternal(key, issuer)) {
             log.warnf("settleConsultantPeriod: open QUEUED internal for key=%s issuer=%s — skipping",
                     key.asString(), issuer);
             throw new WebApplicationException(

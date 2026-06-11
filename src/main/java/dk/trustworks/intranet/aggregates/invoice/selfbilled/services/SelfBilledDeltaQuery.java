@@ -1,8 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
-import dk.trustworks.intranet.aggregates.invoice.services.PhantomSettlementService;
-import dk.trustworks.intranet.aggregates.invoice.services.SettlementDeltaCalculator;
+import dk.trustworks.intranet.aggregates.invoice.services.SettlementQueryService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -14,7 +13,7 @@ import java.util.List;
 
 /**
  * Shared settlement math for the workbench. target comes from the HUMAN assignments
- * (never timesheets — AC1); settled reuses PhantomSettlementService.settledLinesForGroup
+ * (never timesheets — AC1); settled reuses SettlementQueryService.settledLinesForGroup
  * (the one source of truth for the settled side, spec §8). All returns are normalized
  * positive ("owed to the issuer").
  */
@@ -22,7 +21,7 @@ import java.util.List;
 public class SelfBilledDeltaQuery {
 
     @Inject EntityManager em;
-    @Inject PhantomSettlementService phantomSettlementService;
+    @Inject SettlementQueryService settlementQueryService;
 
     /** The debtor (agreement) company configured for an in-scope client, or null. */
     public String debtorFor(String clientUuid) {
@@ -52,14 +51,14 @@ public class SelfBilledDeltaQuery {
     /**
      * Σ settled (signed hours*rate) for ONE consultant within the group's stamped live internals.
      *
-     * NOTE: each call issues one DB query via PhantomSettlementService#settledLinesForGroup.
+     * NOTE: each call issues one DB query via SettlementQueryService#settledLinesForGroup.
      * Callers iterating multiple consultants for the same key should call settledLinesForGroup
      * once and filter in Java.
      */
     public BigDecimal settled(SettlementGroupKey key, String consultantUuid) {
-        return phantomSettlementService.settledLinesForGroup(key).stream()
+        return settlementQueryService.settledLinesForGroup(key).stream()
                 .filter(s -> consultantUuid.equals(s.consultantUuid()))
-                .map(SettlementDeltaCalculator.SettledLine::amount)
+                .map(SettlementQueryService.SettledLine::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
     }
