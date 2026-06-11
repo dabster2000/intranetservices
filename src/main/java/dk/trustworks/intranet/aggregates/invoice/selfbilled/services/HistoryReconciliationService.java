@@ -126,6 +126,13 @@ public class HistoryReconciliationService {
      * <p>Prefill (Feature 2b): the suggested consultant is the internal's own item consultant when ALL
      * items carry the same non-null {@code consultantuuid} (else null — never guessed), and the suggested
      * work period is the source invoice's {@code year}/{@code month} when the source exists (else null).
+     *
+     * <p>Cancelled-internal exclusion: any internal referenced by a LIVE credit note
+     * ({@code creditnote_for_uuid = i.uuid}, {@code type = 'CREDIT_NOTE'}, status in
+     * PENDING_REVIEW/QUEUED/CREATED) is void and dropped — linking it would stamp a cancelled document
+     * into settled totals, producing phantom mismatches (prod-observed: 10 such credited internals matched
+     * the queue). A DRAFT credit note does not yet void the internal. ANY live credit note voids it; the
+     * full-amount credit note is the observed reality, so partial credits are NOT distinguished here.
      */
     @Transactional
     public List<UnlinkedInternalRow> unlinkedInternals() {
@@ -151,6 +158,10 @@ public class HistoryReconciliationService {
                        OR src.uuid IS NULL
                        OR p.clientuuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1)
                        OR src.billing_client_uuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1))
+                  AND NOT EXISTS (SELECT 1 FROM invoices cn
+                                  WHERE cn.creditnote_for_uuid = i.uuid
+                                    AND cn.type = 'CREDIT_NOTE'
+                                    AND cn.status IN ('PENDING_REVIEW','QUEUED','CREATED'))
                 GROUP BY i.uuid, i.invoicenumber, i.type, i.status, ic.name, dc.name, i.invoicedate,
                          i.specificdescription, src.year, src.month
                 ORDER BY i.invoicedate DESC
@@ -177,16 +188,31 @@ public class HistoryReconciliationService {
                 u.suggestedWorkYear(), u.suggestedWorkMonth())).toList();
     }
 
-    /** Count only — feeds the Consultants-tab "unlinked candidates exist" warning (AC8). */
+    /**
+     * Count only — feeds the Consultants-tab "unlinked candidates exist" warning (AC8). Mirrors the
+     * {@link #unlinkedInternals()} discovery scope INCLUDING the live-credit-note exclusion, so the banner
+     * count stays in parity with the queue: a credited (void) internal is hidden from both, never leaving
+     * the banner showing a non-zero count over an empty queue with an unfollowable instruction.
+     */
     @Transactional
     public int unlinkedCandidateCount() {
         Object v = em.createNativeQuery("""
-                SELECT COUNT(*) FROM invoices i
+                SELECT COUNT(DISTINCT i.uuid) FROM invoices i
+                LEFT JOIN invoices src ON src.uuid = i.invoice_ref_uuid
+                LEFT JOIN project p ON p.uuid = src.projectuuid
                 WHERE i.type IN ('INTERNAL','INTERNAL_SERVICE')
                   AND i.status IN ('PENDING_REVIEW','QUEUED','CREATED')
                   AND i.settlement_year IS NULL
                   AND i.companyuuid <> i.debtor_companyuuid
                   AND i.debtor_companyuuid IN (SELECT agreement_company_uuid FROM selfbilled_source WHERE enabled = 1)
+                  AND (i.invoice_ref_uuid IS NULL
+                       OR src.uuid IS NULL
+                       OR p.clientuuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1)
+                       OR src.billing_client_uuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1))
+                  AND NOT EXISTS (SELECT 1 FROM invoices cn
+                                  WHERE cn.creditnote_for_uuid = i.uuid
+                                    AND cn.type = 'CREDIT_NOTE'
+                                    AND cn.status IN ('PENDING_REVIEW','QUEUED','CREATED'))
                 """).getSingleResult();
         return ((Number) v).intValue();
     }
@@ -234,6 +260,16 @@ public class HistoryReconciliationService {
             throw new WebApplicationException("Internal is not in a live status (PENDING_REVIEW/QUEUED/CREATED) — cannot link",
                     Response.Status.CONFLICT);
         }
+        // A live credit note voids the internal: linking a cancelled document would stamp it into
+        // settled totals (phantom mismatch). Mirrors the discovery query's NOT EXISTS — protects the
+        // direct API path. ANY live credit note voids it; partial credits are not distinguished (DRAFT
+        // credit notes do not yet void). 409.
+        if (cancelledByLiveCreditNote(invoiceUuid)) {
+            throw new WebApplicationException(
+                    "Internal #" + internal.getInvoicenumber()
+                            + " has been cancelled by a credit note and cannot be linked",
+                    Response.Status.CONFLICT);
+        }
         List<InvoiceItem> items = internal.getInvoiceitems();
         if (items == null || items.isEmpty()) {
             throw new WebApplicationException("Internal has no items to stamp", Response.Status.CONFLICT);
@@ -263,6 +299,17 @@ public class HistoryReconciliationService {
                 oldState, newState, "Workbench link of pre-existing internal").persist();
         log.infof("linkInternal: %s -> (%s, %s, %d-%02d) by=%s",
                 invoiceUuid, req.clientUuid(), req.consultantUuid(), req.workYear(), req.workMonth(), actor);
+    }
+
+    /** True when a LIVE credit note (PENDING_REVIEW/QUEUED/CREATED) references this internal — voids it for linking. */
+    private boolean cancelledByLiveCreditNote(String invoiceUuid) {
+        Object v = em.createNativeQuery("""
+                SELECT COUNT(*) FROM invoices cn
+                WHERE cn.creditnote_for_uuid = :uuid
+                  AND cn.type = 'CREDIT_NOTE'
+                  AND cn.status IN ('PENDING_REVIEW','QUEUED','CREATED')
+                """).setParameter("uuid", invoiceUuid).getSingleResult();
+        return ((Number) v).intValue() > 0;
     }
 
     private Map<String, String> consultantNames(Set<String> ids) {
