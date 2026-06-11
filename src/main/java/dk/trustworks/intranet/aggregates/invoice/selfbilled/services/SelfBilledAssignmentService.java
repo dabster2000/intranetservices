@@ -76,12 +76,11 @@ public class SelfBilledAssignmentService {
         Set<String> seenTuples = new HashSet<>(inputs.size());
         BigDecimal signedSum = BigDecimal.ZERO;
         for (AssignmentInput in : inputs) {
-            if (in.consultantUuid() == null || in.consultantUuid().isBlank()
-                    || in.workYear() == null || in.workMonth() == null
-                    || in.workMonth() < 1 || in.workMonth() > 12) {
-                throw new WebApplicationException("consultantUuid, workYear and workMonth are required",
+            if (in.consultantUuid() == null || in.consultantUuid().isBlank()) {
+                throw new WebApplicationException("consultantUuid is required",
                         Response.Status.BAD_REQUEST);
             }
+            requireAssignmentPeriod(in.workYear(), in.workMonth());
             if (isSplit && in.shareAmount() != null && in.shareAmount().signum() <= 0) {
                 throw new WebApplicationException("shareAmount must be positive on a split",
                         Response.Status.BAD_REQUEST);
@@ -232,6 +231,14 @@ public class SelfBilledAssignmentService {
             throw new WebApplicationException("shareAmount is required on a split", Response.Status.BAD_REQUEST);
         }
         return voucherNet.signum() < 0 ? normalized.negate() : normalized;
+    }
+
+    static void requireAssignmentPeriod(Integer workYear, Integer workMonth) {
+        if (workYear == null || workYear < 1 || workYear > 9999
+                || workMonth == null || workMonth < 1 || workMonth > 12) {
+            throw new WebApplicationException("workYear and workMonth are required (workMonth 1-12)",
+                    Response.Status.BAD_REQUEST);
+        }
     }
 
     private static SelfBilledLine require(String lineUuid) {
