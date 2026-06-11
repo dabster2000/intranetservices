@@ -20,6 +20,7 @@ import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -265,10 +266,11 @@ public class SelfBilledSettlementService {
      * <p>Guards (all 409 except not-found): the invoice must exist (404); be a settlement-stamped
      * INTERNAL (type INTERNAL + full settlement key) whose billing client is an ENABLED
      * {@code selfbilled_source} — this endpoint only handles workbench settlement docs; and be in
-     * status QUEUED. Behaviour (single tx): write an {@link AttributionAuditLog} BEFORE deleting
-     * (oldState = settlement key + per-item consultant/hours/rate, newState = {"deleted":true}),
-     * delete the items then the invoice, then {@code recomputeForGroup} for the settlement group so
-     * the backing vouchers flip SETTLED→ASSIGNED and the Consultants-tab delta reopens.
+     * status QUEUED (re-checked under a pessimistic row lock to close the nightly-finalize race).
+     * Behaviour (single tx): write an {@link AttributionAuditLog} BEFORE deleting (oldState =
+     * settlement key + per-item consultant/hours/rate, newState = {"deleted":true}), delete the
+     * invoice via the managed entity so cascade REMOVE takes the items, then {@code recomputeForGroup}
+     * for the settlement group so the backing vouchers flip SETTLED→ASSIGNED and the delta reopens.
      */
     @Transactional
     public void deleteQueuedInternal(String invoiceUuid, String actor) {
@@ -301,13 +303,27 @@ public class SelfBilledSettlementService {
         SettlementGroupKey key = new SettlementGroupKey(
                 clientUuid, internal.getSettlementDebtorCompanyuuid(), year, month);
 
+        // Close the nightly-finalize race: QueuedInternalInvoiceProcessorBatchlet runs its whole sweep in
+        // one long @Transactional, so a concurrent finalize can commit CREATED while this tx held a stale
+        // QUEUED read. Re-read under a row lock — this blocks on the finalizer's lock and sees its committed
+        // status on wake — then re-check QUEUED so we never delete a row that just booked an e-conomic draft.
+        em.refresh(internal, LockModeType.PESSIMISTIC_WRITE);
+        if (internal.getStatus() != InvoiceStatus.QUEUED) {
+            throw new WebApplicationException(
+                    "Only QUEUED settlement internals can be deleted; this one is " + internal.getStatus(),
+                    Response.Status.CONFLICT);
+        }
+
         String firstItemUuid = items.isEmpty() ? invoiceUuid : items.get(0).uuid;
         new AttributionAuditLog(invoiceUuid, firstItemUuid, actor, "SELFBILLED_DELETE_QUEUED",
                 deletedOldState(key, consultantUuid, items), "{\"deleted\":true}",
                 "Workbench delete of queued settlement internal").persist();
 
-        InvoiceItem.delete("invoiceuuid", invoiceUuid);
-        Invoice.deleteById(invoiceUuid);
+        // Delete via the MANAGED entity so cascade REMOVE handles the eager-loaded items in the PC. A JPQL
+        // bulk item delete here bypasses the PC, leaving the cascade to issue per-row deletes that affect 0
+        // rows -> OptimisticLockException -> the whole tx (audit row included) rolls back. DB FK
+        // fk_invoiceitems_invoice ON DELETE CASCADE (V173) is the backstop.
+        internal.delete();
 
         // Reopen the delta: flip the backing self-billed vouchers SETTLED -> ASSIGNED for this group
         // (single consultant by construction; mirror of settleConsultantPeriod's recompute call).
