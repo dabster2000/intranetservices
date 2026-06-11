@@ -10,11 +10,6 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceControlHistory;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItemAttribution;
 import dk.trustworks.intranet.aggregates.invoice.model.InvoiceNote;
-import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
-import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupPreview;
-import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupRow;
-import dk.trustworks.intranet.aggregates.invoice.dto.SettlementPreviewRequest;
-import dk.trustworks.intranet.aggregates.invoice.dto.SettlementSettleRequest;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AcceptAttributionsRequest;
 import dk.trustworks.intranet.aggregates.invoice.model.dto.AttributionResolution;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
@@ -105,9 +100,6 @@ public class InvoiceResource {
 
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator internalInvoiceOrchestrator;
-
-    @Inject
-    dk.trustworks.intranet.aggregates.invoice.services.PhantomSettlementService phantomSettlementService;
 
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
@@ -604,48 +596,6 @@ public class InvoiceResource {
             @QueryParam("todate") String todate
     ) {
         List<CrossCompanyInvoicePairDTO> result = internalInvoiceControllingService.findCrossCompanyClientInvoicesStatusCreditNoteWithInternal(dateIt(fromdate), dateIt(todate));
-        return maskCrossCompanyPairs(result);
-    }
-
-    /**
-     * Returns in-scope PHANTOM invoices (e-conomic auto-imports representing
-     * cross-company revenue) paired to their active INTERNAL invoice — plus
-     * skip-flagged phantoms with no active internal (rendered "Skipped" on the FE).
-     * Consultant lines are sourced from invoice_item_attributions because phantom
-     * invoiceitems have consultantuuid = NULL.
-     *
-     * Date window semantics: from inclusive, to exclusive (matches /cross-company/*).
-     *
-     * @param fromdate start date (inclusive), format yyyy-MM-dd
-     * @param todate   end date (exclusive), format yyyy-MM-dd
-     */
-    @GET
-    @Path("/cross-company/phantoms/with-internal")
-    public List<CrossCompanyInvoicePairDTO> findPhantomsWithInternal(
-            @QueryParam("fromdate") String fromdate,
-            @QueryParam("todate") String todate) {
-        List<CrossCompanyInvoicePairDTO> result =
-                internalInvoiceControllingService.findPhantomsWithInternal(dateIt(fromdate), dateIt(todate));
-        return maskCrossCompanyPairs(result);
-    }
-
-    /**
-     * Returns in-scope PHANTOM invoices with NO active INTERNAL and not skip-flagged.
-     * Each pair's client is the phantom (consultant lines from attributions; empty
-     * when the phantom's label is unmapped) and internal is null.
-     *
-     * Date window semantics: from inclusive, to exclusive (matches /cross-company/*).
-     *
-     * @param fromdate start date (inclusive), format yyyy-MM-dd
-     * @param todate   end date (exclusive), format yyyy-MM-dd
-     */
-    @GET
-    @Path("/cross-company/phantoms/without-internal")
-    public List<CrossCompanyInvoicePairDTO> findPhantomsWithoutInternal(
-            @QueryParam("fromdate") String fromdate,
-            @QueryParam("todate") String todate) {
-        List<CrossCompanyInvoicePairDTO> result =
-                internalInvoiceControllingService.findPhantomsWithoutInternal(dateIt(fromdate), dateIt(todate));
         return maskCrossCompanyPairs(result);
     }
 
@@ -1256,63 +1206,6 @@ public class InvoiceResource {
     }
 
     /**
-     * One-time, idempotent backfill (Decision D5): stamp the settlement-group key and
-     * write phantom-link rows onto already-issued phantom-linked internals so the
-     * controlling settlement view is uniform. Safe to re-run (ALREADY_DONE).
-     * Human-invoked; run on staging first, then production after verification.
-     *
-     * @return counts keyed by outcome (STAMPED / ALREADY_DONE / SKIPPED_* / ERROR)
-     */
-    @POST
-    @Path("/cross-company/phantoms/settlement/backfill")
-    @RolesAllowed({"invoices:write"})
-    public Map<String, Integer> backfillPhantomSettlement() {
-        return phantomSettlementService.backfillExistingInternals();
-    }
-
-    /** All settlement groups in the window (one controlling row each). Signed amounts. */
-    @GET
-    @Path("/cross-company/phantoms/settlement")
-    public List<SettlementGroupRow> listSettlementGroups(
-            @QueryParam("fromdate") String fromdate, @QueryParam("todate") String todate) {
-        return phantomSettlementService.listSettlementGroups(dateIt(fromdate), dateIt(todate));
-    }
-
-    /** Per-(issuer, consultant) target/settled/delta for one group's Settle dialog. Read-only. */
-    @POST
-    @Path("/cross-company/phantoms/settlement/preview")
-    public SettlementGroupPreview previewSettlementGroup(SettlementPreviewRequest req) {
-        SettlementGroupKey key = settlementKeyOrBadRequest(
-                req.billingClientUuid(), req.debtorCompanyUuid(), req.year(), req.month());
-        return maskSettlementPreview(phantomSettlementService.previewGroup(key, req.excludedAttributionUuids()));
-    }
-
-    /** Human-initiated settle (Decision D4): emit one document per non-zero issuer delta. */
-    @POST
-    @Path("/cross-company/phantoms/settlement/settle")
-    @RolesAllowed({"invoices:write"})
-    public List<String> settleSettlementGroup(SettlementSettleRequest req) {
-        SettlementGroupKey key = settlementKeyOrBadRequest(
-                req.billingClientUuid(), req.debtorCompanyUuid(), req.year(), req.month());
-        return phantomSettlementService.settleGroup(key, req.issuerCompanyUuids(), req.queue());
-    }
-
-    /**
-     * Build a settlement-group key or throw 400. Rejects a missing/blank client or
-     * company (via {@link SettlementGroupKey#from}) and an out-of-range month/year,
-     * so a malformed request body yields a clean 400 rather than a 500 from the
-     * downstream {@code LocalDate.of(year, month, 1)}.
-     */
-    private SettlementGroupKey settlementKeyOrBadRequest(String billingClientUuid, String debtorCompanyUuid,
-                                                         int year, int month) {
-        SettlementGroupKey key = SettlementGroupKey.from(billingClientUuid, debtorCompanyUuid, year, month);
-        if (key == null || month < 1 || month > 12 || year < 1 || year > 9999) {
-            throw new WebApplicationException("Invalid settlement group key", Response.Status.BAD_REQUEST);
-        }
-        return key;
-    }
-
-    /**
      * Validate that each entry parses as a UUID. Returns an immutable set; throws
      * 400 on the first malformed entry. {@code null} or empty input returns an
      * empty set (no exclusion).
@@ -1369,28 +1262,6 @@ public class InvoiceResource {
                 dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy(),
                 dto.cancellingCreditNote()
         );
-    }
-
-    /**
-     * Strip consultant identity from the settlement preview when the caller lacks
-     * {@code users:read} (mirrors {@link #maskCrossCompanyPairs}). Per-consultant
-     * deltas are preserved; only the consultant uuid/name are nulled.
-     */
-    private SettlementGroupPreview maskSettlementPreview(SettlementGroupPreview p) {
-        if (scopeContext.hasScope("users:read")) {
-            return p;
-        }
-        List<SettlementGroupPreview.IssuerDelta> issuers = p.issuers().stream()
-                .map(i -> new SettlementGroupPreview.IssuerDelta(
-                        i.issuerCompanyUuid(), i.issuerCompanyName(),
-                        i.consultants().stream()
-                                .map(c -> new SettlementGroupPreview.ConsultantDelta(
-                                        null, null, c.target(), c.settled(), c.delta()))
-                                .toList(),
-                        i.target(), i.settled(), i.delta()))
-                .toList();
-        return new SettlementGroupPreview(p.key(), p.debtorCompanyUuid(), p.debtorCompanyName(), issuers,
-                p.totalTarget(), p.totalSettled(), p.totalDelta(), p.allResolved());
     }
 
     // ──────────────────────────────────────────────────────────────

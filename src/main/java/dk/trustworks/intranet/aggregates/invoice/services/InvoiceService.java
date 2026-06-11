@@ -1279,15 +1279,16 @@ public class InvoiceService {
      * pairing / not-null validations stay satisfied (master plan R1).
      *
      * <p>Lines are one per consultant: {@code hours=1, rate=signed delta}, origin BASE. The four
-     * {@code settlement_*} columns are stamped so {@code listSettlementGroups}/{@code previewGroup}
-     * find this document and re-settlement converges (delta &rarr; 0).
+     * {@code settlement_*} columns are stamped so the settled-side aggregation
+     * ({@code SettlementQueryService.settledLinesForGroup}, consumed by the self-billed delta query
+     * {@code SelfBilledDeltaQuery}) counts this document and re-settlement converges (delta &rarr; 0).
      *
      * <p>The document is always created directly in {@link InvoiceStatus#QUEUED} rather than via
      * {@link #queueInternalInvoice}: that method's duplicate guard keys on
      * {@code (invoice_ref_uuid, debtor_companyuuid)} and would 409-CONFLICT for a second issuer in
      * the same group (every issuer shares the representative phantom + debtor). Settlement
      * de-duplication is settlement-column + issuer scoped instead
-     * (see {@code PhantomSettlementService.hasOpenQueuedInternal}). Creating QUEUED (never DRAFT)
+     * (see {@code SettlementQueryService.hasOpenQueuedInternal}). Creating QUEUED (never DRAFT)
      * also means a committed settlement internal is always counted by the group's {@code settled}
      * total, so re-settlement converges and a failed downstream finalize leaves a recoverable
      * QUEUED document rather than an orphaned, uncounted DRAFT. The caller decides whether to

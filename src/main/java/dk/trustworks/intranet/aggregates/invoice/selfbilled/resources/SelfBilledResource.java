@@ -38,7 +38,8 @@ import java.util.Map;
  * Self-billed settlement workbench API (spec §5.2). All reads invoices:read, all
  * writes invoices:write. The acting user comes from X-Requested-By (R3) and is
  * recorded on every assignment, link, and settle (AC7). Consultant identity is
- * masked when the caller lacks users:read (mirrors InvoiceResource.maskSettlementPreview).
+ * masked when the caller lacks users:read (same data-boundary pattern as the
+ * invoice cross-company endpoints).
  */
 @Path("/invoices/cross-company/selfbilled")
 @Produces(MediaType.APPLICATION_JSON)
@@ -300,7 +301,7 @@ public class SelfBilledResource {
      * Validate a body-supplied work period. workYear/workMonth are primitive ints, so a JSON
      * body omitting them deserializes to 0; without this guard settle would build LocalDate.of(0,0,1)
      * (500) and link would stamp settlement_year=0/month=0 — orphaning the internal from any real
-     * period's settled(). Mirrors InvoiceResource.settlementKeyOrBadRequest's plausibility check.
+     * period's settled(). Plausibility check on the (year, month) before it becomes a settlement key.
      */
     private static void requireWorkPeriod(int workYear, int workMonth) {
         if (workYear < 1 || workYear > 9999 || workMonth < 1 || workMonth > 12) {
@@ -320,7 +321,8 @@ public class SelfBilledResource {
         }
     }
 
-    // Data boundary: strip consultant identity without users:read (mirrors maskSettlementPreview).
+    // Data boundary: strip consultant identity without users:read (same pattern as the invoice
+    // cross-company endpoints).
     // sourceText/fakturaNumber/suggestedCode are raw e-conomic free text and may inherently carry
     // initials — that is the issuer's own booking text, not our resolved identity (accepted boundary).
     private SelfBilledDocumentsResponse maskDocuments(SelfBilledDocumentsResponse r) {
