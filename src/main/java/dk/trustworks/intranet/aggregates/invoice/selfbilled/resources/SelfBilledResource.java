@@ -235,6 +235,18 @@ public class SelfBilledResource {
         return maskQueued(settlementService.queuedInternals(client, fromYm, toYm));
     }
 
+    /**
+     * Workbench undo (Feature 3b): delete a QUEUED settlement INTERNAL before it books. Safe because a
+     * QUEUED internal never created an e-conomic draft (see {@code deleteQueuedInternal}); the settlement
+     * group's backing vouchers flip SETTLED→ASSIGNED so the delta reopens. 404 if missing, 409 if it is
+     * not a QUEUED workbench settlement document. 204 on success.
+     */
+    @DELETE @Path("/internals/queued/{invoiceUuid}")
+    @RolesAllowed({"invoices:write"})
+    public void deleteQueuedInternal(@PathParam("invoiceUuid") String invoiceUuid) {
+        settlementService.deleteQueuedInternal(invoiceUuid, requireActor());
+    }
+
     @POST @Path("/internals/{invoiceUuid}/link")
     @RolesAllowed({"invoices:write"})
     public void link(@PathParam("invoiceUuid") String invoiceUuid, LinkRequest req) {

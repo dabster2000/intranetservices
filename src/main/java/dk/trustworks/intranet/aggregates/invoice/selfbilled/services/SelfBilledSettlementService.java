@@ -1,6 +1,11 @@
 package dk.trustworks.intranet.aggregates.invoice.selfbilled.services;
 
 import dk.trustworks.intranet.aggregates.invoice.dto.SettlementGroupKey;
+import dk.trustworks.intranet.aggregates.invoice.model.AttributionAuditLog;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.AssignContextDTO;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.ConsultantPeriodRow;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.dto.QueuedInternalRow;
@@ -15,6 +20,7 @@ import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -245,6 +251,108 @@ public class SelfBilledSettlementService {
         log.infof("settleConsultantPeriod: created %s delta=%s key=%s consultant=%s by=%s queue=%s",
                 internalUuid, delta, key.asString(), req.consultantUuid(), actor, req.queue());
         return List.of(internalUuid);
+    }
+
+    /**
+     * Workbench undo for a settle that has not booked yet (Feature 3b): delete a QUEUED
+     * settlement INTERNAL and reopen its delta. This is the only delete the workbench allows
+     * because <strong>a QUEUED internal never created an e-conomic draft</strong> — the nightly
+     * {@code QueuedInternalInvoiceProcessorBatchlet} is what calls
+     * {@code InternalInvoiceOrchestrator#finalizeAutomatically} to create+book the draft, and it
+     * runs only once the source is PAID. While the document is still QUEUED there is no remote
+     * artefact to clean up, so a purely local delete is both safe and complete (same invariant the
+     * batchlet documents when it deletes an emptied QUEUED row: "no e-conomics draft existed").
+     *
+     * <p>Guards (all 409 except not-found): the invoice must exist (404); be a settlement-stamped
+     * INTERNAL (type INTERNAL + full settlement key) whose billing client is an ENABLED
+     * {@code selfbilled_source} — this endpoint only handles workbench settlement docs; and be in
+     * status QUEUED (re-checked under a pessimistic row lock to close the nightly-finalize race).
+     * Behaviour (single tx): write an {@link AttributionAuditLog} BEFORE deleting (oldState =
+     * settlement key + per-item consultant/hours/rate, newState = {"deleted":true}), delete the
+     * invoice via the managed entity so cascade REMOVE takes the items, then {@code recomputeForGroup}
+     * for the settlement group so the backing vouchers flip SETTLED→ASSIGNED and the delta reopens.
+     */
+    @Transactional
+    public void deleteQueuedInternal(String invoiceUuid, String actor) {
+        Invoice internal = Invoice.findById(invoiceUuid);
+        if (internal == null) {
+            throw new WebApplicationException("Internal not found", Response.Status.NOT_FOUND);
+        }
+        String clientUuid = internal.getSettlementBillingClientUuid();
+        Integer year = internal.getSettlementYear();
+        Integer month = internal.getSettlementMonth();
+        boolean fullyStamped = internal.getType() == InvoiceType.INTERNAL
+                && clientUuid != null && year != null && month != null;
+        if (!fullyStamped || !isEnabledSelfBilledSource(clientUuid)) {
+            throw new WebApplicationException(
+                    "Not a workbench settlement internal — only settlement-stamped INTERNAL documents "
+                            + "for an enabled self-billed source can be deleted here.",
+                    Response.Status.CONFLICT);
+        }
+        if (internal.getStatus() != InvoiceStatus.QUEUED) {
+            throw new WebApplicationException(
+                    "Only QUEUED settlement internals can be deleted; this one is " + internal.getStatus(),
+                    Response.Status.CONFLICT);
+        }
+
+        List<InvoiceItem> items = internal.getInvoiceitems() == null ? List.of() : internal.getInvoiceitems();
+        String consultantUuid = items.stream()
+                .map(i -> i.consultantuuid)
+                .filter(c -> c != null && !c.isBlank())
+                .findFirst().orElse(null);
+        SettlementGroupKey key = new SettlementGroupKey(
+                clientUuid, internal.getSettlementDebtorCompanyuuid(), year, month);
+
+        // Close the nightly-finalize race: QueuedInternalInvoiceProcessorBatchlet runs its whole sweep in
+        // one long @Transactional, so a concurrent finalize can commit CREATED while this tx held a stale
+        // QUEUED read. Re-read under a row lock — this blocks on the finalizer's lock and sees its committed
+        // status on wake — then re-check QUEUED so we never delete a row that just booked an e-conomic draft.
+        em.refresh(internal, LockModeType.PESSIMISTIC_WRITE);
+        if (internal.getStatus() != InvoiceStatus.QUEUED) {
+            throw new WebApplicationException(
+                    "Only QUEUED settlement internals can be deleted; this one is " + internal.getStatus(),
+                    Response.Status.CONFLICT);
+        }
+
+        String firstItemUuid = items.isEmpty() ? invoiceUuid : items.get(0).uuid;
+        new AttributionAuditLog(invoiceUuid, firstItemUuid, actor, "SELFBILLED_DELETE_QUEUED",
+                deletedOldState(key, consultantUuid, items), "{\"deleted\":true}",
+                "Workbench delete of queued settlement internal").persist();
+
+        // Delete via the MANAGED entity so cascade REMOVE handles the eager-loaded items in the PC. A JPQL
+        // bulk item delete here bypasses the PC, leaving the cascade to issue per-row deletes that affect 0
+        // rows -> OptimisticLockException -> the whole tx (audit row included) rolls back. DB FK
+        // fk_invoiceitems_invoice ON DELETE CASCADE (V173) is the backstop.
+        internal.delete();
+
+        // Reopen the delta: flip the backing self-billed vouchers SETTLED -> ASSIGNED for this group
+        // (single consultant by construction; mirror of settleConsultantPeriod's recompute call).
+        if (consultantUuid != null) {
+            assignmentService.recomputeForGroup(clientUuid, consultantUuid, year, month);
+        }
+        log.infof("deleteQueuedInternal: deleted %s key=%s consultant=%s by=%s",
+                invoiceUuid, key.asString(), consultantUuid, actor);
+    }
+
+    /** Old-state snapshot for the audit row: settlement key + per-item (consultant, hours, rate). */
+    private static String deletedOldState(SettlementGroupKey key, String consultantUuid, List<InvoiceItem> items) {
+        StringBuilder lines = new StringBuilder();
+        for (InvoiceItem i : items) {
+            if (lines.length() > 0) lines.append(',');
+            lines.append("{\"consultant\":\"").append(i.consultantuuid)
+                    .append("\",\"hours\":").append(i.hours)
+                    .append(",\"rate\":").append(i.rate).append('}');
+        }
+        return "{\"settlementKey\":\"" + key.asString() + "\",\"consultant\":\""
+                + consultantUuid + "\",\"items\":[" + lines + "]}";
+    }
+
+    /** True when the client is the billing client of an enabled selfbilled_source (workbench scope). */
+    private boolean isEnabledSelfBilledSource(String clientUuid) {
+        Object v = em.createNativeQuery(
+                        "SELECT COUNT(*) FROM selfbilled_source WHERE client_uuid = :c AND enabled = 1")
+                .setParameter("c", clientUuid).getSingleResult();
+        return ((Number) v).intValue() > 0;
     }
 
     /**

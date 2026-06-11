@@ -352,9 +352,12 @@ public class QueuedInternalInvoiceProcessorBatchlet extends AbstractBatchlet {
                             + "cross-company attribution remaining — deleting QUEUED row (no e-conomics "
                             + "draft existed).",
                     queuedInvoice.getUuid(), issuerUuid, period);
-            // Delete the QUEUED invoice and its items — no e-conomics cleanup needed.
-            InvoiceItem.delete("invoiceuuid", queuedInvoice.getUuid());
-            Invoice.deleteById(queuedInvoice.getUuid());
+            // Delete the QUEUED invoice and its items — no e-conomics cleanup needed. Delete via the
+            // MANAGED entity so cascade REMOVE takes the eager-loaded items in the PC; a JPQL bulk item
+            // delete bypasses the PC, leaving the cascade to issue per-row deletes that affect 0 rows ->
+            // OptimisticLockException rolling back the whole tx (DB FK fk_invoiceitems_invoice ON DELETE
+            // CASCADE, V173, is the backstop).
+            queuedInvoice.delete();
             return false;
         }
 
