@@ -188,7 +188,12 @@ public class HistoryReconciliationService {
                 u.suggestedWorkYear(), u.suggestedWorkMonth())).toList();
     }
 
-    /** Count only — feeds the Consultants-tab "unlinked candidates exist" warning (AC8). */
+    /**
+     * Count only — feeds the Consultants-tab "unlinked candidates exist" warning (AC8). Mirrors the
+     * {@link #unlinkedInternals()} discovery scope INCLUDING the live-credit-note exclusion, so the banner
+     * count stays in parity with the queue: a credited (void) internal is hidden from both, never leaving
+     * the banner showing a non-zero count over an empty queue with an unfollowable instruction.
+     */
     @Transactional
     public int unlinkedCandidateCount() {
         Object v = em.createNativeQuery("""
@@ -204,6 +209,10 @@ public class HistoryReconciliationService {
                        OR src.uuid IS NULL
                        OR p.clientuuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1)
                        OR src.billing_client_uuid IN (SELECT client_uuid FROM selfbilled_source WHERE enabled = 1))
+                  AND NOT EXISTS (SELECT 1 FROM invoices cn
+                                  WHERE cn.creditnote_for_uuid = i.uuid
+                                    AND cn.type = 'CREDIT_NOTE'
+                                    AND cn.status IN ('PENDING_REVIEW','QUEUED','CREATED'))
                 """).getSingleResult();
         return ((Number) v).intValue();
     }
