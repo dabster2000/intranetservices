@@ -59,14 +59,18 @@ public class DanlonAssignmentService {
             if (matches) {
                 DanlonAssignmentProposal existing =
                         DanlonAssignmentProposal.findPendingForSlot(useruuid, companyUuid, month, eventType);
-                if (existing != null) return ProposalOutcome.ALREADY_PROPOSED;
+                if (existing != null) {
+                    log.debugf("ALREADY_PROPOSED (reopen): user=%s month=%s event=%s — pending reopen proposal already exists", useruuid, month, eventType);
+                    return ProposalOutcome.ALREADY_PROPOSED;
+                }
                 raiseProposal(useruuid, companyUuid, month, eventType, ProposalIntent.REOPEN,
                         row.getUuid(), row.getDanlon(), detectedBy);
                 log.infof("REOPEN_PROPOSED: user=%s month=%s reopen number=%s", useruuid, month, row.getDanlon());
                 return ProposalOutcome.REOPEN_PROPOSED;
             }
-            log.warnf("CONFLICT: user=%s month=%s has a CLOSED row for a different slot — cannot mint a second row (Approach-A bound)",
-                    useruuid, month);
+            log.warnf("CONFLICT: user=%s month=%s has a CLOSED row for a different slot "
+                            + "(row company=%s event=%s) vs detected company=%s event=%s — cannot mint a second row (Approach-A bound)",
+                    useruuid, month, row.getCompanyUuid(), row.getEventType(), companyUuid, eventType);
             return ProposalOutcome.CONFLICT;
         }
 
