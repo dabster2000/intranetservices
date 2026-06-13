@@ -47,11 +47,11 @@ class EconomicsPeriodClosedShiftTest {
         Expense e = new Expense();
         e.setUuid("abc-123");
 
-        String standard = s.buildIdempotencyKey(e);
+        String standard = s.buildIdempotencyKey(e, 9);
         String shift1 = s.buildPeriodShiftIdempotencyKey(e, 1);
         String shift7 = s.buildPeriodShiftIdempotencyKey(e, 7);
 
-        assertEquals("production-expense-abc-123", standard);
+        assertEquals("production-expense-abc-123-j9", standard);
         assertEquals("production-expense-abc-123-period-shift-1", shift1);
         assertEquals("production-expense-abc-123-period-shift-7", shift7);
     }

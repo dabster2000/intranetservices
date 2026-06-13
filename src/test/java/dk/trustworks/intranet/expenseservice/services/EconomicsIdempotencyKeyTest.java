@@ -23,8 +23,8 @@ class EconomicsIdempotencyKeyTest {
         Expense e = new Expense();
         e.setUuid("abc-123");
 
-        assertEquals("production-expense-abc-123",
-                serviceFor("production").buildIdempotencyKey(e));
+        assertEquals("production-expense-abc-123-j9",
+                serviceFor("production").buildIdempotencyKey(e, 9));
     }
 
     @Test
@@ -32,8 +32,8 @@ class EconomicsIdempotencyKeyTest {
         Expense e = new Expense();
         e.setUuid("abc-123");
 
-        assertEquals("production-expense-abc-123", serviceFor("production").buildIdempotencyKey(e));
-        assertEquals("staging-expense-abc-123",    serviceFor("staging").buildIdempotencyKey(e));
+        assertEquals("production-expense-abc-123-j9", serviceFor("production").buildIdempotencyKey(e, 9));
+        assertEquals("staging-expense-abc-123-j9",    serviceFor("staging").buildIdempotencyKey(e, 9));
     }
 
     @Test
@@ -43,8 +43,8 @@ class EconomicsIdempotencyKeyTest {
         e.markAsOrphaned();
         e.incrementRetryCount();
 
-        assertEquals("production-expense-abc-123-retry-1",
-                serviceFor("production").buildIdempotencyKey(e));
+        assertEquals("production-expense-abc-123-j9-retry-1",
+                serviceFor("production").buildIdempotencyKey(e, 9));
     }
 
     @Test
@@ -56,7 +56,7 @@ class EconomicsIdempotencyKeyTest {
         e.setErrorMessage("voucher not found in journal 16");
         e.incrementRetryCount();
 
-        assertEquals("production-expense-abc-123-retry-1",
-                serviceFor("production").buildIdempotencyKey(e));
+        assertEquals("production-expense-abc-123-j9-retry-1",
+                serviceFor("production").buildIdempotencyKey(e, 9));
     }
 }

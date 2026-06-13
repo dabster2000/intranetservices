@@ -346,6 +346,21 @@ public class ExpenseService {
             // for those is derived purely from status — review_state/hr_decision are not read.
             ExpenseStateDeriver.DerivedState derived = ExpenseStateDeriver.deriveFromStatus(status);
 
+            // Keep the passed entity in sync with the bulk update below. The upload path holds
+            // `expense` as a MANAGED entity inside an outer @Transactional chunk and mutates it
+            // (sendVoucher sets the voucher number). Without syncing status/state here, the outer
+            // persistence-context flush at commit re-derives state from the entity's STALE status
+            // (syncDerivedState @PreUpdate) and writes it back, clobbering this REQUIRES_NEW update.
+            // Observed symptom: the voucher number persists but status reverts to VALIDATED, so the
+            // reader re-posts the expense every hour and it never reaches BOOKED (also leaves rows
+            // stranded in PROCESSING when an UP_FAILED update is clobbered). Syncing the entity makes
+            // the flush a no-op overwrite; on an outer rollback the committed values here still win.
+            expense.setStatus(status);
+            expense.setErrorMessage(errorMessage);
+            expense.setState(derived.state());
+            expense.setAttentionOwner(derived.owner());
+            expense.setAttentionKind(derived.kind());
+
             // Positional params: ?1–?10 = existing fields, ?11 = uuid (WHERE), ?12–?14 = derived state columns.
             // ?12–?14 intentionally appear in SET before ?11 in WHERE; binding is by ordinal, not text order.
             // If you add a field, do NOT renumber ?11–?14 without updating both the SQL and the argument order.
