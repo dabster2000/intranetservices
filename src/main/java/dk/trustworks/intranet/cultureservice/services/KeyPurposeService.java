@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.cultureservice.services;
 
 import dk.trustworks.intranet.cultureservice.model.KeyPurpose;
+import dk.trustworks.intranet.domain.user.entity.User;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
 import java.util.List;
 
 /**
@@ -19,6 +21,9 @@ public class KeyPurposeService {
 
     @Transactional
     public List<KeyPurpose> findByUseruuid(String useruuid) {
+        if (User.count("uuid = ?1", useruuid) == 0) {
+            throw new BadRequestException("Unknown useruuid: " + useruuid);
+        }
         List<KeyPurpose> keyPurposeList = KeyPurpose.find("useruuid = ?1", useruuid).list();
         if(keyPurposeList.size()<3) {
             for (int i = 0; i < 3; i++) {
