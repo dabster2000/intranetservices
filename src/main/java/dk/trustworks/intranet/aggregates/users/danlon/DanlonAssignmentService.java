@@ -1,6 +1,8 @@
 package dk.trustworks.intranet.aggregates.users.danlon;
 
+import dk.trustworks.intranet.aggregates.users.danlon.dto.DanlonProposalView;
 import dk.trustworks.intranet.domain.user.entity.DanlonAssignmentProposal;
+import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.domain.user.entity.UserDanlonHistory;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -9,6 +11,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -110,5 +113,136 @@ public class DanlonAssignmentService {
         p.setDetectedDate(LocalDateTime.now());
         p.setDetectedBy(detectedBy);
         p.persist();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HR minting authority (Phase 06) — the ONLY code that writes user_danlon_history
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** HR mints/reopens/closes via an approved proposal — the ONLY write path to user_danlon_history. */
+    @Transactional
+    public UserDanlonHistory approveProposal(String proposalUuid, String confirmedNumber, String resolvedBy) {
+        DanlonAssignmentProposal p = DanlonAssignmentProposal.findById(proposalUuid);
+        if (p == null) throw new DanlonProposalException("Proposal not found: " + proposalUuid);
+        if (p.getStatus() != ProposalStatus.PENDING)
+            throw new DanlonProposalException("Proposal " + proposalUuid + " is not PENDING (is " + p.getStatus() + ")");
+
+        UserDanlonHistory result;
+        switch (p.getIntent()) {
+            case MINT -> {
+                String number = (confirmedNumber != null && !confirmedNumber.isBlank())
+                        ? confirmedNumber.trim() : p.getSuggestedNumber();
+                if (number == null || number.isBlank())
+                    throw new DanlonProposalException("No confirmed or suggested number for MINT proposal " + proposalUuid);
+                // Dup-guard (invariant #5): the number must not be OPEN for a different user.
+                for (UserDanlonHistory open : UserDanlonHistory.findOpenByDanlon(number)) {
+                    if (!open.getUseruuid().equals(p.getUseruuid()))
+                        throw new DanlonProposalException("Danløn number " + number
+                                + " is already OPEN for another user (" + open.getUseruuid() + "); choose a different number.");
+                }
+                UserDanlonHistory row = new UserDanlonHistory(p.getUseruuid(), p.getEffectiveMonth(), number, resolvedBy);
+                row.setCompanyUuid(p.getCompanyUuid());
+                row.setEventType(p.getEventType() != null ? p.getEventType().name() : null);
+                row.persist();
+                p.setMintedHistoryUuid(row.getUuid());
+                result = row;
+            }
+            case REOPEN -> {
+                UserDanlonHistory target = requireTarget(p);
+                target.setClosedDate(null);
+                target.setClosedReason(null);
+                result = target;
+            }
+            case CLOSE -> {
+                UserDanlonHistory target = requireTarget(p);
+                target.setClosedDate(LocalDateTime.now());
+                target.setClosedReason(p.getResolutionNote() != null ? p.getResolutionNote()
+                        : "closed via proposal " + proposalUuid);
+                result = target;
+            }
+            default -> throw new DanlonProposalException("Unknown intent " + p.getIntent());
+        }
+        p.setStatus(ProposalStatus.APPROVED);
+        p.setResolvedDate(LocalDateTime.now());
+        p.setResolvedBy(resolvedBy);
+        log.infof("APPROVED proposal %s intent=%s user=%s number=%s by=%s",
+                proposalUuid, p.getIntent(), p.getUseruuid(), result.getDanlon(), resolvedBy);
+        return result;
+    }
+
+    @Transactional
+    public void rejectProposal(String proposalUuid, String reason, String resolvedBy) {
+        DanlonAssignmentProposal p = DanlonAssignmentProposal.findById(proposalUuid);
+        if (p == null) throw new DanlonProposalException("Proposal not found: " + proposalUuid);
+        if (p.getStatus() != ProposalStatus.PENDING)
+            throw new DanlonProposalException("Proposal " + proposalUuid + " is not PENDING (is " + p.getStatus() + ")");
+        p.setStatus(ProposalStatus.REJECTED);
+        p.setResolvedDate(LocalDateTime.now());
+        p.setResolvedBy(resolvedBy);
+        p.setResolutionNote(reason);
+        log.infof("REJECTED proposal %s by=%s reason=%s", proposalUuid, resolvedBy, reason);
+    }
+
+    /** Delete-path entry point: raise a PENDING CLOSE proposal for a minted row. Idempotent; never hard-deletes. */
+    @Transactional
+    public ProposalOutcome proposeClose(String targetHistoryUuid, String reason) {
+        UserDanlonHistory target = UserDanlonHistory.findById(targetHistoryUuid);
+        if (target == null) {
+            log.warnf("proposeClose: target row %s not found — SKIPPED", targetHistoryUuid);
+            return ProposalOutcome.SKIPPED;
+        }
+        if (target.isClosed()) return ProposalOutcome.SKIPPED;
+        DanlonEventType eventType;
+        try {
+            eventType = DanlonEventType.valueOf(target.getEventType());
+        } catch (Exception e) {
+            log.warnf("proposeClose: row %s has no recognised event_type (%s) — SKIPPED (manual/legacy row, never auto-closed)",
+                    targetHistoryUuid, target.getEventType());
+            return ProposalOutcome.SKIPPED;
+        }
+        if (DanlonAssignmentProposal.findPendingCloseForTarget(targetHistoryUuid) != null)
+            return ProposalOutcome.ALREADY_PROPOSED;
+
+        DanlonAssignmentProposal p = new DanlonAssignmentProposal();
+        p.setUuid(UUID.randomUUID().toString());
+        p.setUseruuid(target.getUseruuid());
+        p.setCompanyUuid(target.getCompanyUuid() != null ? target.getCompanyUuid() : "unknown");
+        p.setEffectiveMonth(target.getActiveDate());
+        p.setEventType(eventType);
+        p.setIntent(ProposalIntent.CLOSE);
+        p.setStatus(ProposalStatus.PENDING);
+        p.setSuggestedNumber(target.getDanlon());
+        p.setTargetHistoryUuid(targetHistoryUuid);
+        p.setDetectedDate(LocalDateTime.now());
+        p.setDetectedBy("system-delete-detector");
+        p.setResolutionNote(reason);
+        p.persist();
+        log.infof("CLOSE_PROPOSED %s for row %s (number %s): %s", p.getUuid(), targetHistoryUuid, target.getDanlon(), reason);
+        return ProposalOutcome.CLOSE_PROPOSED;
+    }
+
+    /** Panel data: PENDING proposals for a company+month as views. */
+    public List<DanlonProposalView> listPending(String companyUuid, LocalDate month) {
+        LocalDate m = month.withDayOfMonth(1);
+        return DanlonAssignmentProposal.findPendingByCompanyMonth(companyUuid, m).stream().map(this::toView).toList();
+    }
+
+    private UserDanlonHistory requireTarget(DanlonAssignmentProposal p) {
+        if (p.getTargetHistoryUuid() == null)
+            throw new DanlonProposalException("Proposal " + p.getUuid() + " has no target history row");
+        UserDanlonHistory target = UserDanlonHistory.findById(p.getTargetHistoryUuid());
+        if (target == null)
+            throw new DanlonProposalException("Target history row not found: " + p.getTargetHistoryUuid());
+        return target;
+    }
+
+    private DanlonProposalView toView(DanlonAssignmentProposal p) {
+        User user = User.findById(p.getUseruuid());
+        String name = (user != null) ? user.getFullname() : p.getUseruuid();
+        String currentNumber = UserDanlonHistory.findDanlonAsOf(p.getUseruuid(), p.getEffectiveMonth());
+        return new DanlonProposalView(
+                p.getUuid(), p.getUseruuid(), name, p.getCompanyUuid(), p.getEffectiveMonth(),
+                p.getEventType(), p.getIntent(), p.getSuggestedNumber(), p.getStatus(),
+                p.getTargetHistoryUuid(), currentNumber, p.getDetectedDate(), p.getDetectedBy());
     }
 }
