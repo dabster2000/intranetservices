@@ -60,13 +60,20 @@ public class  EconomicsService {
      */
     private static final int MAX_PERIOD_SHIFT_DAYS = 7;
 
-    /** Builds the e-conomics Idempotency-Key header value for a voucher POST. */
-    String buildIdempotencyKey(Expense expense) {
+    /**
+     * Builds the e-conomics Idempotency-Key header value for a voucher POST.
+     * <p>Scoped to the target journal (URL = {@code /journals/{journalNumber}/vouchers}). e-conomic
+     * rejects a reused key against a different URL with HTTP 400 "URLChanged" — which happens when an
+     * expense is retried after its journal/company changed (e.g. an employee moved company). Including
+     * the journal keeps retries to the same journal idempotent (no duplicate voucher) while letting a
+     * different journal be treated as a fresh POST instead of failing.
+     */
+    String buildIdempotencyKey(Expense expense, int journalNumber) {
         if (expense.hasKnownCacheIssue() || Boolean.TRUE.equals(expense.getIsOrphaned())) {
-            return String.format("%s-expense-%s-retry-%d",
-                    environmentId, expense.getUuid(), expense.getSafeRetryCount());
+            return String.format("%s-expense-%s-j%d-retry-%d",
+                    environmentId, expense.getUuid(), journalNumber, expense.getSafeRetryCount());
         }
-        return environmentId + "-expense-" + expense.getUuid();
+        return String.format("%s-expense-%s-j%d", environmentId, expense.getUuid(), journalNumber);
     }
 
     /**
@@ -121,7 +128,7 @@ public class  EconomicsService {
                 voucher = buildJSONRequestWithDate(expense, userAccount, journal, text, voucherDate, defaultVatCode);
                 String json = new ObjectMapper().writeValueAsString(voucher);
                 String idempotencyKey = (shift == 0)
-                        ? buildIdempotencyKey(expense)
+                        ? buildIdempotencyKey(expense, journal.getJournalNumber())
                         : buildPeriodShiftIdempotencyKey(expense, shift);
 
                 if (shift == 0) {
