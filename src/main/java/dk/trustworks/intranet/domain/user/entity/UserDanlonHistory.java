@@ -90,6 +90,24 @@ public class UserDanlonHistory extends PanacheEntityBase {
     @Column(name = "created_by", length = 255)
     private String createdBy;
 
+    /** Target company of this mint. NULL on legacy rows (Approach-A boundary). */
+    @Size(max = 36)
+    @Column(name = "company_uuid", length = 36)
+    private String companyUuid;
+
+    /** Set when this slot is retired (soft-close); cleared on reopen. NULL = OPEN. */
+    @Column(name = "closed_date")
+    private LocalDateTime closedDate;
+
+    @Size(max = 1024)
+    @Column(name = "closed_reason", length = 1024)
+    private String closedReason;
+
+    /** The slot's event (mirrors the legacy created_by marker). May be NULL on legacy/manual rows. */
+    @Size(max = 40)
+    @Column(name = "event_type", length = 40)
+    private String eventType;
+
     /**
      * Constructor for creating new history records.
      * Automatically generates UUID and sets created_date to now.
@@ -171,5 +189,20 @@ public class UserDanlonHistory extends PanacheEntityBase {
         ).firstResultOptional()
          .map(entity -> (UserDanlonHistory) entity)
          .orElse(null);
+    }
+
+    /** The (at most one) row for a user+month, OPEN or CLOSED. */
+    public static UserDanlonHistory findRowForMonth(String useruuid, LocalDate activeDate) {
+        return find("useruuid = ?1 AND activeDate = ?2", useruuid, activeDate.withDayOfMonth(1)).firstResult();
+    }
+
+    /** All OPEN rows currently carrying this danlon number (dup-guard support). */
+    public static List<UserDanlonHistory> findOpenByDanlon(String danlon) {
+        return find("danlon = ?1 AND closedDate IS NULL", danlon).list();
+    }
+
+    /** True when this row's slot has been retired. */
+    public boolean isClosed() {
+        return closedDate != null;
     }
 }
