@@ -3,7 +3,13 @@
     <properties>
         <property name="job.description" value="Detects and marks orphaned expense vouchers in e-conomics"/>
     </properties>
+    <listeners>
+        <listener ref="jobMonitoringListener"/>
+    </listeners>
     <step id="expense-orphan-detection-step">
+        <listeners>
+            <listener ref="stepProgressListener"/>
+        </listeners>
         <batchlet ref="expenseOrphanDetectionBatchlet"/>
     </step>
 </job>

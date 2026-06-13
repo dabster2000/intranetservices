@@ -134,7 +134,7 @@ public class CostAnalyticsResource {
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("  AND EXISTS (SELECT 1 FROM userstatus us2 WHERE us2.useruuid = e.useruuid ");
             sql.append("    AND us2.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = e.useruuid AND us3.statusdate <= CURDATE()) ");
-            sql.append("    AND us2.company IN (:companyIds)) ");
+            sql.append("    AND us2.companyuuid IN (:companyIds)) ");
         }
         sql.append("GROUP BY e.useruuid, u.firstname, u.lastname ");
         sql.append("ORDER BY total_expenses DESC LIMIT 10");
