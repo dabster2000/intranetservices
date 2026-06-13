@@ -206,6 +206,11 @@ public class DanlonAssignmentService {
         DanlonAssignmentProposal p = new DanlonAssignmentProposal();
         p.setUuid(UUID.randomUUID().toString());
         p.setUseruuid(target.getUseruuid());
+        if (target.getCompanyUuid() == null) {
+            log.warnf("proposeClose: target row %s (number %s) has NULL company_uuid (legacy/backfilled row); "
+                    + "CLOSE proposal will use 'unknown' company and won't appear in any company panel until a real company is derived (Phase 14 follow-up)",
+                    targetHistoryUuid, target.getDanlon());
+        }
         p.setCompanyUuid(target.getCompanyUuid() != null ? target.getCompanyUuid() : "unknown");
         p.setEffectiveMonth(target.getActiveDate());
         p.setEventType(eventType);
@@ -222,6 +227,7 @@ public class DanlonAssignmentService {
     }
 
     /** Panel data: PENDING proposals for a company+month as views. */
+    @Transactional
     public List<DanlonProposalView> listPending(String companyUuid, LocalDate month) {
         LocalDate m = month.withDayOfMonth(1);
         return DanlonAssignmentProposal.findPendingByCompanyMonth(companyUuid, m).stream().map(this::toView).toList();
