@@ -7,6 +7,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Created by hans on 23/06/2017.
@@ -25,11 +27,19 @@ public class KeyPurposeService {
             throw new BadRequestException("Unknown useruuid: " + useruuid);
         }
         List<KeyPurpose> keyPurposeList = KeyPurpose.find("useruuid = ?1", useruuid).list();
-        if(keyPurposeList.size()<3) {
-            for (int i = 0; i < 3; i++) {
-                KeyPurpose keyPurpose = new KeyPurpose(useruuid, i, "");
-                create(keyPurpose);
-                keyPurposeList.add(keyPurpose);
+        // Lazily provision the three key purposes using a 1-based scheme (1, 2, 3).
+        // Only missing slots are created, so a user with a partial set is completed
+        // without ever producing duplicate num values.
+        if (keyPurposeList.size() < 3) {
+            Set<Integer> existingNums = keyPurposeList.stream()
+                    .map(KeyPurpose::getNum)
+                    .collect(Collectors.toSet());
+            for (int num = 1; num <= 3; num++) {
+                if (!existingNums.contains(num)) {
+                    KeyPurpose keyPurpose = new KeyPurpose(useruuid, num, "");
+                    create(keyPurpose);
+                    keyPurposeList.add(keyPurpose);
+                }
             }
         }
         return keyPurposeList;
