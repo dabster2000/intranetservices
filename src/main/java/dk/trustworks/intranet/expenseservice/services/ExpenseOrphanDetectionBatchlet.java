@@ -2,6 +2,8 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.expenseservice.model.Expense;
+import io.quarkus.arc.Arc;
+import io.quarkus.arc.ManagedContext;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
@@ -46,6 +48,17 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
     @Override
     @ActivateRequestContext
     public String process() throws Exception {
+        // Guarantee an active CDI request context. The @ActivateRequestContext interceptor
+        // (above) is not reliably applied when JBeret invokes this batchlet — it intermittently
+        // threw ContextNotActiveException on the first EntityManager/@RequestScoped access
+        // (observed on prod on a small fraction of hourly runs). Activating explicitly removes
+        // the dependency on the interceptor firing.
+        ManagedContext requestContext = Arc.container().requestContext();
+        boolean activatedHere = false;
+        if (!requestContext.isActive()) {
+            requestContext.activate();
+            activatedHere = true;
+        }
         try {
             log.info("Starting orphaned voucher detection job");
 
@@ -122,6 +135,10 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
         } catch (Exception e) {
             log.error("ExpenseOrphanDetectionBatchlet failed", e);
             throw e;
+        } finally {
+            if (activatedHere) {
+                requestContext.terminate();
+            }
         }
     }
 }
