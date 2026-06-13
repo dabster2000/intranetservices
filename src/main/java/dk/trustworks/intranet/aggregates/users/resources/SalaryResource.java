@@ -106,7 +106,10 @@ public class SalaryResource {
 
         // Process base salary based on type
         try {
-            if (baseSalary.getType().equals(SalaryType.NORMAL)) {
+            SalaryType salaryType = baseSalary.getType();
+            if (salaryType == null) {
+                log.warnf("Salary has null type for user: %s, month: %s — skipping base salary payment", useruuid, date);
+            } else if (salaryType == SalaryType.NORMAL) {
                 if (availability != null && availability.getGrossAvailableHours().doubleValue() > availability.getSalaryAwardingHours()) {
                     double adjustedSalary = baseSalary.calculateMonthNormAdjustedSalary(
                             availability.getGrossAvailableHours().doubleValue() / 7.4,
@@ -115,7 +118,7 @@ public class SalaryResource {
                     baseSalary.setSalary(convertDoubleToInt(adjustedSalary));
                 }
                 payments.add(new SalaryPayment(date, "Base salary", formatCurrency(baseSalary.getSalary())));
-            } else if (baseSalary.getType().equals(SalaryType.HOURLY)) {
+            } else if (salaryType == SalaryType.HOURLY) {
                 List<Work> workHoursList = workService.findByUserAndUnpaidAndMonthAndTaskuuid(useruuid, WORK_HOURS, date).stream()
                         .filter(w -> w.getRegistered().isBefore(date.plusMonths(1).withDayOfMonth(1)))
                         .toList();
