@@ -146,7 +146,8 @@ public class UserDanlonHistory extends PanacheEntityBase {
      */
     public static String findDanlonAsOf(String useruuid, LocalDate asOfDate) {
         return UserDanlonHistory.find(
-            "useruuid = ?1 AND activeDate <= ?2 ORDER BY activeDate DESC",
+            "useruuid = ?1 AND activeDate <= ?2 AND closedDate IS NULL " +
+            "ORDER BY activeDate DESC, createdDate DESC",
             useruuid,
             asOfDate
         ).firstResultOptional()
