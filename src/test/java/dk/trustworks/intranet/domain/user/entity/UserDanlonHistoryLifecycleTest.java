@@ -37,7 +37,7 @@ class UserDanlonHistoryLifecycleTest {
     void findOpenByDanlonExcludesClosedRows() {
         String openUser = uuid();
         String closedUser = uuid();
-        String number = "T9100" + (System.nanoTime() % 1000); // unique-ish per run
+        String number = "T" + uuid().substring(0, 8);
 
         UserDanlonHistory open = new UserDanlonHistory(openUser, LocalDate.of(2026, 4, 1), number, "t");
         open.persist();
