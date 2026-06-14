@@ -7,7 +7,6 @@ import dk.trustworks.intranet.aggregates.users.events.UpdateSalaryEvent;
 import dk.trustworks.intranet.domain.user.entity.Salary;
 import dk.trustworks.intranet.domain.user.entity.UserDanlonHistory;
 import dk.trustworks.intranet.domain.user.entity.UserStatus;
-import dk.trustworks.intranet.domain.user.service.UserDanlonHistoryService;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
@@ -29,9 +28,6 @@ public class SalaryService {
 
     @Inject
     AggregateEventSender aggregateEventSender;
-
-    @Inject
-    UserDanlonHistoryService danlonHistoryService;
 
     @Inject
     dk.trustworks.intranet.aggregates.users.danlon.DanlonEventDetector danlonEventDetector;
@@ -137,50 +133,22 @@ public class SalaryService {
     public void delete(String salaryuuid) {
         Optional<Salary> optionalSalary = Salary.findByIdOptional(salaryuuid);
 
-        // CLEANUP RULE: Delete salary type change Danløn if this salary triggered it
-        // Only cleanup auto-generated Danløn (marker: 'system-salary-type-change')
-        // Manual entries and other markers are preserved
-        if (optionalSalary.isPresent()) {
-            Salary salary = optionalSalary.get();
-
-            // Only cleanup if it's a NORMAL salary (the target of HOURLY → NORMAL transition)
+        // Forward-only Danløn (spec §7): on deleting the NORMAL salary that backed a mint, raise a
+        // CLOSE proposal for that month's OPEN system-minted row instead of hard-deleting it.
+        optionalSalary.ifPresent(salary -> {
             if (salary.getType() == SalaryType.NORMAL) {
-                LocalDate monthStart = salary.getActivefrom().withDayOfMonth(1);
-                String useruuid = salary.getUseruuid();
-
-                log.infof("Deleting NORMAL salary for user %s on date %s - checking for salary-type-change Danløn cleanup",
-                        useruuid, salary.getActivefrom());
-
-                // Find salary type change Danløn history for this month
-                Optional<UserDanlonHistory> salaryChangeDanlon = UserDanlonHistory.find(
-                        "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                        useruuid,
-                        monthStart,
-                        "system-salary-type-change"
-                ).firstResultOptional();
-
-                if (salaryChangeDanlon.isPresent()) {
-                    UserDanlonHistory danlonToDelete = (UserDanlonHistory) salaryChangeDanlon.get();
-                    log.warnf("Deleting salary-type-change Danløn history for user %s: uuid=%s, danlon=%s, activeDate=%s",
-                            useruuid, danlonToDelete.getUuid(), danlonToDelete.getDanlon(), danlonToDelete.getActiveDate());
-
-                    try {
-                        // Use the service method to ensure denormalized field is updated correctly
-                        danlonHistoryService.deleteDanlonHistory(danlonToDelete.getUuid());
-                        log.infof("Successfully deleted salary-type-change Danløn history for user %s", useruuid);
-                    } catch (Exception e) {
-                        // Log error but don't fail the salary deletion
-                        log.errorf(e, "Failed to delete salary-type-change Danløn history for user %s", useruuid);
-                    }
-                } else {
-                    log.debugf("No salary-type-change Danløn history found for user %s in month %s - skipping cleanup",
-                            useruuid, monthStart);
+                LocalDate month = salary.getActivefrom().withDayOfMonth(1);
+                UserDanlonHistory row = UserDanlonHistory.findRowForMonth(salary.getUseruuid(), month);
+                if (row != null && !row.isClosed() && row.getEventType() != null) {
+                    danlonAssignmentService.proposeClose(row.getUuid(),
+                            "Triggering NORMAL salary for " + month + " was deleted");
                 }
             }
-        }
+        });
 
         Salary.deleteById(salaryuuid);
-        optionalSalary.ifPresent(salary -> aggregateEventSender.handleEvent(new DeleteSalaryEvent(salary.getUseruuid(), salaryuuid)));
+        optionalSalary.ifPresent(salary ->
+                aggregateEventSender.handleEvent(new DeleteSalaryEvent(salary.getUseruuid(), salaryuuid)));
     }
 
     public List<Salary> findByUseruuid(String useruuid) {

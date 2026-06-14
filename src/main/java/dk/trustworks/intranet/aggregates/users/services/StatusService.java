@@ -149,113 +149,28 @@ public class StatusService {
     @CacheInvalidateAll(cacheName = "user-status-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
     public void delete(String statusuuid) {
-        log.info("StatusService.delete");
-        log.info("statusuuid = " + statusuuid);
+        log.infof("StatusService.delete statusuuid=%s", statusuuid);
         UserStatus entity = UserStatus.<UserStatus>findById(statusuuid);
-
-        // CLEANUP RULE 1: Company transition Danløn
-        // Delete company transition Danløn if EITHER TERMINATED or ACTIVE status is deleted
-        // Company transition requires BOTH statuses (TERMINATED in one company, ACTIVE in another on same date)
-        // Deleting either status invalidates the transition, so Danløn must be removed
-        if (entity != null && (entity.getStatus() == StatusType.TERMINATED || entity.getStatus() == StatusType.ACTIVE)) {
-            LocalDate monthStart = entity.getStatusdate().withDayOfMonth(1);
-            String useruuid = entity.getUseruuid();
-
-            log.infof("Deleting %s status for user %s on date %s - checking for company transition Danløn cleanup",
-                    entity.getStatus(), useruuid, entity.getStatusdate());
-
-            // Find company transition Danløn history for this month
-            Optional<UserDanlonHistory> companyTransitionDanlon = UserDanlonHistory.find(
-                    "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                    useruuid,
-                    monthStart,
-                    "system-company-transition"
-            ).firstResultOptional();
-
-            if (companyTransitionDanlon.isPresent()) {
-                UserDanlonHistory danlonToDelete = (UserDanlonHistory) companyTransitionDanlon.get();
-                log.warnf("Deleting company transition Danløn history for user %s: uuid=%s, danlon=%s, activeDate=%s (triggered by %s status deletion)",
-                        useruuid, danlonToDelete.getUuid(), danlonToDelete.getDanlon(), danlonToDelete.getActiveDate(), entity.getStatus());
-
-                try {
-                    // Use the service method to ensure denormalized field is updated correctly
-                    danlonHistoryService.deleteDanlonHistory(danlonToDelete.getUuid());
-                    log.infof("Successfully deleted company transition Danløn history for user %s", useruuid);
-                } catch (Exception e) {
-                    // Log error but don't fail the status deletion
-                    log.errorf(e, "Failed to delete company transition Danløn history for user %s", useruuid);
-                }
-            } else {
-                log.debugf("No company transition Danløn history found for user %s in month %s - skipping cleanup",
-                        useruuid, monthStart);
-            }
+        if (entity == null) {
+            // N9: never deref a null entity. Nothing to delete, nothing to close.
+            log.warnf("StatusService.delete: status %s not found — nothing to do", statusuuid);
+            return;
         }
 
-        // CLEANUP RULE 2: If deleting an ACTIVE status, clean up re-employment Danløn history
-        // Only delete Danløn history with marker 'system-re-employment' to preserve other markers
-        // (salary type change, manual entries)
-        if (entity != null && entity.getStatus() == StatusType.ACTIVE) {
-            LocalDate monthStart = entity.getStatusdate().withDayOfMonth(1);
-            String useruuid = entity.getUseruuid();
-
-            log.infof("Deleting ACTIVE status for user %s on date %s - checking for re-employment Danløn cleanup",
-                    useruuid, entity.getStatusdate());
-
-            // Find re-employment Danløn history for this month
-            Optional<UserDanlonHistory> reEmploymentDanlon = UserDanlonHistory.find(
-                    "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                    useruuid,
-                    monthStart,
-                    "system-re-employment"
-            ).firstResultOptional();
-
-            if (reEmploymentDanlon.isPresent()) {
-                UserDanlonHistory danlonToDelete = (UserDanlonHistory) reEmploymentDanlon.get();
-                log.warnf("Deleting re-employment Danløn history for user %s: uuid=%s, danlon=%s, activeDate=%s",
-                        useruuid, danlonToDelete.getUuid(), danlonToDelete.getDanlon(), danlonToDelete.getActiveDate());
-
-                try {
-                    // Use the service method to ensure denormalized field is updated correctly
-                    danlonHistoryService.deleteDanlonHistory(danlonToDelete.getUuid());
-                    log.infof("Successfully deleted re-employment Danløn history for user %s", useruuid);
-                } catch (Exception e) {
-                    // Log error but don't fail the status deletion
-                    log.errorf(e, "Failed to delete re-employment Danløn history for user %s", useruuid);
-                }
-            } else {
-                log.debugf("No re-employment Danløn history found for user %s in month %s - skipping cleanup",
-                        useruuid, monthStart);
-            }
-
-            // CLEANUP RULE 3: Also clean up salary type change Danløn
-            // This handles the case where deleting the UserStatus that enabled the salary type change Danløn
-            Optional<UserDanlonHistory> salaryChangeDanlon = UserDanlonHistory.find(
-                    "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                    useruuid,
-                    monthStart,
-                    "system-salary-type-change"
-            ).firstResultOptional();
-
-            if (salaryChangeDanlon.isPresent()) {
-                UserDanlonHistory danlonToDelete = (UserDanlonHistory) salaryChangeDanlon.get();
-                log.warnf("Deleting salary-type-change Danløn history for user %s: uuid=%s, danlon=%s, activeDate=%s",
-                        useruuid, danlonToDelete.getUuid(), danlonToDelete.getDanlon(), danlonToDelete.getActiveDate());
-
-                try {
-                    danlonHistoryService.deleteDanlonHistory(danlonToDelete.getUuid());
-                    log.infof("Successfully deleted salary-type-change Danløn history for user %s", useruuid);
-                } catch (Exception e) {
-                    log.errorf(e, "Failed to delete salary-type-change Danløn history for user %s", useruuid);
-                }
-            } else {
-                log.debugf("No salary-type-change Danløn history found for user %s in month %s - skipping cleanup",
-                        useruuid, monthStart);
+        // Forward-only Danløn (spec §7, fixes N1): never hard-delete a minted number. If a
+        // system-minted OPEN row exists for the deleted status's month, raise a CLOSE proposal.
+        // Reconciliation withdraws it if the employment remains/again valid.
+        if (entity.getStatus() == StatusType.TERMINATED || entity.getStatus() == StatusType.ACTIVE) {
+            LocalDate month = entity.getStatusdate().withDayOfMonth(1);
+            UserDanlonHistory row = UserDanlonHistory.findRowForMonth(entity.getUseruuid(), month);
+            if (row != null && !row.isClosed() && row.getEventType() != null) {
+                danlonAssignmentService.proposeClose(row.getUuid(),
+                        "Triggering " + entity.getStatus() + " status for " + month + " was deleted");
             }
         }
 
         UserStatus.deleteById(statusuuid);
-        DeleteUserStatusEvent event = new DeleteUserStatusEvent(entity.getUseruuid(), entity);
-        aggregateEventSender.handleEvent(event);
+        aggregateEventSender.handleEvent(new DeleteUserStatusEvent(entity.getUseruuid(), entity));
     }
 
     private void sendCreateEvent(UserStatus status) {
