@@ -863,6 +863,8 @@ public class BugReportService {
                 notification.getType().name(),
                 notification.getMessage(),
                 notification.isRead(),
-                notification.getCreatedAt());
+                notification.getCreatedAt() != null
+                        ? notification.getCreatedAt().atOffset(java.time.ZoneOffset.UTC)
+                        : null);
     }
 }
