@@ -86,7 +86,11 @@ public class StatusService {
         }, () -> {
             log.info("StatusService.create -> creating status");
             log.info("status = " + status);
-            status.persist();
+            // persistAndFlush so a constraint violation (e.g. duplicate uq_userstatus_user_date)
+            // surfaces to the caller HERE — NOT later inside detectAndPropose's best-effort
+            // try/catch (Hibernate would otherwise auto-flush this INSERT on the detector's first
+            // query and the catch would swallow the business-save failure → false 204).
+            status.persistAndFlush();
             sendCreateEvent(status);
 
             // Danløn lifecycle (propose-only): see UPDATE branch.

@@ -87,7 +87,10 @@ public class SalaryService {
             log.infof("Creating new salary record for user %s (UUID: %s, effective: %s, type: %s)",
                     salary.getUseruuid(), salary.getUuid(), salary.getActivefrom(), salary.getType());
 
-            salary.persist();
+            // persistAndFlush so a constraint violation surfaces to the caller HERE, not later
+            // inside handleSalaryTypeChange's best-effort try/catch (which would swallow the
+            // business-save failure → false success). See StatusService.create for the rationale.
+            salary.persistAndFlush();
             aggregateEventSender.handleEvent(new CreateSalaryLogEvent(salary.getUseruuid(), salary));
 
             // FIX: Check for salary type change even when creating new record
