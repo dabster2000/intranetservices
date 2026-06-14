@@ -190,13 +190,17 @@ public class SalaryService {
             return;
         }
         String companyUuid = status.getCompany().getUuid();
-        var event = danlonEventDetector.detectMostSpecific(useruuid, month, companyUuid);
-        if (event.isEmpty()) return;
+        // Best-effort: detect in this (caller) transaction so the just-written NORMAL salary is
+        // visible, isolate the WRITE in requiringNew, and wrap the whole thing so neither a
+        // detection-read glitch nor a propose failure rolls back the salary save (N5). Reconciliation
+        // (AC10) re-derives and re-raises on its next run.
         try {
+            var event = danlonEventDetector.detectMostSpecific(useruuid, month, companyUuid);
+            if (event.isEmpty()) return;
             QuarkusTransaction.requiringNew().run(() ->
                     danlonAssignmentService.proposeIfNeeded(useruuid, month, event.get(), companyUuid));
         } catch (RuntimeException e) {
-            log.warnf(e, "Danløn propose failed for user %s month %s — salary save unaffected; reconciliation (AC10) will retry",
+            log.warnf(e, "Danløn detect/propose failed for user %s month %s — salary save best-effort; reconciliation (AC10) will retry",
                     useruuid, month);
         }
     }

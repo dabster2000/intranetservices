@@ -128,18 +128,19 @@ public class StatusService {
         if (companyUuid == null) return;
         String useruuid = status.getUseruuid();
         LocalDate month = status.getStatusdate().withDayOfMonth(1);
-        // Detect in the CALLER's transaction so just-written status/salary rows are visible
-        // (a new transaction wouldn't see uncommitted rows → would miss SALARY_TYPE_CHANGE).
-        var event = danlonEventDetector.detectMostSpecific(useruuid, month, companyUuid);
-        if (event.isEmpty()) return;
-        // Isolate only the WRITE in its own transaction so a Danløn failure can't roll back the
-        // status save (carry-forward P13, fixes N5). proposeIfNeeded reads only committed danlon/
-        // proposal state, so it is correct in a nested transaction; reconciliation (AC10) retries.
+        // The whole Danløn side-effect is best-effort (carry-forward P13, fixes N5). Detection runs
+        // in the CALLER's transaction so just-written status/salary rows are visible (a new
+        // transaction wouldn't see uncommitted rows → would miss SALARY_TYPE_CHANGE), and the WRITE
+        // is isolated in a nested requiringNew transaction so its failure can't roll back the status
+        // save. The whole thing is wrapped so a detection-read glitch is logged, not propagated;
+        // reconciliation (AC10) re-derives and re-raises on its next run.
         try {
+            var event = danlonEventDetector.detectMostSpecific(useruuid, month, companyUuid);
+            if (event.isEmpty()) return;
             QuarkusTransaction.requiringNew().run(() ->
                     danlonAssignmentService.proposeIfNeeded(useruuid, month, event.get(), companyUuid));
         } catch (RuntimeException e) {
-            log.warnf(e, "Danløn propose failed for user %s month %s — status save unaffected; reconciliation (AC10) will retry",
+            log.warnf(e, "Danløn detect/propose failed for user %s month %s — status save best-effort; reconciliation (AC10) will retry",
                     useruuid, month);
         }
     }
