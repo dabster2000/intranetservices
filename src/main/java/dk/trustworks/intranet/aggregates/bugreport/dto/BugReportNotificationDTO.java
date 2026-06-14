@@ -1,7 +1,7 @@
 package dk.trustworks.intranet.aggregates.bugreport.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 public record BugReportNotificationDTO(
     String uuid,
@@ -10,5 +10,5 @@ public record BugReportNotificationDTO(
     String type,
     String message,
     @JsonProperty("isRead") boolean isRead,
-    LocalDateTime createdAt
+    OffsetDateTime createdAt
 ) {}
