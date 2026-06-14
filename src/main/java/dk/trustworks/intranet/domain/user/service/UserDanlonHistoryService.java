@@ -336,37 +336,6 @@ public class UserDanlonHistoryService {
     }
 
     /**
-     * Determine the initial active date for a user during migration.
-     * Uses the same logic as V110 migration script:
-     * 1. User's hire date (earliest ACTIVE status) normalized to 1st of month
-     * 2. Fallback to 2020-01-01 if no hire date found
-     *
-     * @param useruuid User UUID
-     * @return Active date for initial history record
-     */
-    private LocalDate determineInitialActiveDate(String useruuid) {
-        // Query for earliest ACTIVE status date
-        // Note: This requires user_status table access
-        // TODO: Consider injecting UserStatusService if this becomes more complex
-        try {
-            LocalDate hireDate = (LocalDate) UserDanlonHistory.getEntityManager()
-                    .createNativeQuery("SELECT MIN(statusdate) FROM user_status WHERE useruuid = ?1 AND status = 'ACTIVE'")
-                    .setParameter(1, useruuid)
-                    .getSingleResult();
-
-            if (hireDate != null) {
-                return hireDate.withDayOfMonth(1);
-            }
-        } catch (Exception e) {
-            log.warnf(e, "Failed to query hire date for user %s - using fallback date", useruuid);
-        }
-
-        // Fallback to 2020-01-01 for legacy users
-        log.infof("No hire date found for user %s - using fallback date 2020-01-01", useruuid);
-        return LocalDate.of(2020, 1, 1);
-    }
-
-    /**
      * Generate the next available Danløn number.
      * <p>
      * <b>Algorithm:</b>

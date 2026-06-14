@@ -202,6 +202,19 @@ public class UserDanlonHistory extends PanacheEntityBase {
         return find("danlon = ?1 AND closedDate IS NULL", danlon).list();
     }
 
+    /** True if an OPEN row exists for the user+month whose event_type is one of the given events. */
+    public static boolean hasOpenEventInMonth(String useruuid, LocalDate month, String... eventTypes) {
+        return find("useruuid = ?1 AND activeDate = ?2 AND closedDate IS NULL AND eventType IN ?3",
+                useruuid, month.withDayOfMonth(1), java.util.Arrays.asList(eventTypes))
+                .firstResultOptional().isPresent();
+    }
+
+    /** The OPEN row for the user+month with the given event_type, or null. */
+    public static UserDanlonHistory findOpenEventRow(String useruuid, LocalDate month, String eventType) {
+        return find("useruuid = ?1 AND activeDate = ?2 AND eventType = ?3 AND closedDate IS NULL",
+                useruuid, month.withDayOfMonth(1), eventType).firstResult();
+    }
+
     /** True when this row's slot has been retired. */
     public boolean isClosed() {
         return closedDate != null;
