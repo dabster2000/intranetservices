@@ -18,6 +18,18 @@ public class ImageProcessor {
         ByteArrayInputStream bais = new ByteArrayInputStream(imageBytes);
         BufferedImage image = ImageIO.read(bais);
 
+        // ImageIO.read() RETURNS null (it does not throw) when the bytes are not a decodable
+        // image — e.g. a PDF, HEIC, or a corrupt/empty receipt. Passing that null straight into
+        // Thumbnailator below throws a cryptic NullPointerException("Image cannot be null."),
+        // which then surfaces on the expense as an opaque "Unexpected error: NullPointerException".
+        // Fail with an actionable IOException instead, so the upload path marks the single expense
+        // as failed (its uuid is already logged by EconomicsService.sendFile) and the chunk
+        // continues, rather than the next reader having to guess what went wrong.
+        if (image == null) {
+            throw new IOException("Receipt is not a decodable image (e.g. PDF, HEIC, or corrupt file); "
+                    + "cannot compress for e-conomic upload");
+        }
+
         // Use Thumbnailator to compress and resize the image
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
