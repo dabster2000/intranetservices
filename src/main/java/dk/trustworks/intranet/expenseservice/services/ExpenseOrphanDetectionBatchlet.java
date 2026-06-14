@@ -67,8 +67,17 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
             AtomicInteger errorsFound = new AtomicInteger(0);
 
             // Find expenses with voucher numbers that might be orphaned
-            // Check multiple statuses as vouchers can become orphaned at any stage
-            List<Expense> expensesToCheck = Expense.<Expense>find(
+            // Check multiple statuses as vouchers can become orphaned at any stage.
+            //
+            // The read runs inside an explicit transaction. JBeret invokes this batchlet without an
+            // ambient transaction, so a bare Panache read executes against a Hibernate session whose
+            // JDBC connection has already been released — failing with
+            // "LogicalConnectionManagedImpl is closed". Opening a transaction (requiringNew) acquires
+            // a valid, open connection for the query. The returned entities are detached afterwards,
+            // which is safe here because Expense is a flat (relationship-free) entity and the loop
+            // below only reads already-loaded scalar fields and re-looks-up by uuid.
+            List<Expense> expensesToCheck = QuarkusTransaction.requiringNew().call(() ->
+                Expense.<Expense>find(
                 "vouchernumber > 0 AND journalnumber IS NOT NULL AND accountingyear IS NOT NULL " +
                 "AND status IN (?1, ?2, ?3, ?4) " +
                 "AND (isOrphaned = false OR isOrphaned IS NULL) " +
@@ -78,7 +87,7 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
                 ExpenseService.STATUS_UP_FAILED,
                 ExpenseService.STATUS_VERIFIED_UNBOOKED)
                 .page(0, MAX_EXPENSES_TO_CHECK)
-                .list();
+                .list());
 
             log.infof("Found %d expenses with voucher references to verify", expensesToCheck.size());
 
@@ -89,26 +98,32 @@ public class ExpenseOrphanDetectionBatchlet extends AbstractBatchlet {
 
                 for (Expense expense : batch) {
                     try {
-                        boolean voucherExists = economicsService.verifyVoucherExists(expense);
-                        totalChecked.incrementAndGet();
+                        // Process each expense in its own transaction. verifyVoucherExists builds the
+                        // e-conomic client via getApiForExpense -> userService.findById, which is a DB
+                        // read; without an explicit transaction that read fails with
+                        // "LogicalConnectionManagedImpl is closed" on the JBeret worker thread. The
+                        // orphan-marking update needs a transaction too. Scoping it per expense keeps
+                        // the connection out of the inter-batch sleeps and releases it between
+                        // expenses, instead of holding one transaction across the whole job.
+                        QuarkusTransaction.requiringNew().run(() -> {
+                            boolean voucherExists = economicsService.verifyVoucherExists(expense);
+                            totalChecked.incrementAndGet();
 
-                        if (!voucherExists) {
-                            log.warnf("Orphaned voucher detected: expense=%s, voucher=%d, journal=%d, year=%s",
-                                expense.getUuid(), expense.getVouchernumber(),
-                                expense.getJournalnumber(), expense.getAccountingyear());
+                            if (!voucherExists) {
+                                log.warnf("Orphaned voucher detected: expense=%s, voucher=%d, journal=%d, year=%s",
+                                    expense.getUuid(), expense.getVouchernumber(),
+                                    expense.getJournalnumber(), expense.getAccountingyear());
 
-                            // Mark as orphaned
-                            expense.markAsOrphaned();
-                            expense.setLastRetryAt(LocalDateTime.now());
+                                // Mark as orphaned (persisted via the bulk update below)
+                                expense.markAsOrphaned();
+                                expense.setLastRetryAt(LocalDateTime.now());
 
-                            // Update database in its own transaction to avoid TransactionRequiredException
-                            QuarkusTransaction.requiringNew().run(() -> {
                                 Expense.update("isOrphaned = ?1, lastRetryAt = ?2 WHERE uuid = ?3",
                                         true, LocalDateTime.now(), expense.getUuid());
-                            });
 
-                            orphansFound.incrementAndGet();
-                        }
+                                orphansFound.incrementAndGet();
+                            }
+                        });
                     } catch (Exception e) {
                         log.errorf(e, "Error checking voucher existence for expense %s", expense.getUuid());
                         errorsFound.incrementAndGet();
