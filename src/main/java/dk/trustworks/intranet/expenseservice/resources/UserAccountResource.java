@@ -73,13 +73,14 @@ public class UserAccountResource {
      * <ul>
      *   <li>economics - saved to user_ext_account table</li>
      *   <li>username - saved to user_ext_account table</li>
-     *   <li>danlon - saved to user_danlon_history table with active_date = 1st of current month</li>
+     *   <li>danlon - <b>read-only</b> on this endpoint; the incoming value is ignored. Minting/closing happens only via DanlonAssignmentService (HR-approved proposals).</li>
      * </ul>
      * </p>
      */
     @POST
     @RolesAllowed({"expenses:write"})
     @Transactional
+    // securityContext is retained: saveAccount is also invoked directly by AccountingResource.
     public void saveAccount(@Valid UserAccountDTO dto, @Context SecurityContext securityContext) {
         String useruuid = dto.getUseruuid();
         UserAccount existing = UserAccount.findById(useruuid);
@@ -109,7 +110,7 @@ public class UserAccountResource {
      * <ul>
      *   <li>economics - saved to user_ext_account table</li>
      *   <li>username - saved to user_ext_account table</li>
-     *   <li>danlon - saved to user_danlon_history table with active_date = 1st of current month</li>
+     *   <li>danlon - <b>read-only</b> on this endpoint; the incoming value is ignored. Minting/closing happens only via DanlonAssignmentService (HR-approved proposals).</li>
      * </ul>
      * </p>
      */
