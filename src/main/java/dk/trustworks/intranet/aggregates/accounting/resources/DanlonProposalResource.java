@@ -54,9 +54,12 @@ public class DanlonProposalResource {
     @Path("/proposals/{uuid}/approve")
     @RolesAllowed({"salaries:write"})
     public Response approve(@PathParam("uuid") String uuid, ApproveRequest body) {
+        String actor = actingUser();
+        if (actor == null) return missingActor();
+        if (belongsToOtherCompany(uuid)) return wrongCompany(uuid);
         try {
             UserDanlonHistory row = assignmentService.approveProposal(
-                    uuid, body != null ? body.confirmedNumber() : null, actingUser());
+                    uuid, body != null ? body.confirmedNumber() : null, actor);
             return Response.ok(Map.of("danlon", row.getDanlon(), "historyUuid", row.getUuid())).build();
         } catch (DanlonProposalException e) {
             log.warnf("Approve proposal %s rejected: %s", uuid, e.getMessage());
@@ -69,8 +72,11 @@ public class DanlonProposalResource {
     @Path("/proposals/{uuid}/reject")
     @RolesAllowed({"salaries:write"})
     public Response reject(@PathParam("uuid") String uuid, RejectRequest body) {
+        String actor = actingUser();
+        if (actor == null) return missingActor();
+        if (belongsToOtherCompany(uuid)) return wrongCompany(uuid);
         try {
-            assignmentService.rejectProposal(uuid, body != null ? body.reason() : null, actingUser());
+            assignmentService.rejectProposal(uuid, body != null ? body.reason() : null, actor);
             return Response.noContent().build();
         } catch (DanlonProposalException e) {
             log.warnf("Reject proposal %s rejected: %s", uuid, e.getMessage());
@@ -85,9 +91,32 @@ public class DanlonProposalResource {
         return integrityService.buildReport();
     }
 
+    /**
+     * The acting user UUID from {@code X-Requested-By}, or {@code null} when absent.
+     * Mints/rejections are audit-critical, so a missing actor must fail the request
+     * (no {@code "unknown"} ghost approvals) — see {@link #missingActor()}.
+     */
     private String actingUser() {
         String u = requestHeaderHolder.getUserUuid();
-        return (u != null && !u.isBlank()) ? u : "unknown";
+        return (u != null && !u.isBlank()) ? u : null;
+    }
+
+    /** True when the proposal exists but belongs to a different company than the path (BOLA guard).
+     *  Returns false for a missing proposal so the service can raise the normal not-found 409. */
+    private boolean belongsToOtherCompany(String proposalUuid) {
+        String owner = assignmentService.companyOfProposal(proposalUuid);
+        return owner != null && !owner.equals(companyuuid);
+    }
+
+    private static Response missingActor() {
+        return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("error", "Missing X-Requested-By: no identified acting user for an audited Danløn action")).build();
+    }
+
+    private Response wrongCompany(String proposalUuid) {
+        log.warnf("Cross-company guard: proposal %s does not belong to company %s — refused", proposalUuid, companyuuid);
+        return Response.status(Response.Status.FORBIDDEN)
+                .entity(Map.of("error", "Proposal does not belong to company " + companyuuid)).build();
     }
 
     /**

@@ -136,9 +136,14 @@ public class DanlonAssignmentService {
                     throw new DanlonProposalException("No confirmed or suggested number for MINT proposal " + proposalUuid);
                 // Dup-guard (invariant #5): the number must not be OPEN for a different user.
                 for (UserDanlonHistory open : UserDanlonHistory.findOpenByDanlon(number)) {
-                    if (!open.getUseruuid().equals(p.getUseruuid()))
+                    if (!open.getUseruuid().equals(p.getUseruuid())) {
+                        // Keep the conflicting user's UUID in the server log only — never in the
+                        // user-facing 409 message (which the BFF forwards verbatim to the browser).
+                        log.warnf("Dup-guard: number %s already OPEN for user %s (requested for user %s)",
+                                number, open.getUseruuid(), p.getUseruuid());
                         throw new DanlonProposalException("Danløn number " + number
-                                + " is already OPEN for another user (" + open.getUseruuid() + "); choose a different number.");
+                                + " is already assigned to another active employee; choose a different number.");
+                    }
                 }
                 UserDanlonHistory row = new UserDanlonHistory(p.getUseruuid(), p.getEffectiveMonth(), number, resolvedBy);
                 row.setCompanyUuid(p.getCompanyUuid());
@@ -165,8 +170,9 @@ public class DanlonAssignmentService {
         p.setStatus(ProposalStatus.APPROVED);
         p.setResolvedDate(LocalDateTime.now());
         p.setResolvedBy(resolvedBy);
-        log.infof("APPROVED proposal %s intent=%s user=%s number=%s by=%s",
-                proposalUuid, p.getIntent(), p.getUseruuid(), result.getDanlon(), resolvedBy);
+        // Audit log: omit the Danløn number (payroll PII) — it lives on the minted history row.
+        log.infof("APPROVED proposal %s intent=%s user=%s by=%s",
+                proposalUuid, p.getIntent(), p.getUseruuid(), resolvedBy);
         return result;
     }
 
@@ -180,7 +186,15 @@ public class DanlonAssignmentService {
         p.setResolvedDate(LocalDateTime.now());
         p.setResolvedBy(resolvedBy);
         p.setResolutionNote(reason);
-        log.infof("REJECTED proposal %s by=%s reason=%s", proposalUuid, resolvedBy, reason);
+        // Omit the free-text reason from the log (may carry employee PII) — it is persisted in resolution_note.
+        log.infof("REJECTED proposal %s by=%s (reason stored in resolution_note)", proposalUuid, resolvedBy);
+    }
+
+    /** Owning company of a proposal, or null if it does not exist (for the resource's cross-company guard). */
+    @Transactional
+    public String companyOfProposal(String proposalUuid) {
+        DanlonAssignmentProposal p = DanlonAssignmentProposal.findById(proposalUuid);
+        return p == null ? null : p.getCompanyUuid();
     }
 
     /** Delete-path entry point: raise a PENDING CLOSE proposal for a minted row. Idempotent; never hard-deletes. */

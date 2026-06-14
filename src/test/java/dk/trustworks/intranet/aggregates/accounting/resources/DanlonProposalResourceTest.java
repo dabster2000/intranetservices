@@ -91,4 +91,40 @@ class DanlonProposalResourceTest {
                 .body("$", hasKey("missingIdActives"))
                 .body("$", hasKey("nonConforming"));
     }
+
+    @Test
+    @TestSecurity(user = "hr", roles = {"salaries:write"})
+    void approveViaWrongCompanyPathReturns403() {  // cross-company BOLA guard (security review F2)
+        String user = newUser();
+        String companyA = "co-a-" + (System.nanoTime() % 100000);
+        service.proposeIfNeeded(user, LocalDate.of(2026, 2, 1), DanlonEventType.FIRST_EMPLOYMENT, companyA);
+        String pid = QuarkusTransaction.requiringNew().call(() ->
+                DanlonAssignmentProposal.findPendingForSlot(user, companyA, LocalDate.of(2026, 2, 1), DanlonEventType.FIRST_EMPLOYMENT).getUuid());
+
+        given().header("X-Requested-By", "hr")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"confirmedNumber\":\"T77777\"}")
+        .when()
+                .post("/company/co-b-different/danlon/proposals/" + pid + "/approve")
+        .then()
+                .statusCode(403);
+
+        // Nothing minted for the cross-company attempt.
+        Long rows = QuarkusTransaction.requiringNew().call(() ->
+                UserDanlonHistory.count("useruuid = ?1 AND danlon = ?2", user, "T77777"));
+        org.junit.jupiter.api.Assertions.assertEquals(0L, rows);
+    }
+
+    @Test
+    @TestSecurity(user = "hr", roles = {"salaries:write"})
+    void approveWithoutRequestedByReturns400() {  // no ghost approvals (security review F4)
+        // No X-Requested-By header → no identified acting user → 400 before any mint.
+        given()
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"confirmedNumber\":\"T1\"}")
+        .when()
+                .post("/company/x/danlon/proposals/whatever/approve")
+        .then()
+                .statusCode(400);
+    }
 }
