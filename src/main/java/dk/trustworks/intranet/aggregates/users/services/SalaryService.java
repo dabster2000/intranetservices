@@ -11,6 +11,7 @@ import dk.trustworks.intranet.domain.user.service.UserDanlonHistoryService;
 import dk.trustworks.intranet.userservice.model.enums.SalaryType;
 import dk.trustworks.intranet.userservice.model.enums.StatusType;
 import io.quarkus.cache.CacheInvalidateAll;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -31,6 +32,12 @@ public class SalaryService {
 
     @Inject
     UserDanlonHistoryService danlonHistoryService;
+
+    @Inject
+    dk.trustworks.intranet.aggregates.users.danlon.DanlonEventDetector danlonEventDetector;
+
+    @Inject
+    dk.trustworks.intranet.aggregates.users.danlon.DanlonAssignmentService danlonAssignmentService;
 
     public List<Salary> listAll(String useruuid) {
         return Salary.findByUseruuid(useruuid);
@@ -196,47 +203,33 @@ public class SalaryService {
      * @param useruuid      User UUID
      * @param effectiveDate Date when salary type change becomes effective
      */
+    /**
+     * HOURLY → NORMAL transition (spec §6): delegate to the shared detector so the same
+     * precedence/window applies whether the status or the salary write triggers it, and raise
+     * at most one proposal — minting nothing (AC1). Never rolls back the salary save (N5):
+     * detection runs in the caller's transaction (so the just-written NORMAL salary is visible),
+     * and only the proposal write is isolated in a nested transaction; the reconciliation scan
+     * (AC10) re-derives and re-raises if the write fails.
+     */
     private void handleSalaryTypeChange(String useruuid, LocalDate effectiveDate) {
-        LocalDate monthStart = effectiveDate.withDayOfMonth(1);
-        LocalDate monthEnd = monthStart.plusMonths(1).minusDays(1);
-
-        // Check if user has a qualifying (non-TERMINATED, non-PREBOARDING) status effective as of this month.
-        // Previously required a status created IN the same month, which failed for users whose
-        // status was set in an earlier month (e.g. company transition months before salary type change).
-        Optional<UserStatus> activeStatus = UserStatus.find(
-                "useruuid = ?1 AND statusdate <= ?2 AND status NOT IN (?3, ?4) ORDER BY statusdate DESC",
-                useruuid,
-                monthEnd,
-                StatusType.TERMINATED,
-                StatusType.PREBOARDING
-        ).firstResultOptional();
-
-        if (activeStatus.isEmpty()) {
-            log.infof("No qualifying UserStatus found for user %s as of month %s - skipping Danløn generation",
-                    useruuid, monthStart);
+        LocalDate month = effectiveDate.withDayOfMonth(1);
+        UserStatus status = UserStatus.<UserStatus>find(
+                "useruuid = ?1 and statusdate <= ?2 and status not in (?3, ?4) order by statusdate desc",
+                useruuid, month.plusMonths(1).minusDays(1), StatusType.TERMINATED, StatusType.PREBOARDING)
+                .firstResult();
+        if (status == null || status.getCompany() == null) {
+            log.infof("No qualifying status/company for user %s month %s — no Danløn proposal raised", useruuid, month);
             return;
         }
-
-        log.infof("Found qualifying UserStatus (%s, date %s) for user %s in month %s - generating new Danløn number",
-                activeStatus.get().getStatus(), activeStatus.get().getStatusdate(), useruuid, monthStart);
-
-        // Generate new Danløn number using the service
-        String newDanlonNumber = danlonHistoryService.generateNextDanlonNumber();
-
-        // Create UserDanlonHistory record
+        String companyUuid = status.getCompany().getUuid();
+        var event = danlonEventDetector.detectMostSpecific(useruuid, month, companyUuid);
+        if (event.isEmpty()) return;
         try {
-            danlonHistoryService.addDanlonHistory(
-                    useruuid,
-                    monthStart, // Active from 1st of month
-                    newDanlonNumber,
-                    "system-salary-type-change"
-            );
-            log.infof("Created new Danløn number %s for user %s due to HOURLY → NORMAL transition",
-                    newDanlonNumber, useruuid);
-        } catch (IllegalArgumentException e) {
-            // Duplicate history for this month - log and continue
-            // This can happen if salary type changes multiple times in same month
-            log.warnf("Failed to create Danløn history for user %s: %s", useruuid, e.getMessage());
+            QuarkusTransaction.requiringNew().run(() ->
+                    danlonAssignmentService.proposeIfNeeded(useruuid, month, event.get(), companyUuid));
+        } catch (RuntimeException e) {
+            log.warnf(e, "Danløn propose failed for user %s month %s — salary save unaffected; reconciliation (AC10) will retry",
+                    useruuid, month);
         }
     }
 }
