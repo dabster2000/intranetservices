@@ -93,6 +93,16 @@ class DanlonProposalResourceTest {
     }
 
     @Test
+    @TestSecurity(user = "hr", roles = {"salaries:read"})
+    void malformedProposalMonthReturns400() {
+        given().header("X-Requested-By", "hr")
+        .when()
+                .get("/company/x/danlon/proposals?month=not-a-month")
+        .then()
+                .statusCode(400);
+    }
+
+    @Test
     @TestSecurity(user = "hr", roles = {"salaries:write"})
     void approveViaWrongCompanyPathReturns403() {  // cross-company BOLA guard (security review F2)
         String user = newUser();

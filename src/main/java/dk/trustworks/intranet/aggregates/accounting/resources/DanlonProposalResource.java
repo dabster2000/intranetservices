@@ -19,6 +19,7 @@ import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 
@@ -128,8 +129,12 @@ public class DanlonProposalResource {
     private static LocalDate parseMonth(String strMonth) {
         if (strMonth == null || strMonth.isBlank()) return LocalDate.now().withDayOfMonth(1);
         String t = strMonth.trim();
-        LocalDate d = (t.length() == 7) ? LocalDate.parse(t + "-01") : LocalDate.parse(t);
-        return d.withDayOfMonth(1);
+        try {
+            LocalDate d = (t.length() == 7) ? LocalDate.parse(t + "-01") : LocalDate.parse(t);
+            return d.withDayOfMonth(1);
+        } catch (DateTimeParseException e) {
+            throw new BadRequestException("month must be YYYY-MM or YYYY-MM-DD");
+        }
     }
 
     public record ApproveRequest(String confirmedNumber) {}
