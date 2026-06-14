@@ -1032,6 +1032,18 @@ public class BugReportAutoFixService {
     }
 
     /**
+     * Read an integer configuration value from autofix_config, falling back to
+     * {@code defaultValue} if the key is missing or not a valid integer.
+     */
+    private int parseIntConfig(String key, int defaultValue) {
+        try {
+            return Integer.parseInt(getConfigValue(key, String.valueOf(defaultValue)));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    /**
      * Invalidate the kill switch cache (called after config update).
      */
     public void invalidateConfigCache() {
@@ -1058,9 +1070,15 @@ public class BugReportAutoFixService {
             metadata.put("reporter_uuid", report.getReporterUuid());
             metadata.put("previous_status", previousStatus);
 
-            // Worker configuration (read by the Fargate worker from metadata)
+            // Worker configuration (read by the Fargate worker from metadata).
+            // Tunable values come from autofix_config (managed via the Auto-Fix
+            // Settings tab → PUT /auto-fix/config); the literals are fallback
+            // defaults if a key is missing. See auto-fix-pipeline.md §3.6.
             metadata.put("allowed_tools", "Read,Write,Edit,Bash,Glob,Grep");
-            metadata.put("max_turns", 150);
+            metadata.put("model", getConfigValue("autofix.model", "claude-opus-4-8"));
+            metadata.put("effort", getConfigValue("autofix.effort", "xhigh"));
+            metadata.put("max_turns", parseIntConfig("autofix.max_turns", 150));
+            metadata.put("max_budget_usd", getConfigValue("autofix.max_budget_usd", "10.00"));
 
             // Security policy decision (for audit)
             ObjectNode policyNode = metadata.putObject("policy_decision");

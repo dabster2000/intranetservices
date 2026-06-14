@@ -22,7 +22,10 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * REST resource for the Bug Report bounded context.
@@ -429,40 +432,91 @@ public class BugReportResource {
         return Response.ok(stats).build();
     }
 
-    // ---- 20. GET /bug-reports/auto-fix/config — Kill switch status ----
+    // Allowed values for the tunable auto-fix worker settings (validated on write).
+    // Model strings must be exact CLI model ids; effort must be a valid --effort level.
+    private static final Set<String> ALLOWED_EFFORTS = Set.of("low", "medium", "high", "xhigh", "max");
+    private static final Set<String> ALLOWED_MODELS = Set.of(
+            "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001");
+    private static final String DEFAULT_MODEL = "claude-opus-4-8";
+    private static final String DEFAULT_EFFORT = "xhigh";
+    private static final String DEFAULT_MAX_TURNS = "150";
+    private static final String DEFAULT_MAX_BUDGET_USD = "10.00";
+
+    // ---- 20. GET /bug-reports/auto-fix/config — Auto-fix worker settings ----
     @GET
     @Path("/auto-fix/config")
     @RolesAllowed({"bugreports:admin"})
     public Response getAutoFixConfig() {
-        String enabled = autoFixService.getConfigValue("autofix.enabled", "true");
-        return Response.ok(Map.of("enabled", Boolean.parseBoolean(enabled))).build();
+        Map<String, Object> cfg = new LinkedHashMap<>();
+        cfg.put("enabled", Boolean.parseBoolean(autoFixService.getConfigValue("autofix.enabled", "true")));
+        cfg.put("model", autoFixService.getConfigValue("autofix.model", DEFAULT_MODEL));
+        cfg.put("effort", autoFixService.getConfigValue("autofix.effort", DEFAULT_EFFORT));
+        cfg.put("maxTurns", safeInt(autoFixService.getConfigValue("autofix.max_turns", DEFAULT_MAX_TURNS), 150));
+        cfg.put("maxBudgetUsd", autoFixService.getConfigValue("autofix.max_budget_usd", DEFAULT_MAX_BUDGET_USD));
+        // Surfaced so the Settings UI can render dropdowns without hardcoding choices.
+        cfg.put("allowedModels", ALLOWED_MODELS);
+        cfg.put("allowedEfforts", ALLOWED_EFFORTS);
+        return Response.ok(cfg).build();
     }
 
-    // ---- 21. PUT /bug-reports/auto-fix/config — Toggle kill switch ----
+    // ---- 21. PUT /bug-reports/auto-fix/config — Update auto-fix worker settings ----
+    // Accepts any subset of {enabled, model, effort, maxTurns, maxBudgetUsd}. Each
+    // provided field is validated, then upserted into autofix_config. Returns the
+    // full, current config (same shape as GET).
     @PUT
     @Path("/auto-fix/config")
     @RolesAllowed({"bugreports:admin"})
     @Transactional
     public Response updateAutoFixConfig(Map<String, Object> config) {
         String requestedBy = requestHeaderHolder.getUserUuid();
-        Boolean enabled = (Boolean) config.get("enabled");
-        if (enabled == null) {
-            return Response.status(Response.Status.BAD_REQUEST)
-                    .entity("{\"error\":\"'enabled' field is required\"}").build();
+        Map<String, String> updates = new LinkedHashMap<>();
+
+        if (config.containsKey("enabled")) {
+            Object v = config.get("enabled");
+            if (!(v instanceof Boolean)) return badRequest("'enabled' must be a boolean");
+            updates.put("autofix.enabled", v.toString());
+        }
+        if (config.containsKey("model")) {
+            String model = String.valueOf(config.get("model"));
+            if (!ALLOWED_MODELS.contains(model)) return badRequest("Invalid model: " + model);
+            updates.put("autofix.model", model);
+        }
+        if (config.containsKey("effort")) {
+            String effort = String.valueOf(config.get("effort"));
+            if (!ALLOWED_EFFORTS.contains(effort)) return badRequest("Invalid effort: " + effort);
+            updates.put("autofix.effort", effort);
+        }
+        if (config.containsKey("maxTurns")) {
+            Integer turns = asInt(config.get("maxTurns"));
+            if (turns == null) return badRequest("'maxTurns' must be a number");
+            if (turns < 10 || turns > 300) return badRequest("'maxTurns' must be between 10 and 300");
+            updates.put("autofix.max_turns", turns.toString());
+        }
+        if (config.containsKey("maxBudgetUsd")) {
+            Double budget = asDouble(config.get("maxBudgetUsd"));
+            if (budget == null) return badRequest("'maxBudgetUsd' must be a number");
+            if (budget < 1.0 || budget > 50.0) return badRequest("'maxBudgetUsd' must be between 1 and 50");
+            updates.put("autofix.max_budget_usd", String.format(Locale.US, "%.2f", budget));
         }
 
-        em.createNativeQuery(
-            "INSERT INTO autofix_config (config_key, config_value, updated_by) " +
-            "VALUES ('autofix.enabled', :value, :updatedBy) " +
-            "ON DUPLICATE KEY UPDATE config_value = :value, updated_by = :updatedBy")
-            .setParameter("value", enabled.toString())
-            .setParameter("updatedBy", requestedBy)
-            .executeUpdate();
+        if (updates.isEmpty()) {
+            return badRequest("No valid settings provided");
+        }
+
+        for (Map.Entry<String, String> e : updates.entrySet()) {
+            em.createNativeQuery(
+                "INSERT INTO autofix_config (config_key, config_value, updated_by) " +
+                "VALUES (:key, :value, :updatedBy) " +
+                "ON DUPLICATE KEY UPDATE config_value = :value, updated_by = :updatedBy")
+                .setParameter("key", e.getKey())
+                .setParameter("value", e.getValue())
+                .setParameter("updatedBy", requestedBy)
+                .executeUpdate();
+        }
 
         autoFixService.invalidateConfigCache();
-
-        log.infof("Auto-fix %s by %s", enabled ? "enabled" : "disabled", requestedBy);
-        return Response.ok(Map.of("enabled", enabled)).build();
+        log.infof("Auto-fix config updated by %s: %s", requestedBy, updates.keySet());
+        return getAutoFixConfig();
     }
 
     // ---- Helpers ----
@@ -482,6 +536,39 @@ public class BugReportResource {
         } catch (Exception e) {
             log.debugf("Could not parse If-Match header: %s", ifMatchHeader);
             return null;
+        }
+    }
+
+    private static Response badRequest(String message) {
+        // Map entity is JSON-serialized by Jackson, so user-supplied values in the
+        // message are safely escaped (no manual string interpolation into JSON).
+        return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("error", message)).build();
+    }
+
+    private static Integer asInt(Object value) {
+        if (value instanceof Number n) return n.intValue();
+        try {
+            return Integer.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Double asDouble(Object value) {
+        if (value instanceof Number n) return n.doubleValue();
+        try {
+            return Double.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static int safeInt(String value, int defaultValue) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
     }
 }
