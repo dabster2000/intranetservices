@@ -183,7 +183,10 @@ public class DanlonResource {
             StringBuilder salaryNote = new StringBuilder();
 
             // Determine if the user is a new hire.
-            boolean isNewHire = user.getHireDate(companyuuid).withDayOfMonth(1).isEqual(currentMonth);
+            // Finding H: unify the report's "new employee" trigger with the minting source — a
+            // FIRST_EMPLOYMENT row this month (covers back-dated/recruitment hires) — not getHireDate alone.
+            boolean isNewHire = user.getHireDate(companyuuid).withDayOfMonth(1).isEqual(currentMonth)
+                    || UserDanlonHistory.hasOpenEventInMonth(user.getUuid(), currentMonth, "FIRST_EMPLOYMENT");
 
             // Fetch availability data for both the previous and current month.
             List<BiDataPerDay> availabilityPrevious = availabilityService.getEmployeeDataPerDay(user.uuid, previousMonth, previousMonth.plusMonths(1));
@@ -224,12 +227,8 @@ public class DanlonResource {
                     if (previousSalary.getType() == SalaryType.HOURLY &&
                             currentSalary.getType() == SalaryType.NORMAL) {
                         // Check if new Danløn number was assigned this month due to salary type change
-                        Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
-                                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                                user.getUuid(),
-                                currentMonth,
-                                "system-salary-type-change"
-                        ).firstResultOptional();
+                        Optional<UserDanlonHistory> newDanlon = Optional.ofNullable(
+                                UserDanlonHistory.findOpenEventRow(user.getUuid(), currentMonth, "SALARY_TYPE_CHANGE"));
 
                         if (newDanlon.isPresent()) {
                             // Look up the previous Danløn number (most recent before current month)
@@ -263,12 +262,8 @@ public class DanlonResource {
 
                 // 2c. Company Transition Rule: Check for company transition with new Danløn number
                 if (hasCompanyTransitionThisMonth(user, currentMonth)) {
-                    Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
-                            "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                            user.getUuid(),
-                            currentMonth,
-                            "system-company-transition"
-                    ).firstResultOptional();
+                    Optional<UserDanlonHistory> newDanlon = Optional.ofNullable(
+                            UserDanlonHistory.findOpenEventRow(user.getUuid(), currentMonth, "COMPANY_TRANSITION"));
 
                     if (newDanlon.isPresent()) {
                         // Look up the previous Danløn number (most recent before current month)
@@ -299,12 +294,8 @@ public class DanlonResource {
 
                 // 2d. Re-Employment Rule: Check for re-employment with new Danløn number
                 if (hasReEmploymentThisMonth(user, currentMonth)) {
-                    Optional<UserDanlonHistory> newDanlon = UserDanlonHistory.find(
-                            "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                            user.getUuid(),
-                            currentMonth,
-                            "system-re-employment"
-                    ).firstResultOptional();
+                    Optional<UserDanlonHistory> newDanlon = Optional.ofNullable(
+                            UserDanlonHistory.findOpenEventRow(user.getUuid(), currentMonth, "RE_EMPLOYMENT"));
 
                     if (newDanlon.isPresent()) {
                         // Look up the previous Danløn number
@@ -361,18 +352,10 @@ public class DanlonResource {
                 EmployeeAvailabilityPerMonth availability = availabilityService
                         .getEmployeeDataPerMonth(user.uuid, currentMonth, currentMonth.plusMonths(1))
                         .getFirst();
-                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
-                    System.out.println("availability = " + availability);
                 double weekdays = getWeekdaysInPeriod(currentMonth, currentMonth.plusMonths(1));
-                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
-                    System.out.println("weekdays = " + weekdays);
                 double actualWorkHours = NumberUtils.round(
                         currentSalary.calculateActualWorkHours(weekdays, availability.getSalaryAwardingHours() / 7.4), 2);
-                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
-                    System.out.println("actualWorkHours = " + actualWorkHours);
                 double adjustedSalary = currentSalary.calculateMonthNormAdjustedSalary(weekdays, availability.getSalaryAwardingHours() / 7.4);
-                if (user.getUuid().equals("50b03d86-2bbf-4b54-8a9e-257f5a256396"))
-                    System.out.println("adjustedSalary = " + adjustedSalary);
                 salaryNote.append("Norm: 160.33 timer, Fakt: ").append(actualWorkHours)
                         .append(" timer, Justeret løn: ").append(formatCurrency(adjustedSalary)).append(". ");
             } else if (!isNewHire && anyNonPayDays(availabilityPrevious) && !hasOnlyNonPayLeave(availabilityPrevious)) {
@@ -445,7 +428,7 @@ public class DanlonResource {
 
             if(isAnyPaidOut) {
                 tm.setRollbackOnly();
-                System.out.println("isAnyPaidOut is true for user " + user.getUsername());
+                log.warnf("Salary supplements timestamp aborted — already paid out for user %s", user.getUsername());
                 return;
             }
 
@@ -667,13 +650,9 @@ public class DanlonResource {
      * @return true if user has new Danløn number this month
      */
     private static boolean hasDanlonNumberChangedThisMonth(User user, LocalDate month) {
-        return UserDanlonHistory.find(
-                "useruuid = ?1 AND activeDate = ?2 AND (createdBy = ?3 OR createdBy = ?4)",
-                user.getUuid(),
-                month,
-                "system-salary-type-change",
-                "system-company-transition"
-        ).firstResultOptional().isPresent();
+        // N6: include re-employment and first-employment so those employees are not dropped from /employees/new.
+        return UserDanlonHistory.hasOpenEventInMonth(user.getUuid(), month,
+                "SALARY_TYPE_CHANGE", "COMPANY_TRANSITION", "RE_EMPLOYMENT", "FIRST_EMPLOYMENT");
     }
 
     /**
@@ -688,12 +667,7 @@ public class DanlonResource {
      * @return true if user transitioned companies this month
      */
     private static boolean hasCompanyTransitionThisMonth(User user, LocalDate month) {
-        return UserDanlonHistory.find(
-                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                user.getUuid(),
-                month,
-                "system-company-transition"
-        ).firstResultOptional().isPresent();
+        return UserDanlonHistory.hasOpenEventInMonth(user.getUuid(), month, "COMPANY_TRANSITION");
     }
 
     /**
@@ -708,12 +682,7 @@ public class DanlonResource {
      * @return true if user was re-employed this month
      */
     private static boolean hasReEmploymentThisMonth(User user, LocalDate month) {
-        return UserDanlonHistory.find(
-                "useruuid = ?1 AND activeDate = ?2 AND createdBy = ?3",
-                user.getUuid(),
-                month,
-                "system-re-employment"
-        ).firstResultOptional().isPresent();
+        return UserDanlonHistory.hasOpenEventInMonth(user.getUuid(), month, "RE_EMPLOYMENT");
     }
 
     /*

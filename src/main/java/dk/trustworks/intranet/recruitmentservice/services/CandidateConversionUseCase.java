@@ -107,6 +107,9 @@ public class CandidateConversionUseCase {
     @Inject
     RecruitmentHrSlackNotifier recruitmentHrSlackNotifier;
 
+    @Inject
+    dk.trustworks.intranet.aggregates.users.danlon.DanlonAssignmentService danlonAssignmentService;
+
     @Transactional
     public ConvertResponse execute(UUID candidateUuid, ConvertRequest req, UUID actor) {
         Objects.requireNonNull(req, "req must not be null");
@@ -176,6 +179,12 @@ public class CandidateConversionUseCase {
         active.setCompany(company);
         active.setTwBonusEligible(true);
         UserStatus.persist(active);
+
+        // Danløn: raise a FIRST_EMPLOYMENT proposal for the new employee (spec §6, closes N2).
+        // Propose-only — no number is minted until HR approves on the salary-payment page.
+        // The reconciliation scan is the backstop if this path is ever bypassed.
+        danlonAssignmentService.proposeIfNeeded(user.uuid, plannedStart,
+                dk.trustworks.intranet.aggregates.users.danlon.DanlonEventType.FIRST_EMPLOYMENT, company.getUuid());
 
         // (d) Career level — active_from is the planned start so the
         // user's earliest career-level row aligns with their hire date.

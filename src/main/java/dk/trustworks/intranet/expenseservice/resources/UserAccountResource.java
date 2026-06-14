@@ -16,7 +16,6 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.SecurityContext;
 import java.io.IOException;
-import java.time.LocalDate;
 
 @JBossLog
 @Path("/user-accounts")
@@ -74,13 +73,14 @@ public class UserAccountResource {
      * <ul>
      *   <li>economics - saved to user_ext_account table</li>
      *   <li>username - saved to user_ext_account table</li>
-     *   <li>danlon - saved to user_danlon_history table with active_date = 1st of current month</li>
+     *   <li>danlon - <b>read-only</b> on this endpoint; the incoming value is ignored. Minting/closing happens only via DanlonAssignmentService (HR-approved proposals).</li>
      * </ul>
      * </p>
      */
     @POST
     @RolesAllowed({"expenses:write"})
     @Transactional
+    // securityContext is retained: saveAccount is also invoked directly by AccountingResource.
     public void saveAccount(@Valid UserAccountDTO dto, @Context SecurityContext securityContext) {
         String useruuid = dto.getUseruuid();
         UserAccount existing = UserAccount.findById(useruuid);
@@ -99,10 +99,8 @@ public class UserAccountResource {
             log.infof("Created new UserAccount for user %s", useruuid);
         }
 
-        // Save danlon to history table if provided
-        if (dto.getDanlon() != null && !dto.getDanlon().isEmpty()) {
-            saveDanlonToHistory(useruuid, dto.getDanlon(), securityContext);
-        }
+        // Danløn is read-only here. Minting/closing happens ONLY via DanlonAssignmentService
+        // (HR-approved proposals) — the single minting authority. The incoming danlon is ignored.
     }
 
     /**
@@ -112,7 +110,7 @@ public class UserAccountResource {
      * <ul>
      *   <li>economics - saved to user_ext_account table</li>
      *   <li>username - saved to user_ext_account table</li>
-     *   <li>danlon - saved to user_danlon_history table with active_date = 1st of current month</li>
+     *   <li>danlon - <b>read-only</b> on this endpoint; the incoming value is ignored. Minting/closing happens only via DanlonAssignmentService (HR-approved proposals).</li>
      * </ul>
      * </p>
      */
@@ -136,54 +134,8 @@ public class UserAccountResource {
                 dto.getUsername(),
                 useruuid);
 
-        // Save danlon to history table if provided
-        if (dto.getDanlon() != null && !dto.getDanlon().isEmpty()) {
-            saveDanlonToHistory(useruuid, dto.getDanlon(), securityContext);
-        }
-    }
-
-    /**
-     * Helper method to save danlon number to history table.
-     * <p>
-     * This method checks if a danlon number already exists for the current month.
-     * If it exists and differs from the new value, it updates the existing record.
-     * If it doesn't exist, it creates a new history entry.
-     * </p>
-     *
-     * @param useruuid User UUID
-     * @param danlon New danlon number
-     * @param securityContext Security context to get current username
-     */
-    private void saveDanlonToHistory(String useruuid, String danlon, SecurityContext securityContext) {
-        LocalDate currentMonth = LocalDate.now().withDayOfMonth(1);
-        String currentDanlon = danlonHistoryService.getDanlonAsOf(useruuid, currentMonth).orElse(null);
-
-        // Get username for audit trail
-        String createdBy = securityContext != null && securityContext.getUserPrincipal() != null
-                ? securityContext.getUserPrincipal().getName()
-                : "system";
-
-        try {
-            if (currentDanlon == null) {
-                // No danlon for current month - create new entry
-                danlonHistoryService.addDanlonHistory(useruuid, currentMonth, danlon, createdBy);
-                log.infof("Created danlon history for user %s: %s (active date: %s)", useruuid, danlon, currentMonth);
-            } else if (!currentDanlon.equals(danlon)) {
-                // Danlon changed - update existing entry for current month
-                // Note: This assumes there's only one entry per month, which is enforced by the unique constraint
-                log.infof("Danlon changed for user %s from %s to %s", useruuid, currentDanlon, danlon);
-                danlonHistoryService.addDanlonHistory(useruuid, currentMonth, danlon, createdBy);
-            } else {
-                // Danlon unchanged - no action needed
-                log.debugf("Danlon unchanged for user %s: %s", useruuid, danlon);
-            }
-        } catch (IllegalArgumentException e) {
-            // Duplicate entry - this is OK, just log it
-            log.warnf("Danlon history already exists for user %s in month %s - skipping", useruuid, currentMonth);
-        } catch (Exception e) {
-            // Log error but don't fail the account save
-            log.errorf(e, "Failed to save danlon history for user %s", useruuid);
-        }
+        // Danløn is read-only here. Minting/closing happens ONLY via DanlonAssignmentService
+        // (HR-approved proposals) — the single minting authority. The incoming danlon is ignored.
     }
 
 }
