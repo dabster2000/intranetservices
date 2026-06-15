@@ -68,6 +68,7 @@ class EconomicsInvoiceServiceVoucherTest {
         inv.setInvoicenumber(91001);
         inv.setInvoicedate(LocalDate.of(2026, 4, 15));
         inv.setGrandTotal(50_000.0);
+        inv.setVat(25.0); // DKK intercompany invoices carry 25% — grandTotal is the VAT-inclusive gross
         Company issuer = new Company();
         issuer.setUuid(issuerUuid);
         issuer.setCvr(issuerCvr);
@@ -106,6 +107,23 @@ class EconomicsInvoiceServiceVoucherTest {
         SupplierInvoice si = voucher.getEntries().getSupplierInvoices().get(0);
         assertEquals(3055, si.getAccount().getAccountNumber());        // AC2
         assertNull(si.getContraAccount());
+    }
+
+    @Test
+    void mapped_pair_with_non_25_vat_rate_is_refused_to_avoid_lifting_vat_from_net() {
+        // Guard: the invoice carries vat=0 (its grandTotal is the NET, not the gross), yet the
+        // supplier resolves so I25 would be applied. e-conomic would then lift VAT out of the net.
+        // The voucher build must fail closed rather than mis-state VAT.
+        Invoice inv = internalInvoice(TECH_UUID, TECH_CVR);
+        inv.setVat(0.0);
+        Journal journal = new Journal(INTERNAL_JOURNAL);
+        when(agreementResolver.intercompanyCostAccount(AS_UUID, TECH_UUID)).thenReturn(Optional.of(3050));
+        when(supplierResolver.resolveByCvr(AS_UUID, TECH_CVR)).thenReturn(Optional.of(700));
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> service.buildJSONRequest(inv, journal, "txt", keys(), debtorAS()));
+        assertTrue(ex.getMessage().contains("VAT rate"),
+                "guard message should explain the VAT-rate mismatch, was: " + ex.getMessage());
     }
 
     @Test
