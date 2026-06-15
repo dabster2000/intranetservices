@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.exceptions;
 
+import jakarta.persistence.PersistenceException;
 import jakarta.ws.rs.core.Response;
 import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,21 @@ class DatabaseConstraintViolationExceptionMapperTest {
     }
 
     @Test
+    void wrappedDuplicateKeyConstraintViolationMapsTo409() {
+        ConstraintViolationException constraint = mock(ConstraintViolationException.class);
+        when(constraint.getConstraintName()).thenReturn("uq_userstatus_user_date");
+        when(constraint.getSQLException()).thenReturn(
+                new SQLException("Duplicate entry 'u-2026-06-01' for key 'uq_userstatus_user_date'", "23000", 1062));
+        when(constraint.getMessage()).thenReturn("could not execute statement");
+
+        Response r = new DatabaseConstraintViolationExceptionMapper()
+                .toResponse(new PersistenceException("flush failed", constraint));
+
+        assertEquals(Response.Status.CONFLICT.getStatusCode(), r.getStatus(),
+                "Wrapped DB constraint violations must still map to 409");
+    }
+
+    @Test
     void nullSqlExceptionDoesNotNpe() {
         ConstraintViolationException ex = mock(ConstraintViolationException.class);
         when(ex.getSQLException()).thenReturn(null);
@@ -44,5 +60,17 @@ class DatabaseConstraintViolationExceptionMapperTest {
 
         Response r = new DatabaseConstraintViolationExceptionMapper().toResponse(ex);
         assertEquals(409, r.getStatus());
+    }
+
+    @Test
+    void unrelatedPersistenceExceptionKeepsGeneric500Shape() {
+        Response r = new DatabaseConstraintViolationExceptionMapper()
+                .toResponse(new PersistenceException("database unavailable"));
+
+        assertEquals(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), r.getStatus());
+        assertInstanceOf(ErrorResponse.class, r.getEntity());
+        ErrorResponse body = (ErrorResponse) r.getEntity();
+        assertEquals("Internal server error", body.error());
+        assertEquals(500, body.status());
     }
 }

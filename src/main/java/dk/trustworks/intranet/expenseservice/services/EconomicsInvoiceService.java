@@ -37,8 +37,15 @@ import java.util.Optional;
 @ApplicationScoped
 public class EconomicsInvoiceService {
 
-    /** Hardcoded Danish 25% purchase VAT code applied to account 2101 on INTERNAL invoices. */
+    /** Hardcoded Danish 25% purchase (input) VAT code (I25), applied to the issuer-aware
+     *  intercompany cost account (e.g. 3050/3055) on INTERNAL invoices. */
     private static final String INTERCOMPANY_VAT_CODE = "I25";
+
+    /** VAT rate (percent) that {@link #INTERCOMPANY_VAT_CODE} lifts out. e-conomic treats a
+     *  VAT-coded supplier-invoice amount as the VAT-inclusive gross, so the posted amount is only
+     *  correct when the invoice carries this rate (grandTotal = net × 1.25). See the guard in
+     *  {@link #buildJSONRequest}. */
+    private static final double INTERCOMPANY_VAT_RATE = 25.0;
 
     @Inject
     InvoicePdfS3Service invoicePdfS3Service;
@@ -156,12 +163,37 @@ public class EconomicsInvoiceService {
         // Check if this is an internal journal (supplier invoice) or regular journal (customer invoice)
         if (journal.getJournalNumber() == integrationKeyValue.internalJournalNumber()) {
             log.info("Creating supplier invoice for number " + invoice.getInvoicenumber());
+
+            // Resolve the issuer-aware intercompany cost account in the DEBTOR's chart of accounts.
+            // issuer = invoice.getCompany(); debtor = targetCompany. When the pair is mapped
+            // (e.g. Technology -> A/S = 3050, Cyber -> A/S = 3055) the cost lands on that account and
+            // NO contra account is set: the CVR-resolved supplier (kreditor) drives the AP credit.
+            // When the pair is unmapped, keep today's behaviour EXACTLY (invoice-account-number for
+            // both the cost account and the contra account) so out-of-scope intercompany flows are
+            // untouched. See spec 2026-06-15-internal-invoice-debtor-cost-account-mapping-design.md §4.5.
+            String issuerCompanyUuid = invoice.getCompany() != null ? invoice.getCompany().getUuid() : null;
+            Optional<Integer> mappedCostAccount =
+                    agreementResolver.intercompanyCostAccount(targetCompany.getUuid(), issuerCompanyUuid);
+
+            ExpenseAccount supplierAccount;
+            ContraAccount supplierContraAccount;
+            if (mappedCostAccount.isPresent()) {
+                supplierAccount = new ExpenseAccount(mappedCostAccount.get());
+                supplierContraAccount = null;
+            } else {
+                log.warnf("No intercompany cost-account mapping for debtor %s / issuer %s — "
+                                + "falling back to invoice-account-number %d",
+                        targetCompany.getUuid(), issuerCompanyUuid, integrationKeyValue.invoiceAccountNumber());
+                supplierAccount = account;
+                supplierContraAccount = contraAccount;
+            }
+
             SupplierInvoice supplierInvoice = new SupplierInvoice(
-                    account,
+                    supplierAccount,
                     StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()),
                     text,
                     invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0,
-                    contraAccount,
+                    supplierContraAccount,
                     date);
 
             String issuerCvr = invoice.getCompany() != null ? invoice.getCompany().getCvr() : null;
@@ -169,6 +201,23 @@ public class EconomicsInvoiceService {
                     targetCompany.getUuid(), issuerCvr);
             if (resolvedSupplier.isPresent()) {
                 supplierInvoice.setSupplier(new Supplier(resolvedSupplier.get()));
+                // Guard: e-conomic treats a VAT-coded supplier-invoice amount as the VAT-inclusive
+                // GROSS and lifts the VAT out of it. That is only correct when the posted amount
+                // (grandTotal) carries the matching 25% rate. A net amount (vat=0) tagged with I25
+                // makes e-conomic lift VAT out of the net — the 2026-06 intercompany mis-posting.
+                // Fail closed rather than mis-state VAT; the invoice's VAT rate must be corrected.
+                double vatRate = invoice.getVat();
+                if (Math.abs(vatRate - INTERCOMPANY_VAT_RATE) > 0.01) {
+                    String msg = String.format(
+                            "Refusing to post INTERNAL invoice %s to debtor %s with VAT code %s: invoice VAT "
+                                    + "rate is %.2f%%, not %.0f%%, so the posted amount is not the VAT-inclusive "
+                                    + "gross and e-conomic would lift VAT out of a net amount. Correct the invoice "
+                                    + "VAT rate and retry.",
+                            invoice.getUuid(), targetCompany.getName(), INTERCOMPANY_VAT_CODE,
+                            vatRate, INTERCOMPANY_VAT_RATE);
+                    log.error(msg);
+                    throw new IllegalStateException(msg);
+                }
                 supplierInvoice.setContraVatAccount(new VatAccount(INTERCOMPANY_VAT_CODE));
                 log.infof("Enriched SupplierInvoice for invoice %s with supplier %d and vatCode %s",
                         invoice.getUuid(), resolvedSupplier.get(), INTERCOMPANY_VAT_CODE);
@@ -182,7 +231,7 @@ public class EconomicsInvoiceService {
 
             log.debugf("SupplierInvoice text=%s, contraAccount=%s, supplier=%s, contraVatAccount=%s",
                     supplierInvoice.text,
-                    contraAccount.getAccountNumber(),
+                    supplierInvoice.getContraAccount(),
                     supplierInvoice.getSupplier(),
                     supplierInvoice.getContraVatAccount());
             List<SupplierInvoice> supplierInvoices = new ArrayList<>();
