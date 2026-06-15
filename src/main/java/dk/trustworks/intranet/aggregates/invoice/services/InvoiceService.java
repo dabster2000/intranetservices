@@ -1391,7 +1391,11 @@ public class InvoiceService {
                 description,
                 debtorCompanyUuid);
         internal.setBillingClientUuid(intercompanyClient.getUuid());
-        internal.setVat(source.getVat());
+        // The PHANTOM source carries vat=0 (it stores the gross figure as a single sumNoTax line),
+        // so its rate must NOT be copied onto this INTERNAL invoice, whose items are net deltas.
+        // Set the rate from the currency like the INTERNAL_SERVICE path (DKK = 25%) so grandTotal
+        // becomes the VAT-inclusive gross and the debtor-side e-conomic voucher lifts VAT correctly.
+        internal.setVat("DKK".equals(source.getCurrency()) ? 25.0 : 0.0);
 
         // Stamp the settlement-group key so the group can find this document.
         internal.setSettlementBillingClientUuid(settlementClientUuid);
