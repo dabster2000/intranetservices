@@ -37,7 +37,8 @@ import java.util.Optional;
 @ApplicationScoped
 public class EconomicsInvoiceService {
 
-    /** Hardcoded Danish 25% purchase VAT code applied to account 2101 on INTERNAL invoices. */
+    /** Hardcoded Danish 25% purchase (input) VAT code (I25), applied to the issuer-aware
+     *  intercompany cost account (e.g. 3050/3055) on INTERNAL invoices. */
     private static final String INTERCOMPANY_VAT_CODE = "I25";
 
     @Inject
@@ -156,12 +157,37 @@ public class EconomicsInvoiceService {
         // Check if this is an internal journal (supplier invoice) or regular journal (customer invoice)
         if (journal.getJournalNumber() == integrationKeyValue.internalJournalNumber()) {
             log.info("Creating supplier invoice for number " + invoice.getInvoicenumber());
+
+            // Resolve the issuer-aware intercompany cost account in the DEBTOR's chart of accounts.
+            // issuer = invoice.getCompany(); debtor = targetCompany. When the pair is mapped
+            // (e.g. Technology -> A/S = 3050, Cyber -> A/S = 3055) the cost lands on that account and
+            // NO contra account is set: the CVR-resolved supplier (kreditor) drives the AP credit.
+            // When the pair is unmapped, keep today's behaviour EXACTLY (invoice-account-number for
+            // both the cost account and the contra account) so out-of-scope intercompany flows are
+            // untouched. See spec 2026-06-15-internal-invoice-debtor-cost-account-mapping-design.md §4.5.
+            String issuerCompanyUuid = invoice.getCompany() != null ? invoice.getCompany().getUuid() : null;
+            Optional<Integer> mappedCostAccount =
+                    agreementResolver.intercompanyCostAccount(targetCompany.getUuid(), issuerCompanyUuid);
+
+            ExpenseAccount supplierAccount;
+            ContraAccount supplierContraAccount;
+            if (mappedCostAccount.isPresent()) {
+                supplierAccount = new ExpenseAccount(mappedCostAccount.get());
+                supplierContraAccount = null;
+            } else {
+                log.warnf("No intercompany cost-account mapping for debtor %s / issuer %s — "
+                                + "falling back to invoice-account-number %d",
+                        targetCompany.getUuid(), issuerCompanyUuid, integrationKeyValue.invoiceAccountNumber());
+                supplierAccount = account;
+                supplierContraAccount = contraAccount;
+            }
+
             SupplierInvoice supplierInvoice = new SupplierInvoice(
-                    account,
+                    supplierAccount,
                     StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()),
                     text,
                     invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0,
-                    contraAccount,
+                    supplierContraAccount,
                     date);
 
             String issuerCvr = invoice.getCompany() != null ? invoice.getCompany().getCvr() : null;
@@ -182,7 +208,7 @@ public class EconomicsInvoiceService {
 
             log.debugf("SupplierInvoice text=%s, contraAccount=%s, supplier=%s, contraVatAccount=%s",
                     supplierInvoice.text,
-                    contraAccount.getAccountNumber(),
+                    supplierInvoice.getContraAccount(),
                     supplierInvoice.getSupplier(),
                     supplierInvoice.getContraVatAccount());
             List<SupplierInvoice> supplierInvoices = new ArrayList<>();
