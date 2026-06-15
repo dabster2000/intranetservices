@@ -147,6 +147,7 @@ class EconomicsInvoiceServiceTest {
         inv.setInvoicenumber(20240315);
         inv.setClientname("Trustworks A/S");
         inv.setGrandTotal(12500.00);
+        inv.setVat(25.0); // DKK intercompany invoice — required for the I25 enrichment guard
         inv.setInvoicedate(java.time.LocalDate.of(2025, 2, 14));
 
         Company issuer = new Company();

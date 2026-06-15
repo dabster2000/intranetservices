@@ -41,6 +41,12 @@ public class EconomicsInvoiceService {
      *  intercompany cost account (e.g. 3050/3055) on INTERNAL invoices. */
     private static final String INTERCOMPANY_VAT_CODE = "I25";
 
+    /** VAT rate (percent) that {@link #INTERCOMPANY_VAT_CODE} lifts out. e-conomic treats a
+     *  VAT-coded supplier-invoice amount as the VAT-inclusive gross, so the posted amount is only
+     *  correct when the invoice carries this rate (grandTotal = net × 1.25). See the guard in
+     *  {@link #buildJSONRequest}. */
+    private static final double INTERCOMPANY_VAT_RATE = 25.0;
+
     @Inject
     InvoicePdfS3Service invoicePdfS3Service;
 
@@ -195,6 +201,23 @@ public class EconomicsInvoiceService {
                     targetCompany.getUuid(), issuerCvr);
             if (resolvedSupplier.isPresent()) {
                 supplierInvoice.setSupplier(new Supplier(resolvedSupplier.get()));
+                // Guard: e-conomic treats a VAT-coded supplier-invoice amount as the VAT-inclusive
+                // GROSS and lifts the VAT out of it. That is only correct when the posted amount
+                // (grandTotal) carries the matching 25% rate. A net amount (vat=0) tagged with I25
+                // makes e-conomic lift VAT out of the net — the 2026-06 intercompany mis-posting.
+                // Fail closed rather than mis-state VAT; the invoice's VAT rate must be corrected.
+                double vatRate = invoice.getVat();
+                if (Math.abs(vatRate - INTERCOMPANY_VAT_RATE) > 0.01) {
+                    String msg = String.format(
+                            "Refusing to post INTERNAL invoice %s to debtor %s with VAT code %s: invoice VAT "
+                                    + "rate is %.2f%%, not %.0f%%, so the posted amount is not the VAT-inclusive "
+                                    + "gross and e-conomic would lift VAT out of a net amount. Correct the invoice "
+                                    + "VAT rate and retry.",
+                            invoice.getUuid(), targetCompany.getName(), INTERCOMPANY_VAT_CODE,
+                            vatRate, INTERCOMPANY_VAT_RATE);
+                    log.error(msg);
+                    throw new IllegalStateException(msg);
+                }
                 supplierInvoice.setContraVatAccount(new VatAccount(INTERCOMPANY_VAT_CODE));
                 log.infof("Enriched SupplierInvoice for invoice %s with supplier %d and vatCode %s",
                         invoice.getUuid(), resolvedSupplier.get(), INTERCOMPANY_VAT_CODE);
