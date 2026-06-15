@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
+import dk.trustworks.intranet.aggregates.invoice.economics.IntercompanyAccountMapping;
+import dk.trustworks.intranet.aggregates.invoice.economics.IntercompanyAccountMappingRepository;
 import dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMapping;
 import dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMappingRepository;
 import dk.trustworks.intranet.aggregates.invoice.economics.VatZoneMapping;
@@ -13,6 +15,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.ws.rs.BadRequestException;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 
 /**
  * Thin wrapper that resolves e-conomic agreement-level configuration for a given
@@ -31,6 +34,9 @@ public class EconomicsAgreementResolver {
 
     @Inject
     VatZoneMappingRepository vatZoneRepo;
+
+    @Inject
+    IntercompanyAccountMappingRepository intercompanyAccountRepo;
 
     @Inject
     EntityManager em;
@@ -169,6 +175,22 @@ public class EconomicsAgreementResolver {
         }
         IntegrationKey.IntegrationKeyValue kv = IntegrationKey.getIntegrationKeyValue(company);
         return kv.internalJournalNumber();
+    }
+
+    /**
+     * Cost account in the DEBTOR's chart of accounts for an inter-company purchase
+     * from the ISSUER (e.g. debtor A/S + issuer Technology = 3050, Cyber = 3055).
+     *
+     * <p>Returns {@link Optional#empty()} when the (debtor, issuer) pair is not
+     * mapped — or when either UUID is null — so the caller can fall back gracefully
+     * without an exception (see EconomicsInvoiceService.buildJSONRequest).
+     */
+    public Optional<Integer> intercompanyCostAccount(String debtorCompanyUuid, String issuerCompanyUuid) {
+        if (debtorCompanyUuid == null || issuerCompanyUuid == null) {
+            return Optional.empty();
+        }
+        return intercompanyAccountRepo.findByDebtorAndIssuer(debtorCompanyUuid, issuerCompanyUuid)
+                .map(IntercompanyAccountMapping::getEconomicsCostAccountNumber);
     }
 
     /**
