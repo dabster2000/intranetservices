@@ -13,6 +13,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.model.Company;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -55,6 +56,11 @@ class InvoiceFinalizationOrchestratorInternalTest {
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock EanPrerequisiteChecker            eanChecker;
+
+    @BeforeEach
+    void enableInvoiceUpload() {
+        orchestrator.invoiceUploadEnabled = true;
+    }
 
     // ── AC-14: INTERNAL finalize → mapper receives intercompany billingClient ─
 
