@@ -166,11 +166,16 @@ public class EconomicsInvoiceService {
 
             // Resolve the issuer-aware intercompany cost account in the DEBTOR's chart of accounts.
             // issuer = invoice.getCompany(); debtor = targetCompany. When the pair is mapped
-            // (e.g. Technology -> A/S = 3050, Cyber -> A/S = 3055) the cost lands on that account and
-            // NO contra account is set: the CVR-resolved supplier (kreditor) drives the AP credit.
+            // (e.g. Technology -> A/S = 3050, Cyber -> A/S = 3055) the cost must land on the
+            // SupplierInvoice's CONTRA account. e-conomic's supplierInvoices voucher entry has no
+            // `account` field — it is silently ignored (see the journals-voucher schema: the only
+            // accounts on a supplierInvoice are `contraAccount` and the `supplier`). The cost account
+            // is therefore the contra (offset) leg, and the CVR-resolved supplier (kreditor) drives
+            // the AP credit. We set both account and contraAccount to the mapped number, mirroring the
+            // proven unmapped shape (account == contraAccount); only the contra is honoured.
             // When the pair is unmapped, keep today's behaviour EXACTLY (invoice-account-number for
             // both the cost account and the contra account) so out-of-scope intercompany flows are
-            // untouched. See spec 2026-06-15-internal-invoice-debtor-cost-account-mapping-design.md §4.5.
+            // untouched. See spec 2026-06-15-internal-invoice-debtor-cost-account-mapping-design.md §4.4.
             String issuerCompanyUuid = invoice.getCompany() != null ? invoice.getCompany().getUuid() : null;
             Optional<Integer> mappedCostAccount =
                     agreementResolver.intercompanyCostAccount(targetCompany.getUuid(), issuerCompanyUuid);
@@ -178,8 +183,9 @@ public class EconomicsInvoiceService {
             ExpenseAccount supplierAccount;
             ContraAccount supplierContraAccount;
             if (mappedCostAccount.isPresent()) {
-                supplierAccount = new ExpenseAccount(mappedCostAccount.get());
-                supplierContraAccount = null;
+                int costAccountNumber = mappedCostAccount.get();
+                supplierAccount = new ExpenseAccount(costAccountNumber);
+                supplierContraAccount = new ContraAccount(costAccountNumber);
             } else {
                 log.warnf("No intercompany cost-account mapping for debtor %s / issuer %s — "
                                 + "falling back to invoice-account-number %d",

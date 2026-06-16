@@ -27,7 +27,7 @@ import static org.mockito.Mockito.*;
  * Only agreementResolver + supplierResolver are used by buildJSONRequest; the other
  * @Inject fields (invoicePdfS3Service, bookingApi) are left null.
  *
- * Covers AC1 (3050), AC2 (3055), AC3 (creditor + no contra), AC4 (I25),
+ * Covers AC1 (3050), AC2 (3055), AC3 (creditor + cost on contra), AC4 (I25),
  * AC5 (unmapped fallback keeps today's behaviour), AC7 (manual branch untouched).
  */
 @ExtendWith(MockitoExtension.class)
@@ -78,7 +78,7 @@ class EconomicsInvoiceServiceVoucherTest {
     }
 
     @Test
-    void technology_to_AS_books_cost_on_3050_with_no_contra_account() {
+    void technology_to_AS_books_cost_on_3050_contra_with_creditor() {
         Invoice inv = internalInvoice(TECH_UUID, TECH_CVR);
         Journal journal = new Journal(INTERNAL_JOURNAL); // == internalJournalNumber -> supplier branch
         when(agreementResolver.intercompanyCostAccount(AS_UUID, TECH_UUID)).thenReturn(Optional.of(3050));
@@ -87,8 +87,10 @@ class EconomicsInvoiceServiceVoucherTest {
         Voucher voucher = service.buildJSONRequest(inv, journal, "Client, Faktura 91001", keys(), debtorAS());
 
         SupplierInvoice si = voucher.getEntries().getSupplierInvoices().get(0);
-        assertEquals(3050, si.getAccount().getAccountNumber());        // AC1
-        assertNull(si.getContraAccount());                            // AC3 — no contra
+        // e-conomic ignores `account` on a supplierInvoices entry; the cost account is the CONTRA
+        // (offset) leg. It must be present, else e-conomic books only the creditor with no cost.
+        assertEquals(3050, si.getContraAccount().getAccountNumber()); // AC1 — cost lands on 3050 (contra)
+        assertEquals(3050, si.getAccount().getAccountNumber());       // mirrors unmapped shape (account==contra)
         assertNotNull(si.getSupplier());                              // AC3 — creditor present
         assertEquals(700, si.getSupplier().supplierNumber);
         assertEquals("I25", si.getContraVatAccount().vatCode);        // AC4
@@ -105,8 +107,8 @@ class EconomicsInvoiceServiceVoucherTest {
         Voucher voucher = service.buildJSONRequest(inv, journal, "txt", keys(), debtorAS());
 
         SupplierInvoice si = voucher.getEntries().getSupplierInvoices().get(0);
-        assertEquals(3055, si.getAccount().getAccountNumber());        // AC2
-        assertNull(si.getContraAccount());
+        assertEquals(3055, si.getContraAccount().getAccountNumber()); // AC2 — cost lands on 3055 (contra)
+        assertEquals(3055, si.getAccount().getAccountNumber());
     }
 
     @Test
