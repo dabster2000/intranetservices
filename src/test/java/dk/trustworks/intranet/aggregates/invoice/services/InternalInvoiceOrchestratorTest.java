@@ -12,6 +12,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.model.Company;
 import jakarta.ws.rs.core.Response;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -63,6 +64,11 @@ class InternalInvoiceOrchestratorTest {
     @Mock InvoiceWorkService                 work;
     @Mock EconomicsInvoiceService            economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
+
+    @BeforeEach
+    void enableInvoiceUpload() {
+        orchestrator.invoiceUploadEnabled = true;
+    }
 
     // ── shared fixtures ───────────────────────────────────────────────────────
 

@@ -62,6 +62,7 @@ class InvoiceFinalizationOrchestratorSendByTest {
      */
     @org.junit.jupiter.api.BeforeEach
     void stubDraftInvoiceNumberResolution() {
+        orchestrator.invoiceUploadEnabled = true;
         EconomicsDraftInvoice fetched = new EconomicsDraftInvoice();
         fetched.setDraftInvoiceNumber(4521);
         lenient().when(draftApi.getByNumber(anyString(), anyString(), anyInt()))
