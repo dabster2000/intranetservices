@@ -16,6 +16,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.model.Company;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -52,6 +53,11 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock InvoiceWorkService                work;
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
+
+    @BeforeEach
+    void enableInvoiceUpload() {
+        orchestrator.invoiceUploadEnabled = true;
+    }
 
     // ── test 1: createDraft happy path ────────────────────────────────────────
 

@@ -30,6 +30,15 @@ public class BatchScheduler {
     @ConfigProperty(name = "dk.trustworks.expense.economics-upload.enabled", defaultValue = "true")
     boolean expenseUploadEnabled;
 
+    /**
+     * Kill switch for internal-invoice e-conomic booking — the queued-internal-invoice
+     * processor and the economics-upload retry both POST to the shared e-conomic. Staging's
+     * deploy sets this to {@code false} so a staging-sync-polluted DB can never book real
+     * internal invoices (2026-06-16 duplicate incident).
+     */
+    @ConfigProperty(name = "dk.trustworks.invoice.economics-upload.enabled", defaultValue = "true")
+    boolean invoiceUploadEnabled;
+
     // Observability heartbeat. The actual nightly BI refresh is run by the
     // MariaDB event ev_bi_nightly_refresh at 03:00 UTC; it runs longer than
     // any reasonable Quarkus JTA transaction timeout.
@@ -204,6 +213,10 @@ public class BatchScheduler {
     // Queued internal invoice processor - runs daily at 2 AM
     @Scheduled(cron = "0 0 2 * * ?")
     void scheduleQueuedInternalInvoiceProcessor() {
+        if (!invoiceUploadEnabled) {
+            log.debug("queued-internal-invoice-processor skipped: dk.trustworks.invoice.economics-upload.enabled=false");
+            return;
+        }
         try {
             if (jobOperator.getJobNames().contains("queued-internal-invoice-processor")) {
                 if (!jobOperator.getRunningExecutions("queued-internal-invoice-processor").isEmpty()) {
@@ -226,6 +239,10 @@ public class BatchScheduler {
     // Economics upload processing - runs every 1 minute to process pending/failed uploads
     @Scheduled(cron = "0 * * * * ?")
     void scheduleEconomicsUploadRetry() {
+        if (!invoiceUploadEnabled) {
+            log.debug("economics-upload-retry skipped: dk.trustworks.invoice.economics-upload.enabled=false");
+            return;
+        }
         try {
             if (jobOperator.getJobNames().contains("economics-upload-retry")) {
                 if (!jobOperator.getRunningExecutions("economics-upload-retry").isEmpty()) {

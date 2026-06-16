@@ -95,6 +95,16 @@ public class InvoiceFinalizationOrchestrator {
     EanPrerequisiteChecker eanChecker;
 
     /**
+     * Kill switch for internal-invoice e-conomic writes. Staging sets this {@code false}
+     * so it can never create drafts or book invoices in the shared production e-conomic
+     * (2026-06-16 duplicate incident). Covers every booking path: nightly batch first &
+     * settlement passes, manual force-create-queued, and the upload retry job.
+     */
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "dk.trustworks.invoice.economics-upload.enabled", defaultValue = "true")
+    boolean invoiceUploadEnabled;
+
+    /**
      * Step 1: Creates the e-conomic draft invoice.
      *
      * <p>Preconditions: invoice must be DRAFT or QUEUED; PHANTOM invoices are rejected.
@@ -112,6 +122,10 @@ public class InvoiceFinalizationOrchestrator {
      */
     @Transactional
     public Invoice createDraft(String invoiceUuid) {
+        if (!invoiceUploadEnabled) {
+            throw new BadRequestException(
+                    "Invoice e-conomic upload is disabled (dk.trustworks.invoice.economics-upload.enabled=false)");
+        }
         Invoice inv = requireEditableInvoice(invoiceUuid);
 
         if (inv.getType() == InvoiceType.PHANTOM) {
@@ -242,6 +256,10 @@ public class InvoiceFinalizationOrchestrator {
      */
     @Transactional
     public Invoice bookDraft(String invoiceUuid, String sendBy) {
+        if (!invoiceUploadEnabled) {
+            throw new BadRequestException(
+                    "Invoice e-conomic upload is disabled (dk.trustworks.invoice.economics-upload.enabled=false)");
+        }
         Invoice inv = invoices.findByUuid(invoiceUuid)
                 .orElseThrow(() -> new NotFoundException(
                         "Invoice not found: " + invoiceUuid));
