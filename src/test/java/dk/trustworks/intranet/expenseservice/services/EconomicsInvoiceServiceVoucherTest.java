@@ -94,6 +94,9 @@ class EconomicsInvoiceServiceVoucherTest {
         assertNotNull(si.getSupplier());                              // AC3 — creditor present
         assertEquals(700, si.getSupplier().supplierNumber);
         assertEquals("I25", si.getContraVatAccount().vatCode);        // AC4
+        // The debtor OWES the issuer, so the creditor must be CREDITED — e-conomic credits the
+        // supplier only for a NEGATIVE amount; a positive amount debits it (the reported bug).
+        assertEquals(-50_000.0, si.getAmount(), 0.001);
         assertNull(voucher.getEntries().getManualCustomerInvoices()); // supplier branch only
     }
 
@@ -109,6 +112,7 @@ class EconomicsInvoiceServiceVoucherTest {
         SupplierInvoice si = voucher.getEntries().getSupplierInvoices().get(0);
         assertEquals(3055, si.getContraAccount().getAccountNumber()); // AC2 — cost lands on 3055 (contra)
         assertEquals(3055, si.getAccount().getAccountNumber());
+        assertEquals(-50_000.0, si.getAmount(), 0.001);               // creditor credited (negative)
     }
 
     @Test

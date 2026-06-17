@@ -194,11 +194,22 @@ public class EconomicsInvoiceService {
                 supplierContraAccount = contraAccount;
             }
 
+            // e-conomic's supplierInvoices entry posts `amount` from the SUPPLIER (kreditor)
+            // perspective: a POSITIVE amount DEBITS the creditor (reduces accounts payable — a
+            // supplier credit note), a NEGATIVE amount CREDITS it (increases payable — a normal
+            // purchase invoice). For an intercompany INTERNAL invoice the debtor (e.g. A/S) OWES
+            // the issuer, so the creditor must be CREDITED: we post the negated gross. e-conomic
+            // then books the balancing debit on the contra (cost) account net, lifting the I25
+            // input VAT out of the gross. Without the negation every payer-side voucher booked as
+            // a DEBIT on the creditor and the accountant had to flip the sign by hand on each one.
+            // Negating getGrandTotal() also keeps credit notes correct: a negative gross flips back
+            // to a positive amount (debit the creditor), reducing payable as intended.
+            double grandTotal = invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0;
             SupplierInvoice supplierInvoice = new SupplierInvoice(
                     supplierAccount,
                     StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()),
                     text,
-                    invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0,
+                    -grandTotal,
                     supplierContraAccount,
                     date);
 
