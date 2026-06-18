@@ -9,6 +9,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+
 class PerformanceDigestBatchletTest {
 
     private final PerformanceDigestBatchlet batchlet = new PerformanceDigestBatchlet();
@@ -49,5 +50,25 @@ class PerformanceDigestBatchletTest {
         String digest = batchlet.buildBatchDigest(rows, now, 24, 1.5);
 
         assertFalse(digest.contains("slack-user-sync"), "stable job must not be flagged");
+    }
+
+    @Test
+    void formatInsightsSection_rendersRowsSortedByValueDesc() {
+        List<java.util.Map<String, String>> rows = List.of(
+                java.util.Map.of("api", "economic", "p95", "820"),
+                java.util.Map.of("api", "graph", "p95", "1300"));
+        String section = batchlet.formatInsightsSection(
+                ":satellite: External API p95 (ms)", rows, "api", "p95", "ms");
+        // higher value first
+        assertTrue(section.indexOf("graph") < section.indexOf("economic"),
+                "rows should be sorted by value descending");
+        assertTrue(section.contains("1300"));
+    }
+
+    @Test
+    void formatInsightsSection_handlesEmpty() {
+        String section = batchlet.formatInsightsSection(
+                ":satellite: x", List.of(), "api", "p95", "ms");
+        assertTrue(section.toLowerCase().contains("no data"));
     }
 }

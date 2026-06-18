@@ -8,9 +8,17 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.apache.ProxyConfiguration;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
+import software.amazon.awssdk.services.cloudwatchlogs.model.*;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +53,27 @@ public class PerformanceDigestBatchlet {
     @ConfigProperty(name = "dk.trustworks.perf.digest.regression-factor", defaultValue = "1.5")
     double regressionFactor;
 
+    @ConfigProperty(name = "dk.trustworks.perf.log-group", defaultValue = "/ecs/tw-quarkus-production")
+    String logGroup;
+
+    private volatile CloudWatchLogsClient logsClient;
+
+    private CloudWatchLogsClient logsClient() {
+        if (logsClient == null) {
+            synchronized (this) {
+                if (logsClient == null) {
+                    ProxyConfiguration.Builder proxy = ProxyConfiguration.builder();
+                    ApacheHttpClient.Builder http = ApacheHttpClient.builder().proxyConfiguration(proxy.build());
+                    logsClient = CloudWatchLogsClient.builder()
+                            .region(Region.EU_WEST_1)
+                            .httpClientBuilder(http)
+                            .build();
+                }
+            }
+        }
+        return logsClient;
+    }
+
     @Scheduled(cron = "0 30 6 * * ?", identity = "performance-digest")
     void scheduledRun() {
         if (!digestEnabled) {
@@ -63,7 +92,21 @@ public class PerformanceDigestBatchlet {
         StringBuilder msg = new StringBuilder();
         msg.append(":bar_chart: *Performance digest* — last ").append(recentWindowHours).append("h\n\n");
         msg.append(batchSection(now));
-        // Task 10 appends invoice/external/infra sections from Logs Insights here.
+
+        LocalDateTime to = now;
+        LocalDateTime from = now.minusHours(recentWindowHours);
+        String apiQuery =
+                "filter ispresent(ExternalApiDurationMs) " +
+                "| stats pct(ExternalApiDurationMs, 95) as p95 by api " +
+                "| sort p95 desc | limit 10";
+        try {
+            List<Map<String, String>> apiRows = runInsightsQuery(apiQuery, from, to);
+            msg.append('\n').append(formatInsightsSection(
+                    ":satellite_antenna: *External API p95 (ms)*", apiRows, "api", "p95", "ms"));
+        } catch (Exception e) {
+            log.warnf("perf digest: external-API Logs Insights query failed: %s", e.getMessage());
+        }
+
         slackService.sendMessage(opsAlertChannel, msg.toString(), "mother");
     }
 
@@ -105,5 +148,54 @@ public class PerformanceDigestBatchlet {
         }
         if (!any) sb.append("• no batch-job regressions\n");
         return sb.toString();
+    }
+
+    /** Pure Slack-section formatter — unit tested. Sorts rows by numeric value desc. */
+    String formatInsightsSection(String title, List<Map<String, String>> rows,
+                                 String labelField, String valueField, String unit) {
+        StringBuilder sb = new StringBuilder(title).append('\n');
+        if (rows == null || rows.isEmpty()) {
+            sb.append("• no data\n");
+            return sb.toString();
+        }
+        rows.stream()
+                .sorted(Comparator.comparingDouble(
+                        (Map<String, String> r) -> parseDouble(r.get(valueField))).reversed())
+                .limit(10)
+                .forEach(r -> sb.append(String.format("• %s — %s %s%n",
+                        r.getOrDefault(labelField, "?"), r.getOrDefault(valueField, "?"), unit)));
+        return sb.toString();
+    }
+
+    private static double parseDouble(String s) {
+        try { return s == null ? 0 : Double.parseDouble(s); } catch (NumberFormatException e) { return 0; }
+    }
+
+    /** Runs a Logs Insights query and returns each result row as field->value. */
+    List<Map<String, String>> runInsightsQuery(String query, LocalDateTime from, LocalDateTime to) {
+        CloudWatchLogsClient c = logsClient();
+        StartQueryResponse started = c.startQuery(StartQueryRequest.builder()
+                .logGroupName(logGroup)
+                .startTime(from.toEpochSecond(ZoneOffset.UTC))
+                .endTime(to.toEpochSecond(ZoneOffset.UTC))
+                .queryString(query)
+                .build());
+        String queryId = started.queryId();
+        for (int i = 0; i < 30; i++) {
+            GetQueryResultsResponse res = c.getQueryResults(
+                    GetQueryResultsRequest.builder().queryId(queryId).build());
+            if (res.status() == QueryStatus.COMPLETE) {
+                List<Map<String, String>> out = new ArrayList<>();
+                res.results().forEach(row -> {
+                    Map<String, String> m = new LinkedHashMap<>();
+                    row.forEach(f -> m.put(f.field(), f.value()));
+                    out.add(m);
+                });
+                return out;
+            }
+            if (res.status() == QueryStatus.FAILED || res.status() == QueryStatus.CANCELLED) break;
+            try { Thread.sleep(1000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+        }
+        return List.of();
     }
 }
