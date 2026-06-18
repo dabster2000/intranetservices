@@ -9,6 +9,7 @@ import dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper;
 @Path("/accounts")
 @RegisterRestClient
 @RegisterProvider(EconomicsErrorMapper.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Produces("application/json")
 @Consumes("application/json")
 public interface EconomicsAPIAccount extends AutoCloseable {

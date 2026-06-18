@@ -18,6 +18,7 @@ import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 @Path("/auth")
 @RegisterRestClient(configKey = "cvtool")
 @RegisterProvider(ResteasyJackson2Provider.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 public interface CvToolAuthClient {
 
     @POST

@@ -17,6 +17,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
  */
 @RegisterRestClient(configKey = "economics-journals-api")
 @RegisterProvider(EconomicsErrorMapper.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Produces(MediaType.APPLICATION_JSON)
 @Path("/")
 public interface EconomicsJournalsAPI extends AutoCloseable {

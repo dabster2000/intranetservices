@@ -21,6 +21,7 @@ import org.jboss.resteasy.plugins.providers.jackson.ResteasyJackson2Provider;
 @RegisterProvider(ResteasyJackson2Provider.class)
 @RegisterProvider(NextsignResponseExceptionMapper.class)
 @RegisterProvider(NextsignLoggingFilter.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 public interface NextsignClient {
 
     /**

@@ -7,6 +7,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
+import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 /**
@@ -19,6 +20,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
  * supplier number in a debtor company's e-conomic agreement by CVR.
  */
 @RegisterRestClient(configKey = "economics-legacy-rest")
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Produces(MediaType.APPLICATION_JSON)
 public interface EconomicsSuppliersApiClient {
 

@@ -19,6 +19,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
  */
 @RegisterRestClient(configKey = "economics-q2c-api")
 @RegisterProvider(EconomicsDraftErrorMapper.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public interface EconomicsDraftInvoiceApiClient {
