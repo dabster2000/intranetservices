@@ -54,6 +54,8 @@ class PerfTimedInterceptorTest {
 
         assertThrows(IllegalStateException.class, () -> interceptor.time(ctx));
 
+        verify(perf).emitTimer(eq("OperationDurationMs"), anyDouble(),
+                eq(Map.of("phase", "invoice.book")), anyMap());
         ArgumentCaptor<Map<String, String>> dims = ArgumentCaptor.forClass(Map.class);
         verify(perf).emitCount(eq("OperationCount"), eq(1.0), dims.capture(), anyMap());
         assertEquals("error", dims.getValue().get("outcome"));
