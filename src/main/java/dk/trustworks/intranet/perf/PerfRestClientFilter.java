@@ -77,7 +77,7 @@ public class PerfRestClientFilter implements ClientRequestFilter, ClientResponse
         for (int i = segs.length - 1; i >= 0 && tail.size() < 3; i--) {
             String s = segs[i];
             if (s.isBlank()) continue;
-            String norm = (s.matches("\\d+") || s.length() > 24) ? "{id}" : s;
+            String norm = (s.matches(".*\\d.*") || s.length() > 24) ? "{id}" : s;
             tail.addFirst(norm);
         }
         return method + (tail.isEmpty() ? "" : " " + String.join(" ", tail));

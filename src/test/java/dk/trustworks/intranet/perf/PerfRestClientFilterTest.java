@@ -24,6 +24,13 @@ class PerfRestClientFilterTest {
     }
 
     @Test
+    void operationLabel_collapsesDateSegmentsToBoundId() {
+        assertEquals("GET accounting-years {id} entries",
+                PerfRestClientFilter.operationLabel("GET",
+                        URI.create("https://apis.e-conomic.com/q2capi/v5.1.0/accounting-years/2025-07-01/entries")));
+    }
+
+    @Test
     void statusClass_bucketsByHundreds() {
         assertEquals("2xx", PerfRestClientFilter.statusClass(204));
         assertEquals("4xx", PerfRestClientFilter.statusClass(404));
