@@ -1,8 +1,10 @@
 package dk.trustworks.intranet.expenseservice.resources;
 
+import dk.trustworks.intranet.dto.ExpenseFile;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import dk.trustworks.intranet.expenseservice.services.EconomicsService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
@@ -21,6 +23,7 @@ import static org.mockito.Mockito.when;
 class ExpenseEconomicsResendResourceTest {
 
     @InjectMock EconomicsService economicsService;
+    @InjectMock ExpenseFileService expenseFileService;
 
     private String seedPosted() {
         String user = "user-" + UUID.randomUUID();
@@ -50,6 +53,7 @@ class ExpenseEconomicsResendResourceTest {
     void resendReturnsUpdatedCount() throws Exception {
         String uuid = seedPosted();
         when(economicsService.sendVoucher(any(), any(), any())).thenReturn(Response.ok().build());
+        when(expenseFileService.getFileById(any())).thenReturn(new ExpenseFile(uuid, "BASE64"));
 
         given()
           .header("X-Requested-By", "accountant")
