@@ -18,6 +18,7 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.Duration;
@@ -73,13 +74,33 @@ public class FinanceLoadJob {
                 log.info("Load data from periode: "+economicsUrlYear+" for company "+company.getUuid());
                 Map<PostingStatus, Map<Range<Integer>, List<EconomicsService.FinanceEntry>>> allEntries;
                 try {
+                    // Order matters: getAllEntries persists finance_details (the
+                    // uq_fd_logical_key table) and THROWS on a 1062 collision, so a
+                    // concurrent-peer duplicate aborts this iteration BEFORE persistExpenses
+                    // writes the aggregated 'finances' rows. 'finances' has no unique key, so
+                    // this throw-before-persist ordering is the only thing keeping the two
+                    // tables consistent under a concurrent peer — do not reorder, and do not
+                    // make finance_details persistence non-throwing (e.g. INSERT IGNORE)
+                    // without first adding a 'finances' duplicate guard.
                     allEntries = economicsService.getAllEntries(company, economicsUrlYear);
                     economicsService.persistExpenses(allEntries);
                     log.info("allEntries.size() = " + allEntries.size());
                     log.info("Entries for period " + economicsUrlYear + " persisted!");
                 } catch (Exception e) {
-                    log.error("Error loading data for company "+company.getUuid(), e);
-                    fireSlackAlertIfNeeded(company, economicsUrlYear, e);
+                    if (isConcurrentDuplicate(e)) {
+                        // A concurrent peer run (e.g. the draining OLD task re-firing the
+                        // 21:00 schedule during an ECS-Express deploy bake) already loaded
+                        // this (company, period). The uq_fd_logical_key 1062 collision rolled
+                        // back ONLY this batch's own transaction (getAllEntries persists via
+                        // QuarkusTransaction.requiringNew), so the rows are present and the
+                        // rest of the run is unaffected. Skip quietly — expected during a
+                        // double-fire and self-heals; no Slack alert.
+                        log.warnf("Skipping company %s period %s: finance_details already loaded by a concurrent peer run (uq_fd_logical_key collision)",
+                                company.getUuid(), economicsUrlYear);
+                    } else {
+                        log.error("Error loading data for company "+company.getUuid(), e);
+                        fireSlackAlertIfNeeded(company, economicsUrlYear, e);
+                    }
                 }
             }
         }
@@ -124,6 +145,34 @@ public class FinanceLoadJob {
         log.info("The ExpenseLoadJob is starting...");
         //loadEconomicsData();
         //synchronizeInvoices();
+    }
+
+    /**
+     * True when {@code e} (or anything in its cause chain) is a unique-key collision on
+     * {@code uq_fd_logical_key} — i.e. a concurrent peer run already inserted these
+     * finance_details rows. The persist runs in {@code QuarkusTransaction.requiringNew()}
+     * inside {@link EconomicsService#getAllEntries}, so a commit-time violation surfaces
+     * wrapped (RollbackException / ArcUndeclaredThrowableException); the whole cause chain
+     * is inspected.
+     *
+     * <p>Detection is by message, anchored on the constraint name {@code uq_fd_logical_key}
+     * (a locale-independent DB object name) with MariaDB's "Duplicate entry" (error 1062)
+     * as a secondary signal. This is deliberately narrow: a genuine, non-duplicate
+     * integrity error (NOT NULL, FK, …) carries neither marker, so it falls through to the
+     * Slack alert instead of being silently skipped on every run. A real duplicate means
+     * the rows are already present, so the caller skips this (company, period) quietly
+     * rather than alerting and re-deriving — see {@link #loadEconomicsData()}.
+     */
+    static boolean isConcurrentDuplicate(Throwable e) {
+        for (Throwable t : ExceptionUtils.getThrowableList(e)) {
+            String msg = t.getMessage();
+            if (msg != null
+                    && (msg.contains("uq_fd_logical_key")
+                        || msg.contains("Duplicate entry"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
