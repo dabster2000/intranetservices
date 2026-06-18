@@ -15,6 +15,7 @@ import dk.trustworks.intranet.financeservice.remote.EconomicsPagingAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.EconomicsInvoice;
 import dk.trustworks.intranet.model.Company;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import lombok.SneakyThrows;
 import lombok.extern.jbosslog.JBossLog;
 import org.apache.commons.lang3.Range;
@@ -22,8 +23,7 @@ import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.transaction.*;
+import jakarta.transaction.Transactional;
 import java.net.URI;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -43,9 +43,6 @@ import static dk.trustworks.intranet.financeservice.model.enums.EconomicAccountG
 @JBossLog
 @ApplicationScoped
 public class EconomicsService {
-
-    @Inject
-    TransactionManager tm;
 
     @ConfigProperty(name = "quarkus.rest-client.economics-journals-api.url", defaultValue = "https://apis.e-conomic.com/journalsapi/v13.0.1")
     URI journalsApiUri;
@@ -117,36 +114,33 @@ public class EconomicsService {
         // Deduping by the source-aware logical key keeps the persist idempotent
         // against pagination quirks. "Last write wins" matches the INSERT
         // IGNORE semantics the unique key enforces at the DB.
-        List<FinanceDetails> uniqueFinanceDetails = financeDetails;
-        if (!financeDetails.isEmpty()) {
-            Map<String, FinanceDetails> deduped = new LinkedHashMap<>();
-            for (FinanceDetails fd : financeDetails) {
-                String logicalKey = fd.getCompany().getUuid()
-                        + "|" + fd.getPostingstatus()
-                        + "|" + fd.getJournalnumber()
-                        + "|" + fd.getVouchernumber()
-                        + "|" + fd.getEntrynumber()
-                        + "|" + fd.getAccountnumber()
-                        + "|" + fd.getAmount()
-                        + "|" + fd.getExpensedate();
-                deduped.put(logicalKey, fd);
-            }
-            if (deduped.size() != financeDetails.size()) {
-                log.warnf("In-batch dedup: %d → %d FinanceDetails for company %s period %s (%d duplicate(s) from e-conomic pagination)",
-                        financeDetails.size(), deduped.size(), company.getUuid(), date,
-                        financeDetails.size() - deduped.size());
-                uniqueFinanceDetails = new ArrayList<>(deduped.values());
-            }
+        Map<String, FinanceDetails> deduped = new LinkedHashMap<>();
+        for (FinanceDetails fd : financeDetails) {
+            String logicalKey = fd.getCompany().getUuid()
+                    + "|" + fd.getPostingstatus()
+                    + "|" + fd.getJournalnumber()
+                    + "|" + fd.getVouchernumber()
+                    + "|" + fd.getEntrynumber()
+                    + "|" + fd.getAccountnumber()
+                    + "|" + fd.getAmount()
+                    + "|" + fd.getExpensedate();
+            deduped.put(logicalKey, fd);
+        }
+        if (deduped.size() != financeDetails.size()) {
+            log.warnf("In-batch dedup: %d → %d FinanceDetails for company %s period %s (%d duplicate(s) from e-conomic pagination)",
+                    financeDetails.size(), deduped.size(), company.getUuid(), date,
+                    financeDetails.size() - deduped.size());
         }
 
-        try {
-            tm.begin();
-            FinanceDetails.persist(uniqueFinanceDetails);
-            tm.commit();
-        } catch (NotSupportedException | HeuristicRollbackException | SystemException | HeuristicMixedException |
-                 RollbackException e) {
-            throw new RuntimeException(e);
-        }
+        // Persist this batch in its OWN new transaction so a uq_fd_logical_key
+        // collision (1062) rolls back ONLY this batch and Quarkus tears down its
+        // transaction-scoped persistence context. The previous manual
+        // tm.begin()/tm.commit() left the failed FinanceDetails (null identifier) in
+        // the long-lived request session, so one collision AssertionFailure-cascaded
+        // (HHH000099) across every remaining tenant (2026-04-24, 2026-06-16). The
+        // collision propagates to the caller, which skips the duplicate tenant.
+        final List<FinanceDetails> entriesToPersist = new ArrayList<>(deduped.values());
+        QuarkusTransaction.requiringNew().run(() -> FinanceDetails.persist(entriesToPersist));
         return collectionResultMap;
     }
 
