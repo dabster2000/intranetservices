@@ -2,11 +2,13 @@ package dk.trustworks.intranet.aggregates.invoice.economics.book;
 
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 import java.io.InputStream;
 
 @RegisterRestClient(configKey = "economics-legacy-rest")
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public interface EconomicsBookingApiClient {

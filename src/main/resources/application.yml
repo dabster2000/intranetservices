@@ -68,6 +68,8 @@ quarkus:
       statement-batch-size: 32
     second-level-caching-enabled: true
     statistics: true
+    log:
+      queries-slower-than-ms: ${PERF_SLOW_QUERY_MS:500}
     unsupported-properties:
       "hibernate.order_inserts": "true"
       "hibernate.order_updates": "true"
@@ -184,9 +186,19 @@ quarkus:
     max-threads: 30
   log:
     level: INFO
+    handler:
+      console:
+        "perf":
+          enable: true
+          format: "%m%n"
     category:
       "dk.trustworks":
         level: INFO
+      "dk.trustworks.perf":
+        level: INFO
+        handlers:
+          - perf
+        use-parent-handlers: false
       "io.quarkus.http":
         level: INFO
       "org.jboss.resteasy.resteasy_client":
@@ -392,6 +404,13 @@ dk:
       # close to the 24h cron cadence; +1h grace covers clock skew + retry.
       economic-revenue-import:
         max-staleness-hours: 25
+    perf:
+      metrics:
+        enabled: ${PERF_METRICS_ENABLED:true}
+      env: ${PERF_ENV:production}
+      digest:
+        enabled: ${PERF_DIGEST_ENABLED:false}   # nightly analyzer off by default; enable per-env
+      log-group: ${CLOUDWATCH_LOG_GROUP_BACKEND:/ecs/tw-quarkus-unknown}
 pricingEngine:
   enabled: true
 cvtool:

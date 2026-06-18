@@ -12,6 +12,7 @@ import static jakarta.ws.rs.core.MediaType.MULTIPART_FORM_DATA;
 
 @RegisterRestClient
 @RegisterProvider(EconomicsErrorMapper.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Produces("application/json")
 @Path("/")
 public interface EconomicsAPI extends AutoCloseable {

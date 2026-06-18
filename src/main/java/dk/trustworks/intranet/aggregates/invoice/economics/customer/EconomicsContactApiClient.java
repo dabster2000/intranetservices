@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.invoice.economics.customer;
 import dk.trustworks.intranet.aggregates.invoice.economics.CreatedResult;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 /**
@@ -22,6 +23,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
  * SPEC-INV-001 §3.3.2, §6.1, §6.4.
  */
 @RegisterRestClient(configKey = "economics-customers-api")
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
 public interface EconomicsContactApiClient {
