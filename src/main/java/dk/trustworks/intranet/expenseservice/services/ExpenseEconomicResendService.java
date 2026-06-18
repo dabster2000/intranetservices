@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.dto.ExpenseFile;
+import dk.trustworks.intranet.expenseservice.dto.ExpenseResendPrecheckDTO;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.model.UserAccount;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -42,6 +43,22 @@ public class ExpenseEconomicResendService {
         if (!isPosted(e)) throw new BadRequestException("not posted yet");
         if (UserAccount.findById(e.getUseruuid()) == null) throw new BadRequestException("no e-conomic account");
         return e;
+    }
+
+    @Transactional
+    public ExpenseResendPrecheckDTO precheckOne(String uuid) {
+        Expense e = Expense.findById(uuid);
+        if (e == null) return new ExpenseResendPrecheckDTO(uuid, false, "not found", false, "MISSING");
+        if ("DELETED".equals(e.getStatus())) return new ExpenseResendPrecheckDTO(uuid, false, "deleted", false, "MISSING");
+        if (!isPosted(e)) return new ExpenseResendPrecheckDTO(uuid, false, "not posted yet", false, "MISSING");
+        if (UserAccount.findById(e.getUseruuid()) == null)
+            return new ExpenseResendPrecheckDTO(uuid, false, "no e-conomic account", false, "MISSING");
+
+        if (economicsService.verifyVoucherExists(e))
+            return new ExpenseResendPrecheckDTO(uuid, true, null, true, "DRAFT");
+        if (economicsService.voucherBookedInLedger(e))
+            return new ExpenseResendPrecheckDTO(uuid, true, null, true, "BOOKED");
+        return new ExpenseResendPrecheckDTO(uuid, true, null, false, "MISSING");
     }
 
     @Transactional
