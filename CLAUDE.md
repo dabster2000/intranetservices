@@ -1,6 +1,6 @@
 # Quarkus Backend — Quick Reference
 
-Java 21, Quarkus 3.30.x, Hibernate ORM with Panache, MariaDB 10.x, Flyway migrations.
+Java 21, Quarkus 3.36.x, Hibernate ORM with Panache, MariaDB 10.x, Flyway migrations.
 
 ## REST Resource Routing
 

@@ -37,10 +37,17 @@ class FinanceLoadJobConcurrentDuplicateTest {
         assertTrue(FinanceLoadJob.isConcurrentDuplicate(e));
     }
 
-    /** "Duplicate entry" (MariaDB 1062 text) is the secondary signal. */
+    /** The duplicate must be for the finance_details logical key, not any arbitrary key. */
     @Test
-    void duplicateEntryText_isConcurrentDuplicate() {
+    void duplicateEntryForDifferentKey_isNotConcurrentDuplicate() {
         Throwable e = new RuntimeException("Duplicate entry 'x' for key 'PRIMARY'");
+        assertFalse(FinanceLoadJob.isConcurrentDuplicate(e));
+    }
+
+    /** MariaDB's 1062 text is accepted when it names the finance_details logical key. */
+    @Test
+    void duplicateEntryForLogicalKey_isConcurrentDuplicate() {
+        Throwable e = new RuntimeException("Duplicate entry 'x' for key 'uq_fd_logical_key'");
         assertTrue(FinanceLoadJob.isConcurrentDuplicate(e));
     }
 

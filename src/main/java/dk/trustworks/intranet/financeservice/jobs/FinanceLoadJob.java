@@ -156,19 +156,17 @@ public class FinanceLoadJob {
      * is inspected.
      *
      * <p>Detection is by message, anchored on the constraint name {@code uq_fd_logical_key}
-     * (a locale-independent DB object name) with MariaDB's "Duplicate entry" (error 1062)
-     * as a secondary signal. This is deliberately narrow: a genuine, non-duplicate
-     * integrity error (NOT NULL, FK, …) carries neither marker, so it falls through to the
-     * Slack alert instead of being silently skipped on every run. A real duplicate means
-     * the rows are already present, so the caller skips this (company, period) quietly
-     * rather than alerting and re-deriving — see {@link #loadEconomicsData()}.
+     * (a locale-independent DB object name). This is deliberately narrow: a genuine,
+     * unrelated integrity error (NOT NULL, FK, another unique key, …) does not carry this
+     * marker, so it falls through to the Slack alert instead of being silently skipped on
+     * every run. A real duplicate means the rows are already present, so the caller skips
+     * this (company, period) quietly rather than alerting and re-deriving — see
+     * {@link #loadEconomicsData()}.
      */
     static boolean isConcurrentDuplicate(Throwable e) {
         for (Throwable t : ExceptionUtils.getThrowableList(e)) {
             String msg = t.getMessage();
-            if (msg != null
-                    && (msg.contains("uq_fd_logical_key")
-                        || msg.contains("Duplicate entry"))) {
+            if (msg != null && msg.contains("uq_fd_logical_key")) {
                 return true;
             }
         }
