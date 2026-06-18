@@ -649,6 +649,43 @@ public class  EconomicsService {
     }
 
     /**
+     * True if the stored voucher is present in the booked accounting-year ledger.
+     * Complements {@link #verifyVoucherExists(Expense)} (draft journal) so a BOOKED
+     * voucher is not mistaken for "missing". Returns false on missing triple / error.
+     */
+    public boolean voucherBookedInLedger(Expense expense) {
+        if (expense.getVouchernumber() <= 0 || expense.getJournalnumber() == null || expense.getAccountingyear() == null) {
+            return false;
+        }
+        String yearId = DateUtils.toEconomicsUrlYear(expense.getAccountingyear());
+        String filter = "voucherNumber$eq:" + expense.getVouchernumber();
+        try (EconomicsAPI api = getApiForExpense(expense)) {
+            Response yr = api.getYearEntries(yearId, filter, 1000, 0);
+            int status = yr != null ? yr.getStatus() : -1;
+            String body = null;
+            try { if (yr != null) body = yr.readEntity(String.class); }
+            finally { if (yr != null) yr.close(); }
+            return status >= 200 && status < 300 && hasAnyLedgerEntries(body);
+        } catch (Exception e) {
+            log.warn("voucherBookedInLedger lookup failed for expense " + expense.getUuid() + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** e-conomic list responses wrap items in a "collection" array. True when non-empty. */
+    private boolean hasAnyLedgerEntries(String json) {
+        if (json == null || json.isBlank()) return false;
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            com.fasterxml.jackson.databind.JsonNode coll = root.get("collection");
+            if (coll != null && coll.isArray()) return coll.size() > 0;
+            return root.isArray() && root.size() > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * Delete voucher from e-conomic using NEW Journals API.
      * <p>
      * Uses GET-then-DELETE pattern: first fetches entry details to obtain
