@@ -410,7 +410,7 @@ dk:
       env: ${PERF_ENV:production}
       digest:
         enabled: ${PERF_DIGEST_ENABLED:false}   # nightly analyzer off by default; enable per-env
-      log-group: ${CLOUDWATCH_LOG_GROUP_BACKEND:/ecs/tw-quarkus-production}
+      log-group: ${CLOUDWATCH_LOG_GROUP_BACKEND:/ecs/tw-quarkus-unknown}
 pricingEngine:
   enabled: true
 cvtool:

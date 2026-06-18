@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.net.URI;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class PerfRestClientFilterTest {
 
@@ -35,5 +36,16 @@ class PerfRestClientFilterTest {
         assertEquals("2xx", PerfRestClientFilter.statusClass(204));
         assertEquals("4xx", PerfRestClientFilter.statusClass(404));
         assertEquals("5xx", PerfRestClientFilter.statusClass(503));
+    }
+
+    @Test
+    void operationLabel_neverIncludesQueryStringSecrets() {
+        String op = PerfRestClientFilter.operationLabel("POST",
+                URI.create("https://api.nextsign.dk/auth/login?password=hunter2&apikey=SECRET"));
+        assertEquals("POST auth login", op);
+        assertFalse(op.contains("password"));
+        assertFalse(op.contains("hunter2"));
+        assertFalse(op.contains("apikey"));
+        assertFalse(op.contains("SECRET"));
     }
 }

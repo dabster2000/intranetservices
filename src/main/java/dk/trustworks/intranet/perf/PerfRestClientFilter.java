@@ -26,6 +26,8 @@ public class PerfRestClientFilter implements ClientRequestFilter, ClientResponse
         requestContext.setProperty(START_PROP, System.nanoTime());
     }
 
+    // SECURITY: emit only path + method + status. NEVER read uri.getQuery()/getRawQuery()
+    // (query strings carry secrets like ?apikey=) or request headers/body/tokens.
     @Override
     public void filter(ClientRequestContext requestContext, ClientResponseContext responseContext) {
         Object start = requestContext.getProperty(START_PROP);
