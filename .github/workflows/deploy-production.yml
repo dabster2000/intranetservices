@@ -95,6 +95,8 @@ jobs:
               {"name":"EXPENSE_ECONOMICS_UPLOAD_ENABLED","value":"true"},
               {"name":"INVOICE_ECONOMICS_UPLOAD_ENABLED","value":"true"},
               {"name":"ENVIRONMENT_ID","value":"production"},
+              {"name":"PERF_LOG_GROUP","value":"/aws/ecs/default/tw-quarkus-production-4cbe"},
+              {"name":"PERF_DIGEST_ENABLED","value":"true"},
               {"name":"INVOICE_S3","value":"invoicefiles-new"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT","value":"http://localhost:4317"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENABLED","value":"false"},
