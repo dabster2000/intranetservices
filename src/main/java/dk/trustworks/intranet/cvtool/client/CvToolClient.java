@@ -21,6 +21,7 @@ import java.util.List;
 @Path("/cv")
 @RegisterRestClient(configKey = "cvtool")
 @RegisterProvider(ResteasyJackson2Provider.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 public interface CvToolClient {
 
     @GET

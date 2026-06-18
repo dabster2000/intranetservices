@@ -35,6 +35,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 @OidcClientFilter("graph")
 @RegisterProvider(GraphResponseExceptionMapper.class)
 @RegisterProvider(GraphApiLoggingFilter.class)
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 public interface GraphApiClient {
 
     @GET

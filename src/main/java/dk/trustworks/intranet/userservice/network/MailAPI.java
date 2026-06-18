@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.userservice.network;
 
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
+import org.eclipse.microprofile.rest.client.annotation.RegisterProvider;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 import jakarta.ws.rs.Consumes;
@@ -9,6 +10,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 
 @RegisterRestClient
+@RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Produces("application/json")
 @Consumes("application/json")
 @Path("/communications/mails")
