@@ -68,6 +68,8 @@ quarkus:
       statement-batch-size: 32
     second-level-caching-enabled: true
     statistics: true
+    log:
+      queries-slower-than-ms: ${PERF_SLOW_QUERY_MS:500}
     unsupported-properties:
       "hibernate.order_inserts": "true"
       "hibernate.order_updates": "true"
