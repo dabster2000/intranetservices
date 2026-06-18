@@ -16,6 +16,8 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.perf.PerfMetrics;
+import dk.trustworks.intranet.perf.PerfTimed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -94,6 +96,9 @@ public class InvoiceFinalizationOrchestrator {
     @Inject
     EanPrerequisiteChecker eanChecker;
 
+    @Inject
+    PerfMetrics perfMetrics;
+
     /**
      * Kill switch for internal-invoice e-conomic writes. Staging sets this {@code false}
      * so it can never create drafts or book invoices in the shared production e-conomic
@@ -120,6 +125,7 @@ public class InvoiceFinalizationOrchestrator {
      * @param invoiceUuid the invoice to create a draft for.
      * @return the updated invoice entity.
      */
+    @PerfTimed("invoice.createDraft")
     @Transactional
     public Invoice createDraft(String invoiceUuid) {
         if (!invoiceUploadEnabled) {
@@ -254,6 +260,7 @@ public class InvoiceFinalizationOrchestrator {
      * @param sendBy      optional delivery method — null | "ean" | "Email".
      * @return the updated invoice entity.
      */
+    @PerfTimed("invoice.book")
     @Transactional
     public Invoice bookDraft(String invoiceUuid, String sendBy) {
         if (!invoiceUploadEnabled) {
@@ -402,6 +409,8 @@ public class InvoiceFinalizationOrchestrator {
                     + "setting PARTIALLY_UPLOADED for retry", inv.getUuid());
             inv.setEconomicsStatus(EconomicsInvoiceStatus.PARTIALLY_UPLOADED);
             invoices.persist(inv);
+            perfMetrics.emitCount("InvoiceFinalizePartialUpload", 1,
+                    java.util.Map.of(), java.util.Map.of());
         }
     }
 
