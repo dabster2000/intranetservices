@@ -66,6 +66,13 @@ public class ExpenseDecisionLogService {
     }
 
     @Transactional
+    public void recordEconomicResend(Expense e, String actorUuid, String reason) {
+        // Re-send does NOT change status/state, so from == to on both axes.
+        append(e, "ACCOUNTING", actorUuid, "ECONOMIC_RESEND",
+               e.getStatus(), e.getStatus(), e.getState(), e.getState(), e.getAiRuleId(), reason);
+    }
+
+    @Transactional
     public void recordLegacyOverride(Expense e, String actorUuid) {
         append(e, "HR", actorUuid, "LEGACY_OVERRIDE",
                e.getStatus(), "VALIDATED", null, null, e.getAiRuleId(), null);
