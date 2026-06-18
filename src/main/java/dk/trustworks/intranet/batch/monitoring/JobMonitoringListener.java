@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.batch.monitoring;
 
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.perf.PerfMetrics;
 import jakarta.batch.api.listener.JobListener;
 import jakarta.batch.operations.JobOperator;
 import jakarta.batch.runtime.BatchStatus;
@@ -14,8 +15,10 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
 
 @JBossLog
 @Dependent
@@ -28,10 +31,15 @@ public class JobMonitoringListener implements JobListener {
     @Inject BatchJobTrackingService trackingService;
     @Inject UserService userService;
     @Inject BatchExceptionRegistry exceptionRegistry;
+    @Inject PerfMetrics perfMetrics;
+
+    /** executionId -> start nanos, used to compute job duration for perf metrics. */
+    private static final Map<Long, Long> PERF_START_NANOS = new ConcurrentHashMap<>();
 
     @Override
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void beforeJob() {
+        PERF_START_NANOS.put(jobContext.getExecutionId(), System.nanoTime());
         long executionId = jobContext.getExecutionId();
         String jobName = jobContext.getJobName();
         log.infof("[JOB-MONITOR] beforeJob() called for job '%s' (execution %d)", jobName, executionId);
@@ -129,8 +137,18 @@ public class JobMonitoringListener implements JobListener {
             exceptionRegistry.clearException(executionId);
             log.debugf("[JOB-MONITOR] Cleared exception registry for execution %d", executionId);
         } catch (Exception e) {
-            log.warnf("[JOB-MONITOR] Failed to clear exception registry for execution %d: %s", 
+            log.warnf("[JOB-MONITOR] Failed to clear exception registry for execution %d: %s",
                      executionId, e.getMessage());
+        }
+
+        try {
+            Long startNanos = PERF_START_NANOS.remove(executionId);
+            if (startNanos != null) {
+                double durationMs = (System.nanoTime() - startNanos) / 1_000_000.0;
+                emitJobPerf(jobName, status, executionId, durationMs);
+            }
+        } catch (Exception e) {
+            log.warnf("perf emit failed for job %s: %s", jobName, e.getMessage());
         }
     }
 
@@ -144,5 +162,24 @@ public class JobMonitoringListener implements JobListener {
             log.warnf("[JOB-MONITOR] Failed to get user count: %s", e.getMessage());
             return 0;
         }
+    }
+
+    void emitJobPerf(String jobName, BatchStatus status,
+                     long executionId, double durationMs) {
+        String outcome;
+        if (status == null) {
+            outcome = "other";
+        } else {
+            switch (status) {
+                case COMPLETED -> outcome = "success";
+                case FAILED -> outcome = "failed";
+                case STOPPED -> outcome = "stopped";
+                default -> outcome = "other";
+            }
+        }
+        perfMetrics.emitTimer("BatchJobDurationMs", durationMs,
+                Map.of("job", jobName), Map.of("executionId", executionId));
+        perfMetrics.emitCount("BatchJobRuns", 1,
+                Map.of("job", jobName, "outcome", outcome), Map.of("executionId", executionId));
     }
 }
