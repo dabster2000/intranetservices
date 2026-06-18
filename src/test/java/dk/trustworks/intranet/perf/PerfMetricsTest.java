@@ -3,6 +3,7 @@ package dk.trustworks.intranet.perf;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -60,5 +61,24 @@ class PerfMetricsTest {
                 List.of(new PerfMetrics.Metric("X", "Count", 1.0)),
                 Map.of("env", "staging"), Map.of(), 1L);
         assertFalse(line.contains("\n"), "EMF must be a single JSON line");
+    }
+
+    @Test
+    void emit_doesNothing_whenDisabled() {
+        PerfMetrics spy = Mockito.spy(new PerfMetrics());
+        spy.enabled = false;
+        spy.env = "production";
+        spy.emitCount("X", 1, Map.of(), Map.of());
+        Mockito.verify(spy, Mockito.never()).write(Mockito.anyString());
+    }
+
+    @Test
+    void emit_writesOnce_whenEnabled_andPrependsEnvDimension() {
+        PerfMetrics spy = Mockito.spy(new PerfMetrics());
+        spy.enabled = true;
+        spy.env = "staging";
+        Mockito.doNothing().when(spy).write(Mockito.anyString());
+        spy.emitCount("ExternalApiCount", 1, Map.of("api", "economic"), Map.of());
+        Mockito.verify(spy, Mockito.times(1)).write(Mockito.contains("\"env\":\"staging\""));
     }
 }
