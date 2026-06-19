@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.conference.resources;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.conference.dto.ParticipantView;
 import dk.trustworks.intranet.aggregates.conference.dto.ReturningCountDTO;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
@@ -91,10 +92,9 @@ public class ConferenceResource {
 
     @GET
     @Path("/{conferenceuuid}/participants")
-    public List<ConferenceParticipant> findAllConferenceParticipants(@PathParam("conferenceuuid") String conferenceuuid) {
-        System.out.println("ConferenceResource.findAllConferenceParticipants");
-        System.out.println("conferenceuuid = " + conferenceuuid);
-        return conferenceService.findAllConferenceParticipants(conferenceuuid);
+    public List<ParticipantView> findAllConferenceParticipants(@PathParam("conferenceuuid") String conferenceuuid) {
+        return conferenceService.findAllConferenceParticipants(conferenceuuid)
+                .stream().map(ParticipantView::from).toList();
     }
 
     @GET
