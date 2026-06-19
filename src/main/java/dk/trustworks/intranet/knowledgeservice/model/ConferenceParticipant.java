@@ -11,7 +11,11 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 @Data
 @NoArgsConstructor
@@ -30,6 +34,14 @@ public class ConferenceParticipant extends PanacheEntityBase {
     private String email;
     private String andet;
     private boolean samtykke;
+
+    @Column(name = "marketing_consent")
+    private boolean marketingConsent;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "fields")
+    private Map<String, Object> fields = new LinkedHashMap<>();
+
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "phaseuuid")
     private ConferencePhase conferencePhase;
