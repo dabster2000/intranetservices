@@ -120,8 +120,8 @@ public class ConferenceResource {
     }
 
     private void updatePhase(ConferencePhase conferencePhase) {
-        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5 where uuid = ?6",
-                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getUuid());
+        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5, slackChannel = ?6 where uuid = ?7",
+                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getSlackChannel(), conferencePhase.getUuid());
     }
 
     @DELETE

@@ -26,6 +26,9 @@ public class ConferencePhase extends PanacheEntityBase {
     private String subject;
     private String mail;
 
+    @Column(name = "slack_channel")
+    private String slackChannel;
+
     @JsonIgnore
     @OneToMany(cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @JoinColumn(name = "phaseuuid")
