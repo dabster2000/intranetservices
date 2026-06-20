@@ -92,6 +92,12 @@ public class ConferenceService {
         conferenceParticipant.persist();
     }
 
+    @Transactional
+    public long deleteParticipant(String conferenceuuid, String participantuuid) {
+        log.infof("ConferenceService.deleteParticipant: conferenceuuid=%s participantuuid=%s", conferenceuuid, participantuuid);
+        return ConferenceParticipant.delete("conferenceuuid = ?1 and participantuuid = ?2", conferenceuuid, participantuuid);
+    }
+
     public ConferencePhase findConferencePhase(String conferenceUUID, int phase) {
         return (ConferencePhase) ConferencePhase.find("conferenceuuid = ?1 and step = ?2", conferenceUUID, phase).firstResultOptional().orElseThrow();
     }
