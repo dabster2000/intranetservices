@@ -12,6 +12,8 @@ import lombok.NoArgsConstructor;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 @Data
 @NoArgsConstructor
@@ -30,6 +32,14 @@ public class ConferenceParticipant extends PanacheEntityBase {
     private String email;
     private String andet;
     private boolean samtykke;
+
+    @Column(name = "marketing_consent")
+    private boolean marketingConsent;
+
+    @Convert(converter = ConferenceParticipantFieldsConverter.class)
+    @Column(name = "fields")
+    private Map<String, Object> fields = new LinkedHashMap<>();
+
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "phaseuuid")
     private ConferencePhase conferencePhase;
