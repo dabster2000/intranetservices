@@ -83,6 +83,27 @@ public class SlackService {
         }
     }
 
+    /**
+     * Posts a Block Kit message to the given channel using the mother bot token.
+     * Best-effort: logs (label + channel only, never the token) and swallows on
+     * failure; never throws. {@code fallbackText} is the notification/preview text.
+     */
+    public void sendMessage(String channel, String fallbackText, java.util.List<com.slack.api.model.block.LayoutBlock> blocks) {
+        try {
+            Slack slack = Slack.getInstance();
+            ChatPostMessageResponse response = slack.methods(motherSlackBotToken)
+                    .chatPostMessage(req -> req
+                            .channel(channel)
+                            .text(fallbackText)
+                            .blocks(blocks));
+            if (!response.isOk()) {
+                log.errorf("Failed to send Slack block message channel=%s: %s", channel, response.getError());
+            }
+        } catch (Exception e) {
+            log.errorf(e, "Error sending Slack block message channel=%s: %s", channel, e.getMessage());
+        }
+    }
+
     public void addUserToChannel(User user, String channelID) {
         Slack slack = Slack.getInstance();
         try {

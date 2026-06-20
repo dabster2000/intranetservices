@@ -319,6 +319,10 @@ slack:
   # alerts emitted by FactChangeLogBacklogAlertBatchlet. Override per
   # environment if a separate test channel is desired.
   opsAlertChannel: ${SLACK_OPS_ALERT_CHANNEL:C0B2VQ2CFU1}
+conference:
+  slack:
+    per-subject-max: ${CONFERENCE_SLACK_PER_SUBJECT_MAX:10}
+    per-subject-delay-ms: ${CONFERENCE_SLACK_PER_SUBJECT_DELAY_MS:1100}
 factChangeLog:
   # Daily retention window (in days) for processed change-log rows. Used by
   # ChangeLogRetentionBatchlet — rows whose processed_at is older than this

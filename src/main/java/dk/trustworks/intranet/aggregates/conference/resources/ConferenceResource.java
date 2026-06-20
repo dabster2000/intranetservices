@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhas
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceService;
+import dk.trustworks.intranet.aggregates.conference.services.PhaseSlackNotifier;
 import dk.trustworks.intranet.communicationsservice.model.*;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
@@ -73,6 +74,9 @@ public class ConferenceResource {
     @Inject
     BulkEmailService bulkEmailService;
 
+    @Inject
+    PhaseSlackNotifier phaseSlackNotifier;
+
     @GET
     public List<Conference> findAllConferences() {
         return conferenceService.findAllConferences();
@@ -120,8 +124,8 @@ public class ConferenceResource {
     }
 
     private void updatePhase(ConferencePhase conferencePhase) {
-        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5 where uuid = ?6",
-                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getUuid());
+        ConferencePhase.update("step = ?1, name = ?2, useMail = ?3, subject = ?4, mail = ?5, slackChannel = ?6 where uuid = ?7",
+                conferencePhase.getStep(), conferencePhase.getName(), conferencePhase.isUseMail(), conferencePhase.getSubject(), conferencePhase.getMail(), conferencePhase.getSlackChannel(), conferencePhase.getUuid());
     }
 
     @DELETE
@@ -241,6 +245,8 @@ public class ConferenceResource {
 
         CreateParticipantEvent event = new CreateParticipantEvent(conferenceUUID, conferenceParticipant);
         aggregateEventSender.handleEvent(event);
+
+        phaseSlackNotifier.notifyEntry(conferenceParticipant.getConferencePhase(), conferenceParticipant);
     }
 
     @PUT
@@ -300,6 +306,8 @@ public class ConferenceResource {
             ChangeParticipantPhaseEvent event = new ChangeParticipantPhaseEvent(conferenceUUID, conferenceParticipant);
             aggregateEventSender.handleEvent(event);
         });
+
+        phaseSlackNotifier.notifyBatch(targetPhase, conferenceParticipantList);
     }
 
     @POST
