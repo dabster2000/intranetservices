@@ -125,3 +125,42 @@ jobs:
               {"name":"GH_TOKEN","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:GH_TOKEN::"},
               {"name":"VIRKDATA_API_KEY","valueFrom":"${{ vars.QUARKUS_SECRETS_ARN }}:VIRKDATA_API_KEY::"}
             ]
+
+      # Gate: the ECS Express deploy action reports success even when the canary
+      # fails to start and ECS silently rolls back to the previous task definition
+      # (e.g. a Hibernate SessionFactory build failure crashes the container at
+      # boot — which `mvn package` cannot catch). Assert the PRIMARY task is
+      # actually running the image we just pushed; otherwise fail the workflow.
+      - name: Verify deployment landed (no silent rollback)
+        run: |
+          set -euo pipefail
+          CLUSTER="${{ vars.ECS_CLUSTER }}"
+          SERVICE="tw-quarkus-production"
+          EXPECTED_TAG="${{ github.sha }}"
+          echo "Expecting PRIMARY task to run image tag: $EXPECTED_TAG"
+          for i in $(seq 1 24); do
+            PRIMARY_TD=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
+              --query 'services[0].deployments[?status==`PRIMARY`]|[0].taskDefinition' --output text)
+            ROLLOUT=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
+              --query 'services[0].deployments[?status==`PRIMARY`]|[0].rolloutState' --output text)
+            IMAGE=$(aws ecs describe-task-definition --task-definition "$PRIMARY_TD" --region "$AWS_REGION" \
+              --query 'taskDefinition.containerDefinitions[0].image' --output text)
+            echo "attempt $i: rolloutState=$ROLLOUT image=$IMAGE"
+            if [ "$ROLLOUT" = "COMPLETED" ]; then
+              case "$IMAGE" in
+                *":$EXPECTED_TAG")
+                  echo "✅ Deployment verified: PRIMARY task is running $EXPECTED_TAG"
+                  exit 0 ;;
+                *)
+                  echo "::error::Deploy rolled back — PRIMARY image is '$IMAGE', expected tag '$EXPECTED_TAG'. The new container failed to start (check CloudWatch /aws/ecs/default/tw-quarkus-production-* for the boot error)."
+                  exit 1 ;;
+              esac
+            fi
+            if [ "$ROLLOUT" = "FAILED" ]; then
+              echo "::error::ECS rollout FAILED for tag '$EXPECTED_TAG' — task failed to start. Check CloudWatch logs for the boot error."
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::Timed out after ~6m waiting for the PRIMARY deployment to settle."
+          exit 1
