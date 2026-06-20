@@ -94,4 +94,39 @@ class PhaseSlackNotifierTest {
         assertFalse(blocks.getValue().isEmpty(), "blocks built");
         assertTrue(fallback.getValue().contains("Alice"));
     }
+
+    private List<ConferenceParticipant> participants(int n) {
+        List<ConferenceParticipant> list = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) list.add(participant("P" + i, "p" + i + "@x.dk"));
+        return list;
+    }
+
+    @Test
+    void batchBelowThreshold_sendsPerParticipant() {
+        SlackService slack = mock(SlackService.class);
+        PhaseSlackNotifier n = notifier(slack); // perSubjectMax=10, delay=0
+        n.notifyBatchSync("C1", "Confirmed", "Forefront 2025", participants(3));
+        verify(slack, times(3)).sendMessage(eq("C1"), anyString(), anyList());
+    }
+
+    @Test
+    void batchAboveThreshold_sendsOneSummary() {
+        SlackService slack = mock(SlackService.class);
+        PhaseSlackNotifier n = notifier(slack); // perSubjectMax=10
+        n.notifyBatchSync("C1", "Confirmed", "Forefront 2025", participants(25));
+
+        ArgumentCaptor<String> fallback = ArgumentCaptor.forClass(String.class);
+        verify(slack, times(1)).sendMessage(eq("C1"), fallback.capture(), anyList());
+        assertTrue(fallback.getValue().contains("25"), "count");
+        assertTrue(fallback.getValue().contains("Confirmed"), "phase");
+        assertTrue(fallback.getValue().contains("Forefront 2025"), "conference");
+    }
+
+    @Test
+    void thresholdIsConfigurable() {
+        SlackService slack = mock(SlackService.class);
+        PhaseSlackNotifier n = new PhaseSlackNotifier(slack, null, 2, 0L); // max=2
+        n.notifyBatchSync("C1", "Confirmed", "Forefront 2025", participants(3)); // 3 > 2 -> summary
+        verify(slack, times(1)).sendMessage(eq("C1"), anyString(), anyList());
+    }
 }

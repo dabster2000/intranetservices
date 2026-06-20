@@ -60,8 +60,63 @@ public class PhaseSlackNotifier {
     }
 
     public void notifyBatch(ConferencePhase phase, List<ConferenceParticipant> participants) {
-        // Implemented in Task 4.
-        throw new UnsupportedOperationException("notifyBatch implemented in Task 4");
+        if (isDisabled(phase) || participants == null || participants.isEmpty()) return;
+        String channel = phase.getSlackChannel();
+        String phaseName = phase.getName();
+        String conferenceName = resolveConferenceName(participants.get(0).getConferenceuuid());
+        List<ConferenceParticipant> snapshot = new ArrayList<>(participants);
+        managedExecutor.submit(() -> notifyBatchSync(channel, phaseName, conferenceName, snapshot));
+    }
+
+    void notifyBatchSync(String channel, String phaseName, String conferenceName, List<ConferenceParticipant> participants) {
+        try {
+            if (participants.size() > perSubjectMax) {
+                slackService.sendMessage(channel,
+                        buildSummaryText(phaseName, conferenceName, participants),
+                        buildSummaryBlocks(phaseName, conferenceName, participants));
+                return;
+            }
+            int posted = 0;
+            for (int i = 0; i < participants.size(); i++) {
+                ConferenceParticipant p = participants.get(i);
+                notifyEntrySync(channel, phaseName, conferenceName, p);
+                posted++;
+                if (i < participants.size() - 1 && perSubjectDelayMs > 0) {
+                    try {
+                        Thread.sleep(perSubjectDelayMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            log.infof("PhaseSlackNotifier batch: posted %d/%d to channel=%s", posted, participants.size(), channel);
+        } catch (Exception e) {
+            log.errorf(e, "PhaseSlackNotifier batch post failed for channel=%s: %s", channel, e.getMessage());
+        }
+    }
+
+    String buildSummaryText(String phaseName, String conferenceName, List<ConferenceParticipant> participants) {
+        int n = participants.size();
+        int k = Math.min(3, n);
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < k; i++) {
+            if (i > 0) names.append(", ");
+            ConferenceParticipant p = participants.get(i);
+            names.append(p.getName() != null && !p.getName().isBlank() ? p.getName() : p.getEmail());
+        }
+        String tail = (n > k) ? " … and " + (n - k) + " more" : "";
+        return "➡️ " + n + " participants moved into " + phaseName
+                + " (" + conferenceName + ") — " + names + tail;
+    }
+
+    private List<LayoutBlock> buildSummaryBlocks(String phaseName, String conferenceName, List<ConferenceParticipant> participants) {
+        List<LayoutBlock> blocks = new ArrayList<>();
+        blocks.add(header(h -> h.text(plainText("➡️ " + participants.size() + " participants moved into " + phaseName))));
+        blocks.add(section(s -> s.text(markdownText(buildSummaryText(phaseName, conferenceName, participants)))));
+        blocks.add(context(c -> c.elements(asContextElements(
+                markdownText("Conference: " + conferenceName + " | Phase: " + phaseName)))));
+        return blocks;
     }
 
     // ---- helpers (package-private for unit tests) ----
