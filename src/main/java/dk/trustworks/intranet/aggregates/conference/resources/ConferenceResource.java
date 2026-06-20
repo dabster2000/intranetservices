@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhas
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceService;
+import dk.trustworks.intranet.aggregates.conference.services.PhaseSlackNotifier;
 import dk.trustworks.intranet.communicationsservice.model.*;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.communicationsservice.services.BulkEmailService;
@@ -72,6 +73,9 @@ public class ConferenceResource {
 
     @Inject
     BulkEmailService bulkEmailService;
+
+    @Inject
+    PhaseSlackNotifier phaseSlackNotifier;
 
     @GET
     public List<Conference> findAllConferences() {
@@ -241,6 +245,8 @@ public class ConferenceResource {
 
         CreateParticipantEvent event = new CreateParticipantEvent(conferenceUUID, conferenceParticipant);
         aggregateEventSender.handleEvent(event);
+
+        phaseSlackNotifier.notifyEntry(conferenceParticipant.getConferencePhase(), conferenceParticipant);
     }
 
     @PUT
@@ -300,6 +306,8 @@ public class ConferenceResource {
             ChangeParticipantPhaseEvent event = new ChangeParticipantPhaseEvent(conferenceUUID, conferenceParticipant);
             aggregateEventSender.handleEvent(event);
         });
+
+        phaseSlackNotifier.notifyBatch(targetPhase, conferenceParticipantList);
     }
 
     @POST
