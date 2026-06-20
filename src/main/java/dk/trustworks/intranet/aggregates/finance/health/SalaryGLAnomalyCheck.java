@@ -1,16 +1,13 @@
 package dk.trustworks.intranet.aggregates.finance.health;
 
 import dk.trustworks.intranet.communicationsservice.services.SlackService;
-import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.eclipse.microprofile.context.ManagedExecutor;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -60,9 +57,6 @@ public class SalaryGLAnomalyCheck {
     @Inject
     SlackService slackService;
 
-    @Inject
-    ManagedExecutor managedExecutor;
-
     @ConfigProperty(name = "slack.opsAlertChannel", defaultValue = "C0B2VQ2CFU1")
     String opsAlertChannel;
 
@@ -80,31 +74,17 @@ public class SalaryGLAnomalyCheck {
         public double coveragePct() { return intendedSalary > 0 ? glSalary / intendedSalary : 0.0; }
     }
 
-    /**
-     * One-shot startup probe. Submits the same detection logic to a worker
-     * thread on app boot so the check exercises the SQL against real data
-     * without waiting for the 04:00 UTC cron. Useful for sanity-checking
-     * after a deploy. Mirrors {@code OpexDistributionRefreshBatchlet#onStart}
-     * cold-start pattern.
-     *
-     * <p>Subject to the same 24h Slack alert rate-limit — a startup-detected
-     * anomaly that's been seen via the scheduled run within the last 24h
-     * does not re-alert.
-     */
-    void onStart(@Observes StartupEvent ev) {
-        log.info("SalaryGLAnomalyCheck: scheduling one-shot startup detection on worker thread");
-        managedExecutor.submit(this::runOnce);
-    }
-
     @Scheduled(cron = "0 0 4 * * ?", identity = "salary-gl-anomaly-check")
     void scheduledRun() {
         runOnce();
     }
 
     /**
-     * Single detect + alert pass. Shared between {@link #scheduledRun()} and
-     * {@link #onStart(StartupEvent)} so both paths produce identical
-     * Slack/log output.
+     * Single detect + alert pass. Invoked by {@link #scheduledRun()} (the
+     * 04:00 UTC cron); {@link #detect()} is also exposed on-demand via the
+     * executive dashboard endpoint. Not run during application startup — a
+     * boot-time DB probe on a worker thread races the main startup thread's
+     * Hibernate session and can abort startup.
      */
     void runOnce() {
         try {
