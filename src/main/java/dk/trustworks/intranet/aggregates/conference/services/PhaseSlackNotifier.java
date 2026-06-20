@@ -102,6 +102,7 @@ public class PhaseSlackNotifier {
         addLine(lines, "Company", p.getCompany());
         addLine(lines, "Title", p.getTitel());
         lines.add("*Marketing consent:* " + (p.isMarketingConsent() ? "✅" : "—"));
+        lines.add("*Consent:* " + (p.isSamtykke() ? "✅" : "—"));
         if (p.getRegistered() != null) lines.add("*Registered:* " + p.getRegistered().format(TS));
         if (p.getFields() != null) {
             for (Map.Entry<String, Object> e : p.getFields().entrySet()) {

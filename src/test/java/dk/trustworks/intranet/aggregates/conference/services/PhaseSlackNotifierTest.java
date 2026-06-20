@@ -35,6 +35,7 @@ class PhaseSlackNotifierTest {
         p.setTitel("CTO");
         p.setAndet("Looking forward to it");
         p.setMarketingConsent(true);
+        p.setSamtykke(true);
         Map<String, Object> bag = new LinkedHashMap<>();
         bag.put("phone", "+45 12345678");
         p.setFields(bag);
@@ -75,6 +76,7 @@ class PhaseSlackNotifierTest {
         assertTrue(all.contains("Acme A/S"), "company");
         assertTrue(all.contains("CTO"), "title");
         assertTrue(all.toLowerCase().contains("consent"), "marketing consent label");
+        assertTrue(all.contains("*Consent:*"), "general consent (samtykke) label, distinct from marketing");
         assertTrue(all.contains("+45 12345678"), "phone from bag");
     }
 
