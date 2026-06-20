@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.conference.resources;
 
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
+import dk.trustworks.intranet.aggregates.conference.dto.ParticipantView;
 import dk.trustworks.intranet.aggregates.conference.dto.ReturningCountDTO;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
@@ -30,6 +31,7 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -90,10 +92,9 @@ public class ConferenceResource {
 
     @GET
     @Path("/{conferenceuuid}/participants")
-    public List<ConferenceParticipant> findAllConferenceParticipants(@PathParam("conferenceuuid") String conferenceuuid) {
-        System.out.println("ConferenceResource.findAllConferenceParticipants");
-        System.out.println("conferenceuuid = " + conferenceuuid);
-        return conferenceService.findAllConferenceParticipants(conferenceuuid);
+    public List<ParticipantView> findAllConferenceParticipants(@PathParam("conferenceuuid") String conferenceuuid) {
+        return conferenceService.findAllConferenceParticipants(conferenceuuid)
+                .stream().map(ParticipantView::from).toList();
     }
 
     @GET
@@ -348,6 +349,16 @@ public class ConferenceResource {
     public void receiveForm(@PathParam("conferenceuuid") String conferenceuuid, @FormParam("name") String name, @FormParam("company") String company, @FormParam("titel") String titel,
                             @FormParam("email") String email, @FormParam("andet") String andet, @FormParam("samtykke[0]") String samtykke) {
         createParticipant(conferenceuuid, new ConferenceParticipant(name, company, titel, email, andet, "ja".equals(samtykke)));
+    }
+
+    @POST
+    @PermitAll
+    @Path("/{conferenceuuid}/contact")
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Produces(MediaType.TEXT_HTML)
+    public void receiveContactForm(@PathParam("conferenceuuid") String conferenceuuid,
+                                   MultivaluedMap<String, String> form) {
+        createParticipant(conferenceuuid, ContactFormMapper.fromForm(form));
     }
 
     @POST
