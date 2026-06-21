@@ -46,6 +46,13 @@ public class ConferenceEventHandler {
         eventBus.publish(BROWSER_EVENT, env.getAggregateId());
     }
 
+    @ConsumeEvent(value = "domain.events.DELETE_CONFERENCE_PARTICIPANT", blocking = true)
+    public void onDeleteConferenceParticipant(String envelopeJson) {
+        DomainEventEnvelope env = DomainEventEnvelope.fromJson(envelopeJson);
+        deleteConferenceParticipant(env);
+        eventBus.publish(BROWSER_EVENT, env.getAggregateId());
+    }
+
     private void createConferenceParticipant(DomainEventEnvelope env) {
         ConferenceParticipant conferenceParticipant = new JsonObject(env.getPayload()).mapTo(ConferenceParticipant.class);
         conferenceService.createParticipant(conferenceParticipant);
@@ -59,5 +66,10 @@ public class ConferenceEventHandler {
     private void changeConferenceParticipantPhase(DomainEventEnvelope env) {
         ConferenceParticipant conferenceParticipant = new JsonObject(env.getPayload()).mapTo(ConferenceParticipant.class);
         conferenceService.changeParticipantPhase(conferenceParticipant);
+    }
+
+    private void deleteConferenceParticipant(DomainEventEnvelope env) {
+        ConferenceParticipant conferenceParticipant = new JsonObject(env.getPayload()).mapTo(ConferenceParticipant.class);
+        conferenceService.deleteParticipant(conferenceParticipant.getConferenceuuid(), conferenceParticipant.getParticipantuuid());
     }
 }

@@ -33,6 +33,7 @@ public class EventRoutingRegistry {
         byEventType.put("CREATE_CONFERENCE_PARTICIPANT", AggregateMessageEmitter.CONFERENCE_EVENT);
         byEventType.put("UPDATE_CONFERENCE_PARTICIPANT", AggregateMessageEmitter.CONFERENCE_EVENT);
         byEventType.put("CHANGE_CONFERENCE_PARTICIPANT_PHASE", AggregateMessageEmitter.CONFERENCE_EVENT);
+        byEventType.put("DELETE_CONFERENCE_PARTICIPANT", AggregateMessageEmitter.CONFERENCE_EVENT);
     }
 
     public Optional<String> resolveAddress(String eventType, String aggregateClassName) {

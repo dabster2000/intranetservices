@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.conference.dto.ParticipantView;
 import dk.trustworks.intranet.aggregates.conference.dto.ReturningCountDTO;
 import dk.trustworks.intranet.aggregates.conference.events.ChangeParticipantPhaseEvent;
 import dk.trustworks.intranet.aggregates.conference.events.CreateParticipantEvent;
+import dk.trustworks.intranet.aggregates.conference.events.DeleteParticipantEvent;
 import dk.trustworks.intranet.aggregates.conference.events.UpdateParticipantDataEvent;
 import dk.trustworks.intranet.aggregates.conference.services.ConferenceService;
 import dk.trustworks.intranet.aggregates.conference.services.PhaseSlackNotifier;
@@ -257,6 +258,17 @@ public class ConferenceResource {
         conferenceParticipant.setUuid(UUID.randomUUID().toString());
         conferenceParticipant.setConferenceuuid(conferenceUUID);
         UpdateParticipantDataEvent event = new UpdateParticipantDataEvent(conferenceUUID, conferenceParticipant);
+        aggregateEventSender.handleEvent(event);
+    }
+
+    @DELETE
+    @Path("/{conferenceuuid}/participants/{participantuuid}")
+    @RolesAllowed({"conference:write"})
+    public void deleteParticipant(@PathParam("conferenceuuid") String conferenceUUID, @PathParam("participantuuid") String participantuuid) {
+        ConferenceParticipant stub = new ConferenceParticipant();
+        stub.setConferenceuuid(conferenceUUID);
+        stub.setParticipantuuid(participantuuid);
+        DeleteParticipantEvent event = new DeleteParticipantEvent(conferenceUUID, stub);
         aggregateEventSender.handleEvent(event);
     }
 
