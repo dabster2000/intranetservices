@@ -13,7 +13,9 @@ import jakarta.inject.Named;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @JBossLog
 @Dependent
@@ -27,6 +29,9 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     @Inject
     ExpenseService expenseService;
 
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.recency-days", defaultValue = "30")
+    int syncRecencyDays;
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private String truncate(String s, int max) {
@@ -39,8 +44,12 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     @ActivateRequestContext
     public String process() throws Exception {
         try {
-            // Fetch expenses that have a voucher triple present
-            List<Expense> expenses = Expense.find("vouchernumber > 0 and journalnumber is not null and accountingyear is not null").list();
+            // Volume fix (Design A): re-sync only what can still change — every
+            // VERIFIED_UNBOOKED row plus anything modified within the recency
+            // window — instead of the entire historical vouchered set (~91% of
+            // which is terminal booked/deleted rows that never change).
+            LocalDate cutoff = computeCutoff(LocalDate.now(), syncRecencyDays);
+            List<Expense> expenses = selectExpensesToSync(cutoff);
             log.info("ExpenseSyncBatchlet processing expenses: " + expenses.size());
             for (Expense expense : expenses) {
                 syncExpense(expense);
@@ -50,6 +59,27 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             log.error("ExpenseSyncBatchlet failed", e);
             throw e;
         }
+    }
+
+    /** Recency cutoff = today − recencyDays. Extracted (pure) for unit testing. */
+    static LocalDate computeCutoff(LocalDate today, int recencyDays) {
+        return today.minusDays(recencyDays);
+    }
+
+    /**
+     * The narrowed selection: rows with a complete voucher triple that are either
+     * still VERIFIED_UNBOOKED (can flip to booked/deleted) or were modified on/after
+     * {@code cutoff}. {@code datemodified} is only bumped on genuine business
+     * activity (create/edit/review) — the bulk-update in
+     * {@link ExpenseService#updateStatus} does not touch it — so the sync can never
+     * self-perpetuate the window. Extracted as a static seam so the selection is
+     * testable with seeded rows (ExpenseSyncSelectionIT).
+     */
+    static List<Expense> selectExpensesToSync(LocalDate cutoff) {
+        return Expense.find(
+                "vouchernumber > 0 and journalnumber is not null and accountingyear is not null " +
+                "and (status = ?1 or datemodified >= ?2)",
+                ExpenseService.STATUS_VERIFIED_UNBOOKED, cutoff).list();
     }
 
     private void syncExpense(Expense expense) {
