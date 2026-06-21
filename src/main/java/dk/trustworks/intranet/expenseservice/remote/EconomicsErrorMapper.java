@@ -20,9 +20,11 @@ public class EconomicsErrorMapper implements ResponseExceptionMapper<RuntimeExce
             body = response.readEntity(String.class);
         } catch (Exception ignore) { }
 
-        // Only 429 becomes the typed exception. The Retry-After header is read
-        // lazily here (after the body) so the shared mapper's behavior for every
-        // other status is byte-identical to the previous implementation.
+        // Only HTTP 429 becomes the typed exception; every other status keeps the
+        // exact previous message (byte-identical) via the status gate below.
+        // readEntity(...) is called before getHeaderString(...) only because the
+        // body must be consumed while the response stream is open — header access
+        // order is irrelevant.
         if (status == 429) {
             Long retryAfterSeconds = parseRetryAfterSeconds(response.getHeaderString("Retry-After"));
             return new EconomicsRateLimitException(

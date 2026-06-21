@@ -14,6 +14,8 @@ package dk.trustworks.intranet.expenseservice.remote;
  */
 public class EconomicsRateLimitException extends RuntimeException {
 
+    private static final long serialVersionUID = 1L;
+
     private final Long retryAfterSeconds;
 
     public EconomicsRateLimitException(String message, Long retryAfterSeconds) {

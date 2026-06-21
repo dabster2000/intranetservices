@@ -58,17 +58,22 @@ class EconomicsRetryExecutor {
         }
     }
 
+    // Caps exponential backoff at 2^16 s (~65 s) so a pathological maxRetries cannot overflow the shift.
+    private static final int MAX_BACKOFF_EXPONENT = 16;
+
     /**
      * Delay before the next attempt: the server's {@code Retry-After} (seconds)
-     * when present and non-negative, otherwise exponential backoff
-     * {@code 1s, 2s, 4s, …}. The exponent is capped so a pathological
-     * {@code maxRetries} cannot overflow.
+     * when present and positive ({@code > 0}), otherwise exponential backoff
+     * {@code 1s, 2s, 4s, …}. A {@code Retry-After: 0} (or absent header) falls
+     * back to the exponential {@code 1s, 2s, 4s, …} backoff — a zero-millisecond
+     * retry against a throttling tenant is never appropriate. The exponent is
+     * capped so a pathological {@code maxRetries} cannot overflow.
      */
     static long computeBackoffMillis(int attempt, Long retryAfterSeconds) {
         if (retryAfterSeconds != null && retryAfterSeconds > 0) {
             return retryAfterSeconds * 1000L;
         }
-        int exponent = Math.min(Math.max(attempt - 1, 0), 16);
+        int exponent = Math.min(Math.max(attempt - 1, 0), MAX_BACKOFF_EXPONENT);
         return 1000L * (1L << exponent);
     }
 }
