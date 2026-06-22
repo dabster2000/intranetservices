@@ -691,6 +691,10 @@ public class InvoiceService {
      * Client and internal-journal-number — mirroring queueInternalInvoice / createSettlementInternal.
      */
     private void validateInternalCreditNoteEligibility(Invoice source) {
+        if (source.getDebtorCompanyuuid() == null || source.getDebtorCompanyuuid().isBlank()) {
+            throw new WebApplicationException(
+                    "INTERNAL invoice is missing debtorCompanyuuid; cannot credit.", Response.Status.BAD_REQUEST);
+        }
         if (source.getStatus() != InvoiceStatus.CREATED) {
             throw new WebApplicationException(
                     "Only booked (CREATED) internal invoices can be credited; drafts/queued use the delete path. Status="
@@ -709,10 +713,16 @@ public class InvoiceService {
             throw new WebApplicationException(
                     "Debtor company not found: " + source.getDebtorCompanyuuid(), Response.Status.BAD_REQUEST);
         }
-        IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(debtor);
-        if (keys.internalJournalNumber() <= 0) {
+        try {
+            IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(debtor);
+            if (keys.internalJournalNumber() <= 0) {
+                throw new WebApplicationException(
+                        "Debtor company " + debtor.getName() + " has no internal-journal-number configured",
+                        Response.Status.BAD_REQUEST);
+            }
+        } catch (NumberFormatException e) {
             throw new WebApplicationException(
-                    "Debtor company " + debtor.getName() + " has no internal-journal-number configured",
+                    "Debtor company " + debtor.getName() + " has incomplete integration keys (missing journal numbers)",
                     Response.Status.BAD_REQUEST);
         }
     }

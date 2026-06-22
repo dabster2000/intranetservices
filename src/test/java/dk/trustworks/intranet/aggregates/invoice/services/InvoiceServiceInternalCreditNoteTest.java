@@ -181,13 +181,34 @@ class InvoiceServiceInternalCreditNoteTest {
                 .setParameter("cvr", fx.debtorCvr)
                 .executeUpdate();
 
-        // integration_keys: "internal-journal-number" > 0 on the debtor company so
-        // validateInternalCreditNoteEligibility passes the journal-number gate.
+        // integration_keys: seed ALL four numeric keys that IntegrationKey.getIntegrationKeyValue
+        // parses via Integer.parseInt so the method doesn't throw NumberFormatException in CI.
         em.createNativeQuery("""
                 INSERT INTO integration_keys (uuid, companyuuid, `key`, value)
                 VALUES (:uuid, :co, 'internal-journal-number', '1')
                 """)
-                .setParameter("uuid", "ik-" + prefix + "-" + UUID.randomUUID())
+                .setParameter("uuid", "ik-int-" + prefix + "-" + UUID.randomUUID())
+                .setParameter("co", fx.debtorCompanyUuid)
+                .executeUpdate();
+        em.createNativeQuery("""
+                INSERT INTO integration_keys (uuid, companyuuid, `key`, value)
+                VALUES (:uuid, :co, 'expense-journal-number', '2')
+                """)
+                .setParameter("uuid", "ik-exp-" + prefix + "-" + UUID.randomUUID())
+                .setParameter("co", fx.debtorCompanyUuid)
+                .executeUpdate();
+        em.createNativeQuery("""
+                INSERT INTO integration_keys (uuid, companyuuid, `key`, value)
+                VALUES (:uuid, :co, 'invoice-journal-number', '3')
+                """)
+                .setParameter("uuid", "ik-inv-" + prefix + "-" + UUID.randomUUID())
+                .setParameter("co", fx.debtorCompanyUuid)
+                .executeUpdate();
+        em.createNativeQuery("""
+                INSERT INTO integration_keys (uuid, companyuuid, `key`, value)
+                VALUES (:uuid, :co, 'invoice-account-number', '6000')
+                """)
+                .setParameter("uuid", "ik-acc-" + prefix + "-" + UUID.randomUUID())
                 .setParameter("co", fx.debtorCompanyUuid)
                 .executeUpdate();
 
