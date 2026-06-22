@@ -8,7 +8,9 @@ import dk.trustworks.intranet.aggregates.invoice.economics.InvoiceToEconomicsDra
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
+import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.perf.PerfMetrics;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,9 +45,10 @@ class InvoiceFinalizationOrchestratorCreditNoteTest {
     @Mock InvoiceItemRecalculator           recalc;
     @Mock BonusService                      bonus;
     @Mock InvoiceWorkService                work;
-    @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
+    @Mock EconomicsInvoiceService            economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock EanPrerequisiteChecker            eanChecker;
+    @Mock PerfMetrics                       perfMetrics;
 
     @BeforeEach
     void stub() {
