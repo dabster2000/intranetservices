@@ -1283,7 +1283,8 @@ public class InvoiceResource {
                 dto.controlStatusUpdatedAt(), dto.controlStatusUpdatedBy(),
                 dto.internalInvoiceSkip(), dto.internalInvoiceSkipNote(),
                 dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy(),
-                dto.cancellingCreditNote()
+                dto.cancellingCreditNote(),
+                dto.creditNote()
         );
     }
 

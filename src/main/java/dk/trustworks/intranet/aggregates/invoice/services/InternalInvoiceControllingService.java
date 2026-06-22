@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.CancellingCreditNoteRef;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.ClientWithInternalsDTO;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO;
@@ -395,7 +396,8 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
-                    cancellingCN
+                    cancellingCN,
+                    null
             );
 
             SimpleInvoiceDTO internalDto = null;
@@ -423,7 +425,8 @@ public class InternalInvoiceControllingService {
                             null,
                             null,
                             null,
-                            null
+                            null,
+                            reverseCreditNoteRef(internal.getUuid())
                     );
                 }
             }
@@ -681,6 +684,7 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
+                    null,
                     null
             );
 
@@ -703,7 +707,8 @@ public class InternalInvoiceControllingService {
                     null,
                     null,
                     null,
-                    null
+                    null,
+                    reverseCreditNoteRef(internal.getUuid())
             );
 
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
@@ -919,6 +924,7 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
+                    null,
                     null
             );
             result.add(clientDto);
@@ -1141,6 +1147,7 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
+                    null,
                     null
             );
 
@@ -1163,7 +1170,8 @@ public class InternalInvoiceControllingService {
                     null,
                     null,
                     null,
-                    null
+                    null,
+                    reverseCreditNoteRef(internal.getUuid())
             );
 
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
@@ -1367,6 +1375,7 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipNote(),
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
+                    null,
                     null
             );
 
@@ -1395,7 +1404,8 @@ public class InternalInvoiceControllingService {
                         null,
                         null,
                         null,
-                        null
+                        null,
+                        reverseCreditNoteRef(inv.getUuid())
                 ));
             }
 
@@ -1423,6 +1433,19 @@ public class InternalInvoiceControllingService {
         int invoicenumber = cnInvoicenumber == null ? 0 : ((Number) cnInvoicenumber).intValue();
         InvoiceStatus status = cnStatus == null ? null : InvoiceStatus.valueOf(cnStatus);
         return new CancellingCreditNoteRef(cnUuid, invoicenumber, cnInvoicedate, status);
+    }
+
+    /**
+     * Reverse lookup: the CREDIT_NOTE (if any) that reverses {@code internalUuid}. Mirrors the
+     * client-side cancellingCreditNote ref but keyed on the internal's own uuid, so the frontend
+     * can gate the "Credit" action and the "Needs crediting" KPI. Returns null when none.
+     */
+    private CancellingCreditNoteRef reverseCreditNoteRef(String internalUuid) {
+        Invoice cn = Invoice.<Invoice>find(
+                        "creditnoteForUuid = ?1 and type = ?2", internalUuid, InvoiceType.CREDIT_NOTE)
+                .firstResult();
+        if (cn == null) return null;
+        return new CancellingCreditNoteRef(cn.getUuid(), cn.getInvoicenumber(), cn.getInvoicedate(), cn.getStatus());
     }
 
     /**

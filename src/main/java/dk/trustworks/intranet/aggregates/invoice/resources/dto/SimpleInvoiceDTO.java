@@ -19,6 +19,10 @@ import java.util.List;
  * AND its linked INTERNAL invoice is still active (status PENDING_REVIEW, QUEUED,
  * or CREATED). It is {@code null} otherwise — including for internal-invoice DTOs
  * and for pairs where the pricing pipeline filtered the source out entirely.
+ *
+ * <p>{@code creditNote} is populated only on the INTERNAL row of a pair when a
+ * CREDIT_NOTE reverses that internal (reverse {@code creditnote_for_uuid} lookup).
+ * Null everywhere else — including client rows.
  */
 @RegisterForReflection
 public record SimpleInvoiceDTO(
@@ -40,5 +44,8 @@ public record SimpleInvoiceDTO(
         String internalInvoiceSkipNote,
         LocalDateTime internalInvoiceSkipAt,
         String internalInvoiceSkipBy,
-        CancellingCreditNoteRef cancellingCreditNote
+        CancellingCreditNoteRef cancellingCreditNote,
+        // Populated only on the INTERNAL row of a pair when a CREDIT_NOTE reverses THIS internal
+        // (reverse `creditnote_for_uuid` lookup). Null otherwise — including client rows.
+        CancellingCreditNoteRef creditNote
 ) {}
