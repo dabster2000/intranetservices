@@ -261,7 +261,7 @@ public class SlackService {
 
     /**
      * Constructs the full URL to view a specific lead in the Trustworks Intranet application.
-     * The URL follows the pattern: {baseUrl}/sales-list/{leadUuid}
+     * The URL follows the pattern: {baseUrl}/sales-leads?lead={leadUuid}
      *
      * @param leadUuid The unique identifier of the lead
      * @return Full URL to the lead, or null if inputs are invalid
@@ -286,7 +286,7 @@ public class SlackService {
         }
 
         // Construct and return the full URL
-        String fullUrl = baseUrl + "/sales-list/" + leadUuid;
+        String fullUrl = baseUrl + "/sales-leads?lead=" + leadUuid;
         log.debug("Constructed lead URL: " + fullUrl);
 
         return fullUrl;
