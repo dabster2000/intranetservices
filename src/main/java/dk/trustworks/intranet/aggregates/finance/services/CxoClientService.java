@@ -2421,7 +2421,7 @@ public class CxoClientService {
                 "        THEN COALESCE(ii.rate * ii.hours, 0) " +
                 "        ELSE 0 " +
                 "      END)                                AS invoice_amount, " +
-                "  ABS(SUM(CASE WHEN i.type = 'CREDIT_NOTE' " +
+                "  ABS(SUM(CASE WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL " +
                 "        THEN COALESCE(ii.rate * ii.hours, 0) " +
                 "        ELSE 0 " +
                 "      END))                               AS credit_note_amount " +
@@ -2441,7 +2441,7 @@ public class CxoClientService {
                 "  COUNT(DISTINCT i.uuid)        AS credit_note_count " +
                 "FROM invoices i " +
                 "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
-                "WHERE i.type = 'CREDIT_NOTE' " +
+                "WHERE i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL " +
                 "  AND i.economics_status IN ('BOOKED', 'PAID') " +
                 "  AND i.invoicedate BETWEEN :fromDate AND :toDate " +
                 "  AND ii.rate IS NOT NULL " +
