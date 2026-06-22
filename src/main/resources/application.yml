@@ -383,9 +383,30 @@ dk:
     expense:
       economics-upload:
         enabled: ${EXPENSE_ECONOMICS_UPLOAD_ENABLED:true}
+      # Read-side e-conomic sync (expense-sync + expense-orphan-detection).
+      # Staging sets EXPENSE_ECONOMICS_SYNC_ENABLED=false so a prod-cloned staging
+      # DB never re-syncs against the shared real e-conomic tenant (429-storm fix).
+      economics-sync:
+        enabled: ${EXPENSE_ECONOMICS_SYNC_ENABLED:true}
+        # Re-sync VERIFIED_UNBOOKED plus any row modified within this many days;
+        # drops the stable booked/deleted tail from the nightly scan.
+        recency-days: ${EXPENSE_ECONOMICS_SYNC_RECENCY_DAYS:30}
+        # Per-item 429 retries before counting the item as throttled.
+        max-retries: ${EXPENSE_ECONOMICS_SYNC_MAX_RETRIES:3}
+        # Consecutive throttled items that trip the circuit breaker (abort run).
+        abort-threshold: ${EXPENSE_ECONOMICS_SYNC_ABORT_THRESHOLD:15}
+        # Optional inter-item sleep in ms (0 = off).
+        pacing-ms: ${EXPENSE_ECONOMICS_SYNC_PACING_MS:0}
     invoice:
       economics-upload:
         enabled: ${INVOICE_ECONOMICS_UPLOAD_ENABLED:true}
+      # Read-side e-conomic sync (economics-invoice-status-sync). Staging false.
+      economics-sync:
+        enabled: ${INVOICE_ECONOMICS_SYNC_ENABLED:true}
+    finance:
+      # Read-side e-conomic load (finance-load-economics). Staging false.
+      economics-load:
+        enabled: ${FINANCE_ECONOMICS_LOAD_ENABLED:true}
     environment:
       id: ${ENVIRONMENT_ID:production}
     intranet:

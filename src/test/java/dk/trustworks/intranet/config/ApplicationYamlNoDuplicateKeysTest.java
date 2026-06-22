@@ -72,6 +72,22 @@ class ApplicationYamlNoDuplicateKeysTest {
                         + "@ConfigProperty falls back to defaultValue=true and the "
                         + "switch never fires.");
 
+        Object expenseSync = path(root, "dk", "trustworks", "expense", "economics-sync", "enabled");
+        assertNotNull(expenseSync,
+                "dk.trustworks.expense.economics-sync.enabled is null. The read-side "
+                        + "kill switch for expense-sync/orphan-detection must stay declared "
+                        + "inside the single dk: block.");
+
+        Object invoiceSync = path(root, "dk", "trustworks", "invoice", "economics-sync", "enabled");
+        assertNotNull(invoiceSync,
+                "dk.trustworks.invoice.economics-sync.enabled is null. The read-side "
+                        + "kill switch for economics-invoice-status-sync must stay declared.");
+
+        Object financeLoad = path(root, "dk", "trustworks", "finance", "economics-load", "enabled");
+        assertNotNull(financeLoad,
+                "dk.trustworks.finance.economics-load.enabled is null. The read-side "
+                        + "kill switch for finance-load-economics must stay declared.");
+
         Object envId = path(root, "dk", "trustworks", "environment", "id");
         assertNotNull(envId,
                 "dk.trustworks.environment.id is null. The env-namespaced "
