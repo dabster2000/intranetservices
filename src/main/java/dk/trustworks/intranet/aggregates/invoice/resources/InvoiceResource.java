@@ -101,6 +101,9 @@ public class InvoiceResource {
     @Inject
     dk.trustworks.intranet.aggregates.invoice.services.InternalInvoiceOrchestrator internalInvoiceOrchestrator;
 
+    @Inject
+    dk.trustworks.intranet.security.RequestHeaderHolder requestHeaderHolder;
+
     @GET
     public List<Invoice> list(@QueryParam("fromdate") String fromdate,
                               @QueryParam("todate")   String todate,
@@ -366,8 +369,28 @@ public class InvoiceResource {
     @POST
     @Path("/creditnotes")
     @RolesAllowed({"invoices:write"})
-    public Invoice createCreditNote(Invoice draftInvoice) {
-        return invoiceService.createCreditNote(draftInvoice);
+    public Invoice createCreditNote(Invoice draftInvoice, @QueryParam("reason") String reason) {
+        // tx1: create + COMMIT the DRAFT credit note (and, for an internal source, stamp the
+        // debtor/intercompany identity + validate eligibility). Committing first keeps the CN row
+        // + 1:1 link durable even if posting is skipped (staging kill-switch) or fails transiently.
+        Invoice cn = invoiceService.createCreditNote(draftInvoice);
+
+        // An internal credit note (CREDIT_NOTE carrying a debtor) reverses a two-leg internal
+        // posting. Finalize it through the SINGLE-TRANSACTION internal path (finalizeAutomatically:
+        // createDraft + bookDraft in one tx) so the recalculator-set, @Transient grandTotal survives
+        // from createDraft into the debtor-side voucher — the issuer Kreditnota and the debtor
+        // reversal must reconcile to the same gross. A separate-request chain would lose grandTotal.
+        if (cn.isInternalCreditNote()) {
+            log.infof("Internal credit note %s created for source %s by user %s (reason=%s) — posting two-leg reversal",
+                    cn.getUuid(), draftInvoice.getUuid(), requestHeaderHolder.getUserUuid(), reason);
+            try {
+                cn = internalInvoiceOrchestrator.finalizeAutomatically(cn.getUuid()); // tx2
+            } catch (Exception e) {
+                log.warnf(e, "Internal credit note %s created but posting was skipped/failed "
+                        + "(kill-switch or transient) — left recoverable as DRAFT", cn.getUuid());
+            }
+        }
+        return cn;
     }
 
     @POST
