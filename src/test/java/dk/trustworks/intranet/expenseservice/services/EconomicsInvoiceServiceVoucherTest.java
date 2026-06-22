@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.economics.supplier.EconomicsSupplierResolver;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.Journal;
 import dk.trustworks.intranet.expenseservice.remote.dto.economics.SupplierInvoice;
@@ -160,5 +161,24 @@ class EconomicsInvoiceServiceVoucherTest {
         // The manual branch is untouched: the issuer-aware resolver is never consulted.
         verifyNoInteractions(agreementResolver);
         verifyNoInteractions(supplierResolver);
+    }
+
+    @Test
+    void internal_credit_note_books_positive_amount_to_reverse_the_payable() {
+        // A CREDIT_NOTE reversing an internal: items are copied POSITIVE, so grandTotal is a
+        // clean positive number. e-conomic credits the kreditor for a negative amount and DEBITS
+        // it for a positive one; reversing the debtor's payable requires a DEBIT → +grandTotal.
+        Invoice inv = internalInvoice(TECH_UUID, TECH_CVR);
+        inv.setType(InvoiceType.CREDIT_NOTE);
+        Journal journal = new Journal(INTERNAL_JOURNAL);
+        when(agreementResolver.intercompanyCostAccount(AS_UUID, TECH_UUID)).thenReturn(Optional.of(3050));
+        when(supplierResolver.resolveByCvr(AS_UUID, TECH_CVR)).thenReturn(Optional.of(700));
+
+        Voucher voucher = service.buildJSONRequest(inv, journal, "Kreditnota 91001", keys(), debtorAS());
+
+        SupplierInvoice si = voucher.getEntries().getSupplierInvoices().get(0);
+        assertEquals(50_000.0, si.getAmount(), 0.001);                 // +grandTotal = DEBIT kreditor = reversal
+        assertEquals(3050, si.getContraAccount().getAccountNumber());  // cost account unchanged (contra)
+        assertEquals("I25", si.getContraVatAccount().vatCode);         // VAT lift unchanged
     }
 }
