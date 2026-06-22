@@ -187,7 +187,8 @@ public class InvoiceFinalizationOrchestrator {
         // otherwise makes e-conomic reject the draft with HTTP 400. Regular invoices
         // keep the contract's payment term.
         boolean internal = inv.getType() == InvoiceType.INTERNAL
-                || inv.getType() == InvoiceType.INTERNAL_SERVICE;
+                || inv.getType() == InvoiceType.INTERNAL_SERVICE
+                || inv.isInternalCreditNote();
         int termOfPaymentNumber = internal
                 ? agreements.immediatePaymentTermFor(companyUuid)
                 : agreements.paymentTermFor(bc.contract());
@@ -358,8 +359,13 @@ public class InvoiceFinalizationOrchestrator {
         //
         // A failure here sets economics_status = PARTIALLY_UPLOADED rather than
         // propagating the exception; the retry batchlet (H12) will re-attempt.
+        //
+        // INTERNAL / INTERNAL_SERVICE invoices and internal CREDIT_NOTE reversals (a
+        // CREDIT_NOTE carrying a debtor) post a debtor-side voucher. A client CREDIT_NOTE
+        // (no debtor) stays skipped → regular client credit notes are untouched.
         if (inv.getType() == InvoiceType.INTERNAL
-                || inv.getType() == InvoiceType.INTERNAL_SERVICE) {
+                || inv.getType() == InvoiceType.INTERNAL_SERVICE
+                || inv.isInternalCreditNote()) {
             postDebtorSideVoucher(inv);
         }
 
