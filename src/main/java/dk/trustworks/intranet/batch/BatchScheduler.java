@@ -39,6 +39,27 @@ public class BatchScheduler {
     @ConfigProperty(name = "dk.trustworks.invoice.economics-upload.enabled", defaultValue = "true")
     boolean invoiceUploadEnabled;
 
+    /**
+     * Read-side kill switch for the expense e-conomic read batches (expense-sync
+     * and expense-orphan-detection). Staging's deploy sets this to {@code false}
+     * so a prod-cloned staging DB never re-syncs against the shared real e-conomic
+     * tenant (2026-06-20 429-storm incident).
+     */
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.enabled", defaultValue = "true")
+    boolean economicsSyncEnabled;
+
+    /**
+     * Read-side kill switch for economics-invoice-status-sync. Staging false.
+     */
+    @ConfigProperty(name = "dk.trustworks.invoice.economics-sync.enabled", defaultValue = "true")
+    boolean invoiceSyncEnabled;
+
+    /**
+     * Read-side kill switch for finance-load-economics. Staging false.
+     */
+    @ConfigProperty(name = "dk.trustworks.finance.economics-load.enabled", defaultValue = "true")
+    boolean financeLoadEnabled;
+
     // Observability heartbeat. The actual nightly BI refresh is run by the
     // MariaDB event ev_bi_nightly_refresh at 03:00 UTC; it runs longer than
     // any reasonable Quarkus JTA transaction timeout.
@@ -57,6 +78,10 @@ public class BatchScheduler {
     // applied to scheduleFinanceInvoiceSync for consistency.
     @Scheduled(cron = "0 0 21 * * ?")
     void scheduleFinanceLoadEconomics() {
+        if (!financeLoadEnabled) {
+            log.debug("finance-load-economics skipped: dk.trustworks.finance.economics-load.enabled=false");
+            return;
+        }
         try {
             if (jobOperator.getJobNames().contains("finance-load-economics")) {
                 if (!jobOperator.getRunningExecutions("finance-load-economics").isEmpty()) {
@@ -165,6 +190,10 @@ public class BatchScheduler {
     // typically clears by 04:05) to avoid lock-wait contention on expense rows.
     @Scheduled(cron = "0 0 5 * * ?")
     void scheduleExpenseSync() {
+        if (!economicsSyncEnabled) {
+            log.debug("expense-sync skipped: dk.trustworks.expense.economics-sync.enabled=false");
+            return;
+        }
         try {
             // Only query running executions if the job is known to the repository
             if (jobOperator.getJobNames().contains("expense-sync")) {
@@ -180,6 +209,10 @@ public class BatchScheduler {
 
     @Scheduled(cron = "0 15 * * * ?") // Run every hour at 15 minutes past
     void scheduleExpenseOrphanDetection() {
+        if (!economicsSyncEnabled) {
+            log.debug("expense-orphan-detection skipped: dk.trustworks.expense.economics-sync.enabled=false");
+            return;
+        }
         try {
             // Only start if no orphan detection job is currently running
             if (jobOperator.getJobNames().contains("expense-orphan-detection")) {
@@ -197,6 +230,10 @@ public class BatchScheduler {
 
     @Scheduled(cron = "0 38 12 * * ?")
     void scheduleEconomicsInvoiceStatusSync() {
+        if (!invoiceSyncEnabled) {
+            log.debug("economics-invoice-status-sync skipped: dk.trustworks.invoice.economics-sync.enabled=false");
+            return;
+        }
         try {
             if (jobOperator.getJobNames().contains("economics-invoice-status-sync")) {
                 if (!jobOperator.getRunningExecutions("economics-invoice-status-sync").isEmpty()) {

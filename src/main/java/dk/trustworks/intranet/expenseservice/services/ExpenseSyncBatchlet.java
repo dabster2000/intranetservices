@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsRateLimitException;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.context.control.ActivateRequestContext;
@@ -13,7 +14,9 @@ import jakarta.inject.Named;
 import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @JBossLog
 @Dependent
@@ -27,6 +30,21 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     @Inject
     ExpenseService expenseService;
 
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.recency-days", defaultValue = "30")
+    int syncRecencyDays;
+
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.max-retries", defaultValue = "3")
+    int syncMaxRetries;
+
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.abort-threshold", defaultValue = "15")
+    int syncAbortThreshold;
+
+    @ConfigProperty(name = "dk.trustworks.expense.economics-sync.pacing-ms", defaultValue = "0")
+    long syncPacingMs;
+
+    /** Per-item result fed to the run-level circuit breaker. */
+    enum SyncOutcome { SUCCESS, THROTTLED, ERROR }
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private String truncate(String s, int max) {
@@ -39,11 +57,40 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
     @ActivateRequestContext
     public String process() throws Exception {
         try {
-            // Fetch expenses that have a voucher triple present
-            List<Expense> expenses = Expense.find("vouchernumber > 0 and journalnumber is not null and accountingyear is not null").list();
+            // Volume fix (Design A): re-sync only what can still change.
+            LocalDate cutoff = computeCutoff(LocalDate.now(), syncRecencyDays);
+            List<Expense> expenses = selectExpensesToSync(cutoff);
             log.info("ExpenseSyncBatchlet processing expenses: " + expenses.size());
+
+            // Cascade fix (Design B): retry transient 429s per item, and abort the
+            // whole run if e-conomic keeps throttling — the unsynced remainder is
+            // small now and re-attempts next night.
+            EconomicsRetryExecutor retry =
+                    new EconomicsRetryExecutor(syncMaxRetries, EconomicsRetryExecutor.Sleeper.REAL);
+            ThrottleCircuitBreaker breaker = new ThrottleCircuitBreaker(syncAbortThreshold);
+
             for (Expense expense : expenses) {
-                syncExpense(expense);
+                SyncOutcome outcome = syncExpense(expense, retry);
+                if (outcome == SyncOutcome.THROTTLED) {
+                    breaker.recordThrottled();
+                    if (breaker.isTripped()) {
+                        log.warn("e-conomic sustained throttling; aborting expense-sync, will resume next run "
+                                + "(consecutive throttled=" + breaker.getConsecutiveThrottled()
+                                + ", threshold=" + syncAbortThreshold + ")");
+                        return "COMPLETED";
+                    }
+                } else {
+                    breaker.reset();
+                }
+                if (syncPacingMs > 0) {
+                    try {
+                        Thread.sleep(syncPacingMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.warn("expense-sync interrupted during pacing; stopping run");
+                        break;
+                    }
+                }
             }
             return "COMPLETED";
         } catch (Exception e) {
@@ -52,7 +99,28 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
         }
     }
 
-    private void syncExpense(Expense expense) {
+    /** Recency cutoff = today − recencyDays. Extracted (pure) for unit testing. */
+    static LocalDate computeCutoff(LocalDate today, int recencyDays) {
+        return today.minusDays(recencyDays);
+    }
+
+    /**
+     * The narrowed selection: rows with a complete voucher triple that are either
+     * still VERIFIED_UNBOOKED (can flip to booked/deleted) or were modified on/after
+     * {@code cutoff}. {@code datemodified} is only bumped on genuine business
+     * activity (create/edit/review) — the bulk-update in
+     * {@link ExpenseService#updateStatus} does not touch it — so the sync can never
+     * self-perpetuate the window. Extracted as a static seam so the selection is
+     * testable with seeded rows (ExpenseSyncSelectionIT).
+     */
+    static List<Expense> selectExpensesToSync(LocalDate cutoff) {
+        return Expense.find(
+                "vouchernumber > 0 and journalnumber is not null and accountingyear is not null " +
+                "and (status = ?1 or datemodified >= ?2)",
+                ExpenseService.STATUS_VERIFIED_UNBOOKED, cutoff).list();
+    }
+
+    private SyncOutcome syncExpense(Expense expense, EconomicsRetryExecutor retry) {
         try (EconomicsAPI api = economicsService.getApiForExpense(expense)) {
             int jn = expense.getJournalnumber();
             String year = expense.getAccountingyear();
@@ -62,7 +130,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             // 1) Look in journal entries (unbooked)
             String journalFilter = "voucher.voucherNumber$eq:" + vn;
-            Response jr = api.getJournalEntries(jn, journalFilter, 1000);
+            Response jr = retry.executeWithRetry(() -> api.getJournalEntries(jn, journalFilter, 1000));
             int jrStatus = jr != null ? jr.getStatus() : -1;
             String jrBody = null;
             try {
@@ -96,14 +164,14 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_UNBOOKED);
                 log.info("Expense " + expense.getUuid() + " marked VERIFIED_UNBOOKED (unbooked in journal)");
-                return;
+                return SyncOutcome.SUCCESS;
             }
 
             // 2) If not in journal, check booked entries under accounting-years
             String yearFilter = "voucherNumber$eq:" + vn;
             // Convert to underscore format for accounting-years path parameter
             String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year);
-            Response yr = api.getYearEntries(yearId, yearFilter, 1000, 0);
+            Response yr = retry.executeWithRetry(() -> api.getYearEntries(yearId, yearFilter, 1000, 0));
             int yrStatus = yr != null ? yr.getStatus() : -1;
             String yrBody = null;
             try {
@@ -135,14 +203,21 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
                 expenseService.updateStatus(expense, ExpenseService.STATUS_VERIFIED_BOOKED);
                 log.info("Expense " + expense.getUuid() + " marked VERIFIED_BOOKED (booked to ledger under accounting-years)");
-                return;
+                return SyncOutcome.SUCCESS;
             }
 
             // 3) Not found anywhere -> consider deleted
             log.warn("Expense " + expense.getUuid() + ": voucher not found in journal or accounting-years; marking DELETED");
             expenseService.updateStatus(expense, ExpenseService.STATUS_DELETED);
+            return SyncOutcome.SUCCESS;
+        } catch (EconomicsRateLimitException rle) {
+            // Retries already exhausted inside executeWithRetry — count as throttled
+            // so the circuit breaker can abort the run if this keeps happening.
+            log.warn("Sync throttled (429) for expense " + expense.getUuid() + " after retries: " + rle.getMessage());
+            return SyncOutcome.THROTTLED;
         } catch (Exception ex) {
             log.error("Sync failed for expense " + expense.getUuid() + ": " + ex.getMessage(), ex);
+            return SyncOutcome.ERROR;
         }
     }
 
