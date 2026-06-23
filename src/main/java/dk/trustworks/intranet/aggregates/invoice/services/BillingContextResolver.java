@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.invoice.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.services.ContractService;
 import dk.trustworks.intranet.dao.crm.model.Client;
@@ -19,6 +20,14 @@ import jakarta.ws.rs.BadRequestException;
  *       are stamped at creation time (see {@link IntercompanyClientResolver})
  *       — the contract is loaded but not consulted for the billing entity.
  *       SPEC: internal-invoice-billing-client-fix § FR-3.</li>
+ *   <li>Otherwise, for INTERNAL / INTERNAL_SERVICE invoices with no stamp
+ *       (legacy drafts QUEUED before the stamping existed), resolve the
+ *       intercompany client for the debtor company by CVR via
+ *       {@link IntercompanyClientResolver}. These must NEVER fall through to the
+ *       contract-based branch below: the contract's client is the source
+ *       contract's <em>external</em> customer, which is the wrong billing entity
+ *       and is typically unpaired in the issuer's e-conomic (surfacing as
+ *       "Client … is not paired …" when the draft mapper runs).</li>
  *   <li>Otherwise (regular INVOICE / PHANTOM / CREDIT_NOTE flow) fall back to
  *       SPEC-INV-001 §3.2: {@code contract.billingClientUuid ?? contract.clientuuid}.</li>
  * </ol>
@@ -35,6 +44,9 @@ public class BillingContextResolver {
 
     @Inject
     ClientService clientService;
+
+    @Inject
+    IntercompanyClientResolver intercompanyClientResolver;
 
     /**
      * Resolves the full billing context (invoice + contract + billing client).
@@ -69,6 +81,25 @@ public class BillingContextResolver {
                         + "The Client row may have been deleted — contact finance.");
             }
             return new BillingContext(invoice, contract, stampedClient);
+        }
+
+        // INTERNAL / INTERNAL_SERVICE invoices must bill the intercompany Client that
+        // represents the debtor company (matched by CVR) — never the source contract's
+        // external client. Newer invoices carry this in billingClientUuid (stamped at
+        // creation, handled above); legacy invoices QUEUED before that stamping have a
+        // null stamp and must be resolved here, mirroring IntercompanyClientResolver.
+        // Falling through to the contract branch would address the internal draft to the
+        // contract's external customer, which is the wrong entity and is usually unpaired
+        // in the issuer's e-conomic. SPEC: internal-invoice-billing-client-fix § FR-1.
+        if (invoice.getType() == InvoiceType.INTERNAL
+                || invoice.getType() == InvoiceType.INTERNAL_SERVICE) {
+            Client intercompanyClient = intercompanyClientResolver
+                    .resolveByDebtorCompanyUuid(invoice.getDebtorCompanyuuid())
+                    .orElseThrow(() -> new BadRequestException(
+                            "No intercompany billing client found for this internal invoice's "
+                            + "debtor company (matched by CVR). Verify the debtor company has a "
+                            + "CVR and a matching Client exists, then try again."));
+            return new BillingContext(invoice, contract, intercompanyClient);
         }
 
         String billingClientUuid = contract.getBillingClientUuid() != null
