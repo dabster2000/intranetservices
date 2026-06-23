@@ -39,7 +39,7 @@ public class EconomicsErrorMapper implements ResponseExceptionMapper<RuntimeExce
      * seconds. e-conomic sends the seconds form; the HTTP-date form is treated as
      * absent (returns {@code null}) and the caller falls back to backoff.
      */
-    static Long parseRetryAfterSeconds(String headerValue) {
+    public static Long parseRetryAfterSeconds(String headerValue) {
         if (headerValue == null || headerValue.isBlank()) return null;
         try {
             long seconds = Long.parseLong(headerValue.trim());

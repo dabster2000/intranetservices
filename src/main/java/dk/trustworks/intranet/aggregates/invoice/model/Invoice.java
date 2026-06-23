@@ -191,6 +191,18 @@ public class Invoice extends PanacheEntityBase {
     @Transient
     public List<CalculationBreakdownLine> calculationBreakdown;
 
+    /**
+     * True when this invoice is an internal credit note — a CREDIT_NOTE reversing an INTERNAL
+     * invoice, identified by carrying a debtor company. Drives the debtor-side posting gate, the
+     * issuer-immediate payment-term predicate, and the InternalInvoiceOrchestrator accept-list.
+     * A client CREDIT_NOTE (no debtor) returns false.
+     */
+    public boolean isInternalCreditNote() {
+        return getType() == InvoiceType.CREDIT_NOTE
+                && getDebtorCompanyuuid() != null
+                && !getDebtorCompanyuuid().isBlank();
+    }
+
     public Invoice() {
         this.invoiceitems = new LinkedList<>();
         this.errors = false;

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.batch.monitoring.BatchExceptionTracking;
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
+import dk.trustworks.intranet.expenseservice.remote.EconomicsErrorMapper;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsRateLimitException;
 import jakarta.batch.api.AbstractBatchlet;
 import jakarta.enterprise.context.Dependent;
@@ -120,7 +121,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
                 ExpenseService.STATUS_VERIFIED_UNBOOKED, cutoff).list();
     }
 
-    private SyncOutcome syncExpense(Expense expense, EconomicsRetryExecutor retry) {
+    SyncOutcome syncExpense(Expense expense, EconomicsRetryExecutor retry) {
         try (EconomicsAPI api = economicsService.getApiForExpense(expense)) {
             int jn = expense.getJournalnumber();
             String year = expense.getAccountingyear();
@@ -130,7 +131,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
 
             // 1) Look in journal entries (unbooked)
             String journalFilter = "voucher.voucherNumber$eq:" + vn;
-            Response jr = retry.executeWithRetry(() -> api.getJournalEntries(jn, journalFilter, 1000));
+            Response jr = retry.executeWithRetry(() -> failOnThrottle(api.getJournalEntries(jn, journalFilter, 1000)));
             int jrStatus = jr != null ? jr.getStatus() : -1;
             String jrBody = null;
             try {
@@ -140,8 +141,12 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
             log.info("Expense " + expense.getUuid() + ": journal query jn=" + jn + ", filter='" + journalFilter + "', status=" + jrStatus);
             log.debug("Journal response body (truncated): " + truncate(jrBody, 800));
+            if (!isSuccessStatus(jrStatus)) {
+                log.warn("Expense " + expense.getUuid() + ": journal query failed with status=" + jrStatus + "; leaving status unchanged");
+                return SyncOutcome.ERROR;
+            }
 
-            boolean inJournal = jrStatus >= 200 && jrStatus < 300 && hasAnyEntries(jrBody);
+            boolean inJournal = hasAnyEntries(jrBody);
             if (inJournal) {
                 // Unbooked; reflect current account if changed
                 String accountFromEntries = extractFirstAccount(jrBody);
@@ -171,7 +176,7 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             String yearFilter = "voucherNumber$eq:" + vn;
             // Convert to underscore format for accounting-years path parameter
             String yearId = dk.trustworks.intranet.utils.DateUtils.toEconomicsUrlYear(year);
-            Response yr = retry.executeWithRetry(() -> api.getYearEntries(yearId, yearFilter, 1000, 0));
+            Response yr = retry.executeWithRetry(() -> failOnThrottle(api.getYearEntries(yearId, yearFilter, 1000, 0)));
             int yrStatus = yr != null ? yr.getStatus() : -1;
             String yrBody = null;
             try {
@@ -181,8 +186,12 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             }
             log.info("Expense " + expense.getUuid() + ": year query year=" + yearId + ", filter='" + yearFilter + "', status=" + yrStatus);
             log.debug("Year response body (truncated): " + truncate(yrBody, 800));
+            if (!isSuccessStatus(yrStatus)) {
+                log.warn("Expense " + expense.getUuid() + ": year query failed with status=" + yrStatus + "; leaving status unchanged");
+                return SyncOutcome.ERROR;
+            }
 
-            boolean booked = yrStatus >= 200 && yrStatus < 300 && hasAnyEntries(yrBody);
+            boolean booked = hasAnyEntries(yrBody);
             if (booked) {
                 // Booked; update account and mark verified booked to ledger
                 String accountFromEntries = extractFirstAccount(yrBody);
@@ -219,6 +228,25 @@ public class ExpenseSyncBatchlet extends AbstractBatchlet {
             log.error("Sync failed for expense " + expense.getUuid() + ": " + ex.getMessage(), ex);
             return SyncOutcome.ERROR;
         }
+    }
+
+    static Response failOnThrottle(Response response) {
+        if (response == null || response.getStatus() != 429) {
+            return response;
+        }
+        Long retryAfterSeconds = EconomicsErrorMapper.parseRetryAfterSeconds(response.getHeaderString("Retry-After"));
+        String body = null;
+        try {
+            body = response.readEntity(String.class);
+        } catch (Exception ignore) {
+        } finally {
+            response.close();
+        }
+        throw new EconomicsRateLimitException("HTTP 429 from Economics: " + (body != null ? body : ""), retryAfterSeconds);
+    }
+
+    private static boolean isSuccessStatus(int status) {
+        return status >= 200 && status < 300;
     }
 
     private boolean hasAnyEntries(String body) {

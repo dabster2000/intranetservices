@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService;
 import dk.trustworks.intranet.model.Company;
+import dk.trustworks.intranet.perf.PerfMetrics;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,7 @@ class InternalInvoiceOrchestratorTest {
     @Mock InvoiceWorkService                 work;
     @Mock EconomicsInvoiceService            economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
+    @Mock PerfMetrics                        perfMetrics;
 
     @BeforeEach
     void enableInvoiceUpload() {

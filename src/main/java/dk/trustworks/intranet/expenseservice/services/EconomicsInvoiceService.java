@@ -10,6 +10,7 @@ import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter
 import dk.trustworks.intranet.aggregates.invoice.economics.book.EconomicsBookingApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.supplier.EconomicsSupplierResolver;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.services.EconomicsAgreementResolver;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -196,20 +197,25 @@ public class EconomicsInvoiceService {
 
             // e-conomic's supplierInvoices entry posts `amount` from the SUPPLIER (kreditor)
             // perspective: a POSITIVE amount DEBITS the creditor (reduces accounts payable — a
-            // supplier credit note), a NEGATIVE amount CREDITS it (increases payable — a normal
-            // purchase invoice). For an intercompany INTERNAL invoice the debtor (e.g. A/S) OWES
-            // the issuer, so the creditor must be CREDITED: we post the negated gross. e-conomic
-            // then books the balancing debit on the contra (cost) account net, lifting the I25
-            // input VAT out of the gross. Without the negation every payer-side voucher booked as
-            // a DEBIT on the creditor and the accountant had to flip the sign by hand on each one.
-            // Negating getGrandTotal() also keeps credit notes correct: a negative gross flips back
-            // to a positive amount (debit the creditor), reducing payable as intended.
+            // supplier credit), a NEGATIVE amount CREDITS it (increases payable — a normal
+            // purchase invoice). e-conomic then books the balancing entry on the contra (cost)
+            // account net, lifting the I25 input VAT out of the gross.
+            //
+            //  * A normal INTERNAL invoice: the debtor OWES the issuer, so the creditor must be
+            //    CREDITED → post the negated gross (-grandTotal). grandTotal is positive.
+            //  * An internal CREDIT_NOTE reversal: the payable must be REDUCED, so the creditor
+            //    must be DEBITED → post the gross POSITIVE (+grandTotal). The reversal sign is
+            //    carried by the TYPE, not the amount — CN items are copied positive so grandTotal
+            //    is a clean positive number (PricingEngine never clamps a positive total).
             double grandTotal = invoice.getGrandTotal() != null ? invoice.getGrandTotal() : 0.0;
+            double signedAmount = invoice.getType() == InvoiceType.CREDIT_NOTE
+                    ? grandTotal
+                    : -grandTotal;
             SupplierInvoice supplierInvoice = new SupplierInvoice(
                     supplierAccount,
                     StringUtils.convertInvoiceNumberToString(invoice.getInvoicenumber()),
                     text,
-                    -grandTotal,
+                    signedAmount,
                     supplierContraAccount,
                     date);
 

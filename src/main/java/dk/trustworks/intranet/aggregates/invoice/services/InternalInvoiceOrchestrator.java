@@ -139,11 +139,12 @@ public class InternalInvoiceOrchestrator {
         Invoice inv = invoices.findByUuid(invoiceUuid)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Invoice not found: " + invoiceUuid));
-        if (inv.getType() != InvoiceType.INTERNAL
-                && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
+        boolean internal = inv.getType() == InvoiceType.INTERNAL
+                || inv.getType() == InvoiceType.INTERNAL_SERVICE;
+        if (!internal && !inv.isInternalCreditNote()) {
             throw new IllegalArgumentException(
-                    "InternalInvoiceOrchestrator only handles INTERNAL/INTERNAL_SERVICE invoices, "
-                    + "got " + inv.getType() + " for " + invoiceUuid);
+                    "InternalInvoiceOrchestrator only handles INTERNAL/INTERNAL_SERVICE invoices "
+                    + "or internal CREDIT_NOTE reversals, got " + inv.getType() + " for " + invoiceUuid);
         }
     }
 }
