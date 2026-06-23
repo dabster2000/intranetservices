@@ -381,10 +381,8 @@ public class InvoiceResource {
         // from createDraft into the debtor-side voucher — the issuer Kreditnota and the debtor
         // reversal must reconcile to the same gross. A separate-request chain would lose grandTotal.
         if (cn.isInternalCreditNote()) {
-            String safeReason = reason == null ? "" : reason.replaceAll("[\r\n]", " ").strip();
-            if (safeReason.length() > 500) safeReason = safeReason.substring(0, 500) + "…[truncated]";
             log.infof("Internal credit note %s created for source %s by user %s (reason=%s) — posting two-leg reversal",
-                    cn.getUuid(), draftInvoice.getUuid(), requestHeaderHolder.getUserUuid(), safeReason);
+                    cn.getUuid(), draftInvoice.getUuid(), requestHeaderHolder.getUserUuid(), sanitizeReason(reason));
             try {
                 cn = internalInvoiceOrchestrator.finalizeAutomatically(cn.getUuid()); // tx2
             } catch (Exception e) {
@@ -393,6 +391,16 @@ public class InvoiceResource {
             }
         }
         return cn;
+    }
+
+    /**
+     * Strips CR/LF and caps length so a caller-supplied credit-note reason cannot inject a
+     * synthetic line into the financial audit log (CloudWatch → #ops-alert digest).
+     */
+    private static String sanitizeReason(String raw) {
+        if (raw == null) return "";
+        String cleaned = raw.replaceAll("[\r\n]", " ").strip();
+        return cleaned.length() > 500 ? cleaned.substring(0, 500) + "…[truncated]" : cleaned;
     }
 
     @POST

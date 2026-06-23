@@ -45,7 +45,5 @@ public record SimpleInvoiceDTO(
         LocalDateTime internalInvoiceSkipAt,
         String internalInvoiceSkipBy,
         CancellingCreditNoteRef cancellingCreditNote,
-        // Populated only on the INTERNAL row of a pair when a CREDIT_NOTE reverses THIS internal
-        // (reverse `creditnote_for_uuid` lookup). Null otherwise — including client rows.
         CancellingCreditNoteRef creditNote
 ) {}
