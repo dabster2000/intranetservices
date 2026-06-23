@@ -600,8 +600,20 @@ public class InvoiceService {
 
     @Transactional
     public Invoice createCreditNote(Invoice invoice) {
+        // Re-fetch the authoritative persisted source. Callers may pass a partial payload
+        // (the internal-invoices Pairs grid sends only summary fields), and crediting must never
+        // trust client-supplied amounts/items. For a booked (CREATED) source the DB equals any
+        // full payload, so the existing client-INVOICE flow is behaviour-preserving.
+        Invoice source = Invoice.findById(invoice.getUuid());
+        if (source == null) {
+            throw new WebApplicationException(
+                    Response.status(Response.Status.NOT_FOUND)
+                            .entity("Source invoice not found: " + invoice.getUuid())
+                            .build());
+        }
+
         // Validate no existing credit note for this invoice
-        if (Invoice.find("creditnoteForUuid = ?1", invoice.getUuid()).count() > 0) {
+        if (Invoice.find("creditnoteForUuid = ?1", source.getUuid()).count() > 0) {
             throw new WebApplicationException(
                     Response.status(Response.Status.CONFLICT)
                             .entity("A credit note already exists for this invoice.")
@@ -609,17 +621,32 @@ public class InvoiceService {
             );
         }
 
-        Invoice creditNote = new Invoice(invoice.getUuid(), invoice.getInvoicenumber(), InvoiceType.CREDIT_NOTE, invoice.getContractuuid(), invoice.getProjectuuid(),
-                invoice.getProjectname(), invoice.getDiscount(), invoice.getYear(), invoice.getMonth(), invoice.getClientname(),
-                invoice.getClientaddresse(), invoice.getOtheraddressinfo(), invoice.getZipcity(),
-                invoice.getEan(), invoice.getCvr(), invoice.getAttention(), LocalDate.now(), LocalDate.now().plusMonths(1),
-                invoice.getProjectref(), invoice.getContractref(), invoice.contractType, invoice.getCompany(), invoice.getCurrency(), invoice.getVat(),
-                "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(invoice.invoicenumber), invoice.getBonusConsultant(), invoice.getBonusConsultantApprovedStatus());
+        boolean internalSource = source.getType() == InvoiceType.INTERNAL;
+        if (internalSource) {
+            validateInternalCreditNoteEligibility(source);
+        }
+
+        Invoice creditNote = new Invoice(source.getUuid(), source.getInvoicenumber(), InvoiceType.CREDIT_NOTE, source.getContractuuid(), source.getProjectuuid(),
+                source.getProjectname(), source.getDiscount(), source.getYear(), source.getMonth(), source.getClientname(),
+                source.getClientaddresse(), source.getOtheraddressinfo(), source.getZipcity(),
+                source.getEan(), source.getCvr(), source.getAttention(), LocalDate.now(), LocalDate.now().plusMonths(1),
+                source.getProjectref(), source.getContractref(), source.contractType, source.getCompany(), source.getCurrency(), source.getVat(),
+                "Kreditnota til faktura " + StringUtils.convertInvoiceNumberToString(source.invoicenumber), source.getBonusConsultant(), source.getBonusConsultantApprovedStatus());
 
         creditNote.invoicenumber = 0;
-        creditNote.setCreditnoteForUuid(invoice.getUuid());
+        creditNote.setCreditnoteForUuid(source.getUuid());
 
-        for (InvoiceItem invoiceitem : invoice.invoiceitems) {
+        // Intercompany carry-over: an INTERNAL source posts a debtor-side voucher, so the reversal
+        // must carry the same debtor + intercompany billing client. BillingContextResolver honours
+        // the stamped billingClientUuid (it keys on non-null, not type) so the issuer Q2C draft bills
+        // the correct intercompany Client; the debtor leg fires on debtorCompanyuuid (Task 2 gate).
+        if (internalSource) {
+            creditNote.setDebtorCompanyuuid(source.getDebtorCompanyuuid());
+            Client intercompanyClient = requireIntercompanyClient(source.getDebtorCompanyuuid());
+            creditNote.setBillingClientUuid(intercompanyClient.getUuid());
+        }
+
+        for (InvoiceItem invoiceitem : source.invoiceitems) {
             InvoiceItem newItem = new InvoiceItem(
                 invoiceitem.consultantuuid,
                 invoiceitem.getItemname(),
@@ -656,6 +683,48 @@ public class InvoiceService {
         }
         invoiceAttributionService.copyAttributionsFromSource(creditNote);
         return creditNote;
+    }
+
+    /**
+     * Fail-closed eligibility for crediting an INTERNAL invoice: it must be booked, carry the
+     * 25% intercompany VAT (the I25 lift), and the debtor must have a configured intercompany
+     * Client and internal-journal-number — mirroring queueInternalInvoice / createSettlementInternal.
+     */
+    private void validateInternalCreditNoteEligibility(Invoice source) {
+        if (source.getDebtorCompanyuuid() == null || source.getDebtorCompanyuuid().isBlank()) {
+            throw new WebApplicationException(
+                    "INTERNAL invoice is missing debtorCompanyuuid; cannot credit.", Response.Status.BAD_REQUEST);
+        }
+        if (source.getStatus() != InvoiceStatus.CREATED) {
+            throw new WebApplicationException(
+                    "Only booked (CREATED) internal invoices can be credited; drafts/queued use the delete path. Status="
+                            + source.getStatus(),
+                    Response.Status.BAD_REQUEST);
+        }
+        if (Math.abs(source.getVat() - 25.0) > 0.01) {
+            throw new WebApplicationException(
+                    "Internal credit notes require a 25% VAT source (the I25 lift); source VAT=" + source.getVat(),
+                    Response.Status.BAD_REQUEST);
+        }
+        // Throws 400 if no intercompany Client is configured for the debtor.
+        requireIntercompanyClient(source.getDebtorCompanyuuid());
+        Company debtor = Company.findById(source.getDebtorCompanyuuid());
+        if (debtor == null) {
+            throw new WebApplicationException(
+                    "Debtor company not found: " + source.getDebtorCompanyuuid(), Response.Status.BAD_REQUEST);
+        }
+        try {
+            IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(debtor);
+            if (keys.internalJournalNumber() <= 0) {
+                throw new WebApplicationException(
+                        "Debtor company " + debtor.getName() + " has no internal-journal-number configured",
+                        Response.Status.BAD_REQUEST);
+            }
+        } catch (NumberFormatException e) {
+            throw new WebApplicationException(
+                    "Debtor company " + debtor.getName() + " has incomplete integration keys (missing journal numbers)",
+                    Response.Status.BAD_REQUEST);
+        }
     }
 
     @Transactional
