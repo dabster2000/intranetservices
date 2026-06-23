@@ -13,6 +13,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Optional;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -28,6 +30,7 @@ class BillingContextResolverTest {
 
     @Mock ContractService contractService;
     @Mock ClientService   clientService;
+    @Mock IntercompanyClientResolver intercompanyClientResolver;
 
     // ── branch 1: invoice-stamped billingClientUuid takes precedence ──────────
 
@@ -137,6 +140,65 @@ class BillingContextResolverTest {
 
         assertThrows(BadRequestException.class, () -> resolver.resolve(inv));
         verify(contractService, never()).findByUuid(any());
+    }
+
+    // ── branch 1b: INTERNAL invoice with no stamp resolves the intercompany client ──
+    // Regression guard for the legacy-QUEUED bug: INTERNAL / INTERNAL_SERVICE invoices
+    // created before billing_client_uuid stamping have a null stamp. They must resolve to
+    // the intercompany client for the debtor company (by CVR) — NEVER fall through to the
+    // contract's external client, which is the wrong entity and is usually unpaired in the
+    // issuer's e-conomic (surfaces as "Client X is not paired …" at force-create time).
+
+    @Test
+    void resolve_internalInvoiceWithNullStamp_resolvesIntercompanyClientByDebtor_notContractExternalClient() {
+        Invoice inv = internalInvoice("inv-1", "contract-1", null);
+        inv.setDebtorCompanyuuid("debtor-company-uuid");
+        Contract contract = contract("contract-1", "external-client-uuid", "external-billing-client-uuid");
+        Client intercompany = client("intercompany-client-uuid", "TRUSTWORKS A/S");
+
+        when(contractService.findByUuid("contract-1")).thenReturn(contract);
+        when(intercompanyClientResolver.resolveByDebtorCompanyUuid("debtor-company-uuid"))
+                .thenReturn(Optional.of(intercompany));
+
+        BillingContext result = resolver.resolve(inv);
+
+        assertSame(intercompany, result.billingClient(),
+                "INTERNAL invoice with null stamp must bill the intercompany (debtor-CVR) client, "
+                + "never the contract's external client");
+        assertSame(contract, result.contract());
+        verify(clientService, never()).findByUuid("external-client-uuid");
+        verify(clientService, never()).findByUuid("external-billing-client-uuid");
+    }
+
+    @Test
+    void resolve_internalServiceInvoiceWithNullStamp_alsoResolvesIntercompanyClient() {
+        Invoice inv = internalInvoice("inv-1", "contract-1", null);
+        inv.setType(InvoiceType.INTERNAL_SERVICE);
+        inv.setDebtorCompanyuuid("debtor-company-uuid");
+        Contract contract = contract("contract-1", "external-client-uuid", null);
+        Client intercompany = client("intercompany-client-uuid", "TRUSTWORKS A/S");
+
+        when(contractService.findByUuid("contract-1")).thenReturn(contract);
+        when(intercompanyClientResolver.resolveByDebtorCompanyUuid("debtor-company-uuid"))
+                .thenReturn(Optional.of(intercompany));
+
+        BillingContext result = resolver.resolve(inv);
+
+        assertSame(intercompany, result.billingClient());
+    }
+
+    @Test
+    void resolve_internalInvoiceWithNullStamp_whenNoIntercompanyClientMatches_throwsBadRequest_withoutContractClientLookup() {
+        Invoice inv = internalInvoice("inv-1", "contract-1", null);
+        inv.setDebtorCompanyuuid("debtor-company-uuid");
+        Contract contract = contract("contract-1", "external-client-uuid", null);
+
+        when(contractService.findByUuid("contract-1")).thenReturn(contract);
+        when(intercompanyClientResolver.resolveByDebtorCompanyUuid("debtor-company-uuid"))
+                .thenReturn(Optional.empty());
+
+        assertThrows(BadRequestException.class, () -> resolver.resolve(inv));
+        verify(clientService, never()).findByUuid(any());
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
