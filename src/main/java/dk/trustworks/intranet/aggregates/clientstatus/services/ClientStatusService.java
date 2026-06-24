@@ -30,6 +30,8 @@ public class ClientStatusService {
         List<String> months = ClientStatusMath.ttmMonthKeys(end);
         LocalDate fromDate = ClientStatusMath.ttmFromDate(end);
         LocalDate toDate = ClientStatusMath.ttmToDateExclusive(end);
+        int fromPeriod = ClientStatusMath.ttmFromPeriod(end);
+        int toPeriod = ClientStatusMath.ttmToPeriod(end);
 
         // client -> (monthKey -> expected)
         Map<String, Map<String, Double>> expectedByClient = new HashMap<>();
@@ -63,12 +65,15 @@ public class ClientStatusService {
         //  - GROSS: discounts/fees are negative non-consultant lines (framework "trapperabat", pre-agreed
         //    discounts, admin fees) NOT written back to work_full, so they are dropped (set to 0) to match
         //    the gross "expected"; positive non-consultant lines (self-billed PHANTOMs, fixed-price) are kept.
-        //  - client via project.clientuuid (invoices has no clientuuid); month via invoicedate.
+        //  - client via project.clientuuid (invoices has no clientuuid); month via the billing
+        //    period (invoice.year + invoice.month), NOT invoicedate — invoicedate is the issue date
+        //    (usually the month AFTER the work) and would mis-align "invoiced" against work-month
+        //    "expected". See docs/finalized/invoicing/concepts-and-terminology.md §6.
         Map<String, Map<String, Double>> invoicedByClient = new HashMap<>();
         @SuppressWarnings("unchecked")
         List<Tuple> invoicedRows = em.createNativeQuery("""
                 SELECT p.clientuuid AS client_id,
-                       DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key,
+                       CONCAT(i.year, LPAD(i.month, 2, '0')) AS month_key,
                        SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
                            * CASE WHEN ii.consultantuuid IS NULL AND (ii.hours * ii.rate) < 0
                                   THEN 0 ELSE (ii.hours * ii.rate) END) AS invoiced
@@ -79,12 +84,13 @@ public class ClientStatusService {
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
                   AND p.clientuuid IS NOT NULL
                   AND p.clientuuid <> :internalClient
-                  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate
-                GROUP BY p.clientuuid, DATE_FORMAT(i.invoicedate, '%Y%m')
+                  AND (i.year * 100 + i.month) >= :fromPeriod
+                  AND (i.year * 100 + i.month) <= :toPeriod
+                GROUP BY p.clientuuid, CONCAT(i.year, LPAD(i.month, 2, '0'))
                 """, Tuple.class)
                 .setParameter("internalClient", INTERNAL_CLIENT_UUID)
-                .setParameter("fromDate", fromDate)
-                .setParameter("toDate", toDate)
+                .setParameter("fromPeriod", fromPeriod)
+                .setParameter("toPeriod", toPeriod)
                 .getResultList();
         for (Tuple r : invoicedRows) {
             invoicedByClient
@@ -116,6 +122,11 @@ public class ClientStatusService {
                     new String[]{(String) r.get("name"), (String) r.get("segment")});
         }
 
+        // The current month is never fully invoiced until early in the following month, so any
+        // still-provisional month is shown in the heatmap but excluded from every summation
+        // (row totals, gaps, outstanding, and the under/fully-billed classification).
+        Set<String> provisional = ClientStatusMath.provisionalMonthKeys(months, LocalDate.now());
+
         List<ClientStatusRow> rows = new ArrayList<>(clientUuids.size());
         double totalExpected = 0, totalInvoiced = 0, outstanding = 0;
         int underBilled = 0, fullyBilled = 0;
@@ -133,6 +144,7 @@ public class ClientStatusService {
                 double i = inv.getOrDefault(mk, 0d);
                 ClientStatusCellState state = ClientStatusMath.classify(e, i);
                 cells.add(new ClientStatusCell(mk, e, i, i - e, state));
+                if (provisional.contains(mk)) continue; // visible cell, but not yet counted in totals
                 rowExpected += e;
                 rowInvoiced += i;
                 if (state == ClientStatusCellState.NOT_INVOICED || state == ClientStatusCellState.PARTIAL) gaps++;
@@ -248,11 +260,11 @@ public class ClientStatusService {
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
                   AND p.clientuuid = :client
-                  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate
+                  AND i.year = :year AND i.month = :month
                 """, Tuple.class)
                 .setParameter("client", clientUuid)
-                .setParameter("fromDate", fromDate)
-                .setParameter("toDate", toDate)
+                .setParameter("year", year)
+                .setParameter("month", month)
                 .getResultList();
         double invoicedHeadline = headRows.isEmpty() ? 0d : num(headRows.get(0).get("invoiced"));
 
