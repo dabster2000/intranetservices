@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.List;
+import java.util.Set;
 
 import static dk.trustworks.intranet.aggregates.clientstatus.dto.ClientStatusCellState.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -65,5 +66,43 @@ class ClientStatusMathTest {
         YearMonth end = YearMonth.of(2026, 6);
         assertEquals(LocalDate.of(2025, 7, 1), ClientStatusMath.ttmFromDate(end));
         assertEquals(LocalDate.of(2026, 7, 1), ClientStatusMath.ttmToDateExclusive(end));
+    }
+
+    @Test
+    void ttmPeriodRange_isInclusiveYearMonthKeys() {
+        YearMonth end = YearMonth.of(2026, 6);
+        assertEquals(202507, ClientStatusMath.ttmFromPeriod(end));
+        assertEquals(202606, ClientStatusMath.ttmToPeriod(end));
+    }
+
+    @Test
+    void provisionalMonthKeys_excludesCurrentMonthBeforeCutoff() {
+        List<String> months = ClientStatusMath.ttmMonthKeys(YearMonth.of(2026, 6));
+        // On Jun 24, June (202606) is provisional (Jul 10 not yet reached); May (202505) is final.
+        Set<String> prov = ClientStatusMath.provisionalMonthKeys(months, LocalDate.of(2026, 6, 24));
+        assertEquals(Set.of("202606"), prov);
+    }
+
+    @Test
+    void provisionalMonthKeys_priorMonthStillProvisionalEarlyInNextMonth() {
+        List<String> months = ClientStatusMath.ttmMonthKeys(YearMonth.of(2026, 6));
+        // On Jul 5, June is still provisional because its Jul 10 cutoff has not passed.
+        Set<String> prov = ClientStatusMath.provisionalMonthKeys(months, LocalDate.of(2026, 7, 5));
+        assertTrue(prov.contains("202606"));
+    }
+
+    @Test
+    void provisionalMonthKeys_finalizedExactlyOnCutoffDay() {
+        List<String> months = ClientStatusMath.ttmMonthKeys(YearMonth.of(2026, 6));
+        // On Jul 10, June is finalized (cutoff reached) and counts toward totals.
+        Set<String> prov = ClientStatusMath.provisionalMonthKeys(months, LocalDate.of(2026, 7, 10));
+        assertFalse(prov.contains("202606"));
+    }
+
+    @Test
+    void provisionalMonthKeys_historicalWindowHasNone() {
+        List<String> months = ClientStatusMath.ttmMonthKeys(YearMonth.of(2026, 3));
+        Set<String> prov = ClientStatusMath.provisionalMonthKeys(months, LocalDate.of(2026, 6, 24));
+        assertTrue(prov.isEmpty());
     }
 }
