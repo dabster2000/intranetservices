@@ -140,4 +140,115 @@ public class ClientStatusService {
                 totalExpected, totalInvoiced, outstanding, underBilled, fullyBilled, rows.size());
         return new ClientStatusResponse(months, rows, summary);
     }
+
+    /** Drill-down: registered work (by consultant × project) and invoices for one client-month. */
+    public ClientStatusDetailResponse getClientStatusDetail(String clientUuid, int year, int month) {
+        YearMonth ym = YearMonth.of(year, month);
+        LocalDate fromDate = ym.atDay(1);
+        LocalDate toDate = ym.plusMonths(1).atDay(1);
+        String monthKey = String.format("%04d%02d", year, month);
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> workRows = em.createNativeQuery("""
+                SELECT w.useruuid AS user_id,
+                       COALESCE(CONCAT(u.firstname, ' ', u.lastname), w.useruuid) AS consultant_name,
+                       w.projectuuid AS project_id,
+                       COALESCE(p.name, '') AS project_name,
+                       SUM(w.workduration) AS hours,
+                       AVG(w.rate) AS avg_rate,
+                       SUM(IFNULL(w.rate,0) * w.workduration
+                           * IF(w.discount > 0, 1.0 - (w.discount/100.0), 1)) AS value
+                FROM work_full w
+                LEFT JOIN `user` u ON u.uuid = w.useruuid
+                LEFT JOIN project p ON p.uuid = w.projectuuid
+                WHERE w.clientuuid = :client
+                  AND w.rate > 0
+                  AND w.registered >= :fromDate AND w.registered < :toDate
+                GROUP BY w.useruuid, consultant_name, w.projectuuid, project_name
+                ORDER BY value DESC
+                """, Tuple.class)
+                .setParameter("client", clientUuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
+
+        List<ClientStatusWorkLine> work = new ArrayList<>(workRows.size());
+        double expected = 0d;
+        for (Tuple r : workRows) {
+            double value = num(r.get("value"));
+            expected += value;
+            work.add(new ClientStatusWorkLine(
+                    (String) r.get("user_id"),
+                    (String) r.get("consultant_name"),
+                    (String) r.get("project_id"),
+                    (String) r.get("project_name"),
+                    num(r.get("hours")),
+                    num(r.get("avg_rate")),
+                    value));
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> invoiceRows = em.createNativeQuery("""
+                SELECT i.uuid AS invoice_uuid,
+                       i.invoicenumber AS invoice_number,
+                       i.type AS type,
+                       i.status AS status,
+                       i.invoicedate AS invoicedate,
+                       COALESCE(SUM(ii.hours * ii.rate), 0) AS amount
+                FROM invoices i
+                JOIN project p ON p.uuid = i.projectuuid
+                LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                WHERE p.clientuuid = :client
+                  AND i.year = :year AND i.month = :month
+                  AND i.status IN ('CREATED','QUEUED')
+                GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate
+                ORDER BY i.invoicenumber
+                """, Tuple.class)
+                .setParameter("client", clientUuid)
+                .setParameter("year", year)
+                .setParameter("month", month)
+                .getResultList();
+
+        List<ClientStatusInvoiceLine> invoices = new ArrayList<>(invoiceRows.size());
+        double invoiced = 0d;
+        for (Tuple r : invoiceRows) {
+            double amount = num(r.get("amount"));
+            invoiced += amount;
+            Object invDate = r.get("invoicedate");
+            invoices.add(new ClientStatusInvoiceLine(
+                    (String) r.get("invoice_uuid"),
+                    ((Number) r.get("invoice_number")).intValue(),
+                    (String) r.get("type"),
+                    (String) r.get("status"),
+                    amount,
+                    invDate == null ? null : invDate.toString()));
+        }
+
+        // Prefer the fact-table invoiced figure for the headline (matches the grid).
+        @SuppressWarnings("unchecked")
+        List<Tuple> factRows = em.createNativeQuery("""
+                SELECT COALESCE(SUM(f.net_revenue_dkk),0) AS invoiced
+                FROM fact_client_revenue_mat f
+                WHERE f.client_id = :client AND f.month_key = :monthKey
+                """, Tuple.class)
+                .setParameter("client", clientUuid)
+                .setParameter("monthKey", monthKey)
+                .getResultList();
+        double invoicedHeadline = factRows.isEmpty() ? invoiced : num(factRows.get(0).get("invoiced"));
+
+        return new ClientStatusDetailResponse(
+                clientUuid, resolveClientName(clientUuid), year, month,
+                expected, invoicedHeadline, invoicedHeadline - expected,
+                ClientStatusMath.classify(expected, invoicedHeadline),
+                work, invoices);
+    }
+
+    private String resolveClientName(String clientUuid) {
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery(
+                "SELECT c.name FROM client c WHERE c.uuid = :uuid", Tuple.class)
+                .setParameter("uuid", clientUuid)
+                .getResultList();
+        return rows.isEmpty() ? clientUuid : (String) rows.get(0).get("name");
+    }
 }
