@@ -176,22 +176,28 @@ public class ClientStatusService {
         LocalDate fromDate = ym.atDay(1);
         LocalDate toDate = ym.plusMonths(1).atDay(1);
 
+        // Split help-colleague work (workas ≠ self) into its own row per helped colleague; all
+        // non-help work for a consultant×project still aggregates into one row (helper_key = NULL).
         @SuppressWarnings("unchecked")
         List<Tuple> workRows = em.createNativeQuery("""
                 SELECT w.useruuid AS user_id,
                        COALESCE(CONCAT(u.firstname, ' ', u.lastname), w.useruuid) AS consultant_name,
                        w.projectuuid AS project_id,
                        COALESCE(p.name, '') AS project_name,
+                       CASE WHEN w.workas IS NOT NULL AND w.workas <> '' AND w.workas <> w.useruuid
+                            THEN w.workas ELSE NULL END AS helper_key,
                        SUM(w.workduration) AS hours,
                        AVG(w.rate) AS avg_rate,
-                       SUM(IFNULL(w.rate,0) * w.workduration) AS value
+                       SUM(IFNULL(w.rate,0) * w.workduration) AS value,
+                       MAX(COALESCE(CONCAT(hu.firstname, ' ', hu.lastname), w.workas)) AS helped_name
                 FROM work_full w
                 LEFT JOIN `user` u ON u.uuid = w.useruuid
                 LEFT JOIN project p ON p.uuid = w.projectuuid
+                LEFT JOIN `user` hu ON hu.uuid = w.workas AND w.workas <> '' AND w.workas <> w.useruuid
                 WHERE w.clientuuid = :client
                   AND w.rate > 0
                   AND w.registered >= :fromDate AND w.registered < :toDate
-                GROUP BY w.useruuid, consultant_name, w.projectuuid, project_name
+                GROUP BY w.useruuid, consultant_name, w.projectuuid, project_name, helper_key
                 ORDER BY value DESC
                 """, Tuple.class)
                 .setParameter("client", clientUuid)
@@ -204,6 +210,7 @@ public class ClientStatusService {
         for (Tuple r : workRows) {
             double value = num(r.get("value"));
             expected += value;
+            boolean helpColleague = r.get("helper_key") != null;
             work.add(new ClientStatusWorkLine(
                     (String) r.get("user_id"),
                     (String) r.get("consultant_name"),
@@ -211,9 +218,13 @@ public class ClientStatusService {
                     (String) r.get("project_name"),
                     num(r.get("hours")),
                     num(r.get("avg_rate")),
-                    value));
+                    value,
+                    helpColleague,
+                    helpColleague ? (String) r.get("helped_name") : null));
         }
 
+        // Per-invoice: signed GROSS consultant basis split from the (signed) discount/non-consultant
+        // total, so amountNet = consultant + discount. PHANTOM dropped — detail is INVOICE/CREDIT_NOTE.
         @SuppressWarnings("unchecked")
         List<Tuple> invoiceRows = em.createNativeQuery("""
                 SELECT i.uuid AS invoice_uuid,
@@ -221,17 +232,25 @@ public class ClientStatusService {
                        i.type AS type,
                        i.status AS status,
                        i.invoicedate AS invoicedate,
-                       COALESCE(CASE WHEN i.type = 'CREDIT_NOTE'
-                                     THEN -SUM(ii.hours * ii.rate)
-                                     ELSE SUM(ii.hours * ii.rate) END, 0) AS amount
+                       i.projectuuid AS project_id,
+                       COALESCE(p.name, '') AS project_name,
+                       i.creditnote_for_uuid AS creditnote_for_uuid,
+                       i.invoice_ref AS invoice_ref,
+                       COALESCE(SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
+                                    * CASE WHEN ii.consultantuuid IS NOT NULL
+                                           THEN ii.hours * ii.rate ELSE 0 END), 0) AS signed_gross_consultant,
+                       COALESCE(SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
+                                    * CASE WHEN ii.consultantuuid IS NULL
+                                           THEN ii.hours * ii.rate ELSE 0 END), 0) AS discount_total
                 FROM invoices i
                 LEFT JOIN project p ON p.uuid = i.projectuuid
                 LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                   AND i.status IN ('CREATED','QUEUED')
-                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
-                GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate
+                  AND i.type IN ('INVOICE','CREDIT_NOTE')
+                GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate,
+                         i.projectuuid, p.name, i.creditnote_for_uuid, i.invoice_ref
                 ORDER BY i.invoicenumber
                 """, Tuple.class)
                 .setParameter("client", clientUuid)
@@ -241,28 +260,39 @@ public class ClientStatusService {
 
         List<ClientStatusInvoiceLine> invoices = new ArrayList<>(invoiceRows.size());
         for (Tuple r : invoiceRows) {
-            double amount = num(r.get("amount"));
+            double signedGrossConsultant = num(r.get("signed_gross_consultant"));
+            double discountTotal = num(r.get("discount_total"));
             Object invDate = r.get("invoicedate");
+            Object refObj = r.get("invoice_ref");
+            int refInt = refObj == null ? 0 : ((Number) refObj).intValue();
+            Integer invoiceRef = refInt == 0 ? null : refInt;
             invoices.add(new ClientStatusInvoiceLine(
                     (String) r.get("invoice_uuid"),
                     ((Number) r.get("invoice_number")).intValue(),
                     (String) r.get("type"),
                     (String) r.get("status"),
-                    amount,
+                    signedGrossConsultant,
+                    discountTotal,
+                    signedGrossConsultant + discountTotal,
+                    (String) r.get("project_id"),
+                    (String) r.get("project_name"),
+                    (String) r.get("creditnote_for_uuid"),
+                    invoiceRef,
                     invDate == null ? null : invDate.toString()));
         }
 
-        // Headline "invoiced" — GROSS, CREATED+QUEUED, same basis + source as the grid.
+        // Headline "invoiced" — signed GROSS consultant basis over INVOICE/CREDIT_NOTE (no PHANTOM),
+        // so the headline equals Σ signedGrossConsultant of the per-invoice rows above.
         @SuppressWarnings("unchecked")
         List<Tuple> headRows = em.createNativeQuery("""
                 SELECT COALESCE(SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
-                       * CASE WHEN ii.consultantuuid IS NULL AND (ii.hours * ii.rate) < 0
-                              THEN 0 ELSE (ii.hours * ii.rate) END), 0) AS invoiced
+                       * CASE WHEN ii.consultantuuid IS NOT NULL
+                              THEN ii.hours * ii.rate ELSE 0 END), 0) AS invoiced
                 FROM invoices i
                 LEFT JOIN project p ON p.uuid = i.projectuuid
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
-                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND i.type IN ('INVOICE','CREDIT_NOTE')
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                 """, Tuple.class)
