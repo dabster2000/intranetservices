@@ -65,28 +65,32 @@ public class ClientStatusService {
         //  - GROSS: discounts/fees are negative non-consultant lines (framework "trapperabat", pre-agreed
         //    discounts, admin fees) NOT written back to work_full, so they are dropped (set to 0) to match
         //    the gross "expected"; positive non-consultant lines (self-billed PHANTOMs, fixed-price) are kept.
-        //  - client via project.clientuuid (invoices has no clientuuid); month via the billing
-        //    period (invoice.year + invoice.month), NOT invoicedate — invoicedate is the issue date
-        //    (usually the month AFTER the work) and would mis-align "invoiced" against work-month
-        //    "expected". See docs/finalized/invoicing/concepts-and-terminology.md §6.
+        //  - client via COALESCE(project.clientuuid, invoices.billing_client_uuid): normal invoices
+        //    resolve through their project; self-billed/e-conomic PHANTOMs have projectuuid=NULL and
+        //    carry the client on billing_client_uuid (stamped by PhantomAttributionService). Without
+        //    this fallback the project JOIN drops every phantom and self-billed clients (Vattenfall,
+        //    Energinet) show a false under-billing gap equal to their entire self-billed revenue.
+        //  - month via the billing period (invoice.year + invoice.month), NOT invoicedate —
+        //    invoicedate is the issue date (usually the month AFTER the work) and would mis-align
+        //    "invoiced" against work-month "expected". See docs/finalized/invoicing/concepts-and-terminology.md §6.
         Map<String, Map<String, Double>> invoicedByClient = new HashMap<>();
         @SuppressWarnings("unchecked")
         List<Tuple> invoicedRows = em.createNativeQuery("""
-                SELECT p.clientuuid AS client_id,
+                SELECT COALESCE(p.clientuuid, i.billing_client_uuid) AS client_id,
                        CONCAT(i.year, LPAD(i.month, 2, '0')) AS month_key,
                        SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
                            * CASE WHEN ii.consultantuuid IS NULL AND (ii.hours * ii.rate) < 0
                                   THEN 0 ELSE (ii.hours * ii.rate) END) AS invoiced
                 FROM invoices i
-                JOIN project p ON p.uuid = i.projectuuid
+                LEFT JOIN project p ON p.uuid = i.projectuuid
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
-                  AND p.clientuuid IS NOT NULL
-                  AND p.clientuuid <> :internalClient
+                  AND COALESCE(p.clientuuid, i.billing_client_uuid) IS NOT NULL
+                  AND COALESCE(p.clientuuid, i.billing_client_uuid) <> :internalClient
                   AND (i.year * 100 + i.month) >= :fromPeriod
                   AND (i.year * 100 + i.month) <= :toPeriod
-                GROUP BY p.clientuuid, CONCAT(i.year, LPAD(i.month, 2, '0'))
+                GROUP BY COALESCE(p.clientuuid, i.billing_client_uuid), CONCAT(i.year, LPAD(i.month, 2, '0'))
                 """, Tuple.class)
                 .setParameter("internalClient", INTERNAL_CLIENT_UUID)
                 .setParameter("fromPeriod", fromPeriod)
@@ -221,9 +225,9 @@ public class ClientStatusService {
                                      THEN -SUM(ii.hours * ii.rate)
                                      ELSE SUM(ii.hours * ii.rate) END, 0) AS amount
                 FROM invoices i
-                JOIN project p ON p.uuid = i.projectuuid
+                LEFT JOIN project p ON p.uuid = i.projectuuid
                 LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
-                WHERE p.clientuuid = :client
+                WHERE COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                   AND i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
@@ -255,11 +259,11 @@ public class ClientStatusService {
                        * CASE WHEN ii.consultantuuid IS NULL AND (ii.hours * ii.rate) < 0
                               THEN 0 ELSE (ii.hours * ii.rate) END), 0) AS invoiced
                 FROM invoices i
-                JOIN project p ON p.uuid = i.projectuuid
+                LEFT JOIN project p ON p.uuid = i.projectuuid
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
-                  AND p.clientuuid = :client
+                  AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                 """, Tuple.class)
                 .setParameter("client", clientUuid)
