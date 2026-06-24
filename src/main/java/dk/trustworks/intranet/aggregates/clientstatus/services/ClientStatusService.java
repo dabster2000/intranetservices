@@ -59,10 +59,16 @@ public class ClientStatusService {
         }
 
         // client -> (monthKey -> invoiced)
+        // "Invoiced" = external client billing net of credit notes, EXCLUDING intercompany INTERNAL.
+        // net_revenue_dkk bundles internal_dkk, so we sum (invoice_phantom_dkk - credit_note_dkk):
+        //   invoice_phantom_dkk = CREATED invoices of type IN (INVOICE, PHANTOM) — incl. self-billed/e-conomic PHANTOMs
+        //   credit_note_dkk     = CREATED CREDIT_NOTE total (subtracted)
+        // See fact_client_revenue view (V345) + V342 column comment.
         Map<String, Map<String, Double>> invoicedByClient = new HashMap<>();
         @SuppressWarnings("unchecked")
         List<Tuple> invoicedRows = em.createNativeQuery("""
-                SELECT f.client_id, f.month_key, SUM(f.net_revenue_dkk) AS invoiced
+                SELECT f.client_id, f.month_key,
+                       SUM(f.invoice_phantom_dkk - f.credit_note_dkk) AS invoiced
                 FROM fact_client_revenue_mat f
                 WHERE f.month_key BETWEEN :fromKey AND :toKey
                   AND f.client_id IS NOT NULL
@@ -194,13 +200,16 @@ public class ClientStatusService {
                        i.type AS type,
                        i.status AS status,
                        i.invoicedate AS invoicedate,
-                       COALESCE(SUM(ii.hours * ii.rate), 0) AS amount
+                       COALESCE(CASE WHEN i.type = 'CREDIT_NOTE'
+                                     THEN -SUM(ii.hours * ii.rate)
+                                     ELSE SUM(ii.hours * ii.rate) END, 0) AS amount
                 FROM invoices i
                 JOIN project p ON p.uuid = i.projectuuid
                 LEFT JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE p.clientuuid = :client
                   AND i.year = :year AND i.month = :month
                   AND i.status IN ('CREATED','QUEUED')
+                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
                 GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate
                 ORDER BY i.invoicenumber
                 """, Tuple.class)
@@ -227,7 +236,7 @@ public class ClientStatusService {
         // Prefer the fact-table invoiced figure for the headline (matches the grid).
         @SuppressWarnings("unchecked")
         List<Tuple> factRows = em.createNativeQuery("""
-                SELECT COALESCE(SUM(f.net_revenue_dkk),0) AS invoiced
+                SELECT COALESCE(SUM(f.invoice_phantom_dkk - f.credit_note_dkk),0) AS invoiced
                 FROM fact_client_revenue_mat f
                 WHERE f.client_id = :client AND f.month_key = :monthKey
                 """, Tuple.class)
