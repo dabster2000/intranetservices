@@ -39,8 +39,7 @@ public class ClientStatusService {
         List<Tuple> expectedRows = em.createNativeQuery("""
                 SELECT w.clientuuid AS client_id,
                        DATE_FORMAT(w.registered, '%Y%m') AS month_key,
-                       SUM(IFNULL(w.rate,0) * w.workduration
-                           * IF(w.discount > 0, 1.0 - (w.discount/100.0), 1)) AS expected
+                       SUM(IFNULL(w.rate,0) * w.workduration) AS expected
                 FROM work_full w
                 WHERE w.rate > 0
                   AND w.clientuuid IS NOT NULL
@@ -58,12 +57,14 @@ public class ClientStatusService {
                     .put((String) r.get("month_key"), num(r.get("expected")));
         }
 
-        // client -> (monthKey -> invoiced)
-        // "Invoiced" = external client billing net of credit notes, EXCLUDING intercompany INTERNAL.
-        // net_revenue_dkk bundles internal_dkk, so we sum (invoice_phantom_dkk - credit_note_dkk):
-        //   invoice_phantom_dkk = CREATED invoices of type IN (INVOICE, PHANTOM) — incl. self-billed/e-conomic PHANTOMs
-        //   credit_note_dkk     = CREATED CREDIT_NOTE total (subtracted)
-        // See fact_client_revenue view (V345) + V342 column comment.
+        // client -> (monthKey -> invoiced), GROSS (full-rate) basis to match the gross "expected".
+        // Discounts/fees are recorded as negative non-consultant invoice lines (framework "trapperabat",
+        // pre-agreed discounts, admin fees), so the fact net (invoice_phantom_dkk - credit_note_dkk)
+        // is NET of them. To compare like-for-like with the gross work value, we ADD THE DISCOUNTS BACK:
+        //   invoiced_gross = (invoice_phantom_dkk - credit_note_dkk) + Σ|negative non-consultant lines|
+        // This keeps self-billed/e-conomic PHANTOMs (single positive non-consultant lines) intact and
+        // excludes only the discount/fee reductions, so legitimate discounts no longer read as under-billing.
+        // INTERNAL/INTERNAL_SERVICE stay excluded (fact uses invoice_phantom_dkk; addback filters the same types).
         Map<String, Map<String, Double>> invoicedByClient = new HashMap<>();
         @SuppressWarnings("unchecked")
         List<Tuple> invoicedRows = em.createNativeQuery("""
@@ -83,6 +84,37 @@ public class ClientStatusService {
             invoicedByClient
                     .computeIfAbsent((String) r.get("client_id"), k -> new HashMap<>())
                     .put((String) r.get("month_key"), num(r.get("invoiced")));
+        }
+
+        // Add back invoice-level discounts/fees so "invoiced" is gross (full-rate), matching gross "expected".
+        // Discount/fee lines are non-consultant (consultantuuid IS NULL) negative lines on INVOICE/PHANTOM
+        // invoices; they are NOT written back to work_full, so without this the dashboard reads correct
+        // (discounted) billing as under-billing. Attribution mirrors the fact view: client via project, month via invoicedate.
+        @SuppressWarnings("unchecked")
+        List<Tuple> discountRows = em.createNativeQuery("""
+                SELECT p.clientuuid AS client_id,
+                       DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key,
+                       SUM(-(ii.hours * ii.rate)) AS addback
+                FROM invoices i
+                JOIN project p ON p.uuid = i.projectuuid
+                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                WHERE i.status = 'CREATED'
+                  AND i.type IN ('INVOICE','PHANTOM')
+                  AND ii.consultantuuid IS NULL
+                  AND (ii.hours * ii.rate) < 0
+                  AND p.clientuuid IS NOT NULL
+                  AND p.clientuuid <> :internalClient
+                  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate
+                GROUP BY p.clientuuid, DATE_FORMAT(i.invoicedate, '%Y%m')
+                """, Tuple.class)
+                .setParameter("internalClient", INTERNAL_CLIENT_UUID)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
+        for (Tuple r : discountRows) {
+            invoicedByClient
+                    .computeIfAbsent((String) r.get("client_id"), k -> new HashMap<>())
+                    .merge((String) r.get("month_key"), num(r.get("addback")), Double::sum);
         }
 
         // Union of client uuids that have any activity.
@@ -162,8 +194,7 @@ public class ClientStatusService {
                        COALESCE(p.name, '') AS project_name,
                        SUM(w.workduration) AS hours,
                        AVG(w.rate) AS avg_rate,
-                       SUM(IFNULL(w.rate,0) * w.workduration
-                           * IF(w.discount > 0, 1.0 - (w.discount/100.0), 1)) AS value
+                       SUM(IFNULL(w.rate,0) * w.workduration) AS value
                 FROM work_full w
                 LEFT JOIN `user` u ON u.uuid = w.useruuid
                 LEFT JOIN project p ON p.uuid = w.projectuuid
@@ -233,7 +264,7 @@ public class ClientStatusService {
                     invDate == null ? null : invDate.toString()));
         }
 
-        // Prefer the fact-table invoiced figure for the headline (matches the grid).
+        // Fact-table NET invoiced for this client-month (matches the grid's fact term).
         @SuppressWarnings("unchecked")
         List<Tuple> factRows = em.createNativeQuery("""
                 SELECT COALESCE(SUM(f.invoice_phantom_dkk - f.credit_note_dkk),0) AS invoiced
@@ -243,7 +274,27 @@ public class ClientStatusService {
                 .setParameter("client", clientUuid)
                 .setParameter("monthKey", monthKey)
                 .getResultList();
-        double invoicedHeadline = factRows.isEmpty() ? invoiced : num(factRows.get(0).get("invoiced"));
+        double invoicedNet = factRows.isEmpty() ? invoiced : num(factRows.get(0).get("invoiced"));
+
+        // Add back invoice-level discounts/fees so the headline "invoiced" is GROSS (matches the grid + gross expected).
+        @SuppressWarnings("unchecked")
+        List<Tuple> discRows = em.createNativeQuery("""
+                SELECT COALESCE(SUM(-(ii.hours * ii.rate)),0) AS addback
+                FROM invoices i
+                JOIN project p ON p.uuid = i.projectuuid
+                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                WHERE i.status = 'CREATED'
+                  AND i.type IN ('INVOICE','PHANTOM')
+                  AND ii.consultantuuid IS NULL
+                  AND (ii.hours * ii.rate) < 0
+                  AND p.clientuuid = :client
+                  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate
+                """, Tuple.class)
+                .setParameter("client", clientUuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getResultList();
+        double invoicedHeadline = invoicedNet + (discRows.isEmpty() ? 0d : num(discRows.get(0).get("addback")));
 
         return new ClientStatusDetailResponse(
                 clientUuid, resolveClientName(clientUuid), year, month,
