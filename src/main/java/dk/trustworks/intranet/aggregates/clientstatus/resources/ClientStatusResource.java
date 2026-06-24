@@ -15,6 +15,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.regex.Pattern;
 
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 
@@ -28,6 +29,8 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 public class ClientStatusResource {
 
     private static final DateTimeFormatter YYYYMM = DateTimeFormatter.ofPattern("yyyyMM");
+    private static final Pattern CLIENT_UUID =
+            Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     @Inject
     ClientStatusService clientStatusService;
@@ -46,6 +49,7 @@ public class ClientStatusResource {
                               @QueryParam("year") int year,
                               @QueryParam("month") int month) {
         if (client == null || client.isBlank()) throw new BadRequestException("client is required");
+        if (!CLIENT_UUID.matcher(client).matches()) throw new BadRequestException("client must be a valid UUID");
         if (month < 1 || month > 12) throw new BadRequestException("month must be 1..12");
         if (year < 2000 || year > 2100) throw new BadRequestException("year out of range");
         log.infof("GET /invoice-controlling/client-status/detail: client=%s year=%d month=%d", client, year, month);
