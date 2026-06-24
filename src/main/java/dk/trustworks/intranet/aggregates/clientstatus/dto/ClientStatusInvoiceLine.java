@@ -6,6 +6,12 @@ public record ClientStatusInvoiceLine(
         int invoiceNumber,
         String type,
         String status,
-        double amount,          // sum excl. VAT (items hours×rate)
-        String invoicedate      // ISO yyyy-MM-dd
+        double signedGrossConsultant,  // Σ consultant lines (hours×rate), SIGNED by type (CREDIT_NOTE ⇒ ×-1)
+        double discountTotal,          // Σ non-consultant lines (hours×rate), SIGNED by type
+        double amountNet,              // signedGrossConsultant + discountTotal
+        String projectUuid,
+        String projectName,
+        String creditnoteForUuid,      // nullable; invoices.creditnote_for_uuid
+        Integer invoiceRef,            // nullable; invoices.invoice_ref mapped 0 → null
+        String invoicedate             // ISO yyyy-MM-dd
 ) {}

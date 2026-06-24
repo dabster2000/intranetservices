@@ -8,5 +8,7 @@ public record ClientStatusWorkLine(
         String projectName,
         double hours,
         double avgRate,
-        double value            // hours × rate (− discount)
+        double value,                  // hours × rate (− discount)
+        boolean helpColleague,         // true when this row is help-colleague work (workas ≠ self)
+        String helpedConsultantName    // nullable; name of the workas user this row was performed on behalf of
 ) {}
