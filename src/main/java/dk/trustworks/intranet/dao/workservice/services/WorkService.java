@@ -206,7 +206,7 @@ public class WorkService {
 
     public List<WorkFull> findByPeriodAndUserUUID(LocalDate fromdate, LocalDate todate, String useruuid) {
         if(todate.getDayOfMonth()>1) {
-            log.error("Beware of month issues!!: "+todate);
+            log.debug("Non-month-aligned period end (todate not the 1st): "+todate);
         }
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid = ?3", fromdate, todate, useruuid).list();
     }
@@ -342,7 +342,7 @@ public class WorkService {
     }
 
     public List<WorkFull> findByPeriodAndProject(String fromdate, String todate, String projectuuid) {
-        if(dateIt(todate).getDayOfMonth()>1) log.error("Beware of month issues!!: "+todate);
+        if(dateIt(todate).getDayOfMonth()>1) log.debug("Non-month-aligned period end (todate not the 1st): "+todate);
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND projectuuid LIKE ?3", dateIt(fromdate), dateIt(todate), projectuuid).list();
     }
 
@@ -448,7 +448,7 @@ public class WorkService {
     }
 
     public List<WorkFull> findByPeriodAndUserAndTasks(LocalDate fromdate, LocalDate todate, String useruuid, String taskuuids) {
-        if(todate.getDayOfMonth()>1) log.error("Beware of month issues!!: "+todate);
+        if(todate.getDayOfMonth()>1) log.debug("Non-month-aligned period end (todate not the 1st): "+todate);
         return WorkFull.find("registered >= ?1 AND registered < ?2 AND useruuid LIKE ?3 AND taskuuid IN (?4)", fromdate, todate, useruuid, taskuuids).list();
     }
 

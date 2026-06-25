@@ -134,7 +134,8 @@ public class BatchScheduler {
         jobOperator.start("user-resume-update", new Properties());
     }
 
-    @Scheduled(every = "1m")
+    // 5m cadence (was 1m): mail delivery SLA tolerates it and this cuts JBeret JOB_*/STEP_EXECUTION metadata churn ~80%.
+    @Scheduled(every = "5m")
     void scheduleMailSend() {
         try {
             if (jobOperator.getJobNames().contains("mail-send")) {
@@ -148,7 +149,8 @@ public class BatchScheduler {
         }
     }
 
-    @Scheduled(every = "1m")
+    // 5m cadence (was 1m): same rationale as scheduleMailSend — reduce empty-cycle job starts and metadata churn.
+    @Scheduled(every = "5m")
     void scheduleBulkMailSend() {
         try {
             // Only start if no bulk-mail-send job is currently running
@@ -273,8 +275,10 @@ public class BatchScheduler {
         }
     }
 
-    // Economics upload processing - runs every 1 minute to process pending/failed uploads
-    @Scheduled(cron = "0 * * * * ?")
+    // Economics upload processing - runs every 5 minutes to process pending/failed uploads.
+    // (Was every 1 minute; the upload service's own exponential backoff windows (1m→5m→15m→1h→4h)
+    //  make sub-5-minute polling pointless and it just churns JBeret job-instance metadata.)
+    @Scheduled(cron = "0 */5 * * * ?")
     void scheduleEconomicsUploadRetry() {
         if (!invoiceUploadEnabled) {
             log.debug("economics-upload-retry skipped: dk.trustworks.invoice.economics-upload.enabled=false");
