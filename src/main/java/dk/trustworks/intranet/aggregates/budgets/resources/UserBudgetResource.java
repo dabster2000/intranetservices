@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.budgets.resources;
 
 import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonth;
+import dk.trustworks.intranet.aggregates.budgets.model.EmployeeBudgetPerMonthLite;
 import dk.trustworks.intranet.aggregates.budgets.services.BudgetService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import io.quarkus.cache.CacheResult;
@@ -33,11 +34,36 @@ public class UserBudgetResource {
     @Inject
     BudgetService budgetService;
 
+    /**
+     * Self-reference (CDI client proxy) used to invoke the cached
+     * {@link #getAllUserBudgetsByPeriod} from the lite endpoint so the
+     * {@code employee-budgets} cache (and its existing contract-change
+     * invalidations) is reused — no second cache, no extra compute, no
+     * staleness divergence.
+     */
+    @Inject
+    UserBudgetResource self;
+
     @GET
     @Path("/budgets")
     @CacheResult(cacheName = "employee-budgets")
     public List<EmployeeBudgetPerMonth> getAllUserBudgetsByPeriod(@QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
         return budgetService.getBudgetDataByPeriod(dateIt(periodFrom), dateIt(periodTo));
+    }
+
+    /**
+     * Lightweight variant of {@link #getAllUserBudgetsByPeriod}: same data, but
+     * each row carries only the scalars/uuids the list consumers actually read,
+     * cutting the serialized payload dramatically on full-period scans. Reuses
+     * the cached full result via {@link #self}, then projects to
+     * {@link EmployeeBudgetPerMonthLite}.
+     */
+    @GET
+    @Path("/budgets/lite")
+    public List<EmployeeBudgetPerMonthLite> getAllUserBudgetsByPeriodLite(@QueryParam("fromdate") String periodFrom, @QueryParam("todate") String periodTo) {
+        return self.getAllUserBudgetsByPeriod(periodFrom, periodTo).stream()
+                .map(EmployeeBudgetPerMonthLite::from)
+                .toList();
     }
 
     @GET
