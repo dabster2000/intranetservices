@@ -64,7 +64,7 @@ public class ClientStatusService {
         //    INTERNAL/INTERNAL_SERVICE excluded.
         //  - GROSS: discounts/fees are negative non-consultant lines (framework "trapperabat", pre-agreed
         //    discounts, admin fees) NOT written back to work_full, so they are dropped (set to 0) to match
-        //    the gross "expected"; positive non-consultant lines (self-billed PHANTOMs, fixed-price) are kept.
+        //    the gross "expected"; PHANTOM lines and positive non-consultant lines (fixed-price) are kept.
         //  - client via COALESCE(project.clientuuid, invoices.billing_client_uuid): normal invoices
         //    resolve through their project; self-billed/e-conomic PHANTOMs have projectuuid=NULL and
         //    carry the client on billing_client_uuid (stamped by PhantomAttributionService). Without
@@ -79,7 +79,9 @@ public class ClientStatusService {
                 SELECT COALESCE(p.clientuuid, i.billing_client_uuid) AS client_id,
                        CONCAT(i.year, LPAD(i.month, 2, '0')) AS month_key,
                        SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
-                           * CASE WHEN ii.consultantuuid IS NULL AND (ii.hours * ii.rate) < 0
+                           * CASE WHEN i.type <> 'PHANTOM'
+                                      AND ii.consultantuuid IS NULL
+                                      AND (ii.hours * ii.rate) < 0
                                   THEN 0 ELSE (ii.hours * ii.rate) END) AS invoiced
                 FROM invoices i
                 LEFT JOIN project p ON p.uuid = i.projectuuid
@@ -223,8 +225,9 @@ public class ClientStatusService {
                     helpColleague ? (String) r.get("helped_name") : null));
         }
 
-        // Per-invoice: signed GROSS consultant basis split from the (signed) discount/non-consultant
-        // total, so amountNet = consultant + discount. PHANTOM dropped — detail is INVOICE/CREDIT_NOTE.
+        // Per-invoice: signed GROSS billing basis split from the (signed) discount/non-consultant
+        // total, so amountNet = basis + discount. PHANTOM is included because self-billed
+        // revenue has no project and lives on billing_client_uuid.
         @SuppressWarnings("unchecked")
         List<Tuple> invoiceRows = em.createNativeQuery("""
                 SELECT i.uuid AS invoice_uuid,
@@ -237,10 +240,14 @@ public class ClientStatusService {
                        i.creditnote_for_uuid AS creditnote_for_uuid,
                        i.invoice_ref AS invoice_ref,
                        COALESCE(SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
-                                    * CASE WHEN ii.consultantuuid IS NOT NULL
+                                    * CASE WHEN i.type = 'PHANTOM'
+                                               OR ii.consultantuuid IS NOT NULL
+                                               OR (ii.hours * ii.rate) > 0
                                            THEN ii.hours * ii.rate ELSE 0 END), 0) AS signed_gross_consultant,
                        COALESCE(SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
-                                    * CASE WHEN ii.consultantuuid IS NULL
+                                    * CASE WHEN i.type <> 'PHANTOM'
+                                               AND ii.consultantuuid IS NULL
+                                               AND (ii.hours * ii.rate) < 0
                                            THEN ii.hours * ii.rate ELSE 0 END), 0) AS discount_total
                 FROM invoices i
                 LEFT JOIN project p ON p.uuid = i.projectuuid
@@ -248,7 +255,7 @@ public class ClientStatusService {
                 WHERE COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                   AND i.status IN ('CREATED','QUEUED')
-                  AND i.type IN ('INVOICE','CREDIT_NOTE')
+                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
                 GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate,
                          i.projectuuid, p.name, i.creditnote_for_uuid, i.invoice_ref
                 ORDER BY i.invoicenumber
@@ -281,18 +288,20 @@ public class ClientStatusService {
                     invDate == null ? null : invDate.toString()));
         }
 
-        // Headline "invoiced" — signed GROSS consultant basis over INVOICE/CREDIT_NOTE (no PHANTOM),
-        // so the headline equals Σ signedGrossConsultant of the per-invoice rows above.
+        // Headline "invoiced" — same signed GROSS billing basis as the grid, so the
+        // headline equals Σ signedGrossConsultant of the per-invoice rows above.
         @SuppressWarnings("unchecked")
         List<Tuple> headRows = em.createNativeQuery("""
                 SELECT COALESCE(SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
-                       * CASE WHEN ii.consultantuuid IS NOT NULL
+                       * CASE WHEN i.type = 'PHANTOM'
+                                  OR ii.consultantuuid IS NOT NULL
+                                  OR (ii.hours * ii.rate) > 0
                               THEN ii.hours * ii.rate ELSE 0 END), 0) AS invoiced
                 FROM invoices i
                 LEFT JOIN project p ON p.uuid = i.projectuuid
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
-                  AND i.type IN ('INVOICE','CREDIT_NOTE')
+                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                 """, Tuple.class)
