@@ -4654,10 +4654,19 @@ public class CxoFinanceService {
         java.util.Map<String, Double> opexByMonth     = sumByMonth(fyOpexRows, row -> !row.isPayrollFlag());
         java.util.Map<String, Double> salariesByMonth = sumByMonth(fyOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
 
-        // 4a. F4: complete monthly payroll from fact_salary_monthly (the canonical monthly
-        //     salary fact, NOT subject to GL posting lag). Used to repair the salary line for
-        //     PROVISIONAL recent months in the loop below — see resolveProvisionalSalary().
-        java.util.Map<String, Double> factSalaryByMonth = queryMonthlySalaryFromSalaryFact(fyFromKey, fyToKey, companyIds);
+        // 4a. F4: GL payroll posts 1–2 months in arrears, so under the BOOKED source the most
+        //     recent actual months under-report real payroll (a month can show 0 booked). For
+        //     those PROVISIONAL months the salary line is floored at the DRAFT-inclusive
+        //     (BOOKED_PLUS_DRAFT) signed-GL figure — the SAME cost source the rest of the EBITDA
+        //     cost line uses, so it is reliable and self-consistent. (This deliberately does NOT
+        //     read fact_salary_monthly: that table's salary_sum proved unreliable — e.g. ~7×
+        //     inflated on staging — and must not drive the EBITDA headline.) Under the B+D source
+        //     this is a no-op: salariesByMonth already equals the B+D figure.
+        List<dk.trustworks.intranet.aggregates.finance.dto.OpexRow> bdOpexRows =
+                (costSource == CostSource.BOOKED_PLUS_DRAFT)
+                        ? fyOpexRows
+                        : opexProvider.getDistributionAwareOpex(fyFromKey, fyToKey, companyIds, null, null, CostSource.BOOKED_PLUS_DRAFT);
+        java.util.Map<String, Double> bdSalariesByMonth = sumByMonth(bdOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
         java.util.Set<String> provisionalMonthKeys = provisionalMonthKeys(today);
 
         // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
@@ -4735,18 +4744,17 @@ public class CxoFinanceService {
                 monthInternalCost  = internalCostByMonth.getOrDefault(monthKey, 0.0);
                 monthSalaries      = salariesByMonth.getOrDefault(monthKey, 0.0);
                 monthOpex          = opexByMonth.getOrDefault(monthKey, 0.0);
-                // F4: GL payroll posts 1–2 months in arrears, so the most recent actual months
-                // (currentMonth-1, currentMonth-2) under-report real payroll in the BOOKED/DRAFT
-                // fact_opex distribution — a month can show 0 booked while its true payroll is
-                // already known. For those PROVISIONAL months only, lift the salary line to the
-                // complete figure from fact_salary_monthly. max(fact, booked) leaves a fully-posted
-                // month (booked >= true) untouched — so completed months (Jul..Apr) still reconcile
-                // to the krone — while raising an under-posted recent month to the true total. Holds
-                // for BOTH cost sources: fact_salary_monthly is the truest payroll figure regardless
-                // of BOOKED vs BOOKED_PLUS_DRAFT.
+                // F4: GL payroll posts 1–2 months in arrears, so under the BOOKED source the most
+                // recent actual months (currentMonth-1, currentMonth-2) under-report real payroll —
+                // a month can show 0 booked while its DRAFT GL payroll is already known. For those
+                // PROVISIONAL months only, floor the salary line at the DRAFT-inclusive
+                // (BOOKED_PLUS_DRAFT) figure. max(draft-inclusive, requested-source) leaves the B+D
+                // default view unchanged (draft-inclusive == salariesByMonth there) and lifts the
+                // BOOKED toggle off its under-posted value — using the same reliable signed-GL
+                // source as the rest of the EBITDA cost (NOT fact_salary_monthly).
                 if (provisionalMonthKeys.contains(monthKey)) {
-                    double factSalary = factSalaryByMonth.getOrDefault(monthKey, monthSalaries);
-                    monthSalaries = resolveProvisionalSalary(factSalary, monthSalaries);
+                    double draftInclusiveSalary = bdSalariesByMonth.getOrDefault(monthKey, monthSalaries);
+                    monthSalaries = resolveProvisionalSalary(draftInclusiveSalary, monthSalaries);
                 }
             } else {
                 // Future / in-progress month: backlog revenue with TTM-margin cost estimation.
@@ -5373,49 +5381,6 @@ public class CxoFinanceService {
     }
 
     /**
-     * F4 helper: total monthly payroll from {@code fact_salary_monthly} — the canonical monthly
-     * salary fact, which (unlike the GL/booked feed) is complete regardless of posting lag. Summed
-     * across all employees per month.
-     *
-     * <p>Source column {@code salary_sum} is the per-(useruuid × company × month) salary; we SUM it
-     * per month. This mirrors {@code SalaryGLAnomalyCheck}, which uses the same {@code SUM(salary_sum)}
-     * as the "intended" payroll total it reconciles against booked GL. Only {@code companyIds} scopes
-     * the result — salary has no sector/service-line/client attribution.
-     *
-     * @return map of month_key (YYYYMM) → total payroll DKK
-     */
-    private java.util.Map<String, Double> queryMonthlySalaryFromSalaryFact(
-            String fromKey, String toKey, Set<String> companyIds) {
-
-        StringBuilder sql = new StringBuilder(
-                "SELECT fsm.month_key AS month_key, " +
-                "       COALESCE(SUM(fsm.salary_sum), 0.0) AS total_salary " +
-                "FROM fact_salary_monthly fsm " +
-                "WHERE fsm.month_key BETWEEN :fromKey AND :toKey "
-        );
-        if (companyIds != null && !companyIds.isEmpty()) {
-            sql.append("AND fsm.companyuuid IN (:companyIds) ");
-        }
-        sql.append("GROUP BY fsm.month_key ORDER BY fsm.month_key ASC");
-
-        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
-        query.setParameter("fromKey", fromKey);
-        query.setParameter("toKey", toKey);
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Tuple> rows = query.getResultList();
-
-        java.util.Map<String, Double> result = new java.util.HashMap<>();
-        for (Tuple row : rows) {
-            result.put((String) row.get("month_key"), ((Number) row.get("total_salary")).doubleValue());
-        }
-        return result;
-    }
-
-    /**
      * F5: revenue selection for a forecast/in-progress month in the EBITDA chart. For the current
      * month only, returns {@code max(actualBookedRevenue, backlogRevenue)} so revenue that has already
      * been invoiced/booked is never discarded in favour of (lower) backlog; for any other month the
@@ -5434,12 +5399,14 @@ public class CxoFinanceService {
 
     /**
      * F4: salary selection for a PROVISIONAL (recent, payroll-lagging) actual month. Returns the
-     * higher of the complete {@code fact_salary_monthly} figure and the booked GL payroll, so a
-     * fully-posted month (booked &gt;= true) is left unchanged while an under-posted month is lifted
-     * to the true total. Never lowers a month's salary — it can only move EBITDA toward honesty.
+     * higher of the DRAFT-inclusive (BOOKED_PLUS_DRAFT) signed-GL payroll and the requested cost
+     * source's salary, so the B+D default view is unchanged (the two are equal there) while the
+     * BOOKED toggle is lifted off its under-posted value. Never lowers a month's salary — it can
+     * only move EBITDA toward honesty, drawing on the same reliable signed-GL source as the rest of
+     * the EBITDA cost line (deliberately not fact_salary_monthly).
      */
-    static double resolveProvisionalSalary(double factSalaryMonthly, double bookedSalary) {
-        return Math.max(factSalaryMonthly, bookedSalary);
+    static double resolveProvisionalSalary(double draftInclusiveSalary, double requestedSourceSalary) {
+        return Math.max(draftInclusiveSalary, requestedSourceSalary);
     }
 
     /**
