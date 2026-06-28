@@ -104,6 +104,27 @@ public class CxoFinanceService {
     @Inject
     DistributionAwareOpexProvider opexProvider;
 
+    /**
+     * F3 — internal-cost timing alignment (default OFF, prod-safe).
+     *
+     * <p>When {@code true}, CREATED INTERNAL (intercompany) cost is recognized on the
+     * <em>issuer's invoicedate</em> month — the same month its revenue is booked — instead
+     * of lagging on the GL <em>expensedate</em>. This closes the structural mismatch where
+     * internal revenue is bucketed on invoicedate but the matching debtor cost (GL accounts
+     * 3050/3055/3070/3075/1350) posts later, leaving an unmatched internal margin in the
+     * revenue month (most visible at the June year-end internal settlement).
+     *
+     * <p>When {@code false} (default) the EBITDA chart's behaviour is byte-identical to the
+     * GL-expensedate timing: none of the F3 helpers are even queried. This is the prod-safe
+     * path until the mechanism is validated on a fully-closed fiscal year in staging.
+     *
+     * <p>See {@link #computeInternalCostRetimingAdjustment} for the exact re-timing formula
+     * and the double-count-avoidance proof.
+     */
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "finance.internal-cost-timing-alignment.enabled", defaultValue = "false")
+    boolean internalCostTimingAlignmentEnabled;
+
     // -------------------------------------------------------------------------
     // Generic helpers for safe DB value conversion (BIT, Boolean, Number, etc.)
     // Mirrors the pattern in CxoClientService so MariaDB BIT columns and other
@@ -161,16 +182,20 @@ public class CxoFinanceService {
         java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(
                 fromMonthKey, toMonthKey, companyIds);
 
-        // Cost: fact_project_financials_mat with deduplication + all dimension filters.
-        // V118 migration added companyuuid column, creating multiple rows per project-month.
-        // Strategy: GROUP BY project_id + month_key with MAX(cost) before aggregating by calendar month.
+        // Cost: fact_project_financials_mat with all dimension filters.
+        // V118 migration added companyuuid column. The grain is unique per
+        // (project_id, month_key, companyuuid): a project-month split across multiple
+        // companies has one row per company, with no same-company duplicates. So the
+        // correct collapse to a single value per (project_id, month_key) is SUM across
+        // companies — MAX would silently drop the other companies' contributions.
+        // Strategy: GROUP BY project_id + month_key with SUM(cost) before aggregating by calendar month.
         StringBuilder costInner = new StringBuilder(
                 "SELECT " +
                 "    f.project_id, " +
                 "    f.month_key, " +
                 "    f.year, " +
                 "    f.month_number, " +
-                "    MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "    SUM(f.direct_delivery_cost_dkk) AS cost " +
                 "FROM fact_project_financials_mat f " +
                 "WHERE f.month_key >= :fromMonthKey " +
                 "  AND f.month_key <= :toMonthKey "
@@ -1160,17 +1185,20 @@ public class CxoFinanceService {
             Set<String> sectors, Set<String> serviceLines,
             Set<String> contractTypes, String clientId, Set<String> companyIds) {
 
-        // Build dynamic SQL with deduplication to fix V118 double-counting issue
-        // NOTE: V118 migration added companyuuid column, creating multiple rows per project-month
+        // Build dynamic SQL that sums recognized revenue across companies per project-month.
+        // NOTE: V118 migration added companyuuid column. The grain is unique per
+        //       (project_id, month_key, companyuuid); a project-month split across companies
+        //       has one row per company with no same-company duplicates, so SUM across
+        //       companies is correct. MAX would silently drop the other companies' revenue.
         // NOTE: Added COLLATE to fix collation mismatch between month_key column and DATE_FORMAT() function
-        // Strategy: GROUP BY project_id + month_key, then MAX(revenue) to get single revenue value per project-month
+        // Strategy: GROUP BY project_id + month_key, then SUM(revenue) across companies per project-month
         StringBuilder sql = new StringBuilder(
-                "SELECT COALESCE(SUM(max_revenue), 0.0) AS total_revenue " +
+                "SELECT COALESCE(SUM(pm_revenue), 0.0) AS total_revenue " +
                         "FROM ( " +
                         "    SELECT " +
                         "        f.project_id, " +
                         "        f.month_key, " +
-                        "        MAX(f.recognized_revenue_dkk) AS max_revenue " +
+                        "        SUM(f.recognized_revenue_dkk) AS pm_revenue " +
                         "    FROM fact_project_financials_mat f" +
                         "    WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
@@ -2071,12 +2099,14 @@ public class CxoFinanceService {
         // Revenue KPIs always show company-total — dimension filters do not apply.
         java.util.Map<String, Double> revenueByMonth = queryCompanyRevenueByMonth(fromKey, toKey, companyIds);
 
-        // Cost: fact_project_financials_mat with all dimension filters (deduplication via MAX per project-month).
+        // Cost: fact_project_financials_mat with all dimension filters (SUM across companies per project-month).
+        // Grain is unique per (project_id, month_key, companyuuid), so SUM collapses a multi-company
+        // project-month correctly; MAX would silently drop the other companies' cost.
         StringBuilder costSql = new StringBuilder(
                 "SELECT f.month_key, " +
                 "       COALESCE(SUM(f.direct_delivery_cost_dkk), 0.0) AS monthly_cost " +
                 "FROM ( " +
-                "    SELECT f2.project_id, f2.month_key, MAX(f2.direct_delivery_cost_dkk) AS direct_delivery_cost_dkk " +
+                "    SELECT f2.project_id, f2.month_key, SUM(f2.direct_delivery_cost_dkk) AS direct_delivery_cost_dkk " +
                 "    FROM fact_project_financials_mat f2 " +
                 "    WHERE f2.month_key BETWEEN :fromKey AND :toKey "
         );
@@ -4624,6 +4654,12 @@ public class CxoFinanceService {
         java.util.Map<String, Double> opexByMonth     = sumByMonth(fyOpexRows, row -> !row.isPayrollFlag());
         java.util.Map<String, Double> salariesByMonth = sumByMonth(fyOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
 
+        // 4a. F4: complete monthly payroll from fact_salary_monthly (the canonical monthly
+        //     salary fact, NOT subject to GL posting lag). Used to repair the salary line for
+        //     PROVISIONAL recent months in the loop below — see resolveProvisionalSalary().
+        java.util.Map<String, Double> factSalaryByMonth = queryMonthlySalaryFromSalaryFact(fyFromKey, fyToKey, companyIds);
+        java.util.Set<String> provisionalMonthKeys = provisionalMonthKeys(today);
+
         // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
         java.util.Map<String, Double> internalCostByMonth = queryMonthlyInternalInvoiceCost(fyFromKey, fyToKey, companyIds);
 
@@ -4643,6 +4679,27 @@ public class CxoFinanceService {
             if (!actualByMonth.containsKey(mk)) {
                 actualByMonth.put(mk, new double[]{0.0, 0.0});
             }
+        }
+
+        // 4d. F3 (flag-gated): internal-cost TIMING alignment. Internal revenue is bucketed
+        //     on the issuer's invoicedate, but the matching debtor cost (CREATED INTERNAL,
+        //     GL accounts 3050/3055/3070/3075/1350) posts on the later expensedate — so the
+        //     revenue month shows an unmatched internal margin until the GL cost catches up
+        //     (most visible at the June year-end settlement). When the flag is ON we re-time
+        //     CREATED-internal cost onto the invoicedate month via a per-month adjustment
+        //     (see computeInternalCostRetimingAdjustment): we ADD the synthesized invoicedate
+        //     CREATED-internal cost and SUBTRACT the GL expensedate CREATED-internal cost that
+        //     is already inside fyCostByMonth/monthDirectCost — so the same cost is never
+        //     counted twice. QUEUED internals (already invoicedate-timed above) are untouched.
+        //     Flag OFF (default) ⇒ empty map ⇒ byte-identical to today.
+        java.util.Map<String, Double> internalCostRetimingByMonth = java.util.Collections.emptyMap();
+        if (internalCostTimingAlignmentEnabled) {
+            java.util.Map<String, Double> synthCreatedInternalByMonth =
+                    queryMonthlyCreatedInternalCostByMonth(fyFromKey, fyToKey, companyIds);
+            java.util.Map<String, Double> glCreatedInternalByMonth =
+                    queryMonthlyCreatedInternalGlCostByMonth(fyFromKey, fyToKey, companyIds, costSource);
+            internalCostRetimingByMonth = computeInternalCostRetimingAdjustment(
+                    synthCreatedInternalByMonth, glCreatedInternalByMonth);
         }
 
         // 5. Backlog by month for future months
@@ -4678,14 +4735,47 @@ public class CxoFinanceService {
                 monthInternalCost  = internalCostByMonth.getOrDefault(monthKey, 0.0);
                 monthSalaries      = salariesByMonth.getOrDefault(monthKey, 0.0);
                 monthOpex          = opexByMonth.getOrDefault(monthKey, 0.0);
+                // F4: GL payroll posts 1–2 months in arrears, so the most recent actual months
+                // (currentMonth-1, currentMonth-2) under-report real payroll in the BOOKED/DRAFT
+                // fact_opex distribution — a month can show 0 booked while its true payroll is
+                // already known. For those PROVISIONAL months only, lift the salary line to the
+                // complete figure from fact_salary_monthly. max(fact, booked) leaves a fully-posted
+                // month (booked >= true) untouched — so completed months (Jul..Apr) still reconcile
+                // to the krone — while raising an under-posted recent month to the true total. Holds
+                // for BOTH cost sources: fact_salary_monthly is the truest payroll figure regardless
+                // of BOOKED vs BOOKED_PLUS_DRAFT.
+                if (provisionalMonthKeys.contains(monthKey)) {
+                    double factSalary = factSalaryByMonth.getOrDefault(monthKey, monthSalaries);
+                    monthSalaries = resolveProvisionalSalary(factSalary, monthSalaries);
+                }
             } else {
-                // Future month: use backlog revenue with TTM margin estimation.
+                // Future / in-progress month: backlog revenue with TTM-margin cost estimation.
                 // Internal invoice costs are not forecast — set to 0.
-                monthRevenue      = backlogByMonth.getOrDefault(monthKey, 0.0);
+                double backlogRevenue  = backlogByMonth.getOrDefault(monthKey, 0.0);
+                double actualBookedRev = fyRevenueByMonth.getOrDefault(monthKey, 0.0);
+                // F5: For the CURRENT (in-progress) month only, never let backlog discard revenue
+                // that has already been booked/invoiced. The ~13M year-end internal settlement lands
+                // in actual invoiced revenue but is absent from backlog, so backlog alone understates
+                // the current month. Take the higher of actual-booked and backlog. Cost stays on the
+                // forecast path: the current month's actual cost is still incomplete and using it
+                // would overstate EBITDA — we only rescue revenue here.
+                monthRevenue      = resolveForecastMonthRevenue(monthKey, currentMonthKey, backlogRevenue, actualBookedRev);
                 monthDirectCost   = monthRevenue * (1.0 - ttmGrossMarginPct / 100.0);
                 monthInternalCost = 0.0;
                 monthSalaries     = avgMonthlySalaries;
                 monthOpex         = avgMonthlyOpex;
+            }
+
+            // F3 (flag-gated): re-time CREATED INTERNAL cost from the GL expensedate month
+            // onto the issuer's invoicedate month (== the revenue month). The adjustment for
+            // month m is (synth invoicedate CREATED-internal) − (GL expensedate CREATED-internal):
+            // it removes the lagged GL copy already inside monthDirectCost and adds the on-time
+            // copy, so the cost is never double-counted and FY totals are conserved (cost simply
+            // moves between months). Applied uniformly to both the actual and the current/forecast
+            // branch — pure future months naturally carry no CREATED internals, so their adjustment
+            // is ~0. Flag OFF (default) ⇒ empty map ⇒ no-op (byte-identical to today).
+            if (internalCostTimingAlignmentEnabled) {
+                monthDirectCost += internalCostRetimingByMonth.getOrDefault(monthKey, 0.0);
             }
 
             // Note: monthInternalCost is NOT subtracted here. As of Phase 4 the QUEUED
@@ -5202,7 +5292,10 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper: Query TTM total revenue and direct delivery cost (deduplicated).
+     * Helper: Query TTM total revenue and direct delivery cost, summed across companies
+     * per project-month. The fact_project_financials_mat grain is unique per
+     * (project_id, month_key, companyuuid), so SUM (not MAX) is the correct collapse —
+     * MAX would silently drop the other companies' values for a multi-company project-month.
      * Returns double[2]: {revenue, cost}.
      */
     private double[] queryTTMRevenueAndCost(
@@ -5212,8 +5305,8 @@ public class CxoFinanceService {
 
         StringBuilder inner = new StringBuilder(
                 "SELECT f.project_id, f.month_key, " +
-                "MAX(f.recognized_revenue_dkk) AS revenue, " +
-                "MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "SUM(f.recognized_revenue_dkk) AS revenue, " +
+                "SUM(f.direct_delivery_cost_dkk) AS cost " +
                 "FROM fact_project_financials_mat f " +
                 "WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
@@ -5280,7 +5373,92 @@ public class CxoFinanceService {
     }
 
     /**
-     * Helper: Query monthly revenue and direct cost (deduplicated) for EBITDA calculation.
+     * F4 helper: total monthly payroll from {@code fact_salary_monthly} — the canonical monthly
+     * salary fact, which (unlike the GL/booked feed) is complete regardless of posting lag. Summed
+     * across all employees per month.
+     *
+     * <p>Source column {@code salary_sum} is the per-(useruuid × company × month) salary; we SUM it
+     * per month. This mirrors {@code SalaryGLAnomalyCheck}, which uses the same {@code SUM(salary_sum)}
+     * as the "intended" payroll total it reconciles against booked GL. Only {@code companyIds} scopes
+     * the result — salary has no sector/service-line/client attribution.
+     *
+     * @return map of month_key (YYYYMM) → total payroll DKK
+     */
+    private java.util.Map<String, Double> queryMonthlySalaryFromSalaryFact(
+            String fromKey, String toKey, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT fsm.month_key AS month_key, " +
+                "       COALESCE(SUM(fsm.salary_sum), 0.0) AS total_salary " +
+                "FROM fact_salary_monthly fsm " +
+                "WHERE fsm.month_key BETWEEN :fromKey AND :toKey "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND fsm.companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY fsm.month_key ORDER BY fsm.month_key ASC");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            result.put((String) row.get("month_key"), ((Number) row.get("total_salary")).doubleValue());
+        }
+        return result;
+    }
+
+    /**
+     * F5: revenue selection for a forecast/in-progress month in the EBITDA chart. For the current
+     * month only, returns {@code max(actualBookedRevenue, backlogRevenue)} so revenue that has already
+     * been invoiced/booked is never discarded in favour of (lower) backlog; for any other month the
+     * backlog figure is returned unchanged.
+     *
+     * <p>Package-private and static so the month-classification + selection logic is unit-testable
+     * without a database.
+     */
+    static double resolveForecastMonthRevenue(String monthKey, String currentMonthKey,
+                                              double backlogRevenue, double actualBookedRevenue) {
+        if (monthKey.equals(currentMonthKey)) {
+            return Math.max(actualBookedRevenue, backlogRevenue);
+        }
+        return backlogRevenue;
+    }
+
+    /**
+     * F4: salary selection for a PROVISIONAL (recent, payroll-lagging) actual month. Returns the
+     * higher of the complete {@code fact_salary_monthly} figure and the booked GL payroll, so a
+     * fully-posted month (booked &gt;= true) is left unchanged while an under-posted month is lifted
+     * to the true total. Never lowers a month's salary — it can only move EBITDA toward honesty.
+     */
+    static double resolveProvisionalSalary(double factSalaryMonthly, double bookedSalary) {
+        return Math.max(factSalaryMonthly, bookedSalary);
+    }
+
+    /**
+     * F4: the set of PROVISIONAL month keys for {@code today} — the two actual months immediately
+     * preceding the current month (currentMonth-1 and currentMonth-2), where GL payroll posting
+     * typically lags. Older (complete) months are never included, so they keep reconciling to the
+     * GL/booked figure to the krone.
+     */
+    static java.util.Set<String> provisionalMonthKeys(LocalDate today) {
+        return java.util.Set.of(
+                UtilizationCalculationHelper.toMonthKey(today.minusMonths(1)),
+                UtilizationCalculationHelper.toMonthKey(today.minusMonths(2)));
+    }
+
+    /**
+     * Helper: Query monthly revenue and direct cost for EBITDA calculation, summed across
+     * companies per project-month. The fact_project_financials_mat grain is unique per
+     * (project_id, month_key, companyuuid), so SUM (not MAX) is the correct collapse —
+     * MAX would silently drop the other companies' values for a multi-company project-month.
      * Returns map of monthKey → double[]{revenue, cost}.
      */
     private java.util.Map<String, double[]> queryMonthlyRevenueAndCost(
@@ -5290,8 +5468,8 @@ public class CxoFinanceService {
 
         StringBuilder inner = new StringBuilder(
                 "SELECT f.project_id, f.month_key, f.year, f.month_number, " +
-                "MAX(f.recognized_revenue_dkk) AS revenue, " +
-                "MAX(f.direct_delivery_cost_dkk) AS cost " +
+                "SUM(f.recognized_revenue_dkk) AS revenue, " +
+                "SUM(f.direct_delivery_cost_dkk) AS cost " +
                 "FROM fact_project_financials_mat f " +
                 "WHERE f.month_key BETWEEN :fromKey AND :toKey "
         );
@@ -5516,6 +5694,196 @@ public class CxoFinanceService {
         }
 
         return ((Number) query.getSingleResult()).doubleValue();
+    }
+
+    // =========================================================================
+    // F3: internal-cost TIMING alignment (flag finance.internal-cost-timing-alignment.enabled)
+    // =========================================================================
+
+    /**
+     * F3 helper: synthesize CREATED INTERNAL invoice cost on the <em>issuer's
+     * invoicedate</em> month, attributed to the debtor company, on a rate&times;hours
+     * basis. Returns map of monthKey &rarr; cost_dkk.
+     *
+     * <p>This is the deliberate twin of {@link #queryMonthlyQueuedInternalCostByMonth}
+     * with the single difference {@code status='CREATED'} (vs {@code 'QUEUED'}). It
+     * reproduces, on the revenue month, the exact same cost figure that the GL will
+     * eventually book on the (later) expensedate — letting the F3 re-timing pull that
+     * cost forward to where the matching internal revenue already sits. Attribution
+     * (debtor via {@code invoices.debtor_companyuuid}), currency conversion (per-month
+     * {@code currences} lookup, default 1.0), and the {@code rate*hours} basis are all
+     * identical to the QUEUED helper so the two timings reconcile.
+     *
+     * <p>The companion {@link #queryMonthlyCreatedInternalGlCostByMonth} returns the
+     * GL-booked copy of this same cost; {@link #computeInternalCostRetimingAdjustment}
+     * differences the two so nothing is double-counted.
+     *
+     * @param fromKey    Start month (YYYYMM, inclusive)
+     * @param toKey      End month (YYYYMM, inclusive)
+     * @param companyIds Optional debtor company filter; null/empty = all debtors
+     * @return Map of monthKey &rarr; summed CREATED INTERNAL cost in DKK (invoicedate-timed)
+     */
+    private java.util.Map<String, Double> queryMonthlyCreatedInternalCostByMonth(
+            String fromKey, String toKey, Set<String> companyIds) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) AS cost " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'CREATED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND i.debtor_companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            String mk = (String) row.get("month_key");
+            double cost = row.get("cost") != null ? ((Number) row.get("cost")).doubleValue() : 0.0;
+            result.put(mk, cost);
+        }
+        return result;
+    }
+
+    /**
+     * F3 helper: the GL-booked copy of CREATED INTERNAL cost, on the <em>expensedate</em>
+     * month, attributed to the debtor company. Returns map of monthKey &rarr; cost_dkk.
+     *
+     * <p>This isolates exactly the portion of {@link #queryMonthlyDirectCostByMonth}
+     * (cost_type {@code DIRECT_COSTS}) that comes from the internal-invoice debtor
+     * accounts {@code 3050/3055/3070/3075/1350}. The {@code INNER JOIN accounting_accounts}
+     * + {@code cost_type='DIRECT_COSTS'} filter is intentional and matches the direct-cost
+     * feed: we subtract ONLY the cost that is genuinely already inside {@code monthDirectCost},
+     * so the F3 re-timing can never over-subtract an account a company has classified
+     * differently. Same {@code postingstatus} (cost-source) filter as the direct-cost feed,
+     * so BOOKED vs BOOKED_PLUS_DRAFT stays consistent.
+     *
+     * @param fromKey    Start month (YYYYMM, inclusive)
+     * @param toKey      End month (YYYYMM, inclusive)
+     * @param companyIds Optional debtor company filter; null/empty = all debtors
+     * @param costSource BOOKED or BOOKED_PLUS_DRAFT (drives the postingstatus filter)
+     * @return Map of monthKey &rarr; summed GL CREATED INTERNAL cost in DKK (expensedate-timed)
+     */
+    private java.util.Map<String, Double> queryMonthlyCreatedInternalGlCostByMonth(
+            String fromKey, String toKey, Set<String> companyIds, CostSource costSource) {
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS cost " +
+                "FROM finance_details fd " +
+                "INNER JOIN accounting_accounts aa " +
+                "    ON fd.accountnumber = aa.account_code " +
+                "    AND fd.companyuuid  = aa.companyuuid " +
+                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
+                "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) " +
+                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus IN (:postingStatuses) "
+        );
+        if (companyIds != null && !companyIds.isEmpty()) {
+            sql.append("AND fd.companyuuid IN (:companyIds) ");
+        }
+        sql.append("GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key");
+
+        Query query = em.createNativeQuery(sql.toString(), Tuple.class);
+        query.setParameter("fromKey", fromKey);
+        query.setParameter("toKey", toKey);
+        query.setParameter("postingStatuses", (costSource == null ? CostSource.BOOKED : costSource).postingStatusNames());
+        if (companyIds != null && !companyIds.isEmpty()) {
+            query.setParameter("companyIds", companyIds);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = query.getResultList();
+
+        java.util.Map<String, Double> result = new java.util.HashMap<>();
+        for (Tuple row : rows) {
+            String mk = (String) row.get("month_key");
+            double cost = row.get("cost") != null ? ((Number) row.get("cost")).doubleValue() : 0.0;
+            result.put(mk, cost);
+        }
+        return result;
+    }
+
+    /**
+     * F3 pure logic: per-month internal-cost re-timing adjustment.
+     *
+     * <p>For every month present in either input, the adjustment is
+     * {@code synthInvoicedateCreated(m) − glExpensedateCreated(m)}:
+     * <ul>
+     *   <li>{@code +synth(m)} recognizes CREATED-internal cost in the month the matching
+     *       internal revenue is booked (issuer invoicedate);</li>
+     *   <li>{@code −gl(m)} removes the lagged GL copy of that cost that is already inside
+     *       {@code monthDirectCost} for month m (expensedate) — guaranteeing the cost is
+     *       counted exactly once.</li>
+     * </ul>
+     *
+     * <p><strong>Double-count avoidance.</strong> The CREATED-internal cost lives in two
+     * data sources keyed on two different dates: the {@code invoices} table (invoicedate)
+     * and {@code finance_details} (expensedate). The direct-cost feed already includes the
+     * {@code finance_details} copy. Adding {@code synth} without subtracting {@code gl} would
+     * count the same cost twice; subtracting {@code gl} re-times rather than duplicates it.
+     *
+     * <p><strong>Conservation depends on whether the FY is closed.</strong> Summed over a
+     * window the net is {@code Σ synth − Σ gl}.
+     * <ul>
+     *   <li><em>Closed FY</em> (all internal cost already posted to GL): {@code Σ synth ≈ Σ gl},
+     *       so the net is only the small structural residual from FY-boundary crossings and
+     *       {@code rate*hours} vs {@code fd.amount} rounding (FY24/25 ≈ +2.62M). This is the
+     *       staging reconciliation oracle — the chart barely moves for historical years.</li>
+     *   <li><em>Open / current FY</em> (recent internal cost not yet posted to GL): the net is
+     *       <strong>large by design</strong> — it equals the internal cost that has been invoiced
+     *       (issuer invoicedate, in-window) but whose matching debtor GL posts on a later
+     *       expensedate beyond the window. Validated against production FY25/26: net
+     *       <strong>≈ +8.53M</strong>, dominated by June (synth 13.02M − gl 5.32M = <strong>+7.69M</strong>).
+     *       That is exactly the unmatched-internal-margin the fix removes: it accrues the cost
+     *       into the revenue month now instead of leaving a fake year-end profit spike. The cost
+     *       is still conserved across the FY boundary (when it later posts to GL it is removed
+     *       from the next FY via {@code −gl}), so nothing is double-counted between years.</li>
+     * </ul>
+     *
+     * <p>Package-private and static so the arithmetic is unit-testable without a database.
+     *
+     * @param synthInvoicedateCreatedByMonth invoicedate-timed CREATED-internal cost per month
+     * @param glExpensedateCreatedByMonth     expensedate-timed GL CREATED-internal cost per month
+     * @return map of monthKey &rarr; signed re-timing adjustment to add to monthDirectCost
+     */
+    static java.util.Map<String, Double> computeInternalCostRetimingAdjustment(
+            java.util.Map<String, Double> synthInvoicedateCreatedByMonth,
+            java.util.Map<String, Double> glExpensedateCreatedByMonth) {
+
+        java.util.Set<String> months = new java.util.HashSet<>(synthInvoicedateCreatedByMonth.keySet());
+        months.addAll(glExpensedateCreatedByMonth.keySet());
+
+        java.util.Map<String, Double> adjustment = new java.util.HashMap<>();
+        for (String mk : months) {
+            double synth = synthInvoicedateCreatedByMonth.getOrDefault(mk, 0.0);
+            double gl    = glExpensedateCreatedByMonth.getOrDefault(mk, 0.0);
+            adjustment.put(mk, synth - gl);
+        }
+        return adjustment;
     }
 
     /**

@@ -61,13 +61,13 @@ public class CostAnalyticsResource {
     public List<SalaryByBandDTO> getAvgSalaryByBand(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return salaryAnalyticsProvider.getAvgSalaryByBand(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return salaryAnalyticsProvider.getAvgSalaryByBand(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -79,13 +79,13 @@ public class CostAnalyticsResource {
     public List<SalaryByBandDTO> getTotalSalaryByBand(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return salaryAnalyticsProvider.getTotalSalaryByBand(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return salaryAnalyticsProvider.getTotalSalaryByBand(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -97,13 +97,13 @@ public class CostAnalyticsResource {
     public List<SalaryCostRatioDTO> getSalaryCostRatio(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return salaryAnalyticsProvider.getSalaryCostRatio(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return salaryAnalyticsProvider.getSalaryCostRatio(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -116,7 +116,9 @@ public class CostAnalyticsResource {
     @GET
     @Path("/top-expense-consultants")
     public List<TopExpenseConsultantDTO> getTopExpenseConsultants(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
+
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = today.minusMonths(11).withDayOfMonth(1);
@@ -131,7 +133,7 @@ public class CostAnalyticsResource {
         sql.append("WHERE e.status IN ('VERIFIED_BOOKED', 'VERIFIED_UNBOOKED') ");
         sql.append("  AND TRIM(e.accountname) NOT LIKE 'Kursus/udd/konferencer%' ");
         sql.append("  AND e.expensedate >= :fromDate AND e.expensedate <= :toDate ");
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (companies != null) {
             sql.append("  AND EXISTS (SELECT 1 FROM userstatus us2 WHERE us2.useruuid = e.useruuid ");
             sql.append("    AND us2.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = e.useruuid AND us3.statusdate <= CURDATE()) ");
             sql.append("    AND us2.companyuuid IN (:companyIds)) ");
@@ -142,8 +144,8 @@ public class CostAnalyticsResource {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", today);
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
+        if (companies != null) {
+            query.setParameter("companyIds", companies);
         }
 
         @SuppressWarnings("unchecked")
@@ -314,7 +316,9 @@ public class CostAnalyticsResource {
     @Path("/bonus-pool-projection")
     public BonusPoolProjectionDTO getBonusPoolProjection(
             @QueryParam("fiscalYear") Integer fiscalYear,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
+
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         LocalDate today = LocalDate.now();
         int fy = fiscalYear != null ? fiscalYear : (today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
@@ -329,7 +333,7 @@ public class CostAnalyticsResource {
         sql.append("FROM fact_tw_bonus_monthly_mat b ");
         sql.append("WHERE CONCAT(LPAD(b.year, 4, '0'), LPAD(b.month, 2, '0')) >= :fromKey ");
         sql.append("  AND CONCAT(LPAD(b.year, 4, '0'), LPAD(b.month, 2, '0')) <= :toKey ");
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (companies != null) {
             sql.append("  AND b.companyuuid IN (:companyIds) ");
         }
         sql.append("GROUP BY b.year, b.month ");
@@ -338,8 +342,8 @@ public class CostAnalyticsResource {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
+        if (companies != null) {
+            query.setParameter("companyIds", companies);
         }
 
         @SuppressWarnings("unchecked")
@@ -384,7 +388,7 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-vs-budget")
     public List<RevenueVsBudgetMonthDTO> getRevenueVsBudget(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         String ttmStartKey = toMonthKey(today.minusMonths(11));
@@ -392,7 +396,7 @@ public class CostAnalyticsResource {
         // Use next month as exclusive upper bound to include current month
         String currentMonthKey = toMonthKey(today);
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         // Actual revenue (grouped by month)
         String actualSql = buildActualRevenueSql(companies);
@@ -447,13 +451,13 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-per-fte")
     public List<RevenuePerFteMonthDTO> getRevenuePerFteMonthly(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         String fromKey = toMonthKey(today.minusMonths(17));
         String toKey = toMonthKey(today);
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         // Revenue per month (grouped, no cross-product)
         String revFilter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
@@ -518,7 +522,9 @@ public class CostAnalyticsResource {
     @GET
     @Path("/salary-equality")
     public SalaryEqualityDTO getSalaryEquality(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
+
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         String currentMonthKey = toMonthKey(LocalDate.now());
 
@@ -531,7 +537,7 @@ public class CostAnalyticsResource {
 
         // By practice
         List<SalaryEqualityDTO.SalaryEqualityGroupDTO> byPractice = querySalaryEqualityGroups(
-                "fsm.practice_id", "fsm.practice_id", latestKey, companyIds, null);
+                "fsm.practice_id", "fsm.practice_id", latestKey, companies, null);
 
         // By career band — requires JOIN with user_career_level since fact_salary_monthly has no career_band column
         String careerLevelJoin = "JOIN user_career_level ucl ON ucl.useruuid = fsm.useruuid "
@@ -539,7 +545,7 @@ public class CostAnalyticsResource {
                 + "WHERE ucl2.useruuid = fsm.useruuid AND ucl2.active_from <= LAST_DAY(STR_TO_DATE(CONCAT(fsm.month_key, '01'), '%Y%m%d'))) ";
         String bandCase = CareerBandMapper.toSqlCase("ucl.career_level");
         List<SalaryEqualityDTO.SalaryEqualityGroupDTO> byCareerBand = querySalaryEqualityGroups(
-                bandCase, bandCase, latestKey, companyIds, careerLevelJoin);
+                bandCase, bandCase, latestKey, companies, careerLevelJoin);
 
         return new SalaryEqualityDTO(byPractice, byCareerBand, latestKey);
     }
@@ -553,14 +559,14 @@ public class CostAnalyticsResource {
     public List<CostPerFteDTO> getCostPerFte(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds,
+            @QueryParam("companyIds") String companyIds,
             @QueryParam("costSource") String costSourceParam) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return profitabilityProvider.getCostPerFte(fromDate, toDate, companyIds.isEmpty() ? null : companyIds,
+        return profitabilityProvider.getCostPerFte(fromDate, toDate, parseCommaSeparated(companyIds),
                 CostSource.fromQueryParam(costSourceParam));
     }
 
@@ -589,7 +595,7 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-cost-forecast")
     public List<RevenueCostForecastDTO> getRevenueCostForecast(
-            @QueryParam("companyIds") Set<String> companyIds,
+            @QueryParam("companyIds") String companyIds,
             @QueryParam("costSource") String costSourceParam) {
 
         LocalDate today = LocalDate.now();
@@ -600,7 +606,7 @@ public class CostAnalyticsResource {
         int fyStartYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
         String fyStartKey = toMonthKey(fyStartYear, 7);
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
         CostSource costSource = CostSource.fromQueryParam(costSourceParam);
 
         // ── TTM actual data (queried for projection inputs; display filtered to FY) ──
@@ -798,7 +804,7 @@ public class CostAnalyticsResource {
     @GET
     @Path("/ebitda-forecast")
     public List<EbitdaForecastDTO> getEbitdaForecast(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         int currentYear = today.getYear();
@@ -813,7 +819,7 @@ public class CostAnalyticsResource {
         // TTM start (12 months before current month)
         String ttmStartKey = toMonthKey(today.minusMonths(12));
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         // ── Actual data queries ──────────────────────────────────────────
 
@@ -1280,5 +1286,32 @@ public class CostAnalyticsResource {
                 : null;
 
         return new CostDataFreshnessDTO(overallLatest, overallDaysBehind, perCompany);
+    }
+
+    /** Upper bound on distinct companyIds — the tenant has a handful of companies; a larger
+     *  list can only be malformed/abusive input. Caps the IN() clause (defense-in-depth). */
+    private static final int MAX_COMPANY_IDS = 50;
+
+    /**
+     * Parses comma-separated string into a Set of trimmed values.
+     * Returns null if input is null or empty. Rejects pathologically large lists
+     * (&gt; {@link #MAX_COMPANY_IDS}) with HTTP 400 so an unbounded IN() clause cannot be
+     * forced from the query string (the endpoints already require {@code dashboard:read}).
+     */
+    private Set<String> parseCommaSeparated(String input) {
+        if (input == null || input.isBlank()) {
+            return null;
+        }
+        Set<String> result = new HashSet<>();
+        for (String value : input.split(",")) {
+            String trimmed = value.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+        }
+        if (result.size() > MAX_COMPANY_IDS) {
+            throw new BadRequestException("companyIds: too many values (max " + MAX_COMPANY_IDS + ")");
+        }
+        return result.isEmpty() ? null : result;
     }
 }
