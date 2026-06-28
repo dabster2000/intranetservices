@@ -440,6 +440,17 @@ dk:
       digest:
         enabled: ${PERF_DIGEST_ENABLED:false}   # nightly analyzer off by default; enable per-env
       log-group: ${PERF_LOG_GROUP:${CLOUDWATCH_LOG_GROUP_BACKEND:/ecs/tw-quarkus-unknown}}
+finance:
+  # F3 — internal-cost timing alignment for the Expected Accumulated EBITDA chart.
+  # Internal (intercompany) revenue is bucketed on the issuer's invoicedate, but the
+  # matching debtor cost (CREATED INTERNAL, GL accounts 3050/3055/3070/3075/1350) posts
+  # on the later expensedate. When ON, CxoFinanceService re-times that CREATED-internal
+  # cost onto the invoicedate month (add synthesized invoicedate cost, subtract the GL
+  # expensedate copy already in the direct-cost feed — no double count, FY totals
+  # conserved). DEFAULT false (prod-safe, byte-identical to today). Enable in staging
+  # first to validate against a fully-closed fiscal year before promoting to prod.
+  internal-cost-timing-alignment:
+    enabled: ${FINANCE_INTERNAL_COST_TIMING_ALIGNMENT_ENABLED:false}
 pricingEngine:
   enabled: true
 cvtool:

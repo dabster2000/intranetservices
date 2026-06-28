@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.finance.services.analytics.CareerBandMa
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.SalaryAnalyticsProvider;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
+import dk.trustworks.intranet.financeservice.model.enums.RevenueBasis;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -61,13 +62,13 @@ public class CostAnalyticsResource {
     public List<SalaryByBandDTO> getAvgSalaryByBand(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return salaryAnalyticsProvider.getAvgSalaryByBand(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return salaryAnalyticsProvider.getAvgSalaryByBand(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -79,13 +80,13 @@ public class CostAnalyticsResource {
     public List<SalaryByBandDTO> getTotalSalaryByBand(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return salaryAnalyticsProvider.getTotalSalaryByBand(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return salaryAnalyticsProvider.getTotalSalaryByBand(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -97,13 +98,13 @@ public class CostAnalyticsResource {
     public List<SalaryCostRatioDTO> getSalaryCostRatio(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return salaryAnalyticsProvider.getSalaryCostRatio(fromDate, toDate, companyIds.isEmpty() ? null : companyIds);
+        return salaryAnalyticsProvider.getSalaryCostRatio(fromDate, toDate, parseCommaSeparated(companyIds));
     }
 
     /**
@@ -116,7 +117,9 @@ public class CostAnalyticsResource {
     @GET
     @Path("/top-expense-consultants")
     public List<TopExpenseConsultantDTO> getTopExpenseConsultants(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
+
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = today.minusMonths(11).withDayOfMonth(1);
@@ -131,7 +134,7 @@ public class CostAnalyticsResource {
         sql.append("WHERE e.status IN ('VERIFIED_BOOKED', 'VERIFIED_UNBOOKED') ");
         sql.append("  AND TRIM(e.accountname) NOT LIKE 'Kursus/udd/konferencer%' ");
         sql.append("  AND e.expensedate >= :fromDate AND e.expensedate <= :toDate ");
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (companies != null) {
             sql.append("  AND EXISTS (SELECT 1 FROM userstatus us2 WHERE us2.useruuid = e.useruuid ");
             sql.append("    AND us2.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = e.useruuid AND us3.statusdate <= CURDATE()) ");
             sql.append("    AND us2.companyuuid IN (:companyIds)) ");
@@ -142,8 +145,8 @@ public class CostAnalyticsResource {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", today);
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
+        if (companies != null) {
+            query.setParameter("companyIds", companies);
         }
 
         @SuppressWarnings("unchecked")
@@ -314,7 +317,9 @@ public class CostAnalyticsResource {
     @Path("/bonus-pool-projection")
     public BonusPoolProjectionDTO getBonusPoolProjection(
             @QueryParam("fiscalYear") Integer fiscalYear,
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
+
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         LocalDate today = LocalDate.now();
         int fy = fiscalYear != null ? fiscalYear : (today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
@@ -329,7 +334,7 @@ public class CostAnalyticsResource {
         sql.append("FROM fact_tw_bonus_monthly_mat b ");
         sql.append("WHERE CONCAT(LPAD(b.year, 4, '0'), LPAD(b.month, 2, '0')) >= :fromKey ");
         sql.append("  AND CONCAT(LPAD(b.year, 4, '0'), LPAD(b.month, 2, '0')) <= :toKey ");
-        if (companyIds != null && !companyIds.isEmpty()) {
+        if (companies != null) {
             sql.append("  AND b.companyuuid IN (:companyIds) ");
         }
         sql.append("GROUP BY b.year, b.month ");
@@ -338,8 +343,8 @@ public class CostAnalyticsResource {
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromKey);
         query.setParameter("toKey", toKey);
-        if (companyIds != null && !companyIds.isEmpty()) {
-            query.setParameter("companyIds", companyIds);
+        if (companies != null) {
+            query.setParameter("companyIds", companies);
         }
 
         @SuppressWarnings("unchecked")
@@ -384,7 +389,7 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-vs-budget")
     public List<RevenueVsBudgetMonthDTO> getRevenueVsBudget(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         String ttmStartKey = toMonthKey(today.minusMonths(11));
@@ -392,7 +397,7 @@ public class CostAnalyticsResource {
         // Use next month as exclusive upper bound to include current month
         String currentMonthKey = toMonthKey(today);
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         // Actual revenue (grouped by month)
         String actualSql = buildActualRevenueSql(companies);
@@ -447,13 +452,13 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-per-fte")
     public List<RevenuePerFteMonthDTO> getRevenuePerFteMonthly(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         String fromKey = toMonthKey(today.minusMonths(17));
         String toKey = toMonthKey(today);
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         // Revenue per month (grouped, no cross-product)
         String revFilter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
@@ -518,7 +523,9 @@ public class CostAnalyticsResource {
     @GET
     @Path("/salary-equality")
     public SalaryEqualityDTO getSalaryEquality(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
+
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         String currentMonthKey = toMonthKey(LocalDate.now());
 
@@ -531,7 +538,7 @@ public class CostAnalyticsResource {
 
         // By practice
         List<SalaryEqualityDTO.SalaryEqualityGroupDTO> byPractice = querySalaryEqualityGroups(
-                "fsm.practice_id", "fsm.practice_id", latestKey, companyIds, null);
+                "fsm.practice_id", "fsm.practice_id", latestKey, companies, null);
 
         // By career band — requires JOIN with user_career_level since fact_salary_monthly has no career_band column
         String careerLevelJoin = "JOIN user_career_level ucl ON ucl.useruuid = fsm.useruuid "
@@ -539,7 +546,7 @@ public class CostAnalyticsResource {
                 + "WHERE ucl2.useruuid = fsm.useruuid AND ucl2.active_from <= LAST_DAY(STR_TO_DATE(CONCAT(fsm.month_key, '01'), '%Y%m%d'))) ";
         String bandCase = CareerBandMapper.toSqlCase("ucl.career_level");
         List<SalaryEqualityDTO.SalaryEqualityGroupDTO> byCareerBand = querySalaryEqualityGroups(
-                bandCase, bandCase, latestKey, companyIds, careerLevelJoin);
+                bandCase, bandCase, latestKey, companies, careerLevelJoin);
 
         return new SalaryEqualityDTO(byPractice, byCareerBand, latestKey);
     }
@@ -553,14 +560,14 @@ public class CostAnalyticsResource {
     public List<CostPerFteDTO> getCostPerFte(
             @QueryParam("fromDate") String fromDateStr,
             @QueryParam("toDate") String toDateStr,
-            @QueryParam("companyIds") Set<String> companyIds,
+            @QueryParam("companyIds") String companyIds,
             @QueryParam("costSource") String costSourceParam) {
 
         LocalDate today = LocalDate.now();
         LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
         LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
-        return profitabilityProvider.getCostPerFte(fromDate, toDate, companyIds.isEmpty() ? null : companyIds,
+        return profitabilityProvider.getCostPerFte(fromDate, toDate, parseCommaSeparated(companyIds),
                 CostSource.fromQueryParam(costSourceParam));
     }
 
@@ -589,8 +596,9 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-cost-forecast")
     public List<RevenueCostForecastDTO> getRevenueCostForecast(
-            @QueryParam("companyIds") Set<String> companyIds,
-            @QueryParam("costSource") String costSourceParam) {
+            @QueryParam("companyIds") String companyIds,
+            @QueryParam("costSource") String costSourceParam,
+            @QueryParam("basis") String basisParam) {
 
         LocalDate today = LocalDate.now();
         String ttmStartKey = toMonthKey(today.minusMonths(12));
@@ -600,8 +608,13 @@ public class CostAnalyticsResource {
         int fyStartYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
         String fyStartKey = toMonthKey(fyStartYear, 7);
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
         CostSource costSource = CostSource.fromQueryParam(costSourceParam);
+        // WORK_PERIOD basis (default INVOICED): invoice revenue + internal-synth cost are
+        // bucketed by invoices.year/month; CREATED-internal GL cost (expensedate) is offset
+        // and re-added on the work month. Subcontractor GL direct cost and OPEX/salary stay
+        // on the month incurred. INVOICED is byte-identical to the historical behaviour.
+        boolean workPeriod = (RevenueBasis.fromQueryParam(basisParam) == RevenueBasis.WORK_PERIOD);
 
         // ── TTM actual data (queried for projection inputs; display filtered to FY) ──
 
@@ -612,8 +625,8 @@ public class CostAnalyticsResource {
         regQuery.setParameter("currentMonth", currentMonthKey);
         if (companies != null) regQuery.setParameter("companyIds", companies);
 
-        // Q2: Invoice revenue from fact_company_revenue_mat
-        String invoiceRevenueSql = buildInvoiceRevenueSql(companies);
+        // Q2: Invoice revenue (basis-aware: invoicedate _mat vs work-period view)
+        String invoiceRevenueSql = buildInvoiceRevenueSql(companies, workPeriod);
         var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
         invQuery.setParameter("ttmStart", ttmStartKey);
         invQuery.setParameter("currentMonth", currentMonthKey);
@@ -643,8 +656,9 @@ public class CostAnalyticsResource {
             glDirectMap.put((String) row.get("month_key"), numericValue(row, "gl_direct_cost"));
         }
 
-        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent)
-        String queuedSql = buildMonthlyQueuedInternalCostSql(companies);
+        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent;
+        // basis-aware bucketing)
+        String queuedSql = buildMonthlyQueuedInternalCostSql(companies, workPeriod);
         var queuedQuery = em.createNativeQuery(queuedSql, Tuple.class);
         queuedQuery.setParameter("fromKey", ttmStartKey);
         queuedQuery.setParameter("toKey", ttmEndKey);
@@ -655,6 +669,33 @@ public class CostAnalyticsResource {
             queuedMap.put((String) row.get("month_key"), numericValue(row, "queued_cost"));
         }
 
+        // Q3c (WORK_PERIOD only): re-time CREATED INTERNAL cost onto the work month.
+        // createdSynth (work-month bucket) is ADDED and glInternal (the GL expensedate copy
+        // already inside glDirect) is SUBTRACTED, so the cost is never double-counted and FY
+        // totals are conserved — same mechanism as the EBITDA chart's F3/WORK_PERIOD path.
+        Map<String, Double> createdSynthMap = new HashMap<>();
+        Map<String, Double> glInternalMap = new HashMap<>();
+        if (workPeriod) {
+            var createdQuery = em.createNativeQuery(buildMonthlyCreatedInternalCostWpSql(companies), Tuple.class);
+            createdQuery.setParameter("fromKey", ttmStartKey);
+            createdQuery.setParameter("toKey", ttmEndKey);
+            if (companies != null) createdQuery.setParameter("companyIds", companies);
+            @SuppressWarnings("unchecked") List<Tuple> createdRows = createdQuery.getResultList();
+            for (Tuple row : createdRows) {
+                createdSynthMap.put((String) row.get("month_key"), numericValue(row, "created_cost"));
+            }
+
+            var glInternalQuery = em.createNativeQuery(buildMonthlyGlInternalCostSql(companies), Tuple.class);
+            glInternalQuery.setParameter("fromKey", ttmStartKey);
+            glInternalQuery.setParameter("toKey", ttmEndKey);
+            glInternalQuery.setParameter("postingStatuses", costSource.postingStatusNames());
+            if (companies != null) glInternalQuery.setParameter("companyIds", companies);
+            @SuppressWarnings("unchecked") List<Tuple> glInternalRows = glInternalQuery.getResultList();
+            for (Tuple row : glInternalRows) {
+                glInternalMap.put((String) row.get("month_key"), numericValue(row, "gl_internal_cost"));
+            }
+        }
+
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
         allKeys.addAll(regMap.keySet());
@@ -662,6 +703,8 @@ public class CostAnalyticsResource {
         allKeys.addAll(opexSalaryMap.keySet());
         allKeys.addAll(glDirectMap.keySet());
         allKeys.addAll(queuedMap.keySet());
+        allKeys.addAll(createdSynthMap.keySet());
+        allKeys.addAll(glInternalMap.keySet());
 
         // Iterate ALL keys in the TTM window so projection inputs (gross margin, avg
         // OPEX+salary) are computed over a stable 12-month base. Only months within the
@@ -683,6 +726,11 @@ public class CostAnalyticsResource {
             double glDirect = glDirectMap.getOrDefault(key, 0.0);
             double queued = queuedMap.getOrDefault(key, 0.0);
             double directDelivery = glDirect + queued;
+            if (workPeriod) {
+                // re-time CREATED-internal: +synth(work month) −GL(expensedate, already in glDirect)
+                directDelivery += createdSynthMap.getOrDefault(key, 0.0)
+                                - glInternalMap.getOrDefault(key, 0.0);
+            }
             double totalCost = opexSalary + directDelivery;
 
             totalCostSum += Math.round(totalCost);
@@ -798,7 +846,7 @@ public class CostAnalyticsResource {
     @GET
     @Path("/ebitda-forecast")
     public List<EbitdaForecastDTO> getEbitdaForecast(
-            @QueryParam("companyIds") Set<String> companyIds) {
+            @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
         int currentYear = today.getYear();
@@ -813,7 +861,7 @@ public class CostAnalyticsResource {
         // TTM start (12 months before current month)
         String ttmStartKey = toMonthKey(today.minusMonths(12));
 
-        Set<String> companies = companyIds == null || companyIds.isEmpty() ? null : companyIds;
+        Set<String> companies = parseCommaSeparated(companyIds);
 
         // ── Actual data queries ──────────────────────────────────────────
 
@@ -976,12 +1024,18 @@ public class CostAnalyticsResource {
                 "GROUP BY month_key, d.year, d.month ORDER BY month_key";
     }
 
-    /** Invoice revenue from fact_company_revenue_mat (TTM window). */
-    private static String buildInvoiceRevenueSql(Set<String> companies) {
+    /**
+     * Invoice revenue (TTM window). INVOICED basis reads the invoicedate-keyed
+     * materialized fact {@code fact_company_revenue_mat}; WORK_PERIOD reads the live
+     * {@code fact_company_revenue_workperiod} view (same invoices bucketed by
+     * invoices.year/month). Both expose identical columns.
+     */
+    private static String buildInvoiceRevenueSql(Set<String> companies, boolean workPeriod) {
+        String table = workPeriod ? "fact_company_revenue_workperiod" : "fact_company_revenue_mat";
         String filter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
         return "SELECT r.month_key, r.year, r.month_number, " +
                 "SUM(r.net_revenue_dkk) AS net_revenue " +
-                "FROM fact_company_revenue_mat r " +
+                "FROM " + table + " r " +
                 "WHERE r.month_key >= :ttmStart AND r.month_key < :currentMonth " +
                 filter +
                 "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
@@ -1071,9 +1125,12 @@ public class CostAnalyticsResource {
      * INTERNALs aren't yet in the GL, so they're synthesized here. Independent of
      * costSource (QUEUED rows aren't subject to BOOKED/DRAFT classification).
      */
-    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies) {
+    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies, boolean workPeriod) {
+        String mexpr = workPeriod
+                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
+                : "DATE_FORMAT(i.invoicedate, '%Y%m')";
         String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
-        return "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+        return "SELECT " + mexpr + " AS month_key, " +
                 "       COALESCE(SUM(ii.rate * ii.hours * " +
                 "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
                 "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
@@ -1085,11 +1142,62 @@ public class CostAnalyticsResource {
                 "WHERE i.type = 'INTERNAL' " +
                 "  AND i.status = 'QUEUED' " +
                 "  AND i.debtor_companyuuid IS NOT NULL " +
-                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
                 "  AND ii.rate IS NOT NULL " +
                 "  AND ii.hours IS NOT NULL " +
                 filter +
-                "GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key";
+                "GROUP BY " + mexpr + " ORDER BY month_key";
+    }
+
+    /**
+     * WORK_PERIOD only: CREATED INTERNAL synth cost bucketed by the WORK period
+     * (invoices.year/month), debtor-attributed. Added to direct delivery and offset by
+     * {@link #buildMonthlyGlInternalCostSql} (the GL expensedate copy) so CREATED-internal
+     * cost re-times onto the work month without double counting — mirrors the EBITDA chart.
+     */
+    private static String buildMonthlyCreatedInternalCostWpSql(Set<String> companies) {
+        String mexpr = "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))";
+        String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
+        return "SELECT " + mexpr + " AS month_key, " +
+                "       COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) AS created_cost " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'CREATED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL " +
+                filter +
+                "GROUP BY " + mexpr + " ORDER BY month_key";
+    }
+
+    /**
+     * WORK_PERIOD only: the GL-booked copy of CREATED INTERNAL cost on the expensedate month
+     * (accounts 3050/3055/3070/3075/1350), costSource-aware. Subtracted from direct delivery
+     * when re-timing CREATED-internal cost onto the work month. Same predicate as
+     * {@code CxoFinanceService.queryMonthlyCreatedInternalGlCostByMonth}.
+     */
+    private static String buildMonthlyGlInternalCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND fd.companyuuid IN (:companyIds) " : "";
+        return "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS gl_internal_cost " +
+                "FROM finance_details fd " +
+                "INNER JOIN accounting_accounts aa " +
+                "    ON fd.accountnumber = aa.account_code " +
+                "    AND fd.companyuuid  = aa.companyuuid " +
+                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
+                "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) " +
+                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus IN (:postingStatuses) " +
+                filter +
+                "GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key";
     }
 
     /** Budget revenue from fact_revenue_budget_mat (forecast window). */
@@ -1280,5 +1388,32 @@ public class CostAnalyticsResource {
                 : null;
 
         return new CostDataFreshnessDTO(overallLatest, overallDaysBehind, perCompany);
+    }
+
+    /** Upper bound on distinct companyIds — the tenant has a handful of companies; a larger
+     *  list can only be malformed/abusive input. Caps the IN() clause (defense-in-depth). */
+    private static final int MAX_COMPANY_IDS = 50;
+
+    /**
+     * Parses comma-separated string into a Set of trimmed values.
+     * Returns null if input is null or empty. Rejects pathologically large lists
+     * (&gt; {@link #MAX_COMPANY_IDS}) with HTTP 400 so an unbounded IN() clause cannot be
+     * forced from the query string (the endpoints already require {@code dashboard:read}).
+     */
+    private Set<String> parseCommaSeparated(String input) {
+        if (input == null || input.isBlank()) {
+            return null;
+        }
+        Set<String> result = new HashSet<>();
+        for (String value : input.split(",")) {
+            String trimmed = value.trim();
+            if (!trimmed.isEmpty()) {
+                result.add(trimmed);
+            }
+        }
+        if (result.size() > MAX_COMPANY_IDS) {
+            throw new BadRequestException("companyIds: too many values (max " + MAX_COMPANY_IDS + ")");
+        }
+        return result.isEmpty() ? null : result;
     }
 }

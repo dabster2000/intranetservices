@@ -52,6 +52,7 @@ import dk.trustworks.intranet.aggregates.finance.services.CxoFinanceService;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.aggregates.finance.usecases.CareerLevelEconomicsUseCase;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
+import dk.trustworks.intranet.financeservice.model.enums.RevenueBasis;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -1264,10 +1265,11 @@ public class CxoFinanceResource {
             @QueryParam("contractTypes") String contractTypes,
             @QueryParam("clientId") String clientId,
             @QueryParam("companyIds") String companyIds,
-            @QueryParam("costSource") String costSourceParam) {
+            @QueryParam("costSource") String costSourceParam,
+            @QueryParam("basis") String basisParam) {
 
-        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s, costSource=%s",
-                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds, costSourceParam);
+        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s, costSource=%s, basis=%s",
+                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds, costSourceParam, basisParam);
 
         LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
                 ? LocalDate.parse(asOfDateStr)
@@ -1280,7 +1282,7 @@ public class CxoFinanceResource {
 
         List<MonthlyAccumulatedEbitdaDTO> result = cxoFinanceService.getExpectedAccumulatedEBITDA(
                 asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet,
-                CostSource.fromQueryParam(costSourceParam));
+                CostSource.fromQueryParam(costSourceParam), RevenueBasis.fromQueryParam(basisParam));
 
         log.debugf("Returning %d expected accumulated EBITDA data points", result.size());
         return result;
@@ -1896,6 +1898,15 @@ public class CxoFinanceResource {
      * Parses comma-separated string into a Set of trimmed values.
      * Returns null if input is null or empty.
      */
+    /**
+     * Upper bound on comma-separated filter values, mirroring
+     * {@code CostAnalyticsResource.MAX_COMPANY_IDS}. Caps the size of any generated
+     * {@code IN(...)} clause so an authenticated caller cannot send an unbounded list.
+     * Set well above any legitimate dimension cardinality (companies, sectors, service
+     * lines, contract types, practices are all small enumerations).
+     */
+    private static final int MAX_FILTER_VALUES = 200;
+
     private Set<String> parseCommaSeparated(String input) {
         if (input == null || input.isBlank()) {
             return null;
@@ -1906,6 +1917,9 @@ public class CxoFinanceResource {
             if (!trimmed.isEmpty()) {
                 result.add(trimmed);
             }
+        }
+        if (result.size() > MAX_FILTER_VALUES) {
+            throw new jakarta.ws.rs.BadRequestException("Too many filter values (max " + MAX_FILTER_VALUES + ")");
         }
         return result.isEmpty() ? null : result;
     }
