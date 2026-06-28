@@ -11,11 +11,9 @@ import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.model.enums.ExcelFinanceType;
 import dk.trustworks.intranet.financeservice.model.enums.PostingStatus;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
-import dk.trustworks.intranet.financeservice.remote.EconomicsJournalEntriesAPI;
 import dk.trustworks.intranet.financeservice.remote.EconomicsPagingAPI;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.Collection;
 import dk.trustworks.intranet.financeservice.remote.dto.economics.EconomicsInvoice;
-import dk.trustworks.intranet.financeservice.remote.dto.economics.JournalEntriesResponse;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import lombok.SneakyThrows;
@@ -48,14 +46,6 @@ public class EconomicsService {
 
     @ConfigProperty(name = "quarkus.rest-client.economics-journals-api.url", defaultValue = "https://apis.e-conomic.com/journalsapi/v13.0.1")
     URI journalsApiUri;
-
-    /**
-     * Intercompany debtor cost accounts. Unbooked intercompany supplier-invoice drafts in the
-     * "Kreditor Intern" daybook post their cost leg to one of these (via contraAccount); they
-     * are the scope of the draft-supplier-invoice sync. Same set the EBITDA chart isolates as
-     * the internal-cost slice of DIRECT_COSTS.
-     */
-    private static final Set<Integer> INTERCOMPANY_COST_ACCOUNTS = Set.of(3050, 3055, 3070, 3075, 1350);
 
     public record FinanceEntry(LocalDate period, int accountNumber, double amountInBaseCurrency, PostingStatus postingStatus) {}
 
@@ -113,12 +103,6 @@ public class EconomicsService {
             loadDraftEntries(company, date, result, collectionResultMap.get(PostingStatus.DRAFT), financeDetails);
         } catch (Exception e) {
             log.warnf(e, "Draft e-conomic entries could not be loaded for company %s period %s; continuing with booked entries", company.getUuid(), date);
-        }
-
-        try {
-            loadDraftSupplierInvoices(company, date, result, collectionResultMap.get(PostingStatus.DRAFT), financeDetails);
-        } catch (Exception e) {
-            log.warnf(e, "Draft intercompany supplier invoices could not be loaded for company %s period %s; continuing", company.getUuid(), date);
         }
 
         // In-batch dedup before persist. The e-conomic pagination API has been
@@ -252,118 +236,6 @@ public class EconomicsService {
                 }
                 cursor = response != null ? response.cursor : null;
             } while (cursor != null && !cursor.isBlank());
-        }
-    }
-
-    /**
-     * Sync UNBOOKED intercompany supplier-invoice drafts into {@code finance_details} as
-     * {@code DRAFT} rows, so the Booked+Draft cost source sees intercompany cost that exists in
-     * e-conomic but is not yet booked. Source: the company's "Kreditor Intern" daybook
-     * ({@code internal-journal-number}) via the classic REST {@code /journals/{n}/entries}
-     * endpoint, filtered to {@code entryType='supplierInvoice'} on an intercompany cost account.
-     *
-     * <p><strong>Net cost, GL sign.</strong> e-conomic's supplier-invoice {@code amount} is gross
-     * (VAT via {@code contraVatAccount}) and signed in creditor convention (a normal invoice is
-     * negative, a credit note positive). We negate and strip VAT
-     * ({@code net = -gross / (1 + vatRate)}) to match the booked 3050/3055 GL rows — verified to
-     * the øre against the issuer invoice net (invoice 70368: gross −165,687.50 / 1.25 = −132,550
-     * → stored +132,550).
-     *
-     * <p><strong>Supersede-on-booking is automatic.</strong> Draft entries
-     * ({@code /journals/{n}/entries}) and booked entries ({@code /accounting-years/.../entries},
-     * loaded above) are DISJOINT sources — a booked invoice leaves the draft journal. The nightly
-     * {@code clean()} + reload therefore makes the booked row replace the draft with no id-matching.
-     * Entries are scoped to the fiscal year of {@code date} so the per-year
-     * {@link dk.trustworks.intranet.financeservice.jobs.FinanceLoadJob} loop never double-loads the
-     * same draft across years.
-     */
-    private void loadDraftSupplierInvoices(
-            Company company,
-            String date,
-            IntegrationKey.IntegrationKeyValue integrationKey,
-            Map<Range<Integer>, List<FinanceEntry>> draftEntryMap,
-            List<FinanceDetails> financeDetails) throws Exception {
-
-        int journalNumber = integrationKey.internalJournalNumber();
-        if (journalNumber <= 0) return;
-
-        LocalDate fiscalStart = fiscalStartFromEconomicsPeriod(date);
-        LocalDate fiscalEndExclusive = fiscalStart.plusYears(1);
-        ObjectMapper objectMapper = new ObjectMapper();
-
-        try (EconomicsJournalEntriesAPI remoteApi = RestClientBuilder.newBuilder()
-                .baseUri(URI.create(integrationKey.url()))
-                .register(new EconomicsDynamicHeaderFilter(integrationKey.appSecretToken(), integrationKey.agreementGrantToken()))
-                .build(EconomicsJournalEntriesAPI.class)) {
-
-            int skipPages = 0;
-            boolean morePages = true;
-            while (morePages) {
-                String json = remoteApi.getJournalEntries(journalNumber, skipPages, 1000).readEntity(String.class);
-                JournalEntriesResponse response = objectMapper.readValue(json, JournalEntriesResponse.class);
-                List<JournalEntriesResponse.Entry> entries = response != null && response.collection != null
-                        ? response.collection
-                        : List.of();
-
-                for (JournalEntriesResponse.Entry entry : entries) {
-                    if (!"supplierInvoice".equalsIgnoreCase(entry.entryType)) continue;
-                    int accountNumber = entry.contraAccountNumber();
-                    if (!INTERCOMPANY_COST_ACCOUNTS.contains(accountNumber)) continue;
-
-                    LocalDate entryDate = parseEconomicsDate(entry.date);
-                    if (entryDate.isBefore(fiscalStart) || !entryDate.isBefore(fiscalEndExclusive)) continue;
-
-                    double net = netCostFromDraftGross(entry.grossBaseAmount(), entry.vatRatePercentage());
-                    LocalDate period = entryDate.withDayOfMonth(1);
-                    int invoiceNumber = parseSupplierInvoiceNumber(entry.supplierInvoiceNumber);
-                    String currency = entry.currency != null ? entry.currency.code : null;
-
-                    addToEntryMap(draftEntryMap, new FinanceEntry(period, accountNumber, net, PostingStatus.DRAFT));
-                    financeDetails.add(new FinanceDetails(
-                            company,
-                            entry.journalEntryNumber != null ? entry.journalEntryNumber : 0,
-                            accountNumber,
-                            invoiceNumber,
-                            net,
-                            0.0,
-                            period,
-                            entry.text,
-                            PostingStatus.DRAFT,
-                            journalNumber,
-                            entry.voucherNumber(),
-                            null,
-                            null,
-                            currency,
-                            entry.exchangeRate));
-                }
-
-                String nextPage = response != null && response.pagination != null ? response.pagination.nextPage : null;
-                morePages = nextPage != null && !nextPage.isBlank() && !entries.isEmpty();
-                skipPages++;
-            }
-        }
-    }
-
-    /**
-     * Net GL cost (debit-positive) for an intercompany supplier-invoice draft. e-conomic's draft
-     * {@code amount} is gross (incl. VAT) and signed in creditor convention (a normal invoice is
-     * negative, a credit note positive); negate it and strip VAT to match the booked 3050/3055 GL
-     * rows. Verified to the øre against the issuer invoice net (invoice 70368: gross −165,687.50,
-     * VAT 25% → +132,550.00; credit note 70363: gross +334,753.58 → −267,802.86).
-     */
-    static double netCostFromDraftGross(double grossSigned, double vatRatePercentage) {
-        return -grossSigned / (1.0 + vatRatePercentage / 100.0);
-    }
-
-    /** Parse an e-conomic supplierInvoiceNumber (e.g. "70-368") to the issuer invoice number 70368. */
-    static int parseSupplierInvoiceNumber(String raw) {
-        if (raw == null) return 0;
-        String digits = raw.replaceAll("[^0-9]", "");
-        if (digits.isEmpty()) return 0;
-        try {
-            return Integer.parseInt(digits);
-        } catch (NumberFormatException e) {
-            return 0;
         }
     }
 
