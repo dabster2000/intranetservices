@@ -4761,13 +4761,17 @@ public class CxoFinanceService {
                 // Internal invoice costs are not forecast — set to 0.
                 double backlogRevenue  = backlogByMonth.getOrDefault(monthKey, 0.0);
                 double actualBookedRev = fyRevenueByMonth.getOrDefault(monthKey, 0.0);
-                // F5: For the CURRENT (in-progress) month only, never let backlog discard revenue
-                // that has already been booked/invoiced. The ~13M year-end internal settlement lands
-                // in actual invoiced revenue but is absent from backlog, so backlog alone understates
-                // the current month. Take the higher of actual-booked and backlog. Cost stays on the
-                // forecast path: the current month's actual cost is still incomplete and using it
-                // would overstate EBITDA — we only rescue revenue here.
-                monthRevenue      = resolveForecastMonthRevenue(monthKey, currentMonthKey, backlogRevenue, actualBookedRev);
+                // F5 (COUPLED TO F3): for the CURRENT (in-progress) month, prefer the higher of
+                // actual-booked and backlog so booked revenue is not discarded — BUT only when the
+                // internal-cost timing alignment (F3) is enabled. The current month's actual revenue
+                // includes the ~13M year-end intercompany settlement, whose matching cost is re-timed
+                // into the month ONLY by F3. With F3 off, surfacing that revenue without its cost
+                // would inflate the current month (a fake internal-billing profit spike), so we fall
+                // back to the conservative backlog forecast. F5 and F3 therefore move together: both
+                // off (default, prod-safe — no spike) or both on (actual revenue + matched cost).
+                monthRevenue      = internalCostTimingAlignmentEnabled
+                        ? resolveForecastMonthRevenue(monthKey, currentMonthKey, backlogRevenue, actualBookedRev)
+                        : backlogRevenue;
                 monthDirectCost   = monthRevenue * (1.0 - ttmGrossMarginPct / 100.0);
                 monthInternalCost = 0.0;
                 monthSalaries     = avgMonthlySalaries;
