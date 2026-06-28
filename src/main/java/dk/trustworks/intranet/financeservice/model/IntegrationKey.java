@@ -30,7 +30,16 @@ public class IntegrationKey extends PanacheEntityBase {
         int expenseJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("expense-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
         int invoiceJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("invoice-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
         int invoiceAccountNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("invoice-account-number")).findFirst().orElse(new IntegrationKey()).getValue());
-        int internalJournalNumber = Integer.parseInt(integrationKeys.stream().filter(i -> i.getKey().equals("internal-journal-number")).findFirst().orElse(new IntegrationKey()).getValue());
+        // internal-journal-number is optional; default 0 so an agreement without the key keeps
+        // working — the draft intercompany supplier-invoice sync short-circuits on journalNumber<=0
+        // rather than failing the whole finance load for that company.
+        int internalJournalNumber = integrationKeys.stream()
+                .filter(i -> i.getKey().equals("internal-journal-number"))
+                .findFirst()
+                .map(IntegrationKey::getValue)
+                .filter(v -> v != null && !v.isBlank())
+                .map(Integer::parseInt)
+                .orElse(0);
         // invoice-product-number is optional; default 0 so existing agreements without the key keep working
         // until the admin configures it. Phase G2/H mappers validate the presence where required.
         int invoiceProductNumber = integrationKeys.stream()

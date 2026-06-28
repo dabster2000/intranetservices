@@ -44,6 +44,7 @@ import dk.trustworks.intranet.aggregates.finance.dto.MonthlyAbsenceWaterfallDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.PracticeForecastMonthDTO;
 import dk.trustworks.intranet.utils.TwConstants;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
+import dk.trustworks.intranet.financeservice.model.enums.RevenueBasis;
 
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.FiscalYearRange;
@@ -1414,10 +1415,24 @@ public class CxoFinanceService {
     private java.util.Map<String, Double> queryCompanyRevenueByMonth(
             String fromKey, String toKey,
             Set<String> companyIds) {
+        return queryCompanyRevenueByMonth(fromKey, toKey, companyIds, false);
+    }
 
+    /**
+     * Overload selecting the recognition basis. {@code workPeriod=false} reads the
+     * invoiced materialized fact ({@code fact_company_revenue_mat}); {@code true} reads
+     * the live work-period view ({@code fact_company_revenue_workperiod}, V384), which
+     * buckets the same invoices by {@code invoices.year/month}. Both expose identical
+     * columns, so only the FROM clause differs.
+     */
+    private java.util.Map<String, Double> queryCompanyRevenueByMonth(
+            String fromKey, String toKey,
+            Set<String> companyIds, boolean workPeriod) {
+
+        String table = workPeriod ? "fact_company_revenue_workperiod" : "fact_company_revenue_mat";
         StringBuilder sql = new StringBuilder(
                 "SELECT r.month_key, COALESCE(SUM(r.net_revenue_dkk), 0.0) AS monthly_revenue " +
-                "FROM fact_company_revenue_mat r " +
+                "FROM " + table + " r " +
                 "WHERE r.month_key BETWEEN :fromKey AND :toKey "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
@@ -4580,6 +4595,32 @@ public class CxoFinanceService {
             String clientId,
             Set<String> companyIds,
             CostSource costSource) {
+        return getExpectedAccumulatedEBITDA(asOfDate, sectors, serviceLines, contractTypes,
+                clientId, companyIds, costSource, RevenueBasis.INVOICED);
+    }
+
+    /**
+     * Overload with an explicit revenue/cost recognition {@link RevenueBasis}.
+     *
+     * <p>{@link RevenueBasis#INVOICED} (default) is byte-identical to the historical
+     * behaviour. {@link RevenueBasis#WORK_PERIOD} recognises the SAME invoices by their
+     * work/service period ({@code invoices.year/month}) and re-times the matching
+     * invoice-derived internal cost (QUEUED + CREATED synth) onto that work month, while
+     * leaving salaries, OPEX and GL subcontractor direct cost on the month incurred.
+     * Structurally WORK_PERIOD is the existing F3 re-timing generalised to the work month
+     * and applied unconditionally (it is not gated by the invoiced-basis F3/F5 flags).
+     */
+    public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
+            LocalDate asOfDate,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds,
+            CostSource costSource,
+            RevenueBasis basis) {
+
+        final boolean workPeriod = (basis == RevenueBasis.WORK_PERIOD);
 
         LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
         String currentMonthKey = UtilizationCalculationHelper.toMonthKey(today);
@@ -4633,7 +4674,13 @@ public class CxoFinanceService {
 
         // 3. Actual FY revenue from fact_company_revenue_mat (company-total, companyIds only)
         //    and cost from GL (cost_type=DIRECT_COSTS) — merged by month.
-        java.util.Map<String, Double> fyRevenueByMonth = queryCompanyRevenueByMonth(fyFromKey, fyToKey, companyIds);
+        // WORK_PERIOD basis reads the live work-period view (revenue bucketed by
+        // invoices.year/month); INVOICED reads the invoicedate-keyed materialized fact.
+        java.util.Map<String, Double> fyRevenueByMonth = queryCompanyRevenueByMonth(fyFromKey, fyToKey, companyIds, workPeriod);
+        // Direct cost stays on the GL expensedate under BOTH bases: per the work-period
+        // semantics, GL subcontractor direct cost is left on the month incurred (it already
+        // aligns to the work month and has no work-period field). The internal slice is
+        // re-timed separately below via the synth/GL difference.
         java.util.Map<String, double[]> fyCostByMonth  = queryMonthlyDirectCostByMonth(fyFromKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds, costSource);
 
         // Combine into the actualByMonth map: [revenue, cost] per month.
@@ -4683,7 +4730,7 @@ public class CxoFinanceService {
         //     month still classifies as an "actual" month (otherwise the loop would treat
         //     it as a future month and apply the TTM-margin estimate instead).
         java.util.Map<String, Double> queuedInternalCostByMonth =
-                queryMonthlyQueuedInternalCostByMonth(fyFromKey, fyToKey, companyIds);
+                queryMonthlyQueuedInternalCostByMonth(fyFromKey, fyToKey, companyIds, workPeriod);
         for (String mk : queuedInternalCostByMonth.keySet()) {
             if (!actualByMonth.containsKey(mk)) {
                 actualByMonth.put(mk, new double[]{0.0, 0.0});
@@ -4701,10 +4748,16 @@ public class CxoFinanceService {
         //     is already inside fyCostByMonth/monthDirectCost — so the same cost is never
         //     counted twice. QUEUED internals (already invoicedate-timed above) are untouched.
         //     Flag OFF (default) ⇒ empty map ⇒ byte-identical to today.
+        //     WORK_PERIOD basis: the same re-timing is applied UNCONDITIONALLY (it is the
+        //     whole point of the basis), but the synth side is bucketed on the WORK period
+        //     instead of the invoicedate — so CREATED-internal cost lands in the work month
+        //     alongside the work-period revenue, while the GL expensedate copy already inside
+        //     monthDirectCost is subtracted out. (F3 is an invoiced-basis-only flag.)
+        boolean applyInternalRetiming = workPeriod || internalCostTimingAlignmentEnabled;
         java.util.Map<String, Double> internalCostRetimingByMonth = java.util.Collections.emptyMap();
-        if (internalCostTimingAlignmentEnabled) {
+        if (applyInternalRetiming) {
             java.util.Map<String, Double> synthCreatedInternalByMonth =
-                    queryMonthlyCreatedInternalCostByMonth(fyFromKey, fyToKey, companyIds);
+                    queryMonthlyCreatedInternalCostByMonth(fyFromKey, fyToKey, companyIds, workPeriod);
             java.util.Map<String, Double> glCreatedInternalByMonth =
                     queryMonthlyCreatedInternalGlCostByMonth(fyFromKey, fyToKey, companyIds, costSource);
             internalCostRetimingByMonth = computeInternalCostRetimingAdjustment(
@@ -4769,7 +4822,11 @@ public class CxoFinanceService {
                 // would inflate the current month (a fake internal-billing profit spike), so we fall
                 // back to the conservative backlog forecast. F5 and F3 therefore move together: both
                 // off (default, prod-safe — no spike) or both on (actual revenue + matched cost).
-                monthRevenue      = internalCostTimingAlignmentEnabled
+                // WORK_PERIOD: future/in-progress months use the backlog forecast (the F5
+                // current-month actual-revenue rescue is an invoiced-basis fix for the June
+                // settlement spike, which the work-period basis already dissolves by spreading
+                // that revenue back to the work months — so no rescue is needed or wanted here).
+                monthRevenue      = (!workPeriod && internalCostTimingAlignmentEnabled)
                         ? resolveForecastMonthRevenue(monthKey, currentMonthKey, backlogRevenue, actualBookedRev)
                         : backlogRevenue;
                 monthDirectCost   = monthRevenue * (1.0 - ttmGrossMarginPct / 100.0);
@@ -4786,7 +4843,7 @@ public class CxoFinanceService {
             // moves between months). Applied uniformly to both the actual and the current/forecast
             // branch — pure future months naturally carry no CREATED internals, so their adjustment
             // is ~0. Flag OFF (default) ⇒ empty map ⇒ no-op (byte-identical to today).
-            if (internalCostTimingAlignmentEnabled) {
+            if (applyInternalRetiming) {
                 monthDirectCost += internalCostRetimingByMonth.getOrDefault(monthKey, 0.0);
             }
 
@@ -5576,9 +5633,24 @@ public class CxoFinanceService {
      */
     private java.util.Map<String, Double> queryMonthlyQueuedInternalCostByMonth(
             String fromKey, String toKey, Set<String> companyIds) {
+        return queryMonthlyQueuedInternalCostByMonth(fromKey, toKey, companyIds, false);
+    }
 
+    /**
+     * Overload selecting the bucketing basis. {@code workPeriod=false} buckets by the
+     * issuer's invoicedate (invoiced basis); {@code true} buckets by the WORK period
+     * ({@code invoices.year/month}) so the QUEUED-internal synth cost lands in the same
+     * month as the work-period revenue. The FX-conversion sub-lookup stays keyed on
+     * invoicedate (internal invoices are DKK in practice, so this never bites).
+     */
+    private java.util.Map<String, Double> queryMonthlyQueuedInternalCostByMonth(
+            String fromKey, String toKey, Set<String> companyIds, boolean workPeriod) {
+
+        String mexpr = workPeriod
+                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
+                : "DATE_FORMAT(i.invoicedate, '%Y%m')";
         StringBuilder sql = new StringBuilder(
-                "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+                "SELECT " + mexpr + " AS month_key, " +
                 "       COALESCE(SUM(ii.rate * ii.hours * " +
                 "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
                 "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
@@ -5590,14 +5662,14 @@ public class CxoFinanceService {
                 "WHERE i.type = 'INTERNAL' " +
                 "  AND i.status = 'QUEUED' " +
                 "  AND i.debtor_companyuuid IS NOT NULL " +
-                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
                 "  AND ii.rate IS NOT NULL " +
                 "  AND ii.hours IS NOT NULL "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND i.debtor_companyuuid IN (:companyIds) ");
         }
-        sql.append("GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key");
+        sql.append("GROUP BY " + mexpr + " ORDER BY month_key");
 
         Query query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromKey);
@@ -5696,9 +5768,26 @@ public class CxoFinanceService {
      */
     private java.util.Map<String, Double> queryMonthlyCreatedInternalCostByMonth(
             String fromKey, String toKey, Set<String> companyIds) {
+        return queryMonthlyCreatedInternalCostByMonth(fromKey, toKey, companyIds, false);
+    }
 
+    /**
+     * Overload selecting the bucketing basis. {@code workPeriod=false} buckets by the
+     * issuer's invoicedate (the invoiced-basis F3 synth); {@code true} buckets by the WORK
+     * period ({@code invoices.year/month}) so CREATED-internal synth cost re-times onto the
+     * work month for the work-period basis. The GL counterpart
+     * ({@link #queryMonthlyCreatedInternalGlCostByMonth}, expensedate) is differenced against
+     * this in {@link #computeInternalCostRetimingAdjustment}, so the cost is never
+     * double-counted regardless of basis.
+     */
+    private java.util.Map<String, Double> queryMonthlyCreatedInternalCostByMonth(
+            String fromKey, String toKey, Set<String> companyIds, boolean workPeriod) {
+
+        String mexpr = workPeriod
+                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
+                : "DATE_FORMAT(i.invoicedate, '%Y%m')";
         StringBuilder sql = new StringBuilder(
-                "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+                "SELECT " + mexpr + " AS month_key, " +
                 "       COALESCE(SUM(ii.rate * ii.hours * " +
                 "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
                 "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
@@ -5710,14 +5799,14 @@ public class CxoFinanceService {
                 "WHERE i.type = 'INTERNAL' " +
                 "  AND i.status = 'CREATED' " +
                 "  AND i.debtor_companyuuid IS NOT NULL " +
-                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
                 "  AND ii.rate IS NOT NULL " +
                 "  AND ii.hours IS NOT NULL "
         );
         if (companyIds != null && !companyIds.isEmpty()) {
             sql.append("AND i.debtor_companyuuid IN (:companyIds) ");
         }
-        sql.append("GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key");
+        sql.append("GROUP BY " + mexpr + " ORDER BY month_key");
 
         Query query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromKey", fromKey);

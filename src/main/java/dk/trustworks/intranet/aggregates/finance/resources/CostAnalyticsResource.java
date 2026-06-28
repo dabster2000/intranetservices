@@ -6,6 +6,7 @@ import dk.trustworks.intranet.aggregates.finance.services.analytics.CareerBandMa
 import dk.trustworks.intranet.aggregates.finance.services.analytics.ProfitabilityProvider;
 import dk.trustworks.intranet.aggregates.finance.services.analytics.SalaryAnalyticsProvider;
 import dk.trustworks.intranet.financeservice.model.enums.CostSource;
+import dk.trustworks.intranet.financeservice.model.enums.RevenueBasis;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
@@ -596,7 +597,8 @@ public class CostAnalyticsResource {
     @Path("/revenue-cost-forecast")
     public List<RevenueCostForecastDTO> getRevenueCostForecast(
             @QueryParam("companyIds") String companyIds,
-            @QueryParam("costSource") String costSourceParam) {
+            @QueryParam("costSource") String costSourceParam,
+            @QueryParam("basis") String basisParam) {
 
         LocalDate today = LocalDate.now();
         String ttmStartKey = toMonthKey(today.minusMonths(12));
@@ -608,6 +610,11 @@ public class CostAnalyticsResource {
 
         Set<String> companies = parseCommaSeparated(companyIds);
         CostSource costSource = CostSource.fromQueryParam(costSourceParam);
+        // WORK_PERIOD basis (default INVOICED): invoice revenue + internal-synth cost are
+        // bucketed by invoices.year/month; CREATED-internal GL cost (expensedate) is offset
+        // and re-added on the work month. Subcontractor GL direct cost and OPEX/salary stay
+        // on the month incurred. INVOICED is byte-identical to the historical behaviour.
+        boolean workPeriod = (RevenueBasis.fromQueryParam(basisParam) == RevenueBasis.WORK_PERIOD);
 
         // ── TTM actual data (queried for projection inputs; display filtered to FY) ──
 
@@ -618,8 +625,8 @@ public class CostAnalyticsResource {
         regQuery.setParameter("currentMonth", currentMonthKey);
         if (companies != null) regQuery.setParameter("companyIds", companies);
 
-        // Q2: Invoice revenue from fact_company_revenue_mat
-        String invoiceRevenueSql = buildInvoiceRevenueSql(companies);
+        // Q2: Invoice revenue (basis-aware: invoicedate _mat vs work-period view)
+        String invoiceRevenueSql = buildInvoiceRevenueSql(companies, workPeriod);
         var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
         invQuery.setParameter("ttmStart", ttmStartKey);
         invQuery.setParameter("currentMonth", currentMonthKey);
@@ -649,8 +656,9 @@ public class CostAnalyticsResource {
             glDirectMap.put((String) row.get("month_key"), numericValue(row, "gl_direct_cost"));
         }
 
-        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent)
-        String queuedSql = buildMonthlyQueuedInternalCostSql(companies);
+        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent;
+        // basis-aware bucketing)
+        String queuedSql = buildMonthlyQueuedInternalCostSql(companies, workPeriod);
         var queuedQuery = em.createNativeQuery(queuedSql, Tuple.class);
         queuedQuery.setParameter("fromKey", ttmStartKey);
         queuedQuery.setParameter("toKey", ttmEndKey);
@@ -661,6 +669,33 @@ public class CostAnalyticsResource {
             queuedMap.put((String) row.get("month_key"), numericValue(row, "queued_cost"));
         }
 
+        // Q3c (WORK_PERIOD only): re-time CREATED INTERNAL cost onto the work month.
+        // createdSynth (work-month bucket) is ADDED and glInternal (the GL expensedate copy
+        // already inside glDirect) is SUBTRACTED, so the cost is never double-counted and FY
+        // totals are conserved — same mechanism as the EBITDA chart's F3/WORK_PERIOD path.
+        Map<String, Double> createdSynthMap = new HashMap<>();
+        Map<String, Double> glInternalMap = new HashMap<>();
+        if (workPeriod) {
+            var createdQuery = em.createNativeQuery(buildMonthlyCreatedInternalCostWpSql(companies), Tuple.class);
+            createdQuery.setParameter("fromKey", ttmStartKey);
+            createdQuery.setParameter("toKey", ttmEndKey);
+            if (companies != null) createdQuery.setParameter("companyIds", companies);
+            @SuppressWarnings("unchecked") List<Tuple> createdRows = createdQuery.getResultList();
+            for (Tuple row : createdRows) {
+                createdSynthMap.put((String) row.get("month_key"), numericValue(row, "created_cost"));
+            }
+
+            var glInternalQuery = em.createNativeQuery(buildMonthlyGlInternalCostSql(companies), Tuple.class);
+            glInternalQuery.setParameter("fromKey", ttmStartKey);
+            glInternalQuery.setParameter("toKey", ttmEndKey);
+            glInternalQuery.setParameter("postingStatuses", costSource.postingStatusNames());
+            if (companies != null) glInternalQuery.setParameter("companyIds", companies);
+            @SuppressWarnings("unchecked") List<Tuple> glInternalRows = glInternalQuery.getResultList();
+            for (Tuple row : glInternalRows) {
+                glInternalMap.put((String) row.get("month_key"), numericValue(row, "gl_internal_cost"));
+            }
+        }
+
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
         allKeys.addAll(regMap.keySet());
@@ -668,6 +703,8 @@ public class CostAnalyticsResource {
         allKeys.addAll(opexSalaryMap.keySet());
         allKeys.addAll(glDirectMap.keySet());
         allKeys.addAll(queuedMap.keySet());
+        allKeys.addAll(createdSynthMap.keySet());
+        allKeys.addAll(glInternalMap.keySet());
 
         // Iterate ALL keys in the TTM window so projection inputs (gross margin, avg
         // OPEX+salary) are computed over a stable 12-month base. Only months within the
@@ -689,6 +726,11 @@ public class CostAnalyticsResource {
             double glDirect = glDirectMap.getOrDefault(key, 0.0);
             double queued = queuedMap.getOrDefault(key, 0.0);
             double directDelivery = glDirect + queued;
+            if (workPeriod) {
+                // re-time CREATED-internal: +synth(work month) −GL(expensedate, already in glDirect)
+                directDelivery += createdSynthMap.getOrDefault(key, 0.0)
+                                - glInternalMap.getOrDefault(key, 0.0);
+            }
             double totalCost = opexSalary + directDelivery;
 
             totalCostSum += Math.round(totalCost);
@@ -982,12 +1024,18 @@ public class CostAnalyticsResource {
                 "GROUP BY month_key, d.year, d.month ORDER BY month_key";
     }
 
-    /** Invoice revenue from fact_company_revenue_mat (TTM window). */
-    private static String buildInvoiceRevenueSql(Set<String> companies) {
+    /**
+     * Invoice revenue (TTM window). INVOICED basis reads the invoicedate-keyed
+     * materialized fact {@code fact_company_revenue_mat}; WORK_PERIOD reads the live
+     * {@code fact_company_revenue_workperiod} view (same invoices bucketed by
+     * invoices.year/month). Both expose identical columns.
+     */
+    private static String buildInvoiceRevenueSql(Set<String> companies, boolean workPeriod) {
+        String table = workPeriod ? "fact_company_revenue_workperiod" : "fact_company_revenue_mat";
         String filter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
         return "SELECT r.month_key, r.year, r.month_number, " +
                 "SUM(r.net_revenue_dkk) AS net_revenue " +
-                "FROM fact_company_revenue_mat r " +
+                "FROM " + table + " r " +
                 "WHERE r.month_key >= :ttmStart AND r.month_key < :currentMonth " +
                 filter +
                 "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
@@ -1077,9 +1125,12 @@ public class CostAnalyticsResource {
      * INTERNALs aren't yet in the GL, so they're synthesized here. Independent of
      * costSource (QUEUED rows aren't subject to BOOKED/DRAFT classification).
      */
-    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies) {
+    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies, boolean workPeriod) {
+        String mexpr = workPeriod
+                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
+                : "DATE_FORMAT(i.invoicedate, '%Y%m')";
         String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
-        return "SELECT DATE_FORMAT(i.invoicedate, '%Y%m') AS month_key, " +
+        return "SELECT " + mexpr + " AS month_key, " +
                 "       COALESCE(SUM(ii.rate * ii.hours * " +
                 "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
                 "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
@@ -1091,11 +1142,62 @@ public class CostAnalyticsResource {
                 "WHERE i.type = 'INTERNAL' " +
                 "  AND i.status = 'QUEUED' " +
                 "  AND i.debtor_companyuuid IS NOT NULL " +
-                "  AND DATE_FORMAT(i.invoicedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
                 "  AND ii.rate IS NOT NULL " +
                 "  AND ii.hours IS NOT NULL " +
                 filter +
-                "GROUP BY DATE_FORMAT(i.invoicedate, '%Y%m') ORDER BY month_key";
+                "GROUP BY " + mexpr + " ORDER BY month_key";
+    }
+
+    /**
+     * WORK_PERIOD only: CREATED INTERNAL synth cost bucketed by the WORK period
+     * (invoices.year/month), debtor-attributed. Added to direct delivery and offset by
+     * {@link #buildMonthlyGlInternalCostSql} (the GL expensedate copy) so CREATED-internal
+     * cost re-times onto the work month without double counting — mirrors the EBITDA chart.
+     */
+    private static String buildMonthlyCreatedInternalCostWpSql(Set<String> companies) {
+        String mexpr = "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))";
+        String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
+        return "SELECT " + mexpr + " AS month_key, " +
+                "       COALESCE(SUM(ii.rate * ii.hours * " +
+                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
+                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
+                "                              WHERE c.currency = i.currency " +
+                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
+                "           END), 0.0) AS created_cost " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE i.type = 'INTERNAL' " +
+                "  AND i.status = 'CREATED' " +
+                "  AND i.debtor_companyuuid IS NOT NULL " +
+                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
+                "  AND ii.rate IS NOT NULL " +
+                "  AND ii.hours IS NOT NULL " +
+                filter +
+                "GROUP BY " + mexpr + " ORDER BY month_key";
+    }
+
+    /**
+     * WORK_PERIOD only: the GL-booked copy of CREATED INTERNAL cost on the expensedate month
+     * (accounts 3050/3055/3070/3075/1350), costSource-aware. Subtracted from direct delivery
+     * when re-timing CREATED-internal cost onto the work month. Same predicate as
+     * {@code CxoFinanceService.queryMonthlyCreatedInternalGlCostByMonth}.
+     */
+    private static String buildMonthlyGlInternalCostSql(Set<String> companies) {
+        String filter = companies != null ? "AND fd.companyuuid IN (:companyIds) " : "";
+        return "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
+                "       COALESCE(SUM(fd.amount), 0.0) AS gl_internal_cost " +
+                "FROM finance_details fd " +
+                "INNER JOIN accounting_accounts aa " +
+                "    ON fd.accountnumber = aa.account_code " +
+                "    AND fd.companyuuid  = aa.companyuuid " +
+                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
+                "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) " +
+                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
+                "  AND fd.amount != 0 " +
+                "  AND fd.postingstatus IN (:postingStatuses) " +
+                filter +
+                "GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key";
     }
 
     /** Budget revenue from fact_revenue_budget_mat (forecast window). */
