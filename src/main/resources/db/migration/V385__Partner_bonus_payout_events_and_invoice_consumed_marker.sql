@@ -18,12 +18,16 @@
 --      sums only rows WHERE payout_uuid IS NULL, so consumed invoices can never
 --      fund a second bonus.
 --
--- BACKWARD-COMPATIBLE
---   payout_uuid is nullable with no default → existing rows read as "unconsumed".
+-- IDEMPOTENT / RE-RUNNABLE
+--   Every statement uses IF [NOT] EXISTS so a partially-applied or interrupted
+--   run (MariaDB auto-commits each DDL; a killed task can leave the column
+--   behind) re-runs cleanly. No explicit ALGORITHM/LOCK clause — the default
+--   online DDL is used (LOCK=NONE is not accepted for the index add on this
+--   table). repair-at-start clears any failed schema-history row before retry.
+--   payout_uuid stays nullable with no default → existing rows are "unconsumed".
 --   A one-time backfill (admin endpoint, dry-run first) stamps the invoices that
---   already funded paid fiscal years so they are not re-funded. No FK constraints
---   are added (app maintains integrity) to avoid charset/collation coupling and
---   ECS-canary drop/alter hazards.
+--   already funded paid fiscal years. No FK constraints (app maintains
+--   integrity) to avoid charset/collation coupling and canary alter hazards.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS partner_bonus_payouts (
@@ -43,9 +47,7 @@ CREATE TABLE IF NOT EXISTS partner_bonus_payouts (
 
 -- Per-invoice consumed marker (nullable → existing rows are "unconsumed").
 ALTER TABLE invoice_bonuses
-    ADD COLUMN payout_uuid VARCHAR(36) NULL,
-    ALGORITHM=INPLACE, LOCK=NONE;
+    ADD COLUMN IF NOT EXISTS payout_uuid VARCHAR(36) NULL;
 
-CREATE INDEX idx_invoice_bonuses_payout
-    ON invoice_bonuses (payout_uuid)
-    ALGORITHM=INPLACE, LOCK=NONE;
+CREATE INDEX IF NOT EXISTS idx_invoice_bonuses_payout
+    ON invoice_bonuses (payout_uuid);
