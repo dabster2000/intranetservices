@@ -320,9 +320,10 @@ public class InvoiceBonusResource {
 
     @GET
     @Path("/{bonusuuid}/lines")
-    public List<EnrichedBonusLineDTO> getLines(@PathParam("bonusuuid") String bonusuuid) {
-        log.debugf("Listing enriched bonus lines for bonusUuid=%s", bonusuuid);
-        return service.listEnrichedLines(bonusuuid);
+    public List<EnrichedBonusLineDTO> getLines(@PathParam("invoiceuuid") String invoiceuuid,
+                                               @PathParam("bonusuuid") String bonusuuid) {
+        log.debugf("Listing enriched bonus lines for invoiceUuid=%s, bonusUuid=%s", invoiceuuid, bonusuuid);
+        return service.listEnrichedLines(invoiceuuid, bonusuuid);
     }
 
     @PUT
