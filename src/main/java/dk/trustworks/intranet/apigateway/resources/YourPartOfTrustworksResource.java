@@ -2,6 +2,8 @@ package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.apigateway.dto.EmployeeBonusBasisDTO;
+import dk.trustworks.intranet.apigateway.dto.SalaryRecalcRequest;
+import dk.trustworks.intranet.bi.services.SalaryRecalculationService;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.domain.user.entity.User;
 import dk.trustworks.intranet.userservice.model.enums.ConsultantType;
@@ -12,7 +14,9 @@ import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
+import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.openapi.annotations.enums.SecuritySchemeType;
 import org.eclipse.microprofile.openapi.annotations.security.SecurityRequirement;
@@ -21,6 +25,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -42,6 +47,14 @@ public class YourPartOfTrustworksResource {
 
     @Inject
     ScopeContext scopeContext;
+
+    @Inject
+    SalaryRecalculationService salaryRecalculationService;
+
+    /** Upper bound on users per bulk refresh (well above headcount) — guards against abusive payloads. */
+    private static final int MAX_USERS = 1000;
+    /** Upper bound on the recalculation window — a little over one fiscal year. */
+    private static final long MAX_RANGE_DAYS = 400;
 
     // --------- OLD ENDPOINT (kept for backward compatibility) ----------
     // Now computed from day-based data: month boolean = (eligibleShare > 0)
@@ -220,6 +233,75 @@ public class YourPartOfTrustworksResource {
     }
 
     private static String key(Integer y, Integer m) { return (y == null || m == null) ? "?" : (y + "-" + m); }
+
+    // --------- NEW ENDPOINTS: on-demand salary refresh ----------
+    // Recalculate the per-day salary in fact_user_day (the source of the /basis view's avg_salary)
+    // for the displayed users over the selected fiscal-year window. Runs asynchronously on a
+    // background worker and returns 202 immediately — a full year for many users is thousands of
+    // upserts and may take minutes. Guarded by bonus:write (the page itself is bonus:read).
+
+    @POST
+    @Path("/recalc-salary")
+    @RolesAllowed({"bonus:write"})
+    public Response recalcSalaryBulk(@Valid SalaryRecalcRequest request) {
+        if (request.getUserUuids() == null || request.getUserUuids().isEmpty()) {
+            throw new BadRequestException("userUuids must not be empty");
+        }
+        // Deduplicate so the MAX_USERS cap bounds distinct work, not raw payload length.
+        List<String> userUuids = new ArrayList<>(new LinkedHashSet<>(request.getUserUuids()));
+        if (userUuids.size() > MAX_USERS) {
+            throw new BadRequestException("Too many users (max " + MAX_USERS + ")");
+        }
+        boolean queued = queueRecalculation(userUuids, request);
+        log.infof("Salary recalc %s (bulk): users=%d window=%s..%s",
+                queued ? "queued" : "skipped (already running)", userUuids.size(),
+                request.getStartDate(), request.getEndDate());
+        return Response.accepted()
+                .entity(Map.of("status", queued ? "queued" : "already-running", "users", userUuids.size()))
+                .build();
+    }
+
+    @POST
+    @Path("/recalc-salary/{useruuid}")
+    @RolesAllowed({"bonus:write"})
+    public Response recalcSalaryUser(@PathParam("useruuid") String useruuid, @Valid SalaryRecalcRequest request) {
+        if (useruuid == null || useruuid.isBlank()) {
+            throw new BadRequestException("useruuid is required");
+        }
+        boolean queued = queueRecalculation(List.of(useruuid), request);
+        log.infof("Salary recalc %s (single): user=%s window=%s..%s",
+                queued ? "queued" : "skipped (already running)", useruuid,
+                request.getStartDate(), request.getEndDate());
+        return Response.accepted()
+                .entity(Map.of("status", queued ? "queued" : "already-running", "users", 1))
+                .build();
+    }
+
+    /**
+     * Validates the window and submits the async recalculation.
+     * Throws {@link BadRequestException} (HTTP 400) on bad input.
+     *
+     * @return {@code true} if queued, {@code false} if a job was already running
+     */
+    private boolean queueRecalculation(List<String> userUuids, SalaryRecalcRequest request) {
+        LocalDate start = parseIsoDate(request.getStartDate(), "startDate");
+        LocalDate end = parseIsoDate(request.getEndDate(), "endDate");
+        if (end.isBefore(start)) {
+            throw new BadRequestException("endDate must not be before startDate");
+        }
+        if (ChronoUnit.DAYS.between(start, end) > MAX_RANGE_DAYS) {
+            throw new BadRequestException("Date range too large (max " + MAX_RANGE_DAYS + " days)");
+        }
+        return salaryRecalculationService.recalculateSalariesAsync(userUuids, start, end);
+    }
+
+    private static LocalDate parseIsoDate(String value, String field) {
+        try {
+            return LocalDate.parse(value);
+        } catch (RuntimeException e) {
+            throw new BadRequestException(field + " must be an ISO date (yyyy-MM-dd)");
+        }
+    }
 
     @GET @Path("/reload")
     public void reload() {
