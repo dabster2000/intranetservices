@@ -298,12 +298,22 @@ public class EconomicsService {
 
             int skipPages = 0;
             boolean morePages = true;
+            int fetchedTotal = 0;
+            int addedTotal = 0;
+            int lastStatus = -1;
+            String firstBodySample = "";
             while (morePages) {
-                String json = remoteApi.getJournalEntries(journalNumber, skipPages, 1000).readEntity(String.class);
+                jakarta.ws.rs.core.Response httpResp = remoteApi.getJournalEntries(journalNumber, skipPages, 1000);
+                lastStatus = httpResp.getStatus();
+                String json = httpResp.readEntity(String.class);
+                if (skipPages == 0) {
+                    firstBodySample = (json == null) ? "null" : json.substring(0, Math.min(300, json.length()));
+                }
                 JournalEntriesResponse response = objectMapper.readValue(json, JournalEntriesResponse.class);
                 List<JournalEntriesResponse.Entry> entries = response != null && response.collection != null
                         ? response.collection
                         : List.of();
+                fetchedTotal += entries.size();
 
                 for (JournalEntriesResponse.Entry entry : entries) {
                     if (!"supplierInvoice".equalsIgnoreCase(entry.entryType)) continue;
@@ -335,11 +345,18 @@ public class EconomicsService {
                             null,
                             currency,
                             entry.exchangeRate));
+                    addedTotal++;
                 }
 
                 String nextPage = response != null && response.pagination != null ? response.pagination.nextPage : null;
                 morePages = nextPage != null && !nextPage.isBlank() && !entries.isEmpty();
                 skipPages++;
+            }
+            log.infof("D3 draft supplier-invoice sync: company=%s journal=%d period=%s httpStatus=%d fetched=%d added=%d",
+                    company.getUuid(), journalNumber, date, lastStatus, fetchedTotal, addedTotal);
+            if (fetchedTotal == 0) {
+                log.warnf("D3 fetched 0 journal entries (company=%s journal=%d httpStatus=%d) body[:300]=%s",
+                        company.getUuid(), journalNumber, lastStatus, firstBodySample);
             }
         }
     }
