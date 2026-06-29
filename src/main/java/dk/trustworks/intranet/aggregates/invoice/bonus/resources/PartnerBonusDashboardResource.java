@@ -1,12 +1,15 @@
 package dk.trustworks.intranet.aggregates.invoice.bonus.resources;
 
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.PartnerBonusBackfillReport;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.PartnerDashboardDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.dto.PayoutRequestDTO;
+import dk.trustworks.intranet.aggregates.invoice.bonus.dto.PayoutResultDTO;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.PartnerBonusDashboardService;
 import dk.trustworks.intranet.aggregates.invoice.bonus.services.PartnerBonusPayoutService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
+import jakarta.validation.Valid;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -89,8 +92,11 @@ public class PartnerBonusDashboardResource {
     @POST
     @Path("/payouts")
     @RolesAllowed({"partnerbonus:write"})
-    @Operation(summary = "Create partner bonus payouts (sales + production)")
-    public Response createPayouts(PayoutRequestDTO request,
+    @Operation(summary = "Create partner bonus payouts (sales + production). " +
+            "Amounts are recomputed server-side from the un-consumed APPROVED invoices; any " +
+            "salesAmount/productionAmount in the request body is ignored. An invoice can only ever " +
+            "fund one payout (enforced via the frozen payout event + per-invoice consumed marker).")
+    public Response createPayouts(@Valid PayoutRequestDTO request,
                                    @HeaderParam("X-Requested-By") String requestedBy) {
         if (request == null) throw new BadRequestException("Request body required");
         if (request.userUuid() == null || request.userUuid().isBlank()) {
@@ -99,29 +105,45 @@ public class PartnerBonusDashboardResource {
         if (request.fiscalYear() < 2000 || request.fiscalYear() > 2999) {
             throw new BadRequestException("Invalid fiscal year");
         }
+        if (request.payoutMonth() == null || request.payoutMonth().isBlank()) {
+            throw new BadRequestException("payoutMonth is required");
+        }
 
-        // Check for existing payout (idempotency)
+        // Friendly pre-check (the real guarantee is the per-track source_reference unique index).
         if (payoutService.hasExistingPayout(request.userUuid(), request.fiscalYear())) {
             return Response.status(Response.Status.CONFLICT)
                     .entity(Map.of("error", "Payout already exists for this user and fiscal year"))
                     .build();
         }
 
-        LocalDate month = LocalDate.parse(request.payoutMonth()).withDayOfMonth(1);
-        payoutService.createPartnerPayouts(
-                request.userUuid(),
-                request.salesAmount(),
-                request.productionAmount(),
-                month,
-                request.fiscalYear()
-        );
+        LocalDate month;
+        try {
+            month = LocalDate.parse(request.payoutMonth()).withDayOfMonth(1);
+        } catch (Exception e) {
+            throw new BadRequestException("payoutMonth must be an ISO date (yyyy-MM-dd)");
+        }
+
+        PayoutResultDTO result = payoutService.payPartner(
+                request.userUuid(), month, request.fiscalYear(), requestedBy);
 
         // Invalidate cache after payout
         dashboardService.invalidateCache(request.fiscalYear());
 
-        return Response.status(Response.Status.CREATED)
-                .entity(Map.of("message", "Payouts created successfully"))
-                .build();
+        return Response.status(Response.Status.CREATED).entity(result).build();
+    }
+
+    @POST
+    @Path("/payouts/backfill")
+    @RolesAllowed({"partnerbonus:write"})
+    @Operation(summary = "One-time backfill: stamp the APPROVED invoices that already funded paid " +
+            "fiscal years so the per-invoice guard does not re-fund them. dryRun=true (default) " +
+            "changes nothing and only returns the reconciliation report.")
+    public PartnerBonusBackfillReport backfillPayouts(
+            @QueryParam("dryRun") @DefaultValue("true") boolean dryRun,
+            @QueryParam("fiscalYearFrom") Integer fiscalYearFrom,
+            @QueryParam("fiscalYearTo") Integer fiscalYearTo,
+            @HeaderParam("X-Requested-By") String requestedBy) {
+        return payoutService.backfillPaidFiscalYears(fiscalYearFrom, fiscalYearTo, dryRun, requestedBy);
     }
 
     // --- helpers ---

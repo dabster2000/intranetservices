@@ -89,6 +89,12 @@ public class InvoiceBonus extends PanacheEntityBase {
     @Schema(description = "Godkendelsestidspunkt (hvis godkendt/afvist)", readOnly = true)
     public LocalDateTime approvedAt;
 
+    @Column(name="payout_uuid", length=36)
+    @Schema(description = "UUID for den partner-bonus-udbetaling (PartnerBonusPayout) som denne række blev brugt til. " +
+            "NULL = endnu ikke udbetalt. Sikrer at en faktura kun kan finansiere én bonus.",
+            example = "66666666-6666-6666-6666-666666666666", readOnly = true)
+    public String payoutUuid;
+
     @PrePersist
     public void prePersist() {
         if (uuid == null) uuid = UUID.randomUUID().toString();

@@ -184,11 +184,15 @@ public class RevenueService {
 
     @CacheResult(cacheName = "employee-revenue")
     public List<DateValueDTO> getRegisteredRevenueByPeriodAndSingleConsultant(String useruuid, String periodFrom, String periodTo) {
+        // Parameter binding only — never concatenate user-supplied values into SQL.
         String sql = "select w.registered as date, sum(ifnull(w.rate, 0) * w.workduration * if(w.discount > 0, w.discount / 100.0, 1)) AS value from work_full w " +
-                "where w.rate > 0 and w.useruuid = '"+useruuid+"' and registered >= '" + periodFrom + "' and registered < '" + periodTo + "' " +
-                "group by year(w.registered), month(w.registered);";
-        log.info("getRegisteredRevenueByPeriod sql: "+sql);
-        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class).getResultList()).stream()
+                "where w.rate > 0 and w.useruuid = :useruuid and registered >= :periodFrom and registered < :periodTo " +
+                "group by year(w.registered), month(w.registered)";
+        return ((List<Tuple>) em.createNativeQuery(sql, Tuple.class)
+                .setParameter("useruuid", useruuid)
+                .setParameter("periodFrom", periodFrom)
+                .setParameter("periodTo", periodTo)
+                .getResultList()).stream()
                 .map(tuple -> new DateValueDTO(
                         tuple.get("date", LocalDate.class).withDayOfMonth(1),
                         (Double) tuple.get("value")

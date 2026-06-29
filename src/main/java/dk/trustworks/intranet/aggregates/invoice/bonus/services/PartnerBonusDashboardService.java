@@ -275,27 +275,17 @@ public class PartnerBonusDashboardService {
         }
         if (users.isEmpty()) return 0.0;
 
-        List<String> invoiceIds = Panache.getEntityManager().createQuery("""
-                SELECT DISTINCT i.uuid
-                FROM dk.trustworks.intranet.aggregates.invoice.model.Invoice i,
-                     dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
-                WHERE b.invoiceuuid = i.uuid
-                  AND b.status = :approved
-                  AND b.useruuid IN :users
-                  AND i.invoicedate >= :from
-                  AND i.invoicedate <= :to
-            """, String.class)
-                .setParameter("approved", SalesApprovalStatus.APPROVED)
-                .setParameter("users", users)
-                .setParameter("from", periodStart)
-                .setParameter("to", periodEnd)
-                .getResultList();
-
+        // Preview the STILL-FUNDABLE basis: only APPROVED rows not yet consumed by a payout, scoped to
+        // this group's members. This keeps the dashboard figure equal to what a payout would actually
+        // recompute (and pay), and surfaces "unfunded" approved bonuses (basis > 0 while a payout
+        // already exists) created after a fiscal year was paid.
+        List<String> invoiceIds = invoiceBonusService.findApprovedInvoiceIdsForUsers(
+                users, periodStart, periodEnd, true);
         if (invoiceIds.isEmpty()) return 0.0;
 
         double total = 0.0;
         for (String invId : invoiceIds) {
-            total += invoiceBonusService.sumApproved(invId);
+            total += invoiceBonusService.sumApprovedUnconsumed(invId, users);
         }
         return round2(total);
     }
