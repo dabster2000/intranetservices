@@ -180,18 +180,25 @@ public class InvoiceBonusService {
         fireCacheInvalidation(inv);
     }
 
-    /** Default selection at approve-time if none exists (bulk persist):
-     *   BASE lines billed by applicant -> 0%; other BASE -> 100%.
+    /** Default selection at approve-time if none exists (bulk persist), per business rule:
+     *   own production -> 0%; cross-company consultant -> 80%; same-company consultant -> 100%.
+     *   Companies are resolved at invoice date (same source as the approval-grid company badges).
      */
     private void ensureDefaultLinesIfEmptyBulk(InvoiceBonus ib) {
         if (InvoiceBonusLine.count("bonusuuid", ib.getUuid()) > 0) return;
         Invoice inv = Invoice.findById(ib.getInvoiceuuid());
         if (inv == null || inv.getInvoiceitems() == null) return;
 
+        LocalDate date = inv.getInvoicedate() != null ? inv.getInvoicedate() : LocalDate.now();
+        Map<String, Map<LocalDate, UserStatus>> statusCache = new HashMap<>();
+        String recipientCompany = companyUuidAt(ib.getUseruuid(), date, statusCache);
+
         List<InvoiceBonusLine> toPersist = new ArrayList<>();
         for (InvoiceItem ii : inv.getInvoiceitems()) {
             if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue;
-            double pct = Objects.equals(ii.getConsultantuuid(), ib.getUseruuid()) ? 0.0 : 100.0;
+            boolean hasConsultant = ii.getConsultantuuid() != null && !ii.getConsultantuuid().isBlank();
+            boolean editable = ii.getRate() >= 0 && hasConsultant;
+            double pct = lineDefault(ii, editable, ib.getUseruuid(), recipientCompany, date, statusCache).percentage();
             InvoiceBonusLine l = new InvoiceBonusLine();
             l.setBonusuuid(ib.getUuid());
             l.setInvoiceuuid(inv.getUuid());
@@ -282,62 +289,111 @@ public class InvoiceBonusService {
     }
 
     /**
-     * Returns enriched bonus lines with server-computed estimatedShare, lineAmount, editable flag.
-     * Eliminates 3 client-side calculations.
+     * Returns one enriched, display-ready line per invoice item — not only persisted lines — so the
+     * inline approval panel can render the full proposed allocation even when the bonus was never edited.
+     *
+     * <p>When a saved {@link InvoiceBonusLine} exists for an item, {@code percentage} is the saved value;
+     * otherwise it is the smart default ({@code defaultPercentage}). Each line also carries the
+     * consultant's name and their company (abbreviation + uuid) resolved at invoice date — the same
+     * source used for the approval-grid company badges — plus the rule {@code reason}.</p>
      */
-    public List<EnrichedBonusLineDTO> listEnrichedLines(String bonusuuid) {
+    public List<EnrichedBonusLineDTO> listEnrichedLines(String invoiceuuid, String bonusuuid) {
         InvoiceBonus ib = InvoiceBonus.findById(bonusuuid);
         if (ib == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
+        if (!Objects.equals(ib.getInvoiceuuid(), invoiceuuid)) {
+            log.warnf("listEnrichedLines failed: bonusUuid=%s belongs to invoiceUuid=%s, not %s",
+                    bonusuuid, ib.getInvoiceuuid(), invoiceuuid);
+            throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST)
+                    .entity("bonusuuid does not belong to invoiceuuid").build());
+        }
 
         Invoice inv = Invoice.findById(ib.getInvoiceuuid());
         if (inv == null) throw new WebApplicationException(Response.Status.NOT_FOUND);
 
-        List<InvoiceBonusLine> lines = listLines(bonusuuid);
-        Map<String, InvoiceItem> itemById = (inv.getInvoiceitems() == null) ?
-                Map.of() :
-                inv.getInvoiceitems().stream()
-                        .collect(Collectors.toMap(InvoiceItem::getUuid, java.util.function.Function.identity(), (a, b) -> a));
+        List<InvoiceItem> items = (inv.getInvoiceitems() == null) ? List.of() : inv.getInvoiceitems();
+
+        // Saved selections keyed by invoice item (empty for never-edited bonuses).
+        Map<String, InvoiceBonusLine> savedByItem = listLines(bonusuuid).stream()
+                .collect(Collectors.toMap(InvoiceBonusLine::getInvoiceitemuuid,
+                        java.util.function.Function.identity(), (a, b) -> a));
 
         double discountPct = Optional.ofNullable(inv.getDiscount()).orElse(0.0);
         double discountFactor = 1.0 - (discountPct / 100.0);
 
-        return lines.stream().map(line -> {
-            InvoiceItem item = itemById.get(line.getInvoiceitemuuid());
-            double lineAmount = 0;
-            double estimatedShare = 0;
-            boolean editable = true;
-            String origin = "BASE";
+        LocalDate date = inv.getInvoicedate() != null ? inv.getInvoicedate() : LocalDate.now();
+        Map<String, Map<LocalDate, UserStatus>> statusCache = new HashMap<>();
+        Map<String, User> userByUuid = new HashMap<>();
+        String recipientCompany = companyUuidAt(ib.getUseruuid(), date, statusCache);
 
-            if (item != null) {
-                lineAmount = round2(item.rate * item.hours);
-                origin = item.origin != null ? item.origin.name() : "BASE";
+        List<EnrichedBonusLineDTO> result = new ArrayList<>(items.size());
+        for (InvoiceItem item : items) {
+            double lineAmount = round2(item.rate * item.hours);
+            String origin = item.origin != null ? item.origin.name() : "BASE";
 
-                // editable = not CALCULATED, rate >= 0, has consultantuuid
-                boolean isCalculated = item.origin == InvoiceItemOrigin.CALCULATED;
-                boolean isNegativeRate = item.rate < 0;
-                boolean hasNoConsultant = item.consultantuuid == null || item.consultantuuid.isBlank();
-                editable = !isCalculated && !isNegativeRate && !hasNoConsultant;
+            boolean isCalculated = item.origin == InvoiceItemOrigin.CALCULATED;
+            boolean isNegativeRate = item.rate < 0;
+            boolean hasNoConsultant = item.consultantuuid == null || item.consultantuuid.isBlank();
+            boolean editable = !isCalculated && !isNegativeRate && !hasNoConsultant;
 
-                // estimatedShare = lineAmount * discountFactor * (pct/100), negated for credit notes
-                if (!isCalculated && line.getPercentage() > 0) {
-                    estimatedShare = lineAmount * discountFactor * (line.getPercentage() / 100.0);
-                    if (inv.getType() == CREDIT_NOTE) {
-                        estimatedShare = -estimatedShare;
-                    }
-                    estimatedShare = round2(estimatedShare);
+            LineDefault def = lineDefault(item, editable, ib.getUseruuid(), recipientCompany, date, statusCache);
+
+            // Effective % = saved value if present, else the same default the seeding would persist
+            // (editable: rule value; non-editable BASE: 100, or 0 for a negative-rate own line; CALCULATED: unused).
+            InvoiceBonusLine saved = savedByItem.get(item.uuid);
+            double percentage;
+            if (saved != null) {
+                percentage = saved.getPercentage();
+            } else if (isCalculated) {
+                percentage = 0.0;     // CALCULATED items are allocated pro-rata; percentage is unused
+            } else {
+                percentage = def.percentage();
+            }
+
+            // estimatedShare = lineAmount * discountFactor * (pct/100), negated for credit notes
+            double estimatedShare = 0.0;
+            if (!isCalculated && percentage > 0) {
+                estimatedShare = lineAmount * discountFactor * (percentage / 100.0);
+                if (inv.getType() == CREDIT_NOTE) estimatedShare = -estimatedShare;
+                estimatedShare = round2(estimatedShare);
+            }
+
+            // Consultant + company display (resolved at invoice date).
+            String consultantName = null;
+            String companyUuid = null;
+            String companyAbbreviation = null;
+            if (!hasNoConsultant) {
+                User cu = userByUuid.computeIfAbsent(item.consultantuuid, k -> User.findById(k));
+                if (cu != null) {
+                    consultantName = (cu.getFirstname() + " " + cu.getLastname()).trim();
+                }
+                UserStatus st = getUserStatusCached(item.consultantuuid, date, statusCache);
+                if (st != null && st.getCompany() != null) {
+                    companyUuid = st.getCompany().getUuid();
+                    companyAbbreviation = st.getCompany().getAbbreviation();
                 }
             }
 
-            return new EnrichedBonusLineDTO(
-                    line.getUuid(),
-                    line.getInvoiceitemuuid(),
-                    line.getPercentage(),
+            result.add(new EnrichedBonusLineDTO(
+                    saved != null ? saved.getUuid() : null,
+                    item.uuid,
+                    item.itemname,
+                    item.description,
+                    item.consultantuuid,
+                    consultantName,
+                    companyUuid,
+                    companyAbbreviation,
+                    item.rate,
+                    item.hours,
                     lineAmount,
+                    percentage,
+                    isCalculated ? 0.0 : def.percentage(),
+                    def.reason(),
                     estimatedShare,
                     editable,
                     origin
-            );
-        }).toList();
+            ));
+        }
+        return result;
     }
 
     private void fireCacheInvalidation(Invoice inv) {
@@ -363,15 +419,20 @@ public class InvoiceBonusService {
                     .entity("bonusuuid does not belong to invoiceuuid").build());
         }
 
-        // Sanitize input and compute from the submitted set (no extra read)
+        // Sanitize input and compute from the submitted set (no extra read).
+        // Drop any line whose invoiceitemuuid is not an item of this invoice (data-integrity guard).
         Invoice inv = Invoice.findById(invoiceuuid);
+        Set<String> validItemUuids = (inv == null || inv.getInvoiceitems() == null) ? Set.of()
+                : inv.getInvoiceitems().stream().map(InvoiceItem::getUuid).collect(Collectors.toSet());
         List<InvoiceBonusLine> sanitized = (lines == null ? List.<InvoiceBonusLine>of() :
-                lines.stream().map(l -> {
-                    InvoiceBonusLine x = new InvoiceBonusLine();
-                    x.setInvoiceitemuuid(l.getInvoiceitemuuid());
-                    x.setPercentage(sanitizePct(l.getPercentage()));
-                    return x;
-                }).toList());
+                lines.stream()
+                        .filter(l -> validItemUuids.contains(l.getInvoiceitemuuid()))
+                        .map(l -> {
+                            InvoiceBonusLine x = new InvoiceBonusLine();
+                            x.setInvoiceitemuuid(l.getInvoiceitemuuid());
+                            x.setPercentage(sanitizePct(l.getPercentage()));
+                            return x;
+                        }).toList());
 
         double amount;
         if (!sanitized.isEmpty()) {
@@ -511,6 +572,43 @@ public class InvoiceBonusService {
     }
 
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
+
+    /** Default percentage + reason for a single invoice line. */
+    public record LineDefault(double percentage, String reason) {}
+
+    /** Resolve a user's company UUID at a date (null if unresolved), via the status cache. */
+    private String companyUuidAt(String userUuid, LocalDate date,
+                                 Map<String, Map<LocalDate, UserStatus>> cache) {
+        UserStatus st = getUserStatusCached(userUuid, date, cache);
+        return (st != null && st.getCompany() != null) ? st.getCompany().getUuid() : null;
+    }
+
+    /**
+     * Smart default percentage for a BASE invoice line, resolved at invoice date:
+     * <ul>
+     *   <li>consultant == bonus recipient → 0% (OWN — no bonus on own production)</li>
+     *   <li>non-editable BASE line (fee / no consultant) → 100% (NOT_APPLICABLE)</li>
+     *   <li>consultant company ≠ recipient company → 80% (CROSS_COMPANY)</li>
+     *   <li>same company, or company unresolved → 100% (SAME_COMPANY)</li>
+     * </ul>
+     * Company comparison uses {@link #getUserStatusCached} — the same source as the approval-grid badges.
+     */
+    private LineDefault lineDefault(InvoiceItem item, boolean editable, String recipientUuid,
+                                    String recipientCompanyUuid, LocalDate date,
+                                    Map<String, Map<LocalDate, UserStatus>> cache) {
+        if (Objects.equals(item.consultantuuid, recipientUuid)) {
+            return new LineDefault(0.0, "OWN");
+        }
+        if (!editable) {
+            return new LineDefault(100.0, "NOT_APPLICABLE");
+        }
+        String consultantCompany = companyUuidAt(item.consultantuuid, date, cache);
+        if (recipientCompanyUuid != null && consultantCompany != null
+                && !recipientCompanyUuid.equals(consultantCompany)) {
+            return new LineDefault(80.0, "CROSS_COMPANY");
+        }
+        return new LineDefault(100.0, "SAME_COMPANY");
+    }
 
 
     public List<BonusEligibility> listEligibility() {
@@ -686,10 +784,14 @@ public class InvoiceBonusService {
                         pctByItem.put(ii.getUuid(), sanitizePct(l.getPercentage()));
                     }
                 } else {
-                    // Simulate approval defaults (§ ensureDefaultLinesIfEmptyBulk)
+                    // Simulate approval defaults (§ ensureDefaultLinesIfEmptyBulk):
+                    // 0% own production, 80% cross-company consultant, 100% same-company.
+                    String recipientCompany = companyUuidAt(applicantUserId, invoiceDate, userStatusCache);
                     for (var ii : items) {
                         if (ii.getOrigin() == InvoiceItemOrigin.CALCULATED) continue;
-                        double pct = Objects.equals(ii.getConsultantuuid(), applicantUserId) ? 0.0 : 100.0;
+                        boolean hasConsultant = ii.getConsultantuuid() != null && !ii.getConsultantuuid().isBlank();
+                        boolean editable = ii.getRate() >= 0 && hasConsultant;
+                        double pct = lineDefault(ii, editable, applicantUserId, recipientCompany, invoiceDate, userStatusCache).percentage();
                         pctByItem.put(ii.getUuid(), pct);
                     }
                 }
