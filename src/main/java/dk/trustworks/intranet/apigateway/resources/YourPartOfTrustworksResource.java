@@ -5,6 +5,7 @@ import dk.trustworks.intranet.apigateway.dto.EmployeeBonusBasisDTO;
 import dk.trustworks.intranet.apigateway.dto.SalaryRecalcRequest;
 import dk.trustworks.intranet.apigateway.support.CareerMultiplierResolver;
 import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
+import dk.trustworks.intranet.domain.user.entity.UserStatus;
 import dk.trustworks.intranet.bi.services.SalaryRecalculationService;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -174,6 +175,18 @@ public class YourPartOfTrustworksResource {
             List<User> users = User.list("uuid in ?1", new ArrayList<>(userUuids));
             for (User u : users) {
                 userMap.put(u.getUuid(), u);
+            }
+
+            // User.statuses is @Transient — a bare User.list(...) leaves it empty, so
+            // User.getUserStatus(date) falls back to its synthetic TERMINATED status and
+            // wrongly flags EVERY employee as terminated-before-year-end (the whole grid
+            // ends up excluded). Batch-load the statuses ONCE and attach them so
+            // terminatedBeforeYearEnd reflects real data.
+            List<UserStatus> userStatuses = UserStatus.list("useruuid in ?1", new ArrayList<>(userUuids));
+            Map<String, List<UserStatus>> statusesByUser = userStatuses.stream()
+                    .collect(Collectors.groupingBy(UserStatus::getUseruuid));
+            for (User u : users) {
+                u.setStatuses(statusesByUser.getOrDefault(u.getUuid(), new ArrayList<>()));
             }
         }
 
