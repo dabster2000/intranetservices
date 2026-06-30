@@ -167,6 +167,18 @@ public class TwBonusResource {
             companyBonuses.put(companyUuid, dto);
         }
 
+        // 7b. Determine the single applied factor: the highest per-company factor.
+        // The company association is only used to derive this factor; the winning
+        // factor is then applied to every employee regardless of their company.
+        double appliedFactor = 0;
+        String winningCompanyUuid = null;
+        for (CompanyBonusDTO c : companyBonuses.values()) {
+            if (c.getFactor() > appliedFactor) {
+                appliedFactor = c.getFactor();
+                winningCompanyUuid = c.getCompanyUuid();
+            }
+        }
+
         // 8. Build per-employee monthly data grouped by (user, company)
         // Key: useruuid -> companyuuid -> month_index (0-11) -> weighted_avg_salary
         Map<String, Map<String, double[]>> userCompanyMonths = new LinkedHashMap<>();
@@ -205,15 +217,17 @@ public class TwBonusResource {
             }
         }
 
-        // 10. Build employee DTOs with cross-company pro-rating
+        // 10. Build employee DTOs. The applied (highest) factor is used for every
+        // employee regardless of company; the company split is retained only for
+        // the per-company contribution breakdown shown in the UI detail panel.
         List<EmployeeBonusDTO> employeeDTOs = new ArrayList<>();
+        double projectedTotalPayout = 0;
         for (Map.Entry<String, Map<String, double[]>> userEntry : userCompanyMonths.entrySet()) {
             String useruuid = userEntry.getKey();
             Map<String, double[]> companiesMap = userEntry.getValue();
 
             List<CompanyContributionDTO> contributions = new ArrayList<>();
             double totalWeightSum = 0;
-            double totalPayout = 0;
 
             for (Map.Entry<String, double[]> compEntry : companiesMap.entrySet()) {
                 String compUuid = compEntry.getKey();
@@ -221,26 +235,23 @@ public class TwBonusResource {
                 double weightSum = 0;
                 for (double m : months) weightSum += m;
 
-                CompanyBonusDTO compBonus = companyBonuses.get(compUuid);
-                double factor = compBonus != null ? compBonus.getFactor() : 0;
-
-                // payout = sum(month_weight * company_factor)
-                double payout = 0;
-                for (double m : months) {
-                    payout += m * factor;
-                }
-
+                // payout = weight * appliedFactor (uniform factor for all companies)
                 CompanyContributionDTO contrib = new CompanyContributionDTO();
                 contrib.setCompanyUuid(compUuid);
                 contrib.setMonths(months);
                 contrib.setWeightSum(weightSum);
-                contrib.setPayout(Math.round(payout));
+                contrib.setPayout(Math.round(weightSum * appliedFactor));
 
                 contributions.add(contrib);
                 totalWeightSum += weightSum;
-                totalPayout += Math.round(payout);
             }
 
+            // Total payout is computed from the total weight so it does not drift
+            // from rounding the per-company contributions independently.
+            double totalPayout = Math.round(totalWeightSum * appliedFactor);
+
+            // bonusFactor is the realized monthly factor for this employee;
+            // with a uniform applied factor this equals appliedFactor * 12.
             double bonusFactor = totalWeightSum > 0
                     ? totalPayout / (totalWeightSum / 12.0)
                     : 0;
@@ -254,12 +265,16 @@ public class TwBonusResource {
             empDto.setBonusFactor(Math.round(bonusFactor * 100.0) / 100.0);
 
             employeeDTOs.add(empDto);
+            projectedTotalPayout += totalPayout;
         }
 
         TwBonusCalculationDTO result = new TwBonusCalculationDTO();
         result.setFiscalYear(fiscalYear);
         result.setCompanies(new ArrayList<>(companyBonuses.values()));
         result.setEmployees(employeeDTOs);
+        result.setAppliedFactor(appliedFactor);
+        result.setWinningCompanyUuid(winningCompanyUuid);
+        result.setProjectedTotalPayout(projectedTotalPayout);
         return result;
     }
 

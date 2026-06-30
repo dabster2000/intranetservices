@@ -13,6 +13,15 @@ public class TwBonusCalculationDTO {
     private int fiscalYear;
     private List<CompanyBonusDTO> companies;
     private List<EmployeeBonusDTO> employees;
+    /**
+     * The single bonus factor actually applied to every employee, regardless of company.
+     * Equals the highest per-company factor ({@link CompanyBonusDTO#factor}).
+     */
+    private double appliedFactor;
+    /** UUID of the company whose factor was selected as {@link #appliedFactor}. */
+    private String winningCompanyUuid;
+    /** Sum of every employee's payout (= appliedFactor applied to all weight, rounded per employee). */
+    private double projectedTotalPayout;
 
     @Data
     @NoArgsConstructor
