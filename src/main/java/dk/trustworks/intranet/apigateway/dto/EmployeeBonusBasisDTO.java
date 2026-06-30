@@ -15,6 +15,8 @@ public class EmployeeBonusBasisDTO {
     private User user;
     private int year; // fiscal start year (July of this calendar year)
     private List<MonthBasis> months; // 12 entries, covering Jul..Jun in calendar order (Jul..Dec of 'year', Jan..Jun of 'year'+1)
+    /** True when the user's effective employment status at fiscal year-end (Jun 30) is TERMINATED — the frontend defaults these employees to not eligible. */
+    private boolean terminatedBeforeYearEnd;
 
     @Data
     @NoArgsConstructor

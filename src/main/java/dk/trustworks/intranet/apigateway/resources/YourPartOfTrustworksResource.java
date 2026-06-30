@@ -184,6 +184,10 @@ public class YourPartOfTrustworksResource {
             {year+1, 1}, {year+1, 2}, {year+1, 3}, {year+1, 4}, {year+1, 5}, {year+1, 6}
         };
 
+        // Last day of the fiscal year — an employee whose effective status here is
+        // TERMINATED left before year-end and is defaulted to not eligible by the UI.
+        LocalDate fiscalYearEnd = LocalDate.of(year + 1, 6, 30);
+
         for (Map.Entry<String, List<Object[]>> entry : byUser.entrySet()) {
             String userUuid = entry.getKey();
             User user = userMap.get(userUuid);
@@ -216,7 +220,11 @@ public class YourPartOfTrustworksResource {
                 months.add(new EmployeeBonusBasisDTO.MonthBasis(ym[0], ym[1], vals[0], vals[1], vals[2]));
             }
 
-            out.add(new EmployeeBonusBasisDTO(user, year, months));
+            // Terminated before fiscal year-end → default to not bonus-eligible (UI default, overridable).
+            boolean terminatedBeforeYearEnd =
+                    user.getUserStatus(fiscalYearEnd).getStatus() == StatusType.TERMINATED;
+
+            out.add(new EmployeeBonusBasisDTO(user, year, months, terminatedBeforeYearEnd));
         }
 
         // Data boundary: mask salary fields when caller lacks salaries:read
