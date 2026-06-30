@@ -17,6 +17,12 @@ public class EmployeeBonusBasisDTO {
     private List<MonthBasis> months; // 12 entries, covering Jul..Jun in calendar order (Jul..Dec of 'year', Jan..Jun of 'year'+1)
     /** True when the user's effective employment status at fiscal year-end (Jun 30) is TERMINATED — the frontend defaults these employees to not eligible. */
     private boolean terminatedBeforeYearEnd;
+    /** Per-month career multipliers (12 entries, fiscal order Jul..Jun): 0/1/1.5/2/3. */
+    private double[] monthMultipliers;
+    /** True when every month is 0× (not eligible) while the user still has salary weight — never overridable in the UI. */
+    private boolean careerIneligible;
+    /** Display-only representative career level name (§3), or "" when none applies. */
+    private String representativeCareerLevel;
 
     @Data
     @NoArgsConstructor

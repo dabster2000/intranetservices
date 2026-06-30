@@ -1,13 +1,13 @@
 package dk.trustworks.intranet.apigateway.resources;
 
 import dk.trustworks.intranet.apigateway.dto.TwBonusCalculationDTO;
-import dk.trustworks.intranet.apigateway.dto.TwBonusCalculationDTO.CompanyBonusDTO;
-import dk.trustworks.intranet.apigateway.dto.TwBonusCalculationDTO.CompanyContributionDTO;
-import dk.trustworks.intranet.apigateway.dto.TwBonusCalculationDTO.EmployeeBonusDTO;
 import dk.trustworks.intranet.apigateway.dto.TwBonusPayoutRequest;
 import dk.trustworks.intranet.apigateway.model.TwBonusPoolConfig;
 import dk.trustworks.intranet.apigateway.repositories.TwBonusPoolConfigRepository;
+import dk.trustworks.intranet.apigateway.support.CareerMultiplierResolver;
+import dk.trustworks.intranet.apigateway.support.TwBonusCalculator;
 import dk.trustworks.intranet.domain.user.entity.SalaryLumpSum;
+import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.userservice.model.enums.LumpSumSalaryType;
 import jakarta.annotation.security.RolesAllowed;
@@ -102,8 +102,10 @@ public class TwBonusResource {
         Map<String, TwBonusPoolConfig> configMap = configs.stream()
                 .collect(Collectors.toMap(TwBonusPoolConfig::getCompanyuuid, c -> c));
 
-        // 2. Load all active companies
+        // 2. Load all companies (name lookup + pool meta keys)
         List<Company> companies = Company.listAll();
+        Map<String, String> companyNames = companies.stream()
+                .collect(Collectors.toMap(Company::getUuid, Company::getName));
 
         // 3. Query monthly data from view
         @SuppressWarnings("unchecked")
@@ -114,97 +116,65 @@ public class TwBonusResource {
             ORDER BY m.useruuid, m.year, m.month
         """).setParameter("fiscalYear", fiscalYear).getResultList();
 
-        // 4. Query annual data from view
-        @SuppressWarnings("unchecked")
-        List<Object[]> annualRows = em.createNativeQuery("""
-            SELECT a.useruuid, a.companyuuid, a.weight_sum
-            FROM fact_tw_bonus_annual a
-            WHERE a.fiscal_year = :fiscalYear
-        """).setParameter("fiscalYear", fiscalYear).getResultList();
-
-        // 5. Build company name lookup
-        Map<String, String> companyNames = companies.stream()
-                .collect(Collectors.toMap(Company::getUuid, Company::getName));
-
-        // 6. Compute total weight per company
-        Map<String, Double> totalWeightByCompany = new HashMap<>();
-        for (Object[] row : annualRows) {
-            String companyUuid = (String) row[1];
-            double weightSum = ((Number) row[2]).doubleValue();
-            totalWeightByCompany.merge(companyUuid, weightSum, Double::sum);
-        }
-
-        // 7. Compute per-company pool and factor
-        Map<String, CompanyBonusDTO> companyBonuses = new HashMap<>();
-        for (String companyUuid : totalWeightByCompany.keySet()) {
-            TwBonusPoolConfig cfg = configMap.get(companyUuid);
-            double profitBeforeTax = cfg != null ? cfg.getProfitBeforeTax() : 10_000_000;
-            double bonusPercent = cfg != null ? cfg.getBonusPercent() : 10.0;
-            double extraPool = cfg != null ? cfg.getExtraPool() : 0.0;
-
-            double pool = profitBeforeTax * (bonusPercent / 100.0) + extraPool;
-            double totalWeight = totalWeightByCompany.get(companyUuid);
-            double factor = totalWeight > 0 ? pool / totalWeight : 0;
-
-            // Count eligible employees for this company
-            long eligibleCount = annualRows.stream()
-                    .filter(r -> companyUuid.equals(r[1]) && ((Number) r[2]).doubleValue() > 0)
-                    .map(r -> r[0])
-                    .distinct()
-                    .count();
-
-            CompanyBonusDTO dto = new CompanyBonusDTO();
-            dto.setCompanyUuid(companyUuid);
-            dto.setCompanyName(companyNames.getOrDefault(companyUuid, companyUuid));
-            dto.setProfitBeforeTax(profitBeforeTax);
-            dto.setBonusPercent(bonusPercent);
-            dto.setExtraPool(extraPool);
-            dto.setPool(pool);
-            dto.setTotalWeight(totalWeight);
-            dto.setFactor(factor);
-            dto.setEligibleCount((int) eligibleCount);
-
-            companyBonuses.put(companyUuid, dto);
-        }
-
-        // 7b. Determine the single applied factor: the highest per-company factor.
-        // The company association is only used to derive this factor; the winning
-        // factor is then applied to every employee regardless of their company.
-        double appliedFactor = 0;
-        String winningCompanyUuid = null;
-        for (CompanyBonusDTO c : companyBonuses.values()) {
-            if (c.getFactor() > appliedFactor) {
-                appliedFactor = c.getFactor();
-                winningCompanyUuid = c.getCompanyUuid();
-            }
-        }
-
-        // 8. Build per-employee monthly data grouped by (user, company)
+        // 4. Build per-employee monthly data grouped by (user, company)
         // Key: useruuid -> companyuuid -> month_index (0-11) -> weighted_avg_salary
         Map<String, Map<String, double[]>> userCompanyMonths = new LinkedHashMap<>();
 
         for (Object[] row : monthlyRows) {
             String useruuid = (String) row[0];
             String companyUuid = (String) row[1];
-            int calYear = ((Number) row[2]).intValue();
             int calMonth = ((Number) row[3]).intValue();
             double weightedAvg = ((Number) row[4]).doubleValue();
 
-            // Convert calendar (year, month) to fiscal month index (0=Jul, 11=Jun)
-            int monthIndex;
-            if (calMonth >= 7) {
-                monthIndex = calMonth - 7; // Jul=0, Aug=1, ..., Dec=5
-            } else {
-                monthIndex = calMonth + 5; // Jan=6, Feb=7, ..., Jun=11
-            }
+            // Convert calendar month to fiscal month index (0=Jul, 11=Jun)
+            int monthIndex = calMonth >= 7 ? calMonth - 7 : calMonth + 5;
 
             userCompanyMonths
                     .computeIfAbsent(useruuid, k -> new LinkedHashMap<>())
                     .computeIfAbsent(companyUuid, k -> new double[12])[monthIndex] = weightedAvg;
         }
 
-        // 9. Get user names
         Set<String> userUuids = userCompanyMonths.keySet();
+
+        // 5. Batch-load career levels once; resolve per-month multipliers + level names.
+        Map<String, double[]> userMultipliers = new HashMap<>();
+        Map<String, String[]> userLevelNames = new HashMap<>();
+        Map<String, List<UserCareerLevel>> careerByUser = new HashMap<>();
+        if (!userUuids.isEmpty()) {
+            List<UserCareerLevel> careerLevels =
+                    UserCareerLevel.list("useruuid in ?1", new ArrayList<>(userUuids));
+            for (UserCareerLevel ucl : careerLevels) {
+                careerByUser.computeIfAbsent(ucl.getUseruuid(), k -> new ArrayList<>()).add(ucl);
+            }
+        }
+        for (String useruuid : userUuids) {
+            List<UserCareerLevel> sorted =
+                    CareerMultiplierResolver.sortAscending(careerByUser.get(useruuid));
+            userMultipliers.put(useruuid,
+                    CareerMultiplierResolver.monthlyMultipliers(sorted, fiscalYear));
+            userLevelNames.put(useruuid,
+                    CareerMultiplierResolver.monthlyLevelNames(sorted, fiscalYear));
+        }
+
+        // 6. Build pool + pool meta for every company appearing in the data.
+        Map<String, Double> poolByCompany = new HashMap<>();
+        Map<String, TwBonusCalculator.PoolMeta> poolMetaByCompany = new HashMap<>();
+        Set<String> companyUuids = new HashSet<>();
+        for (Map<String, double[]> byCompany : userCompanyMonths.values()) {
+            companyUuids.addAll(byCompany.keySet());
+        }
+        for (String companyUuid : companyUuids) {
+            TwBonusPoolConfig cfg = configMap.get(companyUuid);
+            double profitBeforeTax = cfg != null ? cfg.getProfitBeforeTax() : 10_000_000;
+            double bonusPercent = cfg != null ? cfg.getBonusPercent() : 10.0;
+            double extraPool = cfg != null ? cfg.getExtraPool() : 0.0;
+            double pool = profitBeforeTax * (bonusPercent / 100.0) + extraPool;
+            poolByCompany.put(companyUuid, pool);
+            poolMetaByCompany.put(companyUuid,
+                    new TwBonusCalculator.PoolMeta(profitBeforeTax, bonusPercent, extraPool));
+        }
+
+        // 7. Get user names
         Map<String, String> fullNames = new HashMap<>();
         if (!userUuids.isEmpty()) {
             @SuppressWarnings("unchecked")
@@ -217,65 +187,16 @@ public class TwBonusResource {
             }
         }
 
-        // 10. Build employee DTOs. The applied (highest) factor is used for every
-        // employee regardless of company; the company split is retained only for
-        // the per-company contribution breakdown shown in the UI detail panel.
-        List<EmployeeBonusDTO> employeeDTOs = new ArrayList<>();
-        double projectedTotalPayout = 0;
-        for (Map.Entry<String, Map<String, double[]>> userEntry : userCompanyMonths.entrySet()) {
-            String useruuid = userEntry.getKey();
-            Map<String, double[]> companiesMap = userEntry.getValue();
-
-            List<CompanyContributionDTO> contributions = new ArrayList<>();
-            double totalWeightSum = 0;
-
-            for (Map.Entry<String, double[]> compEntry : companiesMap.entrySet()) {
-                String compUuid = compEntry.getKey();
-                double[] months = compEntry.getValue();
-                double weightSum = 0;
-                for (double m : months) weightSum += m;
-
-                // payout = weight * appliedFactor (uniform factor for all companies)
-                CompanyContributionDTO contrib = new CompanyContributionDTO();
-                contrib.setCompanyUuid(compUuid);
-                contrib.setMonths(months);
-                contrib.setWeightSum(weightSum);
-                contrib.setPayout(Math.round(weightSum * appliedFactor));
-
-                contributions.add(contrib);
-                totalWeightSum += weightSum;
-            }
-
-            // Total payout is computed from the total weight so it does not drift
-            // from rounding the per-company contributions independently.
-            double totalPayout = Math.round(totalWeightSum * appliedFactor);
-
-            // bonusFactor is the realized monthly factor for this employee;
-            // with a uniform applied factor this equals appliedFactor * 12.
-            double bonusFactor = totalWeightSum > 0
-                    ? totalPayout / (totalWeightSum / 12.0)
-                    : 0;
-
-            EmployeeBonusDTO empDto = new EmployeeBonusDTO();
-            empDto.setUseruuid(useruuid);
-            empDto.setFullname(fullNames.getOrDefault(useruuid, useruuid));
-            empDto.setCompanyContributions(contributions);
-            empDto.setTotalWeightSum(totalWeightSum);
-            empDto.setTotalPayout(totalPayout);
-            empDto.setBonusFactor(Math.round(bonusFactor * 100.0) / 100.0);
-
-            employeeDTOs.add(empDto);
-            projectedTotalPayout += totalPayout;
-        }
-
-        TwBonusCalculationDTO result = new TwBonusCalculationDTO();
-        result.setFiscalYear(fiscalYear);
-        result.setCompanies(new ArrayList<>(companyBonuses.values()));
-        result.setEmployees(employeeDTOs);
-        result.setAppliedFactor(appliedFactor);
-        result.setWinningCompanyUuid(winningCompanyUuid);
-        result.setProjectedTotalPayout(projectedTotalPayout);
-        return result;
+        // 8. Delegate to the pure calculator.
+        return TwBonusCalculator.calculate(
+                fiscalYear,
+                userCompanyMonths,
+                userMultipliers,
+                userLevelNames,
+                fullNames,
+                poolByCompany,
+                companyNames,
+                poolMetaByCompany);
     }
 
     // ===== Batch Payout Endpoint =====

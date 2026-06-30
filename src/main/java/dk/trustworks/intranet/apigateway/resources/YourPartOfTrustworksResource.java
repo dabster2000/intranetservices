@@ -3,6 +3,8 @@ package dk.trustworks.intranet.apigateway.resources;
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
 import dk.trustworks.intranet.apigateway.dto.EmployeeBonusBasisDTO;
 import dk.trustworks.intranet.apigateway.dto.SalaryRecalcRequest;
+import dk.trustworks.intranet.apigateway.support.CareerMultiplierResolver;
+import dk.trustworks.intranet.domain.user.entity.UserCareerLevel;
 import dk.trustworks.intranet.bi.services.SalaryRecalculationService;
 import dk.trustworks.intranet.model.EmployeeBonusEligibility;
 import dk.trustworks.intranet.domain.user.entity.User;
@@ -175,6 +177,18 @@ public class YourPartOfTrustworksResource {
             }
         }
 
+        // Batch-load career levels ONCE for all users, grouped by useruuid and sorted ascending
+        // by activeFrom. Drives the per-month multipliers / representative level / careerIneligible.
+        Map<String, List<UserCareerLevel>> careerByUser = new HashMap<>();
+        if (!userUuids.isEmpty()) {
+            List<UserCareerLevel> careerLevels = UserCareerLevel.list("useruuid in ?1", new ArrayList<>(userUuids));
+            Map<String, List<UserCareerLevel>> grouped = careerLevels.stream()
+                    .collect(Collectors.groupingBy(UserCareerLevel::getUseruuid));
+            for (Map.Entry<String, List<UserCareerLevel>> e : grouped.entrySet()) {
+                careerByUser.put(e.getKey(), CareerMultiplierResolver.sortAscending(e.getValue()));
+            }
+        }
+
         // Build DTOs
         List<EmployeeBonusBasisDTO> out = new ArrayList<>();
 
@@ -224,7 +238,31 @@ public class YourPartOfTrustworksResource {
             boolean terminatedBeforeYearEnd =
                     user.getUserStatus(fiscalYearEnd).getStatus() == StatusType.TERMINATED;
 
-            out.add(new EmployeeBonusBasisDTO(user, year, months, terminatedBeforeYearEnd));
+            // Career-level multipliers (§2.2/§3). monthWeights are taken from the REAL (unmasked)
+            // weighted average salaries — this runs BEFORE the salary-masking block below, so masking
+            // cannot affect monthMultipliers / careerIneligible / representativeCareerLevel.
+            double[] monthWeights = new double[12];
+            for (int m = 0; m < 12; m++) {
+                monthWeights[m] = months.get(m).getWeightedAvgSalary();
+            }
+            List<UserCareerLevel> sorted = careerByUser.getOrDefault(userUuid, List.of());
+            double[] monthMultipliers = CareerMultiplierResolver.monthlyMultipliers(sorted, year);
+            String[] levelNames = CareerMultiplierResolver.monthlyLevelNames(sorted, year);
+
+            double baseWeight = 0.0;
+            double rawWeight = 0.0;
+            for (int m = 0; m < 12; m++) {
+                rawWeight += monthWeights[m];
+                if (monthMultipliers[m] > 0) {
+                    baseWeight += monthWeights[m];
+                }
+            }
+            boolean careerIneligible = (baseWeight == 0.0 && rawWeight > 0.0);
+            String representativeCareerLevel =
+                    CareerMultiplierResolver.representative(monthWeights, monthMultipliers, levelNames).levelName();
+
+            out.add(new EmployeeBonusBasisDTO(user, year, months, terminatedBeforeYearEnd,
+                    monthMultipliers, careerIneligible, representativeCareerLevel));
         }
 
         // Data boundary: mask salary fields when caller lacks salaries:read
