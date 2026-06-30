@@ -1753,6 +1753,24 @@ public class InvoiceService {
     public void deleteDraftInvoice(String invoiceuuid) {
         Invoice invoice = Invoice.findById(invoiceuuid);
         if (invoice == null) return;
+
+        // SAFETY GUARD — never delete an invoice that already exists in e-conomic.
+        // Booking is non-atomic: the e-conomic HTTP call commits independently of the
+        // local DB transaction, so a draft can carry a real booked number / posted
+        // voucher even after a local rollback. Deleting it here orphans the e-conomic
+        // document and tears a gap in the booked-number sequence (incident: e-conomic
+        // 27886 deleted locally on 2026-05-01, re-booked as 27897 → duplicate left in
+        // e-conomic). A booked invoice must be credited/voided in e-conomic, not deleted.
+        if (isBookedInEconomics(invoice)) {
+            throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                    .entity("Invoice " + invoiceuuid + " is booked in e-conomic (bookedNumber="
+                            + invoice.getEconomicsBookedNumber() + ", voucher="
+                            + invoice.getEconomicsVoucherNumber() + ", status="
+                            + invoice.getEconomicsStatus() + ") and cannot be deleted. "
+                            + "Credit or void it in e-conomic instead.")
+                    .build());
+        }
+
         if (invoice.getStatus() == PENDING_REVIEW) {
             orchestrator.cancelFinalization(invoiceuuid);
         }
@@ -1771,6 +1789,25 @@ public class InvoiceService {
 
     private boolean isDraftOrPhantom(String invoiceuuid) {
         return Invoice.find("uuid LIKE ?1 AND (status LIKE ?2 OR type = ?3 OR invoicenumber = 0)", invoiceuuid, InvoiceStatus.DRAFT, InvoiceType.PHANTOM).count() > 0;
+    }
+
+    /**
+     * True if the invoice already exists in e-conomic on the issuer side — it has a
+     * booked invoice number, a posted debtor-side voucher, or an e-conomic status of
+     * BOOKED/PAID. Such an invoice must never be deleted locally because the e-conomic
+     * document lives on regardless, and deleting the local row orphans it.
+     *
+     * <p>PHANTOM invoices are excluded: they are local mirrors of e-conomic entries that
+     * the import created (171/189 carry a voucher number) — deleting a PHANTOM removes
+     * only the mirror and orphans nothing, so the normal {@link #isDraftOrPhantom} path
+     * keeps handling them.
+     */
+    static boolean isBookedInEconomics(Invoice invoice) {
+        if (invoice.getType() == InvoiceType.PHANTOM) return false;
+        return invoice.getEconomicsBookedNumber() != null
+                || invoice.getEconomicsVoucherNumber() > 0
+                || invoice.getEconomicsStatus() == EconomicsInvoiceStatus.BOOKED
+                || invoice.getEconomicsStatus() == EconomicsInvoiceStatus.PAID;
     }
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)

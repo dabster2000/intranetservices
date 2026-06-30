@@ -443,6 +443,19 @@ public class InvoiceFinalizationOrchestrator {
                 .orElseThrow(() -> new NotFoundException(
                         "Invoice not found: " + invoiceUuid));
 
+        // A booked invoice exists in e-conomic and cannot be "un-finalized" by reverting
+        // it to DRAFT — doing so previously re-opened the row for deletion and orphaned
+        // the e-conomic document (incident 2026-05-01). Reject defensively; the booked
+        // number/voucher should normally only ever coexist with status CREATED, but guard
+        // on the durable e-conomic markers directly rather than trusting status alone.
+        if (inv.getEconomicsBookedNumber() != null || inv.getEconomicsVoucherNumber() > 0) {
+            throw new WebApplicationException(Response.status(Response.Status.CONFLICT)
+                    .entity("Invoice " + invoiceUuid + " is already booked in e-conomic "
+                            + "(bookedNumber=" + inv.getEconomicsBookedNumber() + ") — cannot cancel "
+                            + "finalization. Credit or void it in e-conomic instead.")
+                    .build());
+        }
+
         if (inv.getStatus() != InvoiceStatus.PENDING_REVIEW) {
             throw new BadRequestException(
                     "Invoice " + invoiceUuid + " is not in PENDING_REVIEW (status="

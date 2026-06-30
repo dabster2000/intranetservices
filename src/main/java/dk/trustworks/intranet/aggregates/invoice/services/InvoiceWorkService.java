@@ -23,8 +23,20 @@ public class InvoiceWorkService {
     /**
      * Marks all work items on the invoice's contract/project/month/year as paid out.
      * This is an irreversible side effect — call only after the invoice is booked.
+     *
+     * <p>Runs in its OWN transaction (REQUIRES_NEW). The caller ({@code bookDraft}) has
+     * already booked the invoice in e-conomic and persisted the booked number in its
+     * transaction. The {@code update work set paid_out} below can hit a row-lock
+     * contention ("Lock wait timeout exceeded") under load; if that exception were to
+     * propagate inside the caller's transaction it would mark it rollback-only and undo
+     * the booked-number persist, leaving e-conomic booked but the local row reverted
+     * and deletable (incident: e-conomic 27886 orphaned, 2026-05-01). Isolating this in
+     * a separate transaction means a failure here rolls back only the payout update —
+     * the caller catches it, logs it, and the booking stays durable for manual
+     * work-item reconciliation. Reads only scalar invoice fields, so the detached entity
+     * passed across the transaction boundary is safe (no lazy initialization).
      */
-    @Transactional
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void registerAsPaidout(Invoice invoice) {
         delegate.registerAsPaidout(
                 invoice.getContractuuid(),
