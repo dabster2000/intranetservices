@@ -69,6 +69,64 @@ public class InvoiceBonusService {
                 .sum();
     }
 
+    /**
+     * Sum of APPROVED, not-yet-consumed (payoutUuid IS NULL) bonus amounts on an invoice that belong
+     * to one of the given users. Scoping to the group's members is essential: an invoice can carry
+     * APPROVED rows from members of more than one partner group, and each group's basis (and the rows
+     * it consumes) must include ONLY its own members' rows — otherwise the first group to pay would
+     * absorb and stamp another group's share. This is the "still fundable" basis for the group.
+     */
+    public double sumApprovedUnconsumed(String invoiceuuid, Set<String> users) {
+        if (users == null || users.isEmpty()) return 0.0;
+        return InvoiceBonus.<InvoiceBonus>stream(
+                        "invoiceuuid = ?1 and status = ?2 and payoutUuid is null and useruuid in ?3",
+                        invoiceuuid, SalesApprovalStatus.APPROVED, users)
+                .mapToDouble(InvoiceBonus::getComputedAmount)
+                .sum();
+    }
+
+    /**
+     * Distinct invoice UUIDs in [from, to] (by invoicedate) that carry at least one APPROVED bonus
+     * from one of the given users. When {@code onlyUnconsumed} is true, only invoices whose APPROVED
+     * bonus rows have not yet been stamped to a payout (payoutUuid IS NULL) are returned — this is the
+     * set the partner-bonus payout is allowed to consume.
+     */
+    public List<String> findApprovedInvoiceIdsForUsers(Set<String> users, LocalDate from, LocalDate to,
+                                                       boolean onlyUnconsumed) {
+        if (users == null || users.isEmpty()) return List.of();
+        String jpql = "SELECT DISTINCT i.uuid"
+                + " FROM dk.trustworks.intranet.aggregates.invoice.model.Invoice i,"
+                + "      dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b"
+                + " WHERE b.invoiceuuid = i.uuid"
+                + "   AND b.status = :approved"
+                + "   AND b.useruuid IN :users"
+                + "   AND i.invoicedate >= :from"
+                + "   AND i.invoicedate <= :to"
+                + (onlyUnconsumed ? "   AND b.payoutUuid IS NULL" : "");
+        return Panache.getEntityManager().createQuery(jpql, String.class)
+                .setParameter("approved", SalesApprovalStatus.APPROVED)
+                .setParameter("users", users)
+                .setParameter("from", from)
+                .setParameter("to", to)
+                .getResultList();
+    }
+
+    /**
+     * Stamp the APPROVED, not-yet-consumed bonus rows belonging to {@code users} on the given invoices
+     * with a payout UUID. Scoped to the group's members so a payout consumes only its own members' rows
+     * on a shared invoice. Idempotent: rows already stamped (payoutUuid IS NOT NULL) are left untouched.
+     * Must run inside the payout transaction. Returns the number of rows stamped.
+     */
+    @Transactional
+    public int markApprovedConsumed(Collection<String> invoiceIds, String payoutUuid, Set<String> users) {
+        if (invoiceIds == null || invoiceIds.isEmpty() || payoutUuid == null || users == null || users.isEmpty()) {
+            return 0;
+        }
+        return InvoiceBonus.update(
+                "payoutUuid = ?1 where status = ?2 and payoutUuid is null and invoiceuuid in ?3 and useruuid in ?4",
+                payoutUuid, SalesApprovalStatus.APPROVED, invoiceIds, users);
+    }
+
     @Transactional
     public InvoiceBonus addSelfAssign(String invoiceuuid, String useruuid,
                                       InvoiceBonus.ShareType type, double value, String note) {
