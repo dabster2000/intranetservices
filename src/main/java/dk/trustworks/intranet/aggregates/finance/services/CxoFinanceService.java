@@ -4619,24 +4619,43 @@ public class CxoFinanceService {
             Set<String> companyIds,
             CostSource costSource,
             RevenueBasis basis) {
+        return getExpectedAccumulatedEBITDA(asOfDate, null, sectors, serviceLines, contractTypes,
+                clientId, companyIds, costSource, basis);
+    }
+
+    public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
+            LocalDate asOfDate,
+            Integer selectedFiscalYear,
+            Set<String> sectors,
+            Set<String> serviceLines,
+            Set<String> contractTypes,
+            String clientId,
+            Set<String> companyIds,
+            CostSource costSource,
+            RevenueBasis basis) {
 
         final boolean workPeriod = (basis == RevenueBasis.WORK_PERIOD);
 
-        LocalDate today = (asOfDate != null) ? asOfDate : LocalDate.now();
-        String currentMonthKey = UtilizationCalculationHelper.toMonthKey(today);
+        LocalDate systemToday = LocalDate.now();
+        LocalDate today = (asOfDate != null) ? asOfDate : systemToday;
 
         // Fiscal year: July 1 → June 30
         FiscalYearRange fyRange = UtilizationCalculationHelper.getFiscalYearRange(
-                today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
+                selectedFiscalYear != null ? selectedFiscalYear : (today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1));
         int fiscalYear = fyRange.fiscalYear();
         LocalDate fyStart = fyRange.start();
         LocalDate fyEnd   = fyRange.end();
 
         String fyFromKey = fyRange.startKey();
         String fyToKey   = fyRange.endKey();
+        int currentFiscalYear = systemToday.getMonthValue() >= 7 ? systemToday.getYear() : systemToday.getYear() - 1;
+        boolean completedSelectedFiscalYear = selectedFiscalYear != null && fiscalYear < currentFiscalYear;
+        String currentMonthKey = completedSelectedFiscalYear
+                ? UtilizationCalculationHelper.toMonthKey(fyEnd.plusMonths(1).withDayOfMonth(1))
+                : UtilizationCalculationHelper.toMonthKey(today);
 
         // TTM window (trailing 12 months ending at end of previous month)
-        LocalDate ttmEnd   = today.withDayOfMonth(1).minusDays(1); // last day of previous month
+        LocalDate ttmEnd   = completedSelectedFiscalYear ? fyEnd : today.withDayOfMonth(1).minusDays(1); // last day of previous month
         LocalDate ttmStart = ttmEnd.minusMonths(11).withDayOfMonth(1);
         String ttmFromKey  = UtilizationCalculationHelper.toMonthKey(ttmStart);
         String ttmToKey    = UtilizationCalculationHelper.toMonthKey(ttmEnd);
@@ -4714,7 +4733,9 @@ public class CxoFinanceService {
                         ? fyOpexRows
                         : opexProvider.getDistributionAwareOpex(fyFromKey, fyToKey, companyIds, null, null, CostSource.BOOKED_PLUS_DRAFT);
         java.util.Map<String, Double> bdSalariesByMonth = sumByMonth(bdOpexRows, dk.trustworks.intranet.aggregates.finance.dto.OpexRow::isPayrollFlag);
-        java.util.Set<String> provisionalMonthKeys = provisionalMonthKeys(today);
+        java.util.Set<String> provisionalMonthKeys = completedSelectedFiscalYear
+                ? java.util.Collections.emptySet()
+                : provisionalMonthKeys(today);
 
         // 4b. Actual internal invoice cost by month (intercompany INTERNAL invoices)
         java.util.Map<String, Double> internalCostByMonth = queryMonthlyInternalInvoiceCost(fyFromKey, fyToKey, companyIds);
@@ -4765,7 +4786,9 @@ public class CxoFinanceService {
         }
 
         // 5. Backlog by month for future months
-        java.util.Map<String, Double> backlogByMonth = queryBacklogByMonth(currentMonthKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
+        java.util.Map<String, Double> backlogByMonth = completedSelectedFiscalYear
+                ? java.util.Collections.emptyMap()
+                : queryBacklogByMonth(currentMonthKey, fyToKey, sectors, serviceLines, contractTypes, clientId, companyIds);
 
         // 6. Build 12 data points
         List<MonthlyAccumulatedEbitdaDTO> result = new ArrayList<>(12);

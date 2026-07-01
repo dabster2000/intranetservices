@@ -1260,6 +1260,7 @@ public class CxoFinanceResource {
     @Path("/expected-accumulated-ebitda")
     public List<MonthlyAccumulatedEbitdaDTO> getExpectedAccumulatedEBITDA(
             @QueryParam("asOfDate") String asOfDateStr,
+            @QueryParam("fiscalYear") Integer fiscalYear,
             @QueryParam("sectors") String sectors,
             @QueryParam("serviceLines") String serviceLines,
             @QueryParam("contractTypes") String contractTypes,
@@ -1268,8 +1269,8 @@ public class CxoFinanceResource {
             @QueryParam("costSource") String costSourceParam,
             @QueryParam("basis") String basisParam) {
 
-        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s, costSource=%s, basis=%s",
-                asOfDateStr, sectors, serviceLines, contractTypes, clientId, companyIds, costSourceParam, basisParam);
+        log.debugf("GET /finance/cxo/expected-accumulated-ebitda: asOfDate=%s, fiscalYear=%s, sectors=%s, serviceLines=%s, contractTypes=%s, clientId=%s, companyIds=%s, costSource=%s, basis=%s",
+                asOfDateStr, fiscalYear, sectors, serviceLines, contractTypes, clientId, companyIds, costSourceParam, basisParam);
 
         LocalDate asOfDate = (asOfDateStr != null && !asOfDateStr.trim().isEmpty())
                 ? LocalDate.parse(asOfDateStr)
@@ -1281,7 +1282,7 @@ public class CxoFinanceResource {
         Set<String> companyIdSet = parseCommaSeparated(companyIds);
 
         List<MonthlyAccumulatedEbitdaDTO> result = cxoFinanceService.getExpectedAccumulatedEBITDA(
-                asOfDate, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet,
+                asOfDate, fiscalYear, sectorSet, serviceLineSet, contractTypeSet, clientId, companyIdSet,
                 CostSource.fromQueryParam(costSourceParam), RevenueBasis.fromQueryParam(basisParam));
 
         log.debugf("Returning %d expected accumulated EBITDA data points", result.size());
