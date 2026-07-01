@@ -81,7 +81,13 @@ jobs:
           security-groups: ${{ vars.ECS_TASK_SG }}
           cpu: '2048'
           memory: '4096'
-          health-check-path: /health
+          # Liveness-only ALB health check. /health (SmallRye root) also runs
+          # @Readiness checks — including OpexDistributionFreshnessCheck, which
+          # reports DOWN on stale finance data. Readiness DOWN on the ALB path
+          # deprovisions every task (all tasks share one DB, so it sheds no
+          # load) and triggers a cold-start CPU storm. /health/live is the
+          # liveness group (CustomHealthCheck, always UP while the JVM runs).
+          health-check-path: /health/live
           min-task-count: 1
           max-task-count: 5
           environment-variables: |
