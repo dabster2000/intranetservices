@@ -62,7 +62,7 @@ class InternalInvoiceOrchestratorTest {
     @Mock EconomicsAgreementResolver         agreements;
     @Mock InvoiceItemRecalculator            recalc;
     @Mock BonusService                       bonus;
-    @Mock InvoiceWorkService                 work;
+    @Mock jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
     @Mock EconomicsInvoiceService            economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock PerfMetrics                        perfMetrics;
@@ -126,7 +126,7 @@ class InternalInvoiceOrchestratorTest {
                 .sendVoucherToCompany(eq(inv), eq(debtorCompany), eq(INTERNAL_JOURNAL));
 
         // Assert — work registered as paid out (issuer side)
-        verify(work).registerAsPaidout(inv);
+        verify(invoiceBooked).fire(any());
     }
 
     // ── Test 2: debtor side throws → PARTIALLY_UPLOADED ──────────────────────

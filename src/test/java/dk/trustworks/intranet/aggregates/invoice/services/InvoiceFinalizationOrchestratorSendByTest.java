@@ -49,7 +49,7 @@ class InvoiceFinalizationOrchestratorSendByTest {
     @Mock EconomicsAgreementResolver        agreements;
     @Mock InvoiceItemRecalculator           recalc;
     @Mock BonusService                      bonus;
-    @Mock InvoiceWorkService                work;
+    @Mock jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock EanPrerequisiteChecker            eanChecker;

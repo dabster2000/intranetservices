@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftI
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftLine;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
@@ -50,7 +51,7 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock InvoiceItemRecalculator           recalc;
     @Mock InvoiceAttributionService         attributionService;
     @Mock BonusService                      bonus;
-    @Mock InvoiceWorkService                work;
+    @Mock jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
 
@@ -88,8 +89,8 @@ class InvoiceFinalizationOrchestratorTest {
         assertEquals(Integer.valueOf(4521), out.getEconomicsDraftNumber());
         verify(recalc).recalculateInvoiceItems(inv);
         verify(bonus).recalcForInvoice(inv);
-        // workService.registerAsPaidout is NOT called on step 1
-        verify(work, never()).registerAsPaidout(any());
+        // work-item payout is NOT triggered on step 1
+        verify(invoiceBooked, never()).fire(any());
     }
 
     // ── regression: mapper's otherReference reaches e-conomic unmodified ────────
@@ -203,7 +204,13 @@ class InvoiceFinalizationOrchestratorTest {
         assertEquals(Integer.valueOf(80123), out.getEconomicsBookedNumber());
         assertEquals(80123, out.getInvoicenumber());
         assertEquals(EconomicsInvoiceStatus.BOOKED, out.getEconomicsStatus());
-        verify(work).registerAsPaidout(inv);
+        // Payout is deferred to an AFTER_SUCCESS observer via an event (durability fix),
+        // carrying the invoice's contract/project/period scalars.
+        verify(invoiceBooked).fire(argThat(e ->
+                e.invoiceUuid().equals("i1")
+                && e.contractuuid().equals("contract-uuid")
+                && e.projectuuid().equals("project-uuid")
+                && e.month() == 4 && e.year() == 2026));
     }
 
     // ── test 2b: bookDraft translates Q2C number → legacy draftInvoiceNumber ──
@@ -260,7 +267,7 @@ class InvoiceFinalizationOrchestratorTest {
         verify(draftApi).delete("APP", "GRANT", 4521);
         assertEquals(InvoiceStatus.DRAFT, out.getStatus());
         assertNull(out.getEconomicsDraftNumber());
-        verify(work, never()).registerAsPaidout(any());
+        verify(invoiceBooked, never()).fire(any());
     }
 
     // ── test 4: PHANTOM invoice rejected ────────────────────────────────────
@@ -274,6 +281,33 @@ class InvoiceFinalizationOrchestratorTest {
                 () -> orchestrator.createDraft("i1"));
         assertEquals(400, thrown.getResponse().getStatus());
         verifyNoInteractions(draftApi);
+    }
+
+    // ── test 4b: 0-quantity (0-hours) line rejected before hitting e-conomic ────
+    // e-conomic's Q2C bulk-lines endpoint rejects a 0-quantity line with
+    // SalesDocumentLineCannotHaveZeroValue and voids the ENTIRE batch (2026-07-01
+    // production incident: 9 createDraft 400s). createDraft must fail fast with an
+    // actionable 400 that names the line, and must never create an orphan e-conomic draft.
+
+    @Test
+    void createDraft_rejects_invoice_with_zero_hours_line_before_calling_economics() {
+        Invoice inv = draftInvoice("i1", "co-1");
+        inv.setInvoiceitems(List.of(
+                new InvoiceItem("Consulting", "January hours", 1000d, 37.5d, "i1"),
+                new InvoiceItem("Rounding adjustment", "spurious empty line", 500d, 0d, "i1")));
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+
+        jakarta.ws.rs.BadRequestException thrown = assertThrows(
+                jakarta.ws.rs.BadRequestException.class,
+                () -> orchestrator.createDraft("i1"));
+
+        assertEquals(400, thrown.getResponse().getStatus());
+        assertTrue(thrown.getMessage().contains("0 hours"),
+                "message should explain the 0-hours rejection; got: " + thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("Rounding adjustment"),
+                "message should name the offending line; got: " + thrown.getMessage());
+        // No e-conomic draft may be created for a rejected invoice.
+        verifyNoInteractions(draftApi, bookApi);
     }
 
     // ── test 5: unpaired billing client propagates exception ─────────────────

@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.draft.DraftInvoiceLin
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
@@ -28,6 +29,8 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -85,7 +88,7 @@ public class InvoiceFinalizationOrchestrator {
     BonusService bonus;
 
     @Inject
-    InvoiceWorkService work;
+    jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
 
     @Inject
     EconomicsInvoiceService economicsInvoiceService;
@@ -142,6 +145,14 @@ public class InvoiceFinalizationOrchestrator {
         // Step-1 reversible side effects — before the API call so a failure doesn't
         // leave the invoice in a partially mutated state
         recalc.recalculateInvoiceItems(inv);
+
+        // e-conomic's Q2C bulk-lines endpoint rejects any line with quantity 0
+        // (SalesDocumentLineCannotHaveZeroValue) and fails the WHOLE batch, so a single
+        // 0-hours line turns draft creation into an opaque HTTP 400 (2026-07-01 prod
+        // incident). Detect it here — after recalculation, on exactly the items the
+        // mapper will send — and fail fast with an actionable message before any
+        // e-conomic call, which also avoids leaving an orphaned empty draft behind.
+        assertNoZeroQuantityLines(inv);
 
         if (inv.getType() != InvoiceType.INTERNAL
                 && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
@@ -246,6 +257,48 @@ public class InvoiceFinalizationOrchestrator {
     }
 
     /**
+     * Rejects finalization when any invoice line has a 0 quantity (hours).
+     *
+     * <p>{@link InvoiceToEconomicsDraftMapper#toLines} maps {@code quantity =
+     * item.getHours()}, and e-conomic's Q2C {@code POST /invoices/drafts/{n}/lines/bulk}
+     * rejects a 0-quantity line with {@code SalesDocumentLineCannotHaveZeroValue},
+     * failing the entire batch. Surfacing a specific, actionable error here beats the
+     * opaque "HTTP 400 Bad Request" the user would otherwise see, and failing before
+     * {@code draftApi.create} avoids leaving an orphaned empty draft in e-conomic.
+     */
+    private void assertNoZeroQuantityLines(Invoice inv) {
+        List<InvoiceItem> items = inv.getInvoiceitems();
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        List<String> offending = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            InvoiceItem item = items.get(i);
+            if (item.getHours() == 0d) {
+                offending.add("line " + (i + 1) + " \"" + describeLine(item) + "\"");
+            }
+        }
+        if (!offending.isEmpty()) {
+            throw new BadRequestException(
+                    "Cannot finalize invoice " + inv.getUuid() + ": e-conomic rejects invoice "
+                    + "lines with 0 hours. Enter an hours/quantity value or remove "
+                    + (offending.size() == 1 ? "this line: " : "these lines: ")
+                    + String.join(", ", offending) + ".");
+        }
+    }
+
+    /** Best-effort human label for an invoice line, for error messages. */
+    private static String describeLine(InvoiceItem item) {
+        if (item.getItemname() != null && !item.getItemname().isBlank()) {
+            return item.getItemname();
+        }
+        if (item.getDescription() != null && !item.getDescription().isBlank()) {
+            return item.getDescription();
+        }
+        return "(no description)";
+    }
+
+    /**
      * Step 2: Books the e-conomic draft invoice.
      *
      * <p>Preconditions: invoice must be PENDING_REVIEW with a draft number set.
@@ -333,19 +386,16 @@ public class InvoiceFinalizationOrchestrator {
         inv.setSendBy(sendBy);  // persist delivery method for E-Invoicing tracking
         invoices.persist(inv);
 
-        // Irreversible step-2 side effect. E-conomic has already booked the
-        // invoice at this point, so a RuntimeException from registerAsPaidout
-        // MUST NOT roll back the booked/CREATED state we just persisted —
-        // doing so would leave the DB out-of-sync with e-conomic and every
-        // subsequent book attempt would fight the booking idempotency cache.
-        // Log loudly so ops can reconcile work-item payout status manually.
-        try {
-            work.registerAsPaidout(inv);
-        } catch (RuntimeException e) {
-            log.errorf(e, "bookDraft: registerAsPaidout failed AFTER e-conomic booked invoice %s "
-                    + "(bookedNumber=%d) — manual work-item reconciliation required",
-                    invoiceUuid, booked.getBookedInvoiceNumber());
-        }
+        // Mark work items paid-out only AFTER this booking transaction durably commits.
+        // Running it inline (even via a REQUIRES_NEW facade) shares the Hibernate session,
+        // so a `work`-table "Lock wait timeout" auto-flushed and rolled back the just-persisted
+        // booked state — reverting the invoice to PENDING_REVIEW while e-conomic kept the
+        // booking (split-brain: invoice dba892b4 / bookedNumber 28084, 2026-06-30). An
+        // AFTER_SUCCESS observer (InvoiceBookedPayoutObserver) runs the payout in its own
+        // transaction after commit, so a payout failure can no longer undo the booking.
+        invoiceBooked.fire(new InvoiceBookedEvent(
+                inv.getUuid(), inv.getContractuuid(), inv.getProjectuuid(),
+                inv.getMonth(), inv.getYear()));
 
         // DEBTOR-side voucher for internal invoices (SPEC-INV-001 §4.5, §4.7, §10).
         // The issuer side already went through the standard Q2C path above.  Now post

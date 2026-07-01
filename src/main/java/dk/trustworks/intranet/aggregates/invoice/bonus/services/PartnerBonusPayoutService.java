@@ -326,20 +326,18 @@ public class PartnerBonusPayoutService {
      */
     private int countPartnersWithRows(Set<String> members, LocalDate fyStart, LocalDate fyEnd) {
         if (members == null || members.isEmpty()) return 0;
-        Long count = Panache.getEntityManager().createQuery("""
-                SELECT COUNT(DISTINCT b.useruuid)
-                FROM dk.trustworks.intranet.aggregates.invoice.model.Invoice i,
-                     dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
-                WHERE b.invoiceuuid = i.uuid
-                  AND b.useruuid IN :members
-                  AND i.invoicedate >= :from
-                  AND i.invoicedate <= :to
-                """, Long.class)
+        String sql = "SELECT COUNT(DISTINCT b.useruuid)"
+                + " FROM invoices i JOIN invoice_bonuses b ON b.invoiceuuid = i.uuid"
+                + " WHERE b.useruuid IN (:members)"
+                + "   AND " + InvoiceBonusService.WP_DATE_SQL + " >= :from"
+                + "   AND " + InvoiceBonusService.WP_DATE_SQL + " <= :to"
+                + InvoiceBonusService.NOT_FULLY_CREDITED_SQL;
+        Object r = Panache.getEntityManager().createNativeQuery(sql)
                 .setParameter("members", members)
                 .setParameter("from", fyStart)
                 .setParameter("to", fyEnd)
                 .getSingleResult();
-        return count == null ? 0 : count.intValue();
+        return r == null ? 0 : ((Number) r).intValue();
     }
 
     private boolean anyMemberPaidSales(Set<String> members, int fiscalYear) {

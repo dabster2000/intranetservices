@@ -8,6 +8,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 import java.io.InputStream;
 
 @RegisterRestClient(configKey = "economics-legacy-rest")
+@RegisterProvider(EconomicsBookingErrorMapper.class)
 @RegisterProvider(dk.trustworks.intranet.perf.PerfRestClientFilter.class)
 @Consumes(MediaType.APPLICATION_JSON)
 @Produces(MediaType.APPLICATION_JSON)
