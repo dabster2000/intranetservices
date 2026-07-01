@@ -22,6 +22,7 @@ import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusFySum;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.MyBonusRow;
 import dk.trustworks.intranet.aggregates.invoice.utils.StringUtils;
 import dk.trustworks.intranet.aggregates.users.services.UserService;
+import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -1910,6 +1911,9 @@ public class InvoiceService {
         // 2) Amount (excl. VAT) = SUM(hours * rate) over *persisted* items (incl. CALCULATED)
         Map<String, Double> amountByInvoice = sumAmountNoTaxByInvoice(ids);
 
+        // 2b) Actual client name via contract → client (fallback: bill-to snapshot)
+        Map<String, String> clientNameByInvoice = resolveClientNamesByContract(page);
+
         // 3) Bonus aggregates (sum + aggregated status)
         var bonusSumByInvoice = new HashMap<String, Double>();
         var statusAggByInvoice = new HashMap<String, SalesApprovalStatus>();
@@ -1991,7 +1995,7 @@ public class InvoiceService {
                     i.getInvoicenumber(),
                     i.getInvoicedate(),
                     i.getCurrency(),
-                    i.getClientname(),
+                    clientNameByInvoice.getOrDefault(i.getUuid(), i.getClientname()),
                     amountNoTax,
                     statusAggByInvoice.getOrDefault(i.getUuid(), SalesApprovalStatus.PENDING),
                     bonusSumByInvoice.getOrDefault(i.getUuid(), 0.0),
@@ -2047,6 +2051,9 @@ public class InvoiceService {
 
         // Reuse fast SUM aggregation
         Map<String, Double> amountByInvoice = sumAmountNoTaxByInvoice(ids);
+
+        // Actual client name via contract → client (fallback: bill-to snapshot)
+        Map<String, String> clientNameByInvoice = resolveClientNamesByContract(page);
 
         var bonusSumByInvoice = new HashMap<String, Double>();
         var statusAggByInvoice = new HashMap<String, SalesApprovalStatus>();
@@ -2123,7 +2130,7 @@ public class InvoiceService {
                     i.getInvoicenumber(),
                     i.getInvoicedate(),
                     i.getCurrency(),
-                    i.getClientname(),
+                    clientNameByInvoice.getOrDefault(i.getUuid(), i.getClientname()),
                     amountNoTax,
                     statusAggByInvoice.getOrDefault(i.getUuid(), SalesApprovalStatus.PENDING),
                     bonusSumByInvoice.getOrDefault(i.getUuid(), 0.0),
@@ -2149,6 +2156,57 @@ public class InvoiceService {
             out.put((String) r[0], ((Number) r[1]).doubleValue());
         }
         return out;
+    }
+
+    /**
+     * Resolves each invoice's <em>actual</em> client name via its contract:
+     * {@code invoice.contractuuid → Contract.clientuuid → Client.name}.
+     *
+     * <p>Batch-loads contracts and clients once (two IN queries) to avoid N+1.
+     * Falls back to the invoice's own {@code clientname} bill-to snapshot when
+     * the contract is missing, has no client, or the client row is absent —
+     * so the column is never blank.
+     *
+     * @param invoices page of invoices to resolve
+     * @return map of invoiceuuid → resolved client name (never null values)
+     */
+    private Map<String, String> resolveClientNamesByContract(Collection<Invoice> invoices) {
+        if (invoices == null || invoices.isEmpty()) return Map.of();
+
+        // contractuuid → clientuuid
+        Set<String> contractIds = invoices.stream()
+                .map(Invoice::getContractuuid)
+                .filter(c -> c != null && !c.isBlank())
+                .collect(Collectors.toSet());
+
+        Map<String, String> clientUuidByContract = new HashMap<>();
+        if (!contractIds.isEmpty()) {
+            for (Contract c : Contract.<Contract>list("uuid in ?1", contractIds)) {
+                if (c.getClientuuid() != null && !c.getClientuuid().isBlank()) {
+                    clientUuidByContract.put(c.getUuid(), c.getClientuuid());
+                }
+            }
+        }
+
+        // clientuuid → name
+        Set<String> clientIds = new HashSet<>(clientUuidByContract.values());
+        Map<String, String> nameByClient = new HashMap<>();
+        if (!clientIds.isEmpty()) {
+            for (Client cl : Client.<Client>list("uuid in ?1", clientIds)) {
+                nameByClient.put(cl.getUuid(), cl.getName());
+            }
+        }
+
+        // per-invoice resolved name, with bill-to snapshot fallback
+        Map<String, String> result = new HashMap<>();
+        for (Invoice i : invoices) {
+            String resolved = null;
+            String clientUuid = clientUuidByContract.get(i.getContractuuid());
+            if (clientUuid != null) resolved = nameByClient.get(clientUuid);
+            result.put(i.getUuid(),
+                    (resolved != null && !resolved.isBlank()) ? resolved : i.getClientname());
+        }
+        return result;
     }
 
     /**
@@ -2635,12 +2693,16 @@ public class InvoiceService {
             if (st != null && st.getCompany() != null) companies.add(st.getCompany());
         }
 
+        // Actual client name via contract → client (fallback: bill-to snapshot)
+        String clientName = resolveClientNamesByContract(java.util.List.of(i))
+                .getOrDefault(i.getUuid(), i.getClientname());
+
         return new BonusApprovalRow(
                 i.getUuid(),
                 i.getInvoicenumber(),
                 i.getInvoicedate(),
                 i.getCurrency(),
-                i.getClientname(),
+                clientName,
                 amountNoTax,
                 agg,
                 total,
