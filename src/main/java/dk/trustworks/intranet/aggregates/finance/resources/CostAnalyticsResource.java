@@ -117,12 +117,15 @@ public class CostAnalyticsResource {
     @GET
     @Path("/top-expense-consultants")
     public List<TopExpenseConsultantDTO> getTopExpenseConsultants(
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("companyIds") String companyIds) {
 
         Set<String> companies = parseCommaSeparated(companyIds);
 
         LocalDate today = LocalDate.now();
-        LocalDate fromDate = today.minusMonths(11).withDayOfMonth(1);
+        LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(11).withDayOfMonth(1);
+        LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
 
         // Query 1: Top 10 by total expense amount
         StringBuilder sql = new StringBuilder();
@@ -144,7 +147,7 @@ public class CostAnalyticsResource {
 
         var query = em.createNativeQuery(sql.toString(), Tuple.class);
         query.setParameter("fromDate", fromDate);
-        query.setParameter("toDate", today);
+        query.setParameter("toDate", toDate);
         if (companies != null) {
             query.setParameter("companyIds", companies);
         }
@@ -171,7 +174,7 @@ public class CostAnalyticsResource {
         var catQuery = em.createNativeQuery(catSql, Tuple.class);
         catQuery.setParameter("topUserIds", topUserIds);
         catQuery.setParameter("fromDate", fromDate);
-        catQuery.setParameter("toDate", today);
+        catQuery.setParameter("toDate", toDate);
 
         @SuppressWarnings("unchecked")
         List<Tuple> catRows = catQuery.getResultList();
@@ -389,13 +392,15 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-vs-budget")
     public List<RevenueVsBudgetMonthDTO> getRevenueVsBudget(
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
-        String ttmStartKey = toMonthKey(today.minusMonths(11));
-        String toKey = toMonthKey(today.getYear(), today.getMonthValue() + 1 > 12 ? 1 : today.getMonthValue() + 1);
-        // Use next month as exclusive upper bound to include current month
-        String currentMonthKey = toMonthKey(today);
+        LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(11).withDayOfMonth(1);
+        LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
+        String fromKey = toMonthKey(fromDate);
+        String toKey = toMonthKey(toDate);
 
         Set<String> companies = parseCommaSeparated(companyIds);
 
@@ -404,15 +409,15 @@ public class CostAnalyticsResource {
         // Reuse existing helper but with inclusive upper bound
         String actualSqlInclusive = actualSql.replace("r.month_key < :toKey", "r.month_key <= :toKey");
         var actualQuery = em.createNativeQuery(actualSqlInclusive, Tuple.class);
-        actualQuery.setParameter("fromKey", ttmStartKey);
-        actualQuery.setParameter("toKey", currentMonthKey);
+        actualQuery.setParameter("fromKey", fromKey);
+        actualQuery.setParameter("toKey", toKey);
         if (companies != null) actualQuery.setParameter("companyIds", companies);
 
         // Budget revenue (grouped by month)
         String budgetSql = buildBudgetRevenueSql(companies);
         var budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
-        budgetQuery.setParameter("fromKey", ttmStartKey);
-        budgetQuery.setParameter("toKey", currentMonthKey);
+        budgetQuery.setParameter("fromKey", fromKey);
+        budgetQuery.setParameter("toKey", toKey);
         if (companies != null) budgetQuery.setParameter("companyIds", companies);
 
         @SuppressWarnings("unchecked") List<Tuple> actualRows = actualQuery.getResultList();
@@ -452,11 +457,15 @@ public class CostAnalyticsResource {
     @GET
     @Path("/revenue-per-fte")
     public List<RevenuePerFteMonthDTO> getRevenuePerFteMonthly(
+            @QueryParam("fromDate") String fromDateStr,
+            @QueryParam("toDate") String toDateStr,
             @QueryParam("companyIds") String companyIds) {
 
         LocalDate today = LocalDate.now();
-        String fromKey = toMonthKey(today.minusMonths(17));
-        String toKey = toMonthKey(today);
+        LocalDate fromDate = fromDateStr != null ? LocalDate.parse(fromDateStr) : today.minusMonths(17).withDayOfMonth(1);
+        LocalDate toDate = toDateStr != null ? LocalDate.parse(toDateStr) : today;
+        String fromKey = toMonthKey(fromDate);
+        String toKey = toMonthKey(toDate);
 
         Set<String> companies = parseCommaSeparated(companyIds);
 
@@ -598,15 +607,22 @@ public class CostAnalyticsResource {
     public List<RevenueCostForecastDTO> getRevenueCostForecast(
             @QueryParam("companyIds") String companyIds,
             @QueryParam("costSource") String costSourceParam,
-            @QueryParam("basis") String basisParam) {
+            @QueryParam("basis") String basisParam,
+            @QueryParam("fiscalYear") Integer fiscalYear,
+            @QueryParam("asOfDate") String asOfDateStr) {
 
-        LocalDate today = LocalDate.now();
-        String ttmStartKey = toMonthKey(today.minusMonths(12));
-        String currentMonthKey = toMonthKey(today);
+        LocalDate systemToday = LocalDate.now();
+        LocalDate today = asOfDateStr != null && !asOfDateStr.isBlank() ? LocalDate.parse(asOfDateStr) : systemToday;
 
         // Fiscal year: July 1 → June 30 (matches getExpectedAccumulatedEBITDA in CxoFinanceService).
-        int fyStartYear = today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1;
+        int fyStartYear = fiscalYear != null ? fiscalYear : (today.getMonthValue() >= 7 ? today.getYear() : today.getYear() - 1);
+        int currentFyStartYear = systemToday.getMonthValue() >= 7 ? systemToday.getYear() : systemToday.getYear() - 1;
+        boolean completedSelectedFiscalYear = fiscalYear != null && fyStartYear < currentFyStartYear;
         String fyStartKey = toMonthKey(fyStartYear, 7);
+        String fyEndKey = toMonthKey(fyStartYear + 1, 6);
+        String actualEndExclusiveKey = completedSelectedFiscalYear ? toMonthKey(fyStartYear + 1, 7) : toMonthKey(today);
+        String ttmStartKey = completedSelectedFiscalYear ? fyStartKey : toMonthKey(today.minusMonths(12));
+        String ttmEndKey = completedSelectedFiscalYear ? fyEndKey : toMonthKey(today.minusMonths(1));
 
         Set<String> companies = parseCommaSeparated(companyIds);
         CostSource costSource = CostSource.fromQueryParam(costSourceParam);
@@ -622,20 +638,18 @@ public class CostAnalyticsResource {
         String registeredRevenueSql = buildRegisteredRevenueSql(companies);
         var regQuery = em.createNativeQuery(registeredRevenueSql, Tuple.class);
         regQuery.setParameter("ttmStart", ttmStartKey);
-        regQuery.setParameter("currentMonth", currentMonthKey);
+        regQuery.setParameter("currentMonth", actualEndExclusiveKey);
         if (companies != null) regQuery.setParameter("companyIds", companies);
 
         // Q2: Invoice revenue (basis-aware: invoicedate _mat vs work-period view)
         String invoiceRevenueSql = buildInvoiceRevenueSql(companies, workPeriod);
         var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
         invQuery.setParameter("ttmStart", ttmStartKey);
-        invQuery.setParameter("currentMonth", currentMonthKey);
+        invQuery.setParameter("currentMonth", actualEndExclusiveKey);
         if (companies != null) invQuery.setParameter("companyIds", companies);
 
         @SuppressWarnings("unchecked") List<Tuple> regRows = regQuery.getResultList();
         @SuppressWarnings("unchecked") List<Tuple> invRows = invQuery.getResultList();
-
-        String ttmEndKey = toMonthKey(today.minusMonths(1));
 
         // Index by month_key
         Map<String, Tuple> regMap = indexByMonthKey(regRows);
@@ -739,7 +753,7 @@ public class CostAnalyticsResource {
             totalDirectCostSum += directDelivery;
             ttmMonthCount++;
 
-            if (key.compareTo(fyStartKey) < 0) continue;
+            if (key.compareTo(fyStartKey) < 0 || key.compareTo(fyEndKey) > 0) continue;
 
             result.add(new RevenueCostForecastDTO(
                     key, year, month,
@@ -768,23 +782,20 @@ public class CostAnalyticsResource {
 
         // ── Forecast months (current through FY end) ─────────────────────
 
-        int currentYear = today.getYear();
-        int currentMonth = today.getMonthValue();
-        int fyEndYear = currentMonth >= 7 ? currentYear + 1 : currentYear;
-        String fyEndKey = toMonthKey(fyEndYear, 6);
+        String forecastStartKey = actualEndExclusiveKey.compareTo(fyStartKey) < 0 ? fyStartKey : actualEndExclusiveKey;
 
-        if (currentMonthKey.compareTo(fyEndKey) <= 0) {
+        if (!completedSelectedFiscalYear && forecastStartKey.compareTo(fyEndKey) <= 0) {
             // Q4: Budget revenue
             String budgetSql = buildBudgetRevenueSql(companies);
             var budgetQuery = em.createNativeQuery(budgetSql, Tuple.class);
-            budgetQuery.setParameter("fromKey", currentMonthKey);
+            budgetQuery.setParameter("fromKey", forecastStartKey);
             budgetQuery.setParameter("toKey", fyEndKey);
             if (companies != null) budgetQuery.setParameter("companyIds", companies);
 
             // Q5: Pipeline (excl. WON)
             String pipelineSql = buildPipelineSql(companies);
             var pipelineQuery = em.createNativeQuery(pipelineSql, Tuple.class);
-            pipelineQuery.setParameter("fromKey", currentMonthKey);
+            pipelineQuery.setParameter("fromKey", forecastStartKey);
             pipelineQuery.setParameter("toKey", fyEndKey);
             if (companies != null) pipelineQuery.setParameter("companyIds", companies);
 
@@ -801,8 +812,8 @@ public class CostAnalyticsResource {
             }
 
             // Generate forecast month keys
-            int fYear = currentYear;
-            int fMonth = currentMonth;
+            int fYear = Integer.parseInt(forecastStartKey.substring(0, 4));
+            int fMonth = Integer.parseInt(forecastStartKey.substring(4, 6));
             while (toMonthKey(fYear, fMonth).compareTo(fyEndKey) <= 0) {
                 String fKey = toMonthKey(fYear, fMonth);
                 double budgetRev = budgetMap.getOrDefault(fKey, 0.0);
