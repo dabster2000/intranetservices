@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftI
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftLine;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
@@ -274,6 +275,33 @@ class InvoiceFinalizationOrchestratorTest {
                 () -> orchestrator.createDraft("i1"));
         assertEquals(400, thrown.getResponse().getStatus());
         verifyNoInteractions(draftApi);
+    }
+
+    // ── test 4b: 0-quantity (0-hours) line rejected before hitting e-conomic ────
+    // e-conomic's Q2C bulk-lines endpoint rejects a 0-quantity line with
+    // SalesDocumentLineCannotHaveZeroValue and voids the ENTIRE batch (2026-07-01
+    // production incident: 9 createDraft 400s). createDraft must fail fast with an
+    // actionable 400 that names the line, and must never create an orphan e-conomic draft.
+
+    @Test
+    void createDraft_rejects_invoice_with_zero_hours_line_before_calling_economics() {
+        Invoice inv = draftInvoice("i1", "co-1");
+        inv.setInvoiceitems(List.of(
+                new InvoiceItem("Consulting", "January hours", 1000d, 37.5d, "i1"),
+                new InvoiceItem("Rounding adjustment", "spurious empty line", 500d, 0d, "i1")));
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+
+        jakarta.ws.rs.BadRequestException thrown = assertThrows(
+                jakarta.ws.rs.BadRequestException.class,
+                () -> orchestrator.createDraft("i1"));
+
+        assertEquals(400, thrown.getResponse().getStatus());
+        assertTrue(thrown.getMessage().contains("0 hours"),
+                "message should explain the 0-hours rejection; got: " + thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("Rounding adjustment"),
+                "message should name the offending line; got: " + thrown.getMessage());
+        // No e-conomic draft may be created for a rejected invoice.
+        verifyNoInteractions(draftApi, bookApi);
     }
 
     // ── test 5: unpaired billing client propagates exception ─────────────────

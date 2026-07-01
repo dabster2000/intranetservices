@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.draft.DraftInvoiceLin
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoice;
 import dk.trustworks.intranet.aggregates.invoice.economics.draft.EconomicsDraftInvoiceApiClient;
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.EconomicsInvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
@@ -28,6 +29,8 @@ import jakarta.ws.rs.core.Response;
 import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -143,6 +146,14 @@ public class InvoiceFinalizationOrchestrator {
         // leave the invoice in a partially mutated state
         recalc.recalculateInvoiceItems(inv);
 
+        // e-conomic's Q2C bulk-lines endpoint rejects any line with quantity 0
+        // (SalesDocumentLineCannotHaveZeroValue) and fails the WHOLE batch, so a single
+        // 0-hours line turns draft creation into an opaque HTTP 400 (2026-07-01 prod
+        // incident). Detect it here — after recalculation, on exactly the items the
+        // mapper will send — and fail fast with an actionable message before any
+        // e-conomic call, which also avoids leaving an orphaned empty draft behind.
+        assertNoZeroQuantityLines(inv);
+
         if (inv.getType() != InvoiceType.INTERNAL
                 && inv.getType() != InvoiceType.INTERNAL_SERVICE) {
             bonus.recalcForInvoice(inv);
@@ -243,6 +254,48 @@ public class InvoiceFinalizationOrchestrator {
         log.infof("createDraft: invoiceUuid=%s draftNumber=%d",
                 invoiceUuid, draftNumber);
         return inv;
+    }
+
+    /**
+     * Rejects finalization when any invoice line has a 0 quantity (hours).
+     *
+     * <p>{@link InvoiceToEconomicsDraftMapper#toLines} maps {@code quantity =
+     * item.getHours()}, and e-conomic's Q2C {@code POST /invoices/drafts/{n}/lines/bulk}
+     * rejects a 0-quantity line with {@code SalesDocumentLineCannotHaveZeroValue},
+     * failing the entire batch. Surfacing a specific, actionable error here beats the
+     * opaque "HTTP 400 Bad Request" the user would otherwise see, and failing before
+     * {@code draftApi.create} avoids leaving an orphaned empty draft in e-conomic.
+     */
+    private void assertNoZeroQuantityLines(Invoice inv) {
+        List<InvoiceItem> items = inv.getInvoiceitems();
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        List<String> offending = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            InvoiceItem item = items.get(i);
+            if (item.getHours() == 0d) {
+                offending.add("line " + (i + 1) + " \"" + describeLine(item) + "\"");
+            }
+        }
+        if (!offending.isEmpty()) {
+            throw new BadRequestException(
+                    "Cannot finalize invoice " + inv.getUuid() + ": e-conomic rejects invoice "
+                    + "lines with 0 hours. Enter an hours/quantity value or remove "
+                    + (offending.size() == 1 ? "this line: " : "these lines: ")
+                    + String.join(", ", offending) + ".");
+        }
+    }
+
+    /** Best-effort human label for an invoice line, for error messages. */
+    private static String describeLine(InvoiceItem item) {
+        if (item.getItemname() != null && !item.getItemname().isBlank()) {
+            return item.getItemname();
+        }
+        if (item.getDescription() != null && !item.getDescription().isBlank()) {
+            return item.getDescription();
+        }
+        return "(no description)";
     }
 
     /**
