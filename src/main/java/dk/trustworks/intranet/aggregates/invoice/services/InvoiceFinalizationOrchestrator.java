@@ -88,7 +88,7 @@ public class InvoiceFinalizationOrchestrator {
     BonusService bonus;
 
     @Inject
-    InvoiceWorkService work;
+    jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
 
     @Inject
     EconomicsInvoiceService economicsInvoiceService;
@@ -386,19 +386,16 @@ public class InvoiceFinalizationOrchestrator {
         inv.setSendBy(sendBy);  // persist delivery method for E-Invoicing tracking
         invoices.persist(inv);
 
-        // Irreversible step-2 side effect. E-conomic has already booked the
-        // invoice at this point, so a RuntimeException from registerAsPaidout
-        // MUST NOT roll back the booked/CREATED state we just persisted —
-        // doing so would leave the DB out-of-sync with e-conomic and every
-        // subsequent book attempt would fight the booking idempotency cache.
-        // Log loudly so ops can reconcile work-item payout status manually.
-        try {
-            work.registerAsPaidout(inv);
-        } catch (RuntimeException e) {
-            log.errorf(e, "bookDraft: registerAsPaidout failed AFTER e-conomic booked invoice %s "
-                    + "(bookedNumber=%d) — manual work-item reconciliation required",
-                    invoiceUuid, booked.getBookedInvoiceNumber());
-        }
+        // Mark work items paid-out only AFTER this booking transaction durably commits.
+        // Running it inline (even via a REQUIRES_NEW facade) shares the Hibernate session,
+        // so a `work`-table "Lock wait timeout" auto-flushed and rolled back the just-persisted
+        // booked state — reverting the invoice to PENDING_REVIEW while e-conomic kept the
+        // booking (split-brain: invoice dba892b4 / bookedNumber 28084, 2026-06-30). An
+        // AFTER_SUCCESS observer (InvoiceBookedPayoutObserver) runs the payout in its own
+        // transaction after commit, so a payout failure can no longer undo the booking.
+        invoiceBooked.fire(new InvoiceBookedEvent(
+                inv.getUuid(), inv.getContractuuid(), inv.getProjectuuid(),
+                inv.getMonth(), inv.getYear()));
 
         // DEBTOR-side voucher for internal invoices (SPEC-INV-001 §4.5, §4.7, §10).
         // The issuer side already went through the standard Q2C path above.  Now post

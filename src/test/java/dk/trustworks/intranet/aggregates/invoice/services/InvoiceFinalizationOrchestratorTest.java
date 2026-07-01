@@ -51,7 +51,7 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock InvoiceItemRecalculator           recalc;
     @Mock InvoiceAttributionService         attributionService;
     @Mock BonusService                      bonus;
-    @Mock InvoiceWorkService                work;
+    @Mock jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
 
@@ -89,8 +89,8 @@ class InvoiceFinalizationOrchestratorTest {
         assertEquals(Integer.valueOf(4521), out.getEconomicsDraftNumber());
         verify(recalc).recalculateInvoiceItems(inv);
         verify(bonus).recalcForInvoice(inv);
-        // workService.registerAsPaidout is NOT called on step 1
-        verify(work, never()).registerAsPaidout(any());
+        // work-item payout is NOT triggered on step 1
+        verify(invoiceBooked, never()).fire(any());
     }
 
     // ── regression: mapper's otherReference reaches e-conomic unmodified ────────
@@ -204,7 +204,13 @@ class InvoiceFinalizationOrchestratorTest {
         assertEquals(Integer.valueOf(80123), out.getEconomicsBookedNumber());
         assertEquals(80123, out.getInvoicenumber());
         assertEquals(EconomicsInvoiceStatus.BOOKED, out.getEconomicsStatus());
-        verify(work).registerAsPaidout(inv);
+        // Payout is deferred to an AFTER_SUCCESS observer via an event (durability fix),
+        // carrying the invoice's contract/project/period scalars.
+        verify(invoiceBooked).fire(argThat(e ->
+                e.invoiceUuid().equals("i1")
+                && e.contractuuid().equals("contract-uuid")
+                && e.projectuuid().equals("project-uuid")
+                && e.month() == 4 && e.year() == 2026));
     }
 
     // ── test 2b: bookDraft translates Q2C number → legacy draftInvoiceNumber ──
@@ -261,7 +267,7 @@ class InvoiceFinalizationOrchestratorTest {
         verify(draftApi).delete("APP", "GRANT", 4521);
         assertEquals(InvoiceStatus.DRAFT, out.getStatus());
         assertNull(out.getEconomicsDraftNumber());
-        verify(work, never()).registerAsPaidout(any());
+        verify(invoiceBooked, never()).fire(any());
     }
 
     // ── test 4: PHANTOM invoice rejected ────────────────────────────────────
