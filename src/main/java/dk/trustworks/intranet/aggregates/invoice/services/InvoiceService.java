@@ -2232,43 +2232,53 @@ public class InvoiceService {
                                             List<SalesApprovalStatus> statuses,
                                             LocalDate from, LocalDate to,
                                             int pageIdx, int pageSize) {
-        String base = """
-        FROM Invoice i, dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
-        WHERE b.invoiceuuid = i.uuid AND b.useruuid = :user
-    """;
-        if (statuses != null && !statuses.isEmpty()) base += " AND b.status IN :st ";
-        if (from != null) base += " AND i.invoicedate >= :from ";
-        if (to   != null) base += " AND i.invoicedate <  :to ";
+        boolean hasSt = statuses != null && !statuses.isEmpty();
+        StringBuilder sql = new StringBuilder(
+                "SELECT i.uuid, i.invoicenumber, i.invoicedate, i.currency, i.clientname, i.type, " +
+                "b.uuid, b.share_type, b.share_value, b.computed_amount, b.status, " +
+                "b.approved_by, b.approved_at, b.created_at, b.updated_at, b.override_note " +
+                "FROM invoices i JOIN invoice_bonuses b ON b.invoiceuuid = i.uuid WHERE b.useruuid = :user");
+        if (hasSt) sql.append(" AND b.status IN (:st)");
+        if (from != null) sql.append(" AND ").append(InvoiceBonusService.WP_DATE_SQL).append(" >= :from");
+        if (to   != null) sql.append(" AND ").append(InvoiceBonusService.WP_DATE_SQL).append(" <  :to");
+        sql.append(InvoiceBonusService.NOT_FULLY_CREDITED_SQL);
+        sql.append(" ORDER BY ").append(InvoiceBonusService.WP_DATE_SQL).append(" DESC, i.invoicenumber DESC");
 
-        String select = "SELECT i.uuid, i.invoicenumber, i.invoicedate, i.currency, i.clientname, i.type, " +
-                "b.uuid, b.shareType, b.shareValue, b.computedAmount, b.status, b.approvedBy, b.approvedAt, b.createdAt, b.updatedAt, b.overrideNote " +
-                base + " ORDER BY i.invoicedate DESC, i.invoicenumber DESC";
-
-        var q = em.createQuery(select, Object[].class)
+        var q = em.createNativeQuery(sql.toString())
                 .setParameter("user", useruuid)
                 .setFirstResult(pageIdx * pageSize)
                 .setMaxResults(pageSize);
-        if (statuses != null && !statuses.isEmpty()) q.setParameter("st", statuses);
+        if (hasSt) q.setParameter("st", statuses.stream().map(Enum::name).toList());
         if (from != null) q.setParameter("from", from);
         if (to != null) q.setParameter("to", to);
 
-        var rs = q.getResultList();
+        @SuppressWarnings("unchecked")
+        List<Object[]> rs = q.getResultList();
         List<MyBonusRow> out = new ArrayList<>(rs.size());
         for (Object[] r : rs) {
             String invId = (String) r[0];
-            String userId = (String) r[11]; // careful: adjust index if needed; safer to read explicitly below
-            // safer: pull userId from bonus load instead:
             String bonusUuid = (String) r[6];
             var inv = Invoice.<Invoice>findById(invId);
             var bonus = InvoiceBonus.<InvoiceBonus>findById(bonusUuid);
             double original = computeDefaultOriginalForUser(inv, bonus.getUseruuid());
 
             out.add(new MyBonusRow(
-                    (String) r[0], (Integer) r[1], (LocalDate) r[2], (String) r[3], (String) r[4], (InvoiceType) r[5],
+                    invId,
+                    ((Number) r[1]).intValue(),
+                    toLocalDate(r[2]),
+                    (String) r[3],
+                    (String) r[4],
+                    InvoiceType.valueOf((String) r[5]),
                     bonusUuid,
-                    (InvoiceBonus.ShareType) r[7], ((Number) r[8]).doubleValue(), ((Number) r[9]).doubleValue(),
-                    (SalesApprovalStatus) r[10], (String) r[11], (LocalDateTime) r[12], (LocalDateTime) r[13],
-                    (LocalDateTime) r[14], (String) r[15],
+                    InvoiceBonus.ShareType.valueOf((String) r[7]),
+                    ((Number) r[8]).doubleValue(),
+                    ((Number) r[9]).doubleValue(),
+                    SalesApprovalStatus.valueOf((String) r[10]),
+                    (String) r[11],
+                    toLocalDateTime(r[12]),
+                    toLocalDateTime(r[13]),
+                    toLocalDateTime(r[14]),
+                    (String) r[15],
                     original
             ));
         }
@@ -2278,46 +2288,48 @@ public class InvoiceService {
     public long countMyBonus(String useruuid,
                              List<SalesApprovalStatus> statuses,
                              LocalDate from, LocalDate to) {
-        String base = """
-        FROM Invoice i, InvoiceBonus b
-        WHERE b.invoiceuuid = i.uuid AND b.useruuid = :user
-    """;
-        if (statuses != null && !statuses.isEmpty()) base += " AND b.status IN :st ";
-        if (from != null) base += " AND i.invoicedate >= :from ";
-        if (to   != null) base += " AND i.invoicedate <  :to ";
+        StringBuilder sql = new StringBuilder(
+                "SELECT COUNT(*) FROM invoices i JOIN invoice_bonuses b ON b.invoiceuuid = i.uuid WHERE b.useruuid = :user");
+        boolean hasSt = statuses != null && !statuses.isEmpty();
+        if (hasSt) sql.append(" AND b.status IN (:st)");
+        if (from != null) sql.append(" AND ").append(InvoiceBonusService.WP_DATE_SQL).append(" >= :from");
+        if (to   != null) sql.append(" AND ").append(InvoiceBonusService.WP_DATE_SQL).append(" <  :to");
+        sql.append(InvoiceBonusService.NOT_FULLY_CREDITED_SQL);
 
-        var q = em.createQuery("SELECT COUNT(b) " + base, Long.class)
-                .setParameter("user", useruuid);
-        if (statuses != null && !statuses.isEmpty()) q.setParameter("st", statuses);
+        var q = em.createNativeQuery(sql.toString()).setParameter("user", useruuid);
+        if (hasSt) q.setParameter("st", statuses.stream().map(Enum::name).toList());
         if (from != null) q.setParameter("from", from);
-        if (to != null) q.setParameter("to", to);
-        return q.getSingleResult();
+        if (to   != null) q.setParameter("to", to);
+        return ((Number) q.getSingleResult()).longValue();
     }
 
     public List<MyBonusFySum> myBonusFySummary(String useruuid) {
-        String sel = """
-        SELECT i.uuid, i.invoicedate, b.status, b.computedAmount, b.useruuid
-        FROM Invoice i, dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
-        WHERE b.invoiceuuid = i.uuid AND b.useruuid = :user
-    """;
-        var rows = em.createQuery(sel, Object[].class)
+        String sql =
+                "SELECT i.uuid, i.invoicedate, i.year, i.month, b.status, b.computed_amount, b.useruuid " +
+                "FROM invoices i JOIN invoice_bonuses b ON b.invoiceuuid = i.uuid WHERE b.useruuid = :user" +
+                InvoiceBonusService.NOT_FULLY_CREDITED_SQL;
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(sql)
                 .setParameter("user", useruuid)
                 .getResultList();
 
         Map<LocalDate, double[]> acc = new HashMap<>(); // fyStart -> [approved, pending]
         for (Object[] r : rows) {
             String invoiceId = (String) r[0];
-            LocalDate d = (LocalDate) r[1];
-            SalesApprovalStatus st = (SalesApprovalStatus) r[2];
-            double approvedAmt = ((Number) r[3]).doubleValue();
-            String userId = (String) r[4];
+            LocalDate d = toLocalDate(r[1]);
+            int yr = ((Number) r[2]).intValue();
+            int mo = ((Number) r[3]).intValue();
+            SalesApprovalStatus st = SalesApprovalStatus.valueOf((String) r[4]);
+            double approvedAmt = ((Number) r[5]).doubleValue();
+            String userId = (String) r[6];
 
             dk.trustworks.intranet.aggregates.invoice.model.Invoice inv =
                     dk.trustworks.intranet.aggregates.invoice.model.Invoice.findById(invoiceId);
 
             double engineOriginalForUser = computeDefaultOriginalForUser(inv, userId);
 
-            LocalDate fyStart = fiscalYearStart(d);
+            LocalDate fyStart = fiscalYearStart(DateUtils.workPeriodStart(yr, mo, d));
             var a = acc.computeIfAbsent(fyStart, k -> new double[2]);
             if (st == SalesApprovalStatus.APPROVED) {
                 a[0] += approvedAmt;                    // approved
@@ -2332,6 +2344,20 @@ public class InvoiceService {
                         round2(e.getValue()[0] + e.getValue()[1]) // total = approved + pending
                 ))
                 .toList();
+    }
+
+    /** JDBC {@code DATE} -> {@link LocalDate}, null-safe. */
+    private static LocalDate toLocalDate(Object o) {
+        if (o == null) return null;
+        if (o instanceof java.sql.Date d) return d.toLocalDate();
+        return (LocalDate) o;
+    }
+
+    /** JDBC {@code TIMESTAMP} -> {@link LocalDateTime}, null-safe. */
+    private static LocalDateTime toLocalDateTime(Object o) {
+        if (o == null) return null;
+        if (o instanceof java.sql.Timestamp ts) return ts.toLocalDateTime();
+        return (LocalDateTime) o;
     }
 
     /** Default user "original": 100% of non-self BASE lines + pro‑rata of CALCULATED lines. */

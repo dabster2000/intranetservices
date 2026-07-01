@@ -308,6 +308,18 @@ public final class DateUtils {
         return LocalDate.of(y, 7, 1);
     }
 
+    /** First day of the work period the invoice bills for (year/month), else invoicedate's month, else this month. */
+    public static LocalDate workPeriodStart(int year, int month, LocalDate invoicedate) {
+        if (year > 0 && month >= 1 && month <= 12) return LocalDate.of(year, month, 1);
+        if (invoicedate != null)                   return invoicedate.withDayOfMonth(1);
+        return LocalDate.now().withDayOfMonth(1);
+    }
+
+    /** FY start year (July 1 = year Y) for the invoice's work period. */
+    public static int workPeriodFiscalYearStartYear(int year, int month, LocalDate invoicedate) {
+        return fiscalYearStart(workPeriodStart(year, month, invoicedate)).getYear();
+    }
+
     /**
      * Returns the accounting year label used in e-conomic for the given fiscal
      * start date and company. Normally this is "YYYY/YYYY+1", but certain

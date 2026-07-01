@@ -134,22 +134,25 @@ public class BonusEligibilityGroupResource {
         }
         if (users.isEmpty()) return 0.0;
 
-        // Find invoice UUIDs that have at least one APPROVED bonus for a group member within the period
-        List<String> invoiceIds = em.createQuery("""
-                SELECT DISTINCT i.uuid
-                FROM dk.trustworks.intranet.aggregates.invoice.model.Invoice i,
-                     dk.trustworks.intranet.aggregates.invoice.bonus.model.InvoiceBonus b
-                WHERE b.invoiceuuid = i.uuid
-                  AND b.status = :approved
-                  AND b.useruuid IN :users
-                  AND i.invoicedate >= :from
-                  AND i.invoicedate <= :to
-            """, String.class)
-                .setParameter("approved", SalesApprovalStatus.APPROVED)
-                .setParameter("users", users)
-                .setParameter("from", periodStart)
-                .setParameter("to", periodEnd)
-                .getResultList();
+        // Find invoice UUIDs that have at least one APPROVED bonus for a group member within the
+        // work period (year/month with invoicedate fallback), excluding fully credit-noted invoices (D8).
+        List<String> invoiceIds;
+        {
+            String sql = "SELECT DISTINCT i.uuid"
+                    + " FROM invoices i JOIN invoice_bonuses b ON b.invoiceuuid = i.uuid"
+                    + " WHERE b.status = :approved"
+                    + "   AND b.useruuid IN (:users)"
+                    + "   AND " + InvoiceBonusService.WP_DATE_SQL + " >= :from"
+                    + "   AND " + InvoiceBonusService.WP_DATE_SQL + " <= :to"
+                    + InvoiceBonusService.NOT_FULLY_CREDITED_SQL;
+            List<?> raw = em.createNativeQuery(sql)
+                    .setParameter("approved", SalesApprovalStatus.APPROVED.name())
+                    .setParameter("users", users)
+                    .setParameter("from", periodStart)
+                    .setParameter("to", periodEnd)
+                    .getResultList();
+            invoiceIds = raw.stream().map(String::valueOf).toList();
+        }
 
         if (invoiceIds.isEmpty()) return 0.0;
 
