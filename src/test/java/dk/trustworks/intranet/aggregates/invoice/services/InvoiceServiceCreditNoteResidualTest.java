@@ -148,6 +148,20 @@ class InvoiceServiceCreditNoteResidualTest {
     }
 
     @Test
+    void resolveSourceItemLink_rejectsLinksOutsideTheSourceInvoice() {
+        java.util.Set<String> valid = java.util.Set.of("item-a", "item-b");
+        // client-supplied link to a foreign invoice's item → fall back to the persisted link
+        assertEquals("item-a", InvoiceService.resolveSourceItemLink("foreign-item", "item-a", valid));
+        // client-supplied link to a valid source item → honoured
+        assertEquals("item-b", InvoiceService.resolveSourceItemLink("item-b", "item-a", valid));
+        // blank/absent → persisted link
+        assertEquals("item-a", InvoiceService.resolveSourceItemLink(null, "item-a", valid));
+        assertEquals("item-a", InvoiceService.resolveSourceItemLink(" ", "item-a", valid));
+        // new unlinked line with no prior link stays unlinked
+        assertNull(InvoiceService.resolveSourceItemLink("foreign-item", null, valid));
+    }
+
+    @Test
     void noLineEverHasZeroHours() {
         Invoice source = invoice(InvoiceType.INVOICE, InvoiceStatus.CREATED);
         InvoiceItem a = item(source, "user-a", 1000.0, 10.0);

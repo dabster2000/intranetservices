@@ -533,26 +533,48 @@ public class InvoiceService {
 
     /** Legacy fallback hvis engine ikke må køre for denne type */
     private Invoice legacyUpdateDraft(Invoice invoice) {
-        // The client payload does not carry sourceItemUuid, but the delete-and-recreate below
-        // would otherwise strip the source-item links every time a credit-note draft is edited —
-        // and the multi-CN residual pre-fill depends on those links for per-item math. Preserve
-        // them by item uuid for lines that survive the edit (user-added lines stay unlinked).
+        // sourceItemUuid is SERVER-MANAGED: the delete-and-recreate below would otherwise strip
+        // the source-item links every time a credit-note draft is edited — and the multi-CN
+        // residual pre-fill depends on those links for per-item math. Preserve them by item uuid
+        // for lines that survive the edit (user-added lines stay unlinked). The request body is
+        // client-supplied, so an incoming non-blank link is accepted only when it references an
+        // item of this credit note's own source invoice — never trusted verbatim.
         Map<String, String> sourceItemLinks = InvoiceItem.<InvoiceItem>list("invoiceuuid = ?1", invoice.getUuid())
                 .stream()
                 .filter(ii -> ii.getSourceItemUuid() != null && !ii.getSourceItemUuid().isBlank())
                 .collect(Collectors.toMap(ii -> ii.uuid, InvoiceItem::getSourceItemUuid, (a, b) -> a));
+        Set<String> sourceInvoiceItemUuids = Set.of();
+        Invoice persisted = Invoice.findById(invoice.getUuid());
+        String sourceUuid = persisted != null ? persisted.getCreditnoteForUuid() : null;
+        if (sourceUuid != null && !sourceUuid.isBlank()) {
+            sourceInvoiceItemUuids = InvoiceItem.<InvoiceItem>list("invoiceuuid = ?1", sourceUuid)
+                    .stream().map(ii -> ii.uuid).collect(Collectors.toSet());
+        }
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        final Set<String> validSourceItems = sourceInvoiceItemUuids;
         invoice.getInvoiceitems().forEach(ii -> {
             ii.setInvoiceuuid(invoice.getUuid());
-            if (ii.getSourceItemUuid() == null || ii.getSourceItemUuid().isBlank()) {
-                ii.setSourceItemUuid(sourceItemLinks.get(ii.uuid));
-            }
+            ii.setSourceItemUuid(resolveSourceItemLink(
+                    ii.getSourceItemUuid(), sourceItemLinks.get(ii.uuid), validSourceItems));
         });
         InvoiceItem.persist(invoice.getInvoiceitems());
         if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
             invoiceAttributionService.copyAttributionsFromSource(invoice);
         }
         return invoice;
+    }
+
+    /**
+     * Resolves the server-managed {@code sourceItemUuid} for a credit-note line on draft save:
+     * a client-supplied link is honoured only when it points at an item of the credit note's own
+     * source invoice; anything else falls back to the previously persisted link (matched by the
+     * line's uuid), or null for genuinely new/unlinked lines.
+     */
+    static String resolveSourceItemLink(String incoming, String priorLink, Set<String> validSourceItems) {
+        if (incoming != null && !incoming.isBlank() && validSourceItems.contains(incoming)) {
+            return incoming;
+        }
+        return priorLink;
     }
 
     /**
