@@ -35,10 +35,19 @@ public class CreditNoteCoverageService {
     /** Live credit-note statuses: credit that exists, per the shared SQL measure. */
     private static final List<String> LIVE_CN_STATUSES = List.of("CREATED", "QUEUED", "PENDING_REVIEW");
 
-    /** Σ(hours×rate) over an invoice's persisted items. */
+    /**
+     * Σ(hours×rate) over an invoice's persisted items.
+     *
+     * <p>{@code FOR UPDATE} makes this a <b>current read</b>, not a snapshot read. The
+     * finalization transaction pins its InnoDB REPEATABLE READ view at its first read
+     * (in {@code requireEditableInvoice}), long before the over-credit guard acquires
+     * the source-row lock — so a plain {@code SELECT} here would return stale, pre-lock
+     * data. The guard must compare committed reality at lock-acquisition time. Same
+     * idiom the invoice-number allocator uses ({@code SELECT MAX(...) ... FOR UPDATE}).
+     */
     public double invoiceItemSum(String invoiceUuid) {
         Object result = em().createNativeQuery(
-                        "SELECT COALESCE(SUM(hours*rate),0) FROM invoiceitems WHERE invoiceuuid = :uuid")
+                        "SELECT COALESCE(SUM(hours*rate),0) FROM invoiceitems WHERE invoiceuuid = :uuid FOR UPDATE")
                 .setParameter("uuid", invoiceUuid)
                 .getSingleResult();
         return ((Number) result).doubleValue();
@@ -48,13 +57,23 @@ public class CreditNoteCoverageService {
      * Σ(hours×rate) over items of LIVE credit notes pointing at {@code sourceUuid},
      * excluding {@code excludeCnUuid} (the credit note currently being finalized,
      * whose just-recalculated in-memory items are counted separately).
+     *
+     * <p>{@code FOR UPDATE} is load-bearing for the race guard: a finalizer that blocked
+     * on the source-row lock resumes with a REPEATABLE READ snapshot pinned <i>before</i>
+     * the winning finalizer committed — in that snapshot the winner's credit note is
+     * still DRAFT and excluded from {@link #LIVE_CN_STATUSES}, so a plain read returns 0
+     * and both credit notes over-credit the source. The locking read forces the current,
+     * committed status of every live credit note into the sum (all finalizers serialize on
+     * the source-row {@code PESSIMISTIC_WRITE} lock first, so only one is ever in this
+     * read at a time — no cross-finalizer deadlock on the credit-note rows this locks).
      */
     public double liveCreditedSum(String sourceUuid, String excludeCnUuid) {
         Object result = em().createNativeQuery(
                         "SELECT COALESCE(SUM(cii.hours*cii.rate),0) " +
                         "  FROM invoiceitems cii JOIN invoices cn ON cn.uuid = cii.invoiceuuid " +
                         " WHERE cn.creditnote_for_uuid = :src AND cn.type = 'CREDIT_NOTE' " +
-                        "   AND cn.status IN (:statuses) AND cn.uuid <> :self")
+                        "   AND cn.status IN (:statuses) AND cn.uuid <> :self " +
+                        " FOR UPDATE")
                 .setParameter("src", sourceUuid)
                 .setParameter("statuses", LIVE_CN_STATUSES)
                 .setParameter("self", excludeCnUuid == null ? "" : excludeCnUuid)
@@ -80,7 +99,11 @@ public class CreditNoteCoverageService {
         if (sourceUuid == null || sourceUuid.isBlank()) return;
 
         // Serialize concurrent finalizations against the same source. The lock is
-        // released when the surrounding finalization transaction ends.
+        // released when the surrounding finalization transaction ends. NOTE: this lock
+        // alone is not sufficient — the coverage sums below MUST be locking (current)
+        // reads, because this transaction's REPEATABLE READ snapshot was pinned before
+        // the lock and would otherwise miss a prior finalizer's just-committed credit
+        // note (see invoiceItemSum / liveCreditedSum).
         Invoice source = Invoice.findById(sourceUuid, LockModeType.PESSIMISTIC_WRITE);
         if (source == null) {
             log.warnf("Over-credit guard: credit note %s references missing source %s — skipping guard",
