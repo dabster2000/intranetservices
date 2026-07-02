@@ -238,9 +238,11 @@ public class TeamPeopleService {
             return List.of();
         }
 
-        LocalDate now = LocalDate.now();
-        YearMonth currentMonth = YearMonth.from(now);
-        YearMonth startMonth = currentMonth.minusMonths(5);
+        // Trailing 6 COMPLETE months. The previous same-year OR-predicate degenerated to the
+        // full calendar year (including future pre-booked vacation) whenever the window did
+        // not cross a year boundary; a linear month index makes the range airtight.
+        YearMonth endMonth = YearMonth.from(LocalDate.now()).minusMonths(1);
+        YearMonth startMonth = endMonth.minusMonths(5);
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
@@ -252,17 +254,13 @@ public class TeamPeopleService {
                          + SUM(COALESCE(fud.paid_leave_hours, 0))   AS other_leave_hours
                 FROM fact_user_day fud
                 WHERE fud.useruuid IN (:memberUuids)
-                  AND ((fud.year = :startYear AND fud.month >= :startMonth)
-                       OR (fud.year = :endYear AND fud.month <= :endMonth)
-                       OR (fud.year > :startYear AND fud.year < :endYear))
+                  AND (fud.year * 12 + fud.month) BETWEEN :startIndex AND :endIndex
                 GROUP BY fud.year, fud.month
                 ORDER BY fud.year, fud.month
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
-                .setParameter("startYear", startMonth.getYear())
-                .setParameter("startMonth", startMonth.getMonthValue())
-                .setParameter("endYear", currentMonth.getYear())
-                .setParameter("endMonth", currentMonth.getMonthValue())
+                .setParameter("startIndex", startMonth.getYear() * 12 + startMonth.getMonthValue())
+                .setParameter("endIndex", endMonth.getYear() * 12 + endMonth.getMonthValue())
                 .getResultList();
 
         List<TeamAbsenceOverviewDTO> result = new ArrayList<>();

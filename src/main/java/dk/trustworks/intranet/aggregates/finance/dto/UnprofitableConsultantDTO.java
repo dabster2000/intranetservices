@@ -5,10 +5,11 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * DTO representing a consultant whose TTM net profit is negative.
- * Used by the Consultant Insights tab to surface unprofitable consultants.
+ * DTO representing a consultant's profitability over a reporting window
+ * (TTM for the CXO dashboard, fiscal-year based for the team dashboard).
+ * Field names keep the historical "ttm" prefix — they are part of the JSON contract.
  *
- * Net Profit = TTM Revenue - TTM Salary - Shared Overhead
+ * Net Profit = Registered Revenue - Salary - Shared Overhead
  * Shared Overhead = Total OPEX (non-salary) / consultant headcount (equal split).
  */
 @Data
@@ -28,10 +29,10 @@ public class UnprofitableConsultantDTO {
     /** Practice code (PM, BA, SA, CYB, DEV) */
     private String practice;
 
-    /** Total registered revenue in the TTM window (DKK) */
+    /** Total registered revenue in the reporting window (DKK) */
     private double ttmRevenue;
 
-    /** Total salary cost in the TTM window (DKK), computed as sum of monthly max salary */
+    /** Total salary cost in the reporting window (DKK), computed as sum of monthly max salary */
     private double ttmSalary;
 
     /** Equal share of total non-salary OPEX across all active consultants (DKK) */

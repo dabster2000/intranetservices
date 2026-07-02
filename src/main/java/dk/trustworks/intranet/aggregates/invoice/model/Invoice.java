@@ -191,6 +191,23 @@ public class Invoice extends PanacheEntityBase {
     @Transient
     public List<CalculationBreakdownLine> calculationBreakdown;
 
+    // ── Credit-note aggregates (spec 2026-07-02, multiple credit notes per invoice) ──
+    // Populated only by InvoiceService.findInvoicesForSingleMonth (the month-list endpoint)
+    // via one grouped query; null on every other payload. "Live" = CREATED/QUEUED/
+    // PENDING_REVIEW credit notes, matching InvoiceBonusService.NOT_FULLY_CREDITED_SQL.
+
+    /** True when at least one live credit note points at this invoice. */
+    @Transient
+    public Boolean hasCreditNotes;
+
+    /** Number of live credit notes pointing at this invoice. */
+    @Transient
+    public Integer creditNoteCount;
+
+    /** Σ(hours×rate) over live credit-note items — how much of this invoice is credited. */
+    @Transient
+    public Double creditedAmount;
+
     /**
      * True when this invoice is an internal credit note — a CREDIT_NOTE reversing an INTERNAL
      * invoice, identified by carrying a debtor company. Drives the debtor-side posting gate, the

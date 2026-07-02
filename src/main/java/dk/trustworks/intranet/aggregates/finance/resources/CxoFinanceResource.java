@@ -1592,19 +1592,43 @@ public class CxoFinanceResource {
     }
 
     /**
-     * Returns 12 monthly rows (TTM, excluding current month) with budget hours and actual hours
-     * for a specific consultant. Used for the per-consultant drill-down chart.
+     * Returns monthly rows with budget hours and actual hours for a specific consultant.
+     * Used for the per-consultant drill-down chart and the team dashboard fulfillment heatmap.
+     *
+     * <p>Without {@code fromDate}/{@code toDate} the window is TTM (12 complete months,
+     * excluding the current month). With both params the window is the given inclusive
+     * date range — the team dashboard passes its fiscal-year months here so the budget
+     * series covers the same months as the rest of the FY-scoped dashboard.</p>
      *
      * @param userId the consultant's user UUID
+     * @param fromDate optional inclusive window start (ISO date)
+     * @param toDate optional inclusive window end (ISO date)
      * @return List of monthly budget-vs-actual DTOs ordered by month ascending
      */
     @GET
     @Path("/budget-actual-gap/{userId}/monthly")
     public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(
-            @PathParam("userId") String userId) {
+            @PathParam("userId") String userId,
+            @QueryParam("fromDate") String fromDate,
+            @QueryParam("toDate") String toDate) {
 
-        log.debugf("GET /finance/cxo/budget-actual-gap/%s/monthly", userId);
+        log.debugf("GET /finance/cxo/budget-actual-gap/%s/monthly?fromDate=%s&toDate=%s",
+                userId, fromDate, toDate);
 
+        if (fromDate != null && !fromDate.isBlank() && toDate != null && !toDate.isBlank()) {
+            LocalDate from;
+            LocalDate to;
+            try {
+                from = LocalDate.parse(fromDate);
+                to = LocalDate.parse(toDate);
+            } catch (java.time.format.DateTimeParseException e) {
+                throw new jakarta.ws.rs.BadRequestException("fromDate/toDate must be ISO dates (yyyy-MM-dd)");
+            }
+            if (from.isAfter(to) || from.plusMonths(36).isBefore(to)) {
+                throw new jakarta.ws.rs.BadRequestException("fromDate..toDate must be a forward range of at most 36 months");
+            }
+            return consultantInsightsService.getBudgetActualGapMonthly(userId, from, to);
+        }
         return consultantInsightsService.getBudgetActualGapMonthly(userId);
     }
 
