@@ -24,6 +24,7 @@ import java.time.YearMonth;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -763,16 +764,45 @@ public class TeamPeopleService {
         }
 
         // Group team members by career level
-        Map<String, List<Tuple>> teamByLevel = new LinkedHashMap<>();
+        Map<String, List<TeamMemberSalaryRow>> teamByLevel = new LinkedHashMap<>();
         for (Tuple row : teamRows) {
-            teamByLevel.computeIfAbsent((String) row.get("career_level"), k -> new ArrayList<>()).add(row);
+            TeamMemberSalaryRow member = new TeamMemberSalaryRow(
+                    (String) row.get("user_id"),
+                    (String) row.get("firstname"),
+                    (String) row.get("lastname"),
+                    (String) row.get("career_level"),
+                    ((Number) row.get("salary")).intValue());
+            teamByLevel.computeIfAbsent(member.careerLevel(), k -> new ArrayList<>()).add(member);
         }
 
         // Step 3: Build DTOs
+        return buildSalaryBands(careerLevels, companySalariesByLevel, trackByLevel, teamByLevel);
+    }
+
+    /** A team member's current career level and salary, as read from the team query. */
+    record TeamMemberSalaryRow(String userId, String firstname, String lastname, String careerLevel, int salary) {}
+
+    /**
+     * Company-wide salary statistics (min/max/percentiles) are only disclosed for career levels
+     * with at least this many consultants. Below this, the statistics identify individual
+     * salaries (n=1 → min = max = that person's exact salary), which must stay behind the
+     * salaries:read boundary (audit finding M1).
+     */
+    static final int MIN_COMPANY_PEERS_FOR_BAND_STATS = 5;
+
+    /**
+     * Builds salary band DTOs per career level from pre-grouped company and team data.
+     * Career levels whose company-wide sample is smaller than
+     * {@link #MIN_COMPANY_PEERS_FOR_BAND_STATS} are suppressed entirely.
+     */
+    static List<TeamSalaryBandDTO> buildSalaryBands(Collection<String> careerLevels,
+                                                    Map<String, List<Integer>> companySalariesByLevel,
+                                                    Map<String, String> trackByLevel,
+                                                    Map<String, List<TeamMemberSalaryRow>> teamByLevel) {
         List<TeamSalaryBandDTO> result = new ArrayList<>();
         for (String level : careerLevels) {
             List<Integer> companySalaries = companySalariesByLevel.getOrDefault(level, List.of());
-            if (companySalaries.isEmpty()) continue;
+            if (companySalaries.size() < MIN_COMPANY_PEERS_FOR_BAND_STATS) continue;
 
             List<Integer> sorted = companySalaries.stream().sorted().toList();
             int count = sorted.size();
@@ -783,14 +813,13 @@ public class TeamPeopleService {
             int maxSalary = sorted.get(count - 1);
 
             List<MemberSalaryPosition> members = new ArrayList<>();
-            for (Tuple teamRow : teamByLevel.getOrDefault(level, List.of())) {
-                int memberSalary = ((Number) teamRow.get("salary")).intValue();
-                double percentileRank = computePercentileRank(sorted, memberSalary);
+            for (TeamMemberSalaryRow teamRow : teamByLevel.getOrDefault(level, List.of())) {
+                double percentileRank = computePercentileRank(sorted, teamRow.salary());
                 members.add(new MemberSalaryPosition(
-                        (String) teamRow.get("user_id"),
-                        (String) teamRow.get("firstname"),
-                        (String) teamRow.get("lastname"),
-                        memberSalary,
+                        teamRow.userId(),
+                        teamRow.firstname(),
+                        teamRow.lastname(),
+                        teamRow.salary(),
                         percentileRank
                 ));
             }
@@ -811,7 +840,7 @@ public class TeamPeopleService {
     /**
      * Computes the k-th percentile from a sorted list of integers using linear interpolation.
      */
-    private int percentile(List<Integer> sorted, int k) {
+    private static int percentile(List<Integer> sorted, int k) {
         if (sorted.isEmpty()) return 0;
         if (sorted.size() == 1) return sorted.get(0);
         double index = (k / 100.0) * (sorted.size() - 1);
@@ -824,7 +853,7 @@ public class TeamPeopleService {
     /**
      * Computes the percentile rank of a value within a sorted distribution (0-100).
      */
-    private double computePercentileRank(List<Integer> sorted, int value) {
+    private static double computePercentileRank(List<Integer> sorted, int value) {
         if (sorted.isEmpty()) return 0;
         if (sorted.size() == 1) return 50.0;
 
