@@ -127,17 +127,22 @@ public class InternalInvoiceControllingService {
         java.time.LocalDate from = (fromdate != null) ? fromdate : java.time.LocalDate.of(2014, 1, 1);
         java.time.LocalDate to   = (todate   != null) ? todate   : java.time.LocalDate.now();
 
-        // Cancelled-by-credit-note filter (spec §6.2, R2 + R3):
-        //   * R2 — Hide a row when the client invoice is cancelled (a CREDIT_NOTE points
-        //          at it via creditnote_for_uuid) AND no active internal invoice exists.
-        //   * R3 — When such a cancelled row DOES have an active internal (QUEUED /
+        // Cancelled-by-credit-note filter (spec §6.2 R2 + R3, sum-based since 2026-07-02):
+        //   * "Cancelled" means FULLY credited — Σ(hours×rate) of the client invoice's LIVE
+        //     credit notes (CREATED/QUEUED/PENDING_REVIEW) covers its own item sum within the
+        //     shared 1.0 DKK tolerance (InvoiceBonusService.fullyCreditedPredicateSql). A
+        //     PARTIALLY credited client invoice is neither hidden nor flagged cancelled — it
+        //     renders normally, with credited_amount projected so the UI can show a chip.
+        //   * R2 — Hide a row when the client invoice is fully credited AND no active
+        //          internal invoice exists.
+        //   * R3 — When such a fully credited row DOES have an active internal (QUEUED /
         //          PENDING_REVIEW / CREATED), keep the row so the controlling page can
         //          show a warning + corrective actions. The CN columns are projected onto
         //          the row so the assembly step below can build {@link CancellingCreditNoteRef}.
         //
-        // cn_pick is bucketed once per source (rank=1 by invoicedate, uuid) — the V72
-        // unique index on creditnote_for_uuid guarantees one CN per source, but the
-        // window guards against any historical violation.
+        // cn_pick ranks the LIVE credit notes per source, latest-first — a client invoice may
+        // carry any number of partial credit notes since V386 dropped the V72 unique index;
+        // rank 1 (the newest live CN) is the deep-link target.
         String pickSql = """
         WITH inv AS (
             SELECT *
@@ -183,11 +188,12 @@ public class InternalInvoiceControllingService {
                 cn.status              AS cn_status,
                 ROW_NUMBER() OVER (
                     PARTITION BY cn.creditnote_for_uuid
-                    ORDER BY cn.invoicedate ASC, cn.uuid ASC
+                    ORDER BY cn.invoicedate DESC, cn.uuid DESC
                 ) AS cn_rn
             FROM invoices cn
             WHERE cn.type = 'CREDIT_NOTE'
               AND cn.creditnote_for_uuid IS NOT NULL
+              AND cn.status IN ('CREATED','QUEUED','PENDING_REVIEW')
         ),
         internal_pick AS (
             SELECT
@@ -211,7 +217,9 @@ public class InternalInvoiceControllingService {
                 cnp.cn_uuid,
                 cnp.cn_invoicenumber,
                 cnp.cn_invoicedate,
-                cnp.cn_status
+                cnp.cn_status,
+                %1$s AS credited_amount,
+                CASE WHEN %2$s THEN 1 ELSE 0 END AS fully_credited
             FROM cross_clients ci
             LEFT JOIN cn_pick cnp
               ON cnp.source_uuid = ci.uuid AND cnp.cn_rn = 1
@@ -222,7 +230,7 @@ public class InternalInvoiceControllingService {
                     AND ii.type = 'INTERNAL'
                     AND ii.status IN ('PENDING_REVIEW','QUEUED','CREATED')
               )
-              AND cnp.cn_uuid IS NULL
+              AND NOT %2$s
         )
         SELECT
             ci.uuid                          AS client_uuid,
@@ -230,7 +238,9 @@ public class InternalInvoiceControllingService {
             cnp.cn_uuid                      AS cn_uuid,
             cnp.cn_invoicenumber             AS cn_invoicenumber,
             cnp.cn_invoicedate               AS cn_invoicedate,
-            cnp.cn_status                    AS cn_status
+            cnp.cn_status                    AS cn_status,
+            %1$s AS credited_amount,
+            CASE WHEN %2$s THEN 1 ELSE 0 END AS fully_credited
         FROM cross_clients ci
         LEFT JOIN internal_pick ip
           ON ip.client_uuid = ci.uuid AND ip.r = 1
@@ -238,14 +248,16 @@ public class InternalInvoiceControllingService {
           ON cnp.source_uuid = ci.uuid AND cnp.cn_rn = 1
         WHERE (ci.internal_invoice_skip = 0 OR ip.internal_uuid IS NOT NULL)
           AND (
-                cnp.cn_uuid IS NULL
+                NOT %2$s
              OR ip.internal_status IN ('PENDING_REVIEW','QUEUED','CREATED')
           )
         UNION ALL
-        SELECT client_uuid, internal_uuid, cn_uuid, cn_invoicenumber, cn_invoicedate, cn_status
+        SELECT client_uuid, internal_uuid, cn_uuid, cn_invoicenumber, cn_invoicedate, cn_status, credited_amount, fully_credited
         FROM skipped_clients
         ORDER BY client_uuid
-    """;
+    """.formatted(
+                dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService.creditedSumSql("ci"),
+                dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService.fullyCreditedPredicateSql("ci"));
 
         @SuppressWarnings("unchecked")
         java.util.List<Object[]> pairs = em.createNativeQuery(pickSql)
@@ -364,13 +376,19 @@ public class InternalInvoiceControllingService {
             String clientUuid = (String) r[0];
             String internalUuid = (String) r[1];
 
-            // Optional CN projection — only populated when this client invoice has been
-            // cancelled by a CREDIT_NOTE AND its linked internal is still active (R3).
-            CancellingCreditNoteRef cancellingCN = buildCancellingCreditNoteRef(
-                    (String) r[2],
-                    r[3],
-                    r[4] instanceof java.sql.Date d ? d.toLocalDate() : (java.time.LocalDate) r[4],
-                    (String) r[5]);
+            double creditedAmount = r[6] == null ? 0.0 : ((Number) r[6]).doubleValue();
+            boolean fullyCredited = r[7] != null && ((Number) r[7]).intValue() == 1;
+
+            // Optional CN projection — only populated when this client invoice is FULLY
+            // credited AND its linked internal is still active (R3). Deep-links to the
+            // latest live credit note. Partially credited rows render normally (no ref).
+            CancellingCreditNoteRef cancellingCN = fullyCredited
+                    ? buildCancellingCreditNoteRef(
+                            (String) r[2],
+                            r[3],
+                            r[4] instanceof java.sql.Date d ? d.toLocalDate() : (java.time.LocalDate) r[4],
+                            (String) r[5])
+                    : null;
 
             Invoice client = invoiceById.get(clientUuid);
             if (client == null) continue;
@@ -397,7 +415,9 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
                     cancellingCN,
-                    null
+                    null,
+                    round2(creditedAmount),
+                    fullyCredited
             );
 
             SimpleInvoiceDTO internalDto = null;
@@ -426,7 +446,9 @@ public class InternalInvoiceControllingService {
                             null,
                             null,
                             null,
-                            reverseCreditNoteRef(internal.getUuid())
+                            reverseCreditNoteRef(internal.getUuid()),
+                            0.0,
+                            false
                     );
                 }
             }
@@ -685,7 +707,9 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
                     null,
-                    null
+                    null,
+                    0.0,
+                    false
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -708,7 +732,9 @@ public class InternalInvoiceControllingService {
                     null,
                     null,
                     null,
-                    reverseCreditNoteRef(internal.getUuid())
+                    reverseCreditNoteRef(internal.getUuid()),
+                    0.0,
+                    false
             );
 
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
@@ -778,28 +804,43 @@ public class InternalInvoiceControllingService {
                   AND sp.users_companyuuid IS NOT NULL
                   AND sp.users_companyuuid <> i.companyuuid
             )
-            SELECT ci.uuid AS client_uuid
+            SELECT ci.uuid AS client_uuid,
+                   %1$s AS credited_amount,
+                   CASE WHEN %2$s THEN 1 ELSE 0 END AS fully_credited
             FROM cross_clients ci
             LEFT JOIN invoices ii
               ON ii.invoice_ref_uuid = ci.uuid
              AND ii.type = 'INTERNAL'
              AND ii.status IN ('QUEUED','CREATED')
-            LEFT JOIN invoices cn
-              ON cn.creditnote_for_uuid = ci.uuid
-             AND cn.type = 'CREDIT_NOTE'
             WHERE ii.uuid IS NULL
               AND ci.internal_invoice_skip = 0
-              AND cn.uuid IS NULL
+              AND NOT %2$s
             ORDER BY ci.invoicedate DESC, ci.invoicenumber DESC
-        """;
+        """.formatted(
+                dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService.creditedSumSql("ci"),
+                dk.trustworks.intranet.aggregates.invoice.bonus.services.InvoiceBonusService.fullyCreditedPredicateSql("ci"));
+        // Sum-based cancelled semantics (2026-07-02): only a FULLY credited client invoice is
+        // excluded from "missing internal". A partially credited one still needs its internal
+        // invoice, so it stays listed (previously ANY credit note — even a partial or draft
+        // one — hid the row).
 
         @SuppressWarnings("unchecked")
-        java.util.List<String> clientIds = em.createNativeQuery(selectSql)
+        java.util.List<Object[]> clientRows = em.createNativeQuery(selectSql)
                 .setParameter("from", from)
                 .setParameter("to", to)
                 .getResultList();
 
-        if (clientIds.isEmpty()) return java.util.List.of();
+        if (clientRows.isEmpty()) return java.util.List.of();
+
+        java.util.List<String> clientIds = new java.util.ArrayList<>(clientRows.size());
+        java.util.Map<String, Double> creditedById = new java.util.HashMap<>();
+        java.util.Map<String, Boolean> fullyCreditedById = new java.util.HashMap<>();
+        for (Object[] r : clientRows) {
+            String id = (String) r[0];
+            clientIds.add(id);
+            creditedById.put(id, r[1] == null ? 0.0 : ((Number) r[1]).doubleValue());
+            fullyCreditedById.put(id, r[2] != null && ((Number) r[2]).intValue() == 1);
+        }
 
         // Load invoice headers for selected client invoices
         java.util.List<dk.trustworks.intranet.aggregates.invoice.model.Invoice> clients =
@@ -925,7 +966,9 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
                     null,
-                    null
+                    null,
+                    round2(creditedById.getOrDefault(clientUuid, 0.0)),
+                    fullyCreditedById.getOrDefault(clientUuid, false)
             );
             result.add(clientDto);
         }
@@ -1148,7 +1191,9 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
                     null,
-                    null
+                    null,
+                    0.0,
+                    false
             );
 
             var internalDto = new dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO(
@@ -1171,7 +1216,9 @@ public class InternalInvoiceControllingService {
                     null,
                     null,
                     null,
-                    reverseCreditNoteRef(internal.getUuid())
+                    reverseCreditNoteRef(internal.getUuid()),
+                    0.0,
+                    false
             );
 
             result.add(new dk.trustworks.intranet.aggregates.invoice.resources.dto.CrossCompanyInvoicePairDTO(clientDto, internalDto));
@@ -1376,7 +1423,9 @@ public class InternalInvoiceControllingService {
                     client.getInternalInvoiceSkipAt(),
                     client.getInternalInvoiceSkipBy(),
                     null,
-                    null
+                    null,
+                    0.0,
+                    false
             );
 
             java.util.List<dk.trustworks.intranet.aggregates.invoice.resources.dto.SimpleInvoiceDTO> internals = new java.util.ArrayList<>();
@@ -1405,7 +1454,9 @@ public class InternalInvoiceControllingService {
                         null,
                         null,
                         null,
-                        reverseCreditNoteRef(inv.getUuid())
+                        reverseCreditNoteRef(inv.getUuid()),
+                        0.0,
+                        false
                 ));
             }
 

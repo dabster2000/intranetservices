@@ -100,6 +100,9 @@ public class InvoiceFinalizationOrchestrator {
     EanPrerequisiteChecker eanChecker;
 
     @Inject
+    CreditNoteCoverageService creditCoverage;
+
+    @Inject
     PerfMetrics perfMetrics;
 
     /**
@@ -153,6 +156,14 @@ public class InvoiceFinalizationOrchestrator {
         // mapper will send — and fail fast with an actionable message before any
         // e-conomic call, which also avoids leaving an orphaned empty draft behind.
         assertNoZeroQuantityLines(inv);
+
+        // Over-credit guard for client credit notes (multiple partial CNs per invoice are
+        // allowed since V386): inside this transaction, with a pessimistic lock on the source
+        // row, so two concurrently finalizing credit notes can never jointly exceed the
+        // source amount — the second finalizer gets a 409. Runs after recalculation so the
+        // guard sees exactly the amounts that will be posted. No-op for internal credit
+        // notes (strict 1:1, enforced at creation) and non-credit-note invoices.
+        creditCoverage.assertFinalizableWithinResidual(inv);
 
         if (inv.getType() != InvoiceType.INTERNAL
                 && inv.getType() != InvoiceType.INTERNAL_SERVICE) {

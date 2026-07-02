@@ -47,18 +47,47 @@ public class InvoiceBonusService {
         "      ELSE i.invoicedate END)";
 
     /**
-     * SQL fragment (leading ' AND NOT (...)') that excludes invoices fully credited by open/pending
-     * credit notes. Alias 'i' = invoices. Takes NO parameters.
+     * The credited-measure tolerance: an invoice counts as fully credited when the live
+     * credit-note sum is within 1.0 DKK of the invoice's own item sum. Shared by every
+     * SQL fragment below and by {@code CreditNoteCoverageService} (the Java-side measure).
      */
-    public static final String NOT_FULLY_CREDITED_SQL =
-        " AND NOT ( " +
-        "   (SELECT COALESCE(SUM(cii.hours*cii.rate),0) " +
-        "      FROM invoiceitems cii JOIN invoices cn ON cn.uuid = cii.invoiceuuid " +
-        "     WHERE cn.creditnote_for_uuid = i.uuid AND cn.type = 'CREDIT_NOTE' " +
-        "       AND cn.status IN ('CREATED','QUEUED','PENDING_REVIEW')) " +
-        "   >= (SELECT COALESCE(SUM(oii.hours*oii.rate),0) FROM invoiceitems oii WHERE oii.invoiceuuid = i.uuid) - 1.0 " +
-        "   AND (SELECT COALESCE(SUM(oii.hours*oii.rate),0) FROM invoiceitems oii WHERE oii.invoiceuuid = i.uuid) > 0 " +
-        " )";
+    public static final double CREDITED_TOLERANCE_DKK = 1.0;
+
+    /**
+     * Correlated subquery: Σ(hours×rate) over items of LIVE credit notes
+     * (CREATED/QUEUED/PENDING_REVIEW) pointing at the invoice aliased {@code invAlias}.
+     * This is the single SQL definition of "how much of an invoice is credited".
+     */
+    public static String creditedSumSql(String invAlias) {
+        return "(SELECT COALESCE(SUM(cii.hours*cii.rate),0) " +
+               "   FROM invoiceitems cii JOIN invoices cn ON cn.uuid = cii.invoiceuuid " +
+               "  WHERE cn.creditnote_for_uuid = " + invAlias + ".uuid AND cn.type = 'CREDIT_NOTE' " +
+               "    AND cn.status IN ('CREATED','QUEUED','PENDING_REVIEW'))";
+    }
+
+    /** Correlated subquery: Σ(hours×rate) over the invoice's own items. */
+    public static String invoiceItemSumSql(String invAlias) {
+        return "(SELECT COALESCE(SUM(oii.hours*oii.rate),0) FROM invoiceitems oii WHERE oii.invoiceuuid = " + invAlias + ".uuid)";
+    }
+
+    /**
+     * SQL predicate: the invoice aliased {@code invAlias} is FULLY credited — its live
+     * credit-note sum covers its own item sum within {@link #CREDITED_TOLERANCE_DKK}.
+     * Sum-based on purpose: a partial credit note does NOT make an invoice fully credited.
+     */
+    public static String fullyCreditedPredicateSql(String invAlias) {
+        return "( " + creditedSumSql(invAlias) +
+               "   >= " + invoiceItemSumSql(invAlias) + " - " + CREDITED_TOLERANCE_DKK + " " +
+               "  AND " + invoiceItemSumSql(invAlias) + " > 0 " +
+               " )";
+    }
+
+    /**
+     * SQL fragment (leading ' AND NOT (...)') that excludes invoices fully credited by open/pending
+     * credit notes. Alias 'i' = invoices. Takes NO parameters. Multi-credit-note safe: the inner
+     * measure SUMs across ALL live credit notes of the invoice.
+     */
+    public static final String NOT_FULLY_CREDITED_SQL = " AND NOT " + fullyCreditedPredicateSql("i");
 
     @Inject
     Event<BonusCacheInvalidationEvent> cacheInvalidation;
