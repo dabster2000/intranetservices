@@ -81,9 +81,18 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     /**
-     * Returns UUIDs of active CONSULTANT-type team members for the given team at the given date.
-     * Use for financial KPI queries (utilization, revenue, bench, etc.).
-     * For roster/people queries where all member types should be visible, use {@link #getAllTeamMemberUuids}.
+     * Returns UUIDs of active CONSULTANT-type team members — a POINT-IN-TIME SNAPSHOT
+     * at the given date.
+     *
+     * <p>Use only for "who is on the team right now" views (bench, contract timeline,
+     * forward allocation, expiring contracts) and membership/access checks. Do NOT use it
+     * to filter FY/window-scoped aggregations — a today-snapshot applied to a historical
+     * window drops leavers and adds joiners' pre-team data (audit C4). Window-scoped
+     * queries must use {@link dk.trustworks.intranet.aggregates.utilization.services
+     * .UtilizationCalculationHelper#teamMemberTemporalJoin} instead.</p>
+     *
+     * <p>For roster/people views where all member types should be visible,
+     * use {@link #getAllTeamMemberUuids}.</p>
      */
     public Set<String> getTeamMemberUuids(String teamId, LocalDate date) {
         @SuppressWarnings("unchecked")
@@ -110,8 +119,9 @@ public class TeamDashboardService {
 
     /**
      * Returns UUIDs of ALL active team members (any consultant type: CONSULTANT, STAFF, STUDENT, EXTERNAL)
-     * for the given team at the given date.
-     * Use for roster/people queries where all member types should be visible.
+     * — a POINT-IN-TIME SNAPSHOT at the given date.
+     * Use for roster/people views where all member types should be visible; never for
+     * window-scoped aggregations (see {@link #getTeamMemberUuids} for the full contract).
      */
     public Set<String> getAllTeamMemberUuids(String teamId, LocalDate date) {
         @SuppressWarnings("unchecked")
@@ -165,7 +175,7 @@ public class TeamDashboardService {
     // 1. Overview
     // -----------------------------------------------------------------------
 
-    public TeamOverviewDTO getOverview(String teamId) {
+    public TeamOverviewDTO getOverview(String teamId, int fiscalYear) {
         LocalDate now = LocalDate.now();
         Set<String> allMemberUuids = getAllTeamMemberUuids(teamId, now);
         if (allMemberUuids.isEmpty()) {
@@ -173,67 +183,50 @@ public class TeamDashboardService {
         }
         Set<String> consultantUuids = getTeamMemberUuids(teamId, now);
 
-        var fy = getCurrentFiscalYearRange();
-        // Cap end date to today so we don't include future months
-        LocalDate effectiveEnd = now.isBefore(fy.end()) ? now : fy.end();
+        var fy = getFiscalYearRange(fiscalYear);
+        // Cap to the last complete month — a partial month must not skew FY-to-date KPIs.
+        // For a brand-new FY with no complete months the window is empty and KPIs stay null/0.
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
 
         // Team name
         String teamName = getTeamName(teamId);
 
-        // KPI: utilization — temporal team membership via fact_user_day
-        Double utilPct = null;
-        double revenue = 0;
-        double salaryCost = 0;
-        if (!consultantUuids.isEmpty()) {
-            var utilRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fud.registered_billable_hours), 0) AS billable,
-                           COALESCE(SUM(fud.net_available_hours), 0) AS net_available
-                    FROM fact_user_day fud
-                    JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                        AND tr.teamuuid = :teamId
-                        AND tr.membertype = 'MEMBER'
-                        AND tr.startdate <= fud.document_date
-                        AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
-                    WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
-                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                    """,
-                    Map.of("teamId", teamId,
-                            "fromDate", fy.start(),
-                            "toDate", effectiveEnd));
+        // KPI: utilization + revenue — ONE query on the shared temporal membership
+        // contract, so the overview reconciles to the krone with the Revenue-vs-Cost
+        // trend and Revenue-per-Member (audit C4).
+        var kpiRow = querySingleRow("""
+                SELECT COALESCE(SUM(fud.registered_billable_hours), 0) AS billable,
+                       COALESCE(SUM(fud.net_available_hours), 0) AS net_available,
+                       COALESCE(SUM(fud.registered_amount), 0) AS revenue
+                FROM fact_user_day fud
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
+                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                """,
+                Map.of("teamId", teamId,
+                        "fromDate", fy.start(),
+                        "toDate", effectiveEnd));
 
-            double billable = numVal(utilRow, "billable");
-            double netAvail = numVal(utilRow, "net_available");
-            utilPct = netAvail > 0 ? (billable / netAvail) * 100.0 : null;
+        double billable = numVal(kpiRow, "billable");
+        double netAvail = numVal(kpiRow, "net_available");
+        Double utilPct = netAvail > 0 ? (billable / netAvail) * 100.0 : null;
+        double revenue = numVal(kpiRow, "revenue");
 
-            // KPI: revenue
-            var revRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fud.registered_amount), 0) AS revenue
-                    FROM fact_user_day fud
-                    WHERE fud.useruuid IN (:memberUuids)
-                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                      AND fud.consultant_type = 'CONSULTANT'
-                      AND fud.status_type = 'ACTIVE'
-                    """,
-                    Map.of("memberUuids", consultantUuids,
-                            "fromDate", fy.start(),
-                            "toDate", effectiveEnd));
-            revenue = numVal(revRow, "revenue");
-
-            // KPI: salary cost
-            var salaryRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
-                    FROM fact_salary_monthly_teamroles fsmt
-                    WHERE fsmt.teamuuid = :teamId
-                      AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
-                    """,
-                    Map.of("teamId", teamId,
-                            "fromKey", toMonthKey(fy.start()),
-                            "toKey", toMonthKey(effectiveEnd)));
-            salaryCost = numVal(salaryRow, "salary_cost");
-        }
+        // KPI: salary cost — consultants only, matching the revenue population
+        var salaryRow = querySingleRow("""
+                SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
+                FROM fact_salary_monthly_teamroles fsmt
+                WHERE fsmt.teamuuid = :teamId
+                  AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
+                  AND fsmt.employee_type = 'CONSULTANT'
+                """,
+                Map.of("teamId", teamId,
+                        "fromKey", toMonthKey(fy.start()),
+                        "toKey", toMonthKey(effectiveEnd)));
+        double salaryCost = numVal(salaryRow, "salary_cost");
 
         // Roster — includes all member types (CONSULTANT, STAFF, etc.)
-        List<TeamRosterMemberDTO> roster = buildRoster(allMemberUuids, fy, effectiveEnd);
+        List<TeamRosterMemberDTO> roster = buildRoster(teamId, allMemberUuids, fy, effectiveEnd);
 
         // Bench / attention items — consultant-only
         List<TeamBenchConsultantDTO> bench = consultantUuids.isEmpty()
@@ -248,8 +241,10 @@ public class TeamDashboardService {
 
         List<TeamAttentionItemDTO> attentionItems = buildAttentionItems(bench);
 
+        // memberCount counts ALL current members (any type) so the headline
+        // headcount equals the roster length shown on the same screen (audit C4/H11 family)
         return new TeamOverviewDTO(
-                teamId, teamName, consultantUuids.size(),
+                teamId, teamName, allMemberUuids.size(),
                 utilPct, revenue, salaryCost, avgBenchDays,
                 bench.size(),
                 roster, attentionItems);
@@ -263,7 +258,9 @@ public class TeamDashboardService {
         var fy = getFiscalYearRange(fiscalYear);
         // Extend 3 months before FY start for 15-month view
         LocalDate extendedStart = fy.start().minusMonths(3);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Complete months only: a month-to-date point paired with a full-month budget
+        // produces nonsense ratios (budget utilization >>100%, fulfillment near 0%)
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
@@ -272,7 +269,7 @@ public class TeamDashboardService {
         LocalDate fromDate = extendedStart.withDayOfMonth(1);
         LocalDate toDate = effectiveEnd;
 
-        // Team data — temporal join via fact_user_day
+        // Team data — shared temporal membership contract
         @SuppressWarnings("unchecked")
         List<Tuple> teamRows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
@@ -280,11 +277,7 @@ public class TeamDashboardService {
                        COALESCE(SUM(fud.net_available_hours), 0) AS net_available,
                        COALESCE(SUM(fud.gross_available_hours), 0) AS gross_available
                 FROM fact_user_day fud
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
                 WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
                   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
                 GROUP BY fud.year, fud.month
@@ -311,7 +304,7 @@ public class TeamDashboardService {
                 .setParameter("toDate", toDate)
                 .getResultList();
 
-        // Budget hours per month — temporal team membership (same as billable query)
+        // Budget hours per month — same temporal membership contract as the billable query
         LocalDate budgetFromDate = extendedStart.withDayOfMonth(1);
         LocalDate budgetToDate = YearMonth.from(effectiveEnd).atEndOfMonth();
         @SuppressWarnings("unchecked")
@@ -320,11 +313,7 @@ public class TeamDashboardService {
                               LPAD(MONTH(bd.document_date), 2, '0')) AS month_key,
                        SUM(bd.budgetHours) AS budget_hours
                 FROM fact_budget_day bd
-                JOIN teamroles tr ON tr.useruuid = bd.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= bd.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > bd.document_date)
+                """ + teamMemberTemporalJoin("bd", "document_date") + """
                 WHERE bd.document_date >= :fromDate AND bd.document_date <= :toDate
                 GROUP BY YEAR(bd.document_date), MONTH(bd.document_date)
                 """, Tuple.class)
@@ -384,15 +373,16 @@ public class TeamDashboardService {
 
     public TeamUtilizationHeatmapDTO getUtilizationHeatmap(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        // Show trailing 6 months up to now or FY end
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Show trailing 6 complete months up to FY end (the in-progress month would
+        // render 1-day noise cells and dominate the row sorting)
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         LocalDate sixMonthsBack = effectiveEnd.minusMonths(5).withDayOfMonth(1);
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return new TeamUtilizationHeatmapDTO(List.of(), List.of());
         }
 
-        // Temporal join via fact_user_day — per-day team membership resolution
+        // Shared temporal membership contract — per-day team membership resolution
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT fud.useruuid AS user_id, u.firstname, u.lastname,
@@ -401,11 +391,7 @@ public class TeamDashboardService {
                        COALESCE(SUM(fud.net_available_hours), 0) AS net_available
                 FROM fact_user_day fud
                 JOIN `user` u ON u.uuid = fud.useruuid
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
                 WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
                   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
                 GROUP BY fud.useruuid, u.firstname, u.lastname, fud.year, fud.month
@@ -470,11 +456,13 @@ public class TeamDashboardService {
             return List.of();
         }
 
-        // FY-to-date through previous month (completed months only)
-        LocalDate fyStart = getFiscalYearRange(fiscalYear).start();
-        LocalDate prevMonthEnd = YearMonth.now().minusMonths(1).atEndOfMonth();
-        // If the FY hasn't started yet, there's nothing to show
-        if (fyStart.isAfter(prevMonthEnd)) {
+        // FY-to-date through the last complete month, never beyond the selected FY's end
+        // (an uncapped window would accrete the next FY's months onto a past-FY view)
+        var fy = getFiscalYearRange(fiscalYear);
+        LocalDate fyStart = fy.start();
+        LocalDate windowEnd = capToLastCompleteMonth(fy.end());
+        // If the FY has no complete months yet, there's nothing to show
+        if (fyStart.isAfter(windowEnd)) {
             return List.of();
         }
 
@@ -488,14 +476,14 @@ public class TeamDashboardService {
                     SELECT bd.useruuid, SUM(bd.budgetHours) AS total_budget
                     FROM fact_budget_day bd
                     WHERE bd.useruuid IN (:memberUuids)
-                      AND bd.document_date >= :fyStart AND bd.document_date <= :prevMonthEnd
+                      AND bd.document_date >= :fyStart AND bd.document_date <= :windowEnd
                     GROUP BY bd.useruuid
                 ) budget ON budget.useruuid = u.uuid
                 LEFT JOIN (
                     SELECT fud.useruuid, SUM(fud.registered_billable_hours) AS total_actual
                     FROM fact_user_day fud
                     WHERE fud.useruuid IN (:memberUuids)
-                      AND fud.document_date >= :fyStart AND fud.document_date <= :prevMonthEnd
+                      AND fud.document_date >= :fyStart AND fud.document_date <= :windowEnd
                       AND fud.consultant_type = 'CONSULTANT'
                     GROUP BY fud.useruuid
                 ) actual ON actual.useruuid = u.uuid
@@ -504,7 +492,7 @@ public class TeamDashboardService {
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("fyStart", fyStart)
-                .setParameter("prevMonthEnd", prevMonthEnd)
+                .setParameter("windowEnd", windowEnd)
                 .getResultList();
 
         List<TeamBudgetFulfillmentDTO> result = new ArrayList<>();
@@ -528,9 +516,12 @@ public class TeamDashboardService {
 
     public List<AllTeamsUtilizationDTO> getAllTeamsUtilization(String currentTeamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        // Cap to last day of previous month (only include completed months)
-        LocalDate prevMonthEnd = YearMonth.now().minusMonths(1).atEndOfMonth();
-        LocalDate effectiveEnd = fy.end().isBefore(prevMonthEnd) ? fy.end() : prevMonthEnd;
+        // Only include completed months, capped to the selected FY
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
+        // A brand-new FY has no complete months — avoid running an inverted date range
+        if (fy.start().isAfter(effectiveEnd)) {
+            return List.of();
+        }
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
@@ -1006,24 +997,23 @@ public class TeamDashboardService {
 
     public List<TeamRevenueCostTrendDTO> getRevenueCostTrend(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Complete months only: fact_salary_monthly_teamroles carries the FULL current month
+        // from day 1, so pairing it with month-to-date revenue fabricates a loss
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
 
-        // Revenue by month — temporal: only include revenue for months the consultant was on this team
+        // Revenue by month — shared temporal membership contract: only revenue earned
+        // while the consultant was on this team
         @SuppressWarnings("unchecked")
         List<Tuple> revenueRows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
                        fud.year, fud.month AS month_number,
                        COALESCE(SUM(fud.registered_amount), 0) AS revenue
                 FROM fact_user_day fud
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate > fud.document_date OR tr.enddate IS NULL)
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
                 WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate
                   AND fud.consultant_type = 'CONSULTANT'
                   AND fud.status_type = 'ACTIVE'
@@ -1035,7 +1025,7 @@ public class TeamDashboardService {
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
 
-        // Salary cost by month from fact_salary_monthly_teamroles
+        // Salary cost by month — consultants only, matching the revenue population
         @SuppressWarnings("unchecked")
         List<Tuple> salaryRows = em.createNativeQuery("""
                 SELECT fsmt.month_key,
@@ -1043,6 +1033,7 @@ public class TeamDashboardService {
                 FROM fact_salary_monthly_teamroles fsmt
                 WHERE fsmt.teamuuid = :teamId
                   AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
+                  AND fsmt.employee_type = 'CONSULTANT'
                 GROUP BY fsmt.month_key
                 ORDER BY fsmt.month_key
                 """, Tuple.class)
@@ -1075,12 +1066,16 @@ public class TeamDashboardService {
 
     public List<TeamRevenuePerMemberDTO> getRevenuePerMember(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
+            // Consistent with the other FY widgets: a team with no current members renders empty
             return List.of();
         }
 
+        // Shared temporal membership contract: each person's revenue counts only for the
+        // days they were on this team, so the per-member bars sum to the Revenue-vs-Cost
+        // trend total. Members who left mid-FY appear with their during-membership revenue.
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT fud.useruuid AS user_id, u.firstname, u.lastname,
@@ -1088,14 +1083,14 @@ public class TeamDashboardService {
                        COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours
                 FROM fact_user_day fud
                 JOIN user u ON u.uuid = fud.useruuid
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
+                WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate
                   AND fud.consultant_type = 'CONSULTANT'
                   AND fud.status_type = 'ACTIVE'
                 GROUP BY fud.useruuid, u.firstname, u.lastname
                 ORDER BY revenue DESC
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
@@ -1120,9 +1115,19 @@ public class TeamDashboardService {
 
     public List<TeamBillingRateDTO> getBillingRateAnalysis(String teamId, int fiscalYear) {
         var fyRange = getFiscalYearRange(fiscalYear);
+        // Complete months only — the uncapped FY window averaged availability over
+        // months that haven't happened yet, deflating break-even rates
+        LocalDate effectiveEnd = capToLastCompleteMonth(fyRange.end());
+        if (fyRange.start().isAfter(effectiveEnd)) {
+            return List.of();
+        }
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
-        return profitabilityProvider.getBreakEvenRates(
-                new ArrayList<>(memberUuids), fyRange.start(), fyRange.end());
+        if (memberUuids.isEmpty()) {
+            // Consistent with the other FY widgets: a team with no current members renders empty
+            return List.of();
+        }
+        // Temporal membership resolution happens inside the provider (shared contract)
+        return profitabilityProvider.getBreakEvenRates(teamId, fyRange.start(), effectiveEnd);
     }
 
     // -----------------------------------------------------------------------
@@ -1139,30 +1144,39 @@ public class TeamDashboardService {
 
     public List<TeamClientConcentrationDTO> getClientConcentration(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
+            // Consistent with the other FY widgets: a team with no current members renders empty
             return List.of();
         }
 
-        // fact_user_day has no client column; join through work → contract → client
+        // fact_user_day has no client column; join through work → contract → client.
+        // Membership is the shared temporal contract on the work date, and the day-level
+        // fact_user_day join applies the same CONSULTANT/ACTIVE canon as the revenue trend.
+        // (The contract_consultants rate join undercounts NULL-contract work rows — that is
+        // audit finding C1, tracked separately.)
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT c_client.uuid AS client_uuid, c_client.name AS client_name,
                        COALESCE(SUM(w.workduration * cc.rate), 0) AS revenue
                 FROM work w
+                """ + teamMemberTemporalJoin("w", "registered") + """
+                JOIN fact_user_day fud ON fud.useruuid = w.useruuid
+                    AND fud.document_date = w.registered
+                    AND fud.consultant_type = 'CONSULTANT'
+                    AND fud.status_type = 'ACTIVE'
                 JOIN contract_consultants cc ON cc.contractuuid = w.contractuuid
                     AND cc.useruuid = w.useruuid
                     AND w.registered >= cc.activefrom AND w.registered <= cc.activeto
                 JOIN contracts c ON c.uuid = w.contractuuid
                 JOIN client c_client ON c_client.uuid = c.clientuuid
-                WHERE w.useruuid IN (:memberUuids)
-                  AND w.registered >= :fromDate AND w.registered <= :toDate
+                WHERE w.registered >= :fromDate AND w.registered <= :toDate
                   AND w.workduration > 0
                 GROUP BY c_client.uuid, c_client.name
                 ORDER BY revenue DESC
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
@@ -1192,24 +1206,50 @@ public class TeamDashboardService {
 
         String effectivePeriod = (period != null && !period.isBlank()) ? period : "ttm";
 
-        // Single-consultant lookup: return profitability for that user regardless of profit/loss
+        List<UnprofitableConsultantDTO> all;
+        if ("fytd".equalsIgnoreCase(effectivePeriod)) {
+            // FY-aware window: the SELECTED fiscal year capped to complete months.
+            // A past FY yields the full year; the current FY yields FY-to-date.
+            var fy = getFiscalYearRange(fiscalYear);
+            LocalDate windowFrom = fy.start();
+            LocalDate fyEndExclusive = fy.end().plusDays(1);
+            LocalDate firstOfCurrentMonth = LocalDate.now().withDayOfMonth(1);
+            LocalDate windowToExclusive = fyEndExclusive.isBefore(firstOfCurrentMonth)
+                    ? fyEndExclusive : firstOfCurrentMonth;
+            if (!windowFrom.isBefore(windowToExclusive)) {
+                // Brand-new FY with no complete months yet
+                return List.of();
+            }
+            all = consultantInsightsService
+                    .getConsultantProfitability(null, null, windowFrom, windowToExclusive);
+        } else {
+            // TTM is today-anchored by definition — the fiscal-year selector does not apply.
+            // Call the explicit-window variant with practices=null: team membership (below)
+            // is the population filter, not the CXO practice canon.
+            LocalDate firstOfCurrentMonth = LocalDate.now().withDayOfMonth(1);
+            all = consultantInsightsService
+                    .getConsultantProfitability(null, null,
+                            firstOfCurrentMonth.minusMonths(12), firstOfCurrentMonth);
+        }
+
+        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
+
+        // Single-consultant lookup: return profitability for that user regardless of profit/loss.
+        // Restricted to members of THIS team — the caller's team access must not grant
+        // salary/profitability reads on arbitrary consultants.
         if (userId != null && !userId.isBlank()) {
-            List<UnprofitableConsultantDTO> all = consultantInsightsService
-                    .getConsultantProfitability(null, null, effectivePeriod);
+            if (!memberUuids.contains(userId)) {
+                return List.of();
+            }
             return all.stream()
                     .filter(dto -> userId.equals(dto.getUserId()))
                     .collect(Collectors.toList());
         }
 
         // Team-wide lookup: return only unprofitable consultants (existing behavior)
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
-
-        // Get all consultant profitability, then filter to team members with negative profit
-        List<UnprofitableConsultantDTO> all = consultantInsightsService
-                .getConsultantProfitability(null, null, effectivePeriod);
 
         return all.stream()
                 .filter(dto -> memberUuids.contains(dto.getUserId()))
@@ -1227,13 +1267,22 @@ public class TeamDashboardService {
         return row != null ? (String) row.get("name") : "";
     }
 
-    private List<TeamRosterMemberDTO> buildRoster(Set<String> memberUuids,
+    /**
+     * Builds the roster — a SNAPSHOT of the team's CURRENT members (all types).
+     * The utilization column is FY-to-date but temporally bounded to each member's
+     * time on THIS team (shared membership contract), so mid-FY joiners are not
+     * judged on months they spent elsewhere. Members without consultant capacity
+     * in the window (STAFF/STUDENT, on leave, zero net hours) get {@code null}
+     * utilization — rendered as N/A, never as 0%.
+     */
+    private List<TeamRosterMemberDTO> buildRoster(String teamId,
+                                                   Set<String> memberUuids,
                                                    FiscalYearRange fy,
                                                    LocalDate effectiveEnd) {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
-                       us.status,
+                       us.status, us.type AS consultant_type,
                        COALESCE(util.billable, 0) AS billable,
                        COALESCE(util.net_available, 0) AS net_available,
                        CASE WHEN EXISTS (
@@ -1254,6 +1303,7 @@ public class TeamDashboardService {
                            SUM(fud.registered_billable_hours) AS billable,
                            SUM(fud.net_available_hours) AS net_available
                     FROM fact_user_day fud
+                    """ + teamMemberTemporalJoin("fud", "document_date") + """
                     WHERE fud.useruuid IN (:memberUuids)
                       AND fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
                       AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
@@ -1262,6 +1312,7 @@ public class TeamDashboardService {
                 WHERE u.uuid IN (:memberUuids)
                 ORDER BY u.lastname, u.firstname
                 """, Tuple.class)
+                .setParameter("teamId", teamId)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
@@ -1286,6 +1337,7 @@ public class TeamDashboardService {
                     (String) row.get("lastname"),
                     (String) row.get("practice"),
                     (String) row.get("status"),
+                    (String) row.get("consultant_type"),
                     pct,
                     ((Number) row.get("has_active_contract")).intValue() > 0,
                     career[0],
@@ -1478,11 +1530,6 @@ public class TeamDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
         return rows.isEmpty() ? null : rows.get(0);
-    }
-
-    private static LocalDate capToToday(LocalDate date) {
-        LocalDate today = LocalDate.now();
-        return date.isAfter(today) ? today : date;
     }
 
     private static double numVal(Tuple row, String column) {

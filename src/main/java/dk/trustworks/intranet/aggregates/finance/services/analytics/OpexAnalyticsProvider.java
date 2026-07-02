@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.finance.services.analytics;
 
 import dk.trustworks.intranet.aggregates.finance.dto.OpexRow;
 import dk.trustworks.intranet.aggregates.finance.services.DistributionAwareOpexProvider;
+import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -89,19 +90,28 @@ public class OpexAnalyticsProvider {
     /**
      * Team's allocated share of total OPEX.
      * Formula: totalOpex * (teamMemberCount / totalActiveConsultants)
+     *
+     * <p>Numerator and denominator use the SAME population definition: distinct
+     * ACTIVE CONSULTANTs with fact rows in the window — the team side additionally
+     * bounded by the shared temporal membership contract. (Was: raw teamroles
+     * snapshot at CURDATE() of any member type over a consultant-only denominator,
+     * which inflated the share for teams with STAFF/STUDENT members — audit C6.)</p>
      */
     public double getTeamAllocatedOpex(String teamId, String fromKey, String toKey, Set<String> companyIds) {
         double totalOpex = getTotalOpex(fromKey, toKey, companyIds);
 
-        // Team member count (current)
-        String teamSql = "SELECT COUNT(DISTINCT tr.useruuid) AS team_count " +
-                "FROM teamroles tr " +
-                "WHERE tr.teamuuid = :teamId AND tr.membertype = 'MEMBER' " +
-                "  AND tr.startdate <= CURDATE() " +
-                "  AND (tr.enddate IS NULL OR tr.enddate > CURDATE())";
+        // Team member count — temporal membership, consultant/active canon
+        String teamSql = "SELECT COUNT(DISTINCT fud.useruuid) AS team_count " +
+                "FROM fact_user_day fud " +
+                UtilizationCalculationHelper.teamMemberTemporalJoin("fud", "document_date") +
+                "WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE' " +
+                "  AND fud.document_date >= STR_TO_DATE(CONCAT(:fromKey, '01'), '%Y%m%d') " +
+                "  AND fud.document_date <= LAST_DAY(STR_TO_DATE(CONCAT(:toKey, '01'), '%Y%m%d'))";
 
         long teamCount = ((Number) em.createNativeQuery(teamSql)
                 .setParameter("teamId", teamId)
+                .setParameter("fromKey", fromKey)
+                .setParameter("toKey", toKey)
                 .getSingleResult()).longValue();
 
         // Total active consultants

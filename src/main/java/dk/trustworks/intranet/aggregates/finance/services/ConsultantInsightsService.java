@@ -14,6 +14,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.Month;
+import java.time.YearMonth;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -32,7 +33,9 @@ import static dk.trustworks.intranet.aggregates.utilization.services.Utilization
  * bench consultants, unprofitable consultants, and budget-vs-actual gap.
  *
  * All queries filter to consultants in the five core practices (PM, BA, SA, CYB, DEV)
- * by default, with optional company filtering.
+ * by default, with optional company filtering. Exception: the explicit-window
+ * profitability variant treats an absent practice set as "no practice filter" —
+ * the team dashboard filters by team membership instead.
  */
 @JBossLog
 @ApplicationScoped
@@ -318,9 +321,12 @@ public class ConsultantInsightsService {
      * <p>Unlike {@link #getUnprofitableConsultants}, this method returns ALL consultants
      * regardless of whether they are profitable or not, allowing callers to filter as needed.
      *
+     * <p>Practices default to the five core practices here (CXO dashboard semantics).
+     *
      * @param practices  practice filter
      * @param companyIds optional company filter
-     * @param period     "ttm" for trailing 12 months, "fytd" for fiscal-year-to-date (July 1 → today)
+     * @param period     "ttm" for trailing 12 months, "fytd" for fiscal-year-to-date
+     *                   (current FY start → last complete month)
      * @return list of ALL consultant profitability DTOs, ordered by net profit ascending
      */
     public List<UnprofitableConsultantDTO> getConsultantProfitability(
@@ -328,24 +334,45 @@ public class ConsultantInsightsService {
             Set<String> companyIds,
             String period) {
 
-        Set<String> effectivePractices = effectivePractices(practices);
+        LocalDate firstOfCurrentMonth = LocalDate.now().withDayOfMonth(1);
+        LocalDate periodFrom = "fytd".equalsIgnoreCase(period)
+                ? getCurrentFiscalYearRange().start()
+                : ttmStart();
+        return getConsultantProfitability(
+                effectivePractices(practices), companyIds, periodFrom, firstOfCurrentMonth);
+    }
+
+    /**
+     * Explicit-window variant: computes profitability over [periodFrom, periodToExclusive).
+     * {@code periodToExclusive} must be a first-of-month date — months are compared via
+     * {@code month_key < toKey}, so the month containing {@code periodToExclusive} is excluded.
+     * Used by the team dashboard to honor its fiscal-year selector.
+     *
+     * <p>Revenue basis is registered revenue ({@code fact_user_day.registered_amount}),
+     * consistent with the other financial widgets. It must NOT be sourced from
+     * {@code invoice_item_attributions}: that table was built for internal-invoice
+     * derivation (V284), is only populated from 2026-04-14 with no historical backfill,
+     * and covers under half of invoiced revenue over any trailing window.
+     *
+     * <p>Unlike the string-period variant, {@code practices} null/empty here means
+     * NO practice filter — the team dashboard filters by team membership instead and
+     * must also see members outside the five core practices. The population is anyone
+     * with CONSULTANT/ACTIVE days in the window; zero-salary consultants (e.g. partners)
+     * are included with salary 0 rather than being hidden.
+     */
+    public List<UnprofitableConsultantDTO> getConsultantProfitability(
+            Set<String> practices,
+            Set<String> companyIds,
+            LocalDate periodFrom,
+            LocalDate periodToExclusive) {
+
+        boolean hasPractices = practices != null && !practices.isEmpty();
         boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
 
-        // Compute date range based on period
-        LocalDate now = LocalDate.now();
-        LocalDate periodFrom;
-        if ("fytd".equalsIgnoreCase(period)) {
-            // Fiscal year starts July 1. If current month >= July, use this year; else previous year.
-            int fyStartYear = now.getMonthValue() >= 7 ? now.getYear() : now.getYear() - 1;
-            periodFrom = LocalDate.of(fyStartYear, 7, 1);
-        } else {
-            // Default: TTM — 12 months back from start of current month
-            periodFrom = now.minusMonths(12).withDayOfMonth(1);
-        }
         String fromKey = String.format("%04d%02d", periodFrom.getYear(), periodFrom.getMonthValue());
-        String toKey = String.format("%04d%02d", now.getYear(), now.getMonthValue());
+        String toKey = String.format("%04d%02d", periodToExclusive.getYear(), periodToExclusive.getMonthValue());
 
-        // Step 1: Get total non-salary OPEX for TTM period
+        // Step 1: Get total non-salary OPEX for the period
         StringBuilder opexSql = new StringBuilder();
         opexSql.append("""
             SELECT COALESCE(SUM(opex_amount_dkk), 0) AS total_opex
@@ -368,25 +395,31 @@ public class ConsultantInsightsService {
         List<Tuple> opexRows = opexQuery.getResultList();
         double totalOpex = opexRows.isEmpty() ? 0.0 : ((Number) opexRows.get(0).get("total_opex")).doubleValue();
 
-        // Step 2: Get headcount of active consultants in the practices (distinct users with data in period)
+        // Step 2: Get headcount of active consultants (distinct users with data in period).
+        // Same population filters as the per-user query below, so the overhead divisor
+        // matches the analyzed population.
         StringBuilder headcountSql = new StringBuilder();
         headcountSql.append("""
             SELECT COUNT(DISTINCT fud.useruuid) AS headcount
             FROM fact_user_day fud
             JOIN user u ON u.uuid = fud.useruuid
-            WHERE u.practice IN (:practices)
-              AND fud.consultant_type = 'CONSULTANT'
+            WHERE fud.consultant_type = 'CONSULTANT'
               AND fud.status_type = 'ACTIVE'
               AND fud.document_date >= :periodFrom AND fud.document_date < :periodTo
             """);
+        if (hasPractices) {
+            headcountSql.append("  AND u.practice IN (:practices) ");
+        }
         if (hasCompanies) {
             headcountSql.append("  AND fud.companyuuid IN (:companyIds) ");
         }
 
         var headcountQuery = em.createNativeQuery(headcountSql.toString(), Tuple.class);
-        headcountQuery.setParameter("practices", effectivePractices);
         headcountQuery.setParameter("periodFrom", periodFrom);
-        headcountQuery.setParameter("periodTo", now.withDayOfMonth(1));
+        headcountQuery.setParameter("periodTo", periodToExclusive);
+        if (hasPractices) {
+            headcountQuery.setParameter("practices", practices);
+        }
         if (hasCompanies) {
             headcountQuery.setParameter("companyIds", companyIds);
         }
@@ -401,44 +434,32 @@ public class ConsultantInsightsService {
         log.debugf("getUnprofitableConsultants: totalOpex=%.2f, headcount=%s, overheadPerConsultant=%.2f",
                 totalOpex, headcount, sharedOverheadPerConsultant);
 
-        // Step 3: Per-user revenue and salary
-        // Revenue: from invoiceitems (actual invoiced revenue per consultant)
-        // Salary: SUM of MAX(salary) per month from fact_user_day
+        // Step 3: Per-user revenue and salary, both from fact_user_day.
+        // Revenue: SUM(registered_amount) — the canonical registered-revenue basis.
+        // Salary: SUM of MAX(salary) per month (0 for months without salary data,
+        // so zero-salary consultants stay in the population).
         StringBuilder userSql = new StringBuilder();
         userSql.append("""
-            SELECT sal.useruuid AS user_id, u.firstname, u.lastname, u.practice,
-                   COALESCE(rev.ttm_revenue, 0) AS ttm_revenue,
-                   sal.ttm_salary
+            SELECT agg.useruuid AS user_id, u.firstname, u.lastname, u.practice,
+                   agg.period_revenue AS ttm_revenue,
+                   agg.period_salary AS ttm_salary
             FROM (
-                SELECT useruuid, SUM(max_salary) AS ttm_salary FROM (
-                    SELECT useruuid, MAX(salary) AS max_salary
+                SELECT useruuid,
+                       SUM(month_revenue) AS period_revenue,
+                       SUM(month_salary) AS period_salary
+                FROM (
+                    SELECT useruuid,
+                           SUM(COALESCE(registered_amount, 0)) AS month_revenue,
+                           MAX(COALESCE(salary, 0)) AS month_salary
                     FROM fact_user_day
                     WHERE consultant_type = 'CONSULTANT'
                       AND status_type = 'ACTIVE'
-                      AND salary > 0
                       AND document_date >= :periodFrom AND document_date < :periodTo
                     GROUP BY useruuid, year, month
-                ) ms GROUP BY useruuid
-            ) sal
-            JOIN user u ON u.uuid = sal.useruuid
-            LEFT JOIN (
-                SELECT iia.consultant_uuid AS useruuid,
-                       SUM(iia.attributed_amount
-                           * CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
-                           * CASE WHEN i.currency = 'DKK' THEN 1
-                                  ELSE COALESCE(cur.conversion, 1) END) AS ttm_revenue
-                FROM invoice_item_attributions iia
-                JOIN invoiceitems ii ON iia.invoiceitem_uuid = ii.uuid
-                JOIN invoices i ON ii.invoiceuuid = i.uuid
-                LEFT JOIN currences cur ON cur.currency = i.currency
-                    AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m')
-                WHERE i.status = 'CREATED'
-                  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE')
-                  AND i.invoicedate >= :periodFrom AND i.invoicedate < :periodTo
-                GROUP BY iia.consultant_uuid
-            ) rev ON rev.useruuid = sal.useruuid
-            WHERE u.practice IN (:practices)
-              AND EXISTS (
+                ) monthly GROUP BY useruuid
+            ) agg
+            JOIN user u ON u.uuid = agg.useruuid
+            WHERE EXISTS (
                   SELECT 1 FROM userstatus us_active
                   WHERE us_active.useruuid = u.uuid
                     AND us_active.statusdate = (SELECT MAX(us3.statusdate) FROM userstatus us3 WHERE us3.useruuid = u.uuid AND us3.statusdate <= CURDATE())
@@ -446,18 +467,19 @@ public class ConsultantInsightsService {
               )
             """);
 
+        if (hasPractices) {
+            userSql.append("  AND u.practice IN (:practices) ");
+        }
         if (hasCompanies) {
-            userSql.append("  AND rev.useruuid IN (SELECT DISTINCT us.useruuid FROM userstatus us WHERE us.companyuuid IN (:companyIds)) ");
+            userSql.append("  AND agg.useruuid IN (SELECT DISTINCT us.useruuid FROM userstatus us WHERE us.companyuuid IN (:companyIds)) ");
         }
 
-        userSql.append("""
-            ORDER BY ttm_salary DESC
-            """);
-
         var userQuery = em.createNativeQuery(userSql.toString(), Tuple.class);
-        userQuery.setParameter("practices", effectivePractices);
         userQuery.setParameter("periodFrom", periodFrom);
-        userQuery.setParameter("periodTo", now.withDayOfMonth(1));
+        userQuery.setParameter("periodTo", periodToExclusive);
+        if (hasPractices) {
+            userQuery.setParameter("practices", practices);
+        }
         if (hasCompanies) {
             userQuery.setParameter("companyIds", companyIds);
         }
@@ -604,22 +626,31 @@ public class ConsultantInsightsService {
      * @return list of monthly budget-vs-actual DTOs, ordered by month ascending
      */
     public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(String userId) {
-
         // TTM boundaries: 12 complete months (exclusive of current month)
-        LocalDate now = LocalDate.now();
-        LocalDate ttmFrom = ttmStart();
-        LocalDate ttmTo = now.withDayOfMonth(1).minusDays(1); // last day of previous month
+        return getBudgetActualGapMonthly(userId, ttmStart(),
+                LocalDate.now().withDayOfMonth(1).minusDays(1));
+    }
 
-        // Build skeleton map for all 12 months so we return rows even when data is missing
+    /**
+     * Explicit-window variant: one row per calendar month in [fromDate, toDate] (inclusive).
+     * Used by the team dashboard's fulfillment heatmap so its budget series covers the
+     * same months as the FY-scoped utilization heatmap instead of a fixed TTM window.
+     */
+    public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(
+            String userId, LocalDate fromDate, LocalDate toDate) {
+
+        // Build skeleton map for every month in the window so we return rows even when data is missing
         Map<String, BudgetActualGapMonthlyDTO> monthMap = new LinkedHashMap<>();
-        for (int i = 0; i < 12; i++) {
-            LocalDate month = ttmFrom.plusMonths(i);
-            String key = String.format("%04d%02d", month.getYear(), month.getMonthValue());
-            String label = Month.of(month.getMonthValue())
-                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + month.getYear();
+        YearMonth ym = YearMonth.from(fromDate);
+        YearMonth endYm = YearMonth.from(toDate);
+        while (!ym.isAfter(endYm)) {
+            String key = String.format("%04d%02d", ym.getYear(), ym.getMonthValue());
+            String label = Month.of(ym.getMonthValue())
+                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + ym.getYear();
             monthMap.put(key, new BudgetActualGapMonthlyDTO(
-                    key, month.getYear(), month.getMonthValue(), label,
+                    key, ym.getYear(), ym.getMonthValue(), label,
                     0.0, 0.0, 0.0, 0.0, 0.0));
+            ym = ym.plusMonths(1);
         }
 
         // Budget hours per month from fact_budget_day
@@ -629,7 +660,7 @@ public class ConsultantInsightsService {
                    SUM(bd.budgetHours) AS budget_hours
             FROM fact_budget_day bd
             WHERE bd.useruuid = :userId
-              AND bd.document_date >= :ttmFrom AND bd.document_date <= :ttmTo
+              AND bd.document_date >= :fromDate AND bd.document_date <= :toDate
               AND (SELECT us_type.type FROM userstatus us_type
                    WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
                    ORDER BY us_type.statusdate DESC LIMIT 1) = 'CONSULTANT'
@@ -640,8 +671,8 @@ public class ConsultantInsightsService {
         @SuppressWarnings("unchecked")
         List<Tuple> budgetRows = em.createNativeQuery(budgetSql, Tuple.class)
                 .setParameter("userId", userId)
-                .setParameter("ttmFrom", ttmFrom)
-                .setParameter("ttmTo", ttmTo)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getResultList();
 
         for (Tuple row : budgetRows) {
@@ -669,8 +700,8 @@ public class ConsultantInsightsService {
         @SuppressWarnings("unchecked")
         List<Tuple> actualRows = em.createNativeQuery(actualSql, Tuple.class)
                 .setParameter("userId", userId)
-                .setParameter("fromDate", ttmFrom)
-                .setParameter("toDate", ttmTo)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getResultList();
 
         for (Tuple row : actualRows) {
