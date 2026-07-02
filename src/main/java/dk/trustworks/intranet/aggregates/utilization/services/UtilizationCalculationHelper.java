@@ -131,6 +131,38 @@ public final class UtilizationCalculationHelper {
         return getFiscalYearRange(fy);
     }
 
+    /**
+     * Caps an inclusive reporting end date at the last day of the most recent COMPLETE month.
+     *
+     * <p>Per the current-period capping rule (docs/finalized/shared/fiscal-year.md), reporting
+     * windows must exclude the in-progress month: a month-to-date numerator paired with a
+     * full-month denominator (or vice versa) presents partial data as a complete period.</p>
+     *
+     * @param end inclusive end date of the requested window (typically a fiscal year end)
+     * @return {@code end}, or the last day of the previous month if {@code end} is later
+     */
+    public static LocalDate capToLastCompleteMonth(LocalDate end) {
+        LocalDate lastCompleteMonthEnd = LocalDate.now().withDayOfMonth(1).minusDays(1);
+        return end.isBefore(lastCompleteMonthEnd) ? end : lastCompleteMonthEnd;
+    }
+
+    /**
+     * The default fiscal year for reporting views: the fiscal year of the most recent
+     * complete month.
+     *
+     * <p>In July this is the just-ended fiscal year — the new fiscal year has no complete
+     * months yet, so defaulting to it would render empty or partial-data dashboards.
+     * From August onward this equals the current fiscal year.</p>
+     *
+     * @return fiscal year number of the last complete month
+     */
+    public static int getDefaultReportingFiscalYear() {
+        LocalDate lastCompleteMonthEnd = LocalDate.now().withDayOfMonth(1).minusDays(1);
+        return lastCompleteMonthEnd.getMonthValue() >= 7
+                ? lastCompleteMonthEnd.getYear()
+                : lastCompleteMonthEnd.getYear() - 1;
+    }
+
     // ── Month key formatting ──────────────────────────────────────────────
 
     /**

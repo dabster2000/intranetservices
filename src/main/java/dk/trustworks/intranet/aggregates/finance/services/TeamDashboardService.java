@@ -165,7 +165,7 @@ public class TeamDashboardService {
     // 1. Overview
     // -----------------------------------------------------------------------
 
-    public TeamOverviewDTO getOverview(String teamId) {
+    public TeamOverviewDTO getOverview(String teamId, int fiscalYear) {
         LocalDate now = LocalDate.now();
         Set<String> allMemberUuids = getAllTeamMemberUuids(teamId, now);
         if (allMemberUuids.isEmpty()) {
@@ -173,9 +173,10 @@ public class TeamDashboardService {
         }
         Set<String> consultantUuids = getTeamMemberUuids(teamId, now);
 
-        var fy = getCurrentFiscalYearRange();
-        // Cap end date to today so we don't include future months
-        LocalDate effectiveEnd = now.isBefore(fy.end()) ? now : fy.end();
+        var fy = getFiscalYearRange(fiscalYear);
+        // Cap to the last complete month — a partial month must not skew FY-to-date KPIs.
+        // For a brand-new FY with no complete months the window is empty and KPIs stay null/0.
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
 
         // Team name
         String teamName = getTeamName(teamId);
@@ -263,7 +264,9 @@ public class TeamDashboardService {
         var fy = getFiscalYearRange(fiscalYear);
         // Extend 3 months before FY start for 15-month view
         LocalDate extendedStart = fy.start().minusMonths(3);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Complete months only: a month-to-date point paired with a full-month budget
+        // produces nonsense ratios (budget utilization >>100%, fulfillment near 0%)
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
@@ -384,8 +387,9 @@ public class TeamDashboardService {
 
     public TeamUtilizationHeatmapDTO getUtilizationHeatmap(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        // Show trailing 6 months up to now or FY end
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Show trailing 6 complete months up to FY end (the in-progress month would
+        // render 1-day noise cells and dominate the row sorting)
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         LocalDate sixMonthsBack = effectiveEnd.minusMonths(5).withDayOfMonth(1);
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
@@ -470,11 +474,13 @@ public class TeamDashboardService {
             return List.of();
         }
 
-        // FY-to-date through previous month (completed months only)
-        LocalDate fyStart = getFiscalYearRange(fiscalYear).start();
-        LocalDate prevMonthEnd = YearMonth.now().minusMonths(1).atEndOfMonth();
-        // If the FY hasn't started yet, there's nothing to show
-        if (fyStart.isAfter(prevMonthEnd)) {
+        // FY-to-date through the last complete month, never beyond the selected FY's end
+        // (an uncapped window would accrete the next FY's months onto a past-FY view)
+        var fy = getFiscalYearRange(fiscalYear);
+        LocalDate fyStart = fy.start();
+        LocalDate windowEnd = capToLastCompleteMonth(fy.end());
+        // If the FY has no complete months yet, there's nothing to show
+        if (fyStart.isAfter(windowEnd)) {
             return List.of();
         }
 
@@ -488,14 +494,14 @@ public class TeamDashboardService {
                     SELECT bd.useruuid, SUM(bd.budgetHours) AS total_budget
                     FROM fact_budget_day bd
                     WHERE bd.useruuid IN (:memberUuids)
-                      AND bd.document_date >= :fyStart AND bd.document_date <= :prevMonthEnd
+                      AND bd.document_date >= :fyStart AND bd.document_date <= :windowEnd
                     GROUP BY bd.useruuid
                 ) budget ON budget.useruuid = u.uuid
                 LEFT JOIN (
                     SELECT fud.useruuid, SUM(fud.registered_billable_hours) AS total_actual
                     FROM fact_user_day fud
                     WHERE fud.useruuid IN (:memberUuids)
-                      AND fud.document_date >= :fyStart AND fud.document_date <= :prevMonthEnd
+                      AND fud.document_date >= :fyStart AND fud.document_date <= :windowEnd
                       AND fud.consultant_type = 'CONSULTANT'
                     GROUP BY fud.useruuid
                 ) actual ON actual.useruuid = u.uuid
@@ -504,7 +510,7 @@ public class TeamDashboardService {
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("fyStart", fyStart)
-                .setParameter("prevMonthEnd", prevMonthEnd)
+                .setParameter("windowEnd", windowEnd)
                 .getResultList();
 
         List<TeamBudgetFulfillmentDTO> result = new ArrayList<>();
@@ -528,9 +534,12 @@ public class TeamDashboardService {
 
     public List<AllTeamsUtilizationDTO> getAllTeamsUtilization(String currentTeamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        // Cap to last day of previous month (only include completed months)
-        LocalDate prevMonthEnd = YearMonth.now().minusMonths(1).atEndOfMonth();
-        LocalDate effectiveEnd = fy.end().isBefore(prevMonthEnd) ? fy.end() : prevMonthEnd;
+        // Only include completed months, capped to the selected FY
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
+        // A brand-new FY has no complete months — avoid running an inverted date range
+        if (fy.start().isAfter(effectiveEnd)) {
+            return List.of();
+        }
 
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
@@ -1006,7 +1015,9 @@ public class TeamDashboardService {
 
     public List<TeamRevenueCostTrendDTO> getRevenueCostTrend(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        // Complete months only: fact_salary_monthly_teamroles carries the FULL current month
+        // from day 1, so pairing it with month-to-date revenue fabricates a loss
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
@@ -1075,7 +1086,7 @@ public class TeamDashboardService {
 
     public List<TeamRevenuePerMemberDTO> getRevenuePerMember(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
@@ -1120,9 +1131,15 @@ public class TeamDashboardService {
 
     public List<TeamBillingRateDTO> getBillingRateAnalysis(String teamId, int fiscalYear) {
         var fyRange = getFiscalYearRange(fiscalYear);
+        // Complete months only — the uncapped FY window averaged availability over
+        // months that haven't happened yet, deflating break-even rates
+        LocalDate effectiveEnd = capToLastCompleteMonth(fyRange.end());
+        if (fyRange.start().isAfter(effectiveEnd)) {
+            return List.of();
+        }
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         return profitabilityProvider.getBreakEvenRates(
-                new ArrayList<>(memberUuids), fyRange.start(), fyRange.end());
+                new ArrayList<>(memberUuids), fyRange.start(), effectiveEnd);
     }
 
     // -----------------------------------------------------------------------
@@ -1139,7 +1156,7 @@ public class TeamDashboardService {
 
     public List<TeamClientConcentrationDTO> getClientConcentration(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
-        LocalDate effectiveEnd = capToToday(fy.end());
+        LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
@@ -1192,10 +1209,30 @@ public class TeamDashboardService {
 
         String effectivePeriod = (period != null && !period.isBlank()) ? period : "ttm";
 
+        List<UnprofitableConsultantDTO> all;
+        if ("fytd".equalsIgnoreCase(effectivePeriod)) {
+            // FY-aware window: the SELECTED fiscal year capped to complete months.
+            // A past FY yields the full year; the current FY yields FY-to-date.
+            var fy = getFiscalYearRange(fiscalYear);
+            LocalDate windowFrom = fy.start();
+            LocalDate fyEndExclusive = fy.end().plusDays(1);
+            LocalDate firstOfCurrentMonth = LocalDate.now().withDayOfMonth(1);
+            LocalDate windowToExclusive = fyEndExclusive.isBefore(firstOfCurrentMonth)
+                    ? fyEndExclusive : firstOfCurrentMonth;
+            if (!windowFrom.isBefore(windowToExclusive)) {
+                // Brand-new FY with no complete months yet
+                return List.of();
+            }
+            all = consultantInsightsService
+                    .getConsultantProfitability(null, null, windowFrom, windowToExclusive);
+        } else {
+            // TTM is today-anchored by definition — the fiscal-year selector does not apply
+            all = consultantInsightsService
+                    .getConsultantProfitability(null, null, effectivePeriod);
+        }
+
         // Single-consultant lookup: return profitability for that user regardless of profit/loss
         if (userId != null && !userId.isBlank()) {
-            List<UnprofitableConsultantDTO> all = consultantInsightsService
-                    .getConsultantProfitability(null, null, effectivePeriod);
             return all.stream()
                     .filter(dto -> userId.equals(dto.getUserId()))
                     .collect(Collectors.toList());
@@ -1206,10 +1243,6 @@ public class TeamDashboardService {
         if (memberUuids.isEmpty()) {
             return List.of();
         }
-
-        // Get all consultant profitability, then filter to team members with negative profit
-        List<UnprofitableConsultantDTO> all = consultantInsightsService
-                .getConsultantProfitability(null, null, effectivePeriod);
 
         return all.stream()
                 .filter(dto -> memberUuids.contains(dto.getUserId()))
@@ -1478,11 +1511,6 @@ public class TeamDashboardService {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = query.getResultList();
         return rows.isEmpty() ? null : rows.get(0);
-    }
-
-    private static LocalDate capToToday(LocalDate date) {
-        LocalDate today = LocalDate.now();
-        return date.isAfter(today) ? today : date;
     }
 
     private static double numVal(Tuple row, String column) {

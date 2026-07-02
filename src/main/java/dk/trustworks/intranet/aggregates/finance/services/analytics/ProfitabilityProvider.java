@@ -155,10 +155,16 @@ public class ProfitabilityProvider {
      */
     public TeamContributionMarginDTO getContributionMargin(String teamId, int fiscalYear) {
         var fyRange = UtilizationCalculationHelper.getFiscalYearRange(fiscalYear);
-        String fromKey = fyRange.startKey();
-        String toKey = fyRange.endKey();
         LocalDate fromDate = fyRange.start();
-        LocalDate toDate = fyRange.end();
+        // Complete months only: fact_salary_monthly_teamroles holds the FULL current month
+        // from day 1, so an uncapped window books a whole month's salary against days of revenue
+        LocalDate toDate = UtilizationCalculationHelper.capToLastCompleteMonth(fyRange.end());
+        if (fromDate.isAfter(toDate)) {
+            // Brand-new FY with no complete months yet
+            return new TeamContributionMarginDTO(teamId, getTeamName(teamId), fiscalYear, 0, 0, 0, 0, 0, null, null);
+        }
+        String fromKey = fyRange.startKey();
+        String toKey = toMonthKey(toDate);
 
         List<String> memberUuids = getTeamMemberUuids(teamId);
         if (memberUuids.isEmpty()) {

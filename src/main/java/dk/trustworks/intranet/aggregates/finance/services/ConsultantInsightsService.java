@@ -14,6 +14,7 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
 import java.time.Month;
+import java.time.YearMonth;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -328,9 +329,6 @@ public class ConsultantInsightsService {
             Set<String> companyIds,
             String period) {
 
-        Set<String> effectivePractices = effectivePractices(practices);
-        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
-
         // Compute date range based on period
         LocalDate now = LocalDate.now();
         LocalDate periodFrom;
@@ -342,8 +340,26 @@ public class ConsultantInsightsService {
             // Default: TTM — 12 months back from start of current month
             periodFrom = now.minusMonths(12).withDayOfMonth(1);
         }
+        return getConsultantProfitability(practices, companyIds, periodFrom, now.withDayOfMonth(1));
+    }
+
+    /**
+     * Explicit-window variant: computes profitability over [periodFrom, periodToExclusive).
+     * {@code periodToExclusive} must be a first-of-month date — months are compared via
+     * {@code month_key < toKey}, so the month containing {@code periodToExclusive} is excluded.
+     * Used by the team dashboard to honor its fiscal-year selector.
+     */
+    public List<UnprofitableConsultantDTO> getConsultantProfitability(
+            Set<String> practices,
+            Set<String> companyIds,
+            LocalDate periodFrom,
+            LocalDate periodToExclusive) {
+
+        Set<String> effectivePractices = effectivePractices(practices);
+        boolean hasCompanies = companyIds != null && !companyIds.isEmpty();
+
         String fromKey = String.format("%04d%02d", periodFrom.getYear(), periodFrom.getMonthValue());
-        String toKey = String.format("%04d%02d", now.getYear(), now.getMonthValue());
+        String toKey = String.format("%04d%02d", periodToExclusive.getYear(), periodToExclusive.getMonthValue());
 
         // Step 1: Get total non-salary OPEX for TTM period
         StringBuilder opexSql = new StringBuilder();
@@ -386,7 +402,7 @@ public class ConsultantInsightsService {
         var headcountQuery = em.createNativeQuery(headcountSql.toString(), Tuple.class);
         headcountQuery.setParameter("practices", effectivePractices);
         headcountQuery.setParameter("periodFrom", periodFrom);
-        headcountQuery.setParameter("periodTo", now.withDayOfMonth(1));
+        headcountQuery.setParameter("periodTo", periodToExclusive);
         if (hasCompanies) {
             headcountQuery.setParameter("companyIds", companyIds);
         }
@@ -457,7 +473,7 @@ public class ConsultantInsightsService {
         var userQuery = em.createNativeQuery(userSql.toString(), Tuple.class);
         userQuery.setParameter("practices", effectivePractices);
         userQuery.setParameter("periodFrom", periodFrom);
-        userQuery.setParameter("periodTo", now.withDayOfMonth(1));
+        userQuery.setParameter("periodTo", periodToExclusive);
         if (hasCompanies) {
             userQuery.setParameter("companyIds", companyIds);
         }
@@ -604,22 +620,31 @@ public class ConsultantInsightsService {
      * @return list of monthly budget-vs-actual DTOs, ordered by month ascending
      */
     public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(String userId) {
-
         // TTM boundaries: 12 complete months (exclusive of current month)
-        LocalDate now = LocalDate.now();
-        LocalDate ttmFrom = ttmStart();
-        LocalDate ttmTo = now.withDayOfMonth(1).minusDays(1); // last day of previous month
+        return getBudgetActualGapMonthly(userId, ttmStart(),
+                LocalDate.now().withDayOfMonth(1).minusDays(1));
+    }
 
-        // Build skeleton map for all 12 months so we return rows even when data is missing
+    /**
+     * Explicit-window variant: one row per calendar month in [fromDate, toDate] (inclusive).
+     * Used by the team dashboard's fulfillment heatmap so its budget series covers the
+     * same months as the FY-scoped utilization heatmap instead of a fixed TTM window.
+     */
+    public List<BudgetActualGapMonthlyDTO> getBudgetActualGapMonthly(
+            String userId, LocalDate fromDate, LocalDate toDate) {
+
+        // Build skeleton map for every month in the window so we return rows even when data is missing
         Map<String, BudgetActualGapMonthlyDTO> monthMap = new LinkedHashMap<>();
-        for (int i = 0; i < 12; i++) {
-            LocalDate month = ttmFrom.plusMonths(i);
-            String key = String.format("%04d%02d", month.getYear(), month.getMonthValue());
-            String label = Month.of(month.getMonthValue())
-                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + month.getYear();
+        YearMonth ym = YearMonth.from(fromDate);
+        YearMonth endYm = YearMonth.from(toDate);
+        while (!ym.isAfter(endYm)) {
+            String key = String.format("%04d%02d", ym.getYear(), ym.getMonthValue());
+            String label = Month.of(ym.getMonthValue())
+                    .getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + ym.getYear();
             monthMap.put(key, new BudgetActualGapMonthlyDTO(
-                    key, month.getYear(), month.getMonthValue(), label,
+                    key, ym.getYear(), ym.getMonthValue(), label,
                     0.0, 0.0, 0.0, 0.0, 0.0));
+            ym = ym.plusMonths(1);
         }
 
         // Budget hours per month from fact_budget_day
@@ -629,7 +654,7 @@ public class ConsultantInsightsService {
                    SUM(bd.budgetHours) AS budget_hours
             FROM fact_budget_day bd
             WHERE bd.useruuid = :userId
-              AND bd.document_date >= :ttmFrom AND bd.document_date <= :ttmTo
+              AND bd.document_date >= :fromDate AND bd.document_date <= :toDate
               AND (SELECT us_type.type FROM userstatus us_type
                    WHERE us_type.useruuid = bd.useruuid AND us_type.statusdate <= bd.document_date
                    ORDER BY us_type.statusdate DESC LIMIT 1) = 'CONSULTANT'
@@ -640,8 +665,8 @@ public class ConsultantInsightsService {
         @SuppressWarnings("unchecked")
         List<Tuple> budgetRows = em.createNativeQuery(budgetSql, Tuple.class)
                 .setParameter("userId", userId)
-                .setParameter("ttmFrom", ttmFrom)
-                .setParameter("ttmTo", ttmTo)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getResultList();
 
         for (Tuple row : budgetRows) {
@@ -669,8 +694,8 @@ public class ConsultantInsightsService {
         @SuppressWarnings("unchecked")
         List<Tuple> actualRows = em.createNativeQuery(actualSql, Tuple.class)
                 .setParameter("userId", userId)
-                .setParameter("fromDate", ttmFrom)
-                .setParameter("toDate", ttmTo)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
                 .getResultList();
 
         for (Tuple row : actualRows) {
