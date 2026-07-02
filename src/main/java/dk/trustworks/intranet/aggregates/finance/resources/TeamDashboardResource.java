@@ -1,6 +1,6 @@
 package dk.trustworks.intranet.aggregates.finance.resources;
 
-import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.getCurrentFiscalYearRange;
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.getDefaultReportingFiscalYear;
 
 import dk.trustworks.intranet.aggregates.finance.dto.AllTeamsUtilizationDTO;
 import dk.trustworks.intranet.aggregates.finance.dto.TeamBenchConsultantDTO;
@@ -69,10 +69,13 @@ public class TeamDashboardResource {
 
     @GET
     @Path("/{teamId}/overview")
-    public TeamOverviewDTO getOverview(@PathParam("teamId") String teamId) {
-        log.debugf("GET /finance/team/%s/overview", teamId);
+    public TeamOverviewDTO getOverview(
+            @PathParam("teamId") String teamId,
+            @QueryParam("fiscalYear") Integer fiscalYear) {
+        int fy = effectiveFiscalYear(fiscalYear);
+        log.debugf("GET /finance/team/%s/overview?fiscalYear=%d", teamId, fy);
         teamDashboardService.validateTeamAccess(teamId, requestHeaderHolder.getUserUuid());
-        return teamDashboardService.getOverview(teamId);
+        return teamDashboardService.getOverview(teamId, fy);
     }
 
     // -----------------------------------------------------------------------
@@ -304,6 +307,8 @@ public class TeamDashboardResource {
     // -----------------------------------------------------------------------
 
     private int effectiveFiscalYear(Integer fiscalYear) {
-        return fiscalYear != null ? fiscalYear : getCurrentFiscalYearRange().fiscalYear();
+        // Default to the FY of the last complete month: in July the new FY has no
+        // complete months yet, so defaulting to it would serve empty/partial data.
+        return fiscalYear != null ? fiscalYear : getDefaultReportingFiscalYear();
     }
 }
