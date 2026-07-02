@@ -590,26 +590,28 @@ public class TeamDashboardService {
                 .setParameter("lookbackMonths", lookbackMonths)
                 .getResultList();
 
-        // Sales leads for team members (with extension detection)
+        // Sales leads for team members — renewal signals must reflect OPEN pipeline
+        // only, not already-decided leads. WON/LOST are excluded (the LeadStatus enum
+        // has no ABANDONED — the old NOT IN ('LOST','ABANDONED') filter let WON pass),
+        // and a recency bound drops stale open leads whose expected close date is long
+        // past (forgotten pipeline that was never marked WON/LOST). is_extension now
+        // uses the human-entered sl.extension flag — the authoritative "this renews an
+        // existing engagement" signal — instead of the old heuristic that flagged any
+        // lead sharing a client with an active contract (true even for the lead that
+        // originated that very contract). See audit finding C9.
         @SuppressWarnings("unchecked")
         List<Tuple> leadRows = em.createNativeQuery("""
                 SELECT slc.useruuid AS user_id,
                        sl.uuid AS lead_uuid, cl.name AS client_name,
                        sl.description, sl.status, sl.closedate, sl.allocation, sl.rate, sl.period,
-                       EXISTS (
-                           SELECT 1 FROM contract_consultants cc2
-                           JOIN contracts c2 ON c2.uuid = cc2.contractuuid
-                           WHERE cc2.useruuid = slc.useruuid
-                             AND c2.clientuuid = sl.clientuuid
-                             AND cc2.activefrom <= CURDATE()
-                             AND cc2.activeto > CURDATE()
-                             AND c2.status IN ('SIGNED', 'TIME')
-                       ) AS is_extension
+                       COALESCE(sl.extension, 0) AS is_extension
                 FROM sales_lead_consultant slc
                 JOIN sales_lead sl ON sl.uuid = slc.leaduuid
                 JOIN client cl ON cl.uuid = sl.clientuuid
                 WHERE slc.useruuid IN (:memberUuids)
-                  AND sl.status NOT IN ('LOST', 'ABANDONED')
+                  AND sl.status IN ('DETECTED', 'QUALIFIED', 'PROPOSAL', 'SHORTLISTED', 'NEGOTIATION')
+                  AND sl.closedate IS NOT NULL
+                  AND sl.closedate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
                 ORDER BY sl.closedate
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
@@ -798,6 +800,14 @@ public class TeamDashboardService {
         LocalDate horizon = LocalDate.now().plusDays(days);
 
         @SuppressWarnings("unchecked")
+        // has_extension_lead ("In Pipeline" badge) must mean an OPEN pipeline lead
+        // only — the old NOT IN ('LOST','ABANDONED') filter let already-WON leads flag
+        // coverage that no longer exists, hiding real renewal gaps. covered_by_parallel
+        // detects a *signed* parallel/successor contract at the same client that already
+        // overlaps and extends beyond this contract's end, so the FE can suppress false
+        // red "expiring" urgency for a consultant who is demonstrably still staffed
+        // there (prod case: Kurt Hansen "1 day left" while a parallel contract covers
+        // him to 2027-12-31). See audit finding C9.
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT cc.contractuuid, cc.useruuid AS user_id,
                        u.firstname, u.lastname,
@@ -809,8 +819,20 @@ public class TeamDashboardService {
                            JOIN sales_lead_consultant slc ON slc.leaduuid = sl.uuid
                            WHERE slc.useruuid = cc.useruuid
                              AND sl.clientuuid = c.clientuuid
-                             AND sl.status NOT IN ('LOST', 'ABANDONED')
-                       ) AS has_extension_lead
+                             AND sl.status IN ('DETECTED', 'QUALIFIED', 'PROPOSAL', 'SHORTLISTED', 'NEGOTIATION')
+                             AND sl.closedate IS NOT NULL
+                             AND sl.closedate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                       ) AS has_extension_lead,
+                       EXISTS (
+                           SELECT 1 FROM contract_consultants cc3
+                           JOIN contracts c3 ON c3.uuid = cc3.contractuuid
+                           WHERE cc3.useruuid = cc.useruuid
+                             AND c3.clientuuid = c.clientuuid
+                             AND cc3.contractuuid <> cc.contractuuid
+                             AND c3.status IN ('SIGNED', 'TIME')
+                             AND cc3.activeto > cc.activeto
+                             AND cc3.activefrom <= cc.activeto
+                       ) AS covered_by_parallel
                 FROM contract_consultants cc
                 JOIN contracts c ON c.uuid = cc.contractuuid
                 JOIN client cl ON cl.uuid = c.clientuuid
@@ -839,7 +861,8 @@ public class TeamDashboardService {
                     numVal(row, "rate"),
                     numVal(row, "hours"),
                     ((Number) row.get("days_until_expiry")).intValue(),
-                    ((Number) row.get("has_extension_lead")).intValue() > 0));
+                    ((Number) row.get("has_extension_lead")).intValue() > 0,
+                    ((Number) row.get("covered_by_parallel")).intValue() > 0));
         }
         return result;
     }
@@ -1436,9 +1459,20 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     /**
-     * Calculates time registration compliance for a consultant over the last 6 months.
-     * A work day is "compliant" if it was registered within 7 calendar days of the work date
-     * (i.e., DATEDIFF(updated_at, registered) <= 7).
+     * Calculates time-registration compliance for a consultant over the last 6 <em>complete</em>
+     * months (the current partial month is excluded). A work-day is "compliant" if the entry was
+     * created within 7 calendar days of the work date, measured from the immutable
+     * {@code work.created_at} (V387) — NOT from {@code updated_at}, which payout/edit UPDATEs
+     * rewrite, making invoiced work look weeks late and falsely reddening diligent consultants
+     * (audit finding C8).
+     *
+     * <p>Compliance is computed <strong>only over measurable days</strong> (rows with a known
+     * {@code created_at}); the denominator is {@code measuredDays}, never the full registered-day
+     * count, so unmeasurable pre-V387 invoiced rows can never render red. {@code coveragePct}
+     * exposes how much of each month is measurable. A month with no measurable rows returns a null
+     * {@code compliancePct} (renders "no data", not 0%). The monthly average is day-weighted
+     * (sum of compliant days ÷ sum of measured days — aggregate first, then divide), not an
+     * unweighted mean of month percentages.
      */
     public TimeRegistrationComplianceDTO getConsultantCompliance(String teamId, String userId) {
         LocalDate now = LocalDate.now();
@@ -1449,17 +1483,22 @@ public class TeamDashboardService {
                     Response.Status.BAD_REQUEST);
         }
 
-        LocalDate startDate = now.minusMonths(6).withDayOfMonth(1);
-        LocalDate endDate = now;
+        // Last 6 COMPLETE months: [first day of the month 6 months back .. last day of last month].
+        LocalDate firstOfThisMonth = now.withDayOfMonth(1);
+        LocalDate startDate = firstOfThisMonth.minusMonths(6);
+        LocalDate endDate = firstOfThisMonth.minusDays(1);
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT
                     YEAR(w.registered) AS yr,
                     MONTH(w.registered) AS mo,
-                    COUNT(DISTINCT w.registered) AS total_days,
+                    COUNT(DISTINCT w.registered) AS registered_days,
                     COUNT(DISTINCT CASE
-                        WHEN DATEDIFF(w.updated_at, w.registered) <= 7 THEN w.registered
+                        WHEN w.created_at IS NOT NULL THEN w.registered
+                    END) AS measured_days,
+                    COUNT(DISTINCT CASE
+                        WHEN w.created_at IS NOT NULL AND DATEDIFF(w.created_at, w.registered) <= 7 THEN w.registered
                     END) AS compliant_days
                 FROM work w
                 WHERE w.useruuid = :userId
@@ -1478,31 +1517,47 @@ public class TeamDashboardService {
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
         List<MonthlyCompliance> months = new ArrayList<>();
-        double totalComplianceSum = 0.0;
+        long sumCompliant = 0L;
+        long sumMeasured = 0L;
+        long sumRegistered = 0L;
 
         for (Object[] row : rows) {
             int yr = ((Number) row[0]).intValue();
             int mo = ((Number) row[1]).intValue();
-            int totalDays = ((Number) row[2]).intValue();
-            int compliantDays = ((Number) row[3]).intValue();
+            int registeredDays = ((Number) row[2]).intValue();
+            int measuredDays = ((Number) row[3]).intValue();
+            int compliantDays = ((Number) row[4]).intValue();
 
             String monthKey = String.format("%04d%02d", yr, mo);
             String label = monthNames[mo];
-            double compliancePct = totalDays > 0
-                    ? Math.round((compliantDays * 100.0 / totalDays) * 10.0) / 10.0
+            // Divide by MEASURED days, never registered days — unmeasurable rows must not count as late.
+            Double compliancePct = measuredDays > 0
+                    ? Math.round((compliantDays * 100.0 / measuredDays) * 10.0) / 10.0
+                    : null;
+            double coveragePct = registeredDays > 0
+                    ? Math.round((measuredDays * 100.0 / registeredDays) * 10.0) / 10.0
                     : 0.0;
 
-            months.add(new MonthlyCompliance(monthKey, label, compliancePct, totalDays, compliantDays));
-            totalComplianceSum += compliancePct;
+            months.add(new MonthlyCompliance(monthKey, label, compliancePct, coveragePct,
+                    registeredDays, measuredDays, compliantDays));
+            sumCompliant += compliantDays;
+            sumMeasured += measuredDays;
+            sumRegistered += registeredDays;
         }
 
-        double averagePct = months.isEmpty() ? 0.0
-                : Math.round((totalComplianceSum / months.size()) * 10.0) / 10.0;
+        // Day-weighted average: aggregate first, then divide (C8 aggregation-canon fix).
+        Double averagePct = sumMeasured > 0
+                ? Math.round((sumCompliant * 100.0 / sumMeasured) * 10.0) / 10.0
+                : null;
+        double coveragePct = sumRegistered > 0
+                ? Math.round((sumMeasured * 100.0 / sumRegistered) * 10.0) / 10.0
+                : 0.0;
 
         var dto = new TimeRegistrationComplianceDTO();
         dto.setUserId(userId);
         dto.setMonths(months);
         dto.setAveragePct(averagePct);
+        dto.setCoveragePct(coveragePct);
         return dto;
     }
 
