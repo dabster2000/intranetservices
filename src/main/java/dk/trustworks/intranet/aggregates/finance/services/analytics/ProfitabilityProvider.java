@@ -166,17 +166,16 @@ public class ProfitabilityProvider {
         String fromKey = fyRange.startKey();
         String toKey = toMonthKey(toDate);
 
-        List<String> memberUuids = getTeamMemberUuids(teamId);
-        if (memberUuids.isEmpty()) {
-            return new TeamContributionMarginDTO(teamId, "", fiscalYear, 0, 0, 0, 0, 0, null, null);
-        }
+        // Revenue — shared TEMPORAL membership contract (was: today's raw-teamroles
+        // snapshot applied to the whole window). Reconciles with the Revenue-vs-Cost
+        // trend and the overview revenue KPI to the krone (audit C4/C6).
+        double revenue = revenueProvider.getTeamRevenue(teamId, fromDate, toDate);
 
-        // Revenue (time-registration based for team)
-        double revenue = revenueProvider.getTeamRevenue(memberUuids, fromDate, toDate);
-
-        // Salary cost from fact_salary_monthly_teamroles
+        // Salary cost — consultants only, matching the revenue population
+        // (was: all member types, booking STAFF salary against consultant-only revenue)
         String salSql = "SELECT COALESCE(SUM(fsmt.salary_sum), 0) FROM fact_salary_monthly_teamroles fsmt " +
-                "WHERE fsmt.teamuuid = :teamId AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey";
+                "WHERE fsmt.teamuuid = :teamId AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey " +
+                "AND fsmt.employee_type = 'CONSULTANT'";
         double salaryCost = ((Number) em.createNativeQuery(salSql)
                 .setParameter("teamId", teamId)
                 .setParameter("fromKey", fromKey)
@@ -205,10 +204,13 @@ public class ProfitabilityProvider {
     /**
      * Break-even billing rate per consultant.
      * Formula: (monthly_salary + monthly_overhead) / (net_available_hours * 0.75)
+     *
+     * <p>Population: shared TEMPORAL team-membership contract — every consultant who was
+     * a MEMBER of the team during the window, each measured only over their membership
+     * days (mid-window joiners/leavers included pro rata, consistent with the team's
+     * other FY widgets).</p>
      */
-    public List<TeamBillingRateDTO> getBreakEvenRates(List<String> memberUuids, LocalDate fromDate, LocalDate toDate) {
-        if (memberUuids == null || memberUuids.isEmpty()) return List.of();
-
+    public List<TeamBillingRateDTO> getBreakEvenRates(String teamId, LocalDate fromDate, LocalDate toDate) {
         String fromKey = toMonthKey(fromDate);
         String toKey = toMonthKey(toDate);
 
@@ -220,14 +222,14 @@ public class ProfitabilityProvider {
                 "  COALESCE(SUM(fud.registered_amount), 0) AS revenue, " +
                 "  COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours " +
                 "FROM fact_user_day fud JOIN user u ON u.uuid = fud.useruuid " +
-                "WHERE fud.useruuid IN (:memberUuids) " +
-                "  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
+                UtilizationCalculationHelper.teamMemberTemporalJoin("fud", "document_date") +
+                "WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
                 "  AND fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE' " +
                 "GROUP BY fud.useruuid, u.firstname, u.lastname";
 
         @SuppressWarnings("unchecked")
         List<Tuple> actualRows = em.createNativeQuery(actualSql, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fromDate)
                 .setParameter("toDate", toDate)
                 .getResultList();
@@ -236,20 +238,22 @@ public class ProfitabilityProvider {
         String beSql = "SELECT sal.useruuid AS user_id, " +
                 "  CASE WHEN COALESCE(avail.net_hours, 0) * 0.75 > 0 " +
                 "    THEN (sal.monthly_salary + :overhead) / (avail.net_hours * 0.75) ELSE NULL END AS break_even " +
-                "FROM (SELECT useruuid, AVG(max_sal) AS monthly_salary FROM " +
-                "  (SELECT useruuid, MAX(salary) AS max_sal FROM fact_user_day " +
-                "   WHERE useruuid IN (:memberUuids) AND consultant_type = 'CONSULTANT' AND salary > 0 " +
-                "   AND document_date >= :fromDate AND document_date <= :toDate " +
-                "   GROUP BY useruuid, year, month) ms GROUP BY useruuid) sal " +
-                "LEFT JOIN (SELECT useruuid, AVG(mn) AS net_hours FROM " +
-                "  (SELECT useruuid, SUM(net_available_hours) AS mn FROM fact_user_day " +
-                "   WHERE useruuid IN (:memberUuids) AND consultant_type = 'CONSULTANT' AND status_type = 'ACTIVE' " +
-                "   AND document_date >= :fromDate AND document_date <= :toDate " +
-                "   GROUP BY useruuid, year, month) ma GROUP BY useruuid) avail ON avail.useruuid = sal.useruuid";
+                "FROM (SELECT ms.useruuid, AVG(ms.max_sal) AS monthly_salary FROM " +
+                "  (SELECT fud.useruuid, MAX(fud.salary) AS max_sal FROM fact_user_day fud " +
+                UtilizationCalculationHelper.teamMemberTemporalJoin("fud", "document_date") +
+                "   WHERE fud.consultant_type = 'CONSULTANT' AND fud.salary > 0 " +
+                "   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
+                "   GROUP BY fud.useruuid, fud.year, fud.month) ms GROUP BY ms.useruuid) sal " +
+                "LEFT JOIN (SELECT ma.useruuid, AVG(ma.mn) AS net_hours FROM " +
+                "  (SELECT fud.useruuid, SUM(fud.net_available_hours) AS mn FROM fact_user_day fud " +
+                UtilizationCalculationHelper.teamMemberTemporalJoin("fud", "document_date") +
+                "   WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE' " +
+                "   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
+                "   GROUP BY fud.useruuid, fud.year, fud.month) ma GROUP BY ma.useruuid) avail ON avail.useruuid = sal.useruuid";
 
         @SuppressWarnings("unchecked")
         List<Tuple> beRows = em.createNativeQuery(beSql, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fromDate)
                 .setParameter("toDate", toDate)
                 .setParameter("overhead", monthlyOverhead)
@@ -281,15 +285,6 @@ public class ProfitabilityProvider {
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
-
-    private List<String> getTeamMemberUuids(String teamId) {
-        String sql = "SELECT DISTINCT tr.useruuid FROM teamroles tr " +
-                "WHERE tr.teamuuid = :teamId AND tr.membertype = 'MEMBER' " +
-                "AND tr.startdate <= CURDATE() AND (tr.enddate IS NULL OR tr.enddate > CURDATE())";
-        @SuppressWarnings("unchecked")
-        List<String> uuids = em.createNativeQuery(sql).setParameter("teamId", teamId).getResultList();
-        return uuids;
-    }
 
     private String getTeamName(String teamId) {
         try {

@@ -9,8 +9,11 @@ import java.util.List;
 public record TeamOverviewDTO(
         String teamId,
         String teamName,
+        /** Current members of ANY type (snapshot) — always equals roster.size() so the
+         *  headcount KPI reconciles with the roster shown on the same screen */
         int memberCount,
-        /** Team utilization for the current fiscal year so far (SUM billable / SUM net available * 100) */
+        /** Team utilization for the selected FY window (SUM billable / SUM net available * 100),
+         *  temporal team membership; null when the team has no consultant net-available hours */
         Double utilizationPercent,
         /** Revenue for the current fiscal year so far (DKK) */
         double revenueFY,
@@ -30,6 +33,10 @@ public record TeamOverviewDTO(
             String lastname,
             String practice,
             String status,
+            /** Current userstatus type: CONSULTANT, STAFF, STUDENT, EXTERNAL */
+            String consultantType,
+            /** FY-window utilization while a member of THIS team (temporal bounding);
+             *  null = not measured (no consultant net-available hours) — render N/A, not 0% */
             Double utilizationPercent,
             boolean hasActiveContract,
             String careerLevel,
