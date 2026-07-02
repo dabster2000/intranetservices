@@ -1436,9 +1436,20 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     /**
-     * Calculates time registration compliance for a consultant over the last 6 months.
-     * A work day is "compliant" if it was registered within 7 calendar days of the work date
-     * (i.e., DATEDIFF(updated_at, registered) <= 7).
+     * Calculates time-registration compliance for a consultant over the last 6 <em>complete</em>
+     * months (the current partial month is excluded). A work-day is "compliant" if the entry was
+     * created within 7 calendar days of the work date, measured from the immutable
+     * {@code work.created_at} (V387) — NOT from {@code updated_at}, which payout/edit UPDATEs
+     * rewrite, making invoiced work look weeks late and falsely reddening diligent consultants
+     * (audit finding C8).
+     *
+     * <p>Compliance is computed <strong>only over measurable days</strong> (rows with a known
+     * {@code created_at}); the denominator is {@code measuredDays}, never the full registered-day
+     * count, so unmeasurable pre-V387 invoiced rows can never render red. {@code coveragePct}
+     * exposes how much of each month is measurable. A month with no measurable rows returns a null
+     * {@code compliancePct} (renders "no data", not 0%). The monthly average is day-weighted
+     * (sum of compliant days ÷ sum of measured days — aggregate first, then divide), not an
+     * unweighted mean of month percentages.
      */
     public TimeRegistrationComplianceDTO getConsultantCompliance(String teamId, String userId) {
         LocalDate now = LocalDate.now();
@@ -1449,17 +1460,22 @@ public class TeamDashboardService {
                     Response.Status.BAD_REQUEST);
         }
 
-        LocalDate startDate = now.minusMonths(6).withDayOfMonth(1);
-        LocalDate endDate = now;
+        // Last 6 COMPLETE months: [first day of the month 6 months back .. last day of last month].
+        LocalDate firstOfThisMonth = now.withDayOfMonth(1);
+        LocalDate startDate = firstOfThisMonth.minusMonths(6);
+        LocalDate endDate = firstOfThisMonth.minusDays(1);
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT
                     YEAR(w.registered) AS yr,
                     MONTH(w.registered) AS mo,
-                    COUNT(DISTINCT w.registered) AS total_days,
+                    COUNT(DISTINCT w.registered) AS registered_days,
                     COUNT(DISTINCT CASE
-                        WHEN DATEDIFF(w.updated_at, w.registered) <= 7 THEN w.registered
+                        WHEN w.created_at IS NOT NULL THEN w.registered
+                    END) AS measured_days,
+                    COUNT(DISTINCT CASE
+                        WHEN w.created_at IS NOT NULL AND DATEDIFF(w.created_at, w.registered) <= 7 THEN w.registered
                     END) AS compliant_days
                 FROM work w
                 WHERE w.useruuid = :userId
@@ -1478,31 +1494,47 @@ public class TeamDashboardService {
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
         List<MonthlyCompliance> months = new ArrayList<>();
-        double totalComplianceSum = 0.0;
+        long sumCompliant = 0L;
+        long sumMeasured = 0L;
+        long sumRegistered = 0L;
 
         for (Object[] row : rows) {
             int yr = ((Number) row[0]).intValue();
             int mo = ((Number) row[1]).intValue();
-            int totalDays = ((Number) row[2]).intValue();
-            int compliantDays = ((Number) row[3]).intValue();
+            int registeredDays = ((Number) row[2]).intValue();
+            int measuredDays = ((Number) row[3]).intValue();
+            int compliantDays = ((Number) row[4]).intValue();
 
             String monthKey = String.format("%04d%02d", yr, mo);
             String label = monthNames[mo];
-            double compliancePct = totalDays > 0
-                    ? Math.round((compliantDays * 100.0 / totalDays) * 10.0) / 10.0
+            // Divide by MEASURED days, never registered days — unmeasurable rows must not count as late.
+            Double compliancePct = measuredDays > 0
+                    ? Math.round((compliantDays * 100.0 / measuredDays) * 10.0) / 10.0
+                    : null;
+            double coveragePct = registeredDays > 0
+                    ? Math.round((measuredDays * 100.0 / registeredDays) * 10.0) / 10.0
                     : 0.0;
 
-            months.add(new MonthlyCompliance(monthKey, label, compliancePct, totalDays, compliantDays));
-            totalComplianceSum += compliancePct;
+            months.add(new MonthlyCompliance(monthKey, label, compliancePct, coveragePct,
+                    registeredDays, measuredDays, compliantDays));
+            sumCompliant += compliantDays;
+            sumMeasured += measuredDays;
+            sumRegistered += registeredDays;
         }
 
-        double averagePct = months.isEmpty() ? 0.0
-                : Math.round((totalComplianceSum / months.size()) * 10.0) / 10.0;
+        // Day-weighted average: aggregate first, then divide (C8 aggregation-canon fix).
+        Double averagePct = sumMeasured > 0
+                ? Math.round((sumCompliant * 100.0 / sumMeasured) * 10.0) / 10.0
+                : null;
+        double coveragePct = sumRegistered > 0
+                ? Math.round((sumMeasured * 100.0 / sumRegistered) * 10.0) / 10.0
+                : 0.0;
 
         var dto = new TimeRegistrationComplianceDTO();
         dto.setUserId(userId);
         dto.setMonths(months);
         dto.setAveragePct(averagePct);
+        dto.setCoveragePct(coveragePct);
         return dto;
     }
 

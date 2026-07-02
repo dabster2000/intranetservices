@@ -51,6 +51,18 @@ public class Work extends PanacheEntityBase {
     @JsonDeserialize(using = LocalDateTimeDeserializer.class)
     private LocalDateTime paidOut;
 
+    /**
+     * Immutable row-creation timestamp (DB-managed: {@code DEFAULT current_timestamp()}, NO
+     * {@code ON UPDATE}). Set once at INSERT by the database and never rewritten — unlike
+     * {@code updated_at}, which every payout/edit UPDATE clobbers. Mapped read-only so the app
+     * never writes it; the DB default is authoritative. NULL for rows created before V387.
+     * Used by the time-registration compliance metric. See V387 migration.
+     */
+    @Column(name = "created_at", insertable = false, updatable = false)
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
+    private LocalDateTime createdAt;
+
     @JsonIgnore
     public boolean isPaidOut() {
         return paidOut != null;
