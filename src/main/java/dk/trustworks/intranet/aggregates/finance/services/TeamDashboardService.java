@@ -1226,20 +1226,30 @@ public class TeamDashboardService {
             all = consultantInsightsService
                     .getConsultantProfitability(null, null, windowFrom, windowToExclusive);
         } else {
-            // TTM is today-anchored by definition — the fiscal-year selector does not apply
+            // TTM is today-anchored by definition — the fiscal-year selector does not apply.
+            // Call the explicit-window variant with practices=null: team membership (below)
+            // is the population filter, not the CXO practice canon.
+            LocalDate firstOfCurrentMonth = LocalDate.now().withDayOfMonth(1);
             all = consultantInsightsService
-                    .getConsultantProfitability(null, null, effectivePeriod);
+                    .getConsultantProfitability(null, null,
+                            firstOfCurrentMonth.minusMonths(12), firstOfCurrentMonth);
         }
 
-        // Single-consultant lookup: return profitability for that user regardless of profit/loss
+        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
+
+        // Single-consultant lookup: return profitability for that user regardless of profit/loss.
+        // Restricted to members of THIS team — the caller's team access must not grant
+        // salary/profitability reads on arbitrary consultants.
         if (userId != null && !userId.isBlank()) {
+            if (!memberUuids.contains(userId)) {
+                return List.of();
+            }
             return all.stream()
                     .filter(dto -> userId.equals(dto.getUserId()))
                     .collect(Collectors.toList());
         }
 
         // Team-wide lookup: return only unprofitable consultants (existing behavior)
-        Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             return List.of();
         }
