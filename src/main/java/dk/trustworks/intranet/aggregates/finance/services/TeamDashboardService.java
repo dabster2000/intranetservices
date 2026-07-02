@@ -590,26 +590,28 @@ public class TeamDashboardService {
                 .setParameter("lookbackMonths", lookbackMonths)
                 .getResultList();
 
-        // Sales leads for team members (with extension detection)
+        // Sales leads for team members — renewal signals must reflect OPEN pipeline
+        // only, not already-decided leads. WON/LOST are excluded (the LeadStatus enum
+        // has no ABANDONED — the old NOT IN ('LOST','ABANDONED') filter let WON pass),
+        // and a recency bound drops stale open leads whose expected close date is long
+        // past (forgotten pipeline that was never marked WON/LOST). is_extension now
+        // uses the human-entered sl.extension flag — the authoritative "this renews an
+        // existing engagement" signal — instead of the old heuristic that flagged any
+        // lead sharing a client with an active contract (true even for the lead that
+        // originated that very contract). See audit finding C9.
         @SuppressWarnings("unchecked")
         List<Tuple> leadRows = em.createNativeQuery("""
                 SELECT slc.useruuid AS user_id,
                        sl.uuid AS lead_uuid, cl.name AS client_name,
                        sl.description, sl.status, sl.closedate, sl.allocation, sl.rate, sl.period,
-                       EXISTS (
-                           SELECT 1 FROM contract_consultants cc2
-                           JOIN contracts c2 ON c2.uuid = cc2.contractuuid
-                           WHERE cc2.useruuid = slc.useruuid
-                             AND c2.clientuuid = sl.clientuuid
-                             AND cc2.activefrom <= CURDATE()
-                             AND cc2.activeto > CURDATE()
-                             AND c2.status IN ('SIGNED', 'TIME')
-                       ) AS is_extension
+                       COALESCE(sl.extension, 0) AS is_extension
                 FROM sales_lead_consultant slc
                 JOIN sales_lead sl ON sl.uuid = slc.leaduuid
                 JOIN client cl ON cl.uuid = sl.clientuuid
                 WHERE slc.useruuid IN (:memberUuids)
-                  AND sl.status NOT IN ('LOST', 'ABANDONED')
+                  AND sl.status IN ('DETECTED', 'QUALIFIED', 'PROPOSAL', 'SHORTLISTED', 'NEGOTIATION')
+                  AND sl.closedate IS NOT NULL
+                  AND sl.closedate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
                 ORDER BY sl.closedate
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
@@ -798,6 +800,14 @@ public class TeamDashboardService {
         LocalDate horizon = LocalDate.now().plusDays(days);
 
         @SuppressWarnings("unchecked")
+        // has_extension_lead ("In Pipeline" badge) must mean an OPEN pipeline lead
+        // only — the old NOT IN ('LOST','ABANDONED') filter let already-WON leads flag
+        // coverage that no longer exists, hiding real renewal gaps. covered_by_parallel
+        // detects a *signed* parallel/successor contract at the same client that already
+        // overlaps and extends beyond this contract's end, so the FE can suppress false
+        // red "expiring" urgency for a consultant who is demonstrably still staffed
+        // there (prod case: Kurt Hansen "1 day left" while a parallel contract covers
+        // him to 2027-12-31). See audit finding C9.
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT cc.contractuuid, cc.useruuid AS user_id,
                        u.firstname, u.lastname,
@@ -809,8 +819,20 @@ public class TeamDashboardService {
                            JOIN sales_lead_consultant slc ON slc.leaduuid = sl.uuid
                            WHERE slc.useruuid = cc.useruuid
                              AND sl.clientuuid = c.clientuuid
-                             AND sl.status NOT IN ('LOST', 'ABANDONED')
-                       ) AS has_extension_lead
+                             AND sl.status IN ('DETECTED', 'QUALIFIED', 'PROPOSAL', 'SHORTLISTED', 'NEGOTIATION')
+                             AND sl.closedate IS NOT NULL
+                             AND sl.closedate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                       ) AS has_extension_lead,
+                       EXISTS (
+                           SELECT 1 FROM contract_consultants cc3
+                           JOIN contracts c3 ON c3.uuid = cc3.contractuuid
+                           WHERE cc3.useruuid = cc.useruuid
+                             AND c3.clientuuid = c.clientuuid
+                             AND cc3.contractuuid <> cc.contractuuid
+                             AND c3.status IN ('SIGNED', 'TIME')
+                             AND cc3.activeto > cc.activeto
+                             AND cc3.activefrom <= cc.activeto
+                       ) AS covered_by_parallel
                 FROM contract_consultants cc
                 JOIN contracts c ON c.uuid = cc.contractuuid
                 JOIN client cl ON cl.uuid = c.clientuuid
@@ -839,7 +861,8 @@ public class TeamDashboardService {
                     numVal(row, "rate"),
                     numVal(row, "hours"),
                     ((Number) row.get("days_until_expiry")).intValue(),
-                    ((Number) row.get("has_extension_lead")).intValue() > 0));
+                    ((Number) row.get("has_extension_lead")).intValue() > 0,
+                    ((Number) row.get("covered_by_parallel")).intValue() > 0));
         }
         return result;
     }

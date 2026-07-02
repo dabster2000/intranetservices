@@ -38,7 +38,7 @@ public record TeamContractTimelineDTO(
             int allocationPercent,
             double rate,
             int periodMonths,
-            /** True if the lead's client matches an active contract for this consultant */
+            /** True if the lead is human-flagged as an extension of an existing engagement (sales_lead.extension) */
             boolean isExtension
     ) {}
 }

@@ -19,6 +19,12 @@ public record TeamExpiringContractDTO(
         double hours,
         /** Days until expiry (0 or negative if already expired) */
         int daysUntilExpiry,
-        /** Whether there is a sales lead that could extend this contract */
-        boolean hasExtensionLead
+        /** Whether there is an OPEN pipeline sales lead that could extend this contract */
+        boolean hasExtensionLead,
+        /**
+         * Whether a signed parallel/successor contract at the same client already
+         * covers this consultant beyond this contract's end date. When true the
+         * expiry is not a real staffing gap and the FE should suppress red urgency.
+         */
+        boolean coveredByParallelContract
 ) {}
