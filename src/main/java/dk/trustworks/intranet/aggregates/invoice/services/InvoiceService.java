@@ -342,7 +342,42 @@ public class InvoiceService {
             query.setParameter("status" + i, finalStatus[i]);
         }
         List<Invoice> invoices = query.getResultList();
+        enrichWithCreditNoteAggregates(invoices);
         return Collections.unmodifiableList(invoices);
+    }
+
+    /**
+     * Populates the transient credit-note aggregates ({@code hasCreditNotes},
+     * {@code creditNoteCount}, {@code creditedAmount}) on the month-list invoices with a
+     * single grouped query — no N+1. Live credit notes only (CREATED/QUEUED/PENDING_REVIEW),
+     * matching the shared credited measure. The frontend derives the residual as
+     * {@code sumNoTax - creditedAmount} and drives the partial/fully-credited chips off it.
+     */
+    private void enrichWithCreditNoteAggregates(List<Invoice> invoices) {
+        if (invoices.isEmpty()) return;
+        for (Invoice invoice : invoices) {
+            invoice.hasCreditNotes = false;
+            invoice.creditNoteCount = 0;
+            invoice.creditedAmount = 0.0;
+        }
+        Map<String, Invoice> byUuid = invoices.stream()
+                .collect(Collectors.toMap(Invoice::getUuid, inv -> inv, (a, b) -> a));
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                        "SELECT cn.creditnote_for_uuid, COUNT(DISTINCT cn.uuid), COALESCE(SUM(cii.hours*cii.rate),0) " +
+                        "  FROM invoices cn LEFT JOIN invoiceitems cii ON cii.invoiceuuid = cn.uuid " +
+                        " WHERE cn.type = 'CREDIT_NOTE' AND cn.status IN ('CREATED','QUEUED','PENDING_REVIEW') " +
+                        "   AND cn.creditnote_for_uuid IN (:uuids) " +
+                        " GROUP BY cn.creditnote_for_uuid")
+                .setParameter("uuids", byUuid.keySet())
+                .getResultList();
+        for (Object[] row : rows) {
+            Invoice invoice = byUuid.get((String) row[0]);
+            if (invoice == null) continue;
+            invoice.creditNoteCount = ((Number) row[1]).intValue();
+            invoice.hasCreditNotes = invoice.creditNoteCount > 0;
+            invoice.creditedAmount = ((Number) row[2]).doubleValue();
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -498,9 +533,21 @@ public class InvoiceService {
 
     /** Legacy fallback hvis engine ikke må køre for denne type */
     private Invoice legacyUpdateDraft(Invoice invoice) {
-        // (identisk med jeres nuværende implementering, forkortet for overskuelighed)
+        // The client payload does not carry sourceItemUuid, but the delete-and-recreate below
+        // would otherwise strip the source-item links every time a credit-note draft is edited —
+        // and the multi-CN residual pre-fill depends on those links for per-item math. Preserve
+        // them by item uuid for lines that survive the edit (user-added lines stay unlinked).
+        Map<String, String> sourceItemLinks = InvoiceItem.<InvoiceItem>list("invoiceuuid = ?1", invoice.getUuid())
+                .stream()
+                .filter(ii -> ii.getSourceItemUuid() != null && !ii.getSourceItemUuid().isBlank())
+                .collect(Collectors.toMap(ii -> ii.uuid, InvoiceItem::getSourceItemUuid, (a, b) -> a));
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
-        invoice.getInvoiceitems().forEach(ii -> ii.setInvoiceuuid(invoice.getUuid()));
+        invoice.getInvoiceitems().forEach(ii -> {
+            ii.setInvoiceuuid(invoice.getUuid());
+            if (ii.getSourceItemUuid() == null || ii.getSourceItemUuid().isBlank()) {
+                ii.setSourceItemUuid(sourceItemLinks.get(ii.uuid));
+            }
+        });
         InvoiceItem.persist(invoice.getInvoiceitems());
         if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
             invoiceAttributionService.copyAttributionsFromSource(invoice);
@@ -613,8 +660,13 @@ public class InvoiceService {
                             .build());
         }
 
-        // Validate no existing credit note for this invoice
-        if (Invoice.find("creditnoteForUuid = ?1", source.getUuid()).count() > 0) {
+        // Client INVOICE sources may carry multiple (partial) credit notes as long as the
+        // cumulative credited amount never exceeds the source (spec 2026-07-02). Every other
+        // source type keeps the strict one-credit-note rule — for INTERNAL sources this check
+        // is now the SOLE enforcer of the 1:1 full-reversal model (the V72 unique index that
+        // used to back it was dropped in V386; the internal-CN design depends on 1:1).
+        boolean clientInvoiceSource = source.getType() == InvoiceType.INVOICE;
+        if (!clientInvoiceSource && Invoice.find("creditnoteForUuid = ?1", source.getUuid()).count() > 0) {
             throw new WebApplicationException(
                     Response.status(Response.Status.CONFLICT)
                             .entity("A credit note already exists for this invoice.")
@@ -625,6 +677,28 @@ public class InvoiceService {
         boolean internalSource = source.getType() == InvoiceType.INTERNAL;
         if (internalSource) {
             validateInternalCreditNoteEligibility(source);
+        }
+
+        // Soft residual check for client invoices: creating another credit note is pointless
+        // (and would over-credit) once the live credit notes cover the source. The hard,
+        // race-safe stop lives at finalization (CreditNoteCoverageService).
+        List<Invoice> openCreditNotes = List.of();
+        if (clientInvoiceSource) {
+            openCreditNotes = Invoice.list("creditnoteForUuid = ?1 and type = ?2",
+                    source.getUuid(), InvoiceType.CREDIT_NOTE);
+            double sourceSum = source.getSumNoTax();
+            double liveSum = openCreditNotes.stream()
+                    .filter(cn -> cn.getStatus() != InvoiceStatus.DRAFT)
+                    .flatMap(cn -> cn.getInvoiceitems().stream())
+                    .mapToDouble(item -> item.getHours() * item.getRate())
+                    .sum();
+            if (sourceSum > 0 && liveSum >= sourceSum - InvoiceBonusService.CREDITED_TOLERANCE_DKK) {
+                throw new WebApplicationException(
+                        Response.status(Response.Status.CONFLICT)
+                                .entity("Invoice is fully credited.")
+                                .build()
+                );
+            }
         }
 
         Invoice creditNote = new Invoice(source.getUuid(), source.getInvoicenumber(), InvoiceType.CREDIT_NOTE, source.getContractuuid(), source.getProjectuuid(),
@@ -647,43 +721,118 @@ public class InvoiceService {
             creditNote.setBillingClientUuid(intercompanyClient.getUuid());
         }
 
-        for (InvoiceItem invoiceitem : source.invoiceitems) {
-            InvoiceItem newItem = new InvoiceItem(
-                invoiceitem.consultantuuid,
-                invoiceitem.getItemname(),
-                invoiceitem.getDescription(),
-                invoiceitem.getRate(),
-                invoiceitem.getHours(),
-                invoiceitem.getPosition(),
-                creditNote.uuid,
-                invoiceitem.getOrigin()
-            );
-            // Link CN item back to its source for precise attribution matching.
-            newItem.sourceItemUuid = invoiceitem.uuid;
-            // Preserve additional fields for CALCULATED items
-            if (invoiceitem.getOrigin() == InvoiceItemOrigin.CALCULATED) {
-                newItem.setCalculationRef(invoiceitem.getCalculationRef());
-                newItem.setRuleId(invoiceitem.getRuleId());
-                newItem.setLabel(invoiceitem.getLabel());
+        if (openCreditNotes.isEmpty()) {
+            // First credit note on an uncredited invoice: full copy of the source's items,
+            // byte-equivalent to the pre-multi-CN behavior.
+            for (InvoiceItem invoiceitem : source.invoiceitems) {
+                creditNote.getInvoiceitems().add(copyItemForCreditNote(invoiceitem, creditNote.uuid,
+                        invoiceitem.getRate(), invoiceitem.getHours()));
             }
-            creditNote.getInvoiceitems().add(newItem);
+        } else {
+            prefillResidualItems(source, openCreditNotes, creditNote);
         }
-        try {
-            Invoice.persist(creditNote);
-            creditNote.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
-        } catch (Exception e) {
-            // Map unique index violation to 409 Conflict to prevent duplicates in concurrent requests
-            if (e.getCause() != null && e.getCause().getMessage() != null && e.getCause().getMessage().contains("ux_invoices_creditnote_for_uuid")) {
-                throw new WebApplicationException(
-                        Response.status(Response.Status.CONFLICT)
-                                .entity("A credit note already exists for this invoice.")
-                                .build()
-                );
-            }
-            throw e;
-        }
+        Invoice.persist(creditNote);
+        creditNote.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
         invoiceAttributionService.copyAttributionsFromSource(creditNote);
         return creditNote;
+    }
+
+    /**
+     * Pre-fills a follow-up credit note with the RESIDUAL of the source invoice — what the
+     * existing credit notes (all non-deleted statuses, i.e. DRAFT / PENDING_REVIEW / QUEUED /
+     * CREATED, so two open drafts can't both claim the full residual) have not yet covered.
+     *
+     * <p>Per-item math via {@code sourceItemUuid}: each source line is emitted with its
+     * ORIGINAL rate (keeps rate semantics for attribution) and {@code hours = residual/rate}.
+     * Lines whose residual is (near) zero are OMITTED — a 0-hours line voids the whole Q2C
+     * bulk booking (prod incident 2026-07-01). A negative per-line residual (a prior credit
+     * note over-covered that line, e.g. a kept-in-full discount line) is emitted as a
+     * negative-hours line so the item sum still equals the invoice-level residual.
+     *
+     * <p>Fallback: when any existing credit note carries items WITHOUT {@code sourceItemUuid}
+     * (legacy or manually rebuilt drafts), per-item math is unreliable — emit a single
+     * invoice-level residual line instead and log a warning.
+     */
+    void prefillResidualItems(Invoice source, List<Invoice> openCreditNotes, Invoice creditNote) {
+        Map<String, Double> creditedByItem = new HashMap<>();
+        boolean unmatchable = false;
+        double creditedTotal = 0.0;
+        for (Invoice cn : openCreditNotes) {
+            for (InvoiceItem item : cn.getInvoiceitems()) {
+                double amount = item.getHours() * item.getRate();
+                creditedTotal += amount;
+                if (item.getSourceItemUuid() == null || item.getSourceItemUuid().isBlank()) {
+                    unmatchable = true;
+                } else {
+                    creditedByItem.merge(item.getSourceItemUuid(), amount, Double::sum);
+                }
+            }
+        }
+
+        double invoiceResidual = source.getSumNoTax() - creditedTotal;
+        if (invoiceResidual <= 0.01) {
+            // The soft check above only counts LIVE credit notes; open DRAFTs can consume the
+            // rest of the residual. Never create an empty/negative credit note.
+            throw new WebApplicationException(
+                    Response.status(Response.Status.CONFLICT)
+                            .entity("The remaining amount is already covered by an open credit-note draft for this invoice.")
+                            .build());
+        }
+
+        if (unmatchable) {
+            log.warnf("createCreditNote: source %s has credit-note items without sourceItemUuid — "
+                    + "falling back to a single invoice-level residual line (%.2f)", source.getUuid(), invoiceResidual);
+            creditNote.getInvoiceitems().add(new InvoiceItem(null,
+                    "Restkreditering",
+                    "Restkreditering af faktura " + StringUtils.convertInvoiceNumberToString(source.invoicenumber),
+                    invoiceResidual, 1.0, 1, creditNote.uuid, InvoiceItemOrigin.BASE));
+            return;
+        }
+
+        for (InvoiceItem item : source.invoiceitems) {
+            double itemTotal = item.getHours() * item.getRate();
+            double residual = itemTotal - creditedByItem.getOrDefault(item.getUuid(), 0.0);
+            if (Math.abs(residual) <= 0.01) continue;   // fully credited line — omit, never emit 0-hour lines
+            if (Math.abs(item.getRate()) < 0.0001) {
+                // Cannot express a residual at a 0 rate; the finalization guard still bounds the total.
+                log.warnf("createCreditNote: skipping residual %.2f on 0-rate item %s of source %s",
+                        residual, item.getUuid(), source.getUuid());
+                continue;
+            }
+            creditNote.getInvoiceitems().add(copyItemForCreditNote(item, creditNote.uuid,
+                    item.getRate(), residual / item.getRate()));
+        }
+
+        if (creditNote.getInvoiceitems().isEmpty()) {
+            throw new WebApplicationException(
+                    Response.status(Response.Status.CONFLICT)
+                            .entity("The remaining amount is already covered by an open credit-note draft for this invoice.")
+                            .build());
+        }
+    }
+
+    /** Copies a source line onto a credit note, back-linking it via {@code sourceItemUuid}. */
+    static InvoiceItem copyItemForCreditNote(InvoiceItem sourceItem, String creditNoteUuid,
+                                             double rate, double hours) {
+        InvoiceItem newItem = new InvoiceItem(
+                sourceItem.consultantuuid,
+                sourceItem.getItemname(),
+                sourceItem.getDescription(),
+                rate,
+                hours,
+                sourceItem.getPosition(),
+                creditNoteUuid,
+                sourceItem.getOrigin()
+        );
+        // Link CN item back to its source for precise attribution matching.
+        newItem.sourceItemUuid = sourceItem.uuid;
+        // Preserve additional fields for CALCULATED items
+        if (sourceItem.getOrigin() == InvoiceItemOrigin.CALCULATED) {
+            newItem.setCalculationRef(sourceItem.getCalculationRef());
+            newItem.setRuleId(sourceItem.getRuleId());
+            newItem.setLabel(sourceItem.getLabel());
+        }
+        return newItem;
     }
 
     /**

@@ -56,6 +56,7 @@ class InvoiceFinalizationOrchestratorInternalTest {
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
     @Mock EanPrerequisiteChecker            eanChecker;
+    @Mock CreditNoteCoverageService         creditCoverage;
 
     @BeforeEach
     void enableInvoiceUpload() {
