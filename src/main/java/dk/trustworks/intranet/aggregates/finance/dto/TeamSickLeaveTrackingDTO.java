@@ -8,9 +8,12 @@ import java.util.List;
  * Includes the current rolling 365-day total, threshold status (Funktionaerloven 120-day rule),
  * monthly trend, and consecutive sick periods.
  *
- * <p>Data sourced from {@code fact_sick_day_rolling_mat}.
+ * <p>Rolling totals are computed from {@code fact_user_day} by
+ * {@link dk.trustworks.intranet.aggregates.finance.services.SickLeaveCalculator}:
+ * each sick day counts fractionally by registered hours, and non-working days
+ * (weekends/holidays) inside a continuous full-sick period are bridged.
  *
- * <p>Threshold statuses:
+ * <p>Threshold statuses (the 120-day legal line is the {@code CRITICAL} ceiling shown in the UI):
  * <ul>
  *   <li>{@code OK} — rolling total &lt; 80 days</li>
  *   <li>{@code WARNING} — rolling total 80–99 days</li>
