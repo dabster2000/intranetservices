@@ -551,6 +551,15 @@ public class InvoiceService {
                     .stream().map(ii -> ii.uuid).collect(Collectors.toSet());
         }
         InvoiceItem.delete("invoiceuuid LIKE ?1", invoice.getUuid());
+        // The bulk delete removes the rows but NOT the managed InvoiceItem entities already loaded
+        // into the persistence context — by the list() above AND by the EAGER Invoice.findById on
+        // line 547 (Invoice.invoiceitems is @OneToMany(fetch = EAGER)). Re-persisting the incoming
+        // items below, which reuse the same uuids, then collides with those stale managed instances
+        // and throws EntityExistsException / NonUniqueObjectException — surfaced to the user as a
+        // 500 "Failed to update invoice" on any credit-note draft edit. Detach everything so the
+        // incoming items insert cleanly: sourceUuid, sourceItemLinks and sourceInvoiceItemUuids are
+        // already materialised, and copyAttributionsFromSource re-loads the source it needs.
+        em.clear();
         final Set<String> validSourceItems = sourceInvoiceItemUuids;
         invoice.getInvoiceitems().forEach(ii -> {
             ii.setInvoiceuuid(invoice.getUuid());
