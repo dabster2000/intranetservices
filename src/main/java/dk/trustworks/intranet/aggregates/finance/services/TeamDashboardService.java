@@ -1168,35 +1168,48 @@ public class TeamDashboardService {
     public List<TeamClientConcentrationDTO> getClientConcentration(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
         LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
+        if (fy.start().isAfter(effectiveEnd)) {
+            // Brand-new FY with no complete month yet: nothing to concentrate on
+            return List.of();
+        }
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
             // Consistent with the other FY widgets: a team with no current members renders empty
             return List.of();
         }
 
-        // fact_user_day has no client column; join through work → contract → client.
-        // Membership is the shared temporal contract on the work date, and the day-level
-        // fact_user_day join applies the same CONSULTANT/ACTIVE canon as the revenue trend.
-        // (The contract_consultants rate join undercounts NULL-contract work rows — that is
-        // audit finding C1, tracked separately.)
+        // fact_user_day has no client column, so we source the per-client split from the
+        // canonical work_full view (V259). Rate resolves through the canonical chain
+        // task → project → contract_project → contract_consultants with the
+        // IF(workas, workas, useruuid) effective-user fallback; the client dimension is
+        // task → project → client. work.contractuuid is deliberately never used — it is
+        // NULL on ~57% of rows, which silently dropped >half of team revenue and distorted
+        // the concentration shares (audit finding C1).
+        //
+        // Revenue = SUM(workduration * rate) over rate>0 rows, which is exactly how
+        // sp_aggregate_work derives fact_user_day.registered_amount per user-day. With the
+        // same temporal-member set, CONSULTANT/ACTIVE canon (the fact_user_day join, unique
+        // per user+day so no fan-out) and window as Revenue-per-Member / the Revenue-vs-Cost
+        // trend, the pie total reconciles to those bases to the krone. Work whose rate is
+        // unresolvable (rate = 0) contributes nothing to registered_amount either, so it is
+        // excluded here too. Revenue with no resolvable client is bucketed as "Unknown" so
+        // the pie base stays whole rather than silently shrinking.
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
-                SELECT c_client.uuid AS client_uuid, c_client.name AS client_name,
-                       COALESCE(SUM(w.workduration * cc.rate), 0) AS revenue
-                FROM work w
-                """ + teamMemberTemporalJoin("w", "registered") + """
-                JOIN fact_user_day fud ON fud.useruuid = w.useruuid
-                    AND fud.document_date = w.registered
+                SELECT COALESCE(c_client.uuid, 'unknown') AS client_uuid,
+                       COALESCE(c_client.name, 'Unknown client') AS client_name,
+                       COALESCE(SUM(wf.workduration * wf.rate), 0) AS revenue
+                FROM work_full wf
+                """ + teamMemberTemporalJoin("wf", "registered") + """
+                JOIN fact_user_day fud ON fud.useruuid = wf.useruuid
+                    AND fud.document_date = wf.registered
                     AND fud.consultant_type = 'CONSULTANT'
                     AND fud.status_type = 'ACTIVE'
-                JOIN contract_consultants cc ON cc.contractuuid = w.contractuuid
-                    AND cc.useruuid = w.useruuid
-                    AND w.registered >= cc.activefrom AND w.registered <= cc.activeto
-                JOIN contracts c ON c.uuid = w.contractuuid
-                JOIN client c_client ON c_client.uuid = c.clientuuid
-                WHERE w.registered >= :fromDate AND w.registered <= :toDate
-                  AND w.workduration > 0
-                GROUP BY c_client.uuid, c_client.name
+                LEFT JOIN client c_client ON c_client.uuid = wf.clientuuid
+                WHERE wf.registered >= :fromDate AND wf.registered <= :toDate
+                  AND wf.rate > 0
+                GROUP BY COALESCE(c_client.uuid, 'unknown'),
+                         COALESCE(c_client.name, 'Unknown client')
                 ORDER BY revenue DESC
                 """, Tuple.class)
                 .setParameter("teamId", teamId)
