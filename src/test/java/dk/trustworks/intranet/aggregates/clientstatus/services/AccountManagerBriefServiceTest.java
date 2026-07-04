@@ -76,12 +76,14 @@ class AccountManagerBriefServiceTest {
         var client = new ClientAnalysis("Banedanmark", List.of(gapMonth, fullMonth), 1, 720_980);
 
         ObjectNode payload = AccountManagerBriefService.buildPayload(
-                "Tommy", Framing.TO_AM, List.of(client), List.of("VATTENFALL VINDKRAFT A/S"), 42, false, true);
+                "Tommy", Framing.TO_AM, List.of(client), List.of("VATTENFALL VINDKRAFT A/S"), 42, 25_000, 6, "januar 2026", true);
 
         assertEquals("Tommy", payload.get("accountManager").asText());
         assertEquals("TO_AM", payload.get("framing").asText());
         assertEquals(42, payload.get("variationSeed").asInt());
-        assertFalse(payload.path("options").get("hideMinorAnomalies").asBoolean());
+        assertEquals(25_000, payload.path("options").get("minorAnomalyFloorDkk").asInt());
+        assertEquals(6, payload.path("options").get("reportMonths").asInt());
+        assertEquals("januar 2026", payload.path("options").get("reportFromMonth").asText());
         assertTrue(payload.path("options").get("hideShiftedInvoicing").asBoolean());
         assertEquals(1, payload.path("stats").get("clientsWithGaps").asInt());
         assertEquals(1, payload.path("stats").get("gapMonths").asInt());
@@ -110,7 +112,7 @@ class AccountManagerBriefServiceTest {
     @Test
     void buildPayload_selfFraming_encodedInPayload() {
         ObjectNode payload = AccountManagerBriefService.buildPayload(
-                "Tommy", Framing.SELF, List.of(), List.of(), 7, false, false);
+                "Tommy", Framing.SELF, List.of(), List.of(), 7, 0, 12, "juli 2025", false);
         assertEquals("SELF", payload.get("framing").asText());
         assertTrue(payload.get("clients").isEmpty());
         assertTrue(payload.get("excludedSelfBilled").isEmpty());
@@ -120,7 +122,7 @@ class AccountManagerBriefServiceTest {
     @Test
     void buildPayload_sanitizesAccountManagerName() {
         ObjectNode payload = AccountManagerBriefService.buildPayload(
-                "<script>Tommy</script>", Framing.TO_AM, List.of(), List.of(), 7, true, false);
+                "<script>Tommy</script>", Framing.TO_AM, List.of(), List.of(), 7, 0, 12, "juli 2025", false);
         assertEquals("Tommy", payload.get("accountManager").asText(),
                 "AM firstname must be sanitized before entering the prompt payload");
     }

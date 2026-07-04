@@ -77,7 +77,8 @@ public class AccountManagerBriefService {
     record ClientAnalysis(String name, List<MonthAnalysis> months, int gapMonthCount, double totalMissing) {}
 
     public AccountManagerBriefResponse generate(String accountManagerUuid, String end, String framingRaw,
-                                                boolean hideMinorAnomalies, boolean hideShiftedInvoicing) {
+                                                int minorAnomalyFloorDkk, int reportMonths,
+                                                boolean hideShiftedInvoicing) {
         Framing framing = parseFraming(framingRaw);
         YearMonth endMonth = parseEnd(end);
 
@@ -173,12 +174,22 @@ public class AccountManagerBriefService {
             analyses.add(new ClientAnalysis(sanitize(row.clientName()), months, clientGaps, totalMissing));
         }
 
-        log.infof("POST /invoice-controlling/client-status/account-manager-brief: am=%s clientCount=%d gapMonthCount=%d model=%s framing=%s hideMinor=%s hideShifted=%s detailBuildMs=%d",
+        // Report window: the message may only contain points about the last N non-provisional
+        // months; the full series still goes to the model as timing/pattern context.
+        List<String> nonProvisional = grid.months().stream()
+                .filter(mk -> !provisional.contains(mk))
+                .sorted()
+                .toList();
+        String reportFromMonth = nonProvisional.isEmpty() ? ""
+                : monthLabel(nonProvisional.get(Math.max(0, nonProvisional.size() - reportMonths)));
+
+        log.infof("POST /invoice-controlling/client-status/account-manager-brief: am=%s clientCount=%d gapMonthCount=%d model=%s framing=%s minorFloor=%d reportMonths=%d hideShifted=%s detailBuildMs=%d",
                 accountManagerUuid, clientNameByUuid.size(), gapMonthCount, invoiceStatusModel, framing,
-                hideMinorAnomalies, hideShiftedInvoicing, System.currentTimeMillis() - detailFetchStart);
+                minorAnomalyFloorDkk, reportMonths, hideShiftedInvoicing,
+                System.currentTimeMillis() - detailFetchStart);
 
         String slackText = askModel(am.firstname(), framing, analyses, excludedNames,
-                hideMinorAnomalies, hideShiftedInvoicing);
+                minorAnomalyFloorDkk, reportMonths, reportFromMonth, hideShiftedInvoicing);
         if (slackText == null || slackText.isBlank()) {
             throw new WebApplicationException(
                     "AI-generering fejlede (model " + invoiceStatusModel
@@ -255,10 +266,11 @@ public class AccountManagerBriefService {
 
     private String askModel(String firstname, Framing framing,
                             List<ClientAnalysis> analyses, List<String> excludedNames,
-                            boolean hideMinorAnomalies, boolean hideShiftedInvoicing) {
+                            int minorAnomalyFloorDkk, int reportMonths, String reportFromMonth,
+                            boolean hideShiftedInvoicing) {
         int variationSeed = new Random().nextInt(1_000);
         ObjectNode payload = buildPayload(firstname, framing, analyses, excludedNames, variationSeed,
-                hideMinorAnomalies, hideShiftedInvoicing);
+                minorAnomalyFloorDkk, reportMonths, reportFromMonth, hideShiftedInvoicing);
         String userMsg;
         try {
             userMsg = MAPPER.writeValueAsString(payload);
@@ -288,13 +300,16 @@ public class AccountManagerBriefService {
     static ObjectNode buildPayload(String firstname, Framing framing,
                                    List<ClientAnalysis> analyses, List<String> excludedNames,
                                    int variationSeed,
-                                   boolean hideMinorAnomalies, boolean hideShiftedInvoicing) {
+                                   int minorAnomalyFloorDkk, int reportMonths, String reportFromMonth,
+                                   boolean hideShiftedInvoicing) {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("accountManager", sanitize(firstname));
         root.put("framing", framing.name());
         root.put("variationSeed", variationSeed);
         ObjectNode options = root.putObject("options");
-        options.put("hideMinorAnomalies", hideMinorAnomalies);
+        options.put("minorAnomalyFloorDkk", minorAnomalyFloorDkk);
+        options.put("reportMonths", reportMonths);
+        options.put("reportFromMonth", reportFromMonth);
         options.put("hideShiftedInvoicing", hideShiftedInvoicing);
 
         int gapMonths = analyses.stream().mapToInt(ClientAnalysis::gapMonthCount).sum();
@@ -402,9 +417,15 @@ public class AccountManagerBriefService {
                    en måned der ser fuld ud i totalen men hvor to konsulenter udligner hinanden.
 
                 Brugervalgte options (payload-feltet "options" — følg dem præcist):
-                - options.hideMinorAnomalies=true: udelad mindre afvigelser og bagatel-observationer.
-                  Medtag kun punkter med væsentlige beløb (som tommelfingerregel over ca. 25.000 kr) og
-                  tydelige mønstre; spring punkt 5-observationer over medmindre de er markante.
+                - options.minorAnomalyFloorDkk (bagatelgrænse i kr): udelad punkter hvor det manglende
+                  beløb er under grænsen. 0 = medtag alt væsentligt. Et mønster-punkt der dækker flere
+                  måneder må medtages hvis det SAMLEDE beløb overstiger grænsen. Punkt 5-observationer
+                  udelades hvis deres beløb ligger under grænsen.
+                - options.reportMonths / options.reportFromMonth: beskeden må KUN indeholde punkter om
+                  måneder fra og med {reportFromMonth} (de seneste {reportMonths} måneder). Ældre måneder
+                  i payloaden er UDELUKKENDE kontekst til tidsforskydnings- og mønsteranalysen — et
+                  mønster-punkt må gerne nævne at noget har stået på længere ("siden {ældre måned}"),
+                  men hvert konkret punkt skal handle om en måned i vinduet.
                 - options.hideShiftedInvoicing=true: når du med rimelig høj sikkerhed kan spore at et gap
                   er faktureret i en tidligere eller senere måned (samme konsulent eller tilsvarende beløb
                   i en nabomåned), så udelad punktet HELT i stedet for at nævne det som forskudt. Er du i

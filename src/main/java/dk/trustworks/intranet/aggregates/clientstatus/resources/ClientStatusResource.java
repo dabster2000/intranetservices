@@ -73,9 +73,13 @@ public class ClientStatusResource {
         if (!CLIENT_UUID.matcher(request.accountManagerUuid()).matches()) {
             throw new BadRequestException("accountManagerUuid must be a valid UUID");
         }
+        int minorFloor = request.minorAnomalyFloorDkk() == null ? 0
+                : Math.max(0, Math.min(500_000, request.minorAnomalyFloorDkk()));
+        int reportMonths = request.reportMonths() == null ? 12
+                : Math.max(1, Math.min(12, request.reportMonths()));
         AccountManagerBriefResponse result = accountManagerBriefService.generate(
                 request.accountManagerUuid(), request.end(), request.framing(),
-                Boolean.TRUE.equals(request.hideMinorAnomalies()),
+                minorFloor, reportMonths,
                 Boolean.TRUE.equals(request.hideShiftedInvoicing()));
         return Response.ok(result).build();
     }
