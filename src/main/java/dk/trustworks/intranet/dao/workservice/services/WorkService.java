@@ -567,18 +567,7 @@ public class WorkService {
         Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
     }
 
-    /**
-     * REQUIRES_NEW is load-bearing: the only caller is InvoiceBookedPayoutObserver, an
-     * {@code @Observes(during = AFTER_SUCCESS)} observer that runs in the afterCompletion
-     * callback of the just-committed booking transaction. That completed transaction is still
-     * associated with the thread, so the default {@code REQUIRED} joins it and Narayana rejects
-     * the write with {@code InactiveTransactionException}. REQUIRES_NEW suspends the completed
-     * transaction and begins a fresh one.
-     *
-     * <p>Idempotent: only rows with {@code paid_out IS NULL} are stamped, so a re-run (manual
-     * backfill or a re-fired event) never overwrites an earlier payout timestamp.
-     */
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    @Transactional
     public void registerAsPaidout(String contractuuid, String projectuuid, int month, int year) {
         log.infof("Batch paidout registration started: contractUuid=%s, projectUuid=%s, month=%d, year=%d",
                 contractuuid, projectuuid, month, year);
@@ -586,10 +575,11 @@ public class WorkService {
         long count = 0;
         List<WorkFull> workItems = WorkFull.<WorkFull>find("contractuuid = ?1 AND projectuuid = ?2 AND MONTH(registered) = ?3 AND YEAR(registered) = ?4", contractuuid, projectuuid, month, year).list();
         for (WorkFull work : workItems) {
-            count += Work.update("paidOut = ?1 WHERE uuid = ?2 AND paidOut IS NULL", now, work.getUuid());
+            Work.update("paidOut = ?1 WHERE uuid = ?2 ", now, work.getUuid());
+            count++;
         }
-        log.infof("Batch paidout registration completed: contractUuid=%s, projectUuid=%s, month=%d, year=%d, workItems=%d, newlyMarked=%d, paidOutTimestamp=%s",
-                contractuuid, projectuuid, month, year, workItems.size(), count, now);
+        log.infof("Batch paidout registration completed: contractUuid=%s, projectUuid=%s, month=%d, year=%d, workItemsMarked=%d, paidOutTimestamp=%s",
+                contractuuid, projectuuid, month, year, count, now);
     }
 
     /**

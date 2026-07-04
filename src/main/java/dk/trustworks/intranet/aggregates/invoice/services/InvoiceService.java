@@ -462,22 +462,6 @@ public class InvoiceService {
 
     @Transactional
     public Invoice updateDraftInvoice(Invoice invoice) {
-        // Guard: two body lines that share one uuid can never be distinct rows (uuid is the PK) and
-        // would collide on re-persist with NonUniqueObjectException/EntityExistsException. That
-        // exception carries no SQL cause, so it falls through DatabaseConstraintViolationExceptionMapper
-        // to an opaque, client-retried 500 (prod incident 2026-07-03, credit-note draft edit). The
-        // em.clear() in legacyUpdateDraft only detaches DB-loaded rows — it cannot make two same-uuid
-        // body objects insert cleanly. Reject up-front with a stable, non-retryable 400 so the editor's
-        // debounced auto-save stops re-firing the same broken request.
-        String duplicateItemUuid = firstDuplicateItemUuid(invoice.getInvoiceitems());
-        if (duplicateItemUuid != null) {
-            throw new WebApplicationException(
-                    Response.status(Response.Status.BAD_REQUEST)
-                            .entity("Invoice contains duplicate line-item ids (" + duplicateItemUuid
-                                    + "); each invoice line must have a unique id.")
-                            .build());
-        }
-
         if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
             return legacyUpdateDraft(invoice);
         }
@@ -587,23 +571,6 @@ public class InvoiceService {
             invoiceAttributionService.copyAttributionsFromSource(invoice);
         }
         return invoice;
-    }
-
-    /**
-     * Returns the first {@link InvoiceItem} uuid that occurs more than once in {@code items}, or
-     * {@code null} when every uuid is unique (also for a {@code null}/empty list; items with a
-     * {@code null} uuid are ignored). A duplicate uuid is never two distinct lines — the uuid is the
-     * row primary key — so re-persisting such a body would raise {@code NonUniqueObjectException}/
-     * {@code EntityExistsException}. Kept pure and static so it is unit-testable without a datasource.
-     */
-    static String firstDuplicateItemUuid(List<InvoiceItem> items) {
-        if (items == null) return null;
-        Set<String> seen = new HashSet<>();
-        for (InvoiceItem item : items) {
-            if (item == null || item.uuid == null) continue;
-            if (!seen.add(item.uuid)) return item.uuid;
-        }
-        return null;
     }
 
     /**
