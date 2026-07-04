@@ -74,7 +74,9 @@ public class ClientStatusResource {
             throw new BadRequestException("accountManagerUuid must be a valid UUID");
         }
         AccountManagerBriefResponse result = accountManagerBriefService.generate(
-                request.accountManagerUuid(), request.end(), request.framing());
+                request.accountManagerUuid(), request.end(), request.framing(),
+                Boolean.TRUE.equals(request.hideMinorAnomalies()),
+                Boolean.TRUE.equals(request.hideShiftedInvoicing()));
         return Response.ok(result).build();
     }
 

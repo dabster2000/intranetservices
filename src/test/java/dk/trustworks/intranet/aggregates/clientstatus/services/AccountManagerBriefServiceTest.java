@@ -76,11 +76,13 @@ class AccountManagerBriefServiceTest {
         var client = new ClientAnalysis("Banedanmark", List.of(gapMonth, fullMonth), 1, 720_980);
 
         ObjectNode payload = AccountManagerBriefService.buildPayload(
-                "Tommy", Framing.TO_AM, List.of(client), List.of("VATTENFALL VINDKRAFT A/S"), 42);
+                "Tommy", Framing.TO_AM, List.of(client), List.of("VATTENFALL VINDKRAFT A/S"), 42, false, true);
 
         assertEquals("Tommy", payload.get("accountManager").asText());
         assertEquals("TO_AM", payload.get("framing").asText());
         assertEquals(42, payload.get("variationSeed").asInt());
+        assertFalse(payload.path("options").get("hideMinorAnomalies").asBoolean());
+        assertTrue(payload.path("options").get("hideShiftedInvoicing").asBoolean());
         assertEquals(1, payload.path("stats").get("clientsWithGaps").asInt());
         assertEquals(1, payload.path("stats").get("gapMonths").asInt());
         assertEquals(720_980, payload.path("stats").get("totalMissingDkk").asLong());
@@ -108,7 +110,7 @@ class AccountManagerBriefServiceTest {
     @Test
     void buildPayload_selfFraming_encodedInPayload() {
         ObjectNode payload = AccountManagerBriefService.buildPayload(
-                "Tommy", Framing.SELF, List.of(), List.of(), 7);
+                "Tommy", Framing.SELF, List.of(), List.of(), 7, false, false);
         assertEquals("SELF", payload.get("framing").asText());
         assertTrue(payload.get("clients").isEmpty());
         assertTrue(payload.get("excludedSelfBilled").isEmpty());
@@ -118,7 +120,7 @@ class AccountManagerBriefServiceTest {
     @Test
     void buildPayload_sanitizesAccountManagerName() {
         ObjectNode payload = AccountManagerBriefService.buildPayload(
-                "<script>Tommy</script>", Framing.TO_AM, List.of(), List.of(), 7);
+                "<script>Tommy</script>", Framing.TO_AM, List.of(), List.of(), 7, true, false);
         assertEquals("Tommy", payload.get("accountManager").asText(),
                 "AM firstname must be sanitized before entering the prompt payload");
     }

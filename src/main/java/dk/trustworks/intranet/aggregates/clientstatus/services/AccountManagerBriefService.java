@@ -76,7 +76,8 @@ public class AccountManagerBriefService {
 
     record ClientAnalysis(String name, List<MonthAnalysis> months, int gapMonthCount, double totalMissing) {}
 
-    public AccountManagerBriefResponse generate(String accountManagerUuid, String end, String framingRaw) {
+    public AccountManagerBriefResponse generate(String accountManagerUuid, String end, String framingRaw,
+                                                boolean hideMinorAnomalies, boolean hideShiftedInvoicing) {
         Framing framing = parseFraming(framingRaw);
         YearMonth endMonth = parseEnd(end);
 
@@ -172,11 +173,12 @@ public class AccountManagerBriefService {
             analyses.add(new ClientAnalysis(sanitize(row.clientName()), months, clientGaps, totalMissing));
         }
 
-        log.infof("POST /invoice-controlling/client-status/account-manager-brief: am=%s clientCount=%d gapMonthCount=%d model=%s framing=%s detailBuildMs=%d",
+        log.infof("POST /invoice-controlling/client-status/account-manager-brief: am=%s clientCount=%d gapMonthCount=%d model=%s framing=%s hideMinor=%s hideShifted=%s detailBuildMs=%d",
                 accountManagerUuid, clientNameByUuid.size(), gapMonthCount, invoiceStatusModel, framing,
-                System.currentTimeMillis() - detailFetchStart);
+                hideMinorAnomalies, hideShiftedInvoicing, System.currentTimeMillis() - detailFetchStart);
 
-        String slackText = askModel(am.firstname(), framing, analyses, excludedNames);
+        String slackText = askModel(am.firstname(), framing, analyses, excludedNames,
+                hideMinorAnomalies, hideShiftedInvoicing);
         if (slackText == null || slackText.isBlank()) {
             throw new WebApplicationException(
                     "AI-generering fejlede (model " + invoiceStatusModel
@@ -252,9 +254,11 @@ public class AccountManagerBriefService {
     }
 
     private String askModel(String firstname, Framing framing,
-                            List<ClientAnalysis> analyses, List<String> excludedNames) {
+                            List<ClientAnalysis> analyses, List<String> excludedNames,
+                            boolean hideMinorAnomalies, boolean hideShiftedInvoicing) {
         int variationSeed = new Random().nextInt(1_000);
-        ObjectNode payload = buildPayload(firstname, framing, analyses, excludedNames, variationSeed);
+        ObjectNode payload = buildPayload(firstname, framing, analyses, excludedNames, variationSeed,
+                hideMinorAnomalies, hideShiftedInvoicing);
         String userMsg;
         try {
             userMsg = MAPPER.writeValueAsString(payload);
@@ -283,11 +287,15 @@ public class AccountManagerBriefService {
 
     static ObjectNode buildPayload(String firstname, Framing framing,
                                    List<ClientAnalysis> analyses, List<String> excludedNames,
-                                   int variationSeed) {
+                                   int variationSeed,
+                                   boolean hideMinorAnomalies, boolean hideShiftedInvoicing) {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("accountManager", sanitize(firstname));
         root.put("framing", framing.name());
         root.put("variationSeed", variationSeed);
+        ObjectNode options = root.putObject("options");
+        options.put("hideMinorAnomalies", hideMinorAnomalies);
+        options.put("hideShiftedInvoicing", hideShiftedInvoicing);
 
         int gapMonths = analyses.stream().mapToInt(ClientAnalysis::gapMonthCount).sum();
         double totalMissing = analyses.stream().mapToDouble(ClientAnalysis::totalMissing).sum();
@@ -392,6 +400,18 @@ public class AccountManagerBriefService {
                 5. Nævn gerne ANDRE problemer du kan se i data, formuleret som venlige spørgsmål: fx en
                    konsulent faktureret uden registreret arbejde, et markant unmatchedInvoiced-beløb, eller
                    en måned der ser fuld ud i totalen men hvor to konsulenter udligner hinanden.
+
+                Brugervalgte options (payload-feltet "options" — følg dem præcist):
+                - options.hideMinorAnomalies=true: udelad mindre afvigelser og bagatel-observationer.
+                  Medtag kun punkter med væsentlige beløb (som tommelfingerregel over ca. 25.000 kr) og
+                  tydelige mønstre; spring punkt 5-observationer over medmindre de er markante.
+                - options.hideShiftedInvoicing=true: når du med rimelig høj sikkerhed kan spore at et gap
+                  er faktureret i en tidligere eller senere måned (samme konsulent eller tilsvarende beløb
+                  i en nabomåned), så udelad punktet HELT i stedet for at nævne det som forskudt. Er du i
+                  tvivl, så behold punktet. Ved false: nævn forskudt fakturering som et venligt
+                  bekræftelsesspørgsmål som beskrevet i punkt 2.
+                - Hvis alle punkter for en kunde filtreres væk af options, så udelad hele kundesektionen.
+                  Ender HELE beskeden uden punkter, så skriv en kort positiv besked i stedet.
 
                 Regler:
                 - Brug KUN klient-, konsulent- og projektnavne der findes i payloaden. Opdigt aldrig navne,
