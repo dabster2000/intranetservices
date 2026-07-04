@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dk.trustworks.intranet.aggregates.clientstatus.ClientStatusMath;
 import dk.trustworks.intranet.aggregates.clientstatus.dto.*;
+import dk.trustworks.intranet.aggregates.clientstatus.model.ClientMonthControl;
 import dk.trustworks.intranet.apis.openai.OpenAIService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -39,6 +40,8 @@ public class AccountManagerBriefService {
     /** Only surface a consultant's shortfall when it exceeds this, to keep the payload clean. */
     static final double CONSULTANT_MISSING_FLOOR_DKK = 1_000d;
     private static final int MAX_NAME_LENGTH = 120;
+    /** Controlling notes are context, not the message body — cap them so they can't bloat the prompt. */
+    private static final int MAX_NOTE_LENGTH = 500;
     private static final Locale DA = Locale.of("da");
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -72,7 +75,7 @@ public class AccountManagerBriefService {
      */
     record MonthAnalysis(String monthLabel, double expected, double invoiced, double delta, boolean gap,
                          List<ConsultantGap> consultantDeviations, List<ProjectGap> projectGaps,
-                         double unmatchedInvoiced) {}
+                         double unmatchedInvoiced, boolean approved, String note) {}
 
     record ClientAnalysis(String name, List<MonthAnalysis> months, int gapMonthCount, double totalMissing) {}
 
@@ -119,17 +122,27 @@ public class AccountManagerBriefService {
         ClientStatusResponse grid = clientStatusService.getClientStatus(endMonth);
         Set<String> provisional = ClientStatusMath.provisionalMonthKeys(grid.months(), java.time.LocalDate.now());
 
+        // Controlling state for the AM's clients across the window, keyed "clientUuid:YYYYMM".
+        // Effectively-approved (approved && !drift) cells are signed off: they must never enter the
+        // brief as problems — a client whose gaps are all approved drops out entirely — but their
+        // notes ride along (any month) as background/explanatory context.
+        java.time.LocalDate ttmFrom = ClientStatusMath.ttmFromDate(endMonth);
+        java.time.LocalDate ttmTo = ClientStatusMath.ttmToDateExclusive(endMonth).minusDays(1);
+        Map<String, ClientMonthControl> controlByKey =
+                clientStatusService.controlMap(ttmFrom, ttmTo, clientNameByUuid.keySet());
+
         List<ClientAnalysis> analyses = new ArrayList<>();
         int gapMonthCount = 0;
         long detailFetchStart = System.currentTimeMillis();
         for (ClientStatusRow row : grid.clients()) {
             if (!clientNameByUuid.containsKey(row.clientUuid())) continue;
 
-            // A client enters the brief only when at least one month breaches the gap floor —
-            // but then its FULL month series goes along, so the model can trace timing shifts
-            // and per-consultant patterns across the whole window.
+            // A client enters the brief only when at least one NON-effectively-approved month
+            // breaches the gap floor — but then its FULL month series goes along, so the model can
+            // trace timing shifts and per-consultant patterns across the whole window.
             boolean hasGap = row.cells().stream()
                     .filter(c -> !provisional.contains(c.monthKey()))
+                    .filter(c -> !effectivelyApproved(controlByKey, row.clientUuid(), c))
                     .anyMatch(c -> c.delta() <= -GAP_FLOOR_DKK);
             if (!hasGap) continue;
 
@@ -158,12 +171,17 @@ public class AccountManagerBriefService {
             double totalMissing = 0d;
             for (int i = 0; i < activeCells.size(); i++) {
                 ClientStatusCell cell = activeCells.get(i);
-                boolean gap = cell.delta() <= -GAP_FLOOR_DKK;
+                ClientMonthControl ctrl = controlByKey.get(row.clientUuid() + ":" + cell.monthKey());
+                boolean approved = effectivelyApproved(controlByKey, row.clientUuid(), cell);
+                String note = noteContext(ctrl);
+                // Effectively-approved months are signed off — never counted or reported as gaps,
+                // exactly like provisional months; they still ride along as context.
+                boolean gap = !approved && cell.delta() <= -GAP_FLOOR_DKK;
                 if (detailIdx.contains(i)) {
-                    months.add(buildMonthAnalysis(row.clientUuid(), cell, gap));
+                    months.add(buildMonthAnalysis(row.clientUuid(), cell, gap, approved, note));
                 } else {
                     months.add(new MonthAnalysis(monthLabel(cell.monthKey()), cell.expected(),
-                            cell.invoiced(), cell.delta(), gap, List.of(), List.of(), 0d));
+                            cell.invoiced(), cell.delta(), gap, List.of(), List.of(), 0d, approved, note));
                 }
                 if (gap) {
                     clientGaps++;
@@ -208,7 +226,8 @@ public class AccountManagerBriefService {
      * shortfalls. The unmatched-bucket value rides along so the model can flag invoice lines
      * that could not be tied to any consultant.
      */
-    private MonthAnalysis buildMonthAnalysis(String clientUuid, ClientStatusCell cell, boolean gap) {
+    private MonthAnalysis buildMonthAnalysis(String clientUuid, ClientStatusCell cell, boolean gap,
+                                             boolean approved, String note) {
         int year = Integer.parseInt(cell.monthKey().substring(0, 4));
         int month = Integer.parseInt(cell.monthKey().substring(4, 6));
         ClientStatusDetailResponse detail = clientStatusService.getClientStatusDetail(clientUuid, year, month);
@@ -230,7 +249,33 @@ public class AccountManagerBriefService {
 
         return new MonthAnalysis(monthLabel(cell.monthKey()), cell.expected(), cell.invoiced(),
                 cell.delta(), gap, deviations, projectGaps,
-                Math.abs(unmatched) > CONSULTANT_MISSING_FLOOR_DKK ? unmatched : 0d);
+                Math.abs(unmatched) > CONSULTANT_MISSING_FLOOR_DKK ? unmatched : 0d, approved, note);
+    }
+
+    /** True when the client-month cell is effectively approved (approval snapshot exists and !drift). */
+    private static boolean effectivelyApproved(Map<String, ClientMonthControl> controlByKey,
+                                               String clientUuid, ClientStatusCell cell) {
+        ClientMonthControl ctrl = controlByKey.get(clientUuid + ":" + cell.monthKey());
+        if (ctrl == null || !ctrl.isApproved()) return false;
+        boolean drift = ClientStatusMath.isDrifted(true,
+                ctrl.approvedExpected, ctrl.approvedInvoiced, cell.expected(), cell.invoiced());
+        return !drift;
+    }
+
+    /**
+     * Sanitized, capped controlling note for the cell as context, or null when there is none. Uses
+     * the same HTML/control-char stripping as {@link #sanitize} but keeps up to {@link #MAX_NOTE_LENGTH}
+     * characters (a note is prose context, not a name), so it is not truncated to the name length.
+     */
+    static String noteContext(String rawNote) {
+        if (rawNote == null || rawNote.isBlank()) return null;
+        String stripped = rawNote.replaceAll("<[^>]*>", "").replaceAll("[\\p{Cntrl}]", " ").strip();
+        if (stripped.isBlank()) return null;
+        return stripped.length() > MAX_NOTE_LENGTH ? stripped.substring(0, MAX_NOTE_LENGTH) : stripped;
+    }
+
+    private static String noteContext(ClientMonthControl ctrl) {
+        return ctrl == null ? null : noteContext(ctrl.note);
     }
 
     /** Per-project shortfall = Σ work.value − Σ invoice.signedGrossConsultant, only above the consultant noise floor. */
@@ -331,6 +376,10 @@ public class AccountManagerBriefService {
                 m.put("invoiced", Math.round(ma.invoiced()));
                 m.put("delta", Math.round(ma.delta()));
                 m.put("gap", ma.gap());
+                // Signed-off month: emitted only so the model treats it as accepted context, never a problem.
+                if (ma.approved()) m.put("approved", true);
+                // Controlling note (any month, approved or not) rides along as explanatory context.
+                if (ma.note() != null && !ma.note().isBlank()) m.put("note", ma.note());
                 if (!ma.consultantDeviations().isEmpty()) {
                     ArrayNode consultants = m.putArray("consultants");
                     for (ConsultantGap c : ma.consultantDeviations()) {
@@ -415,6 +464,15 @@ public class AccountManagerBriefService {
                 5. Nævn gerne ANDRE problemer du kan se i data, formuleret som venlige spørgsmål: fx en
                    konsulent faktureret uden registreret arbejde, et markant unmatchedInvoiced-beløb, eller
                    en måned der ser fuld ud i totalen men hvor to konsulenter udligner hinanden.
+
+                Kontrollerede måneder og noter (VIGTIGT):
+                - En måned med "approved": true er allerede kontrolleret og GODKENDT af faktureringsteamet.
+                  Rejs den ALDRIG som et problem, et gap eller et spørgsmål — heller ikke selvom dens tal
+                  ser skæve ud. Brug den udelukkende som baggrund/kontekst (fx til tidsforskydningsanalysen).
+                - Et "note"-felt på en måned er en kort forklaring skrevet af faktureringsteamet. Brug den
+                  KUN som baggrund til at forstå de øvrige punkter (en note kan fx forklare en
+                  faktureringsrytme der også forklarer nabomånederne) — citér den ikke og gør den ikke selv
+                  til et punkt.
 
                 Brugervalgte options (payload-feltet "options" — følg dem præcist):
                 - options.minorAnomalyFloorDkk (bagatelgrænse i kr): udelad punkter hvor det manglende

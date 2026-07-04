@@ -16,5 +16,6 @@ public record ClientStatusDetailResponse(
         List<ClientStatusInvoiceLine> invoices,
         List<ClientStatusConsultantRecon> consultantRecon,
         String accountManagerUuid,      // nullable; client.accountmanager
-        String accountManagerName       // nullable; CONCAT(user.firstname, ' ', user.lastname)
+        String accountManagerName,      // nullable; CONCAT(user.firstname, ' ', user.lastname)
+        ClientStatusControlDto control  // nullable; controlling state for this client-month cell
 ) {}
