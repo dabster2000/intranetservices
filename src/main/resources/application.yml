@@ -374,7 +374,9 @@ openai:
   # Model for the Account-Manager invoicing-status brief (AccountManagerBriefService). A capable
   # text model is required to compose the Danish Slack message; the gpt-5 family is fine here since
   # the call never sets temperature. Override per env with OPENAI_INVOICE_STATUS_MODEL.
-  invoice-status-model: ${OPENAI_INVOICE_STATUS_MODEL:gpt-5.4}
+  # Default is gpt-4o (proven accessible for this project's API key); gpt-5.4 returned
+  # HTTP 403 (project lacks model access) — enable it in the OpenAI console before overriding.
+  invoice-status-model: ${OPENAI_INVOICE_STATUS_MODEL:gpt-4o}
 # Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false, INVOICE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
 # so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
 # does, cannot reuse production's idempotency keys.

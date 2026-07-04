@@ -51,7 +51,7 @@ public class AccountManagerBriefService {
     @Inject
     OpenAIService openAIService;
 
-    @ConfigProperty(name = "openai.invoice-status-model", defaultValue = "gpt-5.4")
+    @ConfigProperty(name = "openai.invoice-status-model", defaultValue = "gpt-4o")
     String invoiceStatusModel;
 
     /** Immutable framing options for the generated message. */
@@ -139,7 +139,8 @@ public class AccountManagerBriefService {
         String slackText = askModel(am.firstname(), framing, analyses, excludedNames);
         if (slackText == null || slackText.isBlank()) {
             throw new WebApplicationException(
-                    "Failed to generate the account-manager brief (empty model response)",
+                    "AI-generering fejlede (model " + invoiceStatusModel
+                            + "). Tjek at OpenAI-projektet har adgang til modellen — se backend-loggen for detaljer.",
                     Response.Status.BAD_GATEWAY);
         }
 

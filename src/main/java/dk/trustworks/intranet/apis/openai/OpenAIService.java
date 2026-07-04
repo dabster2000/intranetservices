@@ -138,6 +138,18 @@ public class OpenAIService {
             }
             return extractOutputTextOrEmpty(root);
 
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            // The REST client throws for 4xx/5xx before the status branch above runs; the
+            // OpenAI error body (e.g. "project does not have access to model X") is on the response.
+            String errBody = null;
+            try {
+                if (e.getResponse() != null) errBody = e.getResponse().readEntity(String.class);
+            } catch (Exception ignore) {
+                // body already consumed/closed — status alone will have to do
+            }
+            log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s body=%s",
+                    chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?", errBody);
+            return "{}";
         } catch (Exception e) {
             log.errorf(e, "[OpenAIService] Responses request failed (schema, model=%s)", chosenModel);
             return "{}";
