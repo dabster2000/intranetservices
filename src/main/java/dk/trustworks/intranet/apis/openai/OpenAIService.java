@@ -92,8 +92,23 @@ public class OpenAIService {
      * Useful when you MUST return a schema-conformant JSON even if the model refuses.
      */
     public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName, String refusalFallbackJson) {
+        return askQuestionWithSchema(system, userMsg, jsonSchema, schemaName, refusalFallbackJson, null, 0);
+    }
+
+    /**
+     * Strict structured output with per-call model + token budget overrides (mirrors the
+     * {@code askWithSchemaAndImage} override plumbing). Never sets {@code temperature} — the
+     * gpt-5 family rejects it with HTTP 400.
+     *
+     * @param modelOverride           optional model id for this call only (null/blank → global {@code openai.model})
+     * @param maxOutputTokensOverride positive value overrides the default 4096 budget (0 → default)
+     */
+    public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName,
+                                        String refusalFallbackJson, String modelOverride, int maxOutputTokensOverride) {
+        String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
-            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName);
+            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
+                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
             ArrayNode input = req.putArray("input");
             if (system != null && !system.isBlank()) {
                 ObjectNode sys = input.addObject();
@@ -105,26 +120,26 @@ public class OpenAIService {
             user.put("content", userMsg);
 
             String body = objectMapper.writeValueAsString(req);
-            log.debugf("[OpenAIService] Sending response (json_schema). model=%s, bodySize=%d", model, body.length());
+            log.debugf("[OpenAIService] Sending response (json_schema). model=%s, bodySize=%d", chosenModel, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);
 
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s", http.getStatus(), chosenModel, payload);
                 return "{}";
             }
 
             JsonNode root = objectMapper.readTree(payload);
             String refusal = extractRefusal(root);
             if (refusal != null) {
-                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
                 return refusalFallbackJson != null ? refusalFallbackJson : "{}";
             }
             return extractOutputTextOrEmpty(root);
 
         } catch (Exception e) {
-            log.error("[OpenAIService] Responses request failed (schema)", e);
+            log.errorf(e, "[OpenAIService] Responses request failed (schema, model=%s)", chosenModel);
             return "{}";
         }
     }
