@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.clientstatus.services;
 import dk.trustworks.intranet.aggregates.clientstatus.ClientStatusMath;
 import dk.trustworks.intranet.aggregates.clientstatus.ClientStatusRecon;
 import dk.trustworks.intranet.aggregates.clientstatus.dto.*;
+import dk.trustworks.intranet.aggregates.clientstatus.model.ClientMonthControl;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -109,8 +110,12 @@ public class ClientStatusService {
         Set<String> clientUuids = new HashSet<>();
         clientUuids.addAll(expectedByClient.keySet());
         clientUuids.addAll(invoicedByClient.keySet());
+        // Provisional months: shown in the heatmap but excluded from every summation (row totals,
+        // gaps, outstanding). Computed up front so it is available for the early empty-result return.
+        Set<String> provisional = ClientStatusMath.provisionalMonthKeys(months, LocalDate.now());
+        List<String> provisionalMonths = months.stream().filter(provisional::contains).sorted().toList();
         if (clientUuids.isEmpty()) {
-            return new ClientStatusResponse(months, List.of(),
+            return new ClientStatusResponse(months, provisionalMonths, List.of(),
                     new ClientStatusSummary(0, 0, 0, 0, 0, 0));
         }
 
@@ -135,10 +140,11 @@ public class ClientStatusService {
                             (String) r.get("am_uuid"), (String) r.get("am_name")});
         }
 
-        // The current month is never fully invoiced until early in the following month, so any
-        // still-provisional month is shown in the heatmap but excluded from every summation
-        // (row totals, gaps, outstanding, and the under/fully-billed classification).
-        Set<String> provisional = ClientStatusMath.provisionalMonthKeys(months, LocalDate.now());
+        // Controlling state (approval snapshot + note) for every client-month in the window, keyed
+        // "clientUuid:YYYYMM". Loaded once so each cell can carry approved/hasNote/drift flags and
+        // effectively-approved months can be excluded from the row gap count.
+        Map<String, ClientMonthControl> controlByKey =
+                controlMap(fromDate, toDate.minusDays(1), clientUuids);
 
         List<ClientStatusRow> rows = new ArrayList<>(clientUuids.size());
         double totalExpected = 0, totalInvoiced = 0, outstanding = 0;
@@ -156,11 +162,20 @@ public class ClientStatusService {
                 double e = exp.getOrDefault(mk, 0d);
                 double i = inv.getOrDefault(mk, 0d);
                 ClientStatusCellState state = ClientStatusMath.classify(e, i);
-                cells.add(new ClientStatusCell(mk, e, i, i - e, state));
-                if (provisional.contains(mk)) continue; // visible cell, but not yet counted in totals
+                ClientMonthControl ctrl = controlByKey.get(uuid + ":" + mk);
+                boolean approved = ctrl != null && ctrl.isApproved();
+                boolean hasNote = ctrl != null && ctrl.note != null && !ctrl.note.isBlank();
+                boolean drift = ClientStatusMath.isDrifted(approved,
+                        ctrl == null ? null : ctrl.approvedExpected,
+                        ctrl == null ? null : ctrl.approvedInvoiced, e, i);
+                cells.add(new ClientStatusCell(mk, e, i, i - e, state, approved, hasNote, drift));
+                boolean prov = provisional.contains(mk);
+                if (prov) continue; // visible cell, but not yet counted in totals
                 rowExpected += e;
                 rowInvoiced += i;
-                if (state == ClientStatusCellState.NOT_INVOICED || state == ClientStatusCellState.PARTIAL) gaps++;
+                // Effectively-approved (approved && !drift) months are signed off and no longer
+                // gaps; a drifted approval re-counts as a gap because its snapshot is stale.
+                if (ClientStatusMath.countsAsGap(state, false, approved, drift)) gaps++;
                 if (e - i > 0) outstanding += (e - i);
             }
             rows.add(new ClientStatusRow(uuid, nameSeg[0], nameSeg[1], cells,
@@ -177,7 +192,33 @@ public class ClientStatusService {
         rows.sort(Comparator.comparingDouble(ClientStatusRow::delta)); // most under-billed first
         ClientStatusSummary summary = new ClientStatusSummary(
                 totalExpected, totalInvoiced, outstanding, underBilled, fullyBilled, rows.size());
-        return new ClientStatusResponse(months, rows, summary);
+        return new ClientStatusResponse(months, provisionalMonths, rows, summary);
+    }
+
+    /**
+     * Load the controlling state for the window and index it by {@code "clientUuid:YYYYMM"} so grid
+     * and brief assembly can look up the approval snapshot + note for any cell in one pass.
+     *
+     * @param from first month (first-of-month) inclusive
+     * @param to   last month (first-of-month) inclusive
+     */
+    public Map<String, ClientMonthControl> controlMap(LocalDate from, LocalDate to) {
+        return indexControls(ClientMonthControl.findByMonthRange(from, to));
+    }
+
+    /** {@link #controlMap(LocalDate, LocalDate)} restricted to the given clients. */
+    public Map<String, ClientMonthControl> controlMap(LocalDate from, LocalDate to,
+                                                      Collection<String> clientUuids) {
+        return indexControls(ClientMonthControl.findByClientsAndMonthRange(clientUuids, from, to));
+    }
+
+    private static Map<String, ClientMonthControl> indexControls(List<ClientMonthControl> controls) {
+        Map<String, ClientMonthControl> byKey = new HashMap<>();
+        for (ClientMonthControl c : controls) {
+            String mk = String.format("%04d%02d", c.month.getYear(), c.month.getMonthValue());
+            byKey.put(c.clientUuid + ":" + mk, c);
+        }
+        return byKey;
     }
 
     /** Drill-down: registered work (by consultant × project) and invoices for one client-month. */
@@ -326,11 +367,87 @@ public class ClientStatusService {
                 buildConsultantRecon(clientUuid, year, month, work);
 
         String[] am = resolveClientNameAndManager(clientUuid);
+        ClientStatusControlDto control = resolveControl(clientUuid, year, month, expected, invoicedHeadline);
         return new ClientStatusDetailResponse(
                 clientUuid, am[0], year, month,
                 expected, invoicedHeadline, invoicedHeadline - expected,
                 ClientStatusMath.classify(expected, invoicedHeadline),
-                work, invoices, consultantRecon, am[1], am[2]);
+                work, invoices, consultantRecon, am[1], am[2], control);
+    }
+
+    /**
+     * Resolve the controlling state for one client-month against the live {@code expected}/
+     * {@code invoiced} values (so {@code drift} reflects the current cell), or {@code null} when no
+     * control row exists. The approver name is resolved from the {@code user} table like the AM name.
+     */
+    private ClientStatusControlDto resolveControl(String clientUuid, int year, int month,
+                                                  double currentExpected, double currentInvoiced) {
+        ClientMonthControl ctrl = ClientMonthControl.findByClientAndMonth(clientUuid, YearMonth.of(year, month).atDay(1));
+        if (ctrl == null) return null;
+        boolean approved = ctrl.isApproved();
+        boolean drift = ClientStatusMath.isDrifted(approved,
+                ctrl.approvedExpected, ctrl.approvedInvoiced, currentExpected, currentInvoiced);
+        String approvedByName = ctrl.approvedBy == null ? null : resolveUserName(ctrl.approvedBy);
+        String monthKey = String.format("%04d%02d", year, month);
+        return new ClientStatusControlDto(
+                clientUuid, monthKey, approved, ctrl.approvedBy, approvedByName,
+                ctrl.approvedAt == null ? null : ctrl.approvedAt.atOffset(java.time.ZoneOffset.UTC).toString(),
+                ctrl.note, ctrl.approvedExpected, ctrl.approvedInvoiced, drift);
+    }
+
+    /** Resolve a user's display name ("firstname lastname"), or null if unknown. */
+    public String resolveUserName(String userUuid) {
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT CONCAT(u.firstname, ' ', u.lastname) AS name FROM `user` u WHERE u.uuid = :uuid
+                """, Tuple.class)
+                .setParameter("uuid", userUuid)
+                .getResultList();
+        return rows.isEmpty() ? null : (String) rows.get(0).get("name");
+    }
+
+    /**
+     * The current expected/invoiced values for one client-month on the SAME gross basis as the grid,
+     * as {@code [expected, invoiced]}. Used to snapshot an approval without paying for the full
+     * per-consultant reconciliation of {@link #getClientStatusDetail}.
+     */
+    public double[] currentExpectedInvoiced(String clientUuid, int year, int month) {
+        YearMonth ym = YearMonth.of(year, month);
+        LocalDate fromDate = ym.atDay(1);
+        LocalDate toDate = ym.plusMonths(1).atDay(1);
+
+        Object expectedObj = em.createNativeQuery("""
+                SELECT SUM(IFNULL(w.rate,0) * w.workduration)
+                FROM work_full w
+                WHERE w.clientuuid = :client
+                  AND w.rate > 0
+                  AND w.registered >= :fromDate AND w.registered < :toDate
+                """)
+                .setParameter("client", clientUuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getSingleResult();
+
+        Object invoicedObj = em.createNativeQuery("""
+                SELECT SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
+                           * CASE WHEN i.type <> 'PHANTOM'
+                                      AND ii.consultantuuid IS NULL
+                                      AND (ii.hours * ii.rate) < 0
+                                  THEN 0 ELSE (ii.hours * ii.rate) END)
+                FROM invoices i
+                LEFT JOIN project p ON p.uuid = i.projectuuid
+                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                WHERE i.status IN ('CREATED','QUEUED')
+                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
+                  AND i.year = :year AND i.month = :month
+                """)
+                .setParameter("client", clientUuid)
+                .setParameter("year", year)
+                .setParameter("month", month)
+                .getSingleResult();
+
+        return new double[]{num(expectedObj), num(invoicedObj)};
     }
 
     /**

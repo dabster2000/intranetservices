@@ -70,9 +70,9 @@ class AccountManagerBriefServiceTest {
         var shiftedConsultant = new ConsultantGap("Daugaard", 0, 120_000, -120_000);
         var project = new ProjectGap("Project Management", 185_119);
         var gapMonth = new MonthAnalysis("januar 2026", 1_856_127, 1_135_147, -720_980, true,
-                List.of(missingConsultant), List.of(project), 5_000);
+                List.of(missingConsultant), List.of(project), 5_000, false, null);
         var fullMonth = new MonthAnalysis("februar 2026", 900_000, 1_020_000, 120_000, false,
-                List.of(shiftedConsultant), List.of(), 0);
+                List.of(shiftedConsultant), List.of(), 0, false, null);
         var client = new ClientAnalysis("Banedanmark", List.of(gapMonth, fullMonth), 1, 720_980);
 
         ObjectNode payload = AccountManagerBriefService.buildPayload(
