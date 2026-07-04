@@ -13,5 +13,8 @@ public record ClientStatusDetailResponse(
         double delta,
         ClientStatusCellState status,
         List<ClientStatusWorkLine> work,
-        List<ClientStatusInvoiceLine> invoices
+        List<ClientStatusInvoiceLine> invoices,
+        List<ClientStatusConsultantRecon> consultantRecon,
+        String accountManagerUuid,      // nullable; client.accountmanager
+        String accountManagerName       // nullable; CONCAT(user.firstname, ' ', user.lastname)
 ) {}

@@ -11,5 +11,7 @@ public record ClientStatusRow(
         double expected,
         double invoiced,
         double delta,
-        int gaps                        // count of NOT_INVOICED + PARTIAL months
+        int gaps,                       // count of NOT_INVOICED + PARTIAL months
+        String accountManagerUuid,      // nullable; client.accountmanager
+        String accountManagerName       // nullable; CONCAT(user.firstname, ' ', user.lastname)
 ) {}

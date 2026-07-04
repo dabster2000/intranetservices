@@ -371,6 +371,12 @@ openai:
   # their output budget on thinking and frequently emit empty structured output for
   # image+schema requests, so vision is routed through a proven vision model.
   vision-model: ${OPENAI_VISION_MODEL:gpt-4o-mini}
+  # Model for the Account-Manager invoicing-status brief (AccountManagerBriefService). A capable
+  # text model is required to compose the Danish Slack message; the gpt-5 family is fine here since
+  # the call never sets temperature. Override per env with OPENAI_INVOICE_STATUS_MODEL.
+  # Requires model access on the OpenAI project (enabled 2026-07-04); a 403 here means the
+  # project/org lost access — OpenAIService logs the error body.
+  invoice-status-model: ${OPENAI_INVOICE_STATUS_MODEL:gpt-5.4}
 # Staging must set EXPENSE_ECONOMICS_UPLOAD_ENABLED=false, INVOICE_ECONOMICS_UPLOAD_ENABLED=false and ENVIRONMENT_ID=staging
 # so a staging-sync-polluted DB cannot POST vouchers to e-conomics and, if it ever
 # does, cannot reuse production's idempotency keys.

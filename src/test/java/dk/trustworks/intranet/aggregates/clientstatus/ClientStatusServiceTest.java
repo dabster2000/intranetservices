@@ -62,6 +62,136 @@ class ClientStatusServiceTest {
                 .sum(), 0.001);
     }
 
+    @Test
+    @TestTransaction
+    void detail_consultantRecon_tiesToHeadline_andExposesAmFields() {
+        String clientUuid = uniqueUuid();
+        String companyUuid = uniqueUuid();
+        String amUuid = uniqueUuid();
+        String consultantA = uniqueUuid();
+        String consultantB = uniqueUuid();
+
+        persistUser(amUuid, "Tommy", "Sørensen");
+        persistUser(consultantA, "Sara", "Vest");
+        persistClient(clientUuid, "Banedanmark", amUuid);
+
+        // Invoice 1: consultant item on consultantA (fallback path), 100k.
+        persistConsultantInvoice(companyUuid, clientUuid, consultantA, 100_000.0);
+        // Invoice 2: consultant item with an attribution split A=60k, B=40k, item value 100k.
+        String invoice2 = persistConsultantInvoice(companyUuid, clientUuid, consultantA, 100_000.0);
+        String item2 = firstItemOf(invoice2);
+        persistAttribution(item2, consultantA, 60_000.0);
+        persistAttribution(item2, consultantB, 40_000.0);
+        em.flush();
+
+        ClientStatusDetailResponse detail = service.getClientStatusDetail(
+                clientUuid, INVOICE_DATE.getYear(), INVOICE_DATE.getMonthValue());
+
+        assertEquals(amUuid, detail.accountManagerUuid(), "AM uuid must be resolved from client.accountmanager");
+        assertEquals("Tommy Sørensen", detail.accountManagerName());
+
+        double reconSum = detail.consultantRecon().stream()
+                .mapToDouble(r -> r.invoicedValue())
+                .sum();
+        assertEquals(detail.invoiced(), reconSum, 0.01,
+                "Σ consultantRecon.invoicedValue (incl. unmatched) must equal the detail 'invoiced' headline");
+        assertEquals(200_000.0, detail.invoiced(), 0.01);
+
+        // consultantB appears only via attribution (no work, no invoiceitem.consultantuuid).
+        var reconB = detail.consultantRecon().stream()
+                .filter(r -> consultantB.equals(r.consultantUuid()))
+                .findFirst().orElseThrow();
+        assertEquals(40_000.0, reconB.invoicedValue(), 0.01);
+        assertEquals("ATTRIBUTION", reconB.invoicedSource());
+    }
+
+    private void persistUser(String uuid, String firstname, String lastname) {
+        em.createNativeQuery("""
+                INSERT INTO user (uuid, active, firstname, lastname, email, username, password, type,
+                                  created, cpr, birthday)
+                VALUES (:uuid, 1, :first, :last, :email, :username, 'x', 'CONSULTANT',
+                        NOW(), '0000000000', '2000-01-01')
+                """)
+                .setParameter("uuid", uuid)
+                .setParameter("first", firstname)
+                .setParameter("last", lastname)
+                .setParameter("email", uuid + "@example.com")
+                .setParameter("username", uuid)
+                .executeUpdate();
+    }
+
+    private void persistClient(String uuid, String name, String accountManagerUuid) {
+        em.createNativeQuery("""
+                INSERT INTO client (uuid, active, contactname, name, crmid, accountmanager,
+                                    managed, type, cvr, billing_country, currency, created)
+                VALUES (:uuid, 1, 'tester', :name, '', :am, 'INTRA', 'CLIENT', '', 'DK', 'DKK', NOW())
+                """)
+                .setParameter("uuid", uuid)
+                .setParameter("name", name)
+                .setParameter("am", accountManagerUuid)
+                .executeUpdate();
+    }
+
+    private String persistConsultantInvoice(String companyUuid, String billingClientUuid,
+                                            String consultantUuid, double amount) {
+        String invoiceUuid = uniqueUuid();
+        em.createNativeQuery("""
+                INSERT INTO invoices (
+                    uuid, type, status, invoicenumber, year, month, companyuuid,
+                    billing_client_uuid, clientname, currency, invoicedate, duedate,
+                    invoice_ref, vat, discount, internal_invoice_skip
+                ) VALUES (
+                    :uuid, 'INVOICE', 'CREATED', 0, :year, :month, :company,
+                    :client, '', 'DKK', :invoiceDate, :invoiceDate,
+                    0, 0.0, 0.0, false
+                )
+                """)
+                .setParameter("uuid", invoiceUuid)
+                .setParameter("year", INVOICE_DATE.getYear())
+                .setParameter("month", INVOICE_DATE.getMonthValue())
+                .setParameter("company", companyUuid)
+                .setParameter("client", billingClientUuid)
+                .setParameter("invoiceDate", INVOICE_DATE)
+                .executeUpdate();
+
+        em.createNativeQuery("""
+                INSERT INTO invoiceitems (
+                    uuid, invoiceuuid, itemname, description, rate, hours, position,
+                    origin, consultantuuid
+                ) VALUES (
+                    :uuid, :invoice, 'consultant work', 'test', :rate, 1.0, 0, 'BASE', :consultant
+                )
+                """)
+                .setParameter("uuid", uniqueUuid())
+                .setParameter("invoice", invoiceUuid)
+                .setParameter("rate", amount)
+                .setParameter("consultant", consultantUuid)
+                .executeUpdate();
+        return invoiceUuid;
+    }
+
+    private String firstItemOf(String invoiceUuid) {
+        em.flush();
+        return (String) em.createNativeQuery(
+                "SELECT uuid FROM invoiceitems WHERE invoiceuuid = :inv ORDER BY position LIMIT 1")
+                .setParameter("inv", invoiceUuid)
+                .getSingleResult();
+    }
+
+    private void persistAttribution(String invoiceitemUuid, String consultantUuid, double amount) {
+        em.createNativeQuery("""
+                INSERT INTO invoice_item_attributions (
+                    uuid, invoiceitem_uuid, consultant_uuid, share_pct, attributed_amount,
+                    original_hours, source
+                ) VALUES (:uuid, :item, :consultant, 0.0, :amount, 0.0, 'AUTO')
+                """)
+                .setParameter("uuid", uniqueUuid())
+                .setParameter("item", invoiceitemUuid)
+                .setParameter("consultant", consultantUuid)
+                .setParameter("amount", amount)
+                .executeUpdate();
+    }
+
     private void persistPhantom(String companyUuid, String billingClientUuid, double amount) {
         String invoiceUuid = uniqueUuid();
         em.createNativeQuery("""

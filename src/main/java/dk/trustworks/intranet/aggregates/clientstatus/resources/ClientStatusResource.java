@@ -1,7 +1,10 @@
 package dk.trustworks.intranet.aggregates.clientstatus.resources;
 
+import dk.trustworks.intranet.aggregates.clientstatus.dto.AccountManagerBriefRequest;
+import dk.trustworks.intranet.aggregates.clientstatus.dto.AccountManagerBriefResponse;
 import dk.trustworks.intranet.aggregates.clientstatus.dto.ClientStatusDetailResponse;
 import dk.trustworks.intranet.aggregates.clientstatus.dto.ClientStatusResponse;
+import dk.trustworks.intranet.aggregates.clientstatus.services.AccountManagerBriefService;
 import dk.trustworks.intranet.aggregates.clientstatus.services.ClientStatusService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -35,6 +38,9 @@ public class ClientStatusResource {
     @Inject
     ClientStatusService clientStatusService;
 
+    @Inject
+    AccountManagerBriefService accountManagerBriefService;
+
     @GET
     public Response getGrid(@QueryParam("end") String end) {
         YearMonth endMonth = parseEnd(end);
@@ -54,6 +60,27 @@ public class ClientStatusResource {
         if (year < 2000 || year > 2100) throw new BadRequestException("year out of range");
         log.infof("GET /invoice-controlling/client-status/detail: client=%s year=%d month=%d", client, year, month);
         ClientStatusDetailResponse result = clientStatusService.getClientStatusDetail(client, year, month);
+        return Response.ok(result).build();
+    }
+
+    @POST
+    @Path("/account-manager-brief")
+    @Consumes(APPLICATION_JSON)
+    public Response accountManagerBrief(AccountManagerBriefRequest request) {
+        if (request == null || request.accountManagerUuid() == null || request.accountManagerUuid().isBlank()) {
+            throw new BadRequestException("accountManagerUuid is required");
+        }
+        if (!CLIENT_UUID.matcher(request.accountManagerUuid()).matches()) {
+            throw new BadRequestException("accountManagerUuid must be a valid UUID");
+        }
+        int minorFloor = request.minorAnomalyFloorDkk() == null ? 0
+                : Math.max(0, Math.min(500_000, request.minorAnomalyFloorDkk()));
+        int reportMonths = request.reportMonths() == null ? 12
+                : Math.max(1, Math.min(12, request.reportMonths()));
+        AccountManagerBriefResponse result = accountManagerBriefService.generate(
+                request.accountManagerUuid(), request.end(), request.framing(),
+                minorFloor, reportMonths,
+                Boolean.TRUE.equals(request.hideShiftedInvoicing()));
         return Response.ok(result).build();
     }
 
