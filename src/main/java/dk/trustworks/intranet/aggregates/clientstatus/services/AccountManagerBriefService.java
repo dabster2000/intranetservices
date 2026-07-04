@@ -51,7 +51,7 @@ public class AccountManagerBriefService {
     @Inject
     OpenAIService openAIService;
 
-    @ConfigProperty(name = "openai.invoice-status-model", defaultValue = "gpt-4o")
+    @ConfigProperty(name = "openai.invoice-status-model", defaultValue = "gpt-5.4")
     String invoiceStatusModel;
 
     /** Immutable framing options for the generated message. */
