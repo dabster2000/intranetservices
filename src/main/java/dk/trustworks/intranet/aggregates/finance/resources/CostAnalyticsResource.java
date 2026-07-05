@@ -641,7 +641,9 @@ public class CostAnalyticsResource {
         regQuery.setParameter("currentMonth", actualEndExclusiveKey);
         if (companies != null) regQuery.setParameter("companyIds", companies);
 
-        // Q2: Invoice revenue (basis-aware: invoicedate _mat vs work-period view)
+        // Q2: Invoice revenue — live invoices×invoiceitems, basis-aware month bucketing,
+        // with debtor-aware intercompany elimination (external at group grain, standalone
+        // internal kept for single-company). See buildInvoiceRevenueSql.
         String invoiceRevenueSql = buildInvoiceRevenueSql(companies, workPeriod);
         var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
         invQuery.setParameter("ttmStart", ttmStartKey);
@@ -1036,20 +1038,70 @@ public class CostAnalyticsResource {
     }
 
     /**
-     * Invoice revenue (TTM window). INVOICED basis reads the invoicedate-keyed
-     * materialized fact {@code fact_company_revenue_mat}; WORK_PERIOD reads the live
-     * {@code fact_company_revenue_workperiod} view (same invoices bucketed by
-     * invoices.year/month). Both expose identical columns.
+     * Invoice revenue (TTM window), issuer-keyed, with <b>debtor-aware intercompany
+     * elimination</b> so the company filter stays correct at every grain.
+     *
+     * <p>Computed live from {@code invoices × invoiceitems} rather than the
+     * {@code fact_company_revenue} family, because eliminating intercompany INTERNAL
+     * revenue correctly requires the per-document {@code debtor_companyuuid} — a column
+     * the aggregated fact tables do not expose. The type+status gate, the per-invoice
+     * amount ({@code SUM(rate*hours)} over consultant + CALCULATED lines) and the issuer
+     * attribution ({@code i.companyuuid}) are otherwise identical to
+     * {@code fact_company_revenue} (V344, invoicedate basis) and
+     * {@code fact_company_revenue_workperiod} (V384, work-period basis).
+     *
+     * <p>Elimination rule — an intercompany document is dropped only when BOTH parties
+     * are inside the shown set:
+     * <ul>
+     *   <li><b>Group / all-companies view</b> ({@code companies == null}): every INTERNAL
+     *       document is intercompany within the group, so it is excluded → external
+     *       (consolidated) revenue only.</li>
+     *   <li><b>Single-company view</b>: the debtor is always a DIFFERENT company (outside
+     *       the one-company set), so that company's issued internal revenue is KEPT. This
+     *       is its correct standalone revenue and matches e-conomic per-CVR and the
+     *       current {@code fact_company_revenue} net for that company to the øre.</li>
+     *   <li><b>Any subset</b>: an INTERNAL document is eliminated only when its issuer and
+     *       its debtor are both in the shown set (e.g. {A/S, Tech} drops Tech→A/S but keeps
+     *       Tech→Cyber).</li>
+     * </ul>
+     * INVOICE/PHANTOM and EXTERNAL credit notes (debtor NULL) are always kept. Internal
+     * credit notes (type=CREDIT_NOTE with a non-null debtor) follow the same debtor rule
+     * as INTERNAL invoices, which also closes the internal-credit-note double-subtract
+     * leak (see docs/finalized/invoicing/rules/credit-note-rules.md §6.0.3a).
      */
     private static String buildInvoiceRevenueSql(Set<String> companies, boolean workPeriod) {
-        String table = workPeriod ? "fact_company_revenue_workperiod" : "fact_company_revenue_mat";
-        String filter = companies != null ? "AND r.company_id IN (:companyIds) " : "";
-        return "SELECT r.month_key, r.year, r.month_number, " +
-                "SUM(r.net_revenue_dkk) AS net_revenue " +
-                "FROM " + table + " r " +
-                "WHERE r.month_key >= :ttmStart AND r.month_key < :currentMonth " +
-                filter +
-                "GROUP BY r.month_key, r.year, r.month_number ORDER BY r.month_key";
+        // Month bucketing: WORK_PERIOD = service period (i.year/i.month); INVOICED = invoicedate.
+        String monthKeyExpr = workPeriod
+                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
+                : "CONCAT(LPAD(YEAR(i.invoicedate), 4, '0'), LPAD(MONTH(i.invoicedate), 2, '0'))";
+        String yearExpr = workPeriod ? "i.year" : "YEAR(i.invoicedate)";
+        String monthExpr = workPeriod ? "i.month" : "MONTH(i.invoicedate)";
+
+        // Issuer filter + debtor-aware "keep this intercompany document" predicate.
+        //   companies != null -> keep INTERNAL / internal-CN whose debtor is OUTSIDE the shown set
+        //   companies == null  -> all-companies group view: eliminate every intercompany document
+        String issuerFilter = companies != null ? "AND i.companyuuid IN (:companyIds) " : "";
+        String internalKeep = companies != null ? "i.debtor_companyuuid NOT IN (:companyIds)" : "FALSE";
+
+        return "SELECT " + monthKeyExpr + " AS month_key, " +
+                yearExpr + " AS year, " + monthExpr + " AS month_number, " +
+                "ROUND(SUM( " +
+                "  (CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END) * (ii.rate * ii.hours) * " +
+                "  (CASE " +
+                "     WHEN i.type IN ('INVOICE', 'PHANTOM') THEN 1 " +
+                "     WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL THEN 1 " +
+                "     WHEN i.debtor_companyuuid IS NOT NULL AND (" + internalKeep + ") THEN 1 " +
+                "     ELSE 0 END) " +
+                "), 2) AS net_revenue " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE ( (i.type IN ('INVOICE', 'PHANTOM') AND i.status = 'CREATED') " +
+                "     OR (i.type = 'INTERNAL'            AND i.status IN ('QUEUED', 'CREATED')) " +
+                "     OR (i.type = 'CREDIT_NOTE'         AND i.status = 'CREATED') ) " +
+                "AND " + monthKeyExpr + " >= :ttmStart AND " + monthKeyExpr + " < :currentMonth " +
+                issuerFilter +
+                "GROUP BY " + monthKeyExpr + ", " + yearExpr + ", " + monthExpr + " " +
+                "ORDER BY month_key";
     }
 
     /** Actual revenue from fact_company_revenue_mat (FY window). */
