@@ -105,6 +105,52 @@ class ClientStatusServiceTest {
         assertEquals("ATTRIBUTION", reconB.invoicedSource());
     }
 
+    @Test
+    @TestTransaction
+    void internalCreditNote_isExcludedFromClientInvoiced() {
+        String clientUuid = uniqueUuid();
+        String companyUuid = uniqueUuid();       // issuing Trustworks entity
+        String debtorCompanyUuid = uniqueUuid(); // the other Trustworks entity (intercompany debtor)
+        String consultant = uniqueUuid();
+
+        // The real, correct client-facing invoice for the work.
+        persistConsultantInvoice(companyUuid, clientUuid, consultant, 100_000.0);
+        // Intercompany invoice (type=INTERNAL) — already excluded by the type filter.
+        persistInternalDoc("INTERNAL", companyUuid, debtorCompanyUuid, clientUuid, consultant, 100_000.0);
+        // Intercompany CREDIT NOTE (type=CREDIT_NOTE + non-null debtor_companyuuid) reversing the
+        // internal invoice. It shares the CREDIT_NOTE type with client credit notes, so before the
+        // debtor guard it slipped through the type filter and was double-subtracted, showing the
+        // external client as under-billed by the reversal amount (the internal invoice it offsets is
+        // excluded, so there is no positive to cancel it). It must NOT touch the client's invoiced total.
+        persistInternalDoc("CREDIT_NOTE", companyUuid, debtorCompanyUuid, clientUuid, consultant, 100_000.0);
+        em.flush();
+
+        ClientStatusResponse grid = service.getClientStatus(YearMonth.from(INVOICE_DATE));
+        ClientStatusRow row = grid.clients().stream()
+                .filter(r -> r.clientUuid().equals(clientUuid))
+                .findFirst()
+                .orElseThrow();
+        ClientStatusCell cell = row.cells().stream()
+                .filter(c -> c.monthKey().equals(MONTH_KEY))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(100_000.0, cell.invoiced(), 0.001,
+                "Grid: internal credit notes (type=CREDIT_NOTE with debtor_companyuuid) must not reduce the client's invoiced total");
+
+        ClientStatusDetailResponse detail = service.getClientStatusDetail(
+                clientUuid, INVOICE_DATE.getYear(), INVOICE_DATE.getMonthValue());
+        assertEquals(100_000.0, detail.invoiced(), 0.001,
+                "Detail headline must exclude internal credit notes");
+        assertEquals(1, detail.invoices().size(),
+                "Detail drawer must not list intercompany documents (INTERNAL invoice + internal CREDIT_NOTE)");
+
+        double reconSum = detail.consultantRecon().stream()
+                .mapToDouble(r -> r.invoicedValue())
+                .sum();
+        assertEquals(100_000.0, reconSum, 0.01,
+                "Per-consultant reconciliation must exclude the internal credit note (no phantom under-billing)");
+    }
+
     private void persistUser(String uuid, String firstname, String lastname) {
         em.createNativeQuery("""
                 INSERT INTO user (uuid, active, firstname, lastname, email, username, password, type,
@@ -189,6 +235,49 @@ class ClientStatusServiceTest {
                 .setParameter("item", invoiceitemUuid)
                 .setParameter("consultant", consultantUuid)
                 .setParameter("amount", amount)
+                .executeUpdate();
+    }
+
+    /**
+     * Persist an intercompany document (type {@code INTERNAL} or an internal {@code CREDIT_NOTE}) with a
+     * non-null {@code debtor_companyuuid}, resolved onto {@code billingClientUuid} via billing_client_uuid.
+     */
+    private void persistInternalDoc(String type, String companyUuid, String debtorCompanyUuid,
+                                    String billingClientUuid, String consultantUuid, double amount) {
+        String invoiceUuid = uniqueUuid();
+        em.createNativeQuery("""
+                INSERT INTO invoices (
+                    uuid, type, status, invoicenumber, year, month, companyuuid, debtor_companyuuid,
+                    billing_client_uuid, clientname, currency, invoicedate, duedate,
+                    invoice_ref, vat, discount, internal_invoice_skip
+                ) VALUES (
+                    :uuid, :type, 'CREATED', 0, :year, :month, :company, :debtor,
+                    :client, '', 'DKK', :invoiceDate, :invoiceDate,
+                    0, 0.0, 0.0, false
+                )
+                """)
+                .setParameter("uuid", invoiceUuid)
+                .setParameter("type", type)
+                .setParameter("year", INVOICE_DATE.getYear())
+                .setParameter("month", INVOICE_DATE.getMonthValue())
+                .setParameter("company", companyUuid)
+                .setParameter("debtor", debtorCompanyUuid)
+                .setParameter("client", billingClientUuid)
+                .setParameter("invoiceDate", INVOICE_DATE)
+                .executeUpdate();
+
+        em.createNativeQuery("""
+                INSERT INTO invoiceitems (
+                    uuid, invoiceuuid, itemname, description, rate, hours, position,
+                    origin, consultantuuid
+                ) VALUES (
+                    :uuid, :invoice, 'intercompany', 'test internal', :rate, 1.0, 0, 'BASE', :consultant
+                )
+                """)
+                .setParameter("uuid", uniqueUuid())
+                .setParameter("invoice", invoiceUuid)
+                .setParameter("rate", amount)
+                .setParameter("consultant", consultantUuid)
                 .executeUpdate();
     }
 
