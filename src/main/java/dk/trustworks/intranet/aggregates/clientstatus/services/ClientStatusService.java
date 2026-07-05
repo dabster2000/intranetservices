@@ -63,7 +63,12 @@ public class ClientStatusService {
         // invoices/invoiceitems (the fact table is CREATED-only and cannot include QUEUED):
         //  - status IN (CREATED, QUEUED): booked + committed-to-book billing. Raw DRAFT is excluded by design.
         //  - type INVOICE/PHANTOM count positive (incl. self-billed/e-conomic PHANTOMs), CREDIT_NOTE negative;
-        //    INTERNAL/INTERNAL_SERVICE excluded.
+        //    INTERNAL/INTERNAL_SERVICE excluded. Internal intercompany credit notes carry type=CREDIT_NOTE
+        //    (NOT INTERNAL) with a non-null debtor_companyuuid, so the type filter alone lets them through and
+        //    double-subtracts them (their matching INTERNAL invoice is already excluded, so there is no
+        //    offsetting positive) — an internal reversal would then show as a phantom under-billing gap on the
+        //    external client. The debtor_companyuuid guard keeps only external credit notes; see
+        //    Invoice.isInternalCreditNote(). This guard is repeated in every invoice query below.
         //  - GROSS: discounts/fees are negative non-consultant lines (framework "trapperabat", pre-agreed
         //    discounts, admin fees) NOT written back to work_full, so they are dropped (set to 0) to match
         //    the gross "expected"; PHANTOM lines and positive non-consultant lines (fixed-price) are kept.
@@ -90,6 +95,7 @@ public class ClientStatusService {
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) IS NOT NULL
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) <> :internalClient
                   AND (i.year * 100 + i.month) >= :fromPeriod
@@ -305,6 +311,7 @@ public class ClientStatusService {
                   AND i.year = :year AND i.month = :month
                   AND i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                 GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate,
                          i.projectuuid, p.name, i.creditnote_for_uuid, i.invoice_ref
                 ORDER BY i.invoicenumber
@@ -351,6 +358,7 @@ public class ClientStatusService {
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                 """, Tuple.class)
@@ -439,6 +447,7 @@ public class ClientStatusService {
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                 """)
@@ -489,6 +498,7 @@ public class ClientStatusService {
                 LEFT JOIN invoice_item_attributions a ON a.invoiceitem_uuid = ii.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                   AND (i.type = 'PHANTOM'

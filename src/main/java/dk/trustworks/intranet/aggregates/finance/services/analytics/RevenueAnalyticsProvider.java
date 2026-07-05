@@ -96,6 +96,10 @@ public class RevenueAnalyticsProvider {
                 "  AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
                 "WHERE i.status = 'CREATED' " +
                 "  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                // Exclude internal intercompany credit notes (type=CREDIT_NOTE with a debtor company):
+                // their INTERNAL invoice is already dropped by the type filter, so counting the reversal
+                // would double-subtract. External documents only. See Invoice.isInternalCreditNote().
+                "  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL) " +
                 "  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL " +
                 "  AND ii.consultantuuid IN (:userIds) " +
                 "  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate";
