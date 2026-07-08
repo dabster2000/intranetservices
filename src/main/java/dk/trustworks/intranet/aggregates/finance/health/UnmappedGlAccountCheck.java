@@ -45,9 +45,18 @@ import java.util.concurrent.atomic.AtomicReference;
  * refresh and e-conomic sync — so any newly-imported-but-unmapped account is
  * caught within 24h.
  *
- * <p>After Flyway V382 maps 3561/3562/3587/4010/2106 the detection returns ZERO
- * rows; the gate exists to catch <em>future</em> drift, so this class of bug can
- * never recur silently.
+ * <p><b>Scope — P&amp;L accounts only.</b> {@code finance_details} holds the full
+ * general ledger (the e-conomic import applies no account-range filter), so a naive
+ * anti-join against the curated, P&amp;L-only {@code accounting_accounts} map flags
+ * every balance-sheet ({@code status}) account as "unmapped" — 282 rows for a full
+ * FY, ~92% of them debitorer/moms/a-skat/bank/kreditorer/egenkapital that MUST NOT
+ * enter fact_opex. The detection is therefore scoped to each company's mapped
+ * {@code [MIN..MAX]} account-code band (see {@link #detect}); verified 2026-07-08
+ * against production + e-conomic {@code accountType}, the band leaves zero status
+ * accounts and only genuine {@code profitAndLoss} drops. After Flyway V382 (+V390)
+ * closed the known FY25/26 gaps, a healthy FY carries only immaterial residue; the
+ * gate exists to catch <em>future</em> drift, so a real dropped cost can never
+ * recur silently.
  *
  * <p>Rate-limited to one Slack alert per {@link #ALERT_REPEAT_INTERVAL} so a
  * standing finding (waiting on accounting to classify) does not spam the channel.
@@ -123,7 +132,8 @@ public class UnmappedGlAccountCheck {
 
     /**
      * Returns GL accounts present in {@code finance_details} for the given fiscal
-     * window that have no {@code accounting_accounts} mapping, heaviest absolute
+     * window that have no {@code accounting_accounts} mapping <em>and</em> fall
+     * inside their company's mapped P&amp;L account-code band, heaviest absolute
      * amount first.
      *
      * <p>The {@code aa.account_code = fd.accountnumber} comparison mirrors the
@@ -132,17 +142,53 @@ public class UnmappedGlAccountCheck {
      * MariaDB numeric coercion of the {@code varchar(6)} code against the INT
      * account number — so the gate flags precisely the accounts that feed would
      * drop, never a false positive from a cast mismatch.
+     *
+     * <p>The inner {@code band} sub-query bounds the scan to
+     * {@code [MIN(account_code)..MAX(account_code)]} per company, excluding the
+     * balance-sheet accounts that also live in {@code finance_details} (the full GL)
+     * but by design never enter the P&amp;L cost/revenue map. Without it the check
+     * flags every {@code status} account and cries wolf; see the class Javadoc.
      */
     @Transactional(Transactional.TxType.SUPPORTS)
     public List<UnmappedAccount> detect(LocalDate fyStart, LocalDate fyEnd) {
-        // LEFT ANTI-JOIN: finance_details rows whose (companyuuid, accountnumber)
-        // has no accounting_accounts mapping within the active fiscal window.
+        // LEFT ANTI-JOIN, scoped to each company's mapped P&L account band:
+        // finance_details rows whose (companyuuid, accountnumber) has no
+        // accounting_accounts mapping AND whose account number falls inside the
+        // [MIN..MAX] span of that company's already-mapped account codes.
+        //
+        // The band JOIN is the fix for the balance-sheet false-positive flood
+        // (2026-07-08 investigation): finance_details holds the FULL general ledger
+        // (FinanceLoadJob/EconomicsService.getAllEntries import every posting, no
+        // range filter — incl. every status/balance-sheet account: debitorer, moms,
+        // a-skat, bank, kreditorer, egenkapital). But accounting_accounts is a
+        // curated P&L-only map (A/S 2101–5298; Technology/Cyber 1010–3780). A plain
+        // anti-join therefore flags EVERY balance-sheet account as "unmapped" — 282
+        // rows for a full FY, of which 258 were status accounts that MUST NOT enter
+        // fact_opex/EBITDA. Restricting to the mapped [MIN..MAX] band keeps only
+        // accounts numbered inside the P&L cost/revenue block — exactly where a
+        // newly-opened-but-unclassified operating account lands (e.g. the original
+        // F18 accounts 3561/3562/3587/4010, all inside A/S's band). Verified against
+        // production + e-conomic accountType: the band leaves ZERO status accounts
+        // and every survivor is a genuine `profitAndLoss` drop.
+        //
+        // Residual limitation: a new P&L account opened numerically ABOVE a
+        // company's current MAX (e.g. A/S 5310) would be missed until an adjacent
+        // account is mapped. This is an accepted trade for silencing the 250+ false
+        // positives; the fully-robust fix is to mirror e-conomic's accountType into
+        // the DB and filter on `accountType='profitAndLoss'` directly.
         String sql = """
                 SELECT fd.companyuuid    AS companyuuid,
                        fd.accountnumber  AS accountnumber,
                        SUM(fd.amount)    AS amount,
                        COUNT(*)          AS n
                   FROM finance_details fd
+                  JOIN (SELECT companyuuid,
+                               MIN(CAST(account_code AS UNSIGNED)) AS lo,
+                               MAX(CAST(account_code AS UNSIGNED)) AS hi
+                          FROM accounting_accounts
+                         GROUP BY companyuuid) band
+                    ON band.companyuuid = fd.companyuuid
+                   AND fd.accountnumber BETWEEN band.lo AND band.hi
                   LEFT JOIN accounting_accounts aa
                          ON aa.account_code = fd.accountnumber
                         AND aa.companyuuid  = fd.companyuuid
