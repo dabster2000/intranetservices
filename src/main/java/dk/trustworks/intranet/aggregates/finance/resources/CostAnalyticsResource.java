@@ -641,14 +641,22 @@ public class CostAnalyticsResource {
         regQuery.setParameter("currentMonth", actualEndExclusiveKey);
         if (companies != null) regQuery.setParameter("companyIds", companies);
 
-        // Q2: Invoice revenue — live invoices×invoiceitems, basis-aware month bucketing,
-        // with debtor-aware intercompany elimination (external at group grain, standalone
-        // internal kept for single-company). See buildInvoiceRevenueSql.
-        String invoiceRevenueSql = buildInvoiceRevenueSql(companies, workPeriod);
+        // Q2: Invoice revenue — live invoices×invoiceitems, basis-aware month bucketing.
+        // Two independently-correct paths so tuning one never disturbs the other:
+        //   • Group (companies null/empty): external only — every INTERNAL nets to 0 within
+        //     the group, so it is simply omitted (buildGroupInvoiceRevenueSql).
+        //   • Single/subset: external issued by the set + internal SOLD by the set (issuer∈S, +)
+        //     − internal PURCHASED by the set (debtor∈S, −), credit notes symmetric. The
+        //     intercompany transfer price is sourced from the invoice table on BOTH sides
+        //     (seller +, buyer −), NEVER from the GL (buildEntityInvoiceRevenueSql).
+        boolean groupInvoiceRevenue = (companies == null || companies.isEmpty());
+        String invoiceRevenueSql = groupInvoiceRevenue
+                ? buildGroupInvoiceRevenueSql(workPeriod)
+                : buildEntityInvoiceRevenueSql(workPeriod);
         var invQuery = em.createNativeQuery(invoiceRevenueSql, Tuple.class);
         invQuery.setParameter("ttmStart", ttmStartKey);
         invQuery.setParameter("currentMonth", actualEndExclusiveKey);
-        if (companies != null) invQuery.setParameter("companyIds", companies);
+        if (!groupInvoiceRevenue) invQuery.setParameter("companyIds", companies);
 
         @SuppressWarnings("unchecked") List<Tuple> regRows = regQuery.getResultList();
         @SuppressWarnings("unchecked") List<Tuple> invRows = invQuery.getResultList();
@@ -659,7 +667,12 @@ public class CostAnalyticsResource {
         Map<String, Double> opexSalaryMap = opexProvider
                 .getMonthlyOpex(ttmStartKey, ttmEndKey, companies, costSource);
 
-        // Q3a: GL DIRECT_COSTS by month (signed, costSource-aware)
+        // Q3: GL DIRECT_COSTS by month (signed, costSource-aware). External subcontractors
+        // ONLY — the intercompany transfer-price accounts (3050/3055/3070/3075/1350) are
+        // excluded in buildMonthlyGlDirectCostSql, because that transfer price is now handled
+        // entirely in the invoice-revenue netting (seller +, buyer −) and must NOT also appear
+        // as cost. Direct delivery = glDirectExternal; the previous queued/createdSynth/
+        // glInternal contributions are gone.
         String glDirectSql = buildMonthlyGlDirectCostSql(companies);
         var glDirectQuery = em.createNativeQuery(glDirectSql, Tuple.class);
         glDirectQuery.setParameter("fromKey", ttmStartKey);
@@ -672,55 +685,12 @@ public class CostAnalyticsResource {
             glDirectMap.put((String) row.get("month_key"), numericValue(row, "gl_direct_cost"));
         }
 
-        // Q3b: QUEUED INTERNAL synthesized cost by month (debtor-side, costSource-independent;
-        // basis-aware bucketing)
-        String queuedSql = buildMonthlyQueuedInternalCostSql(companies, workPeriod);
-        var queuedQuery = em.createNativeQuery(queuedSql, Tuple.class);
-        queuedQuery.setParameter("fromKey", ttmStartKey);
-        queuedQuery.setParameter("toKey", ttmEndKey);
-        if (companies != null) queuedQuery.setParameter("companyIds", companies);
-        @SuppressWarnings("unchecked") List<Tuple> queuedRows = queuedQuery.getResultList();
-        Map<String, Double> queuedMap = new HashMap<>();
-        for (Tuple row : queuedRows) {
-            queuedMap.put((String) row.get("month_key"), numericValue(row, "queued_cost"));
-        }
-
-        // Q3c (WORK_PERIOD only): re-time CREATED INTERNAL cost onto the work month.
-        // createdSynth (work-month bucket) is ADDED and glInternal (the GL expensedate copy
-        // already inside glDirect) is SUBTRACTED, so the cost is never double-counted and FY
-        // totals are conserved — same mechanism as the EBITDA chart's F3/WORK_PERIOD path.
-        Map<String, Double> createdSynthMap = new HashMap<>();
-        Map<String, Double> glInternalMap = new HashMap<>();
-        if (workPeriod) {
-            var createdQuery = em.createNativeQuery(buildMonthlyCreatedInternalCostWpSql(companies), Tuple.class);
-            createdQuery.setParameter("fromKey", ttmStartKey);
-            createdQuery.setParameter("toKey", ttmEndKey);
-            if (companies != null) createdQuery.setParameter("companyIds", companies);
-            @SuppressWarnings("unchecked") List<Tuple> createdRows = createdQuery.getResultList();
-            for (Tuple row : createdRows) {
-                createdSynthMap.put((String) row.get("month_key"), numericValue(row, "created_cost"));
-            }
-
-            var glInternalQuery = em.createNativeQuery(buildMonthlyGlInternalCostSql(companies), Tuple.class);
-            glInternalQuery.setParameter("fromKey", ttmStartKey);
-            glInternalQuery.setParameter("toKey", ttmEndKey);
-            glInternalQuery.setParameter("postingStatuses", costSource.postingStatusNames());
-            if (companies != null) glInternalQuery.setParameter("companyIds", companies);
-            @SuppressWarnings("unchecked") List<Tuple> glInternalRows = glInternalQuery.getResultList();
-            for (Tuple row : glInternalRows) {
-                glInternalMap.put((String) row.get("month_key"), numericValue(row, "gl_internal_cost"));
-            }
-        }
-
         // Collect all month keys
         Set<String> allKeys = new TreeSet<>();
         allKeys.addAll(regMap.keySet());
         allKeys.addAll(invMap.keySet());
         allKeys.addAll(opexSalaryMap.keySet());
         allKeys.addAll(glDirectMap.keySet());
-        allKeys.addAll(queuedMap.keySet());
-        allKeys.addAll(createdSynthMap.keySet());
-        allKeys.addAll(glInternalMap.keySet());
 
         // Iterate ALL keys in the TTM window so projection inputs (gross margin, avg
         // OPEX+salary) are computed over a stable 12-month base. Only months within the
@@ -739,14 +709,9 @@ public class CostAnalyticsResource {
             double regRev = numericValue(regMap.get(key), "registered_revenue");
             double invRev = numericValue(invMap.get(key), "net_revenue");
             double opexSalary = opexSalaryMap.getOrDefault(key, 0.0);
-            double glDirect = glDirectMap.getOrDefault(key, 0.0);
-            double queued = queuedMap.getOrDefault(key, 0.0);
-            double directDelivery = glDirect + queued;
-            if (workPeriod) {
-                // re-time CREATED-internal: +synth(work month) −GL(expensedate, already in glDirect)
-                directDelivery += createdSynthMap.getOrDefault(key, 0.0)
-                                - glInternalMap.getOrDefault(key, 0.0);
-            }
+            // Direct delivery = external subcontractors only (GL, transfer-price accounts
+            // excluded). The intercompany transfer price lives in the invoice-revenue netting.
+            double directDelivery = glDirectMap.getOrDefault(key, 0.0);
             double totalCost = opexSalary + directDelivery;
 
             totalCostSum += Math.round(totalCost);
@@ -1038,68 +1003,104 @@ public class CostAnalyticsResource {
     }
 
     /**
-     * Invoice revenue (TTM window), issuer-keyed, with <b>debtor-aware intercompany
-     * elimination</b> so the company filter stays correct at every grain.
+     * <b>Group invoice revenue</b> (all-companies / consolidated view; {@code companies}
+     * null or empty). External only: every INTERNAL document has both issuer and debtor
+     * inside the group, so it nets to zero — this builder simply omits INTERNAL and internal
+     * credit notes entirely.
      *
-     * <p>Computed live from {@code invoices × invoiceitems} rather than the
-     * {@code fact_company_revenue} family, because eliminating intercompany INTERNAL
-     * revenue correctly requires the per-document {@code debtor_companyuuid} — a column
-     * the aggregated fact tables do not expose. The type+status gate, the per-invoice
-     * amount ({@code SUM(rate*hours)} over consultant + CALCULATED lines) and the issuer
-     * attribution ({@code i.companyuuid}) are otherwise identical to
-     * {@code fact_company_revenue} (V344, invoicedate basis) and
-     * {@code fact_company_revenue_workperiod} (V384, work-period basis).
-     *
-     * <p>Elimination rule — an intercompany document is dropped only when BOTH parties
-     * are inside the shown set:
+     * <p>Per line, factor × {@code (ii.rate*ii.hours)}, summed:
      * <ul>
-     *   <li><b>Group / all-companies view</b> ({@code companies == null}): every INTERNAL
-     *       document is intercompany within the group, so it is excluded → external
-     *       (consolidated) revenue only.</li>
-     *   <li><b>Single-company view</b>: the debtor is always a DIFFERENT company (outside
-     *       the one-company set), so that company's issued internal revenue is KEPT. This
-     *       is its correct standalone revenue and matches e-conomic per-CVR and the
-     *       current {@code fact_company_revenue} net for that company to the øre.</li>
-     *   <li><b>Any subset</b>: an INTERNAL document is eliminated only when its issuer and
-     *       its debtor are both in the shown set (e.g. {A/S, Tech} drops Tech→A/S but keeps
-     *       Tech→Cyber).</li>
+     *   <li>INVOICE / PHANTOM, status=CREATED → +1</li>
+     *   <li>CREDIT_NOTE, status=CREATED, <b>external</b> ({@code debtor_companyuuid IS NULL}) → −1</li>
      * </ul>
-     * INVOICE/PHANTOM and EXTERNAL credit notes (debtor NULL) are always kept. Internal
-     * credit notes (type=CREDIT_NOTE with a non-null debtor) follow the same debtor rule
-     * as INTERNAL invoices, which also closes the internal-credit-note double-subtract
-     * leak (see docs/finalized/invoicing/rules/credit-note-rules.md §6.0.3a).
+     *
+     * <p>Computed live from {@code invoices × invoiceitems} (not the {@code fact_company_revenue}
+     * family) because the intercompany decision needs the per-document {@code debtor_companyuuid}.
+     * The per-invoice amount ({@code SUM(rate*hours)}) and the type+status gate are otherwise
+     * identical to {@code fact_company_revenue} (V344, invoicedate) and
+     * {@code fact_company_revenue_workperiod} (V384, work-period). Month bucketing:
+     * WORK_PERIOD = service period ({@code i.year/i.month}); INVOICED = {@code invoicedate}.
      */
-    private static String buildInvoiceRevenueSql(Set<String> companies, boolean workPeriod) {
-        // Month bucketing: WORK_PERIOD = service period (i.year/i.month); INVOICED = invoicedate.
+    private static String buildGroupInvoiceRevenueSql(boolean workPeriod) {
         String monthKeyExpr = workPeriod
                 ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
                 : "CONCAT(LPAD(YEAR(i.invoicedate), 4, '0'), LPAD(MONTH(i.invoicedate), 2, '0'))";
         String yearExpr = workPeriod ? "i.year" : "YEAR(i.invoicedate)";
         String monthExpr = workPeriod ? "i.month" : "MONTH(i.invoicedate)";
 
-        // Issuer filter + debtor-aware "keep this intercompany document" predicate.
-        //   companies != null -> keep INTERNAL / internal-CN whose debtor is OUTSIDE the shown set
-        //   companies == null  -> all-companies group view: eliminate every intercompany document
-        String issuerFilter = companies != null ? "AND i.companyuuid IN (:companyIds) " : "";
-        String internalKeep = companies != null ? "i.debtor_companyuuid NOT IN (:companyIds)" : "FALSE";
-
         return "SELECT " + monthKeyExpr + " AS month_key, " +
                 yearExpr + " AS year, " + monthExpr + " AS month_number, " +
                 "ROUND(SUM( " +
-                "  (CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END) * (ii.rate * ii.hours) * " +
+                "  (ii.rate * ii.hours) * " +
                 "  (CASE " +
                 "     WHEN i.type IN ('INVOICE', 'PHANTOM') THEN 1 " +
-                "     WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL THEN 1 " +
-                "     WHEN i.debtor_companyuuid IS NOT NULL AND (" + internalKeep + ") THEN 1 " +
+                "     WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL THEN -1 " +
                 "     ELSE 0 END) " +
                 "), 2) AS net_revenue " +
                 "FROM invoices i " +
                 "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
                 "WHERE ( (i.type IN ('INVOICE', 'PHANTOM') AND i.status = 'CREATED') " +
+                "     OR (i.type = 'CREDIT_NOTE' AND i.status = 'CREATED' AND i.debtor_companyuuid IS NULL) ) " +
+                "AND " + monthKeyExpr + " >= :ttmStart AND " + monthKeyExpr + " < :currentMonth " +
+                "GROUP BY " + monthKeyExpr + ", " + yearExpr + ", " + monthExpr + " " +
+                "ORDER BY month_key";
+    }
+
+    /**
+     * <b>Single / subset invoice revenue</b> (selected company set S; {@code companies}
+     * non-empty). The company's operational own-work revenue: external issued by S <b>+</b>
+     * internal SOLD by S (seller, issuer∈S) <b>−</b> internal PURCHASED by S (buyer, debtor∈S),
+     * with internal credit notes symmetric. When both issuer and debtor are in S (e.g. a
+     * subset {A/S, Tech} with a Tech→A/S internal) the +1 seller and −1 buyer cancel, so the
+     * intercompany transfer nets to zero — exactly as it eliminates in the group view.
+     *
+     * <p><b>Invariant:</b> the intercompany transfer price is sourced from the invoice table on
+     * BOTH sides (seller +, buyer −), status-gated QUEUED/CREATED for INTERNAL, and is NEVER
+     * read from the GL for cost. A draft-vs-booked or costSource change on internal GL postings
+     * therefore cannot move revenue without moving the matching cost.
+     *
+     * <p>Per line, the factor is the sum of the applicable seller/buyer contributions:
+     * <ul>
+     *   <li>INVOICE / PHANTOM, status=CREATED, issuer∈S → +1</li>
+     *   <li>CREDIT_NOTE, status=CREATED, <b>external</b> ({@code debtor IS NULL}), issuer∈S → −1</li>
+     *   <li>INTERNAL, status∈(QUEUED,CREATED): issuer∈S → +1 (seller) <b>and</b> debtor∈S → −1 (buyer)</li>
+     *   <li>CREDIT_NOTE, status=CREATED, <b>internal</b> ({@code debtor NOT NULL}): issuer∈S → −1 <b>and</b> debtor∈S → +1</li>
+     * </ul>
+     * A row participates when its issuer∈S OR (for internal docs) its debtor∈S. Month bucketing
+     * is basis-aware ({@code i.year/i.month} for WORK_PERIOD, {@code invoicedate} for INVOICED)
+     * and applies to both the seller and buyer legs, so a purchase reduces the buyer's revenue
+     * in the same period the sale raised the seller's.
+     */
+    private static String buildEntityInvoiceRevenueSql(boolean workPeriod) {
+        String monthKeyExpr = workPeriod
+                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
+                : "CONCAT(LPAD(YEAR(i.invoicedate), 4, '0'), LPAD(MONTH(i.invoicedate), 2, '0'))";
+        String yearExpr = workPeriod ? "i.year" : "YEAR(i.invoicedate)";
+        String monthExpr = workPeriod ? "i.month" : "MONTH(i.invoicedate)";
+
+        // Per-line signed factor = seller leg (issuer∈S) + buyer leg (internal docs, debtor∈S).
+        //   External INVOICE/PHANTOM  : issuer∈S → +1
+        //   External CREDIT_NOTE      : issuer∈S → −1
+        //   INTERNAL                  : issuer∈S → +1 (sold) , debtor∈S → −1 (purchased)
+        //   Internal CREDIT_NOTE      : issuer∈S → −1        , debtor∈S → +1
+        String factor =
+                "  ( CASE WHEN i.type IN ('INVOICE', 'PHANTOM') AND i.companyuuid IN (:companyIds) THEN 1 ELSE 0 END " +
+                "  + CASE WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NULL AND i.companyuuid IN (:companyIds) THEN -1 ELSE 0 END " +
+                "  + CASE WHEN i.type = 'INTERNAL' AND i.companyuuid IN (:companyIds) THEN 1 ELSE 0 END " +
+                "  + CASE WHEN i.type = 'INTERNAL' AND i.debtor_companyuuid IN (:companyIds) THEN -1 ELSE 0 END " +
+                "  + CASE WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NOT NULL AND i.companyuuid IN (:companyIds) THEN -1 ELSE 0 END " +
+                "  + CASE WHEN i.type = 'CREDIT_NOTE' AND i.debtor_companyuuid IS NOT NULL AND i.debtor_companyuuid IN (:companyIds) THEN 1 ELSE 0 END )";
+
+        return "SELECT " + monthKeyExpr + " AS month_key, " +
+                yearExpr + " AS year, " + monthExpr + " AS month_number, " +
+                "ROUND(SUM( (ii.rate * ii.hours) * " + factor + " ), 2) AS net_revenue " +
+                "FROM invoices i " +
+                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
+                "WHERE ( (i.type IN ('INVOICE', 'PHANTOM') AND i.status = 'CREATED') " +
                 "     OR (i.type = 'INTERNAL'            AND i.status IN ('QUEUED', 'CREATED')) " +
                 "     OR (i.type = 'CREDIT_NOTE'         AND i.status = 'CREATED') ) " +
+                "AND (i.companyuuid IN (:companyIds) OR i.debtor_companyuuid IN (:companyIds)) " +
                 "AND " + monthKeyExpr + " >= :ttmStart AND " + monthKeyExpr + " < :currentMonth " +
-                issuerFilter +
                 "GROUP BY " + monthKeyExpr + ", " + yearExpr + ", " + monthExpr + " " +
                 "ORDER BY month_key";
     }
@@ -1162,9 +1163,12 @@ public class CostAnalyticsResource {
     }
 
     /**
-     * Monthly GL DIRECT_COSTS from finance_details (signed sum), parameterized by costSource.
-     * Identical predicate to {@code CxoFinanceService.queryMonthlyDirectCostByMonth} so the
-     * Revenue/Cost chart and EBITDA chart subtract the same direct delivery cost.
+     * Monthly GL DIRECT_COSTS from finance_details (signed sum), parameterized by costSource —
+     * <b>external subcontractors only</b>. The intercompany transfer-price accounts
+     * (3050/3055/3070/3075/1350) are excluded, because that transfer price is handled entirely
+     * in the invoice-revenue netting (seller +, buyer −) and must NEVER be read from the GL for
+     * cost. This is the sole direct-delivery contribution; there is no longer any synthesized
+     * QUEUED/CREATED internal cost added on top.
      */
     private static String buildMonthlyGlDirectCostSql(Set<String> companies) {
         String filter = companies != null ? "AND fd.companyuuid IN (:companyIds) " : "";
@@ -1175,87 +1179,7 @@ public class CostAnalyticsResource {
                 "    ON fd.accountnumber = aa.account_code " +
                 "    AND fd.companyuuid  = aa.companyuuid " +
                 "WHERE aa.cost_type = 'DIRECT_COSTS' " +
-                "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
-                "  AND fd.amount != 0 " +
-                "  AND fd.postingstatus IN (:postingStatuses) " +
-                filter +
-                "GROUP BY DATE_FORMAT(fd.expensedate, '%Y%m') ORDER BY month_key";
-    }
-
-    /**
-     * Monthly QUEUED INTERNAL invoice cost, attributed to debtor company, in DKK.
-     * Mirrors {@code CxoFinanceService.queryMonthlyQueuedInternalCostByMonth}. QUEUED
-     * INTERNALs aren't yet in the GL, so they're synthesized here. Independent of
-     * costSource (QUEUED rows aren't subject to BOOKED/DRAFT classification).
-     */
-    private static String buildMonthlyQueuedInternalCostSql(Set<String> companies, boolean workPeriod) {
-        String mexpr = workPeriod
-                ? "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))"
-                : "DATE_FORMAT(i.invoicedate, '%Y%m')";
-        String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
-        return "SELECT " + mexpr + " AS month_key, " +
-                "       COALESCE(SUM(ii.rate * ii.hours * " +
-                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
-                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
-                "                              WHERE c.currency = i.currency " +
-                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
-                "           END), 0.0) AS queued_cost " +
-                "FROM invoices i " +
-                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
-                "WHERE i.type = 'INTERNAL' " +
-                "  AND i.status = 'QUEUED' " +
-                "  AND i.debtor_companyuuid IS NOT NULL " +
-                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
-                "  AND ii.rate IS NOT NULL " +
-                "  AND ii.hours IS NOT NULL " +
-                filter +
-                "GROUP BY " + mexpr + " ORDER BY month_key";
-    }
-
-    /**
-     * WORK_PERIOD only: CREATED INTERNAL synth cost bucketed by the WORK period
-     * (invoices.year/month), debtor-attributed. Added to direct delivery and offset by
-     * {@link #buildMonthlyGlInternalCostSql} (the GL expensedate copy) so CREATED-internal
-     * cost re-times onto the work month without double counting — mirrors the EBITDA chart.
-     */
-    private static String buildMonthlyCreatedInternalCostWpSql(Set<String> companies) {
-        String mexpr = "CONCAT(LPAD(i.year, 4, '0'), LPAD(i.month, 2, '0'))";
-        String filter = companies != null ? "AND i.debtor_companyuuid IN (:companyIds) " : "";
-        return "SELECT " + mexpr + " AS month_key, " +
-                "       COALESCE(SUM(ii.rate * ii.hours * " +
-                "           CASE WHEN i.currency = 'DKK' THEN 1.0 " +
-                "                ELSE COALESCE((SELECT c.conversion FROM currences c " +
-                "                              WHERE c.currency = i.currency " +
-                "                                AND c.month = DATE_FORMAT(i.invoicedate, '%Y%m') LIMIT 1), 1.0) " +
-                "           END), 0.0) AS created_cost " +
-                "FROM invoices i " +
-                "JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid " +
-                "WHERE i.type = 'INTERNAL' " +
-                "  AND i.status = 'CREATED' " +
-                "  AND i.debtor_companyuuid IS NOT NULL " +
-                "  AND " + mexpr + " BETWEEN :fromKey AND :toKey " +
-                "  AND ii.rate IS NOT NULL " +
-                "  AND ii.hours IS NOT NULL " +
-                filter +
-                "GROUP BY " + mexpr + " ORDER BY month_key";
-    }
-
-    /**
-     * WORK_PERIOD only: the GL-booked copy of CREATED INTERNAL cost on the expensedate month
-     * (accounts 3050/3055/3070/3075/1350), costSource-aware. Subtracted from direct delivery
-     * when re-timing CREATED-internal cost onto the work month. Same predicate as
-     * {@code CxoFinanceService.queryMonthlyCreatedInternalGlCostByMonth}.
-     */
-    private static String buildMonthlyGlInternalCostSql(Set<String> companies) {
-        String filter = companies != null ? "AND fd.companyuuid IN (:companyIds) " : "";
-        return "SELECT DATE_FORMAT(fd.expensedate, '%Y%m') AS month_key, " +
-                "       COALESCE(SUM(fd.amount), 0.0) AS gl_internal_cost " +
-                "FROM finance_details fd " +
-                "INNER JOIN accounting_accounts aa " +
-                "    ON fd.accountnumber = aa.account_code " +
-                "    AND fd.companyuuid  = aa.companyuuid " +
-                "WHERE aa.cost_type = 'DIRECT_COSTS' " +
-                "  AND fd.accountnumber IN (3050, 3055, 3070, 3075, 1350) " +
+                "  AND fd.accountnumber NOT IN (3050, 3055, 3070, 3075, 1350) " +
                 "  AND DATE_FORMAT(fd.expensedate, '%Y%m') BETWEEN :fromKey AND :toKey " +
                 "  AND fd.amount != 0 " +
                 "  AND fd.postingstatus IN (:postingStatuses) " +
