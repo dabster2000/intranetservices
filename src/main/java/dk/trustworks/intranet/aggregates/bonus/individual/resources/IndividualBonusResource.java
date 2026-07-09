@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.resources;
 
+import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusDeleteResult;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRuleDTO;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRuleRequest;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.ProjectedPayoutDTO;
@@ -68,12 +69,31 @@ public class IndividualBonusResource {
         return bonusService.update(uuid, request);
     }
 
+    /**
+     * Delete a rule. GUARDED: a rule that already drove a payout is SOFT-deleted (deactivated, row kept to
+     * preserve its live spec beside the immutable payout snapshot); one that never paid is HARD-deleted.
+     * Returns the outcome so the caller can tell soft- from hard-delete.
+     */
     @DELETE
     @Path("/{uuid}")
     @RolesAllowed({"bonus:write"})
-    public Response delete(@PathParam("uuid") String uuid) {
-        bonusService.delete(uuid);
-        return Response.noContent().build();
+    public IndividualBonusDeleteResult delete(@PathParam("uuid") String uuid) {
+        return bonusService.delete(uuid);
+    }
+
+    /**
+     * Live dry-run: evaluate an UNSAVED rule against the employee's real data and return the projected
+     * payouts, persisting nothing. Same request body as create; same response shape as {@code /projection}.
+     * The {@code userUuid} query param, when present, must match the body's owner.
+     */
+    @POST
+    @Path("/preview")
+    public List<ProjectedPayoutDTO> preview(@QueryParam("userUuid") String userUuid,
+                                            @Valid IndividualBonusRuleRequest request) {
+        if (userUuid != null && !userUuid.isBlank() && !userUuid.equals(request.userUuid())) {
+            throw new BadRequestException("userUuid query param must match the request body userUuid");
+        }
+        return bonusService.preview(request).stream().map(this::toDTO).toList();
     }
 
     /**

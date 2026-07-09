@@ -9,7 +9,10 @@ import jakarta.persistence.EntityManager;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
@@ -34,11 +37,33 @@ public class IndividualBonusBasisResolver {
 
     /**
      * Resolve the basis amount for {@code [from, to]} (both inclusive).
+     * <p>
+     * Actuals are only booked up to today. For an ADDITIVE production/hours basis whose window runs PAST
+     * today, the not-yet-elapsed tail is filled with a modest <b>run-rate forecast</b> — the booked actuals
+     * annualised over the elapsed employed months of the window — so a mid-FY projection reflects a
+     * year-end estimate rather than production-to-date. This feeds only the read-time projection: an already
+     * settled window ({@code to <= today}, e.g. FY-close materialisation) is unaffected and stays actuals-
+     * only. RATIO / LEVEL bases (UTILIZATION, BUDGET_ATTAINMENT, SALARY) are already normalised and are NOT
+     * scaled by months (see {@link #isForecastable}).
      *
      * @throws UnsupportedOperationException for {@code FIXED_AMOUNT} (schedule-driven) and company /
      *                                       unplumbed labels.
      */
     public BigDecimal resolveBasisAmount(Basis basis, String userUuid, LocalDate from, LocalDate to) {
+        LocalDate today = LocalDate.now();
+        // Forecast only additive bases, only when the window extends past today, and only once part of it
+        // has elapsed (from <= today). Everything else keeps the exact actuals-only behaviour.
+        if (!isForecastable(basis) || !to.isAfter(today) || from.isAfter(today)) {
+            return resolveActual(basis, userUuid, from, to);
+        }
+        BigDecimal actualToDate = resolveActual(basis, userUuid, from, today);
+        int elapsedEmployedMonths = monthsActive(userUuid, from, today);
+        int totalMonthsInWindow = monthsBetweenInclusive(from, to);
+        return runRate(actualToDate, elapsedEmployedMonths, totalMonthsInWindow);
+    }
+
+    /** Actuals-only resolution (booked facts over {@code [from, to]}) — the pre-forecast hard-coded switch. */
+    private BigDecimal resolveActual(Basis basis, String userUuid, LocalDate from, LocalDate to) {
         return switch (basis) {
             case OWN_INVOICED_REVENUE -> ownInvoicedRevenue(userUuid, from, to);
             case BILLABLE_HOURS -> billableHours(userUuid, from, to);
@@ -51,6 +76,36 @@ public class IndividualBonusBasisResolver {
                     throw new UnsupportedOperationException(
                             "Basis " + basis + " is company-grain and not yet wired for individual bonuses");
         };
+    }
+
+    /**
+     * Whether run-rate annualisation is meaningful for a basis. Only ADDITIVE production/hours SUMS
+     * (OWN_INVOICED_REVENUE, BILLABLE_HOURS) may be scaled by months. RATIO / LEVEL bases (UTILIZATION,
+     * BUDGET_ATTAINMENT, SALARY) are already period-normalised — scaling them by month count would wildly
+     * inflate them — so they stay actuals-only. FIXED_AMOUNT is schedule-driven (never resolved here).
+     * Pure and package-visible for unit testing.
+     */
+    static boolean isForecastable(Basis basis) {
+        return basis == Basis.OWN_INVOICED_REVENUE || basis == Basis.BILLABLE_HOURS;
+    }
+
+    /**
+     * Run-rate forecast: {@code actualToDate / elapsedEmployedMonths × totalMonthsInWindow}, rounded to øre.
+     * Degrades to actuals when nothing has elapsed to extrapolate from ({@code elapsed <= 0}) or the window
+     * is already fully elapsed ({@code total <= elapsed}) — never fabricates beyond a straight annualisation.
+     * Pure and package-visible for unit testing.
+     */
+    static BigDecimal runRate(BigDecimal actualToDate, int elapsedEmployedMonths, int totalMonthsInWindow) {
+        if (actualToDate == null) return BigDecimal.ZERO;
+        if (elapsedEmployedMonths <= 0 || totalMonthsInWindow <= elapsedEmployedMonths) return actualToDate;
+        return actualToDate
+                .multiply(BigDecimal.valueOf(totalMonthsInWindow))
+                .divide(BigDecimal.valueOf(elapsedEmployedMonths), 2, RoundingMode.HALF_UP);
+    }
+
+    /** Number of distinct calendar months spanned by {@code [from, to]} (both inclusive). Pure. */
+    static int monthsBetweenInclusive(LocalDate from, LocalDate to) {
+        return (int) (ChronoUnit.MONTHS.between(YearMonth.from(from), YearMonth.from(to)) + 1);
     }
 
     /**

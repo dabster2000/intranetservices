@@ -51,7 +51,34 @@ public class IndividualBonusScheduleService {
         return out;
     }
 
+    /** DISPLAY projection: advances reconciled against committed-OR-projected amounts (smooth forecast). */
     public List<ProjectedPayout> project(IndividualBonusRule rule, LocalDate horizonEnd) {
+        return project(rule, horizonEnd, false);
+    }
+
+    /**
+     * @param settlementFromCommittedAdvancesOnly at MATERIALISATION a TRUEUP / FINAL_SETTLEMENT must net
+     *   only advances ACTUALLY PAID (committed lump sums) — a projected-but-unpaid advance counts as 0 —
+     *   so the row written to payroll is {@code earned − Σ paid advances}. The DISPLAY projection (false)
+     *   nets committed-or-projected so the on-screen forecast stays continuous before the advances post.
+     */
+    public List<ProjectedPayout> project(IndividualBonusRule rule, LocalDate horizonEnd,
+                                         boolean settlementFromCommittedAdvancesOnly) {
+        return projectWithInputs(rule, horizonEnd, settlementFromCommittedAdvancesOnly).stream()
+                .map(PayoutWithInputs::payout)
+                .toList();
+    }
+
+    /**
+     * A projected payout paired with the basis inputs that produced it — the reproducibility snapshot the
+     * materialisation writer freezes into {@code individual_bonus_payout}. Package-visible.
+     */
+    public record PayoutWithInputs(ProjectedPayout payout, BigDecimal basisAmount, int monthsEmployed) {
+    }
+
+    /** Projection carrying per-payout basis inputs. Same walk as {@link #project}; single source of truth. */
+    List<PayoutWithInputs> projectWithInputs(IndividualBonusRule rule, LocalDate horizonEnd,
+                                             boolean settlementFromCommittedAdvancesOnly) {
         Spec spec = specMapper.parse(rule.getSpec());
 
         // 1. Effective window, cut by early termination.
@@ -61,11 +88,11 @@ public class IndividualBonusScheduleService {
         LocalDate termMonth = effectiveTerminationMonth(rule.getUserUuid(), horizonEnd);
         LocalDate ruleEnd = rule.getEffectiveTo() != null ? rule.getEffectiveTo() : FAR_FUTURE;
         LocalDate windowEnd = min(min(ruleEnd, termMonth == null ? FAR_FUTURE : termMonth), horizonEnd);
-        boolean cutByTerm = termMonth != null && termMonth.isBefore(ruleEnd);
 
-        List<ProjectedPayout> payouts = new ArrayList<>();
+        List<PayoutWithInputs> payouts = new ArrayList<>();
 
-        // 2. Walk each fiscal year overlapping [effectiveFrom, windowEnd].
+        // 2. Walk each fiscal year overlapping [effectiveFrom, windowEnd]. The window bounds the EARNING
+        //    period; a trailing settlement (paid AFTER FY close) may legitimately fall past windowEnd.
         int fromFy = fiscalYearStart(rule.getEffectiveFrom()).getYear();
         int toFy = fiscalYearStart(windowEnd).getYear();
         for (int fyYear = fromFy; fyYear <= toFy; fyYear++) {
@@ -73,29 +100,29 @@ public class IndividualBonusScheduleService {
             LocalDate fyEnd = LocalDate.of(fyYear + 1, 6, 30);
             LocalDate empFrom = max(rule.getEffectiveFrom(), fyStart);
             LocalDate empTo = min(windowEnd, fyEnd);
-            if (empFrom.isAfter(empTo)) continue;
+            if (empFrom.isAfter(empTo)) continue; // no earning overlap this FY → no settlement
 
             int monthsInFy = basisResolver.monthsActive(rule.getUserUuid(), empFrom, empTo);
             boolean estimated = empTo.isAfter(LocalDate.now()); // window not fully settled yet
-            BigDecimal earned = earnedFor(spec, rule.getUserUuid(), empFrom, empTo, monthsInFy);
+            BigDecimal basisAmount = resolveBasisAmount(spec, rule.getUserUuid(), empFrom, empTo);
+            BigDecimal earned = earnedFrom(spec, basisAmount, monthsInFy);
 
-            // A yearly/true-up payout for a terminated FY settles at the termination month, not FY-end,
-            // so it stays inside the window (otherwise it would be filtered out below).
+            // A yearly/true-up payout for a terminated FY settles at the termination month, not FY-end.
             boolean fyCutByTerm = termMonth != null
                     && !termMonth.isBefore(fyStart) && !termMonth.isAfter(fyEnd);
-            LocalDate yearMonth = fyCutByTerm ? termMonth : yearlyPayMonth(fyEnd, spec);
+            LocalDate settleMonth = fyCutByTerm ? termMonth : yearlyPayMonth(fyEnd, spec);
 
             switch (spec.schedule().cadence()) {
-                case YEARLY -> payouts.add(new ProjectedPayout(
-                        yearMonth, earned, PayoutKind.YEARLY, PayoutStatus.PROJECTED,
-                        refYearly(rule, fyYear), estimated, fyCutByTerm));
+                case YEARLY -> payouts.add(new PayoutWithInputs(new ProjectedPayout(
+                        settleMonth, earned, PayoutKind.YEARLY, PayoutStatus.PROJECTED,
+                        refYearly(rule, fyYear), estimated, fyCutByTerm), basisAmount, monthsInFy));
 
                 case MONTHLY -> {
                     for (YearMonth m : employedMonths(empFrom, empTo)) {
-                        payouts.add(new ProjectedPayout(
+                        payouts.add(new PayoutWithInputs(new ProjectedPayout(
                                 m.atDay(1), monthlyAmount(spec, earned, monthsInFy),
                                 PayoutKind.MONTHLY, PayoutStatus.PROJECTED,
-                                refAdvance(rule, m), estimated, false));
+                                refAdvance(rule, m), estimated, false), basisAmount, monthsInFy));
                     }
                 }
 
@@ -103,42 +130,82 @@ public class IndividualBonusScheduleService {
                     BigDecimal advancesPaid = BigDecimal.ZERO;
                     for (YearMonth m : employedMonths(empFrom, empTo)) {
                         BigDecimal projected = advanceAmount(spec, earned, monthsInFy);
-                        // Reconcile the true-up against what was ACTUALLY paid: once a month's advance
-                        // lump sum is materialised its committed amount is authoritative (matters for
-                        // PERCENT_OF_PROJECTED and mid-year estimate changes); else use the projection.
+                        // Reconcile the true-up against advances actually paid: a committed lump sum is
+                        // authoritative; a still-projected advance counts as PAID for DISPLAY but as ZERO
+                        // at materialisation (settlementFromCommittedAdvancesOnly) so payroll nets only
+                        // real advances.
                         BigDecimal committed = committedAmount(refAdvance(rule, m));
-                        advancesPaid = advancesPaid.add(committed != null ? committed : projected);
-                        payouts.add(new ProjectedPayout(
+                        advancesPaid = advancesPaid.add(
+                                advanceContribution(committed, projected, settlementFromCommittedAdvancesOnly));
+                        payouts.add(new PayoutWithInputs(new ProjectedPayout(
                                 m.atDay(1), projected, PayoutKind.ADVANCE, PayoutStatus.PROJECTED,
-                                refAdvance(rule, m), estimated, false));
+                                refAdvance(rule, m), estimated, false), basisAmount, monthsInFy));
                     }
                     // FY-close true-up (or FINAL_SETTLEMENT on termination) = earned(-to-termination)
-                    // − Σ advances-paid; the termination path reconciles against advances actually paid.
+                    // − Σ advances-paid.
                     BigDecimal trueUp = reconcileTrueUp(spec, earned, advancesPaid);
                     PayoutKind kind = fyCutByTerm ? PayoutKind.FINAL_SETTLEMENT : PayoutKind.TRUEUP;
-                    payouts.add(new ProjectedPayout(
-                            yearMonth, trueUp, kind, PayoutStatus.PROJECTED,
-                            refTrueUp(rule, fyYear), estimated, fyCutByTerm));
+                    payouts.add(new PayoutWithInputs(new ProjectedPayout(
+                            settleMonth, trueUp, kind, PayoutStatus.PROJECTED,
+                            refTrueUp(rule, fyYear), estimated, fyCutByTerm), basisAmount, monthsInFy));
                 }
             }
         }
 
-        // 3. Drop anything past the window; overlay committed lump sums.
+        // 3. Bound each payout (advances by the earning window; a trailing settlement only by the horizon
+        //    so a fully-earned FY does not lose its post-window pay-month), then overlay committed lump sums.
         return payouts.stream()
-                .filter(p -> !p.month().isAfter(windowEnd))
-                .map(this::overlayCommitted)
-                .sorted(Comparator.comparing(ProjectedPayout::month))
+                .filter(pi -> survivesWindow(pi.payout().kind(), pi.payout().month(), windowEnd, horizonEnd))
+                .map(pi -> new PayoutWithInputs(overlayCommitted(pi.payout()), pi.basisAmount(), pi.monthsEmployed()))
+                .sorted(Comparator.comparing(pi -> pi.payout().month()))
                 .toList();
     }
 
     // --- amount helpers ---
 
-    private BigDecimal earnedFor(Spec spec, String userUuid, LocalDate from, LocalDate to, int months) {
+    private BigDecimal resolveBasisAmount(Spec spec, String userUuid, LocalDate from, LocalDate to) {
         if (spec.basis() == Basis.FIXED_AMOUNT) return BigDecimal.ZERO; // amount comes from the schedule
-        BigDecimal basisAmount = basisResolver.resolveBasisAmount(spec.basis(), userUuid, from, to);
+        return basisResolver.resolveBasisAmount(spec.basis(), userUuid, from, to);
+    }
+
+    private BigDecimal earnedFrom(Spec spec, BigDecimal basisAmount, int months) {
+        if (spec.basis() == Basis.FIXED_AMOUNT) return BigDecimal.ZERO; // amount comes from the schedule
         BigDecimal earned = evaluator.computeEarned(spec.tierTable(), basisAmount, spec.proRating(), months);
         if (spec.cap() != null && earned.compareTo(spec.cap()) > 0) earned = spec.cap();
         return earned;
+    }
+
+    // --- pure, package-visible decision helpers (unit-tested without booting Quarkus) ---
+
+    /** The mechanical recurring advance/monthly kinds — written by the monthly job and gated on ACTIVE. */
+    static boolean isMonthlyAdvanceKind(PayoutKind kind) {
+        return kind == PayoutKind.ADVANCE || kind == PayoutKind.MONTHLY;
+    }
+
+    /** The FY-settlement kinds — paid AFTER the earning window closes; admin-confirmed at materialisation. */
+    static boolean isSettlementKind(PayoutKind kind) {
+        return kind == PayoutKind.YEARLY || kind == PayoutKind.TRUEUP || kind == PayoutKind.FINAL_SETTLEMENT;
+    }
+
+    /**
+     * Whether a payout survives the projection cut. Recurring advances are bounded by the earning window
+     * (termination / effective-to). A settlement is bounded only by the horizon, so a fully-earned FY keeps
+     * its trailing pay-month even when it falls after {@code effectiveTo} (spec §12.3 / bounded-yearly bug).
+     */
+    static boolean survivesWindow(PayoutKind kind, LocalDate month, LocalDate windowEnd, LocalDate horizonEnd) {
+        LocalDate bound = isSettlementKind(kind) ? horizonEnd : windowEnd;
+        return !month.isAfter(bound);
+    }
+
+    /**
+     * A single month's advance contribution to the true-up reconciliation: a committed (paid) amount is
+     * always authoritative; an un-materialised advance counts as ZERO when {@code committedOnly} (the
+     * materialisation path) and as its projection otherwise (the display path).
+     */
+    static BigDecimal advanceContribution(BigDecimal committed, BigDecimal projected, boolean committedOnly) {
+        if (committed != null) return committed;
+        if (committedOnly) return BigDecimal.ZERO;
+        return projected != null ? projected : BigDecimal.ZERO;
     }
 
     private BigDecimal monthlyAmount(Spec spec, BigDecimal earned, int monthsInFy) {
@@ -219,19 +286,30 @@ public class IndividualBonusScheduleService {
     }
 
     /**
-     * The first month with no pay if the user is terminated as of {@code horizonEnd}, else null.
-     * Mirrors {@code User.getUserStatus} (latest status wins; TERMINATED wins same-date ties).
+     * The termination month (day-1) if the user is terminated as of {@code horizonEnd}, else null.
+     * Delegates the tie-break to {@link #effectiveStatusAsOf}.
      */
     private LocalDate effectiveTerminationMonth(String userUuid, LocalDate horizonEnd) {
-        List<UserStatus> statuses = UserStatus.findByUseruuid(userUuid);
-        Optional<UserStatus> latest = statuses.stream()
-                .filter(s -> s.getStatusdate() != null && !s.getStatusdate().isAfter(horizonEnd))
+        return effectiveStatusAsOf(UserStatus.findByUseruuid(userUuid), horizonEnd)
+                .filter(s -> s.getStatus() == StatusType.TERMINATED)
+                .map(s -> s.getStatusdate().withDayOfMonth(1))
+                .orElse(null);
+    }
+
+    /**
+     * The effective {@link UserStatus} as of {@code asOf}: latest statusdate wins and — for a PAYOUT path —
+     * a TERMINATED row wins a SAME-DATE tie (money-safe: a leaver is not paid).
+     * <p>
+     * NOTE: this is intentionally STRICTER than {@code User.getUserStatus}, which keeps ACTIVE on a
+     * same-date tie ({@code ? 0 : 1}). The spec (§2.4/§7) mandates TERMINATED-wins for termination
+     * handling, so this bonus path deliberately diverges to avoid paying a same-date leaver. Package-visible
+     * and static so both {@link IndividualBonusPayoutService} and this class share it and it is unit-testable.
+     */
+    static Optional<UserStatus> effectiveStatusAsOf(List<UserStatus> statuses, LocalDate asOf) {
+        return statuses.stream()
+                .filter(s -> s.getStatusdate() != null && !s.getStatusdate().isAfter(asOf))
                 .max(Comparator.comparing(UserStatus::getStatusdate)
-                        .thenComparing(s -> s.getStatus() == StatusType.TERMINATED ? 0 : 1));
-        if (latest.isPresent() && latest.get().getStatus() == StatusType.TERMINATED) {
-            return latest.get().getStatusdate().withDayOfMonth(1);
-        }
-        return null;
+                        .thenComparing(s -> s.getStatus() == StatusType.TERMINATED ? 1 : 0));
     }
 
     // --- sourceReference scheme (stable, idempotent; equals the lump sum's ref once materialised) ---

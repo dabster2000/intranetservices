@@ -212,6 +212,7 @@ public class TwBonusResource {
         int created = 0;
         int updated = 0;
         int skippedReplacedByIndividual = 0;
+        int voidedPreexistingTwBonus = 0;
 
         // "Replaces YPOT" enforcement (Individual Bonus Rules, spec §8): an employee with an active
         // individual_bonus_rule whose replaces = "YPOT" effective for this fiscal year receives their
@@ -233,6 +234,10 @@ public class TwBonusResource {
                 log.infof("Skipping TW_BONUS for %s (FY %d) — replaced by an individual bonus (replaces=YPOT)",
                         entry.getUseruuid(), fiscalYear);
                 skippedReplacedByIndividual++;
+                // A TW_BONUS lump sum may already exist from a run BEFORE the individual (replaces=YPOT)
+                // rule was created; skipping the create alone would leave it in place → double bonus. Void
+                // it (best-effort, logged; ONLY this exact sourceRef) to keep the no-double-bonus invariant.
+                voidedPreexistingTwBonus += voidPreexistingTwBonus(fiscalYear, entry.getUseruuid());
                 continue;
             }
             String sourceRef = "tw_bonus_" + fiscalYear + "_" + entry.getUseruuid();
@@ -264,7 +269,31 @@ public class TwBonusResource {
         response.put("created", created);
         response.put("updated", updated);
         response.put("skippedReplacedByIndividual", skippedReplacedByIndividual);
+        response.put("voidedPreexistingTwBonus", voidedPreexistingTwBonus);
         response.put("total", request.getPayouts().size());
         return Response.ok(response).build();
+    }
+
+    /**
+     * Best-effort delete of any pre-existing {@code tw_bonus_{fy}_{uuid}} lump sum for a user now covered by
+     * an individual (replaces=YPOT) bonus — matching the EXACT sourceRef this endpoint writes. Failure is
+     * logged and swallowed so one stale row never aborts the batch.
+     *
+     * @return number of rows voided (0 or more)
+     */
+    private long voidPreexistingTwBonus(int fiscalYear, String useruuid) {
+        String sourceRef = "tw_bonus_" + fiscalYear + "_" + useruuid;
+        try {
+            long removed = SalaryLumpSum.delete("sourceReference", sourceRef);
+            if (removed > 0) {
+                log.infof("Voided %d pre-existing TW_BONUS lump sum(s) for %s (FY %d, sourceRef=%s) — replaced by individual bonus",
+                        removed, useruuid, fiscalYear, sourceRef);
+            }
+            return removed;
+        } catch (RuntimeException e) {
+            log.warnf("Failed to void pre-existing TW_BONUS lump sum for %s (FY %d, sourceRef=%s): %s",
+                    useruuid, fiscalYear, sourceRef, e.getMessage());
+            return 0;
+        }
     }
 }
