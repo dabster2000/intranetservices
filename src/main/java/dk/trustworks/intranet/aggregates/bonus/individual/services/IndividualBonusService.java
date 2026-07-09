@@ -1,5 +1,7 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
+import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusContext;
+import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusFormulaEngine;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusDeleteResult;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRuleDTO;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRuleRequest;
@@ -49,6 +51,7 @@ public class IndividualBonusService {
     @Inject IndividualBonusEvaluator evaluator;
     @Inject IndividualBonusBasisResolver basisResolver;
     @Inject IndividualBonusScheduleService scheduleService;
+    @Inject BonusFormulaEngine formulaEngine;
 
     // --- CRUD ---
 
@@ -168,9 +171,10 @@ public class IndividualBonusService {
     // --- Computation ---
 
     /**
-     * Compute the FY earned amount (marginal tiers × optional months/12, capped) for a rule, over the
-     * intersection of the rule's effective window and the fiscal year. FIXED_AMOUNT is schedule-driven
-     * and yields 0 here.
+     * Compute the FY earned amount for a rule over the intersection of its effective window and the fiscal
+     * year — routed through the shared {@link IndividualBonusEvaluator#earned} so it honours a {@code formula}
+     * escape hatch (else marginal tiers × optional months/12), then the {@code cap}. FIXED_AMOUNT is
+     * schedule-driven and yields 0 here.
      */
     public BigDecimal computeAmountForFy(IndividualBonusRule rule, int fiscalYear) {
         Spec spec = parseSpec(rule);
@@ -184,11 +188,9 @@ public class IndividualBonusService {
 
         BigDecimal basisAmount = basisResolver.resolveBasisAmount(spec.basis(), rule.getUserUuid(), from, to);
         int months = basisResolver.monthsActive(rule.getUserUuid(), from, to);
-        BigDecimal earned = evaluator.computeEarned(spec.tierTable(), basisAmount, spec.proRating(), months);
-        if (spec.cap() != null && earned.compareTo(spec.cap()) > 0) {
-            earned = spec.cap();
-        }
-        return earned;
+        BonusContext ctx = new BonusContext(spec.tierTable(), months, fiscalYear, basisAmount,
+                name -> basisResolver.resolveVariable(name, rule.getUserUuid(), from, to));
+        return evaluator.earned(spec, ctx);
     }
 
     public Spec parseSpec(IndividualBonusRule rule) {
@@ -222,8 +224,10 @@ public class IndividualBonusService {
     }
 
     /**
-     * Enforce the spec invariants: resolvable basis, a schedule/cadence, and — for tier-based bases —
-     * ordered, non-overlapping bands with from ≥ 0 and rates ∈ [0,1].
+     * Enforce the spec invariants: resolvable basis, a schedule/cadence, sane advance bounds, and — for
+     * tier-based bases — ordered, non-overlapping bands with from ≥ 0 and rates ∈ [0,1]. When a
+     * {@code formula} is supplied it is compiled in the sandboxed engine and its variable references are
+     * checked against the allow-list (the tier table then becomes optional).
      */
     void validateSpec(Spec spec) {
         if (spec.basis() == null) throw new BadRequestException("spec.basis is required");
@@ -233,6 +237,12 @@ public class IndividualBonusService {
         Schedule schedule = spec.schedule();
         if (schedule == null || schedule.cadence() == null) {
             throw new BadRequestException("spec.schedule.cadence is required");
+        }
+
+        // A cap is an UPPER bound; a zero/negative cap would silently clamp every earned amount to ≤ 0 and
+        // suppress pay with no operator alert. Reject it (a bonus that should never pay simply has no rule).
+        if (spec.cap() != null && spec.cap().signum() <= 0) {
+            throw new BadRequestException("spec.cap must be greater than 0 when set");
         }
 
         // A PREPAID_SUPPLEMENT advance materialises as ONE recurring SalarySupplement with a single
@@ -264,6 +274,27 @@ public class IndividualBonusService {
             }
         }
 
+        // Formula escape hatch (§ JEXL): when present it FULLY computes the FY earned scalar in place of the
+        // tier table. Compile it at write time in the sandboxed engine (rejects syntax errors and disallowed
+        // variable references) and enforce the length cap. tierTable becomes OPTIONAL (the formula may call
+        // tier()); validate its bands only if one is supplied.
+        String formula = spec.formula();
+        if (formula != null && !formula.isBlank()) {
+            if (spec.basis() == Basis.FIXED_AMOUNT) {
+                throw new BadRequestException(
+                        "A formula bonus needs a fact basis (not FIXED_AMOUNT) to feed its variables");
+            }
+            if (formula.length() > BonusFormulaEngine.MAX_FORMULA_LENGTH) {
+                throw new BadRequestException("spec.formula exceeds the maximum length of "
+                        + BonusFormulaEngine.MAX_FORMULA_LENGTH + " characters");
+            }
+            formulaEngine.validate(formula);
+            if (spec.tierTable() != null && !spec.tierTable().isEmpty()) {
+                validateTierBands(spec.tierTable());
+            }
+            return;
+        }
+
         if (spec.basis() == Basis.FIXED_AMOUNT) {
             // No tier table for FIXED_AMOUNT; amount comes from schedule.advance.fixedAmountPerMonth.
             return;
@@ -273,6 +304,15 @@ public class IndividualBonusService {
         if (tiers == null || tiers.isEmpty()) {
             throw new BadRequestException("spec.tierTable is required for basis " + spec.basis());
         }
+        validateTierBands(tiers);
+    }
+
+    /**
+     * Validate a marginal tier table: each band has {@code from} ≥ 0 and {@code rate} ∈ [0,1], {@code to > from},
+     * bands are contiguous / ordered / non-overlapping, and only the last may be open-ended. Extracted so both
+     * the declarative path and a formula rule that also supplies a {@code tierTable} (for {@code tier()}) share it.
+     */
+    private static void validateTierBands(List<Tier> tiers) {
         BigDecimal prevTo = null;
         for (int i = 0; i < tiers.size(); i++) {
             Tier t = tiers.get(i);

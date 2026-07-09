@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
+import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusFormulaException;
 import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusRule;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Advance;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.MaterializedPayoutCommand;
@@ -69,69 +70,95 @@ public class IndividualBonusPayoutService {
 
         List<IndividualBonusRule> rules = IndividualBonusRule.list("active = true");
         for (IndividualBonusRule rule : rules) {
-            Spec spec = specMapper.parse(rule.getSpec());
-            boolean prepaidVehicle = isPrepaidSupplement(spec);
-
-            // A PREPAID_SUPPLEMENT advance is delivered by ONE recurring SalarySupplement (which projects
-            // forward and trims its own toMonth), not by monthly lump sums. Maintain it BEFORE the ACTIVE
-            // gate so a termination this month still trims the supplement's window.
-            if (prepaidVehicle && maintainPrepaidSupplement(rule, spec, payMonth)) {
-                created++;
-            }
-
-            boolean activeThisMonth = isActiveInMonth(rule.getUserUuid(), payMonth);
-
-            // Settlements are reconciled against advances ACTUALLY PAID (committed lump sums only), and each
-            // payout carries the basis inputs frozen into the reproducibility snapshot.
-            for (IndividualBonusScheduleService.PayoutWithInputs pi
-                    : scheduleService.projectWithInputs(rule, horizon, true)) {
-                ProjectedPayout p = pi.payout();
-                if (!p.month().isEqual(payMonth)) continue;
-
-                // (§5) The monthly job writes only the mechanical advances; settlements are admin-confirmed.
-                if (scheduledOnly && !IndividualBonusScheduleService.isMonthlyAdvanceKind(p.kind())) continue;
-
-                // The ACTIVE gate applies ONLY to recurring advance/monthly pay (a leaver's future advances
-                // are never written). A YEARLY / TRUEUP / FINAL_SETTLEMENT still settles for a terminated
-                // employee — it lands in the leave month, when the employee is no longer ACTIVE.
-                if (IndividualBonusScheduleService.isMonthlyAdvanceKind(p.kind()) && !activeThisMonth) continue;
-
-                // PREPAID_SUPPLEMENT delivers monthly advances via a recurring supplement, not lump sums;
-                // only the year-end true-up / final settlement is still written as a lump sum.
-                if (prepaidVehicle && IndividualBonusScheduleService.isMonthlyAdvanceKind(p.kind())) continue;
-
-                // A net-negative settlement is a CLAWBACK. The Danløn export drops a net-negative "41 Bonus"
-                // row entirely (DanlonResource emits the line only when the month's sum > 0) and Danløn
-                // løntype 41 cannot carry a negative, so we do NOT auto-write it — HR settles the deduction
-                // manually. The projection still SHOWS the negative for visibility.
-                if (isNegativeClawback(p)) {
-                    log.warnf("MANUAL ACTION REQUIRED — individual-bonus CLAWBACK of %s for user %s not "
-                                    + "auto-paid (%s, %s): Danløn cannot export a negative løntype-41 line; "
-                                    + "settle it as a manual deduction.",
-                            p.amount(), rule.getUserUuid(), p.sourceReference(), payMonth);
-                    continue;
-                }
-                if (!shouldMaterialize(p)) continue;
-
-                try {
-                    // Each write runs in its own REQUIRES_NEW transaction (via the injected writer, a CDI
-                    // proxy) so a unique-constraint race on source_reference rolls back only THIS payout —
-                    // and its snapshot — not the whole batch.
-                    boolean wrote = lumpSumWriter.writeIfAbsent(new MaterializedPayoutCommand(
-                            rule.getUuid(), rule.getUserUuid(), rule.getName(), payMonth, p.kind(), p.amount(),
-                            Boolean.TRUE.equals(spec.pension()), p.sourceReference(),
-                            rule.getSpec(), pi.basisAmount(), pi.monthsEmployed()));
-                    if (wrote) created++;
-                } catch (RuntimeException e) {
-                    // A lost race (concurrent scheduled job + manual run, or ECS-Express double-fire) is
-                    // benign and idempotent — log and continue so one payout never aborts the batch.
-                    log.warnf("Skipped individual-bonus payout %s for %s (already materialised or write failed): %s",
-                            p.sourceReference(), rule.getUserUuid(), e.getMessage());
-                }
+            // MONEY-SAFE BOUNDARY: a formula that fails to evaluate (a runtime error, timeout/runaway, or a
+            // null / non-numeric result) must NOT abort the whole batch and must NEVER pay a guessed amount.
+            // Skip just THIS rule with a prominent WARN for manual handling (mirroring the CLAWBACK
+            // "flag for manual handling" pattern); every other rule still materialises.
+            try {
+                created += materializeRuleForMonth(rule, payMonth, horizon, scheduledOnly);
+            } catch (BonusFormulaException e) {
+                log.warnf("MANUAL ACTION REQUIRED — individual-bonus formula evaluation failed for rule %s "
+                                + "(user %s, %s); NO payout auto-written this run: %s",
+                        rule.getUuid(), rule.getUserUuid(), payMonth, e.getMessage());
             }
         }
         log.infof("Individual bonus materialisation for %s (scheduledOnly=%b): %d row(s) created",
                 payMonth, scheduledOnly, created);
+        return created;
+    }
+
+    /**
+     * Materialise the payouts due in {@code payMonth} for ONE rule and return how many rows were written.
+     * A {@link BonusFormulaException} propagates to {@link #materializeDue}, which isolates the failure to
+     * this rule (skip + WARN) so one bad formula neither aborts the batch nor pays a guessed amount.
+     */
+    private int materializeRuleForMonth(IndividualBonusRule rule, LocalDate payMonth, LocalDate horizon,
+                                        boolean scheduledOnly) {
+        int created = 0;
+        Spec spec = specMapper.parse(rule.getSpec());
+        boolean prepaidVehicle = isPrepaidSupplement(spec);
+
+        // A PREPAID_SUPPLEMENT advance is delivered by ONE recurring SalarySupplement (which projects
+        // forward and trims its own toMonth), not by monthly lump sums. Maintain it BEFORE the ACTIVE
+        // gate so a termination this month still trims the supplement's window.
+        if (prepaidVehicle && maintainPrepaidSupplement(rule, spec, payMonth)) {
+            created++;
+        }
+
+        boolean activeThisMonth = isActiveInMonth(rule.getUserUuid(), payMonth);
+
+        // Settlements are reconciled against advances ACTUALLY PAID (committed lump sums only), and each
+        // payout carries the basis inputs frozen into the reproducibility snapshot.
+        for (IndividualBonusScheduleService.PayoutWithInputs pi
+                : scheduleService.projectWithInputs(rule, horizon, true)) {
+            ProjectedPayout p = pi.payout();
+            if (!p.month().isEqual(payMonth)) continue;
+
+            // (§5) The monthly job writes only the mechanical advances; settlements are admin-confirmed.
+            if (scheduledOnly && !IndividualBonusScheduleService.isMonthlyAdvanceKind(p.kind())) continue;
+
+            // The ACTIVE gate applies ONLY to recurring advance/monthly pay (a leaver's future advances
+            // are never written). A YEARLY / TRUEUP / FINAL_SETTLEMENT still settles for a terminated
+            // employee — it lands in the leave month, when the employee is no longer ACTIVE.
+            if (IndividualBonusScheduleService.isMonthlyAdvanceKind(p.kind()) && !activeThisMonth) continue;
+
+            // PREPAID_SUPPLEMENT delivers monthly advances via a recurring supplement, not lump sums;
+            // only the year-end true-up / final settlement is still written as a lump sum.
+            if (prepaidVehicle && IndividualBonusScheduleService.isMonthlyAdvanceKind(p.kind())) continue;
+
+            // A net-negative settlement is a CLAWBACK. The Danløn export drops a net-negative "41 Bonus"
+            // row entirely (DanlonResource emits the line only when the month's sum > 0) and Danløn
+            // løntype 41 cannot carry a negative, so we do NOT auto-write it — HR settles the deduction
+            // manually. The projection still SHOWS the negative for visibility.
+            if (isNegativeClawback(p)) {
+                log.warnf("MANUAL ACTION REQUIRED — individual-bonus CLAWBACK of %s for user %s not "
+                                + "auto-paid (%s, %s): Danløn cannot export a negative løntype-41 line; "
+                                + "settle it as a manual deduction.",
+                        p.amount(), rule.getUserUuid(), p.sourceReference(), payMonth);
+                continue;
+            }
+            if (!shouldMaterialize(p)) continue;
+
+            try {
+                // Each write runs in its own REQUIRES_NEW transaction (via the injected writer, a CDI
+                // proxy) so a unique-constraint race on source_reference rolls back only THIS payout —
+                // and its snapshot — not the whole batch.
+                boolean wrote = lumpSumWriter.writeIfAbsent(new MaterializedPayoutCommand(
+                        rule.getUuid(), rule.getUserUuid(), rule.getName(), payMonth, p.kind(), p.amount(),
+                        Boolean.TRUE.equals(spec.pension()), p.sourceReference(),
+                        rule.getSpec(), pi.basisAmount(), pi.monthsEmployed()));
+                if (wrote) created++;
+            } catch (BonusFormulaException e) {
+                // A formula failure must bubble to the per-rule boundary in materializeDue (skip + WARN),
+                // never be swallowed as a benign write race below.
+                throw e;
+            } catch (RuntimeException e) {
+                // A lost race (concurrent scheduled job + manual run, or ECS-Express double-fire) is
+                // benign and idempotent — log and continue so one payout never aborts the batch.
+                log.warnf("Skipped individual-bonus payout %s for %s (already materialised or write failed): %s",
+                        p.sourceReference(), rule.getUserUuid(), e.getMessage());
+            }
+        }
         return created;
     }
 

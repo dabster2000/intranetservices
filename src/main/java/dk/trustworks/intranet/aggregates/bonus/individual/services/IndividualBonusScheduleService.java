@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
+import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusContext;
 import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusRule;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.*;
 import dk.trustworks.intranet.domain.user.entity.SalaryLumpSum;
@@ -105,7 +106,7 @@ public class IndividualBonusScheduleService {
             int monthsInFy = basisResolver.monthsActive(rule.getUserUuid(), empFrom, empTo);
             boolean estimated = empTo.isAfter(LocalDate.now()); // window not fully settled yet
             BigDecimal basisAmount = resolveBasisAmount(spec, rule.getUserUuid(), empFrom, empTo);
-            BigDecimal earned = earnedFrom(spec, basisAmount, monthsInFy);
+            BigDecimal earned = earnedFrom(spec, rule.getUserUuid(), empFrom, empTo, fyYear, basisAmount, monthsInFy);
 
             // A yearly/true-up payout for a terminated FY settles at the termination month, not FY-end.
             boolean fyCutByTerm = termMonth != null
@@ -168,11 +169,18 @@ public class IndividualBonusScheduleService {
         return basisResolver.resolveBasisAmount(spec.basis(), userUuid, from, to);
     }
 
-    private BigDecimal earnedFrom(Spec spec, BigDecimal basisAmount, int months) {
+    /**
+     * The FY earned amount for this rule/window — routed through the shared {@link IndividualBonusEvaluator#earned}
+     * so a {@code formula} escape hatch and the declarative tier math share one door (and the {@code cap} clamp).
+     * The {@link BonusContext}'s lazy variable resolver only touches the DB for the fact variables a formula
+     * actually references. {@code FIXED_AMOUNT} is schedule-driven → 0 here.
+     */
+    private BigDecimal earnedFrom(Spec spec, String userUuid, LocalDate from, LocalDate to, int fyYear,
+                                  BigDecimal basisAmount, int months) {
         if (spec.basis() == Basis.FIXED_AMOUNT) return BigDecimal.ZERO; // amount comes from the schedule
-        BigDecimal earned = evaluator.computeEarned(spec.tierTable(), basisAmount, spec.proRating(), months);
-        if (spec.cap() != null && earned.compareTo(spec.cap()) > 0) earned = spec.cap();
-        return earned;
+        BonusContext ctx = new BonusContext(spec.tierTable(), months, fyYear, basisAmount,
+                name -> basisResolver.resolveVariable(name, userUuid, from, to));
+        return evaluator.earned(spec, ctx);
     }
 
     // --- pure, package-visible decision helpers (unit-tested without booting Quarkus) ---

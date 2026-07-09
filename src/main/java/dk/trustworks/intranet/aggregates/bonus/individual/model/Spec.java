@@ -20,6 +20,12 @@ import java.util.List;
  * @param pension     false → Danløn "41 Bonus"; true → with-pension bucket
  * @param replaces    e.g. {@code YPOT} (suppresses the TW_BONUS for that FY)
  * @param schedule    the payout schedule
+ * @param formula     OPTIONAL sandboxed JEXL escape hatch. When non-null it FULLY computes the FY earned
+ *                    scalar (instead of the marginal {@code tierTable}) against a curated set of facts
+ *                    ({@code production}, {@code utilization}, {@code monthsEmployed}, … plus a
+ *                    {@code tier(x)} helper). The formula owns pro-rating (so {@code proRating} is not
+ *                    auto-applied); {@code cap} is still clamped after. Null → today's tier-based behaviour.
+ *                    Evaluated in a locked-down JEXL engine — see {@code dsl/BonusFormulaEngine}.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record Spec(
@@ -30,6 +36,7 @@ public record Spec(
         BigDecimal cap,
         boolean pension,
         String replaces,
-        Schedule schedule
+        Schedule schedule,
+        String formula
 ) {
 }

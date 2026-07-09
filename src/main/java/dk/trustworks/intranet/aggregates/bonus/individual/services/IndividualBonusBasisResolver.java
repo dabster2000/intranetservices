@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
+import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusFormulaException;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Basis;
 import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.dto.DateValueDTO;
@@ -60,6 +61,27 @@ public class IndividualBonusBasisResolver {
         int elapsedEmployedMonths = monthsActive(userUuid, from, today);
         int totalMonthsInWindow = monthsBetweenInclusive(from, to);
         return runRate(actualToDate, elapsedEmployedMonths, totalMonthsInWindow);
+    }
+
+    /**
+     * Resolve one {@code formula} fact variable ({@code production}, {@code utilization}, {@code billableHours},
+     * {@code budgetAttainment}, {@code salary}) to a live number over {@code [from, to]}, reusing the SAME
+     * forecast-aware {@link #resolveBasisAmount} switch as the declarative path (so a formula's {@code production}
+     * matches the tier path's {@code OWN_INVOICED_REVENUE} exactly, including run-rate forecasting for a future
+     * window). The curated variable → {@link Basis} mapping lives here, the single owner of fact resolution;
+     * {@code basisAmount}/{@code monthsEmployed}/{@code fiscalYear} are supplied directly by the caller and never
+     * routed here. An un-mapped name fails safe.
+     */
+    public BigDecimal resolveVariable(String name, String userUuid, LocalDate from, LocalDate to) {
+        Basis basis = switch (name) {
+            case "production" -> Basis.OWN_INVOICED_REVENUE;
+            case "utilization" -> Basis.UTILIZATION;
+            case "billableHours" -> Basis.BILLABLE_HOURS;
+            case "budgetAttainment" -> Basis.BUDGET_ATTAINMENT;
+            case "salary" -> Basis.SALARY;
+            default -> throw new BonusFormulaException("Unknown formula fact variable: " + name);
+        };
+        return resolveBasisAmount(basis, userUuid, from, to);
     }
 
     /** Actuals-only resolution (booked facts over {@code [from, to]}) — the pre-forecast hard-coded switch. */

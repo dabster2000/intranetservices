@@ -40,7 +40,7 @@ class IndividualBonusScheduleServiceTest {
         TrueUp trueUp = new TrueUp(true, "FY_EARNED_MINUS_ADVANCES", handling);
         Schedule schedule = new Schedule(Cadence.MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP, null, advance, trueUp);
         return new Spec(Basis.OWN_INVOICED_REVENUE, "FISCAL_YEAR_SUM", null,
-                new ProRating(true), null, false, null, schedule);
+                new ProRating(true), null, false, null, schedule, null);
     }
 
     @Test
@@ -70,7 +70,7 @@ class IndividualBonusScheduleServiceTest {
     void trueUp_nullHandling_defaultsToWriteOff() {
         Spec noHandling = new Spec(Basis.OWN_INVOICED_REVENUE, "FISCAL_YEAR_SUM", null,
                 new ProRating(true), null, false, null,
-                new Schedule(Cadence.MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP, null, null, null));
+                new Schedule(Cadence.MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP, null, null, null), null);
         BigDecimal trueUp = service.reconcileTrueUp(noHandling, bd(675_000), bd(700_000));
         assertEquals(0, trueUp.compareTo(BigDecimal.ZERO), "default (WRITE_OFF) should clamp to 0 but was " + trueUp);
     }
