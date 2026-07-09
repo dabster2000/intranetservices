@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.apigateway.resources;
 
+import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusRule;
 import dk.trustworks.intranet.apigateway.dto.TwBonusCalculationDTO;
 import dk.trustworks.intranet.apigateway.dto.TwBonusPayoutRequest;
 import dk.trustworks.intranet.apigateway.model.TwBonusPoolConfig;
@@ -210,8 +211,30 @@ public class TwBonusResource {
         LocalDate payoutMonth = LocalDate.now().withDayOfMonth(1);
         int created = 0;
         int updated = 0;
+        int skippedReplacedByIndividual = 0;
+
+        // "Replaces YPOT" enforcement (Individual Bonus Rules, spec §8): an employee with an active
+        // individual_bonus_rule whose replaces = "YPOT" effective for this fiscal year receives their
+        // individual production bonus INSTEAD of "Din del af Trustworks" — so exclude them here to
+        // guarantee nobody is paid BOTH a TW_BONUS and the individual bonus for the same FY.
+        LocalDate fyStart = LocalDate.of(fiscalYear, 7, 1);
+        LocalDate fyEnd = LocalDate.of(fiscalYear + 1, 6, 30);
+        Set<String> ypotReplacedUsers = IndividualBonusRule
+                .<IndividualBonusRule>find(
+                        "active = true and replaces = ?1 and effectiveFrom <= ?2 " +
+                                "and (effectiveTo is null or effectiveTo >= ?3)",
+                        "YPOT", fyEnd, fyStart)
+                .stream()
+                .map(IndividualBonusRule::getUserUuid)
+                .collect(Collectors.toSet());
 
         for (TwBonusPayoutRequest.PayoutEntry entry : request.getPayouts()) {
+            if (ypotReplacedUsers.contains(entry.getUseruuid())) {
+                log.infof("Skipping TW_BONUS for %s (FY %d) — replaced by an individual bonus (replaces=YPOT)",
+                        entry.getUseruuid(), fiscalYear);
+                skippedReplacedByIndividual++;
+                continue;
+            }
             String sourceRef = "tw_bonus_" + fiscalYear + "_" + entry.getUseruuid();
 
             Optional<SalaryLumpSum> existing = SalaryLumpSum
@@ -240,6 +263,7 @@ public class TwBonusResource {
         Map<String, Object> response = new HashMap<>();
         response.put("created", created);
         response.put("updated", updated);
+        response.put("skippedReplacedByIndividual", skippedReplacedByIndividual);
         response.put("total", request.getPayouts().size());
         return Response.ok(response).build();
     }

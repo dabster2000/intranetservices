@@ -58,6 +58,12 @@ public class SalarySupplement extends PanacheEntityBase implements Auditable {
     @Column(name = "description")
     private String description;
 
+    /** Idempotency key for machine-generated supplements (e.g. individual-bonus PREPAID advances). Unique
+     *  index uk_salary_supplement_source_ref (V392); NULL for manually-created supplements. */
+    @Size(max = 255)
+    @Column(name = "source_reference")
+    private String sourceReference;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private LocalDateTime createdAt;
