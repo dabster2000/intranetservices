@@ -10,10 +10,12 @@ import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonus
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Advance;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.AdvanceType;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Basis;
+import dk.trustworks.intranet.aggregates.bonus.individual.model.Cadence;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.ProjectedPayout;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Schedule;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Spec;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Tier;
+import dk.trustworks.intranet.aggregates.bonus.individual.model.TrueUp;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Vehicle;
 import dk.trustworks.intranet.domain.user.entity.SalaryLumpSum;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -27,6 +29,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -46,6 +49,10 @@ public class IndividualBonusService {
     private static final Set<Basis> WRITABLE_BASES = EnumSet.of(
             Basis.OWN_INVOICED_REVENUE, Basis.UTILIZATION, Basis.BILLABLE_HOURS,
             Basis.BUDGET_ATTAINMENT, Basis.SALARY, Basis.FIXED_AMOUNT);
+    private static final String SUPPORTED_AGGREGATION = "FISCAL_YEAR_SUM";
+    private static final String SUPPORTED_REPLACEMENT = "YPOT";
+    private static final String SUPPORTED_ADVANCE_MONTHS = "EMPLOYED_IN_FY";
+    private static final String SUPPORTED_TRUE_UP_FORMULA = "FY_EARNED_MINUS_ADVANCES";
 
     @Inject IndividualBonusSpecMapper specMapper;
     @Inject IndividualBonusEvaluator evaluator;
@@ -216,11 +223,25 @@ public class IndividualBonusService {
                 rule.getCreatedBy(), rule.getCreatedAt(), rule.getModifiedBy(), rule.getUpdatedAt());
     }
 
-    private void validateRequest(IndividualBonusRuleRequest request) {
+    void validateRequest(IndividualBonusRuleRequest request) {
+        if (request == null) throw new BadRequestException("request body is required");
+        if (request.userUuid() == null || request.userUuid().isBlank()) {
+            throw new BadRequestException("userUuid is required");
+        }
+        if (request.name() == null || request.name().isBlank()) {
+            throw new BadRequestException("name is required");
+        }
+        if (request.effectiveFrom() == null) {
+            throw new BadRequestException("effectiveFrom is required");
+        }
         if (request.effectiveTo() != null && request.effectiveTo().isBefore(request.effectiveFrom())) {
             throw new BadRequestException("effectiveTo must not be before effectiveFrom");
         }
+        validateReplacement(request.replaces(), "replaces");
         validateSpec(request.spec());
+        if (!Objects.equals(request.replaces(), request.spec().replaces())) {
+            throw new BadRequestException("request.replaces must exactly match spec.replaces");
+        }
     }
 
     /**
@@ -230,48 +251,25 @@ public class IndividualBonusService {
      * checked against the allow-list (the tier table then becomes optional).
      */
     void validateSpec(Spec spec) {
+        if (spec == null) throw new BadRequestException("spec is required");
         if (spec.basis() == null) throw new BadRequestException("spec.basis is required");
         if (!WRITABLE_BASES.contains(spec.basis())) {
             throw new BadRequestException("Basis " + spec.basis() + " is not supported for individual bonuses yet");
         }
+        if (!SUPPORTED_AGGREGATION.equals(spec.aggregation())) {
+            throw new BadRequestException("spec.aggregation must be FISCAL_YEAR_SUM");
+        }
+        validateReplacement(spec.replaces(), "spec.replaces");
         Schedule schedule = spec.schedule();
         if (schedule == null || schedule.cadence() == null) {
             throw new BadRequestException("spec.schedule.cadence is required");
         }
+        validateSchedule(schedule, spec.basis());
 
         // A cap is an UPPER bound; a zero/negative cap would silently clamp every earned amount to ≤ 0 and
         // suppress pay with no operator alert. Reject it (a bonus that should never pay simply has no rule).
         if (spec.cap() != null && spec.cap().signum() <= 0) {
             throw new BadRequestException("spec.cap must be greater than 0 when set");
-        }
-
-        // A PREPAID_SUPPLEMENT advance materialises as ONE recurring SalarySupplement with a single
-        // monthly value, so it cannot carry a per-month-varying PERCENT_OF_PROJECTED amount. (Independent
-        // of basis — this is the §A.2 "leaner alternative" for a flat FIXED_AMOUNT monthly bonus too.)
-        Advance advance = schedule.advance();
-        if (advance != null && advance.vehicle() == Vehicle.PREPAID_SUPPLEMENT) {
-            if (advance.type() != AdvanceType.FIXED) {
-                throw new BadRequestException(
-                        "advance.type must be FIXED when advance.vehicle is PREPAID_SUPPLEMENT");
-            }
-            if (advance.fixedAmountPerMonth() == null) {
-                throw new BadRequestException(
-                        "advance.fixedAmountPerMonth is required when advance.vehicle is PREPAID_SUPPLEMENT");
-            }
-        }
-
-        // Advance amount / percent bounds — mirrors the tier-rate [0,1] guard. Prevents an inflated
-        // advance (e.g. percentOfProjected > 1) overpaying monthly and then being silently written off
-        // against the negative true-up under the WRITE_OFF default (an unrecovered payroll loss).
-        if (advance != null) {
-            if (advance.fixedAmountPerMonth() != null && advance.fixedAmountPerMonth().signum() < 0) {
-                throw new BadRequestException("advance.fixedAmountPerMonth must be >= 0");
-            }
-            if (advance.percentOfProjected() != null
-                    && (advance.percentOfProjected().signum() < 0
-                        || advance.percentOfProjected().compareTo(BigDecimal.ONE) > 0)) {
-                throw new BadRequestException("advance.percentOfProjected must be within [0, 1]");
-            }
         }
 
         // Formula escape hatch (§ JEXL): when present it FULLY computes the FY earned scalar in place of the
@@ -288,6 +286,10 @@ public class IndividualBonusService {
                 throw new BadRequestException("spec.formula exceeds the maximum length of "
                         + BonusFormulaEngine.MAX_FORMULA_LENGTH + " characters");
             }
+            if (spec.proRating() != null && spec.proRating().byMonthsEmployedInFy()) {
+                throw new BadRequestException(
+                        "spec.proRating.byMonthsEmployedInFy must be false when formula is set; formula owns pro-rating");
+            }
             formulaEngine.validate(formula);
             if (spec.tierTable() != null && !spec.tierTable().isEmpty()) {
                 validateTierBands(spec.tierTable());
@@ -296,7 +298,13 @@ public class IndividualBonusService {
         }
 
         if (spec.basis() == Basis.FIXED_AMOUNT) {
-            // No tier table for FIXED_AMOUNT; amount comes from schedule.advance.fixedAmountPerMonth.
+            if (spec.tierTable() != null && !spec.tierTable().isEmpty()) {
+                throw new BadRequestException("spec.tierTable must be null or empty for FIXED_AMOUNT");
+            }
+            if (spec.proRating() != null && spec.proRating().byMonthsEmployedInFy()) {
+                throw new BadRequestException("FIXED_AMOUNT monthly bonuses cannot be automatically pro-rated");
+            }
+            // Amount comes exclusively from the validated MONTHLY/FIXED advance.
             return;
         }
 
@@ -305,6 +313,113 @@ public class IndividualBonusService {
             throw new BadRequestException("spec.tierTable is required for basis " + spec.basis());
         }
         validateTierBands(tiers);
+    }
+
+    private static void validateSchedule(Schedule schedule, Basis basis) {
+        if (schedule.yearly() != null && schedule.yearly().payMonthOffsetFromFyEnd() <= 0) {
+            throw new BadRequestException("schedule.yearly.payMonthOffsetFromFyEnd must be greater than 0");
+        }
+
+        Cadence cadence = schedule.cadence();
+        switch (cadence) {
+            case YEARLY -> {
+                if (schedule.yearly() == null) {
+                    throw new BadRequestException("schedule.yearly is required for YEARLY cadence");
+                }
+                if (schedule.advance() != null || schedule.trueUp() != null) {
+                    throw new BadRequestException("YEARLY cadence requires schedule.advance and schedule.trueUp to be null");
+                }
+            }
+            case MONTHLY -> {
+                if (schedule.advance() == null) {
+                    throw new BadRequestException("schedule.advance is required for MONTHLY cadence");
+                }
+                if (schedule.yearly() != null || schedule.trueUp() != null) {
+                    throw new BadRequestException("MONTHLY cadence requires schedule.yearly and schedule.trueUp to be null");
+                }
+            }
+            case MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP -> {
+                if (schedule.advance() == null) {
+                    throw new BadRequestException(
+                            "schedule.advance is required for MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP cadence");
+                }
+                if (schedule.trueUp() == null) {
+                    throw new BadRequestException(
+                            "schedule.trueUp is required for MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP cadence");
+                }
+            }
+        }
+
+        if (basis == Basis.FIXED_AMOUNT && cadence != Cadence.MONTHLY) {
+            throw new BadRequestException("FIXED_AMOUNT requires MONTHLY cadence");
+        }
+
+        Advance advance = schedule.advance();
+        if (advance != null) validateAdvance(advance);
+
+        TrueUp trueUp = schedule.trueUp();
+        if (trueUp != null) validateTrueUp(trueUp, cadence);
+
+        if (basis == Basis.FIXED_AMOUNT && advance != null && advance.type() != AdvanceType.FIXED) {
+            throw new BadRequestException("FIXED_AMOUNT requires advance.type FIXED");
+        }
+    }
+
+    private static void validateAdvance(Advance advance) {
+        if (advance.vehicle() == null) throw new BadRequestException("advance.vehicle is required");
+        if (advance.type() == null) throw new BadRequestException("advance.type is required");
+        if (!SUPPORTED_ADVANCE_MONTHS.equals(advance.months())) {
+            throw new BadRequestException("advance.months must be EMPLOYED_IN_FY");
+        }
+
+        if (advance.type() == AdvanceType.FIXED) {
+            if (advance.fixedAmountPerMonth() == null) {
+                throw new BadRequestException("advance.fixedAmountPerMonth is required when advance.type is FIXED");
+            }
+            if (advance.fixedAmountPerMonth().signum() < 0) {
+                throw new BadRequestException("advance.fixedAmountPerMonth must be >= 0");
+            }
+            if (advance.percentOfProjected() != null) {
+                throw new BadRequestException("advance.percentOfProjected must be null when advance.type is FIXED");
+            }
+        } else {
+            if (advance.percentOfProjected() == null) {
+                throw new BadRequestException(
+                        "advance.percentOfProjected is required when advance.type is PERCENT_OF_PROJECTED");
+            }
+            if (advance.percentOfProjected().signum() < 0
+                    || advance.percentOfProjected().compareTo(BigDecimal.ONE) > 0) {
+                throw new BadRequestException("advance.percentOfProjected must be within [0, 1]");
+            }
+            if (advance.fixedAmountPerMonth() != null) {
+                throw new BadRequestException(
+                        "advance.fixedAmountPerMonth must be null when advance.type is PERCENT_OF_PROJECTED");
+            }
+        }
+
+        if (advance.vehicle() == Vehicle.PREPAID_SUPPLEMENT && advance.type() != AdvanceType.FIXED) {
+            throw new BadRequestException(
+                    "advance.type must be FIXED when advance.vehicle is PREPAID_SUPPLEMENT");
+        }
+    }
+
+    private static void validateTrueUp(TrueUp trueUp, Cadence cadence) {
+        if (cadence != Cadence.MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP) {
+            throw new BadRequestException("schedule.trueUp is only supported for advance-plus-true-up cadence");
+        }
+        if (!trueUp.enabled()) throw new BadRequestException("trueUp.enabled must be true");
+        if (!SUPPORTED_TRUE_UP_FORMULA.equals(trueUp.formula())) {
+            throw new BadRequestException("trueUp.formula must be FY_EARNED_MINUS_ADVANCES");
+        }
+        if (trueUp.negativeHandling() == null) {
+            throw new BadRequestException("trueUp.negativeHandling is required");
+        }
+    }
+
+    private static void validateReplacement(String replacement, String field) {
+        if (replacement != null && !SUPPORTED_REPLACEMENT.equals(replacement)) {
+            throw new BadRequestException(field + " must be null or YPOT");
+        }
     }
 
     /**
@@ -316,6 +431,9 @@ public class IndividualBonusService {
         BigDecimal prevTo = null;
         for (int i = 0; i < tiers.size(); i++) {
             Tier t = tiers.get(i);
+            if (t == null) {
+                throw new BadRequestException("Each tier must be an object");
+            }
             if (t.from() == null || t.rate() == null) {
                 throw new BadRequestException("Each tier requires 'from' and 'rate'");
             }

@@ -99,6 +99,23 @@ class BonusFormulaEngineTest {
     }
 
     @Test
+    void canonicalConditionalUplift_yields742500AboveAnd675000Below75PercentUtilization() {
+        Spec spec = formulaSpec(
+                "utilization > 0.75 ? tier(production) * 1.1 : tier(production)",
+                michaelTiers());
+
+        BigDecimal above = engine.evaluate(
+                spec,
+                ctx(facts(bd(3_000_000), bd("0.80")), 12, michaelTiers(), bd(3_000_000)));
+        BigDecimal below = engine.evaluate(
+                spec,
+                ctx(facts(bd(3_000_000), bd("0.70")), 12, michaelTiers(), bd(3_000_000)));
+
+        assertEquals(0, above.compareTo(bd(742_500)), "above 75% should uplift to 742,500");
+        assertEquals(0, below.compareTo(bd(675_000)), "below 75% should remain 675,000");
+    }
+
+    @Test
     void percentOfProduction_producesCleanMoney() {
         // production * 0.15 = 450,000.00 — a common "flat % of production" formula, no float noise.
         Spec spec = formulaSpec("production * 0.15", michaelTiers());

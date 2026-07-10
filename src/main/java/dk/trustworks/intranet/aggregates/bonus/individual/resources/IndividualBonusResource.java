@@ -1,11 +1,14 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.resources;
 
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusDeleteResult;
+import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusGenerateRequest;
+import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusGenerateResponse;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRuleDTO;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRuleRequest;
 import dk.trustworks.intranet.aggregates.bonus.individual.dto.ProjectedPayoutDTO;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.ProjectedPayout;
 import dk.trustworks.intranet.aggregates.bonus.individual.services.IndividualBonusPayoutService;
+import dk.trustworks.intranet.aggregates.bonus.individual.services.IndividualBonusAiService;
 import dk.trustworks.intranet.aggregates.bonus.individual.services.IndividualBonusScheduleService;
 import dk.trustworks.intranet.aggregates.bonus.individual.services.IndividualBonusService;
 import jakarta.annotation.security.RolesAllowed;
@@ -44,6 +47,7 @@ import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 public class IndividualBonusResource {
 
     @Inject IndividualBonusService bonusService;
+    @Inject IndividualBonusAiService aiService;
     @Inject IndividualBonusScheduleService scheduleService;
     @Inject IndividualBonusPayoutService payoutService;
 
@@ -59,6 +63,18 @@ public class IndividualBonusResource {
         return Response.created(URI.create("/individual-bonuses/" + created.uuid()))
                 .entity(created)
                 .build();
+    }
+
+    /**
+     * Convert untrusted contract language into an UNSAVED spec proposal. The service makes one
+     * no-store Structured Outputs call and applies authoritative write validation; persistence is
+     * possible only through the separate create/update endpoints after human Preview.
+     */
+    @POST
+    @Path("/generate-from-text")
+    @RolesAllowed({"bonus:write"})
+    public IndividualBonusGenerateResponse generateFromText(@Valid IndividualBonusGenerateRequest request) {
+        return aiService.generate(request);
     }
 
     @PUT
