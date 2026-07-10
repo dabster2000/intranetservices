@@ -49,6 +49,7 @@ public class ExecutivePeopleResource {
      */
     @GET
     @Path("/age-distribution")
+    @Deprecated(forRemoval = false)
     public List<ExecAgeBucketDTO> ageDistribution(@QueryParam("companyIds") String companyIds) {
         return executivePeopleService.ageDistribution(CxoSqlSupport.parseCommaSeparated(companyIds));
     }
