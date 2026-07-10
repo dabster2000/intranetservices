@@ -2,6 +2,7 @@ package dk.trustworks.intranet.contracts.model;
 
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
+import dk.trustworks.intranet.contracts.audit.ContractTypeAuditListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
@@ -34,6 +35,7 @@ import java.util.List;
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
 @Table(name = "pricing_rule_steps")
+@EntityListeners(ContractTypeAuditListener.class)
 public class PricingRuleStepEntity extends PanacheEntityBase {
 
     @Id

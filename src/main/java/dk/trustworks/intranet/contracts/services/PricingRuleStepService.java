@@ -6,6 +6,8 @@ import dk.trustworks.intranet.contracts.model.ContractTypeDefinition;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
 import io.quarkus.cache.CacheInvalidate;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
@@ -22,6 +24,9 @@ import java.util.stream.Collectors;
 @JBossLog
 @ApplicationScoped
 public class PricingRuleStepService {
+
+    @Inject
+    EntityManager em;
 
     private static final int DEFAULT_PRIORITY_INCREMENT = 10;
 
@@ -219,6 +224,40 @@ public class PricingRuleStepService {
         entity.softDelete();
 
         log.info("Deleted pricing rule: " + ruleId);
+    }
+
+    /**
+     * Restore (reactivate) a soft-deleted pricing rule step.
+     * Idempotent: activating an already-active rule is a no-op returning the current state.
+     *
+     * @param contractTypeCode The contract type code
+     * @param ruleId The rule ID
+     * @return The updated rule DTO
+     * @throws NotFoundException if rule not found
+     */
+    @Transactional
+    @CacheInvalidate(cacheName = "pricing-rules")
+    public PricingRuleStepDTO activateRule(String contractTypeCode, String ruleId) {
+        log.info("PricingRuleStepService.activateRule");
+        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
+
+        // Find existing
+        PricingRuleStepEntity entity = PricingRuleStepEntity.findByContractTypeAndRuleId(contractTypeCode, ruleId);
+        if (entity == null) {
+            throw new NotFoundException("Rule with ID '" + ruleId +
+                    "' not found for contract type '" + contractTypeCode + "'");
+        }
+
+        // Restore (idempotent when already active)
+        entity.activate();
+        // Flush so @PreUpdate has fired and the returned DTO carries the fresh updatedAt
+        // (em is null only when the service is constructed directly in plain unit tests)
+        if (em != null) {
+            em.flush();
+        }
+
+        log.info("Activated pricing rule: " + ruleId);
+        return PricingRuleStepDTO.fromEntity(entity);
     }
 
     /**

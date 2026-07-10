@@ -6,6 +6,8 @@ import dk.trustworks.intranet.contracts.dto.ValidationRuleDTO;
 import dk.trustworks.intranet.contracts.model.ContractValidationRuleEntity;
 import dk.trustworks.intranet.contracts.model.enums.ValidationType;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
@@ -21,6 +23,9 @@ import java.util.stream.Collectors;
 @JBossLog
 @ApplicationScoped
 public class ContractValidationRuleService {
+
+    @Inject
+    EntityManager em;
 
     /**
      * Create a new validation rule for a contract type.
@@ -121,6 +126,39 @@ public class ContractValidationRuleService {
         entity.softDelete();
 
         log.info("Soft deleted validation rule: " + ruleId + " for contract type " + contractTypeCode);
+    }
+
+    /**
+     * Restore (reactivate) a soft-deleted validation rule.
+     * Idempotent: activating an already-active rule is a no-op returning the current state.
+     *
+     * @param contractTypeCode The contract type code
+     * @param ruleId The rule ID
+     * @return The updated validation rule DTO
+     * @throws NotFoundException if rule not found
+     */
+    @Transactional
+    public ValidationRuleDTO activate(String contractTypeCode, String ruleId) {
+        log.info("ContractValidationRuleService.activate");
+        log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
+
+        // Find existing
+        ContractValidationRuleEntity entity = ContractValidationRuleEntity.findByContractTypeAndRuleId(contractTypeCode, ruleId);
+        if (entity == null) {
+            throw new NotFoundException("Validation rule with ID '" + ruleId +
+                    "' not found for contract type '" + contractTypeCode + "'");
+        }
+
+        // Restore (idempotent when already active)
+        entity.activate();
+        // Flush so @PreUpdate has fired and the returned DTO carries the fresh updatedAt
+        // (em is null only when the service is constructed directly in plain unit tests)
+        if (em != null) {
+            em.flush();
+        }
+
+        log.info("Activated validation rule: " + ruleId + " for contract type " + contractTypeCode);
+        return ValidationRuleDTO.fromEntity(entity);
     }
 
     /**

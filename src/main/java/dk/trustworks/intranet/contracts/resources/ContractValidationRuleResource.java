@@ -135,6 +135,29 @@ public class ContractValidationRuleResource {
     }
 
     /**
+     * Restore a soft-deleted validation rule.
+     * Sets active=true. Idempotent: activating an already-active rule returns 200 with its current state.
+     *
+     * @param contractTypeCode The contract type code
+     * @param ruleId The rule ID
+     * @return 200 with the updated validation rule DTO
+     */
+    @POST
+    @Path("/{ruleId}/activate")
+    @RolesAllowed({"contracts:write"})
+    @Operation(summary = "Activate validation rule", description = "Restores a soft-deleted validation rule (sets active=true)")
+    @APIResponse(responseCode = "200", description = "Validation rule activated")
+    @APIResponse(responseCode = "404", description = "Validation rule not found")
+    public Response activate(
+            @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
+            @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {
+        log.debugf("Activating validation rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
+        ValidationRuleDTO updated = validationRuleService.activate(contractTypeCode, ruleId);
+        log.infof("Activated validation rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
+        return Response.ok(updated).build();
+    }
+
+    /**
      * Soft delete a validation rule.
      * Sets active=false but preserves the record.
      *

@@ -159,6 +159,29 @@ public class PricingRuleResource {
     }
 
     /**
+     * Restore a soft-deleted pricing rule.
+     * Sets active=true. Idempotent: activating an already-active rule returns 200 with its current state.
+     *
+     * @param contractTypeCode The contract type code
+     * @param ruleId The rule ID
+     * @return 200 with the updated rule DTO
+     */
+    @POST
+    @Path("/{ruleId}/activate")
+    @Operation(summary = "Activate rule", description = "Restores a soft-deleted pricing rule (sets active=true)")
+    @APIResponse(responseCode = "200", description = "Rule activated")
+    @APIResponse(responseCode = "404", description = "Rule not found")
+    @RolesAllowed({"contracts:write"})
+    public Response activate(
+            @Parameter(description = "Contract type code") @PathParam("contractTypeCode") String contractTypeCode,
+            @Parameter(description = "Rule ID") @PathParam("ruleId") String ruleId) {
+        log.debugf("Activating pricing rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
+        PricingRuleStepDTO updated = pricingRuleService.activateRule(contractTypeCode, ruleId);
+        log.infof("Activated pricing rule ruleId=%s for contractType=%s, user=%s", ruleId, contractTypeCode, requestHeaderHolder.getUserUuid());
+        return Response.ok(updated).build();
+    }
+
+    /**
      * Delete a pricing rule.
      * Performs a soft delete (sets active=false).
      *

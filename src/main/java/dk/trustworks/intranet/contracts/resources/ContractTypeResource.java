@@ -117,6 +117,8 @@ public class ContractTypeResource {
 
     /**
      * Get a contract type with ALL its rules (pricing, validation, rate adjustments).
+     * Pricing and validation rules include soft-deleted (inactive) entries so the
+     * caller can offer restore; rate adjustments remain active-only.
      *
      * @param code The contract type code
      * @return Contract type with all rules DTO
@@ -124,7 +126,7 @@ public class ContractTypeResource {
     @GET
     @Path("/{code}/all-rules")
     @Operation(summary = "Get contract type with all rules",
-               description = "Returns a contract type with pricing rules, validation rules, and rate adjustments")
+               description = "Returns a contract type with pricing rules and validation rules (including inactive), and active rate adjustments")
     @APIResponse(responseCode = "200", description = "Contract type with all rules found")
     @APIResponse(responseCode = "404", description = "Contract type not found")
     public Response getAllRules(@Parameter(description = "Contract type code") @PathParam("code") String code) {
@@ -132,7 +134,7 @@ public class ContractTypeResource {
 
         ContractTypeDefinitionDTO contractType = contractTypeService.findByCode(code);
         var pricingRules = pricingRuleService.getRulesForContractType(code, true);
-        var validationRules = validationRuleService.listAll(code, false);
+        var validationRules = validationRuleService.listAll(code, true);
         var rateAdjustments = rateAdjustmentService.listAll(code, false);
 
         ContractTypeWithAllRulesDTO result = new ContractTypeWithAllRulesDTO(
