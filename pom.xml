@@ -352,6 +352,14 @@
       <artifactId>commons-lang3</artifactId>
       <version>3.20.0</version>
     </dependency>
+    <!-- Apache Commons JEXL 3 — sandboxed expression engine for the individual-bonus `formula`
+         escape hatch. Chosen over MVEL/SpEL/Groovy because JEXL 3.3+ ships a real allow-list
+         sandbox (JexlPermissions.RESTRICTED + JexlSandbox); this is payroll money code. -->
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-jexl3</artifactId>
+      <version>3.7.0</version>
+    </dependency>
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
