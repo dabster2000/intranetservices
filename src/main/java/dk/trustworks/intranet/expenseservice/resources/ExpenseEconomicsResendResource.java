@@ -15,6 +15,7 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
+import lombok.extern.jbosslog.JBossLog;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +28,7 @@ import java.util.List;
 @Path("/expenses/economics")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
+@JBossLog
 public class ExpenseEconomicsResendResource {
 
     @Inject ExpenseEconomicResendService resend;
@@ -60,8 +62,8 @@ public class ExpenseEconomicsResendResource {
             } catch (BadRequestException ex) {
                 skipped.add(new ExpenseResendResultDTO.Skipped(uuid, ex.getMessage()));
             } catch (Exception ex) {
-                failed.add(new ExpenseResendResultDTO.Failed(uuid,
-                        ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()));
+                log.errorf(ex, "Expense e-conomic re-send failed for uuid=%s", uuid);
+                failed.add(new ExpenseResendResultDTO.Failed(uuid, "re-send failed"));
             }
         }
         return new ExpenseResendResultDTO(updated, skipped, failed);

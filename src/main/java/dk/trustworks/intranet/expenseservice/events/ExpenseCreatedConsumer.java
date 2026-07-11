@@ -10,6 +10,7 @@ import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.ExpenseAIValidationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseClassificationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseFileNotFoundException;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseReviewRoutingService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
@@ -27,6 +28,9 @@ import java.util.stream.Collectors;
 @JBossLog
 @ApplicationScoped
 public class ExpenseCreatedConsumer {
+
+    static final String MISSING_RECEIPT_REASON = "Receipt file missing";
+    static final String TRANSIENT_VALIDATION_ERROR = "Validation error: Unable to process receipt";
 
     @Inject
     ExpenseService expenseService;
@@ -96,6 +100,13 @@ public class ExpenseCreatedConsumer {
         Expense managedExpense = Expense.findById(expense.getUuid());
         if (managedExpense == null) {
             log.warnf("Expense disappeared during validation: %s", expense.getUuid());
+            return;
+        }
+
+        if (!result.approved() && MISSING_RECEIPT_REASON.equals(result.reason())) {
+            log.warnf("Expense %s has no receipt file; moving it to NO_FILE", expense.getUuid());
+            expenseService.updateStatus(managedExpense, ExpenseService.STATUS_NO_FILE,
+                    "File not found in S3 during AI validation");
             return;
         }
 
@@ -239,10 +250,13 @@ public class ExpenseCreatedConsumer {
                     budgets
             );
 
+        } catch (ExpenseFileNotFoundException e) {
+            log.warnf("Receipt file missing during AI validation for uuid=%s", expense.getUuid());
+            return ExpenseAIValidationService.AIResult.error(MISSING_RECEIPT_REASON);
         } catch (Exception e) {
             log.error("Error processing expense created event for uuid=" + expense.getUuid(), e);
             // Return a rejection decision on error instead of null (prevents NPE)
-            return ExpenseAIValidationService.AIResult.error("Validation error: " + e.getMessage());
+            return ExpenseAIValidationService.AIResult.error(TRANSIENT_VALIDATION_ERROR);
         }
     }
 }

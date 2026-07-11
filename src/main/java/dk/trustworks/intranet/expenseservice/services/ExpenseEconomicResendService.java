@@ -9,6 +9,7 @@ import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
+import lombok.extern.jbosslog.JBossLog;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -17,6 +18,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * voucher, then {@link EconomicsService#sendVoucher} persists the new triple + re-attaches the
  * receipt. The expense's status/state are never changed.
  */
+@JBossLog
 @ApplicationScoped
 public class ExpenseEconomicResendService {
 
@@ -74,8 +76,11 @@ public class ExpenseEconomicResendService {
         ExpenseFile file;
         try {
             file = expenseFileService.getFileById(uuid);
+        } catch (ExpenseFileNotFoundException ex) {
+            throw new NotFoundException("receipt unavailable: " + uuid, ex);
         } catch (Exception ex) {
-            throw new RuntimeException("receipt unavailable: " + ex.getMessage(), ex);
+            log.errorf(ex, "Could not load receipt for e-conomic re-send: %s", uuid);
+            throw new RuntimeException("receipt unavailable", ex);
         }
 
         int oldVoucher = e.getVouchernumber();
@@ -86,8 +91,8 @@ public class ExpenseEconomicResendService {
             economicsService.sendVoucher(e, file, ua); // persists new triple + re-attaches receipt; no status change
         } catch (Exception ex) {
             // RuntimeException ⇒ this @Transactional rolls back (orphan flag / retry bump reverted).
-            throw new RuntimeException("re-send failed: "
-                    + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()), ex);
+            log.errorf(ex, "E-conomic re-send failed for expense: %s", uuid);
+            throw new RuntimeException("re-send failed", ex);
         }
         e.clearOrphaned();
         decisionLog.recordEconomicResend(e, actorUuid,
