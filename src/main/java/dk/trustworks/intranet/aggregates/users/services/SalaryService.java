@@ -15,6 +15,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
 import jakarta.validation.Valid;
+import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
@@ -152,6 +153,35 @@ public class SalaryService {
         Salary.deleteById(salaryuuid);
         optionalSalary.ifPresent(salary ->
                 aggregateEventSender.handleEvent(new DeleteSalaryEvent(salary.getUseruuid(), salaryuuid)));
+    }
+
+    /**
+     * REST-facing create/update: the salary record being written must belong to the user named
+     * in the endpoint path. Without this, a caller authorized for one employee could overwrite
+     * another employee's record by passing that record's uuid in the body (audit finding M1).
+     * Responds 404 rather than 403 so the endpoint does not confirm that a guessed salary uuid
+     * exists under another user.
+     */
+    @Transactional
+    public void createForUser(String useruuid, Salary salary) {
+        salary.setUseruuid(useruuid);
+        if (salary.getUuid() != null && !salary.getUuid().isBlank()) {
+            Salary existing = Salary.findById(salary.getUuid());
+            if (existing != null && !useruuid.equals(existing.getUseruuid())) {
+                throw new NotFoundException("Salary record not found for user");
+            }
+        }
+        create(salary);
+    }
+
+    /** REST-facing delete: ownership guard mirroring {@link #createForUser(String, Salary)}. */
+    @Transactional
+    public void deleteForUser(String useruuid, String salaryuuid) {
+        Salary existing = Salary.findById(salaryuuid);
+        if (existing != null && !useruuid.equals(existing.getUseruuid())) {
+            throw new NotFoundException("Salary record not found for user");
+        }
+        delete(salaryuuid);
     }
 
     public List<Salary> findByUseruuid(String useruuid) {

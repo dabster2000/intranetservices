@@ -222,14 +222,13 @@ public class SalaryResource {
     @Path("/{useruuid}/salaries")
     @RolesAllowed({"salaries:write"})
     public void create(@PathParam("useruuid") String useruuid, Salary salary) {
-        salary.setUseruuid(useruuid);
-        salaryService.create(salary);
+        salaryService.createForUser(useruuid, salary);
     }
 
     @DELETE
     @Path("/{useruuid}/salaries/{salaryuuid}")
     @RolesAllowed({"salaries:write"})
     public void delete(@PathParam("useruuid") String useruuid, @PathParam("salaryuuid") String salaryuuid) {
-        salaryService.delete(salaryuuid);
+        salaryService.deleteForUser(useruuid, salaryuuid);
     }
 }
