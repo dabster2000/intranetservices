@@ -13,6 +13,7 @@ import dk.trustworks.intranet.expenseservice.model.ExpenseCategory;
 import dk.trustworks.intranet.expenseservice.model.ExpenseStateDeriver;
 import dk.trustworks.intranet.expenseservice.services.ExpenseClassificationService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseDecisionLogService;
+import dk.trustworks.intranet.expenseservice.services.ExpenseFileNotFoundException;
 import dk.trustworks.intranet.expenseservice.services.ExpenseFileService;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
 import dk.trustworks.intranet.model.Company;
@@ -106,7 +107,11 @@ public class ExpenseResource {
     @GET
     @Path("/file/{uuid}")
     public ExpenseFile getFileById(@PathParam("uuid") String uuid) {
-        return expenseFileService.getFileById(uuid);
+        try {
+            return expenseFileService.getFileById(uuid);
+        } catch (ExpenseFileNotFoundException e) {
+            throw new NotFoundException(e.getMessage(), e);
+        }
     }
 
     /**

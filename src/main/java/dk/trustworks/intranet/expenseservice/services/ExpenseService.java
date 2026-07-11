@@ -195,7 +195,14 @@ public class ExpenseService {
 
         updateStatus(expense, STATUS_PROCESSING);
 
-        ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
+        ExpenseFile expenseFile;
+        try {
+            expenseFile = expenseFileService.getFileById(expense.getUuid());
+        } catch (ExpenseFileNotFoundException e) {
+            log.error("No expense file found for expense " + expense);
+            updateStatus(expense, STATUS_NO_FILE, "File not found in S3 or is empty");
+            throw new IOException("No expense file found", e);
+        }
         if (expenseFile == null || expenseFile.getExpensefile().isEmpty()) {
             log.error("No expense file found for expense " + expense);
             updateStatus(expense, STATUS_NO_FILE, "File not found in S3 or is empty");
@@ -439,7 +446,14 @@ public class ExpenseService {
                     expense.getSafeRetryCount() + 1);
 
             // Get the expense file
-            ExpenseFile expenseFile = expenseFileService.getFileById(expense.getUuid());
+            ExpenseFile expenseFile;
+            try {
+                expenseFile = expenseFileService.getFileById(expense.getUuid());
+            } catch (ExpenseFileNotFoundException e) {
+                log.error("No expense file found for expense " + expense);
+                updateStatus(expense, STATUS_NO_FILE, "File not found in S3 during retry");
+                continue;
+            }
             if (expenseFile == null || expenseFile.getExpensefile().isEmpty()) {
                 log.error("No expense file found for expense " + expense);
                 updateStatus(expense, STATUS_NO_FILE, "File not found in S3 during retry");
