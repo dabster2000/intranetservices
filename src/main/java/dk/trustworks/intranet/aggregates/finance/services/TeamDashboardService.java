@@ -81,9 +81,18 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     /**
-     * Returns UUIDs of active CONSULTANT-type team members for the given team at the given date.
-     * Use for financial KPI queries (utilization, revenue, bench, etc.).
-     * For roster/people queries where all member types should be visible, use {@link #getAllTeamMemberUuids}.
+     * Returns UUIDs of active CONSULTANT-type team members — a POINT-IN-TIME SNAPSHOT
+     * at the given date.
+     *
+     * <p>Use only for "who is on the team right now" views (bench, contract timeline,
+     * forward allocation, expiring contracts) and membership/access checks. Do NOT use it
+     * to filter FY/window-scoped aggregations — a today-snapshot applied to a historical
+     * window drops leavers and adds joiners' pre-team data (audit C4). Window-scoped
+     * queries must use {@link dk.trustworks.intranet.aggregates.utilization.services
+     * .UtilizationCalculationHelper#teamMemberTemporalJoin} instead.</p>
+     *
+     * <p>For roster/people views where all member types should be visible,
+     * use {@link #getAllTeamMemberUuids}.</p>
      */
     public Set<String> getTeamMemberUuids(String teamId, LocalDate date) {
         @SuppressWarnings("unchecked")
@@ -110,8 +119,9 @@ public class TeamDashboardService {
 
     /**
      * Returns UUIDs of ALL active team members (any consultant type: CONSULTANT, STAFF, STUDENT, EXTERNAL)
-     * for the given team at the given date.
-     * Use for roster/people queries where all member types should be visible.
+     * — a POINT-IN-TIME SNAPSHOT at the given date.
+     * Use for roster/people views where all member types should be visible; never for
+     * window-scoped aggregations (see {@link #getTeamMemberUuids} for the full contract).
      */
     public Set<String> getAllTeamMemberUuids(String teamId, LocalDate date) {
         @SuppressWarnings("unchecked")
@@ -181,60 +191,42 @@ public class TeamDashboardService {
         // Team name
         String teamName = getTeamName(teamId);
 
-        // KPI: utilization — temporal team membership via fact_user_day
-        Double utilPct = null;
-        double revenue = 0;
-        double salaryCost = 0;
-        if (!consultantUuids.isEmpty()) {
-            var utilRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fud.registered_billable_hours), 0) AS billable,
-                           COALESCE(SUM(fud.net_available_hours), 0) AS net_available
-                    FROM fact_user_day fud
-                    JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                        AND tr.teamuuid = :teamId
-                        AND tr.membertype = 'MEMBER'
-                        AND tr.startdate <= fud.document_date
-                        AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
-                    WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
-                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                    """,
-                    Map.of("teamId", teamId,
-                            "fromDate", fy.start(),
-                            "toDate", effectiveEnd));
+        // KPI: utilization + revenue — ONE query on the shared temporal membership
+        // contract, so the overview reconciles to the krone with the Revenue-vs-Cost
+        // trend and Revenue-per-Member (audit C4).
+        var kpiRow = querySingleRow("""
+                SELECT COALESCE(SUM(fud.registered_billable_hours), 0) AS billable,
+                       COALESCE(SUM(fud.net_available_hours), 0) AS net_available,
+                       COALESCE(SUM(fud.registered_amount), 0) AS revenue
+                FROM fact_user_day fud
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
+                WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
+                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                """,
+                Map.of("teamId", teamId,
+                        "fromDate", fy.start(),
+                        "toDate", effectiveEnd));
 
-            double billable = numVal(utilRow, "billable");
-            double netAvail = numVal(utilRow, "net_available");
-            utilPct = netAvail > 0 ? (billable / netAvail) * 100.0 : null;
+        double billable = numVal(kpiRow, "billable");
+        double netAvail = numVal(kpiRow, "net_available");
+        Double utilPct = netAvail > 0 ? (billable / netAvail) * 100.0 : null;
+        double revenue = numVal(kpiRow, "revenue");
 
-            // KPI: revenue
-            var revRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fud.registered_amount), 0) AS revenue
-                    FROM fact_user_day fud
-                    WHERE fud.useruuid IN (:memberUuids)
-                      AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
-                      AND fud.consultant_type = 'CONSULTANT'
-                      AND fud.status_type = 'ACTIVE'
-                    """,
-                    Map.of("memberUuids", consultantUuids,
-                            "fromDate", fy.start(),
-                            "toDate", effectiveEnd));
-            revenue = numVal(revRow, "revenue");
-
-            // KPI: salary cost
-            var salaryRow = querySingleRow("""
-                    SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
-                    FROM fact_salary_monthly_teamroles fsmt
-                    WHERE fsmt.teamuuid = :teamId
-                      AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
-                    """,
-                    Map.of("teamId", teamId,
-                            "fromKey", toMonthKey(fy.start()),
-                            "toKey", toMonthKey(effectiveEnd)));
-            salaryCost = numVal(salaryRow, "salary_cost");
-        }
+        // KPI: salary cost — consultants only, matching the revenue population
+        var salaryRow = querySingleRow("""
+                SELECT COALESCE(SUM(fsmt.salary_sum), 0) AS salary_cost
+                FROM fact_salary_monthly_teamroles fsmt
+                WHERE fsmt.teamuuid = :teamId
+                  AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
+                  AND fsmt.employee_type = 'CONSULTANT'
+                """,
+                Map.of("teamId", teamId,
+                        "fromKey", toMonthKey(fy.start()),
+                        "toKey", toMonthKey(effectiveEnd)));
+        double salaryCost = numVal(salaryRow, "salary_cost");
 
         // Roster — includes all member types (CONSULTANT, STAFF, etc.)
-        List<TeamRosterMemberDTO> roster = buildRoster(allMemberUuids, fy, effectiveEnd);
+        List<TeamRosterMemberDTO> roster = buildRoster(teamId, allMemberUuids, fy, effectiveEnd);
 
         // Bench / attention items — consultant-only
         List<TeamBenchConsultantDTO> bench = consultantUuids.isEmpty()
@@ -249,8 +241,10 @@ public class TeamDashboardService {
 
         List<TeamAttentionItemDTO> attentionItems = buildAttentionItems(bench);
 
+        // memberCount counts ALL current members (any type) so the headline
+        // headcount equals the roster length shown on the same screen (audit C4/H11 family)
         return new TeamOverviewDTO(
-                teamId, teamName, consultantUuids.size(),
+                teamId, teamName, allMemberUuids.size(),
                 utilPct, revenue, salaryCost, avgBenchDays,
                 bench.size(),
                 roster, attentionItems);
@@ -275,7 +269,7 @@ public class TeamDashboardService {
         LocalDate fromDate = extendedStart.withDayOfMonth(1);
         LocalDate toDate = effectiveEnd;
 
-        // Team data — temporal join via fact_user_day
+        // Team data — shared temporal membership contract
         @SuppressWarnings("unchecked")
         List<Tuple> teamRows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
@@ -283,11 +277,7 @@ public class TeamDashboardService {
                        COALESCE(SUM(fud.net_available_hours), 0) AS net_available,
                        COALESCE(SUM(fud.gross_available_hours), 0) AS gross_available
                 FROM fact_user_day fud
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
                 WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
                   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
                 GROUP BY fud.year, fud.month
@@ -314,7 +304,7 @@ public class TeamDashboardService {
                 .setParameter("toDate", toDate)
                 .getResultList();
 
-        // Budget hours per month — temporal team membership (same as billable query)
+        // Budget hours per month — same temporal membership contract as the billable query
         LocalDate budgetFromDate = extendedStart.withDayOfMonth(1);
         LocalDate budgetToDate = YearMonth.from(effectiveEnd).atEndOfMonth();
         @SuppressWarnings("unchecked")
@@ -323,11 +313,7 @@ public class TeamDashboardService {
                               LPAD(MONTH(bd.document_date), 2, '0')) AS month_key,
                        SUM(bd.budgetHours) AS budget_hours
                 FROM fact_budget_day bd
-                JOIN teamroles tr ON tr.useruuid = bd.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= bd.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > bd.document_date)
+                """ + teamMemberTemporalJoin("bd", "document_date") + """
                 WHERE bd.document_date >= :fromDate AND bd.document_date <= :toDate
                 GROUP BY YEAR(bd.document_date), MONTH(bd.document_date)
                 """, Tuple.class)
@@ -396,7 +382,7 @@ public class TeamDashboardService {
             return new TeamUtilizationHeatmapDTO(List.of(), List.of());
         }
 
-        // Temporal join via fact_user_day — per-day team membership resolution
+        // Shared temporal membership contract — per-day team membership resolution
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT fud.useruuid AS user_id, u.firstname, u.lastname,
@@ -405,11 +391,7 @@ public class TeamDashboardService {
                        COALESCE(SUM(fud.net_available_hours), 0) AS net_available
                 FROM fact_user_day fud
                 JOIN `user` u ON u.uuid = fud.useruuid
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate IS NULL OR tr.enddate > fud.document_date)
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
                 WHERE fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
                   AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
                 GROUP BY fud.useruuid, u.firstname, u.lastname, fud.year, fud.month
@@ -608,26 +590,28 @@ public class TeamDashboardService {
                 .setParameter("lookbackMonths", lookbackMonths)
                 .getResultList();
 
-        // Sales leads for team members (with extension detection)
+        // Sales leads for team members — renewal signals must reflect OPEN pipeline
+        // only, not already-decided leads. WON/LOST are excluded (the LeadStatus enum
+        // has no ABANDONED — the old NOT IN ('LOST','ABANDONED') filter let WON pass),
+        // and a recency bound drops stale open leads whose expected close date is long
+        // past (forgotten pipeline that was never marked WON/LOST). is_extension now
+        // uses the human-entered sl.extension flag — the authoritative "this renews an
+        // existing engagement" signal — instead of the old heuristic that flagged any
+        // lead sharing a client with an active contract (true even for the lead that
+        // originated that very contract). See audit finding C9.
         @SuppressWarnings("unchecked")
         List<Tuple> leadRows = em.createNativeQuery("""
                 SELECT slc.useruuid AS user_id,
                        sl.uuid AS lead_uuid, cl.name AS client_name,
                        sl.description, sl.status, sl.closedate, sl.allocation, sl.rate, sl.period,
-                       EXISTS (
-                           SELECT 1 FROM contract_consultants cc2
-                           JOIN contracts c2 ON c2.uuid = cc2.contractuuid
-                           WHERE cc2.useruuid = slc.useruuid
-                             AND c2.clientuuid = sl.clientuuid
-                             AND cc2.activefrom <= CURDATE()
-                             AND cc2.activeto > CURDATE()
-                             AND c2.status IN ('SIGNED', 'TIME')
-                       ) AS is_extension
+                       COALESCE(sl.extension, 0) AS is_extension
                 FROM sales_lead_consultant slc
                 JOIN sales_lead sl ON sl.uuid = slc.leaduuid
                 JOIN client cl ON cl.uuid = sl.clientuuid
                 WHERE slc.useruuid IN (:memberUuids)
-                  AND sl.status NOT IN ('LOST', 'ABANDONED')
+                  AND sl.status IN ('DETECTED', 'QUALIFIED', 'PROPOSAL', 'SHORTLISTED', 'NEGOTIATION')
+                  AND sl.closedate IS NOT NULL
+                  AND sl.closedate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
                 ORDER BY sl.closedate
                 """, Tuple.class)
                 .setParameter("memberUuids", memberUuids)
@@ -816,6 +800,14 @@ public class TeamDashboardService {
         LocalDate horizon = LocalDate.now().plusDays(days);
 
         @SuppressWarnings("unchecked")
+        // has_extension_lead ("In Pipeline" badge) must mean an OPEN pipeline lead
+        // only — the old NOT IN ('LOST','ABANDONED') filter let already-WON leads flag
+        // coverage that no longer exists, hiding real renewal gaps. covered_by_parallel
+        // detects a *signed* parallel/successor contract at the same client that already
+        // overlaps and extends beyond this contract's end, so the FE can suppress false
+        // red "expiring" urgency for a consultant who is demonstrably still staffed
+        // there (prod case: Kurt Hansen "1 day left" while a parallel contract covers
+        // him to 2027-12-31). See audit finding C9.
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT cc.contractuuid, cc.useruuid AS user_id,
                        u.firstname, u.lastname,
@@ -827,8 +819,20 @@ public class TeamDashboardService {
                            JOIN sales_lead_consultant slc ON slc.leaduuid = sl.uuid
                            WHERE slc.useruuid = cc.useruuid
                              AND sl.clientuuid = c.clientuuid
-                             AND sl.status NOT IN ('LOST', 'ABANDONED')
-                       ) AS has_extension_lead
+                             AND sl.status IN ('DETECTED', 'QUALIFIED', 'PROPOSAL', 'SHORTLISTED', 'NEGOTIATION')
+                             AND sl.closedate IS NOT NULL
+                             AND sl.closedate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                       ) AS has_extension_lead,
+                       EXISTS (
+                           SELECT 1 FROM contract_consultants cc3
+                           JOIN contracts c3 ON c3.uuid = cc3.contractuuid
+                           WHERE cc3.useruuid = cc.useruuid
+                             AND c3.clientuuid = c.clientuuid
+                             AND cc3.contractuuid <> cc.contractuuid
+                             AND c3.status IN ('SIGNED', 'TIME')
+                             AND cc3.activeto > cc.activeto
+                             AND cc3.activefrom <= cc.activeto
+                       ) AS covered_by_parallel
                 FROM contract_consultants cc
                 JOIN contracts c ON c.uuid = cc.contractuuid
                 JOIN client cl ON cl.uuid = c.clientuuid
@@ -857,7 +861,8 @@ public class TeamDashboardService {
                     numVal(row, "rate"),
                     numVal(row, "hours"),
                     ((Number) row.get("days_until_expiry")).intValue(),
-                    ((Number) row.get("has_extension_lead")).intValue() > 0));
+                    ((Number) row.get("has_extension_lead")).intValue() > 0,
+                    ((Number) row.get("covered_by_parallel")).intValue() > 0));
         }
         return result;
     }
@@ -1023,18 +1028,15 @@ public class TeamDashboardService {
             return List.of();
         }
 
-        // Revenue by month — temporal: only include revenue for months the consultant was on this team
+        // Revenue by month — shared temporal membership contract: only revenue earned
+        // while the consultant was on this team
         @SuppressWarnings("unchecked")
         List<Tuple> revenueRows = em.createNativeQuery("""
                 SELECT CONCAT(LPAD(fud.year, 4, '0'), LPAD(fud.month, 2, '0')) AS month_key,
                        fud.year, fud.month AS month_number,
                        COALESCE(SUM(fud.registered_amount), 0) AS revenue
                 FROM fact_user_day fud
-                JOIN teamroles tr ON tr.useruuid = fud.useruuid
-                    AND tr.teamuuid = :teamId
-                    AND tr.membertype = 'MEMBER'
-                    AND tr.startdate <= fud.document_date
-                    AND (tr.enddate > fud.document_date OR tr.enddate IS NULL)
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
                 WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate
                   AND fud.consultant_type = 'CONSULTANT'
                   AND fud.status_type = 'ACTIVE'
@@ -1046,7 +1048,7 @@ public class TeamDashboardService {
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
 
-        // Salary cost by month from fact_salary_monthly_teamroles
+        // Salary cost by month — consultants only, matching the revenue population
         @SuppressWarnings("unchecked")
         List<Tuple> salaryRows = em.createNativeQuery("""
                 SELECT fsmt.month_key,
@@ -1054,6 +1056,7 @@ public class TeamDashboardService {
                 FROM fact_salary_monthly_teamroles fsmt
                 WHERE fsmt.teamuuid = :teamId
                   AND fsmt.month_key >= :fromKey AND fsmt.month_key <= :toKey
+                  AND fsmt.employee_type = 'CONSULTANT'
                 GROUP BY fsmt.month_key
                 ORDER BY fsmt.month_key
                 """, Tuple.class)
@@ -1089,9 +1092,13 @@ public class TeamDashboardService {
         LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
+            // Consistent with the other FY widgets: a team with no current members renders empty
             return List.of();
         }
 
+        // Shared temporal membership contract: each person's revenue counts only for the
+        // days they were on this team, so the per-member bars sum to the Revenue-vs-Cost
+        // trend total. Members who left mid-FY appear with their during-membership revenue.
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT fud.useruuid AS user_id, u.firstname, u.lastname,
@@ -1099,14 +1106,14 @@ public class TeamDashboardService {
                        COALESCE(SUM(fud.registered_billable_hours), 0) AS billable_hours
                 FROM fact_user_day fud
                 JOIN user u ON u.uuid = fud.useruuid
-                WHERE fud.useruuid IN (:memberUuids)
-                  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
+                """ + teamMemberTemporalJoin("fud", "document_date") + """
+                WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate
                   AND fud.consultant_type = 'CONSULTANT'
                   AND fud.status_type = 'ACTIVE'
                 GROUP BY fud.useruuid, u.firstname, u.lastname
                 ORDER BY revenue DESC
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
@@ -1138,8 +1145,12 @@ public class TeamDashboardService {
             return List.of();
         }
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
-        return profitabilityProvider.getBreakEvenRates(
-                new ArrayList<>(memberUuids), fyRange.start(), effectiveEnd);
+        if (memberUuids.isEmpty()) {
+            // Consistent with the other FY widgets: a team with no current members renders empty
+            return List.of();
+        }
+        // Temporal membership resolution happens inside the provider (shared contract)
+        return profitabilityProvider.getBreakEvenRates(teamId, fyRange.start(), effectiveEnd);
     }
 
     // -----------------------------------------------------------------------
@@ -1157,29 +1168,51 @@ public class TeamDashboardService {
     public List<TeamClientConcentrationDTO> getClientConcentration(String teamId, int fiscalYear) {
         var fy = getFiscalYearRange(fiscalYear);
         LocalDate effectiveEnd = capToLastCompleteMonth(fy.end());
+        if (fy.start().isAfter(effectiveEnd)) {
+            // Brand-new FY with no complete month yet: nothing to concentrate on
+            return List.of();
+        }
         Set<String> memberUuids = getTeamMemberUuids(teamId, LocalDate.now());
         if (memberUuids.isEmpty()) {
+            // Consistent with the other FY widgets: a team with no current members renders empty
             return List.of();
         }
 
-        // fact_user_day has no client column; join through work → contract → client
+        // fact_user_day has no client column, so we source the per-client split from the
+        // canonical work_full view (V259). Rate resolves through the canonical chain
+        // task → project → contract_project → contract_consultants with the
+        // IF(workas, workas, useruuid) effective-user fallback; the client dimension is
+        // task → project → client. work.contractuuid is deliberately never used — it is
+        // NULL on ~57% of rows, which silently dropped >half of team revenue and distorted
+        // the concentration shares (audit finding C1).
+        //
+        // Revenue = SUM(workduration * rate) over rate>0 rows, which is exactly how
+        // sp_aggregate_work derives fact_user_day.registered_amount per user-day. With the
+        // same temporal-member set, CONSULTANT/ACTIVE canon (the fact_user_day join, unique
+        // per user+day so no fan-out) and window as Revenue-per-Member / the Revenue-vs-Cost
+        // trend, the pie total reconciles to those bases to the krone. Work whose rate is
+        // unresolvable (rate = 0) contributes nothing to registered_amount either, so it is
+        // excluded here too. Revenue with no resolvable client is bucketed as "Unknown" so
+        // the pie base stays whole rather than silently shrinking.
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
-                SELECT c_client.uuid AS client_uuid, c_client.name AS client_name,
-                       COALESCE(SUM(w.workduration * cc.rate), 0) AS revenue
-                FROM work w
-                JOIN contract_consultants cc ON cc.contractuuid = w.contractuuid
-                    AND cc.useruuid = w.useruuid
-                    AND w.registered >= cc.activefrom AND w.registered <= cc.activeto
-                JOIN contracts c ON c.uuid = w.contractuuid
-                JOIN client c_client ON c_client.uuid = c.clientuuid
-                WHERE w.useruuid IN (:memberUuids)
-                  AND w.registered >= :fromDate AND w.registered <= :toDate
-                  AND w.workduration > 0
-                GROUP BY c_client.uuid, c_client.name
+                SELECT COALESCE(c_client.uuid, 'unknown') AS client_uuid,
+                       COALESCE(c_client.name, 'Unknown client') AS client_name,
+                       COALESCE(SUM(wf.workduration * wf.rate), 0) AS revenue
+                FROM work_full wf
+                """ + teamMemberTemporalJoin("wf", "registered") + """
+                JOIN fact_user_day fud ON fud.useruuid = wf.useruuid
+                    AND fud.document_date = wf.registered
+                    AND fud.consultant_type = 'CONSULTANT'
+                    AND fud.status_type = 'ACTIVE'
+                LEFT JOIN client c_client ON c_client.uuid = wf.clientuuid
+                WHERE wf.registered >= :fromDate AND wf.registered <= :toDate
+                  AND wf.rate > 0
+                GROUP BY COALESCE(c_client.uuid, 'unknown'),
+                         COALESCE(c_client.name, 'Unknown client')
                 ORDER BY revenue DESC
                 """, Tuple.class)
-                .setParameter("memberUuids", memberUuids)
+                .setParameter("teamId", teamId)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
                 .getResultList();
@@ -1270,13 +1303,22 @@ public class TeamDashboardService {
         return row != null ? (String) row.get("name") : "";
     }
 
-    private List<TeamRosterMemberDTO> buildRoster(Set<String> memberUuids,
+    /**
+     * Builds the roster — a SNAPSHOT of the team's CURRENT members (all types).
+     * The utilization column is FY-to-date but temporally bounded to each member's
+     * time on THIS team (shared membership contract), so mid-FY joiners are not
+     * judged on months they spent elsewhere. Members without consultant capacity
+     * in the window (STAFF/STUDENT, on leave, zero net hours) get {@code null}
+     * utilization — rendered as N/A, never as 0%.
+     */
+    private List<TeamRosterMemberDTO> buildRoster(String teamId,
+                                                   Set<String> memberUuids,
                                                    FiscalYearRange fy,
                                                    LocalDate effectiveEnd) {
         @SuppressWarnings("unchecked")
         List<Tuple> rows = em.createNativeQuery("""
                 SELECT u.uuid AS user_id, u.firstname, u.lastname, u.practice,
-                       us.status,
+                       us.status, us.type AS consultant_type,
                        COALESCE(util.billable, 0) AS billable,
                        COALESCE(util.net_available, 0) AS net_available,
                        CASE WHEN EXISTS (
@@ -1297,6 +1339,7 @@ public class TeamDashboardService {
                            SUM(fud.registered_billable_hours) AS billable,
                            SUM(fud.net_available_hours) AS net_available
                     FROM fact_user_day fud
+                    """ + teamMemberTemporalJoin("fud", "document_date") + """
                     WHERE fud.useruuid IN (:memberUuids)
                       AND fud.consultant_type = 'CONSULTANT' AND fud.status_type = 'ACTIVE'
                       AND fud.document_date >= :fromDate AND fud.document_date <= :toDate
@@ -1305,6 +1348,7 @@ public class TeamDashboardService {
                 WHERE u.uuid IN (:memberUuids)
                 ORDER BY u.lastname, u.firstname
                 """, Tuple.class)
+                .setParameter("teamId", teamId)
                 .setParameter("memberUuids", memberUuids)
                 .setParameter("fromDate", fy.start())
                 .setParameter("toDate", effectiveEnd)
@@ -1329,6 +1373,7 @@ public class TeamDashboardService {
                     (String) row.get("lastname"),
                     (String) row.get("practice"),
                     (String) row.get("status"),
+                    (String) row.get("consultant_type"),
                     pct,
                     ((Number) row.get("has_active_contract")).intValue() > 0,
                     career[0],
@@ -1427,9 +1472,20 @@ public class TeamDashboardService {
     // -----------------------------------------------------------------------
 
     /**
-     * Calculates time registration compliance for a consultant over the last 6 months.
-     * A work day is "compliant" if it was registered within 7 calendar days of the work date
-     * (i.e., DATEDIFF(updated_at, registered) <= 7).
+     * Calculates time-registration compliance for a consultant over the last 6 <em>complete</em>
+     * months (the current partial month is excluded). A work-day is "compliant" if the entry was
+     * created within 7 calendar days of the work date, measured from the immutable
+     * {@code work.created_at} (V387) — NOT from {@code updated_at}, which payout/edit UPDATEs
+     * rewrite, making invoiced work look weeks late and falsely reddening diligent consultants
+     * (audit finding C8).
+     *
+     * <p>Compliance is computed <strong>only over measurable days</strong> (rows with a known
+     * {@code created_at}); the denominator is {@code measuredDays}, never the full registered-day
+     * count, so unmeasurable pre-V387 invoiced rows can never render red. {@code coveragePct}
+     * exposes how much of each month is measurable. A month with no measurable rows returns a null
+     * {@code compliancePct} (renders "no data", not 0%). The monthly average is day-weighted
+     * (sum of compliant days ÷ sum of measured days — aggregate first, then divide), not an
+     * unweighted mean of month percentages.
      */
     public TimeRegistrationComplianceDTO getConsultantCompliance(String teamId, String userId) {
         LocalDate now = LocalDate.now();
@@ -1440,17 +1496,22 @@ public class TeamDashboardService {
                     Response.Status.BAD_REQUEST);
         }
 
-        LocalDate startDate = now.minusMonths(6).withDayOfMonth(1);
-        LocalDate endDate = now;
+        // Last 6 COMPLETE months: [first day of the month 6 months back .. last day of last month].
+        LocalDate firstOfThisMonth = now.withDayOfMonth(1);
+        LocalDate startDate = firstOfThisMonth.minusMonths(6);
+        LocalDate endDate = firstOfThisMonth.minusDays(1);
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
                 SELECT
                     YEAR(w.registered) AS yr,
                     MONTH(w.registered) AS mo,
-                    COUNT(DISTINCT w.registered) AS total_days,
+                    COUNT(DISTINCT w.registered) AS registered_days,
                     COUNT(DISTINCT CASE
-                        WHEN DATEDIFF(w.updated_at, w.registered) <= 7 THEN w.registered
+                        WHEN w.created_at IS NOT NULL THEN w.registered
+                    END) AS measured_days,
+                    COUNT(DISTINCT CASE
+                        WHEN w.created_at IS NOT NULL AND DATEDIFF(w.created_at, w.registered) <= 7 THEN w.registered
                     END) AS compliant_days
                 FROM work w
                 WHERE w.useruuid = :userId
@@ -1469,31 +1530,47 @@ public class TeamDashboardService {
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
         List<MonthlyCompliance> months = new ArrayList<>();
-        double totalComplianceSum = 0.0;
+        long sumCompliant = 0L;
+        long sumMeasured = 0L;
+        long sumRegistered = 0L;
 
         for (Object[] row : rows) {
             int yr = ((Number) row[0]).intValue();
             int mo = ((Number) row[1]).intValue();
-            int totalDays = ((Number) row[2]).intValue();
-            int compliantDays = ((Number) row[3]).intValue();
+            int registeredDays = ((Number) row[2]).intValue();
+            int measuredDays = ((Number) row[3]).intValue();
+            int compliantDays = ((Number) row[4]).intValue();
 
             String monthKey = String.format("%04d%02d", yr, mo);
             String label = monthNames[mo];
-            double compliancePct = totalDays > 0
-                    ? Math.round((compliantDays * 100.0 / totalDays) * 10.0) / 10.0
+            // Divide by MEASURED days, never registered days — unmeasurable rows must not count as late.
+            Double compliancePct = measuredDays > 0
+                    ? Math.round((compliantDays * 100.0 / measuredDays) * 10.0) / 10.0
+                    : null;
+            double coveragePct = registeredDays > 0
+                    ? Math.round((measuredDays * 100.0 / registeredDays) * 10.0) / 10.0
                     : 0.0;
 
-            months.add(new MonthlyCompliance(monthKey, label, compliancePct, totalDays, compliantDays));
-            totalComplianceSum += compliancePct;
+            months.add(new MonthlyCompliance(monthKey, label, compliancePct, coveragePct,
+                    registeredDays, measuredDays, compliantDays));
+            sumCompliant += compliantDays;
+            sumMeasured += measuredDays;
+            sumRegistered += registeredDays;
         }
 
-        double averagePct = months.isEmpty() ? 0.0
-                : Math.round((totalComplianceSum / months.size()) * 10.0) / 10.0;
+        // Day-weighted average: aggregate first, then divide (C8 aggregation-canon fix).
+        Double averagePct = sumMeasured > 0
+                ? Math.round((sumCompliant * 100.0 / sumMeasured) * 10.0) / 10.0
+                : null;
+        double coveragePct = sumRegistered > 0
+                ? Math.round((sumMeasured * 100.0 / sumRegistered) * 10.0) / 10.0
+                : 0.0;
 
         var dto = new TimeRegistrationComplianceDTO();
         dto.setUserId(userId);
         dto.setMonths(months);
         dto.setAveragePct(averagePct);
+        dto.setCoveragePct(coveragePct);
         return dto;
     }
 

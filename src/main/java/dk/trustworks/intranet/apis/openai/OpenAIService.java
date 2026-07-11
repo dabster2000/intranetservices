@@ -92,8 +92,46 @@ public class OpenAIService {
      * Useful when you MUST return a schema-conformant JSON even if the model refuses.
      */
     public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName, String refusalFallbackJson) {
+        return askQuestionWithSchema(system, userMsg, jsonSchema, schemaName, refusalFallbackJson, null, 0);
+    }
+
+    /**
+     * Strict structured output with per-call model + token budget overrides (mirrors the
+     * {@code askWithSchemaAndImage} override plumbing). Never sets {@code temperature} — the
+     * gpt-5 family rejects it with HTTP 400.
+     *
+     * @param modelOverride           optional model id for this call only (null/blank → global {@code openai.model})
+     * @param maxOutputTokensOverride positive value overrides the default 4096 budget (0 → default)
+     */
+    public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName,
+                                        String refusalFallbackJson, String modelOverride, int maxOutputTokensOverride) {
+        return askQuestionWithSchemaInternal(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
+                modelOverride, maxOutputTokensOverride, null);
+    }
+
+    /**
+     * Structured-output overload with an explicit Responses API storage choice. Existing overloads
+     * intentionally omit {@code store} and therefore retain their previous request shape; privacy-
+     * sensitive callers can pass {@code false} to disable response application-state storage.
+     */
+    public String askQuestionWithSchema(String system, String userMsg, ObjectNode jsonSchema, String schemaName,
+                                        String refusalFallbackJson, String modelOverride,
+                                        int maxOutputTokensOverride, boolean store) {
+        return askQuestionWithSchemaInternal(system, userMsg, jsonSchema, schemaName, refusalFallbackJson,
+                modelOverride, maxOutputTokensOverride, store);
+    }
+
+    private String askQuestionWithSchemaInternal(String system, String userMsg, ObjectNode jsonSchema,
+                                                 String schemaName, String refusalFallbackJson,
+                                                 String modelOverride, int maxOutputTokensOverride,
+                                                 Boolean store) {
+        String chosenModel = modelOverride != null && !modelOverride.isBlank() ? modelOverride : model;
         try {
-            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName);
+            ObjectNode req = baseSchemaRequest(jsonSchema, schemaName, chosenModel,
+                    maxOutputTokensOverride > 0 ? maxOutputTokensOverride : 4096);
+            if (store != null) {
+                req.put("store", store);
+            }
             ArrayNode input = req.putArray("input");
             if (system != null && !system.isBlank()) {
                 ObjectNode sys = input.addObject();
@@ -105,26 +143,60 @@ public class OpenAIService {
             user.put("content", userMsg);
 
             String body = objectMapper.writeValueAsString(req);
-            log.debugf("[OpenAIService] Sending response (json_schema). model=%s, bodySize=%d", model, body.length());
+            log.debugf("[OpenAIService] Sending response (json_schema). model=%s, bodySize=%d", chosenModel, body.length());
 
             Response http = openAIClient.createResponse("Bearer " + apiKey, "application/json", body);
             String payload = http.readEntity(String.class);
 
             if (http.getStatus() / 100 != 2) {
-                log.errorf("[OpenAIService] OpenAI error status=%d body=%s", http.getStatus(), payload);
+                if (Boolean.FALSE.equals(store)) {
+                    // Privacy-sensitive no-store calls may contain contract/HR data. Do not risk an
+                    // upstream diagnostic echoing request fragments into application logs.
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s (response body suppressed)",
+                            http.getStatus(), chosenModel);
+                } else {
+                    log.errorf("[OpenAIService] OpenAI error status=%d model=%s body=%s",
+                            http.getStatus(), chosenModel, payload);
+                }
                 return "{}";
             }
 
             JsonNode root = objectMapper.readTree(payload);
             String refusal = extractRefusal(root);
             if (refusal != null) {
-                log.warnf("[OpenAIService] Model refusal detected: %s", refusal);
+                if (Boolean.FALSE.equals(store)) {
+                    log.warnf("[OpenAIService] Model refusal detected (model=%s; text suppressed)", chosenModel);
+                } else {
+                    log.warnf("[OpenAIService] Model refusal detected (model=%s): %s", chosenModel, refusal);
+                }
                 return refusalFallbackJson != null ? refusalFallbackJson : "{}";
             }
             return extractOutputTextOrEmpty(root);
 
+        } catch (jakarta.ws.rs.WebApplicationException e) {
+            // The REST client throws for 4xx/5xx before the status branch above runs; the
+            // OpenAI error body (e.g. "project does not have access to model X") is on the response.
+            String errBody = null;
+            try {
+                if (e.getResponse() != null) errBody = e.getResponse().readEntity(String.class);
+            } catch (Exception ignore) {
+                // body already consumed/closed — status alone will have to do
+            }
+            if (Boolean.FALSE.equals(store)) {
+                log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s (body suppressed)",
+                        chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?");
+            } else {
+                log.errorf("[OpenAIService] Responses request failed (schema, model=%s): status=%s body=%s",
+                        chosenModel, e.getResponse() != null ? e.getResponse().getStatus() : "?", errBody);
+            }
+            return "{}";
         } catch (Exception e) {
-            log.error("[OpenAIService] Responses request failed (schema)", e);
+            if (Boolean.FALSE.equals(store)) {
+                log.errorf("[OpenAIService] Responses request failed (schema, model=%s, errorType=%s; details suppressed)",
+                        chosenModel, e.getClass().getSimpleName());
+            } else {
+                log.errorf(e, "[OpenAIService] Responses request failed (schema, model=%s)", chosenModel);
+            }
             return "{}";
         }
     }

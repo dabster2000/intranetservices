@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.model;
 
+import dk.trustworks.intranet.contracts.audit.ContractTypeAuditListener;
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
@@ -29,6 +30,7 @@ import java.util.List;
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper = false)
 @Entity
 @Table(name = "contract_type_definitions")
+@EntityListeners(ContractTypeAuditListener.class)
 public class ContractTypeDefinition extends PanacheEntityBase {
 
     @Id

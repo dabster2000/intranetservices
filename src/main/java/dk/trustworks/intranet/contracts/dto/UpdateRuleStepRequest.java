@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.dto;
 
+import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import jakarta.validation.constraints.*;
@@ -39,6 +40,12 @@ public class UpdateRuleStepRequest {
     private StepBase stepBase;
 
     /**
+     * Optional business purpose tag (DISCOUNT | ADMIN_FEE); null clears the tag.
+     * Only settable on PERCENT_DISCOUNT_ON_SUM rules — 400 otherwise.
+     */
+    private RulePurpose purpose;
+
+    /**
      * Percentage value (0-100).
      */
     @DecimalMin(value = "0.0", message = "Percent must be non-negative")
@@ -73,7 +80,9 @@ public class UpdateRuleStepRequest {
     private Integer priority;
 
     /**
-     * Active status.
+     * Active status. Null means "leave unchanged" — a PUT omitting this field
+     * preserves the rule's current active state instead of silently re-activating
+     * a disabled rule (spec §9.4).
      */
-    private boolean active = true;
+    private Boolean active;
 }

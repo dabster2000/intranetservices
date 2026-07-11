@@ -1,7 +1,9 @@
 package dk.trustworks.intranet.aggregates.clientstatus.services;
 
 import dk.trustworks.intranet.aggregates.clientstatus.ClientStatusMath;
+import dk.trustworks.intranet.aggregates.clientstatus.ClientStatusRecon;
 import dk.trustworks.intranet.aggregates.clientstatus.dto.*;
+import dk.trustworks.intranet.aggregates.clientstatus.model.ClientMonthControl;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -61,7 +63,12 @@ public class ClientStatusService {
         // invoices/invoiceitems (the fact table is CREATED-only and cannot include QUEUED):
         //  - status IN (CREATED, QUEUED): booked + committed-to-book billing. Raw DRAFT is excluded by design.
         //  - type INVOICE/PHANTOM count positive (incl. self-billed/e-conomic PHANTOMs), CREDIT_NOTE negative;
-        //    INTERNAL/INTERNAL_SERVICE excluded.
+        //    INTERNAL/INTERNAL_SERVICE excluded. Internal intercompany credit notes carry type=CREDIT_NOTE
+        //    (NOT INTERNAL) with a non-null debtor_companyuuid, so the type filter alone lets them through and
+        //    double-subtracts them (their matching INTERNAL invoice is already excluded, so there is no
+        //    offsetting positive) — an internal reversal would then show as a phantom under-billing gap on the
+        //    external client. The debtor_companyuuid guard keeps only external credit notes; see
+        //    Invoice.isInternalCreditNote(). This guard is repeated in every invoice query below.
         //  - GROSS: discounts/fees are negative non-consultant lines (framework "trapperabat", pre-agreed
         //    discounts, admin fees) NOT written back to work_full, so they are dropped (set to 0) to match
         //    the gross "expected"; PHANTOM lines and positive non-consultant lines (fixed-price) are kept.
@@ -88,6 +95,7 @@ public class ClientStatusService {
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) IS NOT NULL
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) <> :internalClient
                   AND (i.year * 100 + i.month) >= :fromPeriod
@@ -108,30 +116,41 @@ public class ClientStatusService {
         Set<String> clientUuids = new HashSet<>();
         clientUuids.addAll(expectedByClient.keySet());
         clientUuids.addAll(invoicedByClient.keySet());
+        // Provisional months: shown in the heatmap but excluded from every summation (row totals,
+        // gaps, outstanding). Computed up front so it is available for the early empty-result return.
+        Set<String> provisional = ClientStatusMath.provisionalMonthKeys(months, LocalDate.now());
+        List<String> provisionalMonths = months.stream().filter(provisional::contains).sorted().toList();
         if (clientUuids.isEmpty()) {
-            return new ClientStatusResponse(months, List.of(),
+            return new ClientStatusResponse(months, provisionalMonths, List.of(),
                     new ClientStatusSummary(0, 0, 0, 0, 0, 0));
         }
 
-        // Resolve names + segments.
-        Map<String, String[]> nameSegByUuid = new HashMap<>(); // uuid -> [name, segment]
+        // Resolve names + segments + account manager (name via user join on client.accountmanager).
+        Map<String, String[]> nameSegByUuid = new HashMap<>(); // uuid -> [name, segment, amUuid, amName]
         @SuppressWarnings("unchecked")
         List<Tuple> clientRows = em.createNativeQuery("""
-                SELECT c.uuid, c.name, c.segment
+                SELECT c.uuid,
+                       c.name,
+                       c.segment,
+                       c.accountmanager AS am_uuid,
+                       CONCAT(u.firstname, ' ', u.lastname) AS am_name
                 FROM client c
+                LEFT JOIN `user` u ON u.uuid = c.accountmanager
                 WHERE c.uuid IN (:uuids)
                 """, Tuple.class)
                 .setParameter("uuids", clientUuids)
                 .getResultList();
         for (Tuple r : clientRows) {
             nameSegByUuid.put((String) r.get("uuid"),
-                    new String[]{(String) r.get("name"), (String) r.get("segment")});
+                    new String[]{(String) r.get("name"), (String) r.get("segment"),
+                            (String) r.get("am_uuid"), (String) r.get("am_name")});
         }
 
-        // The current month is never fully invoiced until early in the following month, so any
-        // still-provisional month is shown in the heatmap but excluded from every summation
-        // (row totals, gaps, outstanding, and the under/fully-billed classification).
-        Set<String> provisional = ClientStatusMath.provisionalMonthKeys(months, LocalDate.now());
+        // Controlling state (approval snapshot + note) for every client-month in the window, keyed
+        // "clientUuid:YYYYMM". Loaded once so each cell can carry approved/hasNote/drift flags and
+        // effectively-approved months can be excluded from the row gap count.
+        Map<String, ClientMonthControl> controlByKey =
+                controlMap(fromDate, toDate.minusDays(1), clientUuids);
 
         List<ClientStatusRow> rows = new ArrayList<>(clientUuids.size());
         double totalExpected = 0, totalInvoiced = 0, outstanding = 0;
@@ -140,7 +159,7 @@ public class ClientStatusService {
         for (String uuid : clientUuids) {
             Map<String, Double> exp = expectedByClient.getOrDefault(uuid, Map.of());
             Map<String, Double> inv = invoicedByClient.getOrDefault(uuid, Map.of());
-            String[] nameSeg = nameSegByUuid.getOrDefault(uuid, new String[]{uuid, null});
+            String[] nameSeg = nameSegByUuid.getOrDefault(uuid, new String[]{uuid, null, null, null});
 
             List<ClientStatusCell> cells = new ArrayList<>(12);
             double rowExpected = 0, rowInvoiced = 0;
@@ -149,15 +168,25 @@ public class ClientStatusService {
                 double e = exp.getOrDefault(mk, 0d);
                 double i = inv.getOrDefault(mk, 0d);
                 ClientStatusCellState state = ClientStatusMath.classify(e, i);
-                cells.add(new ClientStatusCell(mk, e, i, i - e, state));
-                if (provisional.contains(mk)) continue; // visible cell, but not yet counted in totals
+                ClientMonthControl ctrl = controlByKey.get(uuid + ":" + mk);
+                boolean approved = ctrl != null && ctrl.isApproved();
+                boolean hasNote = ctrl != null && ctrl.note != null && !ctrl.note.isBlank();
+                boolean drift = ClientStatusMath.isDrifted(approved,
+                        ctrl == null ? null : ctrl.approvedExpected,
+                        ctrl == null ? null : ctrl.approvedInvoiced, e, i);
+                cells.add(new ClientStatusCell(mk, e, i, i - e, state, approved, hasNote, drift));
+                boolean prov = provisional.contains(mk);
+                if (prov) continue; // visible cell, but not yet counted in totals
                 rowExpected += e;
                 rowInvoiced += i;
-                if (state == ClientStatusCellState.NOT_INVOICED || state == ClientStatusCellState.PARTIAL) gaps++;
+                // Effectively-approved (approved && !drift) months are signed off and no longer
+                // gaps; a drifted approval re-counts as a gap because its snapshot is stale.
+                if (ClientStatusMath.countsAsGap(state, false, approved, drift)) gaps++;
                 if (e - i > 0) outstanding += (e - i);
             }
             rows.add(new ClientStatusRow(uuid, nameSeg[0], nameSeg[1], cells,
-                    rowExpected, rowInvoiced, rowInvoiced - rowExpected, gaps));
+                    rowExpected, rowInvoiced, rowInvoiced - rowExpected, gaps,
+                    nameSeg[2], nameSeg[3]));
             totalExpected += rowExpected;
             totalInvoiced += rowInvoiced;
             if (rowExpected > 0d) {
@@ -169,7 +198,33 @@ public class ClientStatusService {
         rows.sort(Comparator.comparingDouble(ClientStatusRow::delta)); // most under-billed first
         ClientStatusSummary summary = new ClientStatusSummary(
                 totalExpected, totalInvoiced, outstanding, underBilled, fullyBilled, rows.size());
-        return new ClientStatusResponse(months, rows, summary);
+        return new ClientStatusResponse(months, provisionalMonths, rows, summary);
+    }
+
+    /**
+     * Load the controlling state for the window and index it by {@code "clientUuid:YYYYMM"} so grid
+     * and brief assembly can look up the approval snapshot + note for any cell in one pass.
+     *
+     * @param from first month (first-of-month) inclusive
+     * @param to   last month (first-of-month) inclusive
+     */
+    public Map<String, ClientMonthControl> controlMap(LocalDate from, LocalDate to) {
+        return indexControls(ClientMonthControl.findByMonthRange(from, to));
+    }
+
+    /** {@link #controlMap(LocalDate, LocalDate)} restricted to the given clients. */
+    public Map<String, ClientMonthControl> controlMap(LocalDate from, LocalDate to,
+                                                      Collection<String> clientUuids) {
+        return indexControls(ClientMonthControl.findByClientsAndMonthRange(clientUuids, from, to));
+    }
+
+    private static Map<String, ClientMonthControl> indexControls(List<ClientMonthControl> controls) {
+        Map<String, ClientMonthControl> byKey = new HashMap<>();
+        for (ClientMonthControl c : controls) {
+            String mk = String.format("%04d%02d", c.month.getYear(), c.month.getMonthValue());
+            byKey.put(c.clientUuid + ":" + mk, c);
+        }
+        return byKey;
     }
 
     /** Drill-down: registered work (by consultant × project) and invoices for one client-month. */
@@ -256,6 +311,7 @@ public class ClientStatusService {
                   AND i.year = :year AND i.month = :month
                   AND i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                 GROUP BY i.uuid, i.invoicenumber, i.type, i.status, i.invoicedate,
                          i.projectuuid, p.name, i.creditnote_for_uuid, i.invoice_ref
                 ORDER BY i.invoicenumber
@@ -302,6 +358,7 @@ public class ClientStatusService {
                 JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
                 WHERE i.status IN ('CREATED','QUEUED')
                   AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
                   AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
                   AND i.year = :year AND i.month = :month
                 """, Tuple.class)
@@ -311,19 +368,211 @@ public class ClientStatusService {
                 .getResultList();
         double invoicedHeadline = headRows.isEmpty() ? 0d : num(headRows.get(0).get("invoiced"));
 
+        // Per-consultant reconciliation: registered work vs. invoiced value on the SAME
+        // consultant-line basis as signedGrossConsultant above (so Σ recon.invoicedValue
+        // + unmatched == invoicedHeadline ± 0.01).
+        List<ClientStatusConsultantRecon> consultantRecon =
+                buildConsultantRecon(clientUuid, year, month, work);
+
+        String[] am = resolveClientNameAndManager(clientUuid);
+        ClientStatusControlDto control = resolveControl(clientUuid, year, month, expected, invoicedHeadline);
         return new ClientStatusDetailResponse(
-                clientUuid, resolveClientName(clientUuid), year, month,
+                clientUuid, am[0], year, month,
                 expected, invoicedHeadline, invoicedHeadline - expected,
                 ClientStatusMath.classify(expected, invoicedHeadline),
-                work, invoices);
+                work, invoices, consultantRecon, am[1], am[2], control);
     }
 
-    private String resolveClientName(String clientUuid) {
+    /**
+     * Resolve the controlling state for one client-month against the live {@code expected}/
+     * {@code invoiced} values (so {@code drift} reflects the current cell), or {@code null} when no
+     * control row exists. The approver name is resolved from the {@code user} table like the AM name.
+     */
+    private ClientStatusControlDto resolveControl(String clientUuid, int year, int month,
+                                                  double currentExpected, double currentInvoiced) {
+        ClientMonthControl ctrl = ClientMonthControl.findByClientAndMonth(clientUuid, YearMonth.of(year, month).atDay(1));
+        if (ctrl == null) return null;
+        boolean approved = ctrl.isApproved();
+        boolean drift = ClientStatusMath.isDrifted(approved,
+                ctrl.approvedExpected, ctrl.approvedInvoiced, currentExpected, currentInvoiced);
+        String approvedByName = ctrl.approvedBy == null ? null : resolveUserName(ctrl.approvedBy);
+        String monthKey = String.format("%04d%02d", year, month);
+        return new ClientStatusControlDto(
+                clientUuid, monthKey, approved, ctrl.approvedBy, approvedByName,
+                ctrl.approvedAt == null ? null : ctrl.approvedAt.atOffset(java.time.ZoneOffset.UTC).toString(),
+                ctrl.note, ctrl.approvedExpected, ctrl.approvedInvoiced, drift);
+    }
+
+    /** Resolve a user's display name ("firstname lastname"), or null if unknown. */
+    public String resolveUserName(String userUuid) {
         @SuppressWarnings("unchecked")
-        List<Tuple> rows = em.createNativeQuery(
-                "SELECT c.name FROM client c WHERE c.uuid = :uuid", Tuple.class)
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT CONCAT(u.firstname, ' ', u.lastname) AS name FROM `user` u WHERE u.uuid = :uuid
+                """, Tuple.class)
+                .setParameter("uuid", userUuid)
+                .getResultList();
+        return rows.isEmpty() ? null : (String) rows.get(0).get("name");
+    }
+
+    /**
+     * The current expected/invoiced values for one client-month on the SAME gross basis as the grid,
+     * as {@code [expected, invoiced]}. Used to snapshot an approval without paying for the full
+     * per-consultant reconciliation of {@link #getClientStatusDetail}.
+     */
+    public double[] currentExpectedInvoiced(String clientUuid, int year, int month) {
+        YearMonth ym = YearMonth.of(year, month);
+        LocalDate fromDate = ym.atDay(1);
+        LocalDate toDate = ym.plusMonths(1).atDay(1);
+
+        Object expectedObj = em.createNativeQuery("""
+                SELECT SUM(IFNULL(w.rate,0) * w.workduration)
+                FROM work_full w
+                WHERE w.clientuuid = :client
+                  AND w.rate > 0
+                  AND w.registered >= :fromDate AND w.registered < :toDate
+                """)
+                .setParameter("client", clientUuid)
+                .setParameter("fromDate", fromDate)
+                .setParameter("toDate", toDate)
+                .getSingleResult();
+
+        Object invoicedObj = em.createNativeQuery("""
+                SELECT SUM(CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END
+                           * CASE WHEN i.type <> 'PHANTOM'
+                                      AND ii.consultantuuid IS NULL
+                                      AND (ii.hours * ii.rate) < 0
+                                  THEN 0 ELSE (ii.hours * ii.rate) END)
+                FROM invoices i
+                LEFT JOIN project p ON p.uuid = i.projectuuid
+                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                WHERE i.status IN ('CREATED','QUEUED')
+                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
+                  AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
+                  AND i.year = :year AND i.month = :month
+                """)
+                .setParameter("client", clientUuid)
+                .setParameter("year", year)
+                .setParameter("month", month)
+                .getSingleResult();
+
+        return new double[]{num(expectedObj), num(invoicedObj)};
+    }
+
+    /**
+     * Build the per-consultant reconciliation for one client-month by pairing the registered
+     * work (aggregated per consultant from {@code work}) with each in-scope invoice item and
+     * its attribution rows, then delegating the pure merge to {@link ClientStatusRecon#merge}.
+     */
+    private List<ClientStatusConsultantRecon> buildConsultantRecon(
+            String clientUuid, int year, int month, List<ClientStatusWorkLine> work) {
+
+        // Registered side: aggregate the already-fetched work lines per consultant.
+        Map<String, double[]> regByConsultant = new LinkedHashMap<>(); // uuid -> [hours, value]
+        Map<String, String> nameByUuid = new HashMap<>();
+        for (ClientStatusWorkLine w : work) {
+            double[] agg = regByConsultant.computeIfAbsent(w.consultantUuid(), k -> new double[2]);
+            agg[0] += w.hours();
+            agg[1] += w.value();
+            if (w.consultantName() != null) nameByUuid.putIfAbsent(w.consultantUuid(), w.consultantName());
+        }
+        List<ClientStatusRecon.RegisteredLine> registered = new ArrayList<>(regByConsultant.size());
+        for (Map.Entry<String, double[]> e : regByConsultant.entrySet()) {
+            registered.add(new ClientStatusRecon.RegisteredLine(
+                    e.getKey(), e.getValue()[0], e.getValue()[1]));
+        }
+
+        // Invoiced side: one row per in-scope consultant-line invoice item, LEFT JOINed to its
+        // attribution rows. Same filters/signs as the signedGrossConsultant per-invoice query.
+        @SuppressWarnings("unchecked")
+        List<Tuple> itemRows = em.createNativeQuery("""
+                SELECT ii.uuid AS item_uuid,
+                       (ii.hours * ii.rate) AS item_value,
+                       CASE WHEN i.type = 'CREDIT_NOTE' THEN -1 ELSE 1 END AS sign,
+                       ii.consultantuuid AS item_consultant,
+                       a.consultant_uuid AS attr_consultant,
+                       a.attributed_amount AS attr_amount
+                FROM invoices i
+                LEFT JOIN project p ON p.uuid = i.projectuuid
+                JOIN invoiceitems ii ON ii.invoiceuuid = i.uuid
+                LEFT JOIN invoice_item_attributions a ON a.invoiceitem_uuid = ii.uuid
+                WHERE i.status IN ('CREATED','QUEUED')
+                  AND i.type IN ('INVOICE','PHANTOM','CREDIT_NOTE')
+                  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL)
+                  AND COALESCE(p.clientuuid, i.billing_client_uuid) = :client
+                  AND i.year = :year AND i.month = :month
+                  AND (i.type = 'PHANTOM'
+                       OR ii.consultantuuid IS NOT NULL
+                       OR (ii.hours * ii.rate) > 0)
+                ORDER BY ii.uuid
+                """, Tuple.class)
+                .setParameter("client", clientUuid)
+                .setParameter("year", year)
+                .setParameter("month", month)
+                .getResultList();
+
+        // Fold the flattened item×attribution rows back into one InvoiceItemLine per item.
+        Map<String, ClientStatusRecon.InvoiceItemLine> itemByUuid = new LinkedHashMap<>();
+        Map<String, List<ClientStatusRecon.AttributionShare>> attrsByItem = new HashMap<>();
+        Set<String> attrConsultants = new HashSet<>();
+        for (Tuple r : itemRows) {
+            String itemUuid = (String) r.get("item_uuid");
+            List<ClientStatusRecon.AttributionShare> attrs =
+                    attrsByItem.computeIfAbsent(itemUuid, k -> new ArrayList<>());
+            itemByUuid.computeIfAbsent(itemUuid, k -> new ClientStatusRecon.InvoiceItemLine(
+                    num(r.get("item_value")),
+                    ((Number) r.get("sign")).intValue(),
+                    (String) r.get("item_consultant"),
+                    attrs));
+            String attrConsultant = (String) r.get("attr_consultant");
+            if (attrConsultant != null) {
+                attrs.add(new ClientStatusRecon.AttributionShare(
+                        attrConsultant, num(r.get("attr_amount"))));
+                attrConsultants.add(attrConsultant);
+            }
+        }
+        List<ClientStatusRecon.InvoiceItemLine> items = new ArrayList<>(itemByUuid.values());
+
+        // Resolve names for consultants that appear only on the invoiced side (attribution or
+        // invoiceitems.consultantuuid) and have no registered work row.
+        Set<String> unnamed = new HashSet<>(attrConsultants);
+        for (ClientStatusRecon.InvoiceItemLine item : items) {
+            if (item.consultantUuid() != null && !item.consultantUuid().isBlank()) {
+                unnamed.add(item.consultantUuid());
+            }
+        }
+        unnamed.removeAll(nameByUuid.keySet());
+        if (!unnamed.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            List<Tuple> userRows = em.createNativeQuery("""
+                    SELECT u.uuid, CONCAT(u.firstname, ' ', u.lastname) AS name
+                    FROM `user` u WHERE u.uuid IN (:uuids)
+                    """, Tuple.class)
+                    .setParameter("uuids", unnamed)
+                    .getResultList();
+            for (Tuple r : userRows) {
+                nameByUuid.putIfAbsent((String) r.get("uuid"), (String) r.get("name"));
+            }
+        }
+
+        return ClientStatusRecon.merge(registered, items, nameByUuid);
+    }
+
+    /** @return [clientName, accountManagerUuid, accountManagerName] — uuid/name may be null. */
+    private String[] resolveClientNameAndManager(String clientUuid) {
+        @SuppressWarnings("unchecked")
+        List<Tuple> rows = em.createNativeQuery("""
+                SELECT c.name,
+                       c.accountmanager AS am_uuid,
+                       CONCAT(u.firstname, ' ', u.lastname) AS am_name
+                FROM client c
+                LEFT JOIN `user` u ON u.uuid = c.accountmanager
+                WHERE c.uuid = :uuid
+                """, Tuple.class)
                 .setParameter("uuid", clientUuid)
                 .getResultList();
-        return rows.isEmpty() ? clientUuid : (String) rows.get(0).get("name");
+        if (rows.isEmpty()) return new String[]{clientUuid, null, null};
+        Tuple r = rows.get(0);
+        return new String[]{(String) r.get("name"), (String) r.get("am_uuid"), (String) r.get("am_name")};
     }
 }

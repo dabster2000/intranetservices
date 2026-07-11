@@ -1294,7 +1294,9 @@ public class InvoiceResource {
                 dto.internalInvoiceSkip(), dto.internalInvoiceSkipNote(),
                 dto.internalInvoiceSkipAt(), dto.internalInvoiceSkipBy(),
                 dto.cancellingCreditNote(),
-                dto.creditNote()
+                dto.creditNote(),
+                dto.creditedAmount(),
+                dto.fullyCredited()
         );
     }
 

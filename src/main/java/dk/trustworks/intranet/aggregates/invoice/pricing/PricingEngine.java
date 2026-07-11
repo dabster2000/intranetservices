@@ -53,7 +53,14 @@ public class PricingEngine {
                 case PERCENT_DISCOUNT_ON_SUM -> {
                     BigDecimal pct = resolvePercent(step, contractTypeItems);
                     delta = base.multiply(pct).divide(BigDecimal.valueOf(100), SCALE + 2, RM).setScale(SCALE, RM).negate();
-                    label = String.format("%s (%s%%)", step.label, pct.stripTrailingZeros().toPlainString());
+                    // Purpose-aware label (spec §12.2 byte-identity across the V396 retype):
+                    // ADMIN_FEE rows keep their stored label verbatim — exactly how the legacy
+                    // ADMIN_FEE_PERCENT branch rendered them — so retyping never changes the
+                    // customer-visible line text. All other percentage deductions carry the
+                    // resolved-percent suffix. The delta math above never reads purpose.
+                    label = step.purpose == RulePurpose.ADMIN_FEE
+                            ? step.label
+                            : String.format("%s (%s%%)", step.label, pct.stripTrailingZeros().toPlainString());
                 }
                 case ADMIN_FEE_PERCENT -> {
                     BigDecimal pct = step.percent != null ? step.percent : BigDecimal.ZERO;

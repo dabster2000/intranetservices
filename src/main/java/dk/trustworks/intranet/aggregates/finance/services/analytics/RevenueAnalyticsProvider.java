@@ -10,6 +10,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Set;
 
+import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.teamMemberTemporalJoin;
 import static dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper.toMonthKey;
 
 /**
@@ -57,20 +58,21 @@ public class RevenueAnalyticsProvider {
 
     /**
      * Team revenue (operational, time-registration-based).
-     * Source: fact_user_day.registered_amount with temporal team membership filter.
+     * Source: fact_user_day.registered_amount with the shared TEMPORAL team-membership
+     * contract — each person's revenue counts only for days they were a MEMBER of the
+     * team, so this total reconciles with the team dashboard's Revenue-vs-Cost trend
+     * and Revenue-per-Member (audit C4).
      */
-    public double getTeamRevenue(List<String> memberUuids, LocalDate fromDate, LocalDate toDate) {
-        if (memberUuids == null || memberUuids.isEmpty()) return 0.0;
-
+    public double getTeamRevenue(String teamId, LocalDate fromDate, LocalDate toDate) {
         String sql = "SELECT COALESCE(SUM(fud.registered_amount), 0) AS revenue " +
                 "FROM fact_user_day fud " +
-                "WHERE fud.useruuid IN (:memberUuids) " +
-                "  AND fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
+                teamMemberTemporalJoin("fud", "document_date") +
+                "WHERE fud.document_date >= :fromDate AND fud.document_date <= :toDate " +
                 "  AND fud.consultant_type = 'CONSULTANT' " +
                 "  AND fud.status_type = 'ACTIVE'";
 
         var query = em.createNativeQuery(sql, Tuple.class);
-        query.setParameter("memberUuids", memberUuids);
+        query.setParameter("teamId", teamId);
         query.setParameter("fromDate", fromDate);
         query.setParameter("toDate", toDate);
 
@@ -94,6 +96,10 @@ public class RevenueAnalyticsProvider {
                 "  AND cur.month = DATE_FORMAT(i.invoicedate, '%Y%m') " +
                 "WHERE i.status = 'CREATED' " +
                 "  AND i.type IN ('INVOICE', 'PHANTOM', 'CREDIT_NOTE') " +
+                // Exclude internal intercompany credit notes (type=CREDIT_NOTE with a debtor company):
+                // their INTERNAL invoice is already dropped by the type filter, so counting the reversal
+                // would double-subtract. External documents only. See Invoice.isInternalCreditNote().
+                "  AND (i.type <> 'CREDIT_NOTE' OR i.debtor_companyuuid IS NULL) " +
                 "  AND ii.rate IS NOT NULL AND ii.hours IS NOT NULL " +
                 "  AND ii.consultantuuid IN (:userIds) " +
                 "  AND i.invoicedate >= :fromDate AND i.invoicedate < :toDate";

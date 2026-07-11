@@ -54,6 +54,7 @@ class InvoiceFinalizationOrchestratorTest {
     @Mock jakarta.enterprise.event.Event<InvoiceBookedEvent> invoiceBooked;
     @Mock dk.trustworks.intranet.expenseservice.services.EconomicsInvoiceService economicsInvoiceService;
     @Mock DebtorCompanyLookup               debtorCompanyLookup;
+    @Mock CreditNoteCoverageService         creditCoverage;
 
     @BeforeEach
     void enableInvoiceUpload() {
@@ -324,6 +325,52 @@ class InvoiceFinalizationOrchestratorTest {
         when(agreements.vatZoneFor(any(), any())).thenReturn(1);
         when(mapper.toDraft(any())).thenThrow(new IllegalStateException("Billing client not paired"));
         assertThrows(IllegalStateException.class, () -> orchestrator.createDraft("i1"));
+    }
+
+    // ── test 5b: over-credit guard aborts credit-note finalization ────────────
+
+    @Test
+    void createDraft_overCreditGuard409_aborts_before_any_economic_call() {
+        Invoice cn = draftInvoice("cn1", "co-1");
+        cn.setType(InvoiceType.CREDIT_NOTE);
+        cn.setCreditnoteForUuid("parent-invoice-uuid");
+        when(invoices.findByUuid("cn1")).thenReturn(Optional.of(cn));
+        doThrow(new jakarta.ws.rs.WebApplicationException(
+                jakarta.ws.rs.core.Response.status(jakarta.ws.rs.core.Response.Status.CONFLICT)
+                        .entity("Finalizing this credit note would over-credit invoice 12345.")
+                        .build()))
+                .when(creditCoverage).assertFinalizableWithinResidual(cn);
+
+        jakarta.ws.rs.WebApplicationException thrown = assertThrows(
+                jakarta.ws.rs.WebApplicationException.class,
+                () -> orchestrator.createDraft("cn1"));
+
+        assertEquals(409, thrown.getResponse().getStatus());
+        // The second concurrent finalizer must fail cleanly with NO e-conomic side effects.
+        verifyNoInteractions(draftApi, bookApi);
+    }
+
+    @Test
+    void createDraft_invokes_overCredit_guard_for_every_invoice() {
+        Invoice inv = draftInvoice("i1", "co-1");
+        when(invoices.findByUuid("i1")).thenReturn(Optional.of(inv));
+        when(billingResolver.resolve(inv)).thenReturn(new BillingContext(inv, contract(), billingClient()));
+        when(agreements.tokens("co-1")).thenReturn(tokens("APP", "GRANT"));
+        when(agreements.productNumber("co-1")).thenReturn("1");
+        when(agreements.layoutNumber("co-1")).thenReturn(22);
+        when(agreements.paymentTermFor(any())).thenReturn(5);
+        when(agreements.vatZoneFor(any(), any())).thenReturn(1);
+        EconomicsDraftInvoice draft = new EconomicsDraftInvoice();
+        draft.setDraftInvoiceNumber(4521);
+        when(mapper.toDraft(any())).thenReturn(draft);
+        when(mapper.toLines(any())).thenReturn(List.of(new EconomicsDraftLine()));
+        CreatedResult createResult = new CreatedResult();
+        createResult.setNumber(77);
+        when(draftApi.create(any(), any(), any(), any())).thenReturn(createResult);
+
+        orchestrator.createDraft("i1");
+
+        verify(creditCoverage).assertFinalizableWithinResidual(inv);
     }
 
     // ── test 6: cancelFinalization restores bonus fields for credit note ──────

@@ -3,6 +3,7 @@ package dk.trustworks.intranet.contracts.services;
 import dk.trustworks.intranet.contracts.dto.ContractTypeDefinitionDTO;
 import dk.trustworks.intranet.contracts.dto.CreateContractTypeRequest;
 import dk.trustworks.intranet.contracts.dto.UpdateContractTypeRequest;
+import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractTypeDefinition;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -11,7 +12,9 @@ import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -180,6 +183,10 @@ public class ContractTypeDefinitionService {
     /**
      * List all contract types (active only by default).
      *
+     * <p>Each list item is enriched with {@code contractCount} (contracts referencing
+     * the agreement's code) and {@code activePricingRuleCount}, computed via two
+     * grouped queries — never per-row lookups.
+     *
      * @param includeInactive Whether to include inactive types
      * @return List of contract type DTOs
      */
@@ -191,9 +198,57 @@ public class ContractTypeDefinitionService {
                 ? ContractTypeDefinition.findAllIncludingInactive()
                 : ContractTypeDefinition.findAllActive();
 
-        return entities.stream()
+        List<ContractTypeDefinitionDTO> dtos = entities.stream()
                 .map(ContractTypeDefinitionDTO::fromEntity)
                 .collect(Collectors.toList());
+
+        applyListCounts(dtos, countContractsByType(), countActivePricingRulesByType());
+        return dtos;
+    }
+
+    /**
+     * Merge grouped per-code counts onto the list DTOs. Codes without a row in a
+     * count map get 0 (never null) so list items always carry both counts.
+     * Package-private for unit testing.
+     */
+    static void applyListCounts(List<ContractTypeDefinitionDTO> dtos,
+                                Map<String, Long> contractCountsByCode,
+                                Map<String, Long> activePricingRuleCountsByCode) {
+        for (ContractTypeDefinitionDTO dto : dtos) {
+            dto.setContractCount(Math.toIntExact(contractCountsByCode.getOrDefault(dto.getCode(), 0L)));
+            dto.setActivePricingRuleCount(Math.toIntExact(activePricingRuleCountsByCode.getOrDefault(dto.getCode(), 0L)));
+        }
+    }
+
+    /**
+     * One grouped query: contract count per contract type code (contracts.contracttype).
+     */
+    private Map<String, Long> countContractsByType() {
+        List<Object[]> rows = Contract.getEntityManager()
+                .createQuery("select c.contractType, count(c) from Contract c group by c.contractType", Object[].class)
+                .getResultList();
+        return toCountMap(rows);
+    }
+
+    /**
+     * One grouped query: active pricing rule count per contract type code.
+     */
+    private Map<String, Long> countActivePricingRulesByType() {
+        List<Object[]> rows = PricingRuleStepEntity.getEntityManager()
+                .createQuery("select p.contractTypeCode, count(p) from PricingRuleStepEntity p " +
+                             "where p.active = true group by p.contractTypeCode", Object[].class)
+                .getResultList();
+        return toCountMap(rows);
+    }
+
+    private static Map<String, Long> toCountMap(List<Object[]> rows) {
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : rows) {
+            if (row[0] != null) {
+                counts.put((String) row[0], ((Number) row[1]).longValue());
+            }
+        }
+        return counts;
     }
 
     /**

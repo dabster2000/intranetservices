@@ -12,10 +12,12 @@ import io.quarkus.panache.common.Page;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceException;
 import jakarta.persistence.Tuple;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.QueryParam;
 import lombok.extern.jbosslog.JBossLog;
+import org.hibernate.exception.ConstraintViolationException;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
@@ -43,6 +45,15 @@ public class WorkService {
 
     @Inject
     EntityManager em;
+
+    /**
+     * Self-proxy. Lets {@link #persistOrUpdate(Work)} re-enter the transactional unit of work
+     * {@link #persistOrUpdateInTx(Work)} through the CDI/interceptor stack so the retry runs in a
+     * <b>fresh</b> transaction (a plain {@code this.} call would bypass {@code @Transactional} via
+     * self-invocation and reuse the poisoned session).
+     */
+    @Inject
+    WorkService self;
 
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
@@ -517,29 +528,103 @@ public class WorkService {
 
 
 
+    /**
+     * Idempotent save for POST /work. The stored row is unique on {@code uq_work_user_date_task}
+     * = (useruuid, registered, taskuuid); the frontend re-submits the same (user, date, task) row on
+     * double-click / retry / concurrent tabs, so a save must converge on "one row for the tuple"
+     * rather than 500.
+     *
+     * <p>The pre-insert lookup in {@link #persistOrUpdateInTx(Work)} turns the common (serialized)
+     * re-submit into an in-place update. But two genuinely concurrent requests can both pass that
+     * lookup — each JTA transaction has its own MariaDB REPEATABLE READ snapshot, so neither sees the
+     * other's not-yet-committed insert — and the loser's {@code persistAndFlush()} then trips the
+     * unique key. We swallow only that specific duplicate-key {@link PersistenceException} and retry
+     * the unit of work <b>once</b> in a fresh transaction (via {@link #self}); its new snapshot now
+     * sees the winning row and takes the update path, so a duplicate submit is a 2xx success rather
+     * than a 500. A second consecutive failure (should not happen) is left to propagate — the
+     * flushed violation is an unchecked {@link PersistenceException}, mapped to a clean 409 by
+     * {@code DatabaseConstraintViolationExceptionMapper}, never a 500.
+     */
+    public void persistOrUpdate(Work work) {
+        try {
+            self.persistOrUpdateInTx(work);
+        } catch (PersistenceException e) {
+            if (!isDuplicateWorkKeyViolation(e)) {
+                throw e;
+            }
+            log.warnf("Concurrent duplicate work insert (registered=%s, userUuid=%s, taskUuid=%s) — reconciling idempotently in a fresh transaction",
+                    work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+            self.persistOrUpdateInTx(work);
+        }
+    }
+
     @Transactional
     @CacheInvalidateAll(cacheName = "work-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
-    public void persistOrUpdate(Work work) {
+    public void persistOrUpdateInTx(Work work) {
         log.debugf("persistOrUpdate called: userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
                 work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
-        List<Work> workList = Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", work.getRegistered(), work.getUseruuid(), work.getTaskuuid()).list();
+        List<Work> workList = findExistingWork(work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
         if(!workList.isEmpty()) {
-            if(workList.stream().findFirst().get().isPaidOut()) {
+            Work existing = workList.get(0);
+            if(existing.isPaidOut()) {
                 log.warnf("Skipping update for already paid-out work: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s",
-                        workList.stream().findFirst().get().getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered());
+                        existing.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered());
                 return;
             }
-            work.setUuid(workList.stream().findFirst().get().getUuid());
-            Work.update("workduration = ?1, comments = ?2, paidOut = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6", work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+            work.setUuid(existing.getUuid());
+            updateExistingWork(work);
             log.infof("Work updated: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
                     work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
         } else {
             work.setUuid(UUID.randomUUID().toString());
-            Work.persist(work);
+            // persistAndFlush (not persist) so a concurrent-insert race trips uq_work_user_date_task
+            // HERE, at flush, as an unchecked PersistenceException the caller can catch and retry —
+            // instead of a deferred commit-time RollbackException that Arc rewraps as
+            // ArcUndeclaredThrowableException and GenericExceptionMapper turns into a 500.
+            work.persistAndFlush();
             log.infof("Work created: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
                     work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
         }
+    }
+
+    /**
+     * Panache lookup for an existing row on the {@code uq_work_user_date_task} tuple
+     * (registered, useruuid, taskuuid). Package-private seam so the idempotency decision in
+     * {@link #persistOrUpdateInTx(Work)} can be unit-tested without a live database.
+     */
+    List<Work> findExistingWork(LocalDate registered, String useruuid, String taskuuid) {
+        return Work.find("registered = ?1 AND useruuid LIKE ?2 AND taskuuid LIKE ?3", registered, useruuid, taskuuid).list();
+    }
+
+    /**
+     * Bulk update of the existing row for the tuple. Package-private seam so
+     * {@link #persistOrUpdateInTx(Work)} can be unit-tested without a live database.
+     */
+    void updateExistingWork(Work work) {
+        Work.update("workduration = ?1, comments = ?2, paidOut = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6",
+                work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+    }
+
+    /**
+     * True only for a duplicate on the {@code uq_work_user_date_task} unique key. Scoped to that
+     * one constraint so we retry a lost insert race but never loop on an unrelated violation
+     * (e.g. a foreign key), which is left to surface as a 409.
+     */
+    private static boolean isDuplicateWorkKeyViolation(Throwable throwable) {
+        Throwable current = throwable;
+        for (int depth = 0; current != null && depth < 8; depth++) {
+            if (current instanceof ConstraintViolationException cve
+                    && cve.getConstraintName() != null
+                    && cve.getConstraintName().toLowerCase().contains("uq_work_user_date_task")) {
+                return true;
+            }
+            if (current.getMessage() != null && current.getMessage().contains("uq_work_user_date_task")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     public List<WorkFull> findBillableWorkByUser(String useruuid) {
@@ -567,7 +652,18 @@ public class WorkService {
         Work.update("paidOut = ?1 WHERE uuid like ?2 ", work.getPaidOut(), work.getUuid());
     }
 
-    @Transactional
+    /**
+     * REQUIRES_NEW is load-bearing: the only caller is InvoiceBookedPayoutObserver, an
+     * {@code @Observes(during = AFTER_SUCCESS)} observer that runs in the afterCompletion
+     * callback of the just-committed booking transaction. That completed transaction is still
+     * associated with the thread, so the default {@code REQUIRED} joins it and Narayana rejects
+     * the write with {@code InactiveTransactionException}. REQUIRES_NEW suspends the completed
+     * transaction and begins a fresh one.
+     *
+     * <p>Idempotent: only rows with {@code paid_out IS NULL} are stamped, so a re-run (manual
+     * backfill or a re-fired event) never overwrites an earlier payout timestamp.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
     public void registerAsPaidout(String contractuuid, String projectuuid, int month, int year) {
         log.infof("Batch paidout registration started: contractUuid=%s, projectUuid=%s, month=%d, year=%d",
                 contractuuid, projectuuid, month, year);
@@ -575,11 +671,10 @@ public class WorkService {
         long count = 0;
         List<WorkFull> workItems = WorkFull.<WorkFull>find("contractuuid = ?1 AND projectuuid = ?2 AND MONTH(registered) = ?3 AND YEAR(registered) = ?4", contractuuid, projectuuid, month, year).list();
         for (WorkFull work : workItems) {
-            Work.update("paidOut = ?1 WHERE uuid = ?2 ", now, work.getUuid());
-            count++;
+            count += Work.update("paidOut = ?1 WHERE uuid = ?2 AND paidOut IS NULL", now, work.getUuid());
         }
-        log.infof("Batch paidout registration completed: contractUuid=%s, projectUuid=%s, month=%d, year=%d, workItemsMarked=%d, paidOutTimestamp=%s",
-                contractuuid, projectuuid, month, year, count, now);
+        log.infof("Batch paidout registration completed: contractUuid=%s, projectUuid=%s, month=%d, year=%d, workItems=%d, newlyMarked=%d, paidOutTimestamp=%s",
+                contractuuid, projectuuid, month, year, workItems.size(), count, now);
     }
 
     /**

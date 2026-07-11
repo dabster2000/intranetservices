@@ -36,5 +36,10 @@ public class UpdateRateAdjustmentRequest {
     @Min(value = 1)
     private Integer priority;
 
-    private boolean active;
+    /**
+     * Whether the adjustment is active. Null means "leave unchanged" — a PUT
+     * omitting this field preserves the current active state instead of silently
+     * deactivating an active adjustment (spec §9.4).
+     */
+    private Boolean active;
 }

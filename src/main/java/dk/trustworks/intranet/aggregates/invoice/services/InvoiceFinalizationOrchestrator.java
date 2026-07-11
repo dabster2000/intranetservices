@@ -100,6 +100,9 @@ public class InvoiceFinalizationOrchestrator {
     EanPrerequisiteChecker eanChecker;
 
     @Inject
+    CreditNoteCoverageService creditCoverage;
+
+    @Inject
     PerfMetrics perfMetrics;
 
     /**
@@ -113,13 +116,26 @@ public class InvoiceFinalizationOrchestrator {
     boolean invoiceUploadEnabled;
 
     /**
+     * Credit-note finalization guard (framework-agreements redesign §9.6). When {@code true},
+     * {@link #createDraft(String)} skips invoice-item recalculation for CREDIT_NOTE invoices so
+     * the lines copied from the source invoice (BASE + CALCULATED, see
+     * {@link InvoiceService#createCreditNote}) are preserved verbatim — a credit note should
+     * credit what was BILLED, not what today's pricing rules say. Default {@code false} keeps
+     * the current behavior (re-run the pricing engine) byte-identical.
+     */
+    @org.eclipse.microprofile.config.inject.ConfigProperty(
+            name = "feature.invoice.cn-preserve-lines", defaultValue = "false")
+    boolean cnPreserveLines;
+
+    /**
      * Step 1: Creates the e-conomic draft invoice.
      *
      * <p>Preconditions: invoice must be DRAFT or QUEUED; PHANTOM invoices are rejected.
      *
      * <p>Side effects (all reversible via cancelFinalization):
      * <ul>
-     *   <li>Recalculates invoice items via PricingEngine.</li>
+     *   <li>Recalculates invoice items via PricingEngine (skipped for CREDIT_NOTE
+     *       invoices when {@code feature.invoice.cn-preserve-lines} is enabled).</li>
      *   <li>Recalculates bonus lines (skipped for INTERNAL / INTERNAL_SERVICE).</li>
      *   <li>Clears parent bonus fields for CREDIT_NOTE invoices.</li>
      *   <li>Sets economicsDraftNumber, billingClientUuid snapshot, status = PENDING_REVIEW.</li>
@@ -144,7 +160,14 @@ public class InvoiceFinalizationOrchestrator {
 
         // Step-1 reversible side effects — before the API call so a failure doesn't
         // leave the invoice in a partially mutated state
-        recalc.recalculateInvoiceItems(inv);
+        if (cnPreserveLines && inv.getType() == InvoiceType.CREDIT_NOTE) {
+            // §9.6 CN guard: credit what was billed, not what today's rules say.
+            log.infof("createDraft: feature.invoice.cn-preserve-lines=true — skipping item "
+                    + "recalculation for CREDIT_NOTE %s (preserving lines copied from the source invoice)",
+                    invoiceUuid);
+        } else {
+            recalc.recalculateInvoiceItems(inv);
+        }
 
         // e-conomic's Q2C bulk-lines endpoint rejects any line with quantity 0
         // (SalesDocumentLineCannotHaveZeroValue) and fails the WHOLE batch, so a single
@@ -153,6 +176,14 @@ public class InvoiceFinalizationOrchestrator {
         // mapper will send — and fail fast with an actionable message before any
         // e-conomic call, which also avoids leaving an orphaned empty draft behind.
         assertNoZeroQuantityLines(inv);
+
+        // Over-credit guard for client credit notes (multiple partial CNs per invoice are
+        // allowed since V386): inside this transaction, with a pessimistic lock on the source
+        // row, so two concurrently finalizing credit notes can never jointly exceed the
+        // source amount — the second finalizer gets a 409. Runs after recalculation so the
+        // guard sees exactly the amounts that will be posted. No-op for internal credit
+        // notes (strict 1:1, enforced at creation) and non-credit-note invoices.
+        creditCoverage.assertFinalizableWithinResidual(inv);
 
         if (inv.getType() != InvoiceType.INTERNAL
                 && inv.getType() != InvoiceType.INTERNAL_SERVICE) {

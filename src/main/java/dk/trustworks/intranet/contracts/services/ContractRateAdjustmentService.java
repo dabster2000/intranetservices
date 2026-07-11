@@ -72,7 +72,11 @@ public class ContractRateAdjustmentService {
         entity.setEffectiveDate(request.getEffectiveDate());
         entity.setEndDate(request.getEndDate());
         entity.setPriority(request.getPriority());
-        entity.setActive(request.isActive());
+        // Null active means "leave unchanged" (spec §9.4) — a PUT omitting the field
+        // must not silently deactivate an active adjustment.
+        if (request.getActive() != null) {
+            entity.setActive(request.getActive());
+        }
         entity.persist();
 
         return RateAdjustmentDTO.fromEntity(entity);
