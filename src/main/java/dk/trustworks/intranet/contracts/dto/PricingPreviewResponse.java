@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.dto;
 
+import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -21,6 +22,12 @@ import java.util.List;
 public class PricingPreviewResponse {
 
     private String contractTypeCode;
+
+    /** Nullable when an older invoice references a code with no agreement metadata row. */
+    private String contractTypeName;
+
+    /** Current agreement lifecycle status; nullable when agreement metadata is missing. */
+    private LifecycleStatus contractTypeStatus;
 
     /** The date the rules were evaluated against (request value, or today when omitted). */
     private LocalDate invoiceDate;

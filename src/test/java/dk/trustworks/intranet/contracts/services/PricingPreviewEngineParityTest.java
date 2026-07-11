@@ -99,6 +99,7 @@ class PricingPreviewEngineParityTest {
         // Real engine on the equivalent synthetic invoice
         Invoice draft = syntheticInvoice(code, contractUuid, amount, discountPct);
         PriceResult engine = pricingEngine.price(draft, Map.of("trapperabat", trapperabat));
+        PricingPreviewResponse invoicePreview = previewService.preview(draft);
 
         assertEquals(0, engine.sumBeforeDiscounts.compareTo(preview.getSumBeforeRules()),
                 "sumBeforeRules must equal engine sumBeforeDiscounts");
@@ -108,6 +109,12 @@ class PricingPreviewEngineParityTest {
                 "vatAmount must match the engine");
         assertEquals(0, engine.grandTotal.compareTo(preview.getGrandTotal()),
                 "grandTotal must match the engine");
+        assertEquals(0, engine.sumAfterDiscounts.compareTo(invoicePreview.getTotalBeforeVat()),
+                "invoice explain overload must match engine total");
+        assertEquals(0, engine.vatAmount.compareTo(invoicePreview.getVatAmount()),
+                "invoice explain overload must use the invoice VAT");
+        assertEquals(0, engine.grandTotal.compareTo(invoicePreview.getGrandTotal()),
+                "invoice explain overload grand total must match the engine");
 
         // Executed-only steps must line up 1:1 with the engine breakdown (order + delta + cumulative).
         // DELIBERATELY not compared: labels (the engine suffixes " (<pct>%)" onto breakdown labels

@@ -1,5 +1,8 @@
 package dk.trustworks.intranet.contracts.services;
 
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
+import dk.trustworks.intranet.aggregates.invoice.model.InvoiceItem;
+import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceItemOrigin;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
@@ -9,6 +12,7 @@ import dk.trustworks.intranet.contracts.dto.PricingPreviewStepDTO;
 import dk.trustworks.intranet.contracts.model.ContractTypeDefinition;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
+import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.security.TestSecurity;
@@ -72,6 +76,7 @@ class PricingPreviewServiceTest {
         assertEquals(PricingPreviewStepDTO.SOURCE_DB, admin.getSource());
         assertEquals("ADMIN_FEE", admin.getPurpose());
         assertEquals(StepBase.CURRENT_SUM, admin.getBase());
+        assertEquals(0, new BigDecimal("100000.00").compareTo(admin.getBaseAmount()));
         assertEquals(PricingPreviewStepDTO.RESOLVED_FROM_RULE_PERCENT, admin.getResolvedFrom());
         assertEquals(0, new BigDecimal("4").compareTo(admin.getRateOrAmount()));
         assertEquals(0, new BigDecimal("-4000.00").compareTo(admin.getDelta()));
@@ -116,6 +121,7 @@ class PricingPreviewServiceTest {
         assertTrue(admin.getSkipDetail().contains("2026-01-01"));
         assertTrue(admin.getSkipDetail().contains("exclusive"));
         assertEquals(0, BigDecimal.ZERO.compareTo(admin.getDelta()));
+        assertEquals(0, new BigDecimal("100000.00").compareTo(admin.getBaseAmount()));
 
         // Nothing executed → total unchanged, honest "no deductions"
         assertEquals(0, new BigDecimal("100000.00").compareTo(response.getTotalBeforeVat()));
@@ -354,6 +360,35 @@ class PricingPreviewServiceTest {
         assertEquals(LocalDate.now(), response.getInvoiceDate());
     }
 
+    @Test
+    @TestTransaction
+    void invoicePreview_usesExactZeroVat_andIncludesAgreementMetadata() {
+        String code = seedSki0215Fixture();
+        Invoice draft = invoice(code, new BigDecimal("100000.00"), 0.0, 0.0);
+
+        PricingPreviewResponse response = service.preview(draft);
+
+        assertEquals("Pricing preview test type", response.getContractTypeName());
+        assertEquals(LifecycleStatus.ACTIVE, response.getContractTypeStatus());
+        assertEquals(0, BigDecimal.ZERO.compareTo(response.getVatPct()));
+        assertEquals(0, BigDecimal.ZERO.compareTo(response.getVatAmount()));
+        assertEquals(0, new BigDecimal("96000.00").compareTo(response.getGrandTotal()));
+    }
+
+    @Test
+    @TestTransaction
+    void invoicePreview_missingAgreementMetadata_failsSoft() {
+        Invoice draft = invoice("ZZMISSING" + System.nanoTime() % 1_000_000L,
+                new BigDecimal("1000.00"), 0.0, 25.0);
+
+        PricingPreviewResponse response = service.preview(draft);
+
+        assertNull(response.getContractTypeName());
+        assertNull(response.getContractTypeStatus());
+        assertEquals(1, response.getSteps().size(), "system fallback remains visible");
+        assertEquals(0, new BigDecimal("1250.00").compareTo(response.getGrandTotal()));
+    }
+
     // --- Fixture seeding (exact prod values under unique codes) ---
 
     /** SKI0215_2025 prod rows: 4% admin (2025-07-01 → 2026-01-01, prio 20) + disabled general (prio 40). */
@@ -436,6 +471,17 @@ class PricingPreviewServiceTest {
         request.setContractUuid(contractUuid);
         request.setDiscountPct(discountPct);
         return request;
+    }
+
+    private static Invoice invoice(String code, BigDecimal amount, double discountPct, double vatPct) {
+        Invoice draft = new Invoice();
+        draft.setContractType(code);
+        draft.setInvoicedate(LocalDate.of(2025, 11, 15));
+        draft.setDiscount(discountPct);
+        draft.setVat(vatPct);
+        draft.getInvoiceitems().add(new InvoiceItem(null, "Base", "", amount.doubleValue(),
+                1.0, 1, draft.getUuid(), InvoiceItemOrigin.BASE));
+        return draft;
     }
 
     private static String uniqueCode() {

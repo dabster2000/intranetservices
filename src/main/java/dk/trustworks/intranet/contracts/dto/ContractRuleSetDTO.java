@@ -80,6 +80,22 @@ public class ContractRuleSetDTO {
     private String contractUuid;
 
     /**
+     * Whether the referenced contract still exists. Historical work rows can
+     * legitimately reference a deleted contract; those responses carry no rules.
+     */
+    private Boolean contractFound;
+
+    /**
+     * Framework-agreement code stored on the contract.
+     */
+    private String contractTypeCode;
+
+    /**
+     * Human-readable framework-agreement name.
+     */
+    private String agreementName;
+
+    /**
      * Date for which the effective rules are calculated.
      * Temporal rules (rate adjustments, pricing) are filtered by this date.
      */

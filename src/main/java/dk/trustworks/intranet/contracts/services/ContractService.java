@@ -2,8 +2,12 @@ package dk.trustworks.intranet.contracts.services;
 
 import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.contracts.dto.ValidationReport;
+import dk.trustworks.intranet.contracts.dto.ContractTypeItemDTO;
+import dk.trustworks.intranet.contracts.exceptions.ContractValidationException;
+import dk.trustworks.intranet.contracts.exceptions.ContractValidationException.ValidationError;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
+import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
 import dk.trustworks.intranet.dao.crm.model.ClientActivityLog;
 import dk.trustworks.intranet.dao.crm.model.Project;
 import dk.trustworks.intranet.dao.crm.services.ClientActivityLogService;
@@ -18,6 +22,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.*;
 import jakarta.transaction.Transactional;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.PathParam;
 import lombok.extern.jbosslog.JBossLog;
 
@@ -278,17 +284,9 @@ public class ContractService {
             throw new jakarta.ws.rs.BadRequestException("Company is required when creating a contract");
         }
 
-        // Validate contract type against creation date
-        if (contract.getContractType() != null) {
-            LocalDate createdDate = contract.getCreated() != null
-                    ? contract.getCreated().toLocalDate()
-                    : LocalDate.now();
-            if (!contractTypeValidationService.isValidContractType(contract.getContractType(), createdDate)) {
-                String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
-                log.warnf("Invalid contract type for contract uuid=%s: %s, user=%s", contract.getUuid(), errorMessage, userUuid);
-                throw new jakarta.ws.rs.BadRequestException(errorMessage);
-            }
-        }
+        // Validate agreement availability against the contract creation date.
+        LocalDate createdDate = contract.getCreated() != null ? contract.getCreated().toLocalDate() : null;
+        enforceContractTypeValidation(contract.getContractType(), createdDate, contract.getUuid(), userUuid, false);
 
         // Validate the contract if it's being activated
         if (contract.getStatus() == ContractStatus.BUDGET ||
@@ -320,6 +318,12 @@ public class ContractService {
 
         Contract c = Contract.findById(contractuuid);
         Contract contract = new Contract(c);
+        enforceContractTypeValidation(
+                contract.getContractType(),
+                contract.getCreated() != null ? contract.getCreated().toLocalDate() : null,
+                contract.getUuid(),
+                userUuid,
+                false);
         contract.persist();
         for (ContractConsultant cc : getContractConsultants(contractuuid)) {
             ContractConsultant contractConsultant = ContractConsultant.createContractConsultant(cc, contract);
@@ -350,18 +354,16 @@ public class ContractService {
         // Load old state for change logging
         Contract oldContract = Contract.findById(contract.getUuid());
 
-        // Validate contract type against the ORIGINAL contract creation date (grandfathered)
-        if (contract.getContractType() != null) {
-            LocalDate validationDate = oldContract != null && oldContract.getCreated() != null
-                    ? oldContract.getCreated().toLocalDate()
-                    : LocalDate.now();
-
-            if (!contractTypeValidationService.isValidContractType(contract.getContractType(), validationDate)) {
-                String errorMessage = contractTypeValidationService.getValidationErrorMessage(contract.getContractType());
-                log.warnf("Invalid contract type for contract uuid=%s: %s, user=%s", contract.getUuid(), errorMessage, userUuid);
-                throw new jakarta.ws.rs.BadRequestException(errorMessage);
-            }
-        }
+        // Validate against the ORIGINAL creation date (expired agreements are grandfathered).
+        LocalDate validationDate = oldContract != null && oldContract.getCreated() != null
+                ? oldContract.getCreated().toLocalDate()
+                : null;
+        boolean allowUnverifiableExpiredGrandfathering = oldContract != null
+                && oldContract.getCreated() == null
+                && Objects.equals(oldContract.getContractType(), contract.getContractType());
+        enforceContractTypeValidation(
+                contract.getContractType(), validationDate, contract.getUuid(), userUuid,
+                allowUnverifiableExpiredGrandfathering);
 
         // Validate the contract if it's being activated or is already active
         if (contract.getStatus() == ContractStatus.BUDGET ||
@@ -386,8 +388,9 @@ public class ContractService {
                         "billingEmail = ?8, " +
                         "billingRef = ?9, " +
                         "paymentTermsUuid = ?10, " +
-                        "name = ?11 " +
-                        "WHERE uuid like ?12 ",
+                        "name = ?11, " +
+                        "contractType = ?12 " +
+                        "WHERE uuid like ?13 ",
                 contract.getAmount(), contract.getStatus(),
                 contract.getNote(),
                 contract.getCompany(), contract.getSalesconsultant(),
@@ -395,6 +398,7 @@ public class ContractService {
                 contract.getBillingEmail(), contract.getBillingRef(),
                 contract.getPaymentTermsUuid(),
                 contract.getName(),
+                contract.getContractType(),
                 contract.getUuid());
         if(contract.getSalesconsultant()!=null) ContractSalesConsultant.persist(contract.getSalesconsultant());
 
@@ -420,9 +424,31 @@ public class ContractService {
                 activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
                         "name", oldContract.getName(), contract.getName());
             }
+            if (!Objects.equals(oldContract.getContractType(), contract.getContractType())) {
+                activityLogService.logFieldChange(clientUuid, ClientActivityLog.TYPE_CONTRACT, entityUuid, entityName,
+                        "contractType", oldContract.getContractType(), contract.getContractType());
+            }
         }
 
         log.infof("Updated contract uuid=%s, status=%s, user=%s", contract.getUuid(), contract.getStatus(), userUuid);
+    }
+
+    private void enforceContractTypeValidation(String contractTypeCode, LocalDate validationDate,
+                                               String contractUuid, String userUuid,
+                                               boolean allowUnverifiableExpiredGrandfathering) {
+        var result = contractTypeValidationService.validate(contractTypeCode, validationDate);
+        if (result.valid()) {
+            return;
+        }
+        if (allowUnverifiableExpiredGrandfathering && result.status() == LifecycleStatus.EXPIRED) {
+            log.infof("Grandfathering unchanged expired contract type for legacy contract uuid=%s with no created date",
+                    contractUuid);
+            return;
+        }
+        log.warnf("Invalid contract type for contract uuid=%s: %s, user=%s",
+                contractUuid, result.message(), userUuid);
+        throw new ContractValidationException(List.of(
+                new ValidationError("contractType", result.message(), result.errorType())));
     }
 
     @Transactional
@@ -640,32 +666,191 @@ public class ContractService {
     }
 
     @Transactional
-    public void addContractTypeItem(String contractuuid, ContractTypeItem contractTypeItem) {
-        validateContractTypeItemValue(contractTypeItem);
+    public ContractTypeItemDTO addContractTypeItem(String contractuuid, ContractTypeItem contractTypeItem) {
+        Contract contract = requireContract(contractuuid);
+        validateContractTypeItem(contract, contractTypeItem, null);
         contractTypeItem.setContractuuid(contractuuid);
-        contractTypeItem.persist();
+        contractTypeItem.setId(0);
+        try {
+            contractTypeItem.persistAndFlush();
+        } catch (PersistenceException exception) {
+            if (isContractTypeItemDuplicate(exception)) {
+                throw duplicateContractTypeItem(contractTypeItem.getKey(), exception);
+            }
+            throw exception;
+        }
+        logAgreementParameterChange(contract, contractTypeItem.getKey(), null, contractTypeItem.getValue());
+        return ContractTypeItemDTO.fromEntity(contractTypeItem);
     }
 
     @Transactional
-    public void updateContractTypeItem(ContractTypeItem contractTypeItem) {
-        validateContractTypeItemValue(contractTypeItem);
-        ContractTypeItem.update("key = ?1, value = ?2 where id = ?3", contractTypeItem.getKey(), contractTypeItem.getValue(), contractTypeItem.getId());
+    public ContractTypeItemDTO updateContractTypeItem(String contractuuid, ContractTypeItem contractTypeItem) {
+        Contract contract = requireContract(contractuuid);
+        ContractTypeItem existing = ContractTypeItem.findById(contractTypeItem.getId());
+        if (existing == null) {
+            throw new NotFoundException("Contract parameter " + contractTypeItem.getId() + " not found");
+        }
+        if (!contractuuid.equals(existing.getContractuuid())) {
+            throw new BadRequestException("Contract parameter does not belong to contract '" + contractuuid + "'");
+        }
+        String oldKey = existing.getKey();
+        String oldValue = existing.getValue();
+        validateContractTypeItem(contract, contractTypeItem, existing.getId());
+        existing.setKey(contractTypeItem.getKey());
+        existing.setValue(contractTypeItem.getValue());
+        try {
+            existing.persistAndFlush();
+        } catch (PersistenceException exception) {
+            if (isContractTypeItemDuplicate(exception)) {
+                throw duplicateContractTypeItem(existing.getKey(), exception);
+            }
+            throw exception;
+        }
+        logAgreementParameterChange(
+                contract,
+                existing.getKey(),
+                oldKey + "=" + oldValue,
+                existing.getKey() + "=" + existing.getValue());
+        return ContractTypeItemDTO.fromEntity(existing);
     }
 
-    private void validateContractTypeItemValue(ContractTypeItem item) {
-        // Normalize empty strings to null
-        if (item.getValue() != null && item.getValue().isBlank()) {
-            item.setValue(null);
+    public List<ContractTypeItemDTO> getContractTypeItems(String contractuuid) {
+        requireContract(contractuuid);
+        return ContractTypeItem.<ContractTypeItem>find(
+                        "contractuuid = ?1 ORDER BY key, id", contractuuid)
+                .list().stream()
+                .map(ContractTypeItemDTO::fromEntity)
+                .toList();
+    }
+
+    @Transactional
+    public void deleteContractTypeItem(String contractuuid, int itemId) {
+        Contract contract = requireContract(contractuuid);
+        requireParameterAuditClient(contract);
+        ContractTypeItem existing = ContractTypeItem.findById(itemId);
+        if (existing == null) {
+            throw new NotFoundException("Contract parameter " + itemId + " not found");
         }
-        // Validate that value is numeric (used in CAST operations by BI stored procedures and views)
-        if (item.getValue() != null) {
-            try {
-                Double.parseDouble(item.getValue());
-            } catch (NumberFormatException e) {
-                throw new jakarta.ws.rs.BadRequestException(
-                        "ContractTypeItem value must be a valid number, got: '" + item.getValue() + "'");
+        if (!contractuuid.equals(existing.getContractuuid())) {
+            throw new BadRequestException("Contract parameter does not belong to contract '" + contractuuid + "'");
+        }
+        String key = existing.getKey();
+        String value = existing.getValue();
+        existing.delete();
+        logAgreementParameterChange(contract, key, value, null);
+    }
+
+    private Contract requireContract(String contractuuid) {
+        if (contractuuid == null || contractuuid.isBlank()) {
+            throw new BadRequestException("Contract UUID is required");
+        }
+        Contract contract = Contract.findById(contractuuid);
+        if (contract == null) {
+            throw new NotFoundException("Contract with uuid '" + contractuuid + "' not found");
+        }
+        return contract;
+    }
+
+    private void validateContractTypeItem(Contract contract, ContractTypeItem item, Integer existingId) {
+        requireParameterAuditClient(contract);
+        if (item == null) {
+            throw new BadRequestException("Contract parameter is required");
+        }
+        if (item.getContractuuid() != null && !item.getContractuuid().isBlank()
+                && !contract.getUuid().equals(item.getContractuuid())) {
+            throw new BadRequestException("Contract parameter does not belong to contract '" + contract.getUuid() + "'");
+        }
+
+        String key = item.getKey() != null ? item.getKey().trim() : "";
+        if (key.isEmpty()) {
+            throw new BadRequestException("Contract parameter key is required");
+        }
+        if (key.length() > 255) {
+            throw new BadRequestException("Contract parameter key must not exceed 255 characters");
+        }
+        item.setKey(key);
+
+        PricingRuleStepEntity referencedRule = PricingRuleStepEntity.<PricingRuleStepEntity>find(
+                        "contractTypeCode = ?1 AND paramKey = ?2 AND ruleStepType = ?3 ORDER BY id",
+                        contract.getContractType(), key,
+                        dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType.PERCENT_DISCOUNT_ON_SUM)
+                .firstResult();
+        if (referencedRule == null) {
+            throw new BadRequestException("Parameter key '" + key
+                    + "' is not referenced by a pricing rule for agreement '"
+                    + contract.getContractType() + "'");
+        }
+        // MariaDB's default collation is case-insensitive while the engine's Java Map lookup is not.
+        // Persist the exact rule spelling so a value accepted here can never become a silent no-op.
+        key = referencedRule.getParamKey();
+        item.setKey(key);
+
+        String value = item.getValue() != null ? item.getValue().trim() : "";
+        if (value.isEmpty()) {
+            throw new BadRequestException("Contract parameter value is required");
+        }
+        if (value.length() > 255) {
+            throw new BadRequestException("Contract parameter value must not exceed 255 characters");
+        }
+        java.math.BigDecimal numericValue;
+        try {
+            numericValue = new java.math.BigDecimal(value);
+        } catch (NumberFormatException exception) {
+            throw new BadRequestException(
+                    "Contract parameter value must be a finite decimal number, got: '" + value + "'");
+        }
+        if (numericValue.compareTo(java.math.BigDecimal.ZERO) < 0
+                || numericValue.compareTo(java.math.BigDecimal.valueOf(100)) > 0) {
+            throw new BadRequestException("Contract parameter percentage must be between 0 and 100");
+        }
+        item.setValue(value);
+
+        long duplicates = existingId == null
+                ? ContractTypeItem.count("contractuuid = ?1 AND key = ?2", contract.getUuid(), key)
+                : ContractTypeItem.count("contractuuid = ?1 AND key = ?2 AND id <> ?3",
+                        contract.getUuid(), key, existingId);
+        if (duplicates > 0) {
+            throw duplicateContractTypeItem(key, null);
+        }
+    }
+
+    private void logAgreementParameterChange(
+            Contract contract, String key, String oldValue, String newValue) {
+        activityLogService.logFieldChange(
+                contract.getClientuuid(),
+                ClientActivityLog.TYPE_CONTRACT,
+                contract.getUuid(),
+                contract.getName(),
+                "agreementParameter:" + key,
+                oldValue,
+                newValue);
+    }
+
+    private static void requireParameterAuditClient(Contract contract) {
+        if (contract.getClientuuid() == null || contract.getClientuuid().isBlank()) {
+            throw new BadRequestException(
+                    "Contract must have a client before agreement parameters can be changed");
+        }
+    }
+
+    private static BadRequestException duplicateContractTypeItem(String key, Throwable cause) {
+        BadRequestException exception = new BadRequestException(
+                "Contract parameter key '" + key + "' already exists on this contract");
+        if (cause != null) {
+            exception.initCause(cause);
+        }
+        return exception;
+    }
+
+    private static boolean isContractTypeItemDuplicate(Throwable throwable) {
+        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (message != null && (message.contains("uq_contract_type_items_contract_key")
+                    || message.contains("Duplicate entry"))) {
+                return true;
             }
         }
+        return false;
     }
 
     /**

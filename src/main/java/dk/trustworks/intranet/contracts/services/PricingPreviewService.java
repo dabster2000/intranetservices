@@ -3,12 +3,14 @@ package dk.trustworks.intranet.contracts.services;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
+import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.contracts.dto.PricingPreviewRequest;
 import dk.trustworks.intranet.contracts.dto.PricingPreviewResponse;
 import dk.trustworks.intranet.contracts.dto.PricingPreviewStepDTO;
 import dk.trustworks.intranet.contracts.model.ContractTypeDefinition;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
+import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
@@ -21,6 +23,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Explain-mode pricing simulation for the framework-agreement simulator (spec §9.1).
@@ -61,9 +64,38 @@ public class PricingPreviewService {
     static final int SYSTEM_FALLBACK_PRIORITY = 9000;
 
     public PricingPreviewResponse preview(String contractTypeCode, PricingPreviewRequest request) {
-        if (ContractTypeDefinition.findByCode(contractTypeCode) == null) {
+        ContractTypeDefinition definition = findDefinition(contractTypeCode);
+        if (definition == null) {
             throw new NotFoundException("Contract type with code '" + contractTypeCode + "' not found");
         }
+
+        return preview(contractTypeCode, request, DEFAULT_VAT_PCT, definition);
+    }
+
+    /**
+     * Explain the pricing of an actual invoice draft. Unlike the public simulator,
+     * this overload uses the invoice's exact VAT rate (including a legitimate 0%)
+     * and tolerates missing agreement metadata on historical invoice records.
+     */
+    public PricingPreviewResponse preview(Invoice draft) {
+        Objects.requireNonNull(draft, "invoice draft");
+
+        PricingPreviewRequest request = new PricingPreviewRequest();
+        BigDecimal amount = draft.getInvoiceitems().stream()
+                .filter(item -> !item.isEffectivelyCalculated())
+                .map(item -> BigDecimal.valueOf(item.getRate()).multiply(BigDecimal.valueOf(item.getHours())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        request.setAmount(amount);
+        request.setInvoiceDate(draft.getInvoicedate());
+        request.setContractUuid(draft.getContractuuid());
+        request.setDiscountPct(draft.getDiscount());
+
+        ContractTypeDefinition definition = findDefinition(draft.getContractType());
+        return preview(draft.getContractType(), request, BigDecimal.valueOf(draft.getVat()), definition);
+    }
+
+    private PricingPreviewResponse preview(String contractTypeCode, PricingPreviewRequest request,
+                                           BigDecimal vatPct, ContractTypeDefinition definition) {
 
         LocalDate invoiceDate = request.getInvoiceDate() != null ? request.getInvoiceDate() : LocalDate.now();
         double discountPct = request.getDiscountPct() != null ? request.getDiscountPct() : 0.0;
@@ -110,6 +142,9 @@ public class PricingPreviewService {
             dto.setRateOrAmount(rate.value);
             dto.setResolvedFrom(rate.resolvedFrom);
 
+            BigDecimal base = (step.base == StepBase.SUM_BEFORE_DISCOUNTS) ? sumBefore : current;
+            dto.setBaseAmount(base.setScale(SCALE, RM));
+
             String windowSkip = skipReasonFor(step, invoiceDate);
             if (windowSkip != null) {
                 dto.setExecuted(false);
@@ -121,7 +156,6 @@ public class PricingPreviewService {
                 continue;
             }
 
-            BigDecimal base = (step.base == StepBase.SUM_BEFORE_DISCOUNTS) ? sumBefore : current;
             BigDecimal delta = computeDelta(step, base, rate, current);
 
             if (delta.compareTo(BigDecimal.ZERO) != 0) {
@@ -142,21 +176,34 @@ public class PricingPreviewService {
         // Clamp + VAT — identical to the engine (VAT applied after the clamp).
         BigDecimal sumAfter = current.max(BigDecimal.ZERO);
         boolean clampedAtZero = current.compareTo(BigDecimal.ZERO) < 0;
-        BigDecimal vatAmount = sumAfter.multiply(DEFAULT_VAT_PCT)
+        BigDecimal effectiveVatPct = vatPct != null ? vatPct : BigDecimal.ZERO;
+        BigDecimal vatAmount = sumAfter.multiply(effectiveVatPct)
                 .divide(HUNDRED, SCALE + 2, RM).setScale(SCALE, RM);
         BigDecimal grandTotal = sumAfter.add(vatAmount).setScale(SCALE, RM);
 
         PricingPreviewResponse response = new PricingPreviewResponse();
         response.setContractTypeCode(contractTypeCode);
+        if (definition != null) {
+            response.setContractTypeName(definition.getName());
+            response.setContractTypeStatus(LifecycleStatus.forAgreement(
+                    definition.isActive(), definition.getValidFrom(), definition.getValidUntil()));
+        }
         response.setInvoiceDate(invoiceDate);
         response.setSumBeforeRules(sumBefore.setScale(SCALE, RM));
         response.setSteps(steps);
         response.setTotalBeforeVat(sumAfter.setScale(SCALE, RM));
         response.setClampedAtZero(clampedAtZero);
-        response.setVatPct(DEFAULT_VAT_PCT);
+        response.setVatPct(effectiveVatPct);
         response.setVatAmount(vatAmount);
         response.setGrandTotal(grandTotal);
         return response;
+    }
+
+    private static ContractTypeDefinition findDefinition(String contractTypeCode) {
+        if (contractTypeCode == null || contractTypeCode.isBlank()) {
+            return null;
+        }
+        return ContractTypeDefinition.findByCode(contractTypeCode);
     }
 
     /**

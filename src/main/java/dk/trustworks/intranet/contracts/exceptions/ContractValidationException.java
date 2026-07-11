@@ -90,7 +90,12 @@ public class ContractValidationException extends RuntimeException {
         RATE_CONFLICT("Rate conflict detected"),
         CONTRACT_INACTIVE("Contract is inactive"),
         WORK_EXISTS("Work exists in affected period"),
-        DUPLICATE_PROJECT("Project already linked to contract");
+        DUPLICATE_PROJECT("Project already linked to contract"),
+        CONTRACT_TYPE_REQUIRED("Contract type is required"),
+        CONTRACT_TYPE_NOT_FOUND("Agreement was not found"),
+        CONTRACT_TYPE_ARCHIVED("Agreement is archived"),
+        CONTRACT_TYPE_NOT_YET_VALID("Agreement is not yet valid"),
+        CONTRACT_TYPE_EXPIRED("Agreement is expired");
 
         private final String description;
 

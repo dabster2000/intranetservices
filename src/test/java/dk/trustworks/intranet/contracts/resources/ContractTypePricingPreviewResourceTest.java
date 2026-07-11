@@ -9,6 +9,7 @@ import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import dk.trustworks.intranet.contracts.dto.PricingPreviewRequest;
 import dk.trustworks.intranet.contracts.dto.PricingPreviewResponse;
 import dk.trustworks.intranet.contracts.dto.PricingPreviewStepDTO;
+import dk.trustworks.intranet.contracts.model.enums.LifecycleStatus;
 import dk.trustworks.intranet.contracts.services.PricingPreviewService;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.core.Response;
@@ -59,7 +60,7 @@ class ContractTypePricingPreviewResourceTest {
 
     /**
      * Pins the wire contract (P1 / spec §9.1): serializing the response must produce
-     * EXACTLY the pinned field names — 9 top-level fields and 13 per step — with
+     * EXACTLY the pinned field names — 11 top-level fields and 14 per step — with
      * enum values as their names and null fields present (skipReason/skipDetail are
      * "null when executed", not omitted). Mirrors the production mapper config
      * ({@code JavaTimeObjectMapperCustomizer}: JavaTimeModule + ISO dates).
@@ -77,6 +78,7 @@ class ContractTypePricingPreviewResourceTest {
         step.setPurpose("ADMIN_FEE");
         step.setSource(PricingPreviewStepDTO.SOURCE_DB);
         step.setBase(StepBase.SUM_BEFORE_DISCOUNTS);
+        step.setBaseAmount(new BigDecimal("100000.00"));
         step.setRateOrAmount(new BigDecimal("4.00"));
         step.setResolvedFrom(PricingPreviewStepDTO.RESOLVED_FROM_RULE_PERCENT);
         step.setExecuted(true);
@@ -87,6 +89,8 @@ class ContractTypePricingPreviewResourceTest {
 
         PricingPreviewResponse breakdown = new PricingPreviewResponse();
         breakdown.setContractTypeCode(CODE);
+        breakdown.setContractTypeName("SKI 02.15 2025");
+        breakdown.setContractTypeStatus(LifecycleStatus.EXPIRED);
         breakdown.setInvoiceDate(LocalDate.of(2025, 11, 15));
         breakdown.setSumBeforeRules(new BigDecimal("100000.00"));
         breakdown.setSteps(List.of(step));
@@ -100,8 +104,9 @@ class ContractTypePricingPreviewResourceTest {
 
         List<String> topLevel = new ArrayList<>();
         root.fieldNames().forEachRemaining(topLevel::add);
-        assertEquals(9, topLevel.size(), "response must serialize exactly 9 top-level fields, got: " + topLevel);
-        for (String field : List.of("contractTypeCode", "invoiceDate", "sumBeforeRules", "steps",
+        assertEquals(11, topLevel.size(), "response must serialize exactly 11 top-level fields, got: " + topLevel);
+        for (String field : List.of("contractTypeCode", "contractTypeName", "contractTypeStatus",
+                "invoiceDate", "sumBeforeRules", "steps",
                 "totalBeforeVat", "clampedAtZero", "vatPct", "vatAmount", "grandTotal")) {
             assertTrue(root.has(field), "missing top-level field: " + field);
         }
@@ -111,14 +116,15 @@ class ContractTypePricingPreviewResourceTest {
         JsonNode stepNode = root.get("steps").get(0);
         List<String> stepFields = new ArrayList<>();
         stepNode.fieldNames().forEachRemaining(stepFields::add);
-        assertEquals(13, stepFields.size(), "step must serialize exactly 13 fields, got: " + stepFields);
+        assertEquals(14, stepFields.size(), "step must serialize exactly 14 fields, got: " + stepFields);
         for (String field : List.of("ruleId", "label", "type", "purpose", "source", "base",
-                "rateOrAmount", "resolvedFrom", "executed", "skipReason", "skipDetail",
+                "baseAmount", "rateOrAmount", "resolvedFrom", "executed", "skipReason", "skipDetail",
                 "delta", "cumulative")) {
             assertTrue(stepNode.has(field), "missing step field: " + field);
         }
         assertEquals("PERCENT_DISCOUNT_ON_SUM", stepNode.get("type").asText(), "type must serialize as enum name");
         assertEquals("SUM_BEFORE_DISCOUNTS", stepNode.get("base").asText(), "base must serialize as enum name");
+        assertEquals("EXPIRED", root.get("contractTypeStatus").asText());
         assertTrue(stepNode.get("skipReason").isNull(), "skipReason must be present-but-null when executed");
         assertTrue(stepNode.get("skipDetail").isNull(), "skipDetail must be present-but-null when executed");
     }

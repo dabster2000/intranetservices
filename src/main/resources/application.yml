@@ -233,6 +233,9 @@ quarkus:
       contract-effective-rules:
         expire-after-write: ${feature.contract.overrides.cache.ttl-seconds:3600}s  # Contract rule override cache
         maximum-size: ${feature.contract.overrides.cache.max-size:1000}  # Maximum cached rule sets
+      timesheet-validation-policies:
+        expire-after-write: ${TIMESHEET_VALIDATION_POLICY_CACHE_TTL:15M}
+        maximum-size: ${TIMESHEET_VALIDATION_POLICY_CACHE_MAX_SIZE:5000}
       client-health:
         expire-after-write: 1H  # Client health cache (1 hour TTL)
         maximum-size: 1000  # Maximum number of client health entries
@@ -289,6 +292,11 @@ feature:
   # credit notes and finance sign-off.
   invoice:
     cn-preserve-lines: false
+  # Server-side enforcement for NOTES_REQUIRED and MIN_HOURS_PER_ENTRY.
+  # OFF does no contract/rule lookup. Roll out through LOG_ONLY before ENFORCE.
+  timesheet:
+    rule-enforcement:
+      mode: ${FEATURE_TIMESHEET_RULE_ENFORCEMENT_MODE:OFF}
   # Contract Rule Override System feature flags
   contract:
     overrides:

@@ -42,9 +42,11 @@ import java.util.List;
  * <p><b>Base Path:</b> /api/contracts/{contractUuid}/rules
  *
  * <p><b>Feature Flags:</b>
- * - All endpoints check feature flags before execution
- * - Returns 404 if feature is disabled for the contract
- * - Returns 403 if API is in read-only mode (for mutations)
+ * - Override-management endpoints check feature flags before execution
+ * - Override-management endpoints return 404 if the feature is disabled for the contract
+ * - Mutations return 403 if the API is in read-only mode
+ * - {@code /timesheet-effective} is deliberately exempt so base agreement rules
+ *   remain visible when the contract-override rollout is disabled
  *
  * <p><b>Authentication:</b>
  * - TODO: Add authentication/authorization annotations
@@ -105,6 +107,39 @@ public class ContractRuleOverrideResource {
         LocalDate effectiveDate = date != null ? date : LocalDate.now();
         ContractRuleSetDTO ruleSet = resolutionService.getEffectiveRuleSet(contractUuid, effectiveDate);
 
+        return Response.ok(ruleSet).build();
+    }
+
+    /**
+     * Validation-only effective rules for timesheet visibility and pre-save checks.
+     * This endpoint intentionally bypasses the override API rollout gate: base
+     * agreement rules must remain visible even when contract overrides are off.
+     * Historical references to deleted contracts return {@code contractFound=false}
+     * with an empty rule list and HTTP 200.
+     */
+    @GET
+    @Path("/timesheet-effective")
+    @RolesAllowed({"contracts:read"})
+    @Operation(
+        summary = "Get effective timesheet rules",
+        description = "Returns effective validation rules without gating base rules on the override rollout; deleted historical contracts return contractFound=false"
+    )
+    @APIResponses(value = {
+        @APIResponse(responseCode = "200", description = "Effective timesheet rules retrieved",
+            content = @Content(schema = @Schema(implementation = ContractRuleSetDTO.class)))
+    })
+    public Response getTimesheetEffectiveRules(
+        @PathParam("contractUuid")
+        @Parameter(description = "Contract UUID", required = true)
+        String contractUuid,
+
+        @QueryParam("date")
+        @Parameter(description = "Effective date (default: today)", example = "2026-07-11")
+        LocalDate date
+    ) {
+        LocalDate effectiveDate = date != null ? date : LocalDate.now();
+        ContractRuleSetDTO ruleSet = resolutionService
+            .getTimesheetEffectiveRuleSet(contractUuid, effectiveDate);
         return Response.ok(ruleSet).build();
     }
 

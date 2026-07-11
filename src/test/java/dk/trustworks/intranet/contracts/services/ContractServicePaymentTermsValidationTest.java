@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMapping;
 import dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsMappingRepository;
 import dk.trustworks.intranet.aggregates.invoice.economics.PaymentTermsType;
 import dk.trustworks.intranet.contracts.model.Contract;
+import dk.trustworks.intranet.contracts.model.ContractTypeDefinition;
 import dk.trustworks.intranet.contracts.model.enums.ContractStatus;
 import dk.trustworks.intranet.model.Company;
 import io.quarkus.test.TestTransaction;
@@ -95,10 +96,21 @@ class ContractServicePaymentTermsValidationTest {
     }
 
     private Contract newDraftContract(Company c) {
+        String code = "ZZPAYTERM" + Math.abs(System.nanoTime() % 1_000_000_000L);
+        ContractTypeDefinition definition = new ContractTypeDefinition();
+        definition.setCode(code);
+        definition.setName("Payment terms test agreement");
+        definition.persist();
+
         Contract contract = new Contract();
         contract.setUuid(UUID.randomUUID().toString());
         contract.setCompany(c);
-        contract.setContractType("PERIOD");
+        String clientUuid = UUID.randomUUID().toString();
+        em.createNativeQuery("INSERT INTO client(uuid, name) VALUES (?1, 'Payment Terms Test Client')")
+                .setParameter(1, clientUuid)
+                .executeUpdate();
+        contract.setClientuuid(clientUuid);
+        contract.setContractType(code);
         contract.setStatus(ContractStatus.INACTIVE);
         contract.setName("test-" + UUID.randomUUID());
         return contract;

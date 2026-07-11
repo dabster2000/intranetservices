@@ -97,7 +97,20 @@ class ContractResourceBillingTest {
 
         assertTrue(updateBody.contains("name = ?"),
                 "ContractService.update must SET the name column (e.g. \"name = ?11\") — " +
-                "without it PUT /contracts silently drops contract renames.");
+                    "without it PUT /contracts silently drops contract renames.");
+    }
+
+    @Test
+    void contract_service_update_method_persists_the_contract_type_column() throws Exception {
+        String serviceSource = java.nio.file.Files.readString(
+                java.nio.file.Path.of(System.getProperty("user.dir"),
+                        "src/main/java/dk/trustworks/intranet/contracts/services/ContractService.java"));
+        int methodIdx = serviceSource.indexOf("public void update(Contract contract)");
+        int methodEnd = indexOfMethodEnd(serviceSource, methodIdx);
+        String updateBody = serviceSource.substring(methodIdx, methodEnd);
+
+        assertTrue(updateBody.contains("contractType = ?"),
+                "ContractService.update must persist agreement changes from contract edit");
     }
 
     private static int indexOfMethodEnd(String source, int methodStart) {

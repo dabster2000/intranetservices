@@ -100,6 +100,71 @@ class WorkServiceTest {
         assertNotNull(incoming.getUuid(), "a new row must be assigned a uuid before insert");
     }
 
+    @Test
+    void existingUpdateKeepsResolvedActualContractAndRoutingFields() {
+        Work existing = newWork("existing-uuid", 2.0);
+        existing.setContractuuid("old-contract");
+        existing.setProjectuuid("old-project");
+        existing.setClientuuid("old-client");
+        Work incoming = newWork("client-uuid", 3.0);
+        incoming.setContractuuid("actual-contract");
+        incoming.setProjectuuid("actual-project");
+        incoming.setClientuuid("actual-client");
+
+        WorkService service = spy(new WorkService());
+        doReturn(List.of(existing)).when(service).findExistingWork(any(LocalDate.class), anyString(), anyString());
+        doNothing().when(service).updateExistingWork(any(Work.class));
+
+        service.persistOrUpdateInTx(incoming);
+
+        assertEquals("actual-contract", incoming.getContractuuid());
+        assertEquals("actual-project", incoming.getProjectuuid());
+        assertEquals("actual-client", incoming.getClientuuid());
+        verify(service).updateExistingWork(incoming);
+    }
+
+    @Test
+    void olderClientOmittingRoutingDoesNotErasePersistedContractOnUpdate() {
+        Work existing = newWork("existing-uuid", 2.0);
+        existing.setContractuuid("stored-contract");
+        existing.setProjectuuid("stored-project");
+        existing.setClientuuid("stored-client");
+        Work incoming = newWork("client-uuid", 3.0);
+
+        WorkService service = spy(new WorkService());
+        doReturn(List.of(existing)).when(service).findExistingWork(any(LocalDate.class), anyString(), anyString());
+        doNothing().when(service).updateExistingWork(any(Work.class));
+
+        service.persistOrUpdateInTx(incoming);
+
+        assertEquals("stored-contract", incoming.getContractuuid());
+        assertEquals("stored-project", incoming.getProjectuuid());
+        assertEquals("stored-client", incoming.getClientuuid());
+    }
+
+    @Test
+    void untrustedRoutingCannotOverwriteExistingTuple() {
+        Work existing = newWork("existing-uuid", 2.0);
+        existing.setContractuuid("stored-contract");
+        existing.setProjectuuid("stored-project");
+        existing.setClientuuid("stored-client");
+        Work incoming = newWork("client-uuid", 3.0);
+        incoming.setContractuuid("attacker-contract");
+        incoming.setProjectuuid("attacker-project");
+        incoming.setClientuuid("attacker-client");
+
+        WorkService service = spy(new WorkService());
+        doReturn(List.of(existing)).when(service).findExistingWork(any(LocalDate.class), anyString(), anyString());
+        doNothing().when(service).updateExistingWork(any(Work.class));
+
+        service.persistOrUpdateInTx(incoming, false);
+
+        assertEquals("stored-contract", incoming.getContractuuid());
+        assertEquals("stored-project", incoming.getProjectuuid());
+        assertEquals("stored-client", incoming.getClientuuid());
+        verify(service).updateExistingWork(incoming);
+    }
+
     private static Work newWork(String uuid, double workduration) {
         Work work = new Work();
         work.setUuid(uuid);

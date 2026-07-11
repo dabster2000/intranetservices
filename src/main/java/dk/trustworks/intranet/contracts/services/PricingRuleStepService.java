@@ -84,7 +84,7 @@ public class PricingRuleStepService {
         entity.setPurpose(request.getPurpose());
         entity.setPercent(request.getPercent());
         entity.setAmount(request.getAmount());
-        entity.setParamKey(request.getParamKey());
+        entity.setParamKey(normalizeParamKey(request.getParamKey()));
         entity.setValidFrom(request.getValidFrom());
         entity.setValidTo(request.getValidTo());
         entity.setPriority(priority);
@@ -158,7 +158,7 @@ public class PricingRuleStepService {
         entity.setPurpose(request.getPurpose());
         entity.setPercent(request.getPercent());
         entity.setAmount(request.getAmount());
-        entity.setParamKey(request.getParamKey());
+        entity.setParamKey(normalizeParamKey(request.getParamKey()));
         entity.setValidFrom(request.getValidFrom());
         entity.setValidTo(request.getValidTo());
         entity.setPriority(priority);
@@ -203,7 +203,7 @@ public class PricingRuleStepService {
         entity.setPurpose(request.getPurpose());
         entity.setPercent(request.getPercent());
         entity.setAmount(request.getAmount());
-        entity.setParamKey(request.getParamKey());
+        entity.setParamKey(normalizeParamKey(request.getParamKey()));
         entity.setValidFrom(request.getValidFrom());
         entity.setValidTo(request.getValidTo());
         entity.setPriority(request.getPriority());
@@ -360,6 +360,16 @@ public class PricingRuleStepService {
                     "'purpose' can only be set on PERCENT_DISCOUNT_ON_SUM rules");
         }
 
+        if (paramKey != null && !paramKey.isBlank()) {
+            if (ruleStepType != RuleStepType.PERCENT_DISCOUNT_ON_SUM) {
+                throw new BadRequestException(
+                        "'paramKey' can only be set on PERCENT_DISCOUNT_ON_SUM rules");
+            }
+            if (paramKey.trim().length() > 64) {
+                throw new BadRequestException("'paramKey' must not exceed 64 characters");
+            }
+        }
+
         switch (ruleStepType) {
             case PERCENT_DISCOUNT_ON_SUM:
                 // At least one of percent/paramKey; both together are allowed — the engine
@@ -385,5 +395,9 @@ public class PricingRuleStepService {
             default:
                 log.warn("Unknown rule step type: " + ruleStepType);
         }
+    }
+
+    private static String normalizeParamKey(String paramKey) {
+        return paramKey == null || paramKey.isBlank() ? null : paramKey.trim();
     }
 }

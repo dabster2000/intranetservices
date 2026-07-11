@@ -51,6 +51,9 @@ public class PricingPreviewStepDTO {
 
     private StepBase base;
 
+    /** Numeric amount selected by {@link #base} when this step was evaluated. */
+    private BigDecimal baseAmount;
+
     /** Resolved percent for percent-type steps, configured amount for fixed deductions; null if nothing configured. */
     private BigDecimal rateOrAmount;
 

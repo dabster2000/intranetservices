@@ -103,12 +103,26 @@ class PricingRuleStepPurposeValidationTest {
         assertEquals(new BigDecimal("5.00"),
                 service.createRule(code, percentRule("percent-only", new BigDecimal("5.00"), null, null)).getPercent());
         assertEquals("trapperabat",
-                service.createRule(code, percentRule("paramkey-only", null, "trapperabat", null)).getParamKey());
+                service.createRule(code, percentRule("paramkey-only", null, " trapperabat ", null)).getParamKey());
 
         // Both together are allowed — percent is the engine fallback when the contract lacks the paramKey
         PricingRuleStepDTO both = service.createRule(code, percentRule("both-set", new BigDecimal("8.00"), "trapperabat", null));
         assertEquals(new BigDecimal("8.00"), both.getPercent());
         assertEquals("trapperabat", both.getParamKey());
+    }
+
+    @Test
+    @TestTransaction
+    void create_paramKeyHonorsDatabaseLengthBoundary() {
+        String code = persistContractType();
+        String maximum = "k".repeat(64);
+
+        assertEquals(maximum,
+                service.createRule(code, percentRule("paramkey-64", null, maximum, null)).getParamKey());
+        BadRequestException exception = assertThrows(BadRequestException.class,
+                () -> service.createRule(code,
+                        percentRule("paramkey-65", null, "k".repeat(65), null)));
+        assertTrue(exception.getMessage().contains("64 characters"));
     }
 
     // --- purpose is PERCENT_DISCOUNT_ON_SUM-only ---
@@ -140,6 +154,21 @@ class PricingRuleStepPurposeValidationTest {
         PricingRuleStepDTO dto = service.createRule(code, general);
         assertEquals(RuleStepType.GENERAL_DISCOUNT_PERCENT, dto.getRuleStepType());
         assertNull(dto.getPurpose(), "placement rows carry no purpose");
+    }
+
+    @Test
+    @TestTransaction
+    void create_paramKeyOnNonPercentageRule_isRejected() {
+        String code = persistContractType();
+
+        CreateRuleStepRequest fixed = percentRule("fixed-param", null, "unused", null);
+        fixed.setRuleStepType(RuleStepType.FIXED_DEDUCTION);
+        fixed.setAmount(new BigDecimal("100"));
+        assertThrows(BadRequestException.class, () -> service.createRule(code, fixed));
+
+        CreateRuleStepRequest general = percentRule("general-param", null, "unused", null);
+        general.setRuleStepType(RuleStepType.GENERAL_DISCOUNT_PERCENT);
+        assertThrows(BadRequestException.class, () -> service.createRule(code, general));
     }
 
     // --- purpose round-trip create → read → update ---

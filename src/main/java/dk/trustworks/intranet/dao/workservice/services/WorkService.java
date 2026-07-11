@@ -4,6 +4,7 @@ package dk.trustworks.intranet.dao.workservice.services;
 import dk.trustworks.intranet.dao.crm.services.ProjectService;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.model.WorkFull;
+import dk.trustworks.intranet.dao.workservice.validation.TimesheetWorkValidationService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import dk.trustworks.intranet.dto.work.ConsultantWorkRevenue;
 import dk.trustworks.intranet.utils.DateUtils;
@@ -54,6 +55,9 @@ public class WorkService {
      */
     @Inject
     WorkService self;
+
+    @Inject
+    TimesheetWorkValidationService timesheetWorkValidationService;
 
     public List<WorkFull> listAll(int page) {
         return WorkFull.findAll().page(Page.of(page, 1000)).list();
@@ -546,22 +550,31 @@ public class WorkService {
      * {@code DatabaseConstraintViolationExceptionMapper}, never a 500.
      */
     public void persistOrUpdate(Work work) {
+        // Validate exactly once, before entering the retryable transactional unit. Both /work and
+        // /public/service/work call this method, so neither path can bypass enforcement. A duplicate-key
+        // retry re-enters persistOrUpdateInTx directly and therefore does not evaluate/log twice.
+        boolean routingTrusted = timesheetWorkValidationService.validate(work);
         try {
-            self.persistOrUpdateInTx(work);
+            self.persistOrUpdateInTx(work, routingTrusted);
         } catch (PersistenceException e) {
             if (!isDuplicateWorkKeyViolation(e)) {
                 throw e;
             }
             log.warnf("Concurrent duplicate work insert (registered=%s, userUuid=%s, taskUuid=%s) — reconciling idempotently in a fresh transaction",
                     work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
-            self.persistOrUpdateInTx(work);
+            self.persistOrUpdateInTx(work, routingTrusted);
         }
+    }
+
+    /** Package-private compatibility seam for the existing plain unit tests. */
+    void persistOrUpdateInTx(Work work) {
+        persistOrUpdateInTx(work, true);
     }
 
     @Transactional
     @CacheInvalidateAll(cacheName = "work-cache")
     @CacheInvalidateAll(cacheName = "employee-availability")
-    public void persistOrUpdateInTx(Work work) {
+    public void persistOrUpdateInTx(Work work, boolean routingTrusted) {
         log.debugf("persistOrUpdate called: userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
                 work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
         List<Work> workList = findExistingWork(work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
@@ -573,6 +586,7 @@ public class WorkService {
                 return;
             }
             work.setUuid(existing.getUuid());
+            reconcileRoutingFields(work, existing, routingTrusted);
             updateExistingWork(work);
             log.infof("Work updated: workUuid=%s, userUuid=%s, taskUuid=%s, registered=%s, duration=%.2f, rate=%.2f",
                     work.getUuid(), work.getUseruuid(), work.getTaskuuid(), work.getRegistered(), work.getWorkduration(), work.getRate());
@@ -602,8 +616,30 @@ public class WorkService {
      * {@link #persistOrUpdateInTx(Work)} can be unit-tested without a live database.
      */
     void updateExistingWork(Work work) {
-        Work.update("workduration = ?1, comments = ?2, paidOut = ?3 WHERE registered = ?4 AND useruuid LIKE ?5 AND taskuuid LIKE ?6",
-                work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+        Work.update("workduration = ?1, comments = ?2, paidOut = ?3, contractuuid = ?4, projectuuid = ?5, clientuuid = ?6 " +
+                        "WHERE registered = ?7 AND useruuid LIKE ?8 AND taskuuid LIKE ?9",
+                work.getWorkduration(), work.getComments(), work.getPaidOut(), work.getContractuuid(),
+                work.getProjectuuid(), work.getClientuuid(), work.getRegistered(), work.getUseruuid(), work.getTaskuuid());
+    }
+
+    /**
+     * Preserve persisted routing unless Phase 4 positively resolved the incoming association.
+     * OFF and LOG_ONLY failures must never turn a duration/comment edit into routing mass assignment.
+     */
+    void reconcileRoutingFields(Work incoming, Work existing, boolean routingTrusted) {
+        if (!routingTrusted || isBlank(incoming.getContractuuid())) {
+            incoming.setContractuuid(existing.getContractuuid());
+        }
+        if (!routingTrusted || isBlank(incoming.getProjectuuid())) {
+            incoming.setProjectuuid(existing.getProjectuuid());
+        }
+        if (!routingTrusted || isBlank(incoming.getClientuuid())) {
+            incoming.setClientuuid(existing.getClientuuid());
+        }
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     /**

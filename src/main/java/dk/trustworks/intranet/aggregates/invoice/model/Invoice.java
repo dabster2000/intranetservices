@@ -11,6 +11,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceControlStatu
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.CalculationBreakdownLine;
+import dk.trustworks.intranet.contracts.dto.PricingPreviewResponse;
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
 import dk.trustworks.intranet.model.Company;
 import dk.trustworks.intranet.model.enums.SalesApprovalStatus;
@@ -190,6 +191,13 @@ public class Invoice extends PanacheEntityBase {
 
     @Transient
     public List<CalculationBreakdownLine> calculationBreakdown;
+
+    /**
+     * Explain-mode pricing result for ordinary draft previews. Null for credit notes,
+     * internal invoices, finalized invoices, and payloads not produced by PricingResource.
+     */
+    @Transient
+    public PricingPreviewResponse pricingPreview;
 
     // ── Credit-note aggregates (spec 2026-07-02, multiple credit notes per invoice) ──
     // Populated only by InvoiceService.findInvoicesForSingleMonth (the month-list endpoint)
