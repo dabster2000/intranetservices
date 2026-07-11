@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class ExecutivePeopleV2ResourceTest {
 
     @Test
-    void exposesExactSeventeenEndpointApplicabilityContract() {
+    void exposesExactEighteenEndpointApplicabilityContract() {
         Map<String, Set<String>> expected = Map.ofEntries(
                 Map.entry("workforce-summary", set("asOfDate", "companyId", "employeeTypes", "practices")),
                 Map.entry("headcount-composition", set("asOfDate", "companyId", "employeeTypes", "population", "practices", "months")),
@@ -34,9 +34,10 @@ class ExecutivePeopleV2ResourceTest {
                 Map.entry("retention-rate", retention()),
                 Map.entry("retention-cohorts", retention()),
                 Map.entry("pay-equity", payEquity()),
+                Map.entry("pay-quartiles", payQuartiles()),
                 Map.entry("pay-trend", payTrend()));
 
-        assertEquals(17, ExecutivePeopleV2Resource.ENDPOINT_QUERY_KEYS.size());
+        assertEquals(18, ExecutivePeopleV2Resource.ENDPOINT_QUERY_KEYS.size());
         assertEquals(expected, ExecutivePeopleV2Resource.ENDPOINT_QUERY_KEYS);
     }
 
@@ -57,6 +58,11 @@ class ExecutivePeopleV2ResourceTest {
         cohort.add("months", "36");
         assertDoesNotThrow(() -> ExecutivePeopleV2Resource.validateQueryParameters(
                 cohort, ExecutivePeopleV2Resource.RETENTION_KEYS));
+
+        MultivaluedHashMap<String, String> quartiles = new MultivaluedHashMap<>();
+        quartiles.add("compensationGroup", "CAREER_BAND");
+        assertThrows(BadRequestException.class, () -> ExecutivePeopleV2Resource.validateQueryParameters(
+                quartiles, ExecutivePeopleV2Resource.PAY_QUARTILE_KEYS));
     }
 
     @Test
@@ -103,6 +109,11 @@ class ExecutivePeopleV2ResourceTest {
     private static Set<String> payTrend() {
         return set("asOfDate", "companyId", "employeeTypes", "population", "practices",
                 "careerTracks", "careerLevels", "managementScope", "months", "salaryType");
+    }
+
+    private static Set<String> payQuartiles() {
+        return set("asOfDate", "companyId", "employeeTypes", "population", "practices",
+                "careerTracks", "careerLevels", "managementScope", "salaryType");
     }
 
     private static Set<String> set(String... values) {

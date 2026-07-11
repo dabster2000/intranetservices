@@ -60,7 +60,9 @@ public final class ExecutivePeopleAnalyticsDTOs {
             Long paidLeave,
             Long maternityLeave,
             Long nonPayLeave,
-            Long employeeTotal
+            Long employeeTotal,
+            boolean suppressed,
+            String suppressionReason
     ) {
     }
 
@@ -91,7 +93,9 @@ public final class ExecutivePeopleAnalyticsDTOs {
             LocalDate date,
             String type,
             Long count,
-            boolean suppressed
+            boolean suppressed,
+            boolean detailAvailable,
+            String detailUnavailableReason
     ) {
     }
 
@@ -160,7 +164,10 @@ public final class ExecutivePeopleAnalyticsDTOs {
             Long leaderCount,
             Double spanPerLeader,
             String coverageStatus,
-            boolean suppressed
+            boolean suppressed,
+            boolean detailAvailable,
+            String detailUnavailableReason,
+            String detailPrivacyReason
     ) {
     }
 
@@ -196,11 +203,15 @@ public final class ExecutivePeopleAnalyticsDTOs {
 
     public record RetentionCohortPoint(
             int month,
+            Integer intervalStartMonth,
             Long atRisk,
             Long events,
+            Long intervalEvents,
             Long retained,
             Double survivalPct,
-            boolean suppressed
+            boolean suppressed,
+            boolean eventsSuppressed,
+            String suppressionReason
     ) {
     }
 
@@ -216,6 +227,22 @@ public final class ExecutivePeopleAnalyticsDTOs {
             Double maleMean,
             Double femaleMean,
             Double payGapPct,
+            Double meanPayGapPct,
+            Boolean reviewThresholdMet,
+            String reviewReason,
+            boolean suppressed
+    ) {
+    }
+
+    public record PayQuartileRow(
+            String key,
+            String label,
+            int sortOrder,
+            String salaryType,
+            Long maleCount,
+            Long femaleCount,
+            Double maleSharePct,
+            Double femaleSharePct,
             boolean suppressed
     ) {
     }

@@ -83,12 +83,14 @@ class PeopleFilterParamsTest {
         request.employeeTypes = "CONSULTANT,STAFF";
         request.population = "ACTIVE";
         request.salaryType = "HOURLY";
+        request.compensationGroup = "DISCO_FUNCTION";
 
         PeopleFilterParams filters = PeopleFilterParams.from(request, CLOCK);
         assertEquals("00000000-0000-0000-0000-000000000001", filters.companyId());
         assertEquals(Set.of(ConsultantType.CONSULTANT, ConsultantType.STAFF), filters.employeeTypes());
         assertEquals(PeoplePopulationScope.ACTIVE, filters.population());
         assertEquals(PeopleSalaryType.HOURLY, filters.salaryType());
+        assertEquals(PeopleCompensationGroup.DISCO_FUNCTION, filters.compensationGroup());
     }
 
     private static PeopleFilterRequest requestWithDate() {

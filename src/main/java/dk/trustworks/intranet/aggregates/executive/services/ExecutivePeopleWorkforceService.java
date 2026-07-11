@@ -178,7 +178,9 @@ public class ExecutivePeopleWorkforceService {
                     visibleCount(paid, pointSuppressed || subtypeSuppressed),
                     visibleCount(maternity, pointSuppressed || subtypeSuppressed),
                     visibleCount(nonPay, pointSuppressed || subtypeSuppressed),
-                    visibleCount(total, activeLeaveSuppressed)));
+                    visibleCount(total, activeLeaveSuppressed),
+                    activeLeaveSuppressed,
+                    activeLeaveSuppressed ? "BELOW_PRIVACY_THRESHOLD" : null));
             latestSample = total;
         }
         return trendResponse(filters, data, latestSuppressed ? -1 : latestSample, suppresses(latestSample), WORKFORCE_CAVEATS);
@@ -353,7 +355,9 @@ public class ExecutivePeopleWorkforceService {
                     localDate(row.get("effective_date")),
                     row.get("event_type", String.class),
                     visibleCount(count, suppressed),
-                    suppressed));
+                    suppressed,
+                    !suppressed,
+                    suppressed ? "BELOW_PRIVACY_THRESHOLD" : null));
             sample += count;
             anySuppressed |= suppressed;
             anyAvailable |= !suppressed;
