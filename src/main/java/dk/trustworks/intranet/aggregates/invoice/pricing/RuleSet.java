@@ -23,11 +23,12 @@ public class RuleSet {
      * Get steps that are active on a specific date.
      *
      * @param date The date to filter by
-     * @return List of active steps, sorted by priority
+     * @return List of active steps in deterministic execution order
+     *         (priority, then rule id — spec §9.8)
      */
     public List<RuleStep> stepsFor(LocalDate date) {
         return steps.stream().filter(s -> s.isActiveOn(date))
-                .sorted((a,b) -> Integer.compare(a.priority, b.priority))
+                .sorted(RuleStep.DETERMINISTIC_ORDER)
                 .toList();
     }
 }

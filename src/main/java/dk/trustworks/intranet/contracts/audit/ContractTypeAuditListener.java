@@ -63,7 +63,7 @@ public class ContractTypeAuditListener {
             "SELECT name, description, valid_from, valid_until, active FROM contract_type_definitions WHERE id = ?";
 
     private static final String SELECT_PRICING_RULE_OLD_STATE =
-            "SELECT label, rule_step_type, step_base, percent, amount, param_key, valid_from, valid_to, priority, active " +
+            "SELECT label, rule_step_type, step_base, purpose, percent, amount, param_key, valid_from, valid_to, priority, active " +
             "FROM pricing_rule_steps WHERE id = ?";
 
     private static final String SELECT_VALIDATION_RULE_OLD_STATE =
@@ -166,6 +166,7 @@ public class ContractTypeAuditListener {
                     addChange(changes, "label", rs.getString("label"), entity.getLabel());
                     addChange(changes, "ruleStepType", rs.getString("rule_step_type"), enumName(entity.getRuleStepType()));
                     addChange(changes, "stepBase", rs.getString("step_base"), enumName(entity.getStepBase()));
+                    addChange(changes, "purpose", rs.getString("purpose"), enumName(entity.getPurpose()));
                     addChange(changes, "percent", rs.getBigDecimal("percent"), entity.getPercent());
                     addChange(changes, "amount", rs.getBigDecimal("amount"), entity.getAmount());
                     addChange(changes, "paramKey", rs.getString("param_key"), entity.getParamKey());

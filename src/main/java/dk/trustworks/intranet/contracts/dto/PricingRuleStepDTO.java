@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.dto;
 
+import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
@@ -31,6 +32,14 @@ public class PricingRuleStepDTO {
     private String label;
     private RuleStepType ruleStepType;
     private StepBase stepBase;
+
+    /**
+     * Business purpose tag (DISCOUNT | ADMIN_FEE) for PERCENT_DISCOUNT_ON_SUM rules;
+     * null on system/placement rows. Legacy ADMIN_FEE_PERCENT rows without a stored
+     * purpose imply ADMIN_FEE (spec §8.2 rollout fallback).
+     */
+    private RulePurpose purpose;
+
     private BigDecimal percent;
     private BigDecimal amount;
     private String paramKey;
@@ -61,6 +70,11 @@ public class PricingRuleStepDTO {
         this.label = entity.getLabel();
         this.ruleStepType = entity.getRuleStepType();
         this.stepBase = entity.getStepBase();
+        // Rollout fallback (spec §8.2 V_a): legacy ADMIN_FEE_PERCENT rows still in flight
+        // before the V396 retype carry no stored purpose — their type implies ADMIN_FEE.
+        this.purpose = entity.getPurpose() != null
+                ? entity.getPurpose()
+                : (entity.getRuleStepType() == RuleStepType.ADMIN_FEE_PERCENT ? RulePurpose.ADMIN_FEE : null);
         this.percent = entity.getPercent();
         this.amount = entity.getAmount();
         this.paramKey = entity.getParamKey();

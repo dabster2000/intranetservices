@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.model;
 
+import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import dk.trustworks.intranet.contracts.audit.ContractTypeAuditListener;
@@ -24,7 +25,8 @@ import java.util.List;
  * rule.setContractTypeCode("SKI0217_2026");
  * rule.setRuleId("ski21726-admin");
  * rule.setLabel("5% SKI administrationsgebyr");
- * rule.setRuleStepType(RuleStepType.ADMIN_FEE_PERCENT);
+ * rule.setRuleStepType(RuleStepType.PERCENT_DISCOUNT_ON_SUM);
+ * rule.setPurpose(RulePurpose.ADMIN_FEE);
  * rule.setStepBase(StepBase.CURRENT_SUM);
  * rule.setPercent(BigDecimal.valueOf(5.0));
  * rule.setPriority(20);
@@ -82,6 +84,18 @@ public class PricingRuleStepEntity extends PanacheEntityBase {
     @Enumerated(EnumType.STRING)
     @NotNull(message = "Step base is required")
     private StepBase stepBase;
+
+    /**
+     * Business purpose tag for PERCENT_DISCOUNT_ON_SUM rules (DISCOUNT or ADMIN_FEE).
+     * Null on system/placement rows (GENERAL_DISCOUNT_PERCENT, FIXED_DEDUCTION) and on
+     * untagged rows. Money-neutral — the engine's delta math never reads it (spec §8.1);
+     * the engine reads it only for label formatting (ADMIN_FEE labels render verbatim,
+     * preserving pre-V396 output byte-for-byte). Column added in V395, legacy
+     * ADMIN_FEE_PERCENT rows tagged by V396.
+     */
+    @Column(length = 20)
+    @Enumerated(EnumType.STRING)
+    private RulePurpose purpose;
 
     /**
      * Percentage value for percentage-based rules (0-100).
@@ -165,20 +179,20 @@ public class PricingRuleStepEntity extends PanacheEntityBase {
      * Find all rules for a specific contract type (active only).
      *
      * @param contractTypeCode The contract type code
-     * @return List of active rules, sorted by priority
+     * @return List of active rules, sorted by (priority, id) — deterministic, spec §9.8
      */
     public static List<PricingRuleStepEntity> findByContractType(String contractTypeCode) {
-        return find("contractTypeCode = ?1 AND active = true ORDER BY priority", contractTypeCode).list();
+        return find("contractTypeCode = ?1 AND active = true ORDER BY priority, id", contractTypeCode).list();
     }
 
     /**
      * Find all rules for a specific contract type (including inactive).
      *
      * @param contractTypeCode The contract type code
-     * @return List of all rules, sorted by priority
+     * @return List of all rules, sorted by (priority, active, id) — deterministic, spec §9.8
      */
     public static List<PricingRuleStepEntity> findByContractTypeIncludingInactive(String contractTypeCode) {
-        return find("contractTypeCode = ?1 ORDER BY priority, active DESC", contractTypeCode).list();
+        return find("contractTypeCode = ?1 ORDER BY priority, active DESC, id", contractTypeCode).list();
     }
 
     /**
@@ -197,14 +211,15 @@ public class PricingRuleStepEntity extends PanacheEntityBase {
      *
      * @param contractTypeCode The contract type code
      * @param date The date to check
-     * @return List of active rules for the given date, sorted by priority
+     * @return List of active rules for the given date, sorted by (priority, id)
+     *         — deterministic, spec §9.8
      */
     public static List<PricingRuleStepEntity> findByContractTypeAndDate(String contractTypeCode, LocalDate date) {
         return find(
             "contractTypeCode = ?1 AND active = true AND " +
             "(validFrom IS NULL OR validFrom <= ?2) AND " +
             "(validTo IS NULL OR validTo > ?2) " +
-            "ORDER BY priority",
+            "ORDER BY priority, id",
             contractTypeCode, date
         ).list();
     }

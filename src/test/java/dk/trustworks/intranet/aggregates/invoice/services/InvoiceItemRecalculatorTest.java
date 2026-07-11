@@ -29,9 +29,10 @@ import static org.mockito.Mockito.mock;
  * Unit tests for {@link InvoiceItemRecalculator}.
  *
  * Pure JUnit + a tiny in-memory subclass that overrides the Panache static
- * call-out hooks. The {@link PricingEngine} is exercised for real against
- * {@link PricingRuleCatalog}'s hardcoded enum-based rule sets, so each test
- * mirrors the actual pricing pipeline a production invoice runs through.
+ * call-out hooks. The {@link PricingEngine} is exercised for real against an
+ * in-memory copy of the production {@code pricing_rule_steps} rule sets, so
+ * each test mirrors the actual pricing pipeline a production invoice runs
+ * through.
  *
  * <p>Test data is modeled on real CREATED invoices that priced correctly in
  * Nov/Dec 2025 (NOVO_MSP_2025 #18172, SKI0215_2025 #18046, SKI0217_2021 #70273,
@@ -249,15 +250,16 @@ class InvoiceItemRecalculatorTest {
     /**
      * Catalog stub that returns the production rule sets from
      * {@code pricing_rule_steps} in-memory, bypassing Panache. Mirrors the
-     * Nov/Dec 2025 production data:
+     * Nov/Dec 2025 production data (V98-seeded, guaranteed by V397):
      * <pre>
      *   NOVO_MSP_2025  → msp-fee 1.8% PERCENT_DISCOUNT_ON_SUM   priority 41
      *   SKI0215_2025   → 4% ADMIN_FEE_PERCENT on CURRENT_SUM    priority 20
      *   SKI0217_2025   → trapperabat (paramKey) + 4% admin      priorities 10, 20
      *   SKI0217_2021   → trapperabat + 2% admin + 2 000 fixed   priorities 10, 20, 30
      * </pre>
-     * Anything else falls through to the hardcoded enum-based rule set in
-     * {@link PricingRuleCatalog} (which covers PERIOD as no-rules).
+     * Anything else (e.g. PERIOD) yields no rules — {@link PricingRuleCatalog}
+     * no longer carries a hardcoded fallback (spec §9.7), so the SKI rule sets
+     * must be supplied here just like the DB supplies them in production.
      */
     private static final class TestCatalog extends PricingRuleCatalog {
         @Override
@@ -268,6 +270,36 @@ class InvoiceItemRecalculatorTest {
                                 RuleStepType.PERCENT_DISCOUNT_ON_SUM,
                                 StepBase.SUM_BEFORE_DISCOUNTS,
                                 new BigDecimal("1.8000"), null, null, 41));
+                case "SKI0215_2025" -> List.of(
+                        rule("ski21525-admin", "4% SKI administrationsgebyr",
+                                RuleStepType.ADMIN_FEE_PERCENT, StepBase.CURRENT_SUM,
+                                new BigDecimal("4.0000"), null, null, 20),
+                        rule("ski21525-general", "Generel rabat",
+                                RuleStepType.GENERAL_DISCOUNT_PERCENT, StepBase.CURRENT_SUM,
+                                null, null, null, 40));
+                case "SKI0217_2025" -> List.of(
+                        rule("ski21725-key", "SKI trapperabat",
+                                RuleStepType.PERCENT_DISCOUNT_ON_SUM, StepBase.SUM_BEFORE_DISCOUNTS,
+                                null, null, "trapperabat", 10),
+                        rule("ski21725-admin", "4% SKI administrationsgebyr",
+                                RuleStepType.ADMIN_FEE_PERCENT, StepBase.CURRENT_SUM,
+                                new BigDecimal("4.0000"), null, null, 20),
+                        rule("ski21725-general", "Generel rabat",
+                                RuleStepType.GENERAL_DISCOUNT_PERCENT, StepBase.CURRENT_SUM,
+                                null, null, null, 40));
+                case "SKI0217_2021" -> List.of(
+                        rule("ski21721-key", "SKI trapperabat",
+                                RuleStepType.PERCENT_DISCOUNT_ON_SUM, StepBase.SUM_BEFORE_DISCOUNTS,
+                                null, null, "trapperabat", 10),
+                        rule("ski21721-admin", "2% SKI administrationsgebyr",
+                                RuleStepType.ADMIN_FEE_PERCENT, StepBase.CURRENT_SUM,
+                                new BigDecimal("2.0000"), null, null, 20),
+                        rule("ski21721-fee", "Faktureringsgebyr",
+                                RuleStepType.FIXED_DEDUCTION, StepBase.CURRENT_SUM,
+                                null, new BigDecimal("2000.00"), null, 30),
+                        rule("ski21721-general", "Generel rabat",
+                                RuleStepType.GENERAL_DISCOUNT_PERCENT, StepBase.CURRENT_SUM,
+                                null, null, null, 40));
                 default -> List.of();
             };
         }

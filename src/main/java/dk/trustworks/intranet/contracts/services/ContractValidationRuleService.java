@@ -93,7 +93,11 @@ public class ContractValidationRuleService {
         entity.setThresholdValue(request.getThresholdValue());
         entity.setConfigJson(request.getConfigJson());
         entity.setPriority(request.getPriority());
-        entity.setActive(request.isActive());
+        // Null active means "leave unchanged" (spec §9.4) — a PUT omitting the field
+        // must not silently deactivate an active rule.
+        if (request.getActive() != null) {
+            entity.setActive(request.getActive());
+        }
 
         // Persist (automatic with @Transactional)
         entity.persist();

@@ -1,10 +1,10 @@
 package dk.trustworks.intranet.contracts.services;
 
+import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.contracts.dto.*;
 import dk.trustworks.intranet.contracts.model.ContractTypeDefinition;
 import dk.trustworks.intranet.contracts.model.PricingRuleStepEntity;
-import io.quarkus.cache.CacheInvalidate;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -13,13 +13,17 @@ import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.NotFoundException;
 import lombok.extern.jbosslog.JBossLog;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
  * Service for managing pricing rule steps.
- * Provides CRUD operations, priority management, validation, and cache invalidation.
+ * Provides CRUD operations, priority management, and validation.
+ * Rule reads are deliberately uncached (spec §9.7) — the former
+ * {@code @CacheInvalidate(cacheName = "pricing-rules")} annotations targeted a
+ * cache that no {@code @CacheResult} ever populated and were removed.
  */
 @JBossLog
 @ApplicationScoped
@@ -40,7 +44,6 @@ public class PricingRuleStepService {
      * @throws NotFoundException if contract type not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "pricing-rules")
     public PricingRuleStepDTO createRule(String contractTypeCode, CreateRuleStepRequest request) {
         log.info("PricingRuleStepService.createRule");
         log.info("contractTypeCode = " + contractTypeCode + ", request = " + request);
@@ -57,7 +60,11 @@ public class PricingRuleStepService {
         }
 
         // Validate rule integrity
-        validateRuleIntegrity(request.getRuleStepType(), request.getPercent(), request.getAmount(), request.getParamKey());
+        validateRuleIntegrity(request.getRuleStepType(), request.getPercent(), request.getAmount(),
+                request.getParamKey(), request.getPurpose());
+
+        // Validate date order up front so it surfaces as 400 (spec §9.5)
+        validateDateOrder(request.getValidFrom(), request.getValidTo());
 
         // Auto-increment priority if not provided
         Integer priority = request.getPriority();
@@ -74,6 +81,7 @@ public class PricingRuleStepService {
         entity.setLabel(request.getLabel());
         entity.setRuleStepType(request.getRuleStepType());
         entity.setStepBase(request.getStepBase());
+        entity.setPurpose(request.getPurpose());
         entity.setPercent(request.getPercent());
         entity.setAmount(request.getAmount());
         entity.setParamKey(request.getParamKey());
@@ -96,7 +104,6 @@ public class PricingRuleStepService {
      * @return List of created rule DTOs
      */
     @Transactional
-    @CacheInvalidate(cacheName = "pricing-rules")
     public List<PricingRuleStepDTO> createRulesBulk(String contractTypeCode, BulkCreateRulesRequest request) {
         log.info("PricingRuleStepService.createRulesBulk");
         log.info("contractTypeCode = " + contractTypeCode + ", rulesCount = " + request.getRules().size());
@@ -108,7 +115,6 @@ public class PricingRuleStepService {
 
         List<PricingRuleStepDTO> results = new ArrayList<>();
         for (CreateRuleStepRequest ruleRequest : request.getRules()) {
-            // Note: We call createRule for each, but cache is only invalidated once at the end
             PricingRuleStepDTO dto = createRuleInternal(contractTypeCode, ruleRequest);
             results.add(dto);
         }
@@ -118,7 +124,8 @@ public class PricingRuleStepService {
     }
 
     /**
-     * Internal method to create a rule without cache invalidation (for bulk operations).
+     * Internal method to create a rule, skipping the contract-type existence
+     * check the bulk entry point already performed.
      */
     private PricingRuleStepDTO createRuleInternal(String contractTypeCode, CreateRuleStepRequest request) {
         // Validate uniqueness
@@ -128,7 +135,11 @@ public class PricingRuleStepService {
         }
 
         // Validate rule integrity
-        validateRuleIntegrity(request.getRuleStepType(), request.getPercent(), request.getAmount(), request.getParamKey());
+        validateRuleIntegrity(request.getRuleStepType(), request.getPercent(), request.getAmount(),
+                request.getParamKey(), request.getPurpose());
+
+        // Validate date order up front so it surfaces as 400 (spec §9.5)
+        validateDateOrder(request.getValidFrom(), request.getValidTo());
 
         // Auto-increment priority if not provided
         Integer priority = request.getPriority();
@@ -144,6 +155,7 @@ public class PricingRuleStepService {
         entity.setLabel(request.getLabel());
         entity.setRuleStepType(request.getRuleStepType());
         entity.setStepBase(request.getStepBase());
+        entity.setPurpose(request.getPurpose());
         entity.setPercent(request.getPercent());
         entity.setAmount(request.getAmount());
         entity.setParamKey(request.getParamKey());
@@ -166,7 +178,6 @@ public class PricingRuleStepService {
      * @throws BadRequestException if validation fails
      */
     @Transactional
-    @CacheInvalidate(cacheName = "pricing-rules")
     public PricingRuleStepDTO updateRule(String contractTypeCode, String ruleId, UpdateRuleStepRequest request) {
         log.info("PricingRuleStepService.updateRule");
         log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
@@ -179,19 +190,28 @@ public class PricingRuleStepService {
         }
 
         // Validate rule integrity
-        validateRuleIntegrity(request.getRuleStepType(), request.getPercent(), request.getAmount(), request.getParamKey());
+        validateRuleIntegrity(request.getRuleStepType(), request.getPercent(), request.getAmount(),
+                request.getParamKey(), request.getPurpose());
+
+        // Validate date order up front so it surfaces as 400 (spec §9.5)
+        validateDateOrder(request.getValidFrom(), request.getValidTo());
 
         // Update fields
         entity.setLabel(request.getLabel());
         entity.setRuleStepType(request.getRuleStepType());
         entity.setStepBase(request.getStepBase());
+        entity.setPurpose(request.getPurpose());
         entity.setPercent(request.getPercent());
         entity.setAmount(request.getAmount());
         entity.setParamKey(request.getParamKey());
         entity.setValidFrom(request.getValidFrom());
         entity.setValidTo(request.getValidTo());
         entity.setPriority(request.getPriority());
-        entity.setActive(request.isActive());
+        // Null active means "leave unchanged" (spec §9.4) — a PUT omitting the field
+        // must not silently re-activate a disabled rule.
+        if (request.getActive() != null) {
+            entity.setActive(request.getActive());
+        }
 
         // Persist (automatic with @Transactional)
         entity.persist();
@@ -208,7 +228,6 @@ public class PricingRuleStepService {
      * @throws NotFoundException if rule not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "pricing-rules")
     public void deleteRule(String contractTypeCode, String ruleId) {
         log.info("PricingRuleStepService.deleteRule");
         log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
@@ -236,7 +255,6 @@ public class PricingRuleStepService {
      * @throws NotFoundException if rule not found
      */
     @Transactional
-    @CacheInvalidate(cacheName = "pricing-rules")
     public PricingRuleStepDTO activateRule(String contractTypeCode, String ruleId) {
         log.info("PricingRuleStepService.activateRule");
         log.info("contractTypeCode = " + contractTypeCode + ", ruleId = " + ruleId);
@@ -302,29 +320,59 @@ public class PricingRuleStepService {
     }
 
     /**
-     * Validate rule integrity based on rule type.
-     * Ensures required fields are present and valid.
+     * Validate that validFrom is strictly before validTo when both are set (spec §9.5).
+     * Mirrors the entity lifecycle rule ({@code PricingRuleStepEntity} @PrePersist/@PreUpdate),
+     * but surfaces it as a 400 with a field-level message instead of an unhandled 500
+     * from the lifecycle {@code IllegalArgumentException}.
      */
+    private static void validateDateOrder(LocalDate validFrom, LocalDate validTo) {
+        if (validFrom != null && validTo != null && !validFrom.isBefore(validTo)) {
+            throw new BadRequestException(
+                    "validFrom must be before validTo (validFrom=" + validFrom + ", validTo=" + validTo + ")");
+        }
+    }
+
+    /**
+     * Validate rule integrity based on rule type (spec §8.1 target taxonomy).
+     * Ensures required fields are present and valid, and rejects the retired types:
+     * ADMIN_FEE_PERCENT (folded into PERCENT_DISCOUNT_ON_SUM + purpose ADMIN_FEE by V396)
+     * and ROUNDING (broken placeholder, never offered for creation). Rows persisted with
+     * those types before the retype stay readable and executable — only create/update is blocked.
+     */
+    @SuppressWarnings("deprecation") // ADMIN_FEE_PERCENT/ROUNDING referenced to reject them
     private void validateRuleIntegrity(RuleStepType ruleStepType,
                                        java.math.BigDecimal percent,
                                        java.math.BigDecimal amount,
-                                       String paramKey) {
+                                       String paramKey,
+                                       RulePurpose purpose) {
+        // Retired types are rejected outright (spec §8.2 step 3)
+        if (ruleStepType == RuleStepType.ADMIN_FEE_PERCENT) {
+            throw new BadRequestException(
+                    "Rule step type ADMIN_FEE_PERCENT is not supported — use PERCENT_DISCOUNT_ON_SUM with purpose ADMIN_FEE");
+        }
+        if (ruleStepType == RuleStepType.ROUNDING) {
+            throw new BadRequestException("Rule step type ROUNDING is not supported");
+        }
+
+        // purpose is a PERCENT_DISCOUNT_ON_SUM-only tag (DISCOUNT | ADMIN_FEE)
+        if (purpose != null && ruleStepType != RuleStepType.PERCENT_DISCOUNT_ON_SUM) {
+            throw new BadRequestException(
+                    "'purpose' can only be set on PERCENT_DISCOUNT_ON_SUM rules");
+        }
+
         switch (ruleStepType) {
             case PERCENT_DISCOUNT_ON_SUM:
-                // Must have either percent or paramKey
+                // At least one of percent/paramKey; both together are allowed — the engine
+                // uses percent as fallback when the paramKey is missing on the contract.
                 if (percent == null && (paramKey == null || paramKey.trim().isEmpty())) {
                     throw new BadRequestException(
                             "PERCENT_DISCOUNT_ON_SUM rules must have either 'percent' or 'paramKey' set");
                 }
                 break;
 
-            case ADMIN_FEE_PERCENT:
             case GENERAL_DISCOUNT_PERCENT:
-                // Percent-based rules should have percent (unless using invoice.discount for GENERAL_DISCOUNT_PERCENT)
-                // We allow null for GENERAL_DISCOUNT_PERCENT as it uses invoice.discount field
-                if (ruleStepType == RuleStepType.ADMIN_FEE_PERCENT && percent == null) {
-                    throw new BadRequestException("ADMIN_FEE_PERCENT rules must have 'percent' set");
-                }
+                // Requires neither percent nor paramKey — it only positions the
+                // invoice-level discount (invoice.discount) in the pipeline.
                 break;
 
             case FIXED_DEDUCTION:
@@ -332,10 +380,6 @@ public class PricingRuleStepService {
                 if (amount == null) {
                     throw new BadRequestException("FIXED_DEDUCTION rules must have 'amount' set");
                 }
-                break;
-
-            case ROUNDING:
-                // No specific requirements
                 break;
 
             default:

@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.services;
 
+import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import dk.trustworks.intranet.contracts.dto.CreateRuleStepRequest;
@@ -51,7 +52,9 @@ class ContractRuleRestoreRoundTripTest {
         CreateRuleStepRequest request = new CreateRuleStepRequest();
         request.setRuleId("restore-me");
         request.setLabel("Restore round-trip pricing rule");
-        request.setRuleStepType(RuleStepType.ADMIN_FEE_PERCENT);
+        // ADMIN_FEE_PERCENT is rejected on create since Phase 3 (§8.1) — use the replacement shape
+        request.setRuleStepType(RuleStepType.PERCENT_DISCOUNT_ON_SUM);
+        request.setPurpose(RulePurpose.ADMIN_FEE);
         request.setStepBase(StepBase.CURRENT_SUM);
         request.setPercent(new BigDecimal("5.00"));
         PricingRuleStepDTO created = pricingRuleService.createRule(code, request);

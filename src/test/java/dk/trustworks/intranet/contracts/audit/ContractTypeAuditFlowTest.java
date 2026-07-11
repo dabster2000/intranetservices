@@ -94,7 +94,7 @@ class ContractTypeAuditFlowTest {
             .body(Map.of(
                 "ruleId", RULE_ID,
                 "label", "5% audit admin fee",
-                "ruleStepType", "ADMIN_FEE_PERCENT",
+                "ruleStepType", "PERCENT_DISCOUNT_ON_SUM",
                 "stepBase", "CURRENT_SUM",
                 "percent", 5.0,
                 "priority", 10))
