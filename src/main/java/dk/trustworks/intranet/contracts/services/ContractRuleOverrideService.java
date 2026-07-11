@@ -6,6 +6,7 @@ import dk.trustworks.intranet.contracts.dto.ValidationOverrideDTO;
 import dk.trustworks.intranet.contracts.mappers.ContractOverrideMapper;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.OverrideType;
+import dk.trustworks.intranet.dao.workservice.validation.TimesheetValidationPolicyInvalidator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -45,6 +46,9 @@ public class ContractRuleOverrideService {
 
     @Inject
     ContractOverrideMapper mapper;
+
+    @Inject
+    TimesheetValidationPolicyInvalidator timesheetValidationPolicyInvalidator;
 
     // ===== Validation Overrides =====
 
@@ -89,6 +93,7 @@ public class ContractRuleOverrideService {
 
         // Persist
         entity.persist();
+        scheduleTimesheetPolicyInvalidation();
 
         log.infof("Created validation override id=%d for contract %s", entity.getId(), contractUuid);
 
@@ -120,6 +125,7 @@ public class ContractRuleOverrideService {
         // Update entity
         mapper.updateEntity(entity, dto);
         entity.persist();
+        scheduleTimesheetPolicyInvalidation();
 
         log.infof("Updated validation override id=%d", id);
 
@@ -145,6 +151,7 @@ public class ContractRuleOverrideService {
         // Soft delete
         entity.setActive(false);
         entity.persist();
+        scheduleTimesheetPolicyInvalidation();
 
         log.infof("Deleted (soft) validation override id=%d", id);
     }
@@ -444,5 +451,11 @@ public class ContractRuleOverrideService {
     private String getCurrentUserId() {
         // Placeholder - integrate with actual security context
         return "system";
+    }
+
+    private void scheduleTimesheetPolicyInvalidation() {
+        if (timesheetValidationPolicyInvalidator != null) {
+            timesheetValidationPolicyInvalidator.scheduleAfterCommit();
+        }
     }
 }

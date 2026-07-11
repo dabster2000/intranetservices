@@ -5,6 +5,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.services.InvoiceService;
 import dk.trustworks.intranet.aggregates.sender.AggregateEventSender;
 import dk.trustworks.intranet.contracts.dto.ValidationReport;
+import dk.trustworks.intranet.contracts.dto.ContractTypeItemDTO;
 import dk.trustworks.intranet.contracts.events.ModifyContractConsultantEvent;
 import dk.trustworks.intranet.contracts.model.Contract;
 import dk.trustworks.intranet.contracts.model.ContractConsultant;
@@ -281,15 +282,30 @@ public class ContractResource {
     @POST
     @Path("/{contractuuid}/contracttypeitems")
     @RolesAllowed({"contracts:write"})
-    public void addContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
-        contractService.addContractTypeItem(contractuuid, contractTypeItem);
+    public Response addContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
+        ContractTypeItemDTO created = contractService.addContractTypeItem(contractuuid, contractTypeItem);
+        return Response.status(Response.Status.CREATED).entity(created).build();
     }
 
     @PUT
     @Path("/{contractuuid}/contracttypeitems")
     @RolesAllowed({"contracts:write"})
-    public void updateContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
-        contractService.updateContractTypeItem(contractTypeItem);
+    public ContractTypeItemDTO updateContractTypeItem(@PathParam("contractuuid") String contractuuid, ContractTypeItem contractTypeItem) {
+        return contractService.updateContractTypeItem(contractuuid, contractTypeItem);
+    }
+
+    @GET
+    @Path("/{contractuuid}/contracttypeitems")
+    public List<ContractTypeItemDTO> getContractTypeItems(@PathParam("contractuuid") String contractuuid) {
+        return contractService.getContractTypeItems(contractuuid);
+    }
+
+    @DELETE
+    @Path("/{contractuuid}/contracttypeitems/{itemId}")
+    @RolesAllowed({"contracts:write"})
+    public void deleteContractTypeItem(@PathParam("contractuuid") String contractuuid,
+                                       @PathParam("itemId") int itemId) {
+        contractService.deleteContractTypeItem(contractuuid, itemId);
     }
 
     /**

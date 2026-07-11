@@ -5,6 +5,8 @@ import jakarta.persistence.*;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.math.BigDecimal;
+
 @Data
 @EqualsAndHashCode(onlyExplicitlyIncluded = true, callSuper=false)
 @Entity
@@ -32,10 +34,10 @@ public class ContractTypeItem extends PanacheEntityBase {
         }
         if (value != null) {
             try {
-                Double.parseDouble(value);
+                new BigDecimal(value);
             } catch (NumberFormatException e) {
                 throw new IllegalArgumentException(
-                        "ContractTypeItem value must be a valid number, got: '" + value + "'");
+                        "ContractTypeItem value must be a finite decimal number, got: '" + value + "'");
             }
         }
     }

@@ -5,6 +5,7 @@ import dk.trustworks.intranet.contracts.dto.UpdateValidationRuleRequest;
 import dk.trustworks.intranet.contracts.dto.ValidationRuleDTO;
 import dk.trustworks.intranet.contracts.model.ContractValidationRuleEntity;
 import dk.trustworks.intranet.contracts.model.enums.ValidationType;
+import dk.trustworks.intranet.dao.workservice.validation.TimesheetValidationPolicyInvalidator;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
@@ -26,6 +27,9 @@ public class ContractValidationRuleService {
 
     @Inject
     EntityManager em;
+
+    @Inject
+    TimesheetValidationPolicyInvalidator timesheetValidationPolicyInvalidator;
 
     /**
      * Create a new validation rule for a contract type.
@@ -60,6 +64,7 @@ public class ContractValidationRuleService {
 
         // Persist
         entity.persist();
+        scheduleTimesheetPolicyInvalidation();
 
         log.info("Created validation rule: " + entity.getRuleId() + " for contract type " + contractTypeCode);
         return ValidationRuleDTO.fromEntity(entity);
@@ -101,6 +106,7 @@ public class ContractValidationRuleService {
 
         // Persist (automatic with @Transactional)
         entity.persist();
+        scheduleTimesheetPolicyInvalidation();
 
         log.info("Updated validation rule: " + ruleId + " for contract type " + contractTypeCode);
         return ValidationRuleDTO.fromEntity(entity);
@@ -128,6 +134,7 @@ public class ContractValidationRuleService {
 
         // Soft delete
         entity.softDelete();
+        scheduleTimesheetPolicyInvalidation();
 
         log.info("Soft deleted validation rule: " + ruleId + " for contract type " + contractTypeCode);
     }
@@ -160,6 +167,7 @@ public class ContractValidationRuleService {
         if (em != null) {
             em.flush();
         }
+        scheduleTimesheetPolicyInvalidation();
 
         log.info("Activated validation rule: " + ruleId + " for contract type " + contractTypeCode);
         return ValidationRuleDTO.fromEntity(entity);
@@ -268,5 +276,12 @@ public class ContractValidationRuleService {
 
         return rules.stream()
                 .anyMatch(ContractValidationRuleEntity::isRequired);
+    }
+
+    private void scheduleTimesheetPolicyInvalidation() {
+        // Null-safe for the existing plain unit tests that construct this service without CDI.
+        if (timesheetValidationPolicyInvalidator != null) {
+            timesheetValidationPolicyInvalidator.scheduleAfterCommit();
+        }
     }
 }

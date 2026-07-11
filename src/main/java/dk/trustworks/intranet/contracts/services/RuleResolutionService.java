@@ -114,6 +114,63 @@ public class RuleResolutionService {
     }
 
     /**
+     * Resolve the validation-only rule set used by timesheet clients.
+     *
+     * <p>Unlike {@link #getEffectiveRuleSet(String, LocalDate)}, this read path is
+     * deliberately not gated by the contract-override rollout. It always returns
+     * active base validation rules; {@link #getEffectiveValidationRules(String,
+     * String, LocalDate)} applies contract overrides when their rollout is enabled.
+     * A historical reference to a deleted contract is returned as an explicit
+     * {@code contractFound=false} empty rule set rather than a transport error.
+     */
+    public ContractRuleSetDTO getTimesheetEffectiveRuleSet(
+        String contractUuid,
+        LocalDate effectiveDate
+    ) {
+        Contract contract = findContract(contractUuid);
+        if (contract == null) {
+            return ContractRuleSetDTO.builder()
+                .contractUuid(contractUuid)
+                .contractFound(false)
+                .effectiveDate(effectiveDate)
+                .fromCache(false)
+                .build();
+        }
+
+        String contractTypeCode = contract.getContractType();
+        ContractTypeDefinition definition = findContractTypeDefinition(contractTypeCode);
+        List<ContractValidationRuleEntity> effectiveValidationRules =
+            getEffectiveValidationRules(
+                contractTypeCode != null ? contractTypeCode : "",
+                contractUuid,
+                effectiveDate
+            );
+
+        return ContractRuleSetDTO.builder()
+            .contractUuid(contractUuid)
+            .contractFound(true)
+            .contractTypeCode(contractTypeCode)
+            .agreementName(definition != null ? definition.getName() : contractTypeCode)
+            .effectiveDate(effectiveDate)
+            .effectiveValidationRules(mapper.fromValidationEntities(effectiveValidationRules))
+            .fromCache(false)
+            .build();
+    }
+
+    /** Database lookup hooks kept narrow so the ungated read contract is unit-testable. */
+    protected Contract findContract(String contractUuid) {
+        return Contract.findById(contractUuid);
+    }
+
+    protected ContractTypeDefinition findContractTypeDefinition(String contractTypeCode) {
+        if (contractTypeCode == null || contractTypeCode.isBlank()) {
+            return null;
+        }
+        return ContractTypeDefinition.<ContractTypeDefinition>find("code", contractTypeCode)
+            .firstResult();
+    }
+
+    /**
      * Resolve effective validation rules for a contract.
      * Merges base rules from contract type with contract-specific overrides.
      *

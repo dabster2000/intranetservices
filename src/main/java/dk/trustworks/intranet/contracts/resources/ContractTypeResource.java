@@ -5,6 +5,7 @@ import dk.trustworks.intranet.contracts.services.ContractTypeDefinitionService;
 import dk.trustworks.intranet.contracts.services.ContractValidationRuleService;
 import dk.trustworks.intranet.contracts.services.ContractRateAdjustmentService;
 import dk.trustworks.intranet.contracts.services.PricingRuleStepService;
+import dk.trustworks.intranet.contracts.services.ContractTypeContractQueryService;
 import dk.trustworks.intranet.security.RequestHeaderHolder;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.RequestScoped;
@@ -28,7 +29,7 @@ import java.util.List;
  * REST API for managing dynamic contract type definitions.
  * Allows creating, reading, updating, and deleting contract types via HTTP.
  *
- * All endpoints require SYSTEM role (admin access).
+ * Read endpoints require the contracts:read scope; mutations override this with contracts:write.
  */
 @Tag(name = "Contract Types", description = "Manage dynamic contract type definitions")
 @Path("/api/contract-types")
@@ -54,6 +55,9 @@ public class ContractTypeResource {
 
     @Inject
     RequestHeaderHolder requestHeaderHolder;
+
+    @Inject
+    ContractTypeContractQueryService contractQueryService;
 
     /**
      * List all contract types.
@@ -92,6 +96,17 @@ public class ContractTypeResource {
 
         ContractTypeDefinitionDTO dto = contractTypeService.findByCode(code);
         return Response.ok(dto).build();
+    }
+
+    /** Lightweight contracts + parameters and rolling-revenue top ten for agreement surfaces. */
+    @GET
+    @Path("/{code}/contracts")
+    @Operation(summary = "List contracts using a contract type")
+    @APIResponse(responseCode = "200", description = "Contracts using the contract type")
+    @APIResponse(responseCode = "400", description = "Invalid contract type code")
+    @APIResponse(responseCode = "404", description = "Contract type not found")
+    public Response getContracts(@PathParam("code") String code) {
+        return Response.ok(contractQueryService.findContracts(code)).build();
     }
 
     /**

@@ -68,4 +68,17 @@ class ContractValidationExceptionMapperTest {
         assertEquals("Contract is inactive", body.error(), "the exception message is preserved as the summary");
         assertTrue(body.errors().isEmpty(), "a message-only exception yields an empty structured list, never null");
     }
+
+    @Test
+    void preservesContractTypeLifecycleCodeInErrorsArray() {
+        String message = "This contract's agreement is archived — restore it or change the agreement to save.";
+        Response response = mapper.toResponse(new ContractValidationException(List.of(
+                new ValidationError("contractType", message, ErrorType.CONTRACT_TYPE_ARCHIVED))));
+
+        ContractValidationErrorResponse body = (ContractValidationErrorResponse) response.getEntity();
+        assertEquals(400, body.status());
+        assertEquals("contractType", body.errors().get(0).field());
+        assertEquals(message, body.errors().get(0).message());
+        assertEquals("CONTRACT_TYPE_ARCHIVED", body.errors().get(0).type());
+    }
 }

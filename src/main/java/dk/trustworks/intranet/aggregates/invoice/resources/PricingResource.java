@@ -5,8 +5,10 @@ import dk.trustworks.intranet.aggregates.invoice.model.Invoice;
 import dk.trustworks.intranet.aggregates.invoice.pricing.PricingEngine;
 
 import dk.trustworks.intranet.contracts.model.ContractTypeItem;
+import dk.trustworks.intranet.contracts.services.PricingPreviewService;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -20,9 +22,11 @@ import java.util.stream.Collectors;
 public class PricingResource {
 
     @Inject PricingEngine pricingEngine;
+    @Inject PricingPreviewService pricingPreviewService;
 
     @GET
     @Path("/preview/{invoiceuuid}")
+    @Transactional(Transactional.TxType.REQUIRED)
     public Response preview(@PathParam("invoiceuuid") String invoiceuuid) {
         return preview(Invoice.findById(invoiceuuid));
     }
@@ -30,6 +34,7 @@ public class PricingResource {
 
     @POST
     @Path("/preview")
+    @Transactional(Transactional.TxType.REQUIRED)
     public Response preview(Invoice draft) {
         // Bypass for kreditnota (credit notes keep their stored values as-is)
         if (draft.getType() != null && draft.getType().name().equals("CREDIT_NOTE")) {
@@ -79,6 +84,7 @@ public class PricingResource {
         draft.vatAmount          = pr.vatAmount.doubleValue();
         draft.grandTotal         = pr.grandTotal.doubleValue();
         draft.calculationBreakdown = pr.breakdown;
+        draft.pricingPreview = pricingPreviewService.preview(draft);
 
         // Til UI preview: vis base + syntetiske (men persistér ikke)
         // Filter out effectively-CALCULATED items (origin=CALCULATED OR engine
