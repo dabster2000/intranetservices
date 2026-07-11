@@ -237,6 +237,7 @@ public class ExecutivePeopleCareerService {
             boolean suppressed = suppresses(members);
             boolean leaderSuppressed = suppresses(leaders);
             boolean rowSuppressed = suppressed || leaderSuppressed;
+            boolean detailAvailable = leadershipDetailAvailable(members, leaders);
             data.add(new LeadershipCoverageRow(
                     row.get("team_uuid", String.class),
                     row.get("team_name", String.class),
@@ -244,7 +245,10 @@ public class ExecutivePeopleCareerService {
                     visibleCount(leaders, rowSuppressed),
                     rowSuppressed ? null : spanPerLeader(members, leaders),
                     leaders > 0 ? "COVERED" : "UNCOVERED",
-                    rowSuppressed));
+                    rowSuppressed,
+                    detailAvailable,
+                    detailAvailable ? null : leadershipDetailUnavailableReason(members),
+                    leadershipDetailPrivacyReason(members, leaders)));
             sample += members;
             anySuppressed |= suppressed || leaderSuppressed;
         }
@@ -275,8 +279,8 @@ public class ExecutivePeopleCareerService {
                 " SUM(CASE WHEN membertype='LEADER' THEN 1 ELSE 0 END)" +
                 " OVER (PARTITION BY team_uuid) leader_count FROM team_population" +
                 ") SELECT team_uuid,team_name,useruuid,CONCAT(firstname,' ',lastname) display_name," +
-                " membertype,career_level FROM team_sized WHERE team_size>=3" +
-                " AND (leader_count=0 OR leader_count>=3)" +
+                " CASE WHEN leader_count>0 AND leader_count<3 THEN 'HIDDEN' ELSE membertype END membertype," +
+                " career_level FROM team_sized WHERE team_size>=3" +
                 " ORDER BY CASE membertype WHEN 'LEADER' THEN 0 ELSE 1 END,lastname,firstname";
         Map<String, Object> bindings = PeoplePopulationSqlSupport.snapshotBindings(
                 coverageFilters, "asOfDate", filters.asOfDate());
@@ -293,9 +297,14 @@ public class ExecutivePeopleCareerService {
                 row.get("display_name", String.class),
                 row.get("membertype", String.class),
                 row.get("career_level", String.class))).toList();
+        boolean rolesHidden = data.stream().anyMatch(row -> "HIDDEN".equals(row.role()));
         return new Response<>(meta(filters, filters.asOfDate(), filters.asOfDate(), null, null,
                 data.size(), 0, false, YearMonth.from(filters.asOfDate()),
-                List.of("Named team detail is ADMIN-only and unavailable for teams smaller than three people.")), data);
+                rolesHidden
+                        ? List.of(
+                                "Named team detail is ADMIN-only and unavailable for teams smaller than three people.",
+                                "LEADER_ROLE_HIDDEN_BELOW_PRIVACY_THRESHOLD: roles are hidden because the team has one or two leaders; the roster remains available.")
+                        : List.of("Named team detail is ADMIN-only and unavailable for teams smaller than three people.")), data);
     }
 
     private Map<String, Long> careerBandCounts(PeopleFilterParams filters, LocalDate snapshot) {
@@ -347,6 +356,16 @@ public class ExecutivePeopleCareerService {
     }
 
     static boolean leadershipDetailAvailable(long peopleIncludingLeaders, long leaders) {
-        return !suppresses(peopleIncludingLeaders) && !suppresses(leaders);
+        return !suppresses(peopleIncludingLeaders);
+    }
+
+    static String leadershipDetailUnavailableReason(long peopleIncludingLeaders) {
+        if (suppresses(peopleIncludingLeaders)) return "TEAM_BELOW_PRIVACY_THRESHOLD";
+        return null;
+    }
+
+    static String leadershipDetailPrivacyReason(long peopleIncludingLeaders, long leaders) {
+        if (suppresses(peopleIncludingLeaders)) return null;
+        return suppresses(leaders) ? "LEADER_ROLE_HIDDEN_BELOW_PRIVACY_THRESHOLD" : null;
     }
 }

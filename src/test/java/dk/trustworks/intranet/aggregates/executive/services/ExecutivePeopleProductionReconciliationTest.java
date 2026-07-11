@@ -4,6 +4,9 @@ import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAna
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.GenderTrendPoint;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.HeadcountCompositionPoint;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.Response;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.RetentionCohort;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.RetentionCohortPoint;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.StatusTrendPoint;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.WorkforceSummary;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.WorkforceFlowPoint;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleFilterParams;
@@ -72,7 +75,18 @@ class ExecutivePeopleProductionReconciliationTest {
         assertTrue(unassigned.suppressed());
         assertNull(unassigned.count()); // production contains exactly one; privacy must win
 
-        assertFalse(workforce.statusTrend(filters).data().isEmpty());
+        List<StatusTrendPoint> statuses = workforce.statusTrend(filters).data();
+        assertFalse(statuses.isEmpty());
+        List<StatusTrendPoint> protectedLeaveMonths = statuses.stream()
+                .filter(point -> !point.date().isBefore(LocalDate.of(2024, 10, 1)))
+                .filter(point -> !point.date().isAfter(LocalDate.of(2024, 12, 31)))
+                .toList();
+        assertEquals(3, protectedLeaveMonths.size());
+        assertTrue(protectedLeaveMonths.stream().allMatch(point ->
+                point.suppressed()
+                        && point.active() == null
+                        && point.onLeave() == null
+                        && point.employeeTotal() == null));
         List<WorkforceFlowPoint> actualFlow = workforce.workforceFlow(filters).data();
         assertFalse(actualFlow.isEmpty());
         assertTrue(actualFlow.stream().allMatch(point ->
@@ -85,15 +99,37 @@ class ExecutivePeopleProductionReconciliationTest {
         assertFalse(career.practiceCareerMatrix(filters).data().isEmpty());
         assertFalse(career.leadershipCoverage(filters).data().isEmpty());
         assertFalse(retentionPay.retentionRate(filters).data().isEmpty());
-        assertFalse(retentionPay.retentionCohorts(filters).data().isEmpty());
+        List<RetentionCohort> cohorts = retentionPay.retentionCohorts(fixedFilters(36)).data();
+        assertFalse(cohorts.isEmpty());
+        RetentionCohort cohort2022 = cohorts.stream()
+                .filter(cohort -> "2022".equals(cohort.cohort()))
+                .findFirst().orElseThrow();
+        RetentionCohortPoint month36 = cohort2022.points().stream()
+                .filter(point -> point.month() == 36)
+                .findFirst().orElseThrow();
+        assertFalse(month36.suppressed());
+        assertEquals(61.11d, month36.survivalPct(), 0.01d);
+        assertTrue(cohorts.stream().flatMap(cohort -> cohort.points().stream()).allMatch(point ->
+                List.of(0, 6, 12, 24, 36).contains(point.month())));
+        assertTrue(cohorts.stream().flatMap(cohort -> cohort.points().stream())
+                .filter(RetentionCohortPoint::suppressed)
+                .allMatch(point -> point.atRisk() == null
+                        && point.events() == null
+                        && point.intervalEvents() == null
+                        && point.survivalPct() == null));
         assertFalse(retentionPay.payEquity(filters).data().isEmpty());
+        assertEquals(4, retentionPay.payQuartiles(filters).data().size());
         assertEquals(24, retentionPay.payTrend(filters).data().size());
     }
 
     private static PeopleFilterParams fixedFilters() {
+        return fixedFilters(24);
+    }
+
+    private static PeopleFilterParams fixedFilters(int months) {
         PeopleFilterRequest request = new PeopleFilterRequest();
         request.asOfDate = "2026-07-10";
-        request.months = "24";
+        request.months = String.valueOf(months);
         request.horizonDays = "90";
         return PeopleFilterParams.from(request);
     }

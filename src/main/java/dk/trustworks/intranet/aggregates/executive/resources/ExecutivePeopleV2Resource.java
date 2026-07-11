@@ -7,6 +7,7 @@ import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAna
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.LeadershipCoverageDetail;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.LeadershipCoverageRow;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayEquityRow;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayQuartileRow;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayTrendPoint;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PracticeCareerCell;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.Response;
@@ -89,6 +90,9 @@ public class ExecutivePeopleV2Resource {
     static final Set<String> PAY_TREND_KEYS = Set.of(
             "asOfDate", "months", "companyId", "employeeTypes", "population", "practices", "careerTracks",
             "careerLevels", "managementScope", "salaryType");
+    static final Set<String> PAY_QUARTILE_KEYS = Set.of(
+            "asOfDate", "companyId", "employeeTypes", "population", "practices", "careerTracks",
+            "careerLevels", "managementScope", "salaryType");
     static final Map<String, Set<String>> ENDPOINT_QUERY_KEYS = Map.ofEntries(
             Map.entry("workforce-summary", WORKFORCE_SUMMARY_KEYS),
             Map.entry("headcount-composition", TREND_KEYS),
@@ -106,6 +110,7 @@ public class ExecutivePeopleV2Resource {
             Map.entry("retention-rate", RETENTION_KEYS),
             Map.entry("retention-cohorts", RETENTION_KEYS),
             Map.entry("pay-equity", PAY_EQUITY_KEYS),
+            Map.entry("pay-quartiles", PAY_QUARTILE_KEYS),
             Map.entry("pay-trend", PAY_TREND_KEYS));
 
     @Inject
@@ -230,6 +235,13 @@ public class ExecutivePeopleV2Resource {
     public Response<List<PayEquityRow>> payEquity(@BeanParam PeopleFilterRequest request) {
         requireSalaryScope();
         return retentionPayService.payEquity(filters(request, PAY_EQUITY_KEYS));
+    }
+
+    @GET
+    @Path("/pay-quartiles")
+    public Response<List<PayQuartileRow>> payQuartiles(@BeanParam PeopleFilterRequest request) {
+        requireSalaryScope();
+        return retentionPayService.payQuartiles(filters(request, PAY_QUARTILE_KEYS));
     }
 
     @GET
