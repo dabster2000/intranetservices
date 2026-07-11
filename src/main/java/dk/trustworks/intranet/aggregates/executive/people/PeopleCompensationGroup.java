@@ -4,5 +4,6 @@ package dk.trustworks.intranet.aggregates.executive.people;
 public enum PeopleCompensationGroup {
     CAREER_BAND,
     PRACTICE,
-    CAREER_TRACK
+    CAREER_TRACK,
+    DISCO_FUNCTION
 }

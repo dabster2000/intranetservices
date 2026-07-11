@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.executive.services;
 
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayEquityRow;
+import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayQuartileRow;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.PayTrendPoint;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.Response;
 import dk.trustworks.intranet.aggregates.executive.dto.people.ExecutivePeopleAnalyticsDTOs.RetentionCohort;
@@ -16,6 +17,8 @@ import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationScope;
 import dk.trustworks.intranet.aggregates.executive.people.PeoplePopulationSqlSupport;
 import dk.trustworks.intranet.aggregates.executive.people.PeopleSalaryType;
 import dk.trustworks.intranet.userservice.model.enums.CareerTrack;
+import dk.trustworks.intranet.userservice.model.enums.DstEmploymentFunction;
+import dk.trustworks.intranet.userservice.model.enums.DstEmploymentStatus;
 import dk.trustworks.intranet.userservice.model.enums.PrimarySkillType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -42,6 +45,9 @@ import static dk.trustworks.intranet.aggregates.executive.people.PeopleAnalytics
 /** Continuous-spell retention and contractual-pay analytics. */
 @ApplicationScoped
 public class ExecutivePeopleRetentionPayService {
+
+    private static final String OVERALL_GROUP = "OVERALL";
+    private static final List<Integer> COHORT_MILESTONES = List.of(0, 6, 12, 24, 36);
 
     @Inject
     PeopleAnalyticsRepository repository;
@@ -157,47 +163,38 @@ public class ExecutivePeopleRetentionPayService {
             String cohort = String.valueOf(toLong(row.get("cohort_year")));
             long cohortSize = toLong(row.get("cohort_size"));
             CohortAccumulator acc = cohorts.computeIfAbsent(cohort, ignored -> new CohortAccumulator(cohortSize));
-            if (acc.points.isEmpty()) totalSpells += cohortSize;
-            long atRisk = toLong(row.get("at_risk"));
-            long events = toLong(row.get("events"));
-            int month = (int) toLong(row.get("month_number"));
-            boolean pointSuppressed = acc.survivalSuppressed || suppresses(atRisk) || suppresses(events);
-            if (pointSuppressed) acc.survivalSuppressed = true;
-            if (!acc.survivalSuppressed && atRisk > 0) {
-                acc.survival *= 1.0d - ((double) events / atRisk);
-            }
-            acc.points.add(new RetentionCohortPoint(
-                    month,
-                    visibleCount(atRisk, pointSuppressed),
-                    visibleCount(events, pointSuppressed),
-                    visibleCount(Math.max(0, atRisk - events), pointSuppressed),
-                    acc.survivalSuppressed ? null : round2(acc.survival * 100.0d),
-                    pointSuppressed));
+            if (acc.observations.isEmpty()) totalSpells += cohortSize;
+            acc.observations.add(new CohortObservation(
+                    (int) toLong(row.get("month_number")),
+                    toLong(row.get("at_risk")),
+                    toLong(row.get("events"))));
         }
         List<RetentionCohort> data = new ArrayList<>(cohorts.size());
-        boolean anySuppressed = false;
         for (Map.Entry<String, CohortAccumulator> entry : cohorts.entrySet()) {
             CohortAccumulator acc = entry.getValue();
-            anySuppressed |= acc.cohortSuppressed || acc.survivalSuppressed;
+            List<RetentionCohortPoint> points = privacySafeMilestones(
+                    acc.cohortSize, acc.observations, filters.months());
             data.add(new RetentionCohort(
                     entry.getKey(),
                     visibleCount(acc.cohortSize, acc.cohortSuppressed),
                     acc.cohortSuppressed,
-                    acc.cohortSuppressed ? List.of() : acc.points));
+                    acc.cohortSuppressed ? List.of() : points));
         }
         return new Response<>(meta(filters, cohortStart, filters.asOfDate(), filters.months(), null,
-                anySuppressed ? -1 : totalSpells, 0, suppresses(totalSpells), YearMonth.from(filters.asOfDate()),
+                totalSpells, 0, suppresses(totalSpells), YearMonth.from(filters.asOfDate()),
                 List.of(
                         "Each hire or rehire creates a new continuous-employment spell in its actual start-year cohort.",
-                        "Cohort curves are shown through the selected 12, 24, or 36-month horizon (24 months by default).",
+                        "Cohort survival is shown only at observed month 0, 6, 12, 24, and 36 milestones inside the selected horizon.",
                         "Survival is Kaplan–Meier style: at-risk counts exclude employees whose observation window ended before that month.",
                         "Active spells are right-censored at the reporting date; future status rows are excluded.",
-                        "A suppressed event interval also suppresses later survival values to prevent differencing.")), data);
+                        "intervalEvents pools departures since the last visible milestone; a milestone is released only when that interval has zero or at least three departures and at least three people remain at risk.",
+                        "Suppressed interval events carry forward to the next milestone and are never rendered as zero; retained is populated only for the month-zero baseline.",
+                        "This ADMIN-only aggregate view is a privacy-screening control, not a differential-privacy guarantee.")), data);
     }
 
     public Response<List<PayEquityRow>> payEquity(PeopleFilterParams filters) {
         requireEmployedPopulation(filters, "pay-equity");
-        String groupExpression = compensationGroupExpression(filters.compensationGroup(), "fp");
+        String groupExpression = compensationGroupExpression(filters.compensationGroup(), "fp", "cds");
         String salaryExpression = salaryExpression(filters.salaryType(), "cs", "fp");
         String salaryPredicate = salaryPredicate(filters.salaryType(), "cs", "fp");
         String sql = "WITH " + PeoplePopulationSqlSupport.snapshotPopulationCtes(filters, "asOfDate") +
@@ -206,10 +203,19 @@ public class ExecutivePeopleRetentionPayService {
                 salaryTemporalOrder("s") + ") rn" +
                 " FROM salary s WHERE s.activefrom<=:asOfDate" +
                 "), current_salary AS (SELECT * FROM salary_ranked WHERE rn=1)," +
-                " compensation AS (" +
+                " dst_ranked AS (" +
+                " SELECT uds.*,ROW_NUMBER() OVER (PARTITION BY uds.useruuid" +
+                "  ORDER BY uds.active_date DESC,uds.uuid DESC) rn" +
+                " FROM user_dst_statistics uds WHERE uds.active_date<=:asOfDate" +
+                "), current_dst AS (SELECT * FROM dst_ranked WHERE rn=1)," +
+                " compensation_base AS (" +
                 " SELECT fp.useruuid,fp.gender," + groupExpression + " group_key," + salaryExpression + " pay_value" +
                 " FROM filtered_population fp JOIN current_salary cs ON cs.useruuid=fp.useruuid" +
+                " LEFT JOIN current_dst cds ON cds.useruuid=fp.useruuid" +
                 " WHERE " + salaryPredicate + " AND fp.gender IN ('MALE','FEMALE')" +
+                "), compensation AS (" +
+                " SELECT useruuid,gender,group_key,pay_value FROM compensation_base" +
+                " UNION ALL SELECT useruuid,gender,'" + OVERALL_GROUP + "',pay_value FROM compensation_base" +
                 "), gender_stats AS (" +
                 " SELECT group_key,gender," +
                 " COUNT(*) OVER (PARTITION BY group_key,gender) people_count," +
@@ -232,25 +238,37 @@ public class ExecutivePeopleRetentionPayService {
         bindings.put("salaryType", filters.salaryType().name());
         List<Tuple> rows = repository.tuples("pay-equity", sql, bindings);
         List<PayEquityRow> data = new ArrayList<>(rows.size());
-        long eligible = 0;
+        long groupedEligible = 0;
+        Long overallEligible = null;
+        long unassignedGrouping = 0;
         boolean anySuppressed = false;
         for (Tuple row : rows) {
             String group = row.get("group_key", String.class);
             long maleCount = toLong(row.get("male_count"));
             long femaleCount = toLong(row.get("female_count"));
-            eligible += maleCount + femaleCount;
+            if (OVERALL_GROUP.equals(group)) {
+                overallEligible = maleCount + femaleCount;
+            } else {
+                groupedEligible += maleCount + femaleCount;
+                if (group.startsWith("UNASSIGNED|") || group.endsWith("|UNASSIGNED")) {
+                    unassignedGrouping += maleCount + femaleCount;
+                }
+            }
             boolean suppressed = maleCount < 3 || femaleCount < 3;
             Double maleMedianRaw = suppressed ? null : toDoubleBoxed(row.get("male_median"));
             Double femaleMedianRaw = suppressed ? null : toDoubleBoxed(row.get("female_median"));
             Double maleMedian = maleMedianRaw == null ? null : round2(maleMedianRaw);
             Double femaleMedian = femaleMedianRaw == null ? null : round2(femaleMedianRaw);
-            Double maleMean = suppressed ? null : rounded(row.get("male_mean"));
-            Double femaleMean = suppressed ? null : rounded(row.get("female_mean"));
-            Double gap = suppressed || maleMedianRaw == null || maleMedianRaw == 0d || femaleMedianRaw == null
-                    ? null : round2((maleMedianRaw - femaleMedianRaw) / maleMedianRaw * 100.0d);
+            Double maleMeanRaw = suppressed ? null : toDoubleBoxed(row.get("male_mean"));
+            Double femaleMeanRaw = suppressed ? null : toDoubleBoxed(row.get("female_mean"));
+            Double maleMean = maleMeanRaw == null ? null : round2(maleMeanRaw);
+            Double femaleMean = femaleMeanRaw == null ? null : round2(femaleMeanRaw);
+            Double medianGap = signedGapPct(maleMedianRaw, femaleMedianRaw);
+            Double meanGap = signedGapPct(maleMeanRaw, femaleMeanRaw);
+            Boolean reviewThresholdMet = meanGap == null ? null : Math.abs(meanGap) >= 5.0d;
             data.add(new PayEquityRow(
                     group,
-                    group,
+                    compensationGroupLabel(filters.compensationGroup(), group),
                     compensationGroupSort(filters.compensationGroup(), group),
                     filters.salaryType().name(),
                     visibleCount(maleCount, suppressed),
@@ -259,24 +277,111 @@ public class ExecutivePeopleRetentionPayService {
                     femaleMedian,
                     maleMean,
                     femaleMean,
-                    gap,
+                    medianGap,
+                    meanGap,
+                    reviewThresholdMet,
+                    reviewReason(suppressed, reviewThresholdMet),
                     suppressed));
             anySuppressed |= suppressed;
         }
         data.sort(java.util.Comparator.comparingInt(PayEquityRow::sortOrder));
+        long eligible = overallEligible == null ? groupedEligible : overallEligible;
         long population = payPopulationCount(filters);
         long excluded = Math.max(0, population - eligible);
         if (complementSmallExcludedPayEquity(data, excluded)) anySuppressed = true;
+        List<String> caveats = new ArrayList<>(List.of(
+                "Pay is the latest contractual salary on or before the reporting date; owner cost overrides are never used.",
+                filters.salaryType() == PeopleSalaryType.NORMAL
+                        ? "NORMAL pay is monthly DKK normalized to 37 hours; salaries below 1,000 and zero allocations are excluded."
+                        : "HOURLY pay is the raw contractual DKK-per-hour rate in a separate view.",
+                "Each group requires at least three people of each recorded gender.",
+                "If one or two people are excluded, one eligible group is also hidden to prevent total differencing.",
+                "Median gap = (male median − female median) / male median × 100; mean gap uses the same signed formula with means.",
+                "reviewThresholdMet is a neutral screen for an absolute mean contractual-pay gap of at least 5%; it is not a finding of discrimination or a legal joint-pay-assessment trigger.",
+                filters.compensationGroup() == PeopleCompensationGroup.DISCO_FUNCTION
+                        ? "DISCO-08 functions and statutory employee categories are the latest classifications on or before the reporting date; they support like-work readiness screening but do not alone validate equal-value categories."
+                        : "Career bands are management groupings, not legally validated equal-work or equal-value worker categories.",
+                "Contractual salary excludes variable pay, supplements, lump sums, pension, and other remuneration required for a complete pay-transparency report."));
+        if (filters.compensationGroup() == PeopleCompensationGroup.DISCO_FUNCTION) {
+            caveats.add(discoCoverageCaveat(eligible, unassignedGrouping));
+            caveats.add(filters.companyId() == null
+                    ? "Group scope spans multiple legal employers, so no Danish reporting-eligibility conclusion may be drawn from these combined counts; select one company first."
+                    : "For a single company, the current Danish threshold of at least ten women and ten men in the same six-digit DISCO function and statutory employee category can be pre-screened from the displayed counts; legal applicability remains an employer assessment.");
+            caveats.add("SPECIAL_EMPLOYEES remains a separate source category; its statutory mapping requires HR/legal confirmation rather than automatic reassignment.");
+            caveats.add("This is a current-survivor contractual-pay pre-screen. Danish statutory statistics use prior-calendar-year gross pay, include leavers and variable/in-kind remuneration, and cannot be reproduced by this endpoint.");
+        }
         return new Response<>(meta(filters, filters.asOfDate(), filters.asOfDate(), null, null,
                 anySuppressed ? -1 : eligible, excluded, suppresses(eligible), YearMonth.from(filters.asOfDate()),
-                List.of(
-                        "Pay is the latest contractual salary on or before the reporting date; owner cost overrides are never used.",
-                        filters.salaryType() == PeopleSalaryType.NORMAL
-                                ? "NORMAL pay is monthly DKK normalized to 37 hours; salaries below 1,000 and zero allocations are excluded."
-                                : "HOURLY pay is the raw contractual DKK-per-hour rate in a separate view.",
-                        "Each group requires at least three people of each recorded gender.",
-                        "If one or two people are excluded, one eligible group is also hidden to prevent total differencing.",
-                        "Pay gap = (male median − female median) / male median × 100; the signed value is descriptive, not a target.")), data);
+                caveats), data);
+    }
+
+    public Response<List<PayQuartileRow>> payQuartiles(PeopleFilterParams filters) {
+        requireEmployedPopulation(filters, "pay-quartiles");
+        String salaryExpression = salaryExpression(filters.salaryType(), "cs", "fp");
+        String salaryPredicate = salaryPredicate(filters.salaryType(), "cs", "fp");
+        String sql = "WITH " + PeoplePopulationSqlSupport.snapshotPopulationCtes(filters, "asOfDate") +
+                ", salary_ranked AS (" +
+                " SELECT s.*,ROW_NUMBER() OVER (PARTITION BY s.useruuid ORDER BY " +
+                salaryTemporalOrder("s") + ") rn" +
+                " FROM salary s WHERE s.activefrom<=:asOfDate" +
+                "), current_salary AS (SELECT * FROM salary_ranked WHERE rn=1)," +
+                " eligible_pay AS (" +
+                " SELECT fp.useruuid,fp.gender," + salaryExpression + " pay_value" +
+                " FROM filtered_population fp JOIN current_salary cs ON cs.useruuid=fp.useruuid" +
+                " WHERE " + salaryPredicate + " AND fp.gender IN ('MALE','FEMALE')" +
+                "), ranked_pay AS (" +
+                " SELECT eligible_pay.*,NTILE(4) OVER (ORDER BY pay_value,useruuid) quartile_number" +
+                " FROM eligible_pay" +
+                ") SELECT quartile_number," +
+                " COUNT(DISTINCT CASE WHEN gender='MALE' THEN useruuid END) male_count," +
+                " COUNT(DISTINCT CASE WHEN gender='FEMALE' THEN useruuid END) female_count" +
+                " FROM ranked_pay GROUP BY quartile_number ORDER BY quartile_number";
+        Map<String, Object> bindings = PeoplePopulationSqlSupport.snapshotBindings(
+                filters, "asOfDate", filters.asOfDate());
+        bindings.put("salaryType", filters.salaryType().name());
+        List<Tuple> rows = repository.tuples("pay-quartiles", sql, bindings);
+        Map<Integer, long[]> counts = new LinkedHashMap<>();
+        for (Tuple row : rows) {
+            counts.put((int) toLong(row.get("quartile_number")), new long[]{
+                    toLong(row.get("male_count")), toLong(row.get("female_count"))});
+        }
+        List<PayQuartileRow> data = new ArrayList<>(4);
+        long eligible = 0;
+        boolean anySuppressed = false;
+        for (int quartile = 1; quartile <= 4; quartile++) {
+            long[] genderCounts = counts.getOrDefault(quartile, new long[]{0, 0});
+            long male = genderCounts[0];
+            long female = genderCounts[1];
+            long total = male + female;
+            eligible += total;
+            boolean suppressed = male < 3 || female < 3;
+            data.add(new PayQuartileRow(
+                    quartileKey(quartile),
+                    quartileLabel(quartile),
+                    quartile - 1,
+                    filters.salaryType().name(),
+                    visibleCount(male, suppressed),
+                    visibleCount(female, suppressed),
+                    percentage(male, total, suppressed),
+                    percentage(female, total, suppressed),
+                    suppressed));
+            anySuppressed |= suppressed;
+        }
+        long population = payPopulationCount(filters);
+        long excluded = Math.max(0, population - eligible);
+        if (suppressQuartileComplement(data, suppresses(excluded))) anySuppressed = true;
+        List<String> caveats = new ArrayList<>(List.of(
+                "Quartiles use NTILE(4) over the eligible current snapshot, ordered from lowest to highest contractual base pay.",
+                "NORMAL pay is normalized to 37 weekly hours; HOURLY pay remains a separate unit and is never mixed with NORMAL.",
+                "Each displayed quartile requires at least three people of each recorded gender; one additional quartile is hidden when needed for complementary suppression.",
+                "This is a current-survivor contractual-base-pay distribution, not prior-calendar-year statutory gross pay.",
+                "Variable pay, supplements, lump sums, pension, benefits in kind, and leavers are not included; equal-work/equal-value categories are not validated."));
+        caveats.add(filters.companyId() == null
+                ? "Group scope spans multiple legal employers, so the quartiles cannot be used as a legal-employer reporting result."
+                : "Single-company scope is an analytical pre-screen only; legal reporting eligibility and completeness require HR/legal review.");
+        return new Response<>(meta(filters, filters.asOfDate(), filters.asOfDate(), null, null,
+                anySuppressed ? -1 : eligible, excluded, suppresses(eligible), YearMonth.from(filters.asOfDate()),
+                caveats), data);
     }
 
     public Response<List<PayTrendPoint>> payTrend(PeopleFilterParams filters) {
@@ -392,16 +497,38 @@ public class ExecutivePeopleRetentionPayService {
         return rows.isEmpty() ? 0 : toLong(rows.getFirst().get("people_count"));
     }
 
-    private static String compensationGroupExpression(PeopleCompensationGroup group, String alias) {
+    private static String compensationGroupExpression(
+            PeopleCompensationGroup group, String alias, String dstAlias) {
         return switch (group) {
             case CAREER_BAND -> HrCareerBandMapper.toSqlCase(alias + ".career_level");
             case PRACTICE -> "COALESCE(" + alias + ".practice,'UNASSIGNED')";
             case CAREER_TRACK -> "CASE WHEN " + alias + ".career_level='JUNIOR_CONSULTANT' THEN 'ENTRY'" +
                     " WHEN " + alias + ".career_track IS NULL THEN 'UNASSIGNED' ELSE " + alias + ".career_track END";
+            case DISCO_FUNCTION -> "CONCAT(" + discoCodeCase(dstAlias) + ",'|'," +
+                    "COALESCE(" + dstAlias + ".job_status,'UNASSIGNED'))";
         };
     }
 
+    private static String compensationGroupLabel(PeopleCompensationGroup group, String value) {
+        if (OVERALL_GROUP.equals(value)) return "Overall eligible population";
+        if (group != PeopleCompensationGroup.DISCO_FUNCTION) return value;
+        String[] parts = value.split("\\|", -1);
+        String code = parts.length > 0 ? parts[0] : "UNASSIGNED";
+        String status = parts.length > 1 ? parts[1] : "UNASSIGNED";
+        String functionLabel = "UNASSIGNED".equals(code)
+                ? "Unassigned / missing DISCO-08"
+                : code + " · " + discoFunctionLabel(code);
+        String statusLabel = "UNASSIGNED".equals(status) ? "Unassigned employee category" : status;
+        try {
+            statusLabel = DstEmploymentStatus.valueOf(status).getName();
+        } catch (IllegalArgumentException ignored) {
+            // Preserve an unknown stored category verbatim for data-quality review.
+        }
+        return functionLabel + " — " + statusLabel;
+    }
+
     private static int compensationGroupSort(PeopleCompensationGroup group, String value) {
+        if (OVERALL_GROUP.equals(value)) return -1;
         return switch (group) {
             case CAREER_BAND -> HrCareerBandMapper.sortOrder(value);
             case PRACTICE -> {
@@ -418,7 +545,93 @@ public class ExecutivePeopleRetentionPayService {
                 int index = order.indexOf(value);
                 yield index < 0 ? order.size() : index;
             }
+            case DISCO_FUNCTION -> {
+                String[] parts = value.split("\\|", -1);
+                if (parts.length < 2 || "UNASSIGNED".equals(parts[0])) yield Integer.MAX_VALUE;
+                try {
+                    int code = Integer.parseInt(parts[0]);
+                    int statusOrder = "UNASSIGNED".equals(parts[1])
+                            ? 99 : DstEmploymentStatus.valueOf(parts[1]).ordinal();
+                    yield code * 100 + statusOrder;
+                } catch (IllegalArgumentException | ArrayIndexOutOfBoundsException ignored) {
+                    yield Integer.MAX_VALUE - 1;
+                }
+            }
         };
+    }
+
+    static String discoCodeCase(String alias) {
+        StringBuilder sql = new StringBuilder("CASE ").append(alias).append(".employement_function");
+        for (DstEmploymentFunction function : DstEmploymentFunction.values()) {
+            sql.append(" WHEN '").append(function.name()).append("' THEN '")
+                    .append(function.getCode()).append("'");
+        }
+        return sql.append(" ELSE 'UNASSIGNED' END").toString();
+    }
+
+    static String discoGroupKey(DstEmploymentFunction function, DstEmploymentStatus status) {
+        return function.getCode() + "|" + status.name();
+    }
+
+    private static String discoFunctionLabel(String code) {
+        return java.util.Arrays.stream(DstEmploymentFunction.values())
+                .filter(function -> String.valueOf(function.getCode()).equals(code))
+                .map(DstEmploymentFunction::getName)
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(" / "));
+    }
+
+    static String discoCoverageCaveat(long eligible, long unassigned) {
+        long classified = Math.max(0, eligible - unassigned);
+        if (eligible == 0) {
+            return "No eligible recorded-gender contractual-pay records are available for DISCO-08 coverage.";
+        }
+        if (suppresses(unassigned)) {
+            return "DISCO-08 coverage is available for the eligible recorded-gender contractual-pay population; the missing classification count is privacy-suppressed.";
+        }
+        return "DISCO-08 function/category classification covers " + classified + " of " + eligible +
+                " eligible recorded-gender contractual-pay records; " + unassigned + " remain unassigned.";
+    }
+
+    static String quartileKey(int quartile) {
+        return switch (quartile) {
+            case 1 -> "Q1_LOWEST";
+            case 2 -> "Q2_LOWER_MIDDLE";
+            case 3 -> "Q3_UPPER_MIDDLE";
+            case 4 -> "Q4_HIGHEST";
+            default -> throw new IllegalArgumentException("quartile must be between 1 and 4");
+        };
+    }
+
+    private static String quartileLabel(int quartile) {
+        return switch (quartile) {
+            case 1 -> "Q1 · Lowest pay";
+            case 2 -> "Q2 · Lower middle";
+            case 3 -> "Q3 · Upper middle";
+            case 4 -> "Q4 · Highest pay";
+            default -> throw new IllegalArgumentException("quartile must be between 1 and 4");
+        };
+    }
+
+    static boolean suppressQuartileComplement(List<PayQuartileRow> rows) {
+        return suppressQuartileComplement(rows, false);
+    }
+
+    static boolean suppressQuartileComplement(List<PayQuartileRow> rows, boolean forceComplement) {
+        if (!forceComplement && rows.stream().noneMatch(PayQuartileRow::suppressed)) return false;
+        int candidate = java.util.stream.IntStream.range(0, rows.size())
+                .boxed()
+                .filter(index -> !rows.get(index).suppressed())
+                .min(java.util.Comparator
+                        .comparingLong((Integer index) -> rows.get(index).maleCount() + rows.get(index).femaleCount())
+                        .thenComparing(index -> rows.get(index).key()))
+                .orElse(-1);
+        if (candidate < 0) return false;
+        PayQuartileRow row = rows.get(candidate);
+        rows.set(candidate, new PayQuartileRow(
+                row.key(), row.label(), row.sortOrder(), row.salaryType(),
+                null, null, null, null, true));
+        return true;
     }
 
     private static String salaryExpression(PeopleSalaryType type, String salaryAlias, String statusAlias) {
@@ -444,20 +657,102 @@ public class ExecutivePeopleRetentionPayService {
     }
 
     static boolean complementSmallExcludedPayEquity(List<PayEquityRow> rows, long excluded) {
-        if (!suppresses(excluded) || rows.stream().anyMatch(PayEquityRow::suppressed)) return false;
-        int candidate = java.util.stream.IntStream.range(0, rows.size())
+        int overallIndex = java.util.stream.IntStream.range(0, rows.size())
                 .boxed()
+                .filter(index -> OVERALL_GROUP.equals(rows.get(index).groupKey()))
+                .findFirst()
+                .orElse(-1);
+        if (overallIndex < 0 || rows.get(overallIndex).suppressed()) return false;
+
+        long hiddenPartitions = rows.stream()
+                .filter(row -> !OVERALL_GROUP.equals(row.groupKey()) && row.suppressed())
+                .count();
+        boolean needsComplement = hiddenPartitions == 1 || suppresses(excluded);
+        if (!needsComplement || hiddenPartitions >= 2) return false;
+
+        int requiredComplements = (int) (2 - hiddenPartitions);
+        List<Integer> candidates = java.util.stream.IntStream.range(0, rows.size())
+                .boxed()
+                .filter(index -> !OVERALL_GROUP.equals(rows.get(index).groupKey()))
+                .filter(index -> !rows.get(index).suppressed())
                 .filter(index -> rows.get(index).maleCount() != null && rows.get(index).femaleCount() != null)
-                .min(java.util.Comparator
+                .sorted(java.util.Comparator
                         .comparingLong((Integer index) -> rows.get(index).maleCount() + rows.get(index).femaleCount())
                         .thenComparing(index -> rows.get(index).groupKey()))
-                .orElse(-1);
-        if (candidate < 0) return false;
-        PayEquityRow row = rows.get(candidate);
-        rows.set(candidate, new PayEquityRow(
+                .toList();
+        int complements = Math.min(requiredComplements, candidates.size());
+        for (int index = 0; index < complements; index++) {
+            int candidate = candidates.get(index);
+            rows.set(candidate, suppressedPayEquityRow(
+                    rows.get(candidate), "COMPLEMENTARY_PRIVACY_SUPPRESSION"));
+        }
+        if (hiddenPartitions + complements < 2) {
+            rows.set(overallIndex, suppressedPayEquityRow(
+                    rows.get(overallIndex), "OVERALL_PRIVACY_SUPPRESSION"));
+        }
+        return complements > 0 || hiddenPartitions + complements < 2;
+    }
+
+    private static PayEquityRow suppressedPayEquityRow(PayEquityRow row, String reason) {
+        return new PayEquityRow(
                 row.groupKey(), row.groupLabel(), row.sortOrder(), row.salaryType(),
-                null, null, null, null, null, null, null, true));
-        return true;
+                null, null, null, null, null, null, null, null, null,
+                reason, true);
+    }
+
+    static Double signedGapPct(Double maleValue, Double femaleValue) {
+        if (maleValue == null || femaleValue == null || maleValue == 0d) return null;
+        return round2((maleValue - femaleValue) / maleValue * 100.0d);
+    }
+
+    static String reviewReason(boolean suppressed, Boolean reviewThresholdMet) {
+        if (suppressed) return "PAY_CELL_BELOW_PRIVACY_THRESHOLD";
+        if (reviewThresholdMet == null) return "INSUFFICIENT_ELIGIBLE_PAY_DATA";
+        return reviewThresholdMet
+                ? "OBSERVED_ABSOLUTE_MEAN_CONTRACTUAL_PAY_GAP_AT_LEAST_FIVE_PERCENT"
+                : "OBSERVED_ABSOLUTE_MEAN_CONTRACTUAL_PAY_GAP_BELOW_FIVE_PERCENT";
+    }
+
+    static List<RetentionCohortPoint> privacySafeMilestones(
+            long cohortSize, List<CohortObservation> observations, int horizonMonths) {
+        if (suppresses(cohortSize)) return List.of();
+        List<RetentionCohortPoint> points = new ArrayList<>();
+        points.add(new RetentionCohortPoint(
+                0, 0, cohortSize, 0L, 0L, cohortSize, 100.0d,
+                false, false, null));
+        double survival = 1.0d;
+        long pendingIntervalEvents = 0;
+        int intervalStartMonth = 0;
+        for (CohortObservation observation : observations.stream()
+                .sorted(java.util.Comparator.comparingInt(CohortObservation::month)).toList()) {
+            if (observation.month() > horizonMonths) break;
+            if (observation.atRisk() > 0) {
+                survival *= 1.0d - ((double) observation.events() / observation.atRisk());
+            }
+            pendingIntervalEvents += observation.events();
+            if (observation.month() == 0 || !COHORT_MILESTONES.contains(observation.month())) continue;
+
+            boolean atRiskSuppressed = suppresses(observation.atRisk());
+            boolean intervalEventsSuppressed = suppresses(pendingIntervalEvents);
+            boolean pointSuppressed = atRiskSuppressed || intervalEventsSuppressed;
+            points.add(new RetentionCohortPoint(
+                    observation.month(),
+                    intervalStartMonth,
+                    visibleCount(observation.atRisk(), pointSuppressed),
+                    visibleCount(pendingIntervalEvents, pointSuppressed),
+                    visibleCount(pendingIntervalEvents, pointSuppressed),
+                    null,
+                    pointSuppressed ? null : round2(survival * 100.0d),
+                    pointSuppressed,
+                    intervalEventsSuppressed,
+                    atRiskSuppressed ? "AT_RISK_BELOW_PRIVACY_THRESHOLD"
+                            : intervalEventsSuppressed ? "INTERVAL_EVENTS_BELOW_PRIVACY_THRESHOLD" : null));
+            if (!pointSuppressed) {
+                intervalStartMonth = observation.month();
+                pendingIntervalEvents = 0;
+            }
+        }
+        return List.copyOf(points);
     }
 
     static boolean complementSmallExcludedPayTrend(List<PayTrendPoint> points, long excluded) {
@@ -488,17 +783,17 @@ public class ExecutivePeopleRetentionPayService {
         }
     }
 
+    record CohortObservation(int month, long atRisk, long events) {
+    }
+
     private static final class CohortAccumulator {
         private final long cohortSize;
         private final boolean cohortSuppressed;
-        private final List<RetentionCohortPoint> points = new ArrayList<>();
-        private double survival = 1.0d;
-        private boolean survivalSuppressed;
+        private final List<CohortObservation> observations = new ArrayList<>();
 
         private CohortAccumulator(long cohortSize) {
             this.cohortSize = cohortSize;
             this.cohortSuppressed = suppresses(cohortSize);
-            this.survivalSuppressed = cohortSuppressed;
         }
     }
 }
