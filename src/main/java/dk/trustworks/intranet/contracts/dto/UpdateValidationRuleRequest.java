@@ -54,7 +54,9 @@ public class UpdateValidationRuleRequest {
     private Integer priority;
 
     /**
-     * Whether the rule is active.
+     * Whether the rule is active. Null means "leave unchanged" — a PUT omitting
+     * this field preserves the rule's current active state instead of silently
+     * deactivating an active rule (spec §9.4).
      */
-    private boolean active;
+    private Boolean active;
 }

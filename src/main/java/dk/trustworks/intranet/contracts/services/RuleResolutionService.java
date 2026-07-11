@@ -4,8 +4,6 @@ import dk.trustworks.intranet.contracts.dto.ContractRuleSetDTO;
 import dk.trustworks.intranet.contracts.mappers.ContractOverrideMapper;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.OverrideType;
-import io.quarkus.cache.CacheKey;
-import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import lombok.extern.jbosslog.JBossLog;
@@ -29,11 +27,6 @@ import java.util.stream.Collectors;
  *   <li><b>DISABLE</b>: Base rule is removed from effective set</li>
  *   <li><b>MODIFY</b>: Non-null override fields are merged with base rule fields</li>
  * </ul>
- *
- * <p><b>Caching:</b>
- * - Results are cached by contract UUID and date
- * - Cache is invalidated when overrides are created/updated/deleted
- * - TTL is configured via feature service
  *
  * @see ContractValidationRuleEntity
  * @see ContractRateAdjustmentEntity

@@ -6,7 +6,6 @@ import dk.trustworks.intranet.contracts.dto.ValidationOverrideDTO;
 import dk.trustworks.intranet.contracts.mappers.ContractOverrideMapper;
 import dk.trustworks.intranet.contracts.model.*;
 import dk.trustworks.intranet.contracts.model.enums.OverrideType;
-import io.quarkus.cache.CacheInvalidate;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -25,7 +24,6 @@ import java.util.List;
  * <p><b>Key Features:</b>
  * <ul>
  *   <li>Feature flag integration - checks if overrides are enabled</li>
- *   <li>Cache invalidation - clears cache after mutations</li>
  *   <li>Transactional operations - ensures data consistency</li>
  *   <li>Input validation - validates override values before persisting</li>
  *   <li>Audit logging - tracks who created/modified overrides</li>

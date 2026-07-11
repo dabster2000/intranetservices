@@ -280,6 +280,15 @@ feature:
       # Override via env var FEATURE_INVOICING_INTERNAL_ATTRIBUTION_DRIVEN or
       # the Quarkus config key `feature.invoicing.internal.attribution-driven`.
       attribution-driven: true
+  # Credit-note finalization guard (framework-agreements redesign §9.6).
+  # When true, invoice finalization SKIPS invoice-item recalculation for
+  # CREDIT_NOTE invoices, preserving the lines copied from the source invoice —
+  # a credit note should credit what was BILLED, not what today's pricing rules
+  # say. Default false = current behavior (re-run the pricing engine on
+  # finalization). Enable only after staging verification against historical
+  # credit notes and finance sign-off.
+  invoice:
+    cn-preserve-lines: false
   # Contract Rule Override System feature flags
   contract:
     overrides:

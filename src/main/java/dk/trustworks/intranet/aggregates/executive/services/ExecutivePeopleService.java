@@ -86,12 +86,16 @@ public class ExecutivePeopleService {
                 "JOIN `user` u ON u.uuid = us.useruuid " +
                 "WHERE us.`type` IN ('CONSULTANT', 'STUDENT', 'STAFF') " +
                 "  AND us.status = 'ACTIVE' " +
+                "  AND us.statusdate <= CURDATE() " +
                 "  AND u.birthday IS NOT NULL " +
                 "  AND u.birthday != '0000-00-00' " +
+                "  AND u.birthday <= CURDATE() " +
+                "  AND u.birthday >= DATE_SUB(CURDATE(), INTERVAL 100 YEAR) " +
                 companyFilter +
                 "  AND NOT EXISTS ( " +
                 "    SELECT 1 FROM userstatus us2 " +
                 "    WHERE us2.useruuid = us.useruuid " +
+                "      AND us2.statusdate <= CURDATE() " +
                 "      AND us2.statusdate > us.statusdate " +
                 "  ) " +
                 "GROUP BY bucket_start, u.gender " +

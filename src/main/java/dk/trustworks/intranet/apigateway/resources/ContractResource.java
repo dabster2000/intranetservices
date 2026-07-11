@@ -140,11 +140,18 @@ public class ContractResource {
 
     @GET
     @Path("/count-by-type/{contractTypeCode}")
-    public Long countContractsByType(@PathParam("contractTypeCode") String contractTypeCode) {
+    public ContractCountResponse countContractsByType(@PathParam("contractTypeCode") String contractTypeCode) {
         log.debug("ContractResource.countContractsByType");
         log.debug("contractTypeCode = " + contractTypeCode);
-        return Contract.count("contractType", contractTypeCode);
+        return new ContractCountResponse(Contract.count("contractType", contractTypeCode));
     }
+
+    /**
+     * Response shape for {@code GET /contracts/count-by-type/{code}}: {@code {"count": n}}.
+     * Replaces the previous bare JSON number (framework-agreements redesign §9.2);
+     * the BFF tolerates both shapes.
+     */
+    public record ContractCountResponse(long count) {}
 
     @GET
     @Path("/by-type/{contractTypeCode}")

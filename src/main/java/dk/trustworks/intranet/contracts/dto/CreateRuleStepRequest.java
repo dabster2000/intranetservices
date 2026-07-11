@@ -1,5 +1,6 @@
 package dk.trustworks.intranet.contracts.dto;
 
+import dk.trustworks.intranet.aggregates.invoice.pricing.RulePurpose;
 import dk.trustworks.intranet.aggregates.invoice.pricing.RuleStepType;
 import dk.trustworks.intranet.aggregates.invoice.pricing.StepBase;
 import jakarta.validation.constraints.*;
@@ -46,8 +47,15 @@ public class CreateRuleStepRequest {
     private StepBase stepBase;
 
     /**
+     * Optional business purpose tag (DISCOUNT | ADMIN_FEE).
+     * Only settable on PERCENT_DISCOUNT_ON_SUM rules — 400 otherwise.
+     */
+    private RulePurpose purpose;
+
+    /**
      * Percentage value for percentage-based rules (0-100).
-     * Required for PERCENT_DISCOUNT_ON_SUM and ADMIN_FEE_PERCENT rules.
+     * PERCENT_DISCOUNT_ON_SUM rules need percent or paramKey (or both — percent is the
+     * engine fallback when the paramKey is missing on the contract).
      */
     @DecimalMin(value = "0.0", message = "Percent must be non-negative")
     @DecimalMax(value = "100.0", message = "Percent must not exceed 100")

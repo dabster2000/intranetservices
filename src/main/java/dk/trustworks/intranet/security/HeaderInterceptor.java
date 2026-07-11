@@ -39,7 +39,7 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
         // API client JWTs have preferred_username set to the client_id (e.g., "autofix-worker").
         // Only API clients may identify as system actors.
         if (requestedBy != null && requestedBy.startsWith("system:")) {
-            String jwtUsername = jwt.getClaim("preferred_username");
+            String jwtUsername = jwtClaimOrNull("preferred_username");
             // API client JWTs have non-UUID preferred_username (e.g., "autofix-worker")
             // User/BFF JWTs have UUID-format preferred_username or none
             boolean isApiClient = jwtUsername != null && !jwtUsername.isEmpty()
@@ -51,7 +51,7 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
         }
 
         if (requestedBy == null || requestedBy.isEmpty()) {
-            requestedBy = jwt.getClaim("preferred_username");
+            requestedBy = jwtClaimOrNull("preferred_username");
             if (requestedBy != null) log.debugf("User identifier resolved from JWT: %s", requestedBy);
         }
         if (requestedBy == null || requestedBy.isEmpty()) {
@@ -66,6 +66,22 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
         requestHeaderHolder.setUserUuid(requestedBy);
         MDC.put("userUuid", requestedBy);
         log.debugf("Request userUuid set to %s", requestedBy);
+    }
+
+    /**
+     * Reads a claim from the injected {@link JsonWebToken}, returning {@code null} when the
+     * active security identity is not a JWT. In production every authenticated request carries
+     * a real JWT, so this never changes behavior there; without the guard, non-JWT principals
+     * (e.g. {@code @TestSecurity} in tests) make the producer throw {@link IllegalStateException}
+     * and turn any request lacking an X-Requested-By header into a 500.
+     */
+    private String jwtClaimOrNull(String claimName) {
+        try {
+            return jwt.getClaim(claimName);
+        } catch (IllegalStateException e) {
+            log.debugf("Current principal is not a JWT; claim %s unavailable", claimName);
+            return null;
+        }
     }
 
     @Override
