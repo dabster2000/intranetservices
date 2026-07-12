@@ -102,6 +102,7 @@ jobs:
               {"name":"EXPENSE_ECONOMICS_SYNC_ENABLED","value":"false"},
               {"name":"INVOICE_ECONOMICS_SYNC_ENABLED","value":"false"},
               {"name":"FINANCE_ECONOMICS_LOAD_ENABLED","value":"false"},
+              {"name":"FEATURE_TIMESHEET_RULE_ENFORCEMENT_MODE","value":"LOG_ONLY"},
               {"name":"ENVIRONMENT_ID","value":"staging"},
               {"name":"PERF_METRICS_ENABLED","value":"false"},
               {"name":"INVOICE_S3","value":"invoicefiles-test"},
