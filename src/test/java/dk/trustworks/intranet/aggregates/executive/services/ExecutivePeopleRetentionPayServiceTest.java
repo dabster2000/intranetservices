@@ -26,7 +26,7 @@ import static org.mockito.Mockito.when;
 class ExecutivePeopleRetentionPayServiceTest {
 
     @Test
-    void milestonePrivacyCarriesSmallEventsForwardUntilThePooledIntervalIsSafe() {
+    void milestonesAreAllReleasedWhenPrivacyFloorDisabled() {
         List<RetentionCohortPoint> points = ExecutivePeopleRetentionPayService.privacySafeMilestones(
                 10,
                 List.of(
@@ -40,17 +40,23 @@ class ExecutivePeopleRetentionPayServiceTest {
 
         assertEquals(List.of(0, 6, 12, 24, 36), points.stream().map(RetentionCohortPoint::month).toList());
         assertEquals(100.0d, points.get(0).survivalPct());
-        assertTrue(points.get(1).suppressed());
-        assertNull(points.get(1).intervalEvents());
-        assertEquals("INTERVAL_EVENTS_BELOW_PRIVACY_THRESHOLD", points.get(1).suppressionReason());
+        // Privacy floor disabled: every observed milestone is released with its real interval events.
+        assertFalse(points.get(1).suppressed());
+        assertEquals(0, points.get(1).intervalStartMonth());
+        assertEquals(1L, points.get(1).intervalEvents());
+        assertNull(points.get(1).suppressionReason());
+        assertEquals(90.0d, points.get(1).survivalPct());
         assertFalse(points.get(2).suppressed());
-        assertEquals(0, points.get(2).intervalStartMonth());
-        assertEquals(3L, points.get(2).intervalEvents());
+        assertEquals(6, points.get(2).intervalStartMonth());
+        assertEquals(2L, points.get(2).intervalEvents());
         assertEquals(70.0d, points.get(2).survivalPct());
-        assertTrue(points.get(3).suppressed());
+        assertFalse(points.get(3).suppressed());
+        assertEquals(12, points.get(3).intervalStartMonth());
+        assertEquals(1L, points.get(3).intervalEvents());
+        assertEquals(60.0d, points.get(3).survivalPct());
         assertFalse(points.get(4).suppressed());
-        assertEquals(12, points.get(4).intervalStartMonth());
-        assertEquals(3L, points.get(4).intervalEvents());
+        assertEquals(24, points.get(4).intervalStartMonth());
+        assertEquals(2L, points.get(4).intervalEvents());
         assertEquals(40.0d, points.get(4).survivalPct());
     }
 

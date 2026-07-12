@@ -4,24 +4,24 @@ import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PeopleComplementarySuppressionTest {
 
     @Test
-    void addsComplementWhenOneOrSeveralPrimaryCellsExist() {
-        assertEquals(Set.of("small", "safe-a"), PeopleComplementarySuppression.suppressedKeys(
-                Map.of("small", 1L, "safe-a", 3L, "safe-b", 8L)));
+    void noComplementIsHiddenWhenPrivacyFloorDisabled() {
+        // With the privacy floor disabled, 1–2-person cells are no longer primary-suppressed,
+        // so no complementary safe cell is hidden either.
+        assertTrue(PeopleComplementarySuppression.suppressedKeys(
+                Map.of("small", 1L, "safe-a", 3L, "safe-b", 8L)).isEmpty());
 
-        assertEquals(Set.of("small-a", "small-b", "safe-a"), PeopleComplementarySuppression.suppressedKeys(
-                Map.of("small-a", 1L, "small-b", 2L, "safe-a", 3L, "safe-b", 8L)));
+        assertTrue(PeopleComplementarySuppression.suppressedKeys(
+                Map.of("small-a", 1L, "small-b", 2L, "safe-a", 3L, "safe-b", 8L)).isEmpty());
     }
 
     @Test
-    void equalCountComplementIsStableAcrossMapInsertionOrder() {
+    void suppressedKeysAreEmptyRegardlessOfInsertionOrder() {
         Map<String, Long> first = new LinkedHashMap<>();
         first.put("small", 1L);
         first.put("safe-b", 3L);
@@ -32,9 +32,8 @@ class PeopleComplementarySuppressionTest {
         second.put("small", 1L);
         second.put("safe-b", 3L);
 
-        Set<String> expected = Set.of("small", "safe-a");
-        assertEquals(expected, PeopleComplementarySuppression.suppressedKeys(first));
-        assertEquals(expected, PeopleComplementarySuppression.suppressedKeys(second));
+        assertTrue(PeopleComplementarySuppression.suppressedKeys(first).isEmpty());
+        assertTrue(PeopleComplementarySuppression.suppressedKeys(second).isEmpty());
     }
 
     @Test

@@ -187,8 +187,7 @@ public class ExecutivePeopleRetentionPayService {
                         "Cohort survival is shown only at observed month 0, 6, 12, 24, and 36 milestones inside the selected horizon.",
                         "Survival is Kaplan–Meier style: at-risk counts exclude employees whose observation window ended before that month.",
                         "Active spells are right-censored at the reporting date; future status rows are excluded.",
-                        "intervalEvents pools departures since the last visible milestone; a milestone is released only when that interval has zero or at least three departures and at least three people remain at risk.",
-                        "Suppressed interval events carry forward to the next milestone and are never rendered as zero; retained is populated only for the month-zero baseline.",
+                        "intervalEvents shows departures since the previous milestone; retained is populated only for the month-zero baseline.",
                         "This ADMIN-only aggregate view is a privacy-screening control, not a differential-privacy guarantee.")), data);
     }
 
@@ -254,7 +253,7 @@ public class ExecutivePeopleRetentionPayService {
                     unassignedGrouping += maleCount + femaleCount;
                 }
             }
-            boolean suppressed = maleCount < 3 || femaleCount < 3;
+            boolean suppressed = false; // privacy floor removed — ADMIN-only full-detail view
             Double maleMedianRaw = suppressed ? null : toDoubleBoxed(row.get("male_median"));
             Double femaleMedianRaw = suppressed ? null : toDoubleBoxed(row.get("female_median"));
             Double maleMedian = maleMedianRaw == null ? null : round2(maleMedianRaw);
@@ -294,8 +293,6 @@ public class ExecutivePeopleRetentionPayService {
                 filters.salaryType() == PeopleSalaryType.NORMAL
                         ? "NORMAL pay is monthly DKK normalized to 37 hours; salaries below 1,000 and zero allocations are excluded."
                         : "HOURLY pay is the raw contractual DKK-per-hour rate in a separate view.",
-                "Each group requires at least three people of each recorded gender.",
-                "If one or two people are excluded, one eligible group is also hidden to prevent total differencing.",
                 "Median gap = (male median − female median) / male median × 100; mean gap uses the same signed formula with means.",
                 "reviewThresholdMet is a neutral screen for an absolute mean contractual-pay gap of at least 5%; it is not a finding of discrimination or a legal joint-pay-assessment trigger.",
                 filters.compensationGroup() == PeopleCompensationGroup.DISCO_FUNCTION
@@ -354,7 +351,7 @@ public class ExecutivePeopleRetentionPayService {
             long female = genderCounts[1];
             long total = male + female;
             eligible += total;
-            boolean suppressed = male < 3 || female < 3;
+            boolean suppressed = false; // privacy floor removed — ADMIN-only full-detail view
             data.add(new PayQuartileRow(
                     quartileKey(quartile),
                     quartileLabel(quartile),
@@ -373,7 +370,6 @@ public class ExecutivePeopleRetentionPayService {
         List<String> caveats = new ArrayList<>(List.of(
                 "Quartiles use NTILE(4) over the eligible current snapshot, ordered from lowest to highest contractual base pay.",
                 "NORMAL pay is normalized to 37 weekly hours; HOURLY pay remains a separate unit and is never mixed with NORMAL.",
-                "Each displayed quartile requires at least three people of each recorded gender; one additional quartile is hidden when needed for complementary suppression.",
                 "This is a current-survivor contractual-base-pay distribution, not prior-calendar-year statutory gross pay.",
                 "Variable pay, supplements, lump sums, pension, benefits in kind, and leavers are not included; equal-work/equal-value categories are not validated."));
         caveats.add(filters.companyId() == null
@@ -429,7 +425,7 @@ public class ExecutivePeopleRetentionPayService {
             long count = toLong(row.get("people_count"));
             long male = toLong(row.get("male_count"));
             long female = toLong(row.get("female_count"));
-            boolean suppressed = male < 3 || female < 3;
+            boolean suppressed = false; // privacy floor removed — ADMIN-only full-detail view
             data.add(new PayTrendPoint(
                     YearMonth.from(localDate(row.get("snapshot_date"))).toString(),
                     filters.salaryType().name(),
@@ -449,9 +445,7 @@ public class ExecutivePeopleRetentionPayService {
                 List.of(
                         "Median and mean use the contractual pay unit shown by salaryType.",
                         "NORMAL and HOURLY values are never combined in one series.",
-                        "Excluded count is the reporting-date employed population without an eligible contractual pay record.",
-                        "If one or two people are excluded, the current eligible pay point is also hidden to prevent total differencing.",
-                        "A month is suppressed unless it contains at least three recorded male and three recorded female employees.")), data);
+                        "Excluded count is the reporting-date employed population without an eligible contractual pay record.")), data);
     }
 
     private String retentionSnapshotScope(PeopleFilterParams filters) {

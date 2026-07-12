@@ -31,7 +31,11 @@ class ExecutivePeopleCareerServiceTest {
                 counts, java.util.Set.of("Professional", "Executive")));
         assertTrue(ExecutivePeopleCareerService.hasComparablePriorCareerMix(
                 counts, java.util.Set.of("Senior / Advisory", "Executive")));
-        assertFalse(ExecutivePeopleCareerService.hasComparablePriorCareerMix(
+        // Privacy floor disabled: a small but fully-assigned, fully-visible prior year now qualifies
+        // (only a truly-empty prior year is excluded).
+        assertTrue(ExecutivePeopleCareerService.hasComparablePriorCareerMix(
                 Map.of("Professional", 2L), java.util.Set.of()));
+        assertFalse(ExecutivePeopleCareerService.hasComparablePriorCareerMix(
+                Map.of(), java.util.Set.of()));
     }
 }

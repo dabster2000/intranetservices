@@ -46,8 +46,7 @@ public class ExecutivePeopleCareerService {
     private static final List<String> CAREER_CAVEATS = List.of(
             "Career views include employed internal consultants only; staff, students, and externals are excluded.",
             "Career records are resolved to the latest value on or before each reporting date.",
-            "Entry is shared across tracks and missing career records are shown as Unassigned.",
-            "Counts from one or two people are suppressed after all filters are applied.");
+            "Entry is shared across tracks and missing career records are shown as Unassigned.");
 
     private static final List<String> MATRIX_TRACK_ORDER = List.of(
             "ENTRY",
@@ -279,8 +278,8 @@ public class ExecutivePeopleCareerService {
                 " SUM(CASE WHEN membertype='LEADER' THEN 1 ELSE 0 END)" +
                 " OVER (PARTITION BY team_uuid) leader_count FROM team_population" +
                 ") SELECT team_uuid,team_name,useruuid,CONCAT(firstname,' ',lastname) display_name," +
-                " CASE WHEN leader_count>0 AND leader_count<3 THEN 'HIDDEN' ELSE membertype END membertype," +
-                " career_level FROM team_sized WHERE team_size>=3" +
+                " membertype," +
+                " career_level FROM team_sized" +
                 " ORDER BY CASE membertype WHEN 'LEADER' THEN 0 ELSE 1 END,lastname,firstname";
         Map<String, Object> bindings = PeoplePopulationSqlSupport.snapshotBindings(
                 coverageFilters, "asOfDate", filters.asOfDate());
@@ -297,14 +296,9 @@ public class ExecutivePeopleCareerService {
                 row.get("display_name", String.class),
                 row.get("membertype", String.class),
                 row.get("career_level", String.class))).toList();
-        boolean rolesHidden = data.stream().anyMatch(row -> "HIDDEN".equals(row.role()));
         return new Response<>(meta(filters, filters.asOfDate(), filters.asOfDate(), null, null,
                 data.size(), 0, false, YearMonth.from(filters.asOfDate()),
-                rolesHidden
-                        ? List.of(
-                                "Named team detail is ADMIN-only and unavailable for teams smaller than three people.",
-                                "LEADER_ROLE_HIDDEN_BELOW_PRIVACY_THRESHOLD: roles are hidden because the team has one or two leaders; the roster remains available.")
-                        : List.of("Named team detail is ADMIN-only and unavailable for teams smaller than three people.")), data);
+                List.of("Named team detail is ADMIN-only.")), data);
     }
 
     private Map<String, Long> careerBandCounts(PeopleFilterParams filters, LocalDate snapshot) {
@@ -323,7 +317,7 @@ public class ExecutivePeopleCareerService {
 
     static boolean hasComparablePriorCareerMix(Map<String, Long> counts, Set<String> hiddenKeys) {
         long total = counts.values().stream().mapToLong(Long::longValue).sum();
-        if (total < 3) return false;
+        if (total == 0) return false; // only guard the truly-empty prior year; privacy floor removed
         long assigned = total - counts.getOrDefault(HrCareerBandMapper.UNASSIGNED, 0L);
         long privacyVisible = counts.entrySet().stream()
                 .filter(entry -> !hiddenKeys.contains(entry.getKey()))

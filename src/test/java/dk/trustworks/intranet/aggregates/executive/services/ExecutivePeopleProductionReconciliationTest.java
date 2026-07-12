@@ -22,7 +22,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -72,8 +71,8 @@ class ExecutivePeopleProductionReconciliationTest {
         CareerLadderRow unassigned = ladder.data().stream()
                 .filter(row -> row.level().equals("UNASSIGNED"))
                 .findFirst().orElseThrow();
-        assertTrue(unassigned.suppressed());
-        assertNull(unassigned.count()); // production contains exactly one; privacy must win
+        assertFalse(unassigned.suppressed());
+        assertEquals(1L, unassigned.count()); // privacy floor disabled — the single UNASSIGNED person is shown
 
         List<StatusTrendPoint> statuses = workforce.statusTrend(filters).data();
         assertFalse(statuses.isEmpty());
@@ -82,11 +81,12 @@ class ExecutivePeopleProductionReconciliationTest {
                 .filter(point -> !point.date().isAfter(LocalDate.of(2024, 12, 31)))
                 .toList();
         assertEquals(3, protectedLeaveMonths.size());
+        // Privacy floor disabled — these small leave months are now shown rather than suppressed.
         assertTrue(protectedLeaveMonths.stream().allMatch(point ->
-                point.suppressed()
-                        && point.active() == null
-                        && point.onLeave() == null
-                        && point.employeeTotal() == null));
+                !point.suppressed()
+                        && point.active() != null
+                        && point.onLeave() != null
+                        && point.employeeTotal() != null));
         List<WorkforceFlowPoint> actualFlow = workforce.workforceFlow(filters).data();
         assertFalse(actualFlow.isEmpty());
         assertTrue(actualFlow.stream().allMatch(point ->

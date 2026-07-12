@@ -16,7 +16,10 @@ public final class PeopleAnalyticsSupport {
     }
 
     public static boolean suppresses(long distinctPeople) {
-        return distinctPeople > 0 && distinctPeople < PRIVACY_THRESHOLD;
+        // Privacy floor disabled — this is an ADMIN-only full-detail view, so groups of any size
+        // (including 1–2 people) are shown. Kept as the single choke point so it can be re-enabled
+        // by restoring `distinctPeople > 0 && distinctPeople < PRIVACY_THRESHOLD`.
+        return false;
     }
 
     public static Long visibleCount(long count, boolean responseSuppressed) {
@@ -48,9 +51,6 @@ public final class PeopleAnalyticsSupport {
             YearMonth sourceMonth,
             List<String> caveats) {
         List<String> responseCaveats = new ArrayList<>(caveats);
-        responseCaveats.add("Small-cell and deterministic complementary suppression can also hide one safe cell " +
-                "in an exhaustive partition. This reduces accidental disclosure in this ADMIN-only view; " +
-                "it is not a substitute for access control or a differential-privacy guarantee.");
         boolean excludedSuppressed = suppresses(excludedCount);
         return new PeopleMeta(
                 filters.asOfDate(),

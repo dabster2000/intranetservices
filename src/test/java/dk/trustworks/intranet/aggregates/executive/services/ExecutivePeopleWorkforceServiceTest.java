@@ -47,7 +47,7 @@ class ExecutivePeopleWorkforceServiceTest {
     }
 
     @Test
-    void smallLeaveCellIsAnExplainedPrivacyGapRatherThanMissingMonth() {
+    void smallLeaveCellIsShownWhenFloorDisabled() {
         PeopleAnalyticsRepository repository = mock(PeopleAnalyticsRepository.class);
         Tuple row = datedRow();
         when(row.get("active")).thenReturn(100L);
@@ -61,15 +61,15 @@ class ExecutivePeopleWorkforceServiceTest {
 
         StatusTrendPoint point = service.statusTrend(filters()).data().getFirst();
 
-        assertTrue(point.suppressed());
-        assertEquals("BELOW_PRIVACY_THRESHOLD", point.suppressionReason());
-        assertNull(point.active());
-        assertNull(point.onLeave());
-        assertNull(point.employeeTotal());
+        assertFalse(point.suppressed());
+        assertNull(point.suppressionReason());
+        assertEquals(100L, point.active());
+        assertEquals(1L, point.onLeave());
+        assertEquals(101L, point.employeeTotal());
     }
 
     @Test
-    void upcomingCellsDeclareWhetherNamedDetailIsPrivacySafe() {
+    void upcomingCellsAreDetailAvailableWhenFloorDisabled() {
         PeopleAnalyticsRepository repository = mock(PeopleAnalyticsRepository.class);
         Tuple hidden = upcomingRow("2026-08-01", "FIRST_HIRE", 1L);
         Tuple visible = upcomingRow("2026-08-15", "DEPARTURE", 3L);
@@ -80,8 +80,8 @@ class ExecutivePeopleWorkforceServiceTest {
 
         var summaries = service.upcomingChanges(filters()).data().summary();
 
-        assertFalse(summaries.get(0).detailAvailable());
-        assertEquals("BELOW_PRIVACY_THRESHOLD", summaries.get(0).detailUnavailableReason());
+        assertTrue(summaries.get(0).detailAvailable());
+        assertNull(summaries.get(0).detailUnavailableReason());
         assertTrue(summaries.get(1).detailAvailable());
         assertNull(summaries.get(1).detailUnavailableReason());
     }

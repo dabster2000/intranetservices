@@ -54,12 +54,11 @@ class ExecutivePeopleAnalyticsSupportTest {
         assertTrue(ExecutivePeopleCareerService.leadershipDetailAvailable(6, 3));
         assertTrue(ExecutivePeopleCareerService.leadershipDetailAvailable(6, 0));
         assertTrue(ExecutivePeopleCareerService.leadershipDetailAvailable(6, 1));
-        assertEquals(false, ExecutivePeopleCareerService.leadershipDetailAvailable(2, 0));
+        // Privacy floor disabled: small teams are available and produce no suppression reason.
+        assertTrue(ExecutivePeopleCareerService.leadershipDetailAvailable(2, 0));
         assertNull(ExecutivePeopleCareerService.leadershipDetailUnavailableReason(6));
-        assertEquals("TEAM_BELOW_PRIVACY_THRESHOLD",
-                ExecutivePeopleCareerService.leadershipDetailUnavailableReason(2));
-        assertEquals("LEADER_ROLE_HIDDEN_BELOW_PRIVACY_THRESHOLD",
-                ExecutivePeopleCareerService.leadershipDetailPrivacyReason(6, 1));
+        assertNull(ExecutivePeopleCareerService.leadershipDetailUnavailableReason(2));
+        assertNull(ExecutivePeopleCareerService.leadershipDetailPrivacyReason(6, 1));
     }
 
     @Test
@@ -75,26 +74,23 @@ class ExecutivePeopleAnalyticsSupportTest {
     }
 
     @Test
-    void smallExcludedPayPopulationGetsDeterministicEligibleComplement() {
+    void smallExcludedPayPopulationIsNotComplementedWhenFloorDisabled() {
         List<PayEquityRow> equity = new ArrayList<>(List.of(
                 payRow("OVERALL", 16, 16),
                 payRow("B", 4, 4),
                 payRow("A", 4, 4),
                 payRow("C", 8, 8)));
 
-        assertTrue(ExecutivePeopleRetentionPayService.complementSmallExcludedPayEquity(equity, 2));
-        assertEquals(List.of("B", "A"), equity.stream()
-                .filter(PayEquityRow::suppressed)
-                .map(PayEquityRow::groupKey)
-                .toList());
-        assertFalse(equity.getFirst().suppressed());
+        // Privacy floor disabled: a small excluded population no longer triggers complementary suppression.
+        assertFalse(ExecutivePeopleRetentionPayService.complementSmallExcludedPayEquity(equity, 2));
+        assertTrue(equity.stream().noneMatch(PayEquityRow::suppressed));
 
         List<PayTrendPoint> trend = new ArrayList<>(List.of(
                 new PayTrendPoint("2026-06", "NORMAL", 100L, 60_000d, 61_000d, false),
                 new PayTrendPoint("2026-07", "NORMAL", 101L, 60_500d, 61_500d, false)));
-        assertTrue(ExecutivePeopleRetentionPayService.complementSmallExcludedPayTrend(trend, 1));
-        assertNull(trend.getLast().count());
-        assertTrue(trend.getLast().suppressed());
+        assertFalse(ExecutivePeopleRetentionPayService.complementSmallExcludedPayTrend(trend, 1));
+        assertEquals(101L, trend.getLast().count());
+        assertFalse(trend.getLast().suppressed());
     }
 
     @Test
@@ -141,8 +137,9 @@ class ExecutivePeopleAnalyticsSupportTest {
         assertEquals(
                 "DISCO-08 function/category classification covers 120 of 142 eligible recorded-gender contractual-pay records; 22 remain unassigned.",
                 ExecutivePeopleRetentionPayService.discoCoverageCaveat(142, 22));
-        assertTrue(ExecutivePeopleRetentionPayService.discoCoverageCaveat(142, 2)
-                .contains("privacy-suppressed"));
+        assertEquals(
+                "DISCO-08 function/category classification covers 140 of 142 eligible recorded-gender contractual-pay records; 2 remain unassigned.",
+                ExecutivePeopleRetentionPayService.discoCoverageCaveat(142, 2));
         assertEquals(
                 ExecutivePeopleRetentionPayService.discoGroupKey(
                         DstEmploymentFunction.CEO, DstEmploymentStatus.EMPLOYEES),

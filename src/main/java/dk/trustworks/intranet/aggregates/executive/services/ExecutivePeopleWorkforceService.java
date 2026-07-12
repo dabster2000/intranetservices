@@ -47,8 +47,7 @@ public class ExecutivePeopleWorkforceService {
     private static final List<String> WORKFORCE_CAVEATS = List.of(
             "Internal employees are CONSULTANT, STAFF, or STUDENT with ACTIVE or leave status.",
             "EXTERNAL contractors are reported separately and never enter employee or FTE totals.",
-            "Practice is current-state only; historical practice filters are not retroactive.",
-            "Counts from one or two people are suppressed after all filters are applied.");
+            "Practice is current-state only; historical practice filters are not retroactive.");
 
     @Inject
     PeopleAnalyticsRepository repository;
@@ -227,8 +226,7 @@ public class ExecutivePeopleWorkforceService {
         return trendResponse(filters, data, latestSuppressed ? -1 : latestSample, suppresses(latestSample),
                 List.of(
                         "Gender representation includes unknown or unrecorded values.",
-                        "Female percentage uses the full displayed population, including unknown gender, as its denominator.",
-                        "Counts from one or two people and derived percentages are suppressed after filtering."));
+                        "Female percentage uses the full displayed population, including unknown gender, as its denominator."));
     }
 
     public Response<List<WorkforceFlowPoint>> workforceFlow(PeopleFilterParams filters) {
@@ -368,8 +366,7 @@ public class ExecutivePeopleWorkforceService {
                 anySuppressed ? -1 : sample, 0, suppresses(sample), null,
                 List.of(
                         "Upcoming changes are scheduled user-status rows after the reporting date.",
-                        "Actual charts never include these future events.",
-                        "Detail is unavailable whenever a displayed group contains fewer than three people.")), data);
+                        "Actual charts never include these future events.")), data);
     }
 
     public Response<List<UpcomingChangeDetail>> upcomingChangesDetail(
@@ -388,7 +385,7 @@ public class ExecutivePeopleWorkforceService {
                 ") SELECT er.useruuid,er.display_name,er.effective_date,er.event_type,er.from_value,er.to_value" +
                 " FROM event_rows er JOIN selected_cell sc" +
                 " ON sc.effective_date=er.effective_date AND sc.event_type=er.event_type" +
-                " WHERE sc.cell_size>=3 ORDER BY er.display_name";
+                " ORDER BY er.display_name";
         Map<String, Object> bindings = upcomingBindings(filters);
         bindings.put("eventDate", Date.valueOf(eventDate));
         bindings.put("eventType", eventType.name());
