@@ -68,10 +68,11 @@ public class SigningCase {
 
     /**
      * Async processing status for batch job tracking.
-     * Values: PENDING_FETCH, FETCHING, COMPLETED, FAILED.
+     * Values: PENDING_FETCH, FETCHING, COMPLETED, FAILED, SKIPPED.
      *
      * Handles race condition where NextSign needs time before cases are queryable.
      * Cases start as PENDING_FETCH and are processed by background batch job.
+     * Terminal non-uploadable cases are marked SKIPPED and are not selected again.
      */
     @Column(name = "processing_status", length = 50)
     @Builder.Default

@@ -732,6 +732,7 @@ public class SigningResource {
      * - FETCHING: Cases currently being processed by batch job
      * - COMPLETED: Cases with status successfully fetched
      * - FAILED: Cases that failed to fetch (will retry)
+     * - SKIPPED: Terminal non-uploadable cases excluded from future polling
      *
      * Useful for monitoring async processing health and detecting issues.
      *

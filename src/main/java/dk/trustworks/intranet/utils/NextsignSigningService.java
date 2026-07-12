@@ -1,8 +1,5 @@
 package dk.trustworks.intranet.utils;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import dk.trustworks.intranet.utils.client.NextsignClient;
 import dk.trustworks.intranet.utils.client.NextsignDocumentClient;
 import dk.trustworks.intranet.utils.client.NextsignResponseExceptionMapper;
@@ -43,9 +40,6 @@ import java.util.List;
 @ApplicationScoped
 public class NextsignSigningService {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
-        .enable(SerializationFeature.INDENT_OUTPUT);
-
     @Inject
     @RestClient
     NextsignClient nextsignClient;
@@ -62,11 +56,8 @@ public class NextsignSigningService {
 
     @PostConstruct
     void logConfiguration() {
-        log.infof("Nextsign configuration loaded - Company: %s, Token: %s...%s (length: %d)",
-            company,
-            bearerToken != null && bearerToken.length() > 8 ? bearerToken.substring(0, 8) : "???",
-            bearerToken != null && bearerToken.length() > 8 ? bearerToken.substring(bearerToken.length() - 4) : "???",
-            bearerToken != null ? bearerToken.length() : 0);
+        log.infof("Nextsign configuration loaded - Company: %s, bearer token configured: %s",
+            company, bearerToken != null && !bearerToken.isBlank());
     }
 
     /**
@@ -99,8 +90,8 @@ public class NextsignSigningService {
      */
     public String createSigningCase(byte[] pdfBytes, String documentName, List<SignerInfo> signers,
                                     String referenceId, List<String> signingSchemas) {
-        log.infof("Creating signing case for document: %s (%d bytes) with %d signers, schemas: %s",
-            documentName, pdfBytes.length, signers.size(),
+        log.infof("Creating signing case with %d document bytes, %d signers, schemas: %s",
+            pdfBytes.length, signers.size(),
             signingSchemas != null && !signingSchemas.isEmpty() ? signingSchemas : "defaults");
 
         try {
@@ -108,7 +99,7 @@ public class NextsignSigningService {
             CreateCaseRequest request = buildDynamicSigningRequest(pdfBytes, documentName, signers, referenceId, signingSchemas);
 
             // Log request details (without the base64 document content)
-            logRequestDetails(request);
+            logRequestSummary(request);
 
             // Call Nextsign API with Bearer token
             String authHeader = "Bearer " + bearerToken;
@@ -117,15 +108,12 @@ public class NextsignSigningService {
             CreateCaseResponse response = nextsignClient.createCase(company, authHeader, request);
 
             // Log response
-            log.infof("Nextsign API response - Status: %s, Message: %s",
-                response.status(), response.message());
+            log.infof("Nextsign API response - Status: %s", response.status());
 
             // Check for errors
             if (!response.isSuccess()) {
-                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
-                throw new NextsignException(
-                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
-                );
+                log.errorf("Nextsign API returned error status: %s", response.status());
+                throw new NextsignException("Nextsign API error status: " + response.status());
             }
 
             if (response.contract() == null || response.contract().id() == null) {
@@ -135,23 +123,18 @@ public class NextsignSigningService {
 
             // Use MongoDB _id for API calls, not nextSignKey
             String caseId = response.contract().id();
-            String nextSignKey = response.contract().nextSignKey();
-            log.infof("Successfully created signing case. CaseId: %s, NextSignKey: %s, Title: %s",
-                caseId, nextSignKey, response.contract().title());
+            log.infof("Successfully created signing case. CaseId: %s", caseId);
             return caseId;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
-                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+            throw safeApiException("creating signing case", e);
 
         } catch (NextsignException e) {
             throw e;
 
         } catch (Exception e) {
-            log.errorf(e, "Unexpected error creating signing case for: %s - %s: %s",
-                documentName, e.getClass().getSimpleName(), e.getMessage());
+            log.errorf(e, "Unexpected error creating signing case - %s: %s",
+                e.getClass().getSimpleName(), e.getMessage());
             throw new NextsignException("Failed to create signing case: " + e.getMessage(), e);
         }
     }
@@ -182,7 +165,7 @@ public class NextsignSigningService {
             CreateCaseRequest request = buildMultiDocumentSigningRequest(documents, signers, referenceId, signingSchemas);
 
             // Log request details
-            logMultiDocumentRequestDetails(request);
+            logRequestSummary(request);
 
             // Call Nextsign API with Bearer token
             String authHeader = "Bearer " + bearerToken;
@@ -191,15 +174,12 @@ public class NextsignSigningService {
             CreateCaseResponse response = nextsignClient.createCase(company, authHeader, request);
 
             // Log response
-            log.infof("Nextsign API response - Status: %s, Message: %s",
-                response.status(), response.message());
+            log.infof("Nextsign API response - Status: %s", response.status());
 
             // Check for errors
             if (!response.isSuccess()) {
-                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
-                throw new NextsignException(
-                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
-                );
+                log.errorf("Nextsign API returned error status: %s", response.status());
+                throw new NextsignException("Nextsign API error status: " + response.status());
             }
 
             if (response.contract() == null || response.contract().id() == null) {
@@ -209,16 +189,11 @@ public class NextsignSigningService {
 
             // Use MongoDB _id for API calls
             String caseId = response.contract().id();
-            String nextSignKey = response.contract().nextSignKey();
-            log.infof("Successfully created multi-document signing case. CaseId: %s, NextSignKey: %s, Title: %s",
-                caseId, nextSignKey, response.contract().title());
+            log.infof("Successfully created multi-document signing case. CaseId: %s", caseId);
             return caseId;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
-                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+            throw safeApiException("creating multi-document signing case", e);
 
         } catch (NextsignException e) {
             throw e;
@@ -251,19 +226,14 @@ public class NextsignSigningService {
                 response.contract() != null ? response.contract().caseStatus() : "unknown");
 
             if (!response.isSuccess()) {
-                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
-                throw new NextsignException(
-                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
-                );
+                log.errorf("Nextsign API returned error status: %s", response.status());
+                throw new NextsignException("Nextsign API error status: " + response.status());
             }
 
             return response;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
-                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+            throw safeApiException("fetching case status", e);
 
         } catch (NextsignException e) {
             throw e;
@@ -312,8 +282,7 @@ public class NextsignSigningService {
                 throw new NextsignException("Failed to get presigned URL: empty response");
             }
 
-            log.infof("Got presigned URL (expires in 1 hour): %s...",
-                response.signedUrl().substring(0, Math.min(60, response.signedUrl().length())));
+            log.info("Got presigned URL for signed document (expires in 1 hour)");
 
             // Step 2: Download PDF from presigned URL
             byte[] pdfBytes = downloadFromUrl(response.signedUrl());
@@ -324,9 +293,7 @@ public class NextsignSigningService {
             return pdfBytes;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("NextSign API error downloading document: status=%d, body=%s",
-                e.getStatusCode(), e.getResponseBody());
-            throw new NextsignException("Failed to download document: " + e.getMessage(), e);
+            throw safeApiException("downloading signed document", e);
 
         } catch (IOException e) {
             log.errorf(e, "IO error downloading document from presigned URL");
@@ -375,19 +342,14 @@ public class NextsignSigningService {
                 response.getCases().size());
 
             if (!response.isSuccess()) {
-                log.errorf("Nextsign API returned error status: %s - %s", response.status(), response.message());
-                throw new NextsignException(
-                    String.format("Nextsign API error: %s - %s", response.status(), response.message())
-                );
+                log.errorf("Nextsign API returned error status: %s", response.status());
+                throw new NextsignException("Nextsign API error status: " + response.status());
             }
 
             return response;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("Nextsign API error response - Status: %d %s, Body: %s",
-                e.getStatusCode(), e.getStatusInfo(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+            throw safeApiException("listing cases", e);
 
         } catch (NextsignException e) {
             throw e;
@@ -414,10 +376,7 @@ public class NextsignSigningService {
             log.infof("Successfully deleted case from NextSign: %s", caseId);
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("Nextsign API error deleting case: status=%d, body=%s",
-                e.getStatusCode(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "Nextsign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+            throw safeApiException("deleting case", e);
 
         } catch (NextsignException e) {
             throw e;
@@ -455,10 +414,7 @@ public class NextsignSigningService {
             return response;
 
         } catch (NextsignResponseExceptionMapper.NextsignApiException e) {
-            log.errorf("NextSign API error getting presigned URL: status=%d, body=%s",
-                e.getStatusCode(), e.getResponseBody());
-            throw new NextsignException(String.format(
-                "NextSign API error %d: %s", e.getStatusCode(), e.getResponseBody()), e);
+            throw safeApiException("getting presigned URL", e);
 
         } catch (NextsignException e) {
             throw e;
@@ -477,7 +433,7 @@ public class NextsignSigningService {
      * @throws IOException if download fails
      */
     private byte[] downloadFromUrl(String url) throws IOException {
-        log.debugf("Downloading from URL: %s...", url.substring(0, Math.min(60, url.length())));
+        log.debug("Downloading document from a presigned URL");
 
         try (InputStream in = new URL(url).openStream()) {
             byte[] bytes = in.readAllBytes();
@@ -487,48 +443,17 @@ public class NextsignSigningService {
     }
 
     /**
-     * Logs request details for debugging (masks document content).
+     * Logs only non-sensitive request cardinalities. Names, email addresses,
+     * reference IDs, document metadata, settings, and payloads are excluded.
      */
-    private void logRequestDetails(CreateCaseRequest request) {
-        try {
-            // Create a copy with truncated document for logging
-            String docPreview = request.documents().isEmpty() ? "none" :
-                String.format("%s (%d chars base64)",
-                    request.documents().get(0).name(),
-                    request.documents().get(0).file().length());
-
-            log.infof("Nextsign request details - Title: %s, ReferenceId: %s, Folder: %s, AutoSend: %s",
-                request.title(), request.referenceId(), request.folder(), request.autoSend());
-            log.infof("Nextsign request - UserEmail: %s, Document: %s",
-                request.userEmail(), docPreview);
-            log.infof("Nextsign request - Recipients: %s", request.recipients());
-            log.infof("Nextsign request - SigningSchemas: %s", request.signingSchemas());
-            log.debugf("Nextsign request - Settings: %s", request.settings());
-
-            // Log full JSON structure (with document content truncated) at debug level
-            if (log.isDebugEnabled()) {
-                // Create modified request for logging without huge base64
-                CreateCaseRequest logRequest = new CreateCaseRequest(
-                    request.title(),
-                    request.referenceId(),
-                    request.folder(),
-                    request.autoSend(),
-                    request.userEmail(),
-                    request.settings(),
-                    request.signingSchemas(),
-                    request.recipients(),
-                    List.of(new CreateCaseRequest.Document(
-                        request.documents().get(0).name(),
-                        "<BASE64_CONTENT_TRUNCATED:" + request.documents().get(0).file().length() + "_chars>",
-                        request.documents().get(0).fileIsBlob(),
-                        request.documents().get(0).signObligated()
-                    ))
-                );
-                log.debugf("Nextsign request JSON structure:\n%s", OBJECT_MAPPER.writeValueAsString(logRequest));
-            }
-        } catch (JsonProcessingException e) {
-            log.warnf("Failed to serialize request for logging: %s", e.getMessage());
-        }
+    private void logRequestSummary(CreateCaseRequest request) {
+        log.infof(
+            "Nextsign create request summary - documents=%d, recipients=%d, schemas=%d, autoSend=%s",
+            request.documents() != null ? request.documents().size() : 0,
+            request.recipients() != null ? request.recipients().size() : 0,
+            request.signingSchemas() != null ? request.signingSchemas().size() : 0,
+            request.autoSend()
+        );
     }
 
     /**
@@ -670,28 +595,15 @@ public class NextsignSigningService {
         );
     }
 
-    /**
-     * Logs multi-document request details for debugging (masks document content).
-     */
-    private void logMultiDocumentRequestDetails(CreateCaseRequest request) {
-        try {
-            // Log document summary without base64 content
-            StringBuilder docSummary = new StringBuilder();
-            for (int i = 0; i < request.documents().size(); i++) {
-                CreateCaseRequest.Document doc = request.documents().get(i);
-                if (i > 0) docSummary.append(", ");
-                docSummary.append(String.format("%s (%d chars base64)", doc.name(), doc.file().length()));
-            }
-
-            log.infof("Nextsign multi-doc request - Title: %s, ReferenceId: %s, Folder: %s",
-                request.title(), request.referenceId(), request.folder());
-            log.infof("Nextsign multi-doc request - Documents: [%s]", docSummary.toString());
-            log.infof("Nextsign multi-doc request - Recipients: %s", request.recipients());
-            log.infof("Nextsign multi-doc request - SigningSchemas: %s", request.signingSchemas());
-
-        } catch (Exception e) {
-            log.warnf("Failed to log multi-document request details: %s", e.getMessage());
-        }
+    private NextsignException safeApiException(
+            String operation,
+            NextsignResponseExceptionMapper.NextsignApiException error) {
+        log.errorf("Nextsign API error while %s - Status: %d %s",
+            operation, error.getStatusCode(), error.getStatusInfo());
+        return new NextsignException(
+            String.format("Nextsign API error %d %s", error.getStatusCode(), error.getStatusInfo()),
+            error
+        );
     }
 
     /**

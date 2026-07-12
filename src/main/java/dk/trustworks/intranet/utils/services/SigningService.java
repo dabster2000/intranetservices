@@ -36,6 +36,8 @@ import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Service for managing document signing workflows.
@@ -48,6 +50,12 @@ public class SigningService {
 
     private static final DateTimeFormatter NEXTSIGN_DATE_FORMATTER =
         DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+
+    private static final Set<String> TERMINAL_NON_UPLOADABLE_STATUSES = Set.of(
+        "expired", "rejected", "denied", "cancelled"
+    );
+
+    private static final String PROCESSING_STATUS_SKIPPED = "SKIPPED";
 
     @Inject
     NextsignSigningService nextsignService;
@@ -469,9 +477,14 @@ public class SigningService {
             dbCase.setTotalSigners(liveStatus.totalSigners());
             dbCase.setCompletedSigners(liveStatus.completedSigners());
             dbCase.setLastStatusFetch(LocalDateTime.now());
-            dbCase.setStatusFetchError(null);
-            if ("PENDING_FETCH".equals(dbCase.getProcessingStatus()) || "FAILED".equals(dbCase.getProcessingStatus())) {
-                dbCase.setProcessingStatus("COMPLETED");
+
+            if (isTerminalNonUploadableStatus(liveStatus.status())) {
+                applyTerminalSkip(dbCase);
+            } else {
+                dbCase.setStatusFetchError(null);
+                if ("PENDING_FETCH".equals(dbCase.getProcessingStatus()) || "FAILED".equals(dbCase.getProcessingStatus())) {
+                    dbCase.setProcessingStatus("COMPLETED");
+                }
             }
 
             signingCaseRepository.persist(dbCase);
@@ -751,7 +764,16 @@ public class SigningService {
      * The NextSign API does not return a case_status field, so we compute it.
      */
     private String deriveSigningStatus(GetCaseStatusResponse.CaseDetails contract, int totalSigners, int completedSigners) {
-        // If NextSign ever returns case_status in the future, use it
+        // A fully signed case remains uploadable even when NextSign also reports
+        // that its signing availability has expired.
+        boolean signingCompleted = totalSigners > 0 && completedSigners >= totalSigners;
+        if (signingCompleted
+                && contract.caseStatus() != null
+                && "expired".equalsIgnoreCase(contract.caseStatus().trim())) {
+            return "completed";
+        }
+
+        // If NextSign returns another explicit case_status, use it.
         if (contract.caseStatus() != null && !contract.caseStatus().isBlank()) {
             return contract.caseStatus();
         }
@@ -765,10 +787,20 @@ public class SigningService {
             }
         }
 
-        // Derive from completion counts
-        if (totalSigners > 0 && completedSigners >= totalSigners) {
+        // Derive from completion counts. Completion takes precedence over expiry
+        // so fully signed documents remain eligible for SharePoint upload.
+        if (signingCompleted) {
             return "completed";
         }
+
+        // NextSign can leave an expired case open with case_status=null. Such a
+        // case can no longer make signing progress and must not be polled forever.
+        if (contract.settings() != null
+                && contract.settings().availability() != null
+                && contract.settings().availability().isExpired()) {
+            return "expired";
+        }
+
         if (completedSigners > 0) {
             return "in_progress";
         }
@@ -955,27 +987,77 @@ public class SigningService {
 
     /**
      * Update case with fetched status (called by batch job).
-     * Marks the case as COMPLETED in processing_status.
+     * Marks terminal non-uploadable cases as SKIPPED; all other successful
+     * status fetches are marked COMPLETED.
      *
      * @param entity The SigningCase entity to update
      * @param status Fetched status from NextSign
+     * @return true when the case reached a terminal non-uploadable status and was skipped
      */
     @Transactional
-    public void updateCaseWithFetchedStatus(SigningCase entity, SigningCaseStatus status) {
+    public boolean updateCaseWithFetchedStatus(SigningCase entity, SigningCaseStatus status) {
         log.debugf("Updating case %s with fetched status", entity.getCaseKey());
 
         entity.setDocumentName(status.documentName());
         entity.setStatus(status.status());
         entity.setTotalSigners(status.totalSigners());
         entity.setCompletedSigners(status.completedSigners());
-        entity.setProcessingStatus("COMPLETED");
         entity.setLastStatusFetch(LocalDateTime.now());
-        entity.setStatusFetchError(null); // Clear previous error
-        entity.setRetryCount(0); // Reset retry count on success
+
+        boolean skipped = isTerminalNonUploadableStatus(status.status());
+        if (skipped) {
+            applyTerminalSkip(entity);
+        } else {
+            entity.setProcessingStatus("COMPLETED");
+            entity.setStatusFetchError(null); // Clear previous error
+            entity.setRetryCount(0); // Reset retry count on non-terminal success
+        }
 
         signingCaseRepository.persist(entity);
 
-        log.infof("Updated case %s with fetched status", entity.getCaseKey());
+        if (skipped) {
+            log.warnf("Marked case %s as SKIPPED after terminal NextSign status '%s'",
+                entity.getCaseKey(), status.status());
+        } else {
+            log.infof("Updated case %s with fetched status", entity.getCaseKey());
+        }
+
+        return skipped;
+    }
+
+    /**
+     * Stops polling a locally known terminal case before making another NextSign call.
+     * This is a defensive path for rows populated before terminal-state handling existed
+     * or updated by another status-fetch entry point.
+     *
+     * @param entity signing case selected by the batch job
+     * @return true when the case was terminal and transitioned to SKIPPED
+     */
+    @Transactional
+    public boolean markCaseSkippedIfTerminal(SigningCase entity) {
+        if (entity == null || !isTerminalNonUploadableStatus(entity.getStatus())) {
+            return false;
+        }
+
+        applyTerminalSkip(entity);
+        signingCaseRepository.persist(entity);
+        log.warnf("Marked already-terminal case %s as SKIPPED (status '%s')",
+            entity.getCaseKey(), entity.getStatus());
+        return true;
+    }
+
+    private static boolean isTerminalNonUploadableStatus(String status) {
+        return status != null
+            && TERMINAL_NON_UPLOADABLE_STATUSES.contains(status.toLowerCase(Locale.ROOT));
+    }
+
+    private static void applyTerminalSkip(SigningCase entity) {
+        String normalizedStatus = entity.getStatus().toLowerCase(Locale.ROOT);
+        entity.setProcessingStatus(PROCESSING_STATUS_SKIPPED);
+        entity.setStatusFetchError(
+            "Status sync skipped: terminal NextSign status '" + normalizedStatus + "'"
+        );
+        // Preserve retryCount for manual-review evidence.
     }
 
     /**

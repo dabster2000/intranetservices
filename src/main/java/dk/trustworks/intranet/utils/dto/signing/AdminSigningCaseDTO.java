@@ -24,7 +24,7 @@ import java.util.List;
  * @param userUuid UUID of the user who owns this signing case
  * @param employeeName Resolved full name of the employee (nullable)
  * @param templateName Resolved template name (nullable)
- * @param processingStatus Async processing status: PENDING_FETCH, FETCHING, COMPLETED, FAILED
+ * @param processingStatus Async processing status: PENDING_FETCH, FETCHING, COMPLETED, FAILED, SKIPPED
  * @param retryCount Number of failed fetch attempts
  * @param lastStatusFetch Timestamp when status was last fetched from NextSign
  * @param title Case title from NextSign (may differ from documentName)

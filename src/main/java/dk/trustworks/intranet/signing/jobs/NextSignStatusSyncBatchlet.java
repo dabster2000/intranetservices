@@ -113,6 +113,15 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
             String caseKey = signingCase.getCaseKey();
 
             try {
+                // Defensive guard: terminal signing cases cannot produce an uploadable
+                // document and must not incur another external status request.
+                if (signingService.markCaseSkippedIfTerminal(signingCase)) {
+                    log.warnf("Skipping terminal signing case %s (status: %s)",
+                        caseKey, signingCase.getStatus());
+                    skipped++;
+                    continue;
+                }
+
                 log.debugf("Fetching status for case: %s (attempt %d)",
                     caseKey, signingCase.getRetryCount() + 1);
 
@@ -123,8 +132,15 @@ public class NextSignStatusSyncBatchlet extends MonitoredBatchlet {
                 // Fetch status from NextSign
                 SigningCaseStatus status = signingService.getStatus(caseKey);
 
-                // Update case with fetched status (marks as COMPLETED)
-                signingService.updateCaseWithFetchedStatus(signingCase, status);
+                // Update case with fetched status (COMPLETED or terminal SKIPPED)
+                boolean terminalSkipped = signingService.updateCaseWithFetchedStatus(signingCase, status);
+
+                if (terminalSkipped) {
+                    log.warnf("Case %s reached terminal status '%s'; future polling skipped",
+                        caseKey, status.status());
+                    skipped++;
+                    continue;
+                }
 
                 log.infof("Successfully fetched and updated status for case: %s", caseKey);
                 successful++;
