@@ -28,9 +28,21 @@ class IndividualBonusAiServiceTest {
             {"basis":"OWN_INVOICED_REVENUE","aggregation":"FISCAL_YEAR_SUM","tierTable":[
             {"from":0,"to":1000000,"rate":0},{"from":1000000,"to":1500000,"rate":0.20},
             {"from":1500000,"to":2000000,"rate":0.30},{"from":2000000,"to":2500000,"rate":0.40},
-            {"from":2500000,"to":null,"rate":0.45}],"proRating":{"byMonthsEmployedInFy":true},
-            "cap":null,"pension":false,"replaces":"YPOT","schedule":{"cadence":"YEARLY",
+            {"from":2500000,"to":null,"rate":0.45}],"stepTable":null,
+            "proRating":{"byMonthsEmployedInFy":true},"cap":null,"expectedBaseSalary":null,
+            "pension":false,"replaces":"YPOT","schedule":{"cadence":"YEARLY","monthly":null,
             "yearly":{"payMonthOffsetFromFyEnd":1},"advance":null,"trueUp":null},"formula":null}
+            """;
+
+    private static final String VALID_MONTHLY_SPEC = """
+            {"basis":"UTILIZATION","aggregation":"CALENDAR_MONTH","tierTable":null,"stepTable":[
+            {"from":0,"to":0.75,"amount":0},{"from":0.75,"to":0.80,"amount":2500},
+            {"from":0.80,"to":0.85,"amount":5000},{"from":0.85,"to":0.90,"amount":7500},
+            {"from":0.90,"to":0.95,"amount":10000},{"from":0.95,"to":1.00,"amount":12500},
+            {"from":1.00,"to":null,"amount":15000}],"proRating":null,"cap":null,
+            "expectedBaseSalary":58000,"pension":false,"replaces":null,"schedule":{"cadence":"MONTHLY",
+            "monthly":{"vehicle":"MONTHLY_LUMP_SUM","payMonthOffset":1},"yearly":null,
+            "advance":null,"trueUp":null},"formula":null}
             """;
 
     private IndividualBonusAiService service;
@@ -89,6 +101,22 @@ class IndividualBonusAiServiceTest {
                 new IndividualBonusGenerateRequest("employee", "conditional clause", null));
 
         assertTrue(response.usedFormula());
+    }
+
+    @Test
+    void monthlyProposal_usesSameOneCallRecognizerAndValidatorFlow() {
+        whenModelReturns(VALID_MONTHLY_SPEC);
+
+        IndividualBonusGenerateResponse response = service.generate(
+                new IndividualBonusGenerateRequest("employee", "monthly utilization bands", null));
+
+        assertEquals("CALENDAR_MONTH", response.spec().aggregation());
+        assertEquals(new BigDecimal("58000"), response.spec().expectedBaseSalary());
+        assertEquals(7, response.spec().stepTable().size());
+        assertEquals(1, response.spec().schedule().monthly().payMonthOffset());
+        verify(bonusService).validateSpec(response.spec());
+        verify(openAIService, times(1)).askQuestionWithSchema(
+                anyString(), anyString(), any(), anyString(), isNull(), anyString(), anyInt(), eq(false));
     }
 
     @Test
@@ -166,12 +194,16 @@ class IndividualBonusAiServiceTest {
     @Test
     void groundingPrompt_containsCompleteVocabularyAndWorkedExample() {
         String prompt = IndividualBonusAiService.SYSTEM_PROMPT;
-        for (String token : new String[]{"OWN_INVOICED_REVENUE", "UTILIZATION", "BILLABLE_HOURS",
-                "BUDGET_ATTAINMENT", "SALARY", "FIXED_AMOUNT", "YEARLY", "MONTHLY",
+        for (String token : new String[]{"OWN_INVOICED_REVENUE", "UTILIZATION",
+                "REGISTERED_BILLABLE_VALUE", "BILLABLE_HOURS", "BUDGET_ATTAINMENT", "SALARY",
+                "FIXED_AMOUNT", "YEARLY", "MONTHLY",
+                "CALENDAR_MONTH", "stepTable", "expectedBaseSalary",
+                "[0.00,0.75)=0", "73,000", "Pension is never inferred",
                 "MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP", "MONTHLY_LUMP_SUM", "PREPAID_SUPPLEMENT",
                 "PERCENT_OF_PROJECTED", "FY_EARNED_MINUS_ADVANCES", "WRITE_OFF", "CLAWBACK",
                 "production", "utilization", "billableHours", "budgetAttainment", "basisAmount",
-                "monthsEmployed", "fiscalYear", "tier(x)", "675,000"}) {
+                "hours times rate must use REGISTERED_BILLABLE_VALUE", "monthsEmployed", "fiscalYear",
+                "tier(x)", "675,000"}) {
             assertTrue(prompt.contains(token), () -> "prompt missing " + token);
         }
     }
@@ -180,13 +212,22 @@ class IndividualBonusAiServiceTest {
     void schema_isStrictRecursively_andAllPropertiesAreRequired() {
         ObjectNodeAsserts.assertStrict(IndividualBonusAiService.buildSchema());
         JsonNode schema = IndividualBonusAiService.buildSchema();
+        boolean hasRegisteredBillableValue = false;
+        for (JsonNode basis : schema.path("properties").path("basis").path("enum")) {
+            if ("REGISTERED_BILLABLE_VALUE".equals(basis.asText())) hasRegisteredBillableValue = true;
+        }
+        assertTrue(hasRegisteredBillableValue);
         assertEquals("FISCAL_YEAR_SUM",
                 schema.path("properties").path("aggregation").path("enum").get(0).asText());
+        assertEquals("CALENDAR_MONTH",
+                schema.path("properties").path("aggregation").path("enum").get(1).asText());
         assertEquals("number", schema.path("properties").path("tierTable").path("items")
                 .path("properties").path("rate").path("type").asText());
         assertEquals(1, schema.path("properties").path("schedule").path("properties")
                 .path("yearly").path("properties").path("payMonthOffsetFromFyEnd")
                 .path("minimum").asInt());
+        assertEquals(12, schema.path("properties").path("schedule").path("properties")
+                .path("monthly").path("properties").path("payMonthOffset").path("maximum").asInt());
     }
 
     private void whenModelReturns(String output) {

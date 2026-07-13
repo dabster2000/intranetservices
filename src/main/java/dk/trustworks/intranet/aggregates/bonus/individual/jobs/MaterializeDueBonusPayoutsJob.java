@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.jobs;
 
 import dk.trustworks.intranet.aggregates.bonus.individual.services.IndividualBonusPayoutService;
+import dk.trustworks.intranet.aggregates.bonus.individual.config.IndividualBonusMonthlyConfig;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -28,6 +29,7 @@ import java.time.LocalDate;
 public class MaterializeDueBonusPayoutsJob {
 
     @Inject IndividualBonusPayoutService payoutService;
+    @Inject IndividualBonusMonthlyConfig monthlyConfig;
 
     @Scheduled(cron = "0 0 6 3 * ?") // 3rd of each month at 06:00 — after the prior month's fact refresh
     public void materializeMonthlyPayouts() {
@@ -35,5 +37,13 @@ public class MaterializeDueBonusPayoutsJob {
         log.infof("Individual bonus monthly materialisation job starting for %s", month);
         int created = payoutService.materializeDue(month, true); // scheduledOnly: advances/monthly only
         log.infof("Individual bonus monthly materialisation job finished for %s: %d created", month, created);
+        if (monthlyConfig.materializationEnabled()) {
+            var monthly = payoutService.materializeCalendarMonthDue(LocalDate.now().withDayOfMonth(1),
+                    "system:individual-bonus-scheduler", false);
+            log.infof("Calendar-month individual bonus run finished: evaluated=%d committed=%d blocked=%d failed=%d",
+                    monthly.evaluated(), monthly.committed(), monthly.blocked(), monthly.failed());
+        } else {
+            log.info("Calendar-month individual bonus materialization is disabled");
+        }
     }
 }

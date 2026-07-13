@@ -69,8 +69,8 @@ public class IndividualBonusAiRateLimitFilter implements ContainerRequestFilter 
                 Instant oldest = timestamps.peekFirst();
                 long retryAfterSeconds = oldest == null ? WINDOW_DURATION.toSeconds()
                         : Math.max(1, Duration.between(now, oldest.plus(WINDOW_DURATION)).toSeconds());
-                log.warnf("Individual bonus AI rate limit exceeded for actor %s (%d generations in window)",
-                        actor, timestamps.size());
+                log.warnf("Individual bonus AI rate limit exceeded (%d generations in window)",
+                        timestamps.size());
                 requestContext.abortWith(Response.status(Response.Status.TOO_MANY_REQUESTS)
                         .header("Retry-After", retryAfterSeconds)
                         .type(MediaType.APPLICATION_JSON_TYPE)

@@ -24,7 +24,7 @@ public class LoggingFilter implements ContainerRequestFilter {
         String path = requestContext.getUriInfo().getPath();
 
         // Skip logging for noisy polling endpoints
-        if (path.contains("/notifications")) {
+        if (path.contains("/notifications") || path.startsWith("individual-bonuses")) {
             return;
         }
 

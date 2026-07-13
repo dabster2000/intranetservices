@@ -68,6 +68,13 @@ public class IndividualBonusRule extends PanacheEntityBase implements Auditable 
     @Column(name = "active", nullable = false)
     private Boolean active = true;
 
+    /** Optimistic concurrency token. Existing rows start at revision zero. */
+    @Version
+    @NotNull
+    @ColumnDefault("0")
+    @Column(name = "revision", nullable = false)
+    private Long revision = 0L;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private LocalDateTime createdAt;

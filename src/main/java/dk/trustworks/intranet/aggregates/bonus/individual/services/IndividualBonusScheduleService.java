@@ -41,12 +41,30 @@ public class IndividualBonusScheduleService {
     @Inject IndividualBonusSpecMapper specMapper;
     @Inject IndividualBonusEvaluator evaluator;
     @Inject IndividualBonusBasisResolver basisResolver;
+    @Inject IndividualBonusMonthlyCalculationService monthlyCalculationService;
 
     /** All projected + committed payouts for a user up to {@code horizonEnd}, sorted by month. */
     public List<ProjectedPayout> project(String userUuid, LocalDate horizonEnd) {
         List<ProjectedPayout> out = new ArrayList<>();
-        for (IndividualBonusRule rule : IndividualBonusRule.findActiveByUser(userUuid)) {
-            out.addAll(project(rule, horizonEnd));
+        for (IndividualBonusRule rule : IndividualBonusRule.<IndividualBonusRule>list("userUuid", userUuid)) {
+            if (Boolean.TRUE.equals(rule.getActive())) {
+                out.addAll(project(rule, horizonEnd));
+                continue;
+            }
+            // Inactive fiscal-year rules keep their byte-for-byte legacy disappearance. Monthly rules stay
+            // visible as non-payable RULE_INACTIVE rows so HR can reactivate/reconcile a due identity.
+            Spec spec;
+            try {
+                spec = specMapper.parse(rule.getSpec());
+            } catch (RuntimeException invalidStoredRule) {
+                continue;
+            }
+            if (IndividualBonusMonthlySpecValidator.isMonthlyGrammar(spec)) {
+                LocalDate inactiveHorizon = horizonEnd.isBefore(LocalDate.now().withDayOfMonth(1))
+                        ? horizonEnd : LocalDate.now().withDayOfMonth(1);
+                out.addAll(projectCalendarMonths(rule, spec, inactiveHorizon).stream()
+                        .map(PayoutWithInputs::payout).toList());
+            }
         }
         out.sort(Comparator.comparing(ProjectedPayout::month));
         return out;
@@ -74,13 +92,23 @@ public class IndividualBonusScheduleService {
      * A projected payout paired with the basis inputs that produced it — the reproducibility snapshot the
      * materialisation writer freezes into {@code individual_bonus_payout}. Package-visible.
      */
-    public record PayoutWithInputs(ProjectedPayout payout, BigDecimal basisAmount, int monthsEmployed) {
+    public record PayoutWithInputs(ProjectedPayout payout, BigDecimal basisAmount, int monthsEmployed,
+                                   MonthlyCalculationResult monthlyCalculation) {
+        public PayoutWithInputs(ProjectedPayout payout, BigDecimal basisAmount, int monthsEmployed) {
+            this(payout, basisAmount, monthsEmployed, null);
+        }
     }
 
     /** Projection carrying per-payout basis inputs. Same walk as {@link #project}; single source of truth. */
     List<PayoutWithInputs> projectWithInputs(IndividualBonusRule rule, LocalDate horizonEnd,
                                              boolean settlementFromCommittedAdvancesOnly) {
         Spec spec = specMapper.parse(rule.getSpec());
+
+        // Closed calendar-month grammar must dispatch BEFORE termination/FY walking. Its employment
+        // episodes, month maturity, salary guard, and fixed-step math are independent from FY semantics.
+        if (IndividualBonusMonthlySpecValidator.isMonthlyGrammar(spec)) {
+            return projectCalendarMonths(rule, spec, horizonEnd);
+        }
 
         // 1. Effective window, cut by early termination.
         // NOTE: termination is resolved GLOBALLY here. Multi-company scoping (spec §7.4 — a leaver
@@ -158,6 +186,35 @@ public class IndividualBonusScheduleService {
         return payouts.stream()
                 .filter(pi -> survivesWindow(pi.payout().kind(), pi.payout().month(), windowEnd, horizonEnd))
                 .map(pi -> new PayoutWithInputs(overlayCommitted(pi.payout()), pi.basisAmount(), pi.monthsEmployed()))
+                .sorted(Comparator.comparing(pi -> pi.payout().month()))
+                .toList();
+    }
+
+    private List<PayoutWithInputs> projectCalendarMonths(IndividualBonusRule rule, Spec spec,
+                                                          LocalDate horizonEnd) {
+        int offset = spec.schedule().monthly().payMonthOffset();
+        YearMonth firstEarningMonth = YearMonth.from(rule.getEffectiveFrom());
+        YearMonth lastEarningMonth = YearMonth.from(horizonEnd).minusMonths(offset);
+        if (firstEarningMonth.isAfter(lastEarningMonth)) return List.of();
+
+        List<PayoutWithInputs> payouts = new ArrayList<>();
+        for (YearMonth earningMonth = firstEarningMonth;
+             !earningMonth.isAfter(lastEarningMonth);
+             earningMonth = earningMonth.plusMonths(1)) {
+            MonthlyCalculationResult calculation = monthlyCalculationService.calculate(
+                    rule, spec, earningMonth, LocalDate.now(IndividualBonusMonthlyCalculationService.COPENHAGEN));
+            if (!calculation.hasEarningOverlap()) continue;
+
+            ProjectedPayout projected = new ProjectedPayout(
+                    calculation.payMonth().atDay(1), calculation.finalSupplement(), PayoutKind.MONTHLY,
+                    PayoutStatus.PROJECTED, refCalendarMonth(rule, earningMonth),
+                    calculation.calculationState() == CalculationState.ESTIMATED, false);
+            ProjectedPayout overlaid = overlayCommitted(projected);
+            BigDecimal basisAmount = calculation.utilization() == null
+                    ? BigDecimal.ZERO : calculation.utilization().rawUtilization();
+            payouts.add(new PayoutWithInputs(overlaid, basisAmount, 0, calculation));
+        }
+        return payouts.stream()
                 .sorted(Comparator.comparing(pi -> pi.payout().month()))
                 .toList();
     }
@@ -329,6 +386,11 @@ public class IndividualBonusScheduleService {
     static String refAdvance(IndividualBonusRule rule, YearMonth month) {
         return "individual:" + rule.getUuid() + ":advance:" + String.format("%04d%02d",
                 month.getYear(), month.getMonthValue());
+    }
+
+    static String refCalendarMonth(IndividualBonusRule rule, YearMonth earningMonth) {
+        return "individual:" + rule.getUuid() + ":monthly:" + String.format("%04d%02d",
+                earningMonth.getYear(), earningMonth.getMonthValue());
     }
 
     static String refTrueUp(IndividualBonusRule rule, int fyYear) {

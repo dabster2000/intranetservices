@@ -47,23 +47,45 @@ public class IndividualBonusAiService {
             represented by marginal tiers. Never guess missing economic terms; choose only supported values.
 
             Complete Spec grammar (every named property is present; nullable values are JSON null):
-            - basis: exactly one writable enum: OWN_INVOICED_REVENUE, UTILIZATION, BILLABLE_HOURS,
-              BUDGET_ATTAINMENT, SALARY, FIXED_AMOUNT. Never emit COMPANY_INVOICED_REVENUE,
+            - basis: exactly one writable enum: OWN_INVOICED_REVENUE, UTILIZATION,
+              REGISTERED_BILLABLE_VALUE, BILLABLE_HOURS, BUDGET_ATTAINMENT, SALARY, FIXED_AMOUNT.
+              REGISTERED_BILLABLE_VALUE is gross registered billable value in DKK (historical resolved
+              rate times duration, without contract discount). BILLABLE_HOURS is the raw hours quantity,
+              mainly for formulas or explicitly hours-denominated tiers. A DKK marginal-tier clause based
+              on billable hours times rate must use REGISTERED_BILLABLE_VALUE.
+              Never emit COMPANY_INVOICED_REVENUE,
               COMPANY_UTILIZATION, or COMPANY_EBITDA.
-            - aggregation: exactly FISCAL_YEAR_SUM (the Trustworks fiscal year is July 1 through June 30).
+            - aggregation: FISCAL_YEAR_SUM (Trustworks fiscal year July 1 through June 30) or CALENDAR_MONTH.
             - tierTable: null or marginal bands {from,to,rate}. It is required for non-FIXED_AMOUNT rules
               unless formula is nonblank. from >= 0; rate is within [0,1]; to is null or greater than from;
               bands are contiguous, ordered, non-overlapping; only the final band may have to:null.
+            - stepTable: null or fixed utilization bands {from,to,amount}. It is used only with
+              basis:UTILIZATION and aggregation:CALENDAR_MONTH. Bands start at 0, are exactly contiguous,
+              ordered and non-overlapping, use inclusive from/exclusive to, and only the final to is null.
+            - expectedBaseSalary: null for fiscal-year rules; for CALENDAR_MONTH it is the positive NORMAL
+              monthly salary written in the contract. Never infer a salary that is not stated.
             - proRating: null or {byMonthsEmployedInFy:boolean}. A nonblank formula owns pro-rating, so set
               byMonthsEmployedInFy:false (or proRating:null) and use monthsEmployed explicitly if needed.
             - cap: null or a number greater than 0. pension: boolean. replaces: null or YPOT only.
             - formula: null or a sandboxed JEXL expression of at most 2000 characters. Formula requires a
               non-FIXED_AMOUNT basis and fully computes FY earned before cap.
 
+            Calendar-month grammar is closed: basis UTILIZATION, aggregation CALENDAR_MONTH, tierTable null,
+            a nonempty stepTable, proRating null, cap null, positive expectedBaseSalary, replaces null,
+            formula null, pension explicit, and schedule cadence MONTHLY with monthly
+            {vehicle:MONTHLY_LUMP_SUM,payMonthOffset:1} for production. yearly, advance and trueUp are null.
+            Do not use the legacy MONTHLY advance shape for a calendar-month utilization clause.
+            For the standard 58,000 DKK contract, the step amounts are incremental supplements, never total
+            salary: [0.00,0.75)=0, [0.75,0.80)=2500, [0.80,0.85)=5000,
+            [0.85,0.90)=7500, [0.90,0.95)=10000, [0.95,1.00)=12500,
+            [1.00,+infinity)=15000. These produce total salaries 58,000, 60,500, 63,000, 65,500,
+            68,000, 70,500 and 73,000. Preserve the half-open boundaries and final open ceiling exactly.
+            Pension is never inferred; emit only the contract's explicit pension treatment.
+
             Schedule grammar:
             - cadence: YEARLY, MONTHLY, or MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP.
             - YEARLY uses yearly:{payMonthOffsetFromFyEnd:positive integer}; normally 1 means July after FY end.
-            - MONTHLY uses advance and no true-up. FIXED_AMOUNT is supported only as MONTHLY with a FIXED
+            - Fiscal-year MONTHLY uses advance and no true-up. FIXED_AMOUNT is supported only as MONTHLY with a FIXED
               advance and no tier table.
             - MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP uses advance plus enabled trueUp; yearly may select the
               settlement offset and defaults to July when null.
@@ -87,8 +109,9 @@ public class IndividualBonusAiService {
             {"basis":"OWN_INVOICED_REVENUE","aggregation":"FISCAL_YEAR_SUM","tierTable":[
             {"from":0,"to":1000000,"rate":0},{"from":1000000,"to":1500000,"rate":0.20},
             {"from":1500000,"to":2000000,"rate":0.30},{"from":2000000,"to":2500000,"rate":0.40},
-            {"from":2500000,"to":null,"rate":0.45}],"proRating":{"byMonthsEmployedInFy":true},
-            "cap":null,"pension":false,"replaces":"YPOT","schedule":{"cadence":"YEARLY",
+            {"from":2500000,"to":null,"rate":0.45}],"stepTable":null,
+            "proRating":{"byMonthsEmployedInFy":true},"cap":null,"expectedBaseSalary":null,
+            "pension":false,"replaces":"YPOT","schedule":{"cadence":"YEARLY","monthly":null,
             "yearly":{"payMonthOffsetFromFyEnd":1},"advance":null,"trueUp":null},"formula":null}.
             Sanity check: production 3,000,000 DKK for 12 months earns 675,000 DKK.
             A conditional uplift can use: utilization > 0.75 ? tier(production) * 1.1 : tier(production).
@@ -173,12 +196,13 @@ public class IndividualBonusAiService {
 
     /** Strict inner JSON Schema; OpenAIService wraps it in Responses text.format.json_schema. */
     static ObjectNode buildSchema() {
-        ObjectNode root = objectSchema("basis", "aggregation", "tierTable", "proRating", "cap",
-                "pension", "replaces", "schedule", "formula");
+        ObjectNode root = objectSchema("basis", "aggregation", "tierTable", "stepTable", "proRating", "cap",
+                "expectedBaseSalary", "pension", "replaces", "schedule", "formula");
         ObjectNode properties = root.putObject("properties");
-        properties.set("basis", stringEnum("OWN_INVOICED_REVENUE", "UTILIZATION", "BILLABLE_HOURS",
-                "BUDGET_ATTAINMENT", "SALARY", "FIXED_AMOUNT"));
-        properties.set("aggregation", stringEnum("FISCAL_YEAR_SUM"));
+        properties.set("basis", stringEnum("OWN_INVOICED_REVENUE", "UTILIZATION",
+                "REGISTERED_BILLABLE_VALUE", "BILLABLE_HOURS", "BUDGET_ATTAINMENT", "SALARY",
+                "FIXED_AMOUNT"));
+        properties.set("aggregation", stringEnum("FISCAL_YEAR_SUM", "CALENDAR_MONTH"));
 
         ObjectNode tier = objectSchema("from", "to", "rate");
         ObjectNode tierProperties = tier.putObject("properties");
@@ -189,18 +213,40 @@ public class IndividualBonusAiService {
         tierTable.set("items", tier);
         properties.set("tierTable", tierTable);
 
+        ObjectNode step = objectSchema("from", "to", "amount");
+        ObjectNode stepProperties = step.putObject("properties");
+        ObjectNode stepFrom = numberType(false);
+        stepFrom.put("minimum", 0);
+        stepProperties.set("from", stepFrom);
+        stepProperties.set("to", numberType(true));
+        stepProperties.set("amount", numberType(false));
+        ObjectNode stepTable = nullableType("array");
+        stepTable.set("items", step);
+        properties.set("stepTable", stepTable);
+
         ObjectNode proRating = objectSchema("byMonthsEmployedInFy");
         proRating.set("type", typeUnion("object", "null"));
         proRating.putObject("properties").set("byMonthsEmployedInFy", type("boolean"));
         properties.set("proRating", proRating);
         properties.set("cap", numberType(true));
+        properties.set("expectedBaseSalary", numberType(true));
         properties.set("pension", type("boolean"));
         properties.set("replaces", nullableEnum("YPOT"));
 
-        ObjectNode schedule = objectSchema("cadence", "yearly", "advance", "trueUp");
+        ObjectNode schedule = objectSchema("cadence", "monthly", "yearly", "advance", "trueUp");
         ObjectNode scheduleProperties = schedule.putObject("properties");
         scheduleProperties.set("cadence", stringEnum("YEARLY", "MONTHLY",
                 "MONTHLY_ADVANCE_PLUS_YEARLY_TRUEUP"));
+
+        ObjectNode monthly = objectSchema("vehicle", "payMonthOffset");
+        monthly.set("type", typeUnion("object", "null"));
+        ObjectNode monthlyProperties = monthly.putObject("properties");
+        monthlyProperties.set("vehicle", stringEnum("MONTHLY_LUMP_SUM"));
+        ObjectNode monthlyOffset = type("integer");
+        monthlyOffset.put("minimum", 1);
+        monthlyOffset.put("maximum", 12);
+        monthlyProperties.set("payMonthOffset", monthlyOffset);
+        scheduleProperties.set("monthly", monthly);
 
         ObjectNode yearly = objectSchema("payMonthOffsetFromFyEnd");
         yearly.set("type", typeUnion("object", "null"));

@@ -153,6 +153,28 @@ class SpSyncProdToStagingSafeguardTest {
                         + "column abort (ERROR 1906) under STRICT_TRANS_TABLES.");
     }
 
+    @Test
+    void latest_sp_sync_prod_to_staging_excludes_individual_bonus_workflow_state() throws IOException {
+        assertNotNull(latestMigration, "no migration creates sp_sync_prod_to_staging");
+
+        String body = Files.readString(latestMigration);
+        List<String> protectedTables = List.of(
+                "individual_bonus_rule",
+                "individual_bonus_payout",
+                "individual_bonus_preview_proof",
+                "individual_bonus_create_idempotency",
+                "individual_bonus_reconciliation_head",
+                "individual_bonus_adjustment",
+                "individual_bonus_audit_event");
+
+        for (String table : protectedTables) {
+            assertTrue(body.contains("'" + table + "'"),
+                    latestMigration.getFileName() + " must exclude " + table
+                            + " from the prod-to-staging copy. Individual Bonus tables contain "
+                            + "sensitive compensation data and staging-owned workflow state.");
+        }
+    }
+
     private static boolean createsSpSyncProdToStaging(Path path) {
         String body;
         try {

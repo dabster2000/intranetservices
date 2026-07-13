@@ -13,6 +13,8 @@ public enum Basis {
     OWN_INVOICED_REVENUE,
     /** Billable hours divided by net available hours (fact_user_day). */
     UTILIZATION,
+    /** Gross registered billable value (historical rate times duration, fact_user_day). */
+    REGISTERED_BILLABLE_VALUE,
     /** Raw billable hours (fact_user_day). */
     BILLABLE_HOURS,
     /** Actual registered amount divided by budgeted revenue (bi_budget_per_day). */

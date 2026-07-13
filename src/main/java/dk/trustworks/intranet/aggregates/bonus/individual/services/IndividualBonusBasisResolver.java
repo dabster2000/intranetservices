@@ -2,6 +2,9 @@ package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
 import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusFormulaException;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Basis;
+import dk.trustworks.intranet.aggregates.bonus.individual.model.DateInterval;
+import dk.trustworks.intranet.aggregates.bonus.individual.model.FactCoverage;
+import dk.trustworks.intranet.aggregates.bonus.individual.model.UtilizationResolution;
 import dk.trustworks.intranet.aggregates.revenue.services.RevenueService;
 import dk.trustworks.intranet.dto.DateValueDTO;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -12,9 +15,13 @@ import lombok.extern.jbosslog.JBossLog;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
+import java.sql.Timestamp;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static dk.trustworks.intranet.utils.DateUtils.stringIt;
 
@@ -88,6 +95,7 @@ public class IndividualBonusBasisResolver {
     private BigDecimal resolveActual(Basis basis, String userUuid, LocalDate from, LocalDate to) {
         return switch (basis) {
             case OWN_INVOICED_REVENUE -> ownInvoicedRevenue(userUuid, from, to);
+            case REGISTERED_BILLABLE_VALUE -> registeredAmount(userUuid, from, to);
             case BILLABLE_HOURS -> billableHours(userUuid, from, to);
             case UTILIZATION -> utilization(userUuid, from, to);
             case SALARY -> averageMonthlySalary(userUuid, from, to);
@@ -102,13 +110,16 @@ public class IndividualBonusBasisResolver {
 
     /**
      * Whether run-rate annualisation is meaningful for a basis. Only ADDITIVE production/hours SUMS
-     * (OWN_INVOICED_REVENUE, BILLABLE_HOURS) may be scaled by months. RATIO / LEVEL bases (UTILIZATION,
-     * BUDGET_ATTAINMENT, SALARY) are already period-normalised — scaling them by month count would wildly
-     * inflate them — so they stay actuals-only. FIXED_AMOUNT is schedule-driven (never resolved here).
+     * (OWN_INVOICED_REVENUE, REGISTERED_BILLABLE_VALUE, BILLABLE_HOURS) may be scaled by months. RATIO /
+     * LEVEL bases (UTILIZATION, BUDGET_ATTAINMENT, SALARY) are already period-normalised — scaling them by
+     * month count would wildly inflate them — so they stay actuals-only. FIXED_AMOUNT is schedule-driven
+     * (never resolved here).
      * Pure and package-visible for unit testing.
      */
     static boolean isForecastable(Basis basis) {
-        return basis == Basis.OWN_INVOICED_REVENUE || basis == Basis.BILLABLE_HOURS;
+        return basis == Basis.OWN_INVOICED_REVENUE
+                || basis == Basis.REGISTERED_BILLABLE_VALUE
+                || basis == Basis.BILLABLE_HOURS;
     }
 
     /**
@@ -177,11 +188,10 @@ public class IndividualBonusBasisResolver {
         return toBigDecimal(r);
     }
 
-    /** Billable ÷ net-available hours over the window (0 when no available hours). */
-    private BigDecimal utilization(String userUuid, LocalDate from, LocalDate to) {
-        Object[] r = (Object[]) em.createNativeQuery("""
-                        SELECT COALESCE(SUM(fud.registered_billable_hours), 0),
-                               COALESCE(SUM(fud.net_available_hours), 0)
+    /** Gross registered billable value (historical resolved rate × duration, without contract discount). */
+    private BigDecimal registeredAmount(String userUuid, LocalDate from, LocalDate to) {
+        Object r = em.createNativeQuery("""
+                        SELECT COALESCE(SUM(fud.registered_amount), 0)
                         FROM fact_user_day fud
                         WHERE fud.useruuid = :userUuid
                           AND fud.status_type = 'ACTIVE'
@@ -191,10 +201,72 @@ public class IndividualBonusBasisResolver {
                 .setParameter("from", from)
                 .setParameter("to", to)
                 .getSingleResult();
-        BigDecimal billable = toBigDecimal(r[0]);
-        BigDecimal available = toBigDecimal(r[1]);
-        if (available.signum() == 0) return BigDecimal.ZERO;
-        return billable.divide(available, 6, java.math.RoundingMode.HALF_UP);
+        return toBigDecimal(r);
+    }
+
+    /** Billable ÷ net-available hours over the window (0 when no available hours). */
+    private BigDecimal utilization(String userUuid, LocalDate from, LocalDate to) {
+        return resolveUtilization(userUuid, from, to).rawUtilization();
+    }
+
+    /**
+     * Composite form of the existing scalar utilization resolver. Numerator, denominator, ratio, daily-row
+     * counts, null-input count, and facts watermark come from ONE parameter-bound query so monthly payroll
+     * cannot accidentally use predicates that differ from the legacy scalar path.
+     */
+    public UtilizationResolution resolveUtilization(String userUuid, LocalDate from, LocalDate to) {
+        return resolveUtilization(userUuid, List.of(new DateInterval(from, to)));
+    }
+
+    /** Same composite resolver over a non-contiguous union of inclusive employment intervals. */
+    public UtilizationResolution resolveUtilization(String userUuid, List<DateInterval> intervals) {
+        if (userUuid == null || userUuid.isBlank()) {
+            throw new IllegalArgumentException("userUuid is required");
+        }
+        if (intervals == null || intervals.isEmpty()) {
+            return new UtilizationResolution(BigDecimal.ZERO, BigDecimal.ZERO,
+                    BigDecimal.ZERO.setScale(6), new FactCoverage(0, 0, 0, 0, null));
+        }
+
+        StringBuilder rangePredicate = new StringBuilder();
+        for (int i = 0; i < intervals.size(); i++) {
+            if (i > 0) rangePredicate.append(" OR ");
+            rangePredicate.append("(fud.document_date >= :from").append(i)
+                    .append(" AND fud.document_date <= :to").append(i).append(')');
+        }
+
+        String sql = """
+                SELECT COALESCE(SUM(fud.registered_billable_hours), 0),
+                       COALESCE(SUM(fud.net_available_hours), 0),
+                       COUNT(*),
+                       COUNT(DISTINCT fud.document_date),
+                       COALESCE(SUM(CASE WHEN fud.registered_billable_hours IS NULL
+                                              OR fud.net_available_hours IS NULL
+                                              OR fud.last_update IS NULL THEN 1 ELSE 0 END), 0),
+                       MAX(fud.last_update)
+                FROM fact_user_day fud
+                WHERE fud.useruuid = :userUuid
+                  AND fud.status_type = 'ACTIVE'
+                  AND (""" + rangePredicate + ")";
+
+        jakarta.persistence.Query query = em.createNativeQuery(sql).setParameter("userUuid", userUuid);
+        for (int i = 0; i < intervals.size(); i++) {
+            query.setParameter("from" + i, intervals.get(i).from());
+            query.setParameter("to" + i, intervals.get(i).to());
+        }
+        Object[] row = (Object[]) query.getSingleResult();
+
+        BigDecimal billable = toBigDecimal(row[0]);
+        BigDecimal available = toBigDecimal(row[1]);
+        BigDecimal raw = available.signum() == 0
+                ? BigDecimal.ZERO.setScale(6)
+                : billable.divide(available, 6, RoundingMode.HALF_UP);
+        int totalRows = toInt(row[2]);
+        int actualRows = toInt(row[3]);
+        int duplicates = Math.max(0, totalRows - actualRows);
+        FactCoverage coverage = new FactCoverage(expectedDates(intervals), actualRows, duplicates,
+                toInt(row[4]), toLocalDateTime(row[5]));
+        return new UtilizationResolution(billable, available, raw, coverage);
     }
 
     /** Average monthly gross salary over the window (per-month MAX(salary), averaged). */
@@ -218,17 +290,6 @@ public class IndividualBonusBasisResolver {
 
     /** Actual registered amount ÷ budgeted revenue (bi_budget_per_day) over the window. */
     private BigDecimal budgetAttainment(String userUuid, LocalDate from, LocalDate to) {
-        Object actualObj = em.createNativeQuery("""
-                        SELECT COALESCE(SUM(fud.registered_amount), 0)
-                        FROM fact_user_day fud
-                        WHERE fud.useruuid = :userUuid
-                          AND fud.status_type = 'ACTIVE'
-                          AND fud.document_date >= :from AND fud.document_date <= :to
-                        """)
-                .setParameter("userUuid", userUuid)
-                .setParameter("from", from)
-                .setParameter("to", to)
-                .getSingleResult();
         Object budgetObj = em.createNativeQuery("""
                         SELECT COALESCE(SUM(b.budgetHours * b.rate), 0)
                         FROM bi_budget_per_day b
@@ -239,7 +300,7 @@ public class IndividualBonusBasisResolver {
                 .setParameter("from", from)
                 .setParameter("to", to)
                 .getSingleResult();
-        BigDecimal actual = toBigDecimal(actualObj);
+        BigDecimal actual = registeredAmount(userUuid, from, to);
         BigDecimal budget = toBigDecimal(budgetObj);
         if (budget.signum() == 0) return BigDecimal.ZERO;
         return actual.divide(budget, 6, java.math.RoundingMode.HALF_UP);
@@ -249,5 +310,27 @@ public class IndividualBonusBasisResolver {
         if (o == null) return BigDecimal.ZERO;
         if (o instanceof BigDecimal bd) return bd;
         return BigDecimal.valueOf(((Number) o).doubleValue());
+    }
+
+    private static int expectedDates(List<DateInterval> intervals) {
+        Set<LocalDate> dates = new LinkedHashSet<>();
+        for (DateInterval interval : intervals) {
+            LocalDate cursor = interval.from();
+            while (!cursor.isAfter(interval.to())) {
+                dates.add(cursor);
+                cursor = cursor.plusDays(1);
+            }
+        }
+        return dates.size();
+    }
+
+    private static int toInt(Object value) {
+        return value == null ? 0 : ((Number) value).intValue();
+    }
+
+    private static LocalDateTime toLocalDateTime(Object value) {
+        if (value instanceof LocalDateTime dateTime) return dateTime;
+        if (value instanceof Timestamp timestamp) return timestamp.toLocalDateTime();
+        return null;
     }
 }

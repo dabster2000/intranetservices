@@ -7,6 +7,7 @@ import lombok.extern.jbosslog.JBossLog;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
+import java.util.Objects;
 
 /**
  * Service for managing historical Danløn employee numbers.
@@ -99,6 +100,34 @@ public class UserDanlonHistoryService {
      */
     public Optional<UserDanlonHistory> getLatestRecord(String useruuid) {
         return Optional.ofNullable(UserDanlonHistory.findLatestRecord(useruuid));
+    }
+
+    /**
+     * Historical delayed-pay lookup for a frozen earning company. Closed rows remain eligible because
+     * termination after earning must not erase the Danløn identity that covered the earning period.
+     * A legacy null-company row is accepted only when it is the sole candidate.
+     */
+    public Optional<UserDanlonHistory> getHistoricalDelayedPayAssignment(String useruuid,
+                                                                         String earningCompanyUuid,
+                                                                         LocalDate earningMonthEnd) {
+        if (useruuid == null || earningCompanyUuid == null || earningMonthEnd == null) return Optional.empty();
+        List<UserDanlonHistory> candidates = UserDanlonHistory.<UserDanlonHistory>find(
+                "useruuid = ?1 and activeDate <= ?2 and (companyUuid = ?3 or companyUuid is null) "
+                        + "order by activeDate desc, createdDate desc",
+                useruuid, earningMonthEnd, earningCompanyUuid).list();
+        List<UserDanlonHistory> companyMatches = candidates.stream()
+                .filter(row -> earningCompanyUuid.equals(row.getCompanyUuid())).toList();
+        if (!companyMatches.isEmpty()) {
+            UserDanlonHistory first = companyMatches.get(0);
+            boolean ambiguousTop = companyMatches.stream()
+                    .filter(row -> row.getActiveDate().equals(first.getActiveDate())
+                            && Objects.equals(row.getCreatedDate(), first.getCreatedDate()))
+                    .map(UserDanlonHistory::getDanlon).distinct().count() > 1;
+            return ambiguousTop ? Optional.empty() : Optional.of(first);
+        }
+        List<UserDanlonHistory> legacy = candidates.stream()
+                .filter(row -> row.getCompanyUuid() == null).toList();
+        return legacy.size() == 1 ? Optional.of(legacy.get(0)) : Optional.empty();
     }
 
     /**

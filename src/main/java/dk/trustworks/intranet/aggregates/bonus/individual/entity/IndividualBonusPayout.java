@@ -76,6 +76,37 @@ public class IndividualBonusPayout extends PanacheEntityBase {
     @Column(name = "months_employed")
     private Integer monthsEmployed;
 
+    @Column(name = "earning_month")
+    private LocalDate earningMonth;
+
+    @Column(name = "pay_month")
+    private LocalDate payMonth;
+
+    @Column(name = "company_uuid", length = 36)
+    private String companyUuid;
+
+    @Column(name = "materialization_status", length = 40)
+    private String materializationStatus;
+
+    @Column(name = "snapshot_version")
+    private Short snapshotVersion;
+
+    /** Canonical Snapshot V2 JSON. Kept as LONGTEXT for the established Hibernate mapper boundary. */
+    @Column(name = "calculation_snapshot")
+    private String calculationSnapshot;
+
+    @Column(name = "calculation_fingerprint", length = 64)
+    private String calculationFingerprint;
+
+    @Column(name = "actor_uuid", length = 64)
+    private String actorUuid;
+
+    @Column(name = "salary_lump_sum_uuid", length = 36)
+    private String salaryLumpSumUuid;
+
+    @Column(name = "facts_as_of")
+    private LocalDateTime factsAsOf;
+
     @NotNull
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

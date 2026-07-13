@@ -8,5 +8,6 @@ public enum PayoutKind {
     MONTHLY,
     YEARLY,
     TRUEUP,
-    FINAL_SETTLEMENT
+    FINAL_SETTLEMENT,
+    ADJUSTMENT
 }

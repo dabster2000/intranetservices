@@ -64,8 +64,8 @@ public class IndividualBonusSupplementWriter {
         s.setDescription(truncate(ruleName, MAX_DESCRIPTION));
         salarySupplementService.create(s);
 
-        log.infof("%s PREPAID supplement for %s: %s..%s = %s (%s)",
-                created ? "Created" : "Updated", userUuid, s.getFromMonth(), s.getToMonth(), s.getValue(), sourceRef);
+        log.infof("%s individual-bonus PREPAID supplement (%s)",
+                created ? "Created" : "Updated", sourceRef);
         return created;
     }
 

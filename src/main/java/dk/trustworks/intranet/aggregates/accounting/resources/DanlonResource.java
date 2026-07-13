@@ -6,6 +6,10 @@ import dk.trustworks.intranet.aggregates.accounting.model.DanlonSalarySupplement
 import dk.trustworks.intranet.aggregates.availability.model.EmployeeAvailabilityPerMonth;
 import dk.trustworks.intranet.aggregates.availability.services.AvailabilityService;
 import dk.trustworks.intranet.aggregates.bidata.model.BiDataPerDay;
+import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusAdjustment;
+import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusPayout;
+import dk.trustworks.intranet.aggregates.bonus.individual.exceptions.IndividualBonusException;
+import dk.trustworks.intranet.aggregates.bonus.individual.services.IndividualBonusSpecMapper;
 import dk.trustworks.intranet.aggregates.users.services.*;
 import dk.trustworks.intranet.dao.workservice.model.Work;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -35,8 +39,13 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
+import java.util.Set;
 
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.VACATION;
 import static dk.trustworks.intranet.dao.workservice.services.WorkService.WORK_HOURS;
@@ -74,6 +83,8 @@ public class DanlonResource {
     AvailabilityService availabilityService;
     @Inject
     UserDanlonHistoryService danlonHistoryService;
+    @Inject
+    IndividualBonusSpecMapper individualBonusSpecMapper;
 
     @PathParam("companyuuid")
     private String companyuuid;
@@ -475,6 +486,61 @@ public class DanlonResource {
 
         List<DanlonSalarySupplements> result = new ArrayList<>();
 
+        // Calendar-month bonus money is driven by immutable earning snapshots, not pay-month ACTIVE
+        // status. Emit it first and exclude the exact source references from the generic active-user pass.
+        Set<String> snapshotBonusReferences = new HashSet<>();
+        Map<MonthlyBonusExportKey, Double> snapshotBonusAmounts = new HashMap<>();
+        List<IndividualBonusPayout> monthlyPayouts = IndividualBonusPayout.find(
+                "snapshotVersion = 2 and payMonth = ?1 and materializationStatus = 'COMMITTED'",
+                month).list();
+        for (IndividualBonusPayout payout : monthlyPayouts) {
+            if (payout.getAmount() == null || payout.getAmount().signum() <= 0) continue;
+            // Exclusion is global for the pay month: after a company transfer the generic active-user
+            // pass may run under another company, but the same source identity must still be suppressed.
+            snapshotBonusReferences.add(payout.getSourceReference());
+            if (!Objects.equals(companyuuid, payout.getCompanyUuid())) continue;
+            var assignment = danlonHistoryService.getHistoricalDelayedPayAssignment(payout.getUserUuid(),
+                    payout.getCompanyUuid(), payout.getEarningMonth().withDayOfMonth(
+                            payout.getEarningMonth().lengthOfMonth()));
+            if (assignment.isEmpty()) {
+                throw danlonAssignmentUnresolved(payout.getEarningMonth(), payout.getPayMonth());
+            }
+            User bonusUser = userService.findById(payout.getUserUuid(), true);
+            if (bonusUser == null) {
+                throw danlonAssignmentUnresolved(payout.getEarningMonth(), payout.getPayMonth());
+            }
+            boolean pension = Boolean.TRUE.equals(individualBonusSpecMapper.parse(payout.getSpecJson()).pension());
+            MonthlyBonusExportKey key = new MonthlyBonusExportKey(payout.getUserUuid(), bonusUser.getFullname(),
+                    assignment.get().getDanlon(), pension);
+            snapshotBonusAmounts.merge(key, payout.getAmount().doubleValue(), Double::sum);
+        }
+        List<IndividualBonusAdjustment> monthlyAdjustments = IndividualBonusAdjustment.find(
+                "payMonth = ?1 and state = 'ADJUSTMENT_COMMITTED'", month).list();
+        for (IndividualBonusAdjustment adjustment : monthlyAdjustments) {
+            if (adjustment.getDeltaAmount() == null || adjustment.getDeltaAmount().signum() <= 0) continue;
+            snapshotBonusReferences.add(adjustment.getAdjustmentSourceReference());
+            if (!Objects.equals(companyuuid, adjustment.getCompanyUuid())) continue;
+            var assignment = danlonHistoryService.getHistoricalDelayedPayAssignment(adjustment.getUserUuid(),
+                    adjustment.getCompanyUuid(), adjustment.getEarningMonth().withDayOfMonth(
+                            adjustment.getEarningMonth().lengthOfMonth()));
+            if (assignment.isEmpty()) {
+                throw danlonAssignmentUnresolved(adjustment.getEarningMonth(), adjustment.getPayMonth());
+            }
+            User bonusUser = userService.findById(adjustment.getUserUuid(), true);
+            if (bonusUser == null) {
+                throw danlonAssignmentUnresolved(adjustment.getEarningMonth(), adjustment.getPayMonth());
+            }
+            MonthlyBonusExportKey key = new MonthlyBonusExportKey(adjustment.getUserUuid(),
+                    bonusUser.getFullname(), assignment.get().getDanlon(),
+                    Boolean.TRUE.equals(adjustment.getPension()));
+            snapshotBonusAmounts.merge(key, adjustment.getDeltaAmount().doubleValue(), Double::sum);
+        }
+        snapshotBonusAmounts.forEach((key, amount) -> {
+            if (amount > 0) result.add(new DanlonSalarySupplements(company.getCvr(), key.danlonNumber(),
+                    key.fullName(), key.pension() ? "11" : "41",
+                    key.pension() ? "Tillæg med pension" : "Bonus", "", "", formatDouble(amount)));
+        });
+
         for (User user : getActiveUsersExcludingPreboardingAndTerminated(endOfMonth)) {
             // Skip users without a Danløn number
             if(danlonHistoryService.getDanlonAsOf(user.getUuid(), month).isEmpty()) continue;
@@ -484,6 +550,10 @@ public class DanlonResource {
             //   lump sums pension=false (danloenType==41) → "41" Tillæg ej ferieberettiget
             List<SalarySupplement> supplements = salarySupplementService.findByUseruuidAndMonth(user.getUuid(), month);
             List<SalaryLumpSum> lumpSums = salaryLumpSumService.findByUseruuidAndMonth(user.getUuid(), month);
+            lumpSums = lumpSums.stream()
+                    .filter(lump -> lump.getSourceReference() == null
+                            || !snapshotBonusReferences.contains(lump.getSourceReference()))
+                    .toList();
 
             double withPensionTotal = supplements.stream()
                     .filter(s -> Boolean.TRUE.equals(s.getWithPension()))
@@ -524,6 +594,16 @@ public class DanlonResource {
 
         return result;
     }
+
+    private static IndividualBonusException danlonAssignmentUnresolved(LocalDate earningMonth,
+                                                                         LocalDate payMonth) {
+        return new IndividualBonusException(409, "DANLON_ASSIGNMENT_UNRESOLVED",
+                "Historical payroll assignment is unresolved; payroll review is required", null,
+                earningMonth, payMonth, true, null, null, List.of());
+    }
+
+    private record MonthlyBonusExportKey(String userUuid, String fullName, String danlonNumber,
+                                         boolean pension) { }
 
     private @NotNull List<User> getUsersWithSpecificCriteria(LocalDate endOfMonth, LocalDate month) {
         return userService.listAll(false).stream()

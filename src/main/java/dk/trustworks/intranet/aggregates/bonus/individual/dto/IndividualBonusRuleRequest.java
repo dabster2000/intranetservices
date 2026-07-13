@@ -11,8 +11,8 @@ import java.time.LocalDate;
  * Create/update request for an individual bonus rule. Kept separate from the entity and the response
  * DTO. The {@code spec} arrives as a typed object and is serialised to JSON text on write.
  * {@code active} is nullable so it can be omitted (defaults to true on create).
- * Unknown properties are ignored so the BFF may send an extra client-side {@code uuid} (the server
- * assigns its own) without a 400.
+ * {@code ruleUuid} is accepted into the transport type solely so controlled monthly CREATE requests
+ * can reject client-assigned identities explicitly instead of silently ignoring them.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record IndividualBonusRuleRequest(
@@ -22,6 +22,20 @@ public record IndividualBonusRuleRequest(
         LocalDate effectiveTo,
         String replaces,
         Boolean active,
-        @NotNull Spec spec
+        @NotNull Spec spec,
+        Long revision,
+        String ruleUuid
 ) {
+    /** Source-compatible constructor retained for legacy service/tests and non-monthly callers. */
+    public IndividualBonusRuleRequest(String userUuid, String name, LocalDate effectiveFrom,
+                                      LocalDate effectiveTo, String replaces, Boolean active, Spec spec) {
+        this(userUuid, name, effectiveFrom, effectiveTo, replaces, active, spec, null, null);
+    }
+
+    /** Source-compatible constructor for callers that already supply optimistic revision. */
+    public IndividualBonusRuleRequest(String userUuid, String name, LocalDate effectiveFrom,
+                                      LocalDate effectiveTo, String replaces, Boolean active, Spec spec,
+                                      Long revision) {
+        this(userUuid, name, effectiveFrom, effectiveTo, replaces, active, spec, revision, null);
+    }
 }

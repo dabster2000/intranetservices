@@ -33,6 +33,9 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
 
     @Override
     public void filter(ContainerRequestContext context) throws IOException {
+        String requestPath = uriInfo.getPath();
+        boolean compensationRequest = requestPath.startsWith("individual-bonuses")
+                || requestPath.startsWith("/individual-bonuses");
         String requestedBy = context.getHeaders().getFirst("X-Requested-By");
 
         // SECURITY: Reject system: prefix from non-API-client callers.
@@ -45,18 +48,26 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
             boolean isApiClient = jwtUsername != null && !jwtUsername.isEmpty()
                     && !jwtUsername.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-.*");
             if (!isApiClient) {
-                log.warnf("Rejected system: prefix in X-Requested-By from non-API-client JWT (preferred_username=%s)", jwtUsername);
+                if (compensationRequest) {
+                    log.warn("Rejected system actor prefix on individual-bonus request");
+                } else {
+                    log.warnf("Rejected system: prefix in X-Requested-By from non-API-client JWT (preferred_username=%s)", jwtUsername);
+                }
                 requestedBy = null; // Fall through to JWT resolution below
             }
         }
 
         if (requestedBy == null || requestedBy.isEmpty()) {
             requestedBy = jwtClaimOrNull("preferred_username");
-            if (requestedBy != null) log.debugf("User identifier resolved from JWT: %s", requestedBy);
+            if (requestedBy != null && !compensationRequest) {
+                log.debugf("User identifier resolved from JWT: %s", requestedBy);
+            }
         }
         if (requestedBy == null || requestedBy.isEmpty()) {
             requestedBy = uriInfo.getQueryParameters().getFirst("username");
-            if (requestedBy != null) log.debugf("User identifier resolved from query param: %s", requestedBy);
+            if (requestedBy != null && !compensationRequest) {
+                log.debugf("User identifier resolved from query param: %s", requestedBy);
+            }
         }
         if (requestedBy == null || requestedBy.isEmpty()) {
             requestedBy = "anonymous";
@@ -64,8 +75,14 @@ public class HeaderInterceptor implements ContainerRequestFilter, ContainerRespo
         }
 
         requestHeaderHolder.setUserUuid(requestedBy);
-        MDC.put("userUuid", requestedBy);
-        log.debugf("Request userUuid set to %s", requestedBy);
+        // Compensation routes retain the actor only in the request-scoped holder and protected audit table.
+        // Never place it in ordinary logs/MDC, even briefly before the domain redaction filter runs.
+        if (compensationRequest) {
+            MDC.remove("userUuid");
+        } else {
+            MDC.put("userUuid", requestedBy);
+            log.debugf("Request userUuid set to %s", requestedBy);
+        }
     }
 
     /**

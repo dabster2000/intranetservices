@@ -47,8 +47,8 @@ public class IndividualBonusService {
 
     /** Bases we can actually resolve at write time — a rule referencing anything else is rejected. */
     private static final Set<Basis> WRITABLE_BASES = EnumSet.of(
-            Basis.OWN_INVOICED_REVENUE, Basis.UTILIZATION, Basis.BILLABLE_HOURS,
-            Basis.BUDGET_ATTAINMENT, Basis.SALARY, Basis.FIXED_AMOUNT);
+            Basis.OWN_INVOICED_REVENUE, Basis.UTILIZATION, Basis.REGISTERED_BILLABLE_VALUE,
+            Basis.BILLABLE_HOURS, Basis.BUDGET_ATTAINMENT, Basis.SALARY, Basis.FIXED_AMOUNT);
     private static final String SUPPORTED_AGGREGATION = "FISCAL_YEAR_SUM";
     private static final String SUPPORTED_REPLACEMENT = "YPOT";
     private static final String SUPPORTED_ADVANCE_MONTHS = "EMPLOYED_IN_FY";
@@ -77,8 +77,7 @@ public class IndividualBonusService {
         applyRequest(rule, request);
         rule.setActive(request.active() == null ? Boolean.TRUE : request.active());
         rule.persist();
-        log.infof("Created individual bonus rule %s for user %s (%s)",
-                rule.getUuid(), rule.getUserUuid(), rule.getName());
+        log.infof("Created individual bonus rule %s", rule.getUuid());
         return toDTO(rule);
     }
 
@@ -155,7 +154,7 @@ public class IndividualBonusService {
         IndividualBonusRule transientRule = new IndividualBonusRule();
         transientRule.setUuid(UUID.randomUUID().toString()); // random → sourceRefs never match a committed row
         applyRequest(transientRule, request);
-        transientRule.setActive(Boolean.TRUE);
+        transientRule.setActive(request.active() == null ? Boolean.TRUE : request.active());
         // NOTE: deliberately NOT persisted — this is a read-only dry run.
         LocalDate horizonEnd = previewHorizon(request.effectiveFrom(), request.effectiveTo(), LocalDate.now());
         return scheduleService.project(transientRule, horizonEnd);
@@ -208,7 +207,7 @@ public class IndividualBonusService {
 
     private void applyRequest(IndividualBonusRule rule, IndividualBonusRuleRequest request) {
         rule.setUserUuid(request.userUuid());
-        rule.setName(request.name());
+        rule.setName(request.name() == null ? null : request.name().trim());
         rule.setEffectiveFrom(request.effectiveFrom());
         rule.setEffectiveTo(request.effectiveTo());
         rule.setReplaces(request.replaces());
@@ -220,7 +219,8 @@ public class IndividualBonusService {
                 rule.getUuid(), rule.getUserUuid(), rule.getName(),
                 rule.getEffectiveFrom(), rule.getEffectiveTo(), rule.getReplaces(),
                 Boolean.TRUE.equals(rule.getActive()), specMapper.parse(rule.getSpec()),
-                rule.getCreatedBy(), rule.getCreatedAt(), rule.getModifiedBy(), rule.getUpdatedAt());
+                rule.getCreatedBy(), rule.getCreatedAt(), rule.getModifiedBy(), rule.getUpdatedAt(),
+                rule.getRevision() == null ? 0L : rule.getRevision());
     }
 
     void validateRequest(IndividualBonusRuleRequest request) {
@@ -256,13 +256,25 @@ public class IndividualBonusService {
         if (!WRITABLE_BASES.contains(spec.basis())) {
             throw new BadRequestException("Basis " + spec.basis() + " is not supported for individual bonuses yet");
         }
-        if (!SUPPORTED_AGGREGATION.equals(spec.aggregation())) {
-            throw new BadRequestException("spec.aggregation must be FISCAL_YEAR_SUM");
-        }
         validateReplacement(spec.replaces(), "spec.replaces");
         Schedule schedule = spec.schedule();
         if (schedule == null || schedule.cadence() == null) {
             throw new BadRequestException("spec.schedule.cadence is required");
+        }
+
+        // Monthly-only fields form a CLOSED grammar. Any near-match is validated and rejected here so it
+        // can never fall through into the legacy fiscal-year evaluator.
+        if (IndividualBonusMonthlySpecValidator.isMonthlyCandidate(spec)) {
+            IndividualBonusMonthlySpecValidator.validate(spec);
+            return;
+        }
+
+        if (!SUPPORTED_AGGREGATION.equals(spec.aggregation())) {
+            throw new BadRequestException("spec.aggregation must be FISCAL_YEAR_SUM");
+        }
+        if (spec.stepTable() != null || spec.expectedBaseSalary() != null || schedule.monthly() != null) {
+            throw new BadRequestException(
+                    "Legacy FISCAL_YEAR_SUM specs require stepTable, expectedBaseSalary, and schedule.monthly to be null");
         }
         validateSchedule(schedule, spec.basis());
 

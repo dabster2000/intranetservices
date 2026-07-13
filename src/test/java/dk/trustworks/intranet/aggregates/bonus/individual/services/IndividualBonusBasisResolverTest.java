@@ -1,14 +1,24 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Basis;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Pure unit tests for the run-rate forecast helpers — no Quarkus boot / DB required (the extracted math is
@@ -57,6 +67,7 @@ class IndividualBonusBasisResolverTest {
     @Test
     void isForecastable_additiveBases_true() {
         assertTrue(IndividualBonusBasisResolver.isForecastable(Basis.OWN_INVOICED_REVENUE));
+        assertTrue(IndividualBonusBasisResolver.isForecastable(Basis.REGISTERED_BILLABLE_VALUE));
         assertTrue(IndividualBonusBasisResolver.isForecastable(Basis.BILLABLE_HOURS));
     }
 
@@ -79,6 +90,112 @@ class IndividualBonusBasisResolverTest {
                 LocalDate.of(2026, 9, 1), LocalDate.of(2027, 6, 30)));
         assertEquals(12, IndividualBonusBasisResolver.monthsBetweenInclusive(
                 LocalDate.of(2026, 7, 1), LocalDate.of(2027, 6, 30)));
+    }
+
+    @Test
+    void registeredBillableValue_sumsRegisteredAmountForActiveUserAcrossInclusiveWindow() {
+        EntityManager em = mock(EntityManager.class);
+        Query query = mock(Query.class);
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.setParameter(anyString(), any())).thenReturn(query);
+        when(query.getSingleResult()).thenReturn(new BigDecimal("1250000.00"));
+        IndividualBonusBasisResolver resolver = new IndividualBonusBasisResolver();
+        resolver.em = em;
+        LocalDate from = LocalDate.of(2023, 7, 1);
+        LocalDate to = LocalDate.of(2024, 6, 30);
+
+        BigDecimal amount = resolver.resolveBasisAmount(
+                Basis.REGISTERED_BILLABLE_VALUE, "employee-uuid", from, to);
+
+        assertEquals(0, amount.compareTo(new BigDecimal("1250000.00")));
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(em).createNativeQuery(sql.capture());
+        assertTrue(sql.getValue().contains("SUM(fud.registered_amount)"));
+        assertTrue(sql.getValue().contains("fud.status_type = 'ACTIVE'"));
+        assertTrue(sql.getValue().contains("fud.document_date >= :from"));
+        assertTrue(sql.getValue().contains("fud.document_date <= :to"));
+        assertFalse(sql.getValue().toLowerCase().contains("discount"));
+        verify(query).setParameter("userUuid", "employee-uuid");
+        verify(query).setParameter("from", from);
+        verify(query).setParameter("to", to);
+    }
+
+    @Test
+    void billableHoursFormulaVariable_remainsRawHours() {
+        EntityManager em = mock(EntityManager.class);
+        Query query = mock(Query.class);
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.setParameter(anyString(), any())).thenReturn(query);
+        when(query.getSingleResult()).thenReturn(new BigDecimal("1250.00"));
+        IndividualBonusBasisResolver resolver = new IndividualBonusBasisResolver();
+        resolver.em = em;
+        LocalDate from = LocalDate.of(2023, 7, 1);
+        LocalDate to = LocalDate.of(2024, 6, 30);
+
+        BigDecimal hours = resolver.resolveVariable("billableHours", "employee-uuid", from, to);
+
+        assertEquals(0, hours.compareTo(new BigDecimal("1250.00")));
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(em).createNativeQuery(sql.capture());
+        assertTrue(sql.getValue().contains("SUM(fud.registered_billable_hours)"));
+        assertFalse(sql.getValue().contains("SUM(fud.registered_amount)"));
+    }
+
+    @Test
+    void compositeUtilizationUsesOneActiveInclusiveQueryAndReturnsCoverage() {
+        EntityManager em = mock(EntityManager.class);
+        Query query = mock(Query.class);
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.setParameter(anyString(), any())).thenReturn(query);
+        LocalDateTime watermark = LocalDateTime.of(2026, 8, 1, 2, 3, 4);
+        when(query.getSingleResult()).thenReturn(new Object[]{
+                new BigDecimal("93.0000"), new BigDecimal("100.0000"),
+                31L, 31L, BigDecimal.ZERO, Timestamp.valueOf(watermark)
+        });
+        IndividualBonusBasisResolver resolver = new IndividualBonusBasisResolver();
+        resolver.em = em;
+        LocalDate from = LocalDate.of(2026, 7, 1);
+        LocalDate to = LocalDate.of(2026, 7, 31);
+
+        var result = resolver.resolveUtilization("employee-uuid", from, to);
+
+        assertEquals(new BigDecimal("0.930000"), result.rawUtilization());
+        assertEquals(0, result.billableHours().compareTo(new BigDecimal("93.0000")));
+        assertEquals(31, result.coverage().expectedRows());
+        assertEquals(31, result.coverage().actualRows());
+        assertEquals(0, result.coverage().duplicateRows());
+        assertEquals(watermark, result.coverage().factsAsOf());
+        assertTrue(result.coverage().complete());
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(em).createNativeQuery(sql.capture());
+        assertTrue(sql.getValue().contains("fud.status_type = 'ACTIVE'"));
+        assertTrue(sql.getValue().contains("SUM(fud.registered_billable_hours)"));
+        assertTrue(sql.getValue().contains("SUM(fud.net_available_hours)"));
+        assertTrue(sql.getValue().contains("COUNT(DISTINCT fud.document_date)"));
+        assertTrue(sql.getValue().contains("MAX(fud.last_update)"));
+        verify(query).setParameter("userUuid", "employee-uuid");
+        verify(query).setParameter("from0", from);
+        verify(query).setParameter("to0", to);
+    }
+
+    @Test
+    void compositeUtilizationZeroDenominatorHasExactSixDecimalZero() {
+        EntityManager em = mock(EntityManager.class);
+        Query query = mock(Query.class);
+        when(em.createNativeQuery(anyString())).thenReturn(query);
+        when(query.setParameter(anyString(), any())).thenReturn(query);
+        when(query.getSingleResult()).thenReturn(new Object[]{
+                new BigDecimal("5.0000"), BigDecimal.ZERO,
+                1L, 1L, BigDecimal.ZERO, Timestamp.valueOf(LocalDateTime.of(2026, 8, 1, 0, 0))
+        });
+        IndividualBonusBasisResolver resolver = new IndividualBonusBasisResolver();
+        resolver.em = em;
+
+        var result = resolver.resolveUtilization("employee-uuid",
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 1));
+
+        assertEquals(new BigDecimal("0.000000"), result.rawUtilization());
     }
 
     private static BigDecimal bd(long v) {

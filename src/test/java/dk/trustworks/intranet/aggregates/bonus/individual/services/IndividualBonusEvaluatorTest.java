@@ -48,6 +48,25 @@ class IndividualBonusEvaluatorTest {
     }
 
     @Test
+    void registeredBillableValue_1250HoursAt1000Dkk_yields15000() {
+        List<Tier> tiers = List.of(
+                new Tier(bd(0), bd(800_000), bd("0.00")),
+                new Tier(bd(800_000), bd(1_100_000), bd("0.025")),
+                new Tier(bd(1_100_000), bd(1_400_000), bd("0.05")),
+                new Tier(bd(1_400_000), bd(2_000_000), bd("0.075")),
+                new Tier(bd(2_000_000), null, bd("0.10"))
+        );
+
+        assertDoesNotThrow(() -> service.validateSpec(specWith(tiers, Basis.REGISTERED_BILLABLE_VALUE)));
+        // 1,250 hours × 1,000 DKK = 1,250,000 DKK basis:
+        // 300,000 × 2.5% + 150,000 × 5% = 15,000 DKK.
+        BigDecimal earned = evaluator.computeEarned(
+                tiers, bd(1_250_000), new ProRating(false), 12);
+
+        assertEquals(0, earned.compareTo(bd(15_000)), "Expected 15,000 but got " + earned);
+    }
+
+    @Test
     void boundary_justBelowFirstPayingBand_yieldsZero() {
         BigDecimal earned = evaluator.computeEarned(
                 michaelTiers(), bd(999_999), new ProRating(false), 12);

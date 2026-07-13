@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -32,11 +33,19 @@ public record Spec(
         Basis basis,
         String aggregation,
         List<Tier> tierTable,
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<StepBand> stepTable,
         ProRating proRating,
         BigDecimal cap,
+        @JsonInclude(JsonInclude.Include.NON_NULL) BigDecimal expectedBaseSalary,
         boolean pension,
         String replaces,
         Schedule schedule,
         String formula
 ) {
+    /** Backward-compatible constructor for the legacy fiscal-year grammar. */
+    public Spec(Basis basis, String aggregation, List<Tier> tierTable, ProRating proRating,
+                BigDecimal cap, boolean pension, String replaces, Schedule schedule, String formula) {
+        this(basis, aggregation, tierTable, null, proRating, cap, null,
+                pension, replaces, schedule, formula);
+    }
 }

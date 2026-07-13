@@ -1,9 +1,14 @@
 package dk.trustworks.intranet.aggregates.bonus.individual.services;
 
 import dk.trustworks.intranet.aggregates.bonus.individual.dsl.BonusFormulaException;
+import dk.trustworks.intranet.aggregates.bonus.individual.config.IndividualBonusMonthlyConfig;
+import dk.trustworks.intranet.aggregates.bonus.individual.dto.IndividualBonusRunMonthlyResultDTO;
+import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusPayout;
+import dk.trustworks.intranet.aggregates.bonus.individual.exceptions.IndividualBonusException;
 import dk.trustworks.intranet.aggregates.bonus.individual.entity.IndividualBonusRule;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Advance;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.MaterializedPayoutCommand;
+import dk.trustworks.intranet.aggregates.bonus.individual.model.MonthlyCalculationResult;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.PayoutKind;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.ProjectedPayout;
 import dk.trustworks.intranet.aggregates.bonus.individual.model.Spec;
@@ -16,8 +21,12 @@ import jakarta.transaction.Transactional;
 import lombok.extern.jbosslog.JBossLog;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 import static dk.trustworks.intranet.utils.DateUtils.fiscalYearStart;
 
@@ -41,6 +50,212 @@ public class IndividualBonusPayoutService {
     @Inject IndividualBonusSpecMapper specMapper;
     @Inject IndividualBonusLumpSumWriter lumpSumWriter;
     @Inject IndividualBonusSupplementWriter supplementWriter;
+    @Inject IndividualBonusMonthlyConfig monthlyConfig;
+    @Inject IndividualBonusMonthlyCalculationService monthlyCalculationService;
+    @Inject IndividualBonusMonthlyPayoutWriter monthlyPayoutWriter;
+    @Inject IndividualBonusReconciliationService reconciliationService;
+
+    private static final ZoneId COPENHAGEN = ZoneId.of("Europe/Copenhagen");
+    private static final Set<String> MONTHLY_IDENTITY_CONSTRAINTS = Set.of(
+            "uk_individual_bonus_payout_source_ref", "uk_salary_lump_sum_source_ref");
+
+    /**
+     * Explicit calendar-month path. It never changes legacy materialisation semantics and never backdates
+     * money: overdue identities become manual MISSED_PRIMARY items.
+     */
+    @Transactional(Transactional.TxType.NOT_SUPPORTED)
+    public IndividualBonusRunMonthlyResultDTO materializeCalendarMonthDue(LocalDate requestedPayMonth,
+                                                                          String actor, boolean dryRun) {
+        LocalDate payMonth = requestedPayMonth.withDayOfMonth(1);
+        if (!dryRun && !monthlyConfig.materializationEnabled()) {
+            throw new IndividualBonusException(503, "MONTHLY_MATERIALIZATION_DISABLED",
+                    "Monthly bonus materialization is disabled");
+        }
+        YearMonth currentPayMonth = YearMonth.now(COPENHAGEN);
+        YearMonth requested = YearMonth.from(payMonth);
+        if (!requested.equals(currentPayMonth)) {
+            throw new IndividualBonusException(400, "INVALID_PAY_MONTH",
+                    "Monthly primary materialization is allowed only for the current Copenhagen pay month",
+                    "payMonth");
+        }
+
+        int evaluated = 0, committed = 0, noPayment = 0, idempotent = 0;
+        int blocked = 0, missedPrimary = 0, failed = 0;
+        List<IndividualBonusRunMonthlyResultDTO.Item> items = new ArrayList<>();
+        boolean truncated = false;
+        // Include inactive monthly rules so a rule disabled after earning cannot silently lose its M+1
+        // identity.  Legacy materialization below retains its original active-only query.
+        List<IndividualBonusRule> rules = IndividualBonusRule.list("order by uuid");
+        for (IndividualBonusRule rule : rules) {
+            Spec spec;
+            try {
+                spec = specMapper.parse(rule.getSpec());
+            } catch (RuntimeException ignored) {
+                continue;
+            }
+            if (!"CALENDAR_MONTH".equals(spec.aggregation()) || spec.schedule() == null
+                    || spec.schedule().monthly() == null) continue;
+            int offset = spec.schedule().monthly().payMonthOffset();
+            YearMonth currentEarning = requested.minusMonths(offset);
+            YearMonth first = YearMonth.from(rule.getEffectiveFrom());
+            YearMonth earliest = currentEarning.minusMonths(monthlyConfig.boundedDueLookbackMonths() - 1L);
+            if (first.isBefore(earliest)) first = earliest;
+            for (YearMonth earning = first; !earning.isAfter(currentEarning); earning = earning.plusMonths(1)) {
+                String sourceReference = IndividualBonusMonthlyPayoutWriter.sourceReference(rule.getUuid(), earning);
+                MonthlyCalculationResult calculation;
+                try {
+                    calculation = monthlyCalculationService.calculate(rule, spec, earning,
+                            LocalDate.now(COPENHAGEN));
+                } catch (RuntimeException error) {
+                    failed++;
+                    continue;
+                }
+                IndividualBonusPayout existing = monthlyPayoutWriter.findExisting(sourceReference);
+                if (existing != null) {
+                    // A source-reference hit is not sufficient evidence of idempotence. Recalculate and
+                    // verify the complete immutable payout + linked payroll identity. Changed facts are
+                    // handled by reconciliation; corrupt/conflicting identities remain a visible failure.
+                    evaluated++;
+                    Spec committedSpec;
+                    boolean committedIdentity;
+                    try {
+                        committedSpec = specMapper.parse(existing.getSpecJson());
+                        committedIdentity = monthlyPayoutWriter.hasConsistentCommittedIdentity(
+                                existing, rule, committedSpec, earning);
+                    } catch (RuntimeException corruptSnapshot) {
+                        committedIdentity = false;
+                    }
+                    if (!committedIdentity) {
+                        failed++;
+                        addItem(items, rule, earning, YearMonth.from(existing.getMonth()), "FAILED",
+                                null, "UNKNOWN", "PAYOUT_IDENTITY_CONFLICT");
+                    } else if (calculation.hasEarningOverlap()
+                            && monthlyPayoutWriter.matchesExpected(existing, rule, spec, calculation, actor)) {
+                        idempotent++;
+                        addItem(items, rule, earning, YearMonth.from(existing.getMonth()), "IDEMPOTENT",
+                                existing.getAmount(), "ACTUAL", null);
+                    } else {
+                        // The immutable identity is healthy but authoritative facts differ. Route it to
+                        // reconciliation when enabled; never mislabel a legitimate late-fact change as
+                        // a corrupt source-reference collision.
+                        String state = "BLOCKED";
+                        String reason = "RECONCILIATION_REQUIRED";
+                        if (monthlyConfig.reconciliationEnabled()) {
+                            try {
+                                IndividualBonusReconciliationService.OneResult result =
+                                        reconciliationService.reconcileOne(existing.getUuid(), actor, dryRun);
+                                if ("NO_CHANGE".equals(result.outcome()) || "RESOLVED".equals(result.outcome())) {
+                                    idempotent++;
+                                    state = "IDEMPOTENT";
+                                    reason = null;
+                                } else {
+                                    blocked++;
+                                }
+                            } catch (RuntimeException reconciliationFailure) {
+                                failed++;
+                                state = "FAILED";
+                                reason = "RECONCILIATION_FAILED";
+                            }
+                        } else {
+                            blocked++;
+                        }
+                        addItem(items, rule, earning, YearMonth.from(existing.getMonth()), state,
+                                null, "UNKNOWN", reason);
+                    }
+                    continue;
+                }
+                if (!calculation.hasEarningOverlap()) continue;
+                evaluated++;
+                boolean overdue = calculation.payMonth().isBefore(requested);
+                String outcome;
+                if (!Boolean.TRUE.equals(rule.getActive())) {
+                    blocked++;
+                    outcome = "BLOCKED";
+                    if (!dryRun) {
+                        reconciliationService.recordBlocker(rule, spec, calculation, actor, "RULE_INACTIVE");
+                    }
+                } else if (!calculation.materializable()) {
+                    blocked++;
+                    outcome = "BLOCKED";
+                    if (!dryRun) {
+                        reconciliationService.recordBlocker(rule, spec, calculation, actor,
+                                calculation.blockerCode() != null && calculation.blockerCode().startsWith("BASE_SALARY")
+                                        ? "BASE_SALARY_MISMATCH" : "DATA_UNRESOLVED");
+                    }
+                } else if (overdue) {
+                    if (calculation.finalSupplement().signum() > 0) {
+                        missedPrimary++;
+                        outcome = "MISSED_PRIMARY";
+                        if (!dryRun) reconciliationService.recordMissedPrimary(rule, spec, calculation, actor);
+                    } else {
+                        noPayment++;
+                        outcome = "NO_PAYMENT";
+                        if (!dryRun) {
+                            reconciliationService.resolveOpenBlockerNoPayment(
+                                    rule.getUuid(), earning.atDay(1), actor);
+                        }
+                    }
+                } else if (dryRun) {
+                    if (calculation.finalSupplement().signum() > 0) {
+                        committed++;
+                        outcome = "COMMITTED";
+                    } else {
+                        noPayment++;
+                        outcome = "NO_PAYMENT";
+                    }
+                } else {
+                    try {
+                        IndividualBonusMonthlyPayoutWriter.WriteResult result = monthlyPayoutWriter.writePrimary(
+                                rule, spec, calculation, actor);
+                        outcome = result.outcome().name();
+                        switch (result.outcome()) {
+                            case COMMITTED -> committed++;
+                            case NO_PAYMENT -> noPayment++;
+                            case IDEMPOTENT -> idempotent++;
+                        }
+                        reconciliationService.resolveOpenBlocker(rule.getUuid(), earning.atDay(1), actor);
+                    } catch (IndividualBonusException e) {
+                        if ("MONTHLY_PAYOUT_FINGERPRINT_CONFLICT".equals(e.code())) {
+                            failed++;
+                            outcome = "FAILED";
+                        } else {
+                            throw e;
+                        }
+                    } catch (RuntimeException raceOrFailure) {
+                        // The REQUIRES_NEW writer rolled back. Classify only a source-reference winner;
+                        // unrelated failures remain failures and never masquerade as idempotency.
+                        IndividualBonusPayout winner = IndividualBonusDuplicateClassifier.isNamedUniqueViolation(
+                                raceOrFailure, MONTHLY_IDENTITY_CONSTRAINTS)
+                                ? monthlyPayoutWriter.findExisting(sourceReference) : null;
+                        if (monthlyPayoutWriter.matchesExpected(winner, rule, spec, calculation, actor)) {
+                            idempotent++;
+                            outcome = "IDEMPOTENT";
+                        } else {
+                            failed++;
+                            outcome = "FAILED";
+                        }
+                    }
+                }
+                if (items.size() < 100) {
+                    addItem(items, rule, earning, calculation.payMonth(), outcome,
+                            calculation.finalSupplement(), calculation.calculationState().name(),
+                            Boolean.TRUE.equals(rule.getActive()) ? calculation.blockerCode() : "RULE_INACTIVE");
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+        return new IndividualBonusRunMonthlyResultDTO(payMonth, evaluated, committed, noPayment, idempotent,
+                blocked, missedPrimary, failed, dryRun, truncated, List.copyOf(items));
+    }
+
+    private static void addItem(List<IndividualBonusRunMonthlyResultDTO.Item> items,
+                                IndividualBonusRule rule, YearMonth earningMonth, YearMonth payMonth,
+                                String outcome, java.math.BigDecimal amount, String state, String blocker) {
+        if (items.size() >= 100) return;
+        items.add(new IndividualBonusRunMonthlyResultDTO.Item(rule.getUuid(), rule.getUserUuid(),
+                earningMonth.atDay(1), payMonth.atDay(1), outcome, amount, state, blocker));
+    }
 
     /**
      * Admin-triggered materialisation ({@code /payouts/run}): writes EVERY due kind (monthly advances AND
@@ -78,8 +293,8 @@ public class IndividualBonusPayoutService {
                 created += materializeRuleForMonth(rule, payMonth, horizon, scheduledOnly);
             } catch (BonusFormulaException e) {
                 log.warnf("MANUAL ACTION REQUIRED — individual-bonus formula evaluation failed for rule %s "
-                                + "(user %s, %s); NO payout auto-written this run: %s",
-                        rule.getUuid(), rule.getUserUuid(), payMonth, e.getMessage());
+                                + "(%s); NO payout auto-written this run",
+                        rule.getUuid(), payMonth);
             }
         }
         log.infof("Individual bonus materialisation for %s (scheduledOnly=%b): %d row(s) created",
@@ -96,6 +311,9 @@ public class IndividualBonusPayoutService {
                                         boolean scheduledOnly) {
         int created = 0;
         Spec spec = specMapper.parse(rule.getSpec());
+        // Calendar-month rules have their own guarded Snapshot V2 path. They must never fall through
+        // into the always-on legacy V1 materializer or bypass feature flags/open-payroll attestation.
+        if ("CALENDAR_MONTH".equals(spec.aggregation())) return 0;
         boolean prepaidVehicle = isPrepaidSupplement(spec);
 
         // A PREPAID_SUPPLEMENT advance is delivered by ONE recurring SalarySupplement (which projects
@@ -131,10 +349,10 @@ public class IndividualBonusPayoutService {
             // løntype 41 cannot carry a negative, so we do NOT auto-write it — HR settles the deduction
             // manually. The projection still SHOWS the negative for visibility.
             if (isNegativeClawback(p)) {
-                log.warnf("MANUAL ACTION REQUIRED — individual-bonus CLAWBACK of %s for user %s not "
+                log.warnf("MANUAL ACTION REQUIRED — individual-bonus CLAWBACK not "
                                 + "auto-paid (%s, %s): Danløn cannot export a negative løntype-41 line; "
                                 + "settle it as a manual deduction.",
-                        p.amount(), rule.getUserUuid(), p.sourceReference(), payMonth);
+                        p.sourceReference(), payMonth);
                 continue;
             }
             if (!shouldMaterialize(p)) continue;
@@ -155,8 +373,8 @@ public class IndividualBonusPayoutService {
             } catch (RuntimeException e) {
                 // A lost race (concurrent scheduled job + manual run, or ECS-Express double-fire) is
                 // benign and idempotent — log and continue so one payout never aborts the batch.
-                log.warnf("Skipped individual-bonus payout %s for %s (already materialised or write failed): %s",
-                        p.sourceReference(), rule.getUserUuid(), e.getMessage());
+                log.warnf("Skipped individual-bonus payout %s (already materialised or write failed)",
+                        p.sourceReference());
             }
         }
         return created;
@@ -222,8 +440,8 @@ public class IndividualBonusPayoutService {
             // Lost a race on the unique salary_supplement.source_reference index — a concurrent run already
             // created this rule's PREPAID supplement for the FY (the winner carries this month's value /
             // window; a later run reconciles any change). Benign — never abort the batch.
-            log.warnf("Skipped PREPAID supplement for %s (already materialised or write failed): %s",
-                    rule.getUserUuid(), e.getMessage());
+            log.warnf("Skipped PREPAID supplement for rule %s (already materialised or write failed)",
+                    rule.getUuid());
             return false;
         }
     }

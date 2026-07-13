@@ -54,8 +54,7 @@ public class IndividualBonusLumpSumWriter {
             ls.setDescription(cmd.ruleName());
             ls.setSourceReference(cmd.sourceReference());
             salaryLumpSumService.create(ls);
-            log.infof("Created INDIVIDUAL_PROD_BONUS for %s: %s (%s)",
-                    cmd.userUuid(), cmd.amount(), cmd.sourceReference());
+            log.infof("Created individual-bonus lump sum (%s)", cmd.sourceReference());
         }
 
         // Reproducibility snapshot — idempotent on source_reference, independent of whether the lump sum

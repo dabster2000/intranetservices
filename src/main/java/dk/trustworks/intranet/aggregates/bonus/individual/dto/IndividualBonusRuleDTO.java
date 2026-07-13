@@ -21,6 +21,7 @@ public record IndividualBonusRuleDTO(
         String createdBy,
         LocalDateTime createdAt,
         String modifiedBy,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        long revision
 ) {
 }
