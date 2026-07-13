@@ -110,7 +110,10 @@ jobs:
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT","value":"http://localhost:4317"},
               {"name":"OTEL_EXPORTER_OTLP_TRACES_ENABLED","value":"false"},
               {"name":"CLOUDWATCH_LOG_GROUP_BACKEND","value":"/ecs/tw-quarkus-production"},
-              {"name":"CLOUDWATCH_LOG_GROUP_FRONTEND","value":"/ecs/tw-nextjs-production"}
+              {"name":"CLOUDWATCH_LOG_GROUP_FRONTEND","value":"/ecs/tw-nextjs-production"},
+              {"name":"INDIVIDUAL_BONUS_MONTHLY_AUTHORING_ENABLED","value":"true"},
+              {"name":"INDIVIDUAL_BONUS_MONTHLY_MATERIALIZATION_ENABLED","value":"true"},
+              {"name":"INDIVIDUAL_BONUS_MONTHLY_RECONCILIATION_ENABLED","value":"true"}
             ]
           secrets: |
             [
