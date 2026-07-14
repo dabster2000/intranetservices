@@ -15,12 +15,12 @@ import static dk.trustworks.intranet.messaging.emitters.AggregateMessageEmitter.
 
 @Path("/sse")
 @ApplicationScoped
-@RolesAllowed({"system:read"})
 public class SSEResource {
 
     private final BroadcastProcessor<String> broadcastProcessor = BroadcastProcessor.create();
 
     @GET
+    @RolesAllowed({"system:read"})
     @Produces(MediaType.SERVER_SENT_EVENTS)
     @RestStreamElementType(MediaType.TEXT_PLAIN)
     //@SseElementType(MediaType.TEXT_PLAIN)
