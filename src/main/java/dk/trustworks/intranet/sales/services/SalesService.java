@@ -257,6 +257,7 @@ public class SalesService {
     public void delete(String uuid) {
         String userUuid = requestHeaderHolder != null ? requestHeaderHolder.getUserUuid() : null;
         log.infof("Deleting sales lead uuid=%s, user=%s", uuid, userUuid);
+        SalesLeadConsultant.delete("lead.uuid = ?1", uuid);
         SalesLead.deleteById(uuid);
     }
 
