@@ -2,6 +2,7 @@ package dk.trustworks.intranet.aggregates.utilization.services;
 
 import java.time.LocalDate;
 import java.time.Month;
+import java.time.ZoneId;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -41,12 +42,27 @@ public final class UtilizationCalculationHelper {
      * The dashboard (company-wide) intentionally does NOT filter by practice.
      * The team dashboard filters by team membership instead.
      *
-     * <p><b>Note:</b> {@code user.practice} is current-state only (no temporal history).
-     * Practice-filtered reports attribute all historical data to the consultant's
-     * current practice assignment. As of 2026-04, no practice changes have occurred
-     * in production data, so this is a documented limitation, not an active bug.</p>
+     * <p><b>Note:</b> practice-filtered daily reports use prospective effective-dated
+     * snapshots when covered and explicitly fall back to {@code user.practice} before
+     * the snapshot coverage boundary. Materialized facts may retain their own attribution.</p>
      */
     public static final Set<String> BILLABLE_PRACTICES = Set.of("PM", "BA", "CYB", "DEV", "SA");
+
+    /** Executive reporting timezone. A reporting day is complete at Copenhagen midnight. */
+    public static final ZoneId REPORTING_ZONE = ZoneId.of("Europe/Copenhagen");
+
+    /** Central management target used by practice utilization views. */
+    public static final double TARGET_UTILIZATION_PCT = 80.0;
+
+    /**
+     * Daily practice attribution method used by live fact queries.
+     */
+    public static final String PRACTICE_ATTRIBUTION_METHOD =
+            "EFFECTIVE_DATED_SNAPSHOT_WITH_CURRENT_USER_FALLBACK";
+
+    public static final String PRACTICE_ATTRIBUTION_NOTE =
+            "Effective-dated daily practice snapshots apply from the reported coverage start date. " +
+            "Earlier dates fall back to the consultant's current user.practice value and cannot be reconstructed historically.";
 
     /** Canonical consultant type filter. Only billable consultants contribute to utilization. */
     public static final String CONSULTANT_TYPE = "CONSULTANT";

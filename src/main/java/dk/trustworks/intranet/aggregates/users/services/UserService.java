@@ -1,6 +1,7 @@
 package dk.trustworks.intranet.aggregates.users.services;
 
 import dk.trustworks.intranet.apis.ResumeParserService;
+import dk.trustworks.intranet.aggregates.practices.services.PracticeAttributionService;
 import dk.trustworks.intranet.communicationsservice.model.TrustworksMail;
 import dk.trustworks.intranet.communicationsservice.resources.MailResource;
 import dk.trustworks.intranet.domain.cv.entity.UserResume;
@@ -54,6 +55,8 @@ public class UserService {
     LoginService loginService;
     @Inject
     ResumeParserService resumeParserService;
+    @Inject
+    PracticeAttributionService practiceAttributionService;
 
     /**
      * 1) Find user by Azure OID + issuer
@@ -403,6 +406,10 @@ public class UserService {
         User.persist(user);
         Role.persist(new Role(UUID.randomUUID().toString(), "USER", user.getUuid()));
         UserContactinfo.persist(userContactinfo);
+        if (shouldRecordCreatedPractice(user.getPractice())) {
+            em.flush();
+            practiceAttributionService.recordUserCreated(user.getUuid(), user.getPractice());
+        }
         log.infof("User created successfully: uuid=%s username=%s", user.getUuid(), user.getUsername());
         return user;
     }
@@ -414,12 +421,11 @@ public class UserService {
 
         // Preserve CPR: @JsonIgnore on User.cpr prevents Jackson deserialization,
         // so REST calls always have cpr=null. Read existing value to avoid erasing it.
+        User existing = User.findById(user.getUuid());
+        Object previousPractice = existing == null ? null : existing.getPractice();
         String cprValue = user.getCpr();
-        if (cprValue == null) {
-            User existing = User.findById(user.getUuid());
-            if (existing != null) {
-                cprValue = existing.getCpr();
-            }
+        if (cprValue == null && existing != null) {
+            cprValue = existing.getCpr();
         }
 
         User.update("email = ?1, " +
@@ -457,7 +463,20 @@ public class UserService {
                 user.getPractice(),
                 user.getUuid());
 
+        if (existing != null && shouldRecordPracticeChange(previousPractice, user.getPractice())) {
+            practiceAttributionService.recordPracticeChange(
+                    user.getUuid(), previousPractice, user.getPractice());
+        }
+
         log.debugf("User updated successfully: uuid=%s", user.getUuid());
+    }
+
+    static boolean shouldRecordCreatedPractice(Object practice) {
+        return practice != null;
+    }
+
+    static boolean shouldRecordPracticeChange(Object previousPractice, Object newPractice) {
+        return !Objects.equals(previousPractice, newPractice);
     }
 
     @Transactional
