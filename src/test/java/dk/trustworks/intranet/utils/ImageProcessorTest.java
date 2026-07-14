@@ -5,10 +5,10 @@ import org.junit.jupiter.api.Test;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -16,26 +16,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Guards the e-conomic receipt upload path (EconomicsService.sendFile -> ExpenseService).
  *
- * ImageIO.read() RETURNS null (it does not throw) for content it cannot decode — e.g. a PDF,
- * HEIC, or a corrupt receipt. Before the null guard in ImageProcessor, that null flowed straight
- * into Thumbnailator and surfaced on the expense as a cryptic
- * NullPointerException("Image cannot be null."), seen once on prod (2026-06-13, expense
- * 78c1d153). The guard turns it into an actionable IOException so the single expense is failed
- * (with its uuid already logged) and the chunk continues.
+ * ImageIO.read() returns null for unrecognized formats such as PDF/HEIC and can throw for
+ * recognized but corrupt or truncated image data. Before the decoder guard in ImageProcessor,
+ * a null result flowed into Thumbnailator and surfaced on the expense as a cryptic
+ * NullPointerException("Image cannot be null."). The guard emits a typed signal so the batch
+ * writer can park the expense for attention, log a warning, and continue the chunk.
  */
 class ImageProcessorTest {
 
-    /** Non-image content (a PDF here) must fail with an actionable IOException, not a cryptic NPE. */
+    /** Non-image content (a PDF here) must fail with the item-level decoder signal, not a cryptic NPE. */
     @Test
-    void nonDecodableReceiptThrowsActionableIOException() {
+    void nonDecodableReceiptThrowsTypedException() {
         // Valid bytes, but ImageIO cannot decode them into a BufferedImage (returns null).
         byte[] pdfBytes = "%PDF-1.7 fake pdf receipt, not a real image".getBytes(StandardCharsets.US_ASCII);
         String base64Pdf = Base64.getEncoder().encodeToString(pdfBytes);
 
-        IOException ex = assertThrows(IOException.class,
+        UndecodableReceiptException ex = assertThrows(UndecodableReceiptException.class,
                 () -> ImageProcessor.convertBase64ToImageAndCompress(base64Pdf));
-        assertTrue(ex.getMessage() != null && ex.getMessage().toLowerCase().contains("not a decodable image"),
-                "message should identify the non-image receipt, was: " + ex.getMessage());
+        assertEquals(UndecodableReceiptException.DEFAULT_MESSAGE, ex.getMessage());
+    }
+
+    /** Recognized but truncated image data can make ImageIO throw rather than return null. */
+    @Test
+    void truncatedRecognizedImageThrowsTypedException() {
+        byte[] truncatedPng = new byte[]{
+                (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A
+        };
+        String base64Png = Base64.getEncoder().encodeToString(truncatedPng);
+
+        UndecodableReceiptException ex = assertThrows(UndecodableReceiptException.class,
+                () -> ImageProcessor.convertBase64ToImageAndCompress(base64Png));
+        assertEquals(UndecodableReceiptException.DEFAULT_MESSAGE, ex.getMessage());
     }
 
     /** A genuine image still compresses to a non-empty JPEG (happy path unchanged by the guard). */

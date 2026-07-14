@@ -2,6 +2,7 @@ package dk.trustworks.intranet.expenseservice.batch;
 
 import dk.trustworks.intranet.expenseservice.model.Expense;
 import dk.trustworks.intranet.expenseservice.services.ExpenseService;
+import dk.trustworks.intranet.utils.UndecodableReceiptException;
 import jakarta.batch.api.BatchProperty;
 import jakarta.batch.api.chunk.ItemWriter;
 import jakarta.enterprise.context.Dependent;
@@ -37,6 +38,7 @@ public class ExpenseItemWriter implements ItemWriter {
     private long throttleMs;
     private int processedCount;
     private int successCount;
+    private int skippedCount;
     private int failedCount;
     private long startNs;
 
@@ -44,6 +46,7 @@ public class ExpenseItemWriter implements ItemWriter {
     public void open(Serializable checkpoint) throws Exception {
         processedCount = 0;
         successCount = 0;
+        skippedCount = 0;
         failedCount = 0;
         startNs = System.nanoTime();
 
@@ -79,6 +82,7 @@ public class ExpenseItemWriter implements ItemWriter {
         log.info("Expense processing progress: " +
                  "processed=" + processedCount +
                  ", success=" + successCount +
+                 ", skipped=" + skippedCount +
                  ", failed=" + failedCount +
                  ", elapsedMs=" + elapsedMs);
     }
@@ -97,6 +101,14 @@ public class ExpenseItemWriter implements ItemWriter {
 
             successCount++;
             log.info("Successfully processed expense: " + expense.getUuid());
+
+        } catch (UndecodableReceiptException e) {
+            // The receipt exists, but cannot be converted to the JPEG required by e-conomic.
+            // Park only this item for Accounting attention and keep the rest of the chunk running.
+            // If persisting the status fails, let that exception escape as a real batch failure.
+            expenseService.updateStatus(expense, ExpenseService.STATUS_UP_FAILED, e.getMessage());
+            skippedCount++;
+            log.warnf("Skipping expense %s: %s", expense.getUuid(), e.getMessage());
 
         } catch (Exception e) {
             failedCount++;
@@ -132,6 +144,7 @@ public class ExpenseItemWriter implements ItemWriter {
         log.info("ExpenseItemWriter completed: " +
                  "processed=" + processedCount +
                  ", success=" + successCount +
+                 ", skipped=" + skippedCount +
                  ", failed=" + failedCount +
                  ", elapsedMs=" + elapsedMs +
                  " (" + elapsedSec + "s)");
