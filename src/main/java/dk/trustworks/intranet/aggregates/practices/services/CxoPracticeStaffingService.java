@@ -4,6 +4,7 @@ import dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport;
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeStaffingConsultantDTO;
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeStaffingResponseDTO;
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeStaffingSummaryDTO;
+import dk.trustworks.intranet.aggregates.utilization.services.FactUserDayFreshnessService;
 import dk.trustworks.intranet.aggregates.utilization.services.UtilizationCalculationHelper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -26,7 +27,7 @@ import java.util.Set;
 
 import static dk.trustworks.intranet.aggregates.cxo.CxoSqlSupport.CXO_QUERY_TIMEOUT_MS;
 
-/** Group staffing signals with separate planned-allocation and completed-day actual definitions. */
+/** Group staffing signals with planned allocation and pipeline-certified completed-day actuals. */
 @JBossLog
 @ApplicationScoped
 public class CxoPracticeStaffingService {
@@ -37,37 +38,30 @@ public class CxoPracticeStaffingService {
     static final double ACTUAL_UNDERUTILIZED_THRESHOLD_PCT = 50.0;
     static final double STANDARD_DAILY_FTE_HOURS = 7.4;
     static final String PLANNED_ROWS_SQL = """
-            WITH monthly_capacity AS (
-                SELECT fud.useruuid,
-                       u.firstname,
-                       u.lastname,
-                       u.practice,
-                       DATE_FORMAT(fud.document_date, '%Y%m') AS month_key,
-                       SUM(fud.net_available_hours) AS net_available_hours
-                FROM fact_user_day fud
-                JOIN `user` u ON u.uuid = fud.useruuid
-                WHERE fud.document_date >= :fromDate
-                  AND fud.document_date < :toDate
-                  AND fud.consultant_type = 'CONSULTANT'
-                  AND fud.status_type = 'ACTIVE'
-                  AND u.practice IN (:practices)
-                GROUP BY fud.useruuid, u.firstname, u.lastname, u.practice,
-                         DATE_FORMAT(fud.document_date, '%Y%m')
-                HAVING SUM(fud.net_available_hours) > 0
-            ), monthly_budget AS (
-                SELECT useruuid,
-                       DATE_FORMAT(document_date, '%Y%m') AS month_key,
+            WITH daily_budget AS (
+                SELECT useruuid, document_date,
                        SUM(budgetHours) AS budget_hours
                 FROM fact_budget_day
                 WHERE document_date >= :fromDate AND document_date < :toDate
-                GROUP BY useruuid, DATE_FORMAT(document_date, '%Y%m')
+                GROUP BY useruuid, document_date
             )
-            SELECT c.useruuid, c.firstname, c.lastname, c.practice, c.month_key,
-                   c.net_available_hours, COALESCE(b.budget_hours, 0) AS budget_hours
-            FROM monthly_capacity c
-            LEFT JOIN monthly_budget b
-              ON b.useruuid = c.useruuid AND b.month_key = c.month_key
-            ORDER BY c.practice, c.month_key, c.firstname, c.lastname, c.useruuid
+            SELECT fud.useruuid, u.firstname, u.lastname, u.practice,
+                   DATE_FORMAT(fud.document_date, '%Y%m') AS month_key,
+                   SUM(fud.net_available_hours) AS net_available_hours,
+                   COALESCE(SUM(COALESCE(db.budget_hours, 0)), 0) AS budget_hours
+            FROM fact_user_day fud
+            JOIN `user` u ON u.uuid = fud.useruuid
+            LEFT JOIN daily_budget db
+              ON db.useruuid = fud.useruuid AND db.document_date = fud.document_date
+            WHERE fud.document_date >= :fromDate
+              AND fud.document_date < :toDate
+              AND fud.consultant_type = 'CONSULTANT'
+              AND fud.status_type = 'ACTIVE'
+              AND u.practice IN (:practices)
+            GROUP BY fud.useruuid, u.firstname, u.lastname, u.practice,
+                     DATE_FORMAT(fud.document_date, '%Y%m')
+            HAVING SUM(fud.net_available_hours) > 0
+            ORDER BY u.practice, month_key, u.firstname, u.lastname, fud.useruuid
             """;
     static final String ACTUAL_ROWS_SQL = """
             SELECT fud.useruuid, u.firstname, u.lastname,
@@ -95,6 +89,9 @@ public class CxoPracticeStaffingService {
     @Inject
     PracticeAttributionService practiceAttributionService;
 
+    @Inject
+    FactUserDayFreshnessService factUserDayFreshnessService;
+
     public PracticeStaffingResponseDTO getStaffing(String requestedPractice) {
         return getStaffing(normalizePractice(requestedPractice),
                 LocalDate.now(UtilizationCalculationHelper.REPORTING_ZONE));
@@ -103,15 +100,18 @@ public class CxoPracticeStaffingService {
     PracticeStaffingResponseDTO getStaffing(String requestedPractice, LocalDate copenhagenToday) {
         YearMonth plannedMonth = YearMonth.from(copenhagenToday);
         YearMonth priorPlannedMonth = plannedMonth.minusMonths(1);
-        StaffingWindow staffingWindow = staffingWindow(copenhagenToday);
-        LocalDate actualTo = staffingWindow.actualToDate();
-        LocalDate actualFrom = staffingWindow.actualFromDate();
-        int standardWorkingDays = countWeekdays(actualFrom, actualTo);
+        FactUserDayFreshnessService.Freshness freshness = factUserDayFreshnessService.resolve(copenhagenToday);
+        StaffingWindow staffingWindow = staffingWindow(freshness.actualDataThroughDate());
+        LocalDate actualTo = staffingWindow == null ? null : staffingWindow.actualToDate();
+        LocalDate actualFrom = staffingWindow == null ? null : staffingWindow.actualFromDate();
+        int standardWorkingDays = staffingWindow == null ? 0 : countWeekdays(actualFrom, actualTo);
         double standardPeriodHours = standardWorkingDays * STANDARD_DAILY_FTE_HOURS;
 
         List<Object[]> plannedRows = loadPlannedRows(
                 priorPlannedMonth.atDay(1), plannedMonth.plusMonths(1).atDay(1));
-        List<Object[]> actualRows = loadActualRows(actualFrom, actualTo);
+        List<Object[]> actualRows = staffingWindow == null
+                ? List.of()
+                : loadActualRows(actualFrom, actualTo);
 
         String plannedKey = monthKey(plannedMonth);
         String priorKey = monthKey(priorPlannedMonth);
@@ -161,8 +161,8 @@ public class CxoPracticeStaffingService {
                     current,
                     prior,
                     current - prior,
-                    actualCount.get(practice),
-                    actualUnusedFte.get(practice)
+                    freshness.hasCertifiedActualData() ? actualCount.get(practice) : null,
+                    freshness.hasCertifiedActualData() ? actualUnusedFte.get(practice) : null
             ));
         }
 
@@ -203,6 +203,11 @@ public class CxoPracticeStaffingService {
                 actualFrom,
                 actualTo,
                 actualTo,
+                freshness.requestedActualThroughDate(),
+                freshness.actualDataThroughDate(),
+                freshness.actualDataStatus(),
+                freshness.actualSourceLagDays(),
+                freshness.sourceRefreshedAt(),
                 attribution.method(),
                 attribution.coverageStartDate(),
                 attribution.note(),
@@ -281,9 +286,9 @@ public class CxoPracticeStaffingService {
         return utilizationPct < ACTUAL_UNDERUTILIZED_THRESHOLD_PCT;
     }
 
-    static StaffingWindow staffingWindow(LocalDate copenhagenToday) {
-        LocalDate actualTo = copenhagenToday.minusDays(1);
-        return new StaffingWindow(actualTo.minusDays(27), actualTo);
+    static StaffingWindow staffingWindow(LocalDate actualDataThroughDate) {
+        if (actualDataThroughDate == null) return null;
+        return new StaffingWindow(actualDataThroughDate.minusDays(27), actualDataThroughDate);
     }
 
     static int countWeekdays(LocalDate fromInclusive, LocalDate toInclusive) {

@@ -10,14 +10,20 @@ final class PracticeForecastCalculator {
 
     private PracticeForecastCalculator() {}
 
-    static ForecastWindow window(LocalDate copenhagenToday) {
+    static ForecastWindow window(LocalDate copenhagenToday, LocalDate actualDataThroughDate) {
         YearMonth current = YearMonth.from(copenhagenToday);
+        LocalDate requestedActualThroughDate = copenhagenToday.minusDays(1);
+        LocalDate effectiveActualThroughDate = actualDataThroughDate == null
+                ? null
+                : actualDataThroughDate.isAfter(requestedActualThroughDate)
+                        ? requestedActualThroughDate
+                        : actualDataThroughDate;
         return new ForecastWindow(
                 current,
                 current.minusMonths(6),
                 current.plusMonths(5),
                 current.minusMonths(6).atDay(1),
-                copenhagenToday.minusDays(1),
+                effectiveActualThroughDate,
                 current.atDay(1),
                 current.plusMonths(5).atEndOfMonth()
         );
@@ -30,7 +36,12 @@ final class PracticeForecastCalculator {
     }
 
     static LocalDate actualThroughDate(YearMonth month, ForecastWindow window) {
-        if (month.isBefore(window.currentMonth())) return month.atEndOfMonth();
+        if (window.actualToDate() == null) return null;
+        if (month.isBefore(window.currentMonth())) {
+            return !window.actualToDate().isBefore(month.atEndOfMonth())
+                    ? month.atEndOfMonth()
+                    : null;
+        }
         if (month.equals(window.currentMonth()) && !window.actualToDate().isBefore(month.atDay(1))) {
             return window.actualToDate();
         }

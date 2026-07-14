@@ -1,9 +1,11 @@
 package dk.trustworks.intranet.aggregates.finance.dto;
 
+import dk.trustworks.intranet.aggregates.utilization.dto.ActualDataStatus;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
 import java.time.LocalDate;
 
 /**
@@ -44,6 +46,13 @@ public class PracticeForecastMonthDTO {
 
     /** Last completed Copenhagen date included in actual fields; null for forward months. */
     private LocalDate actualThroughDate;
+
+    /** Requested and pipeline-certified cutoffs for source-completeness disclosure. */
+    private LocalDate requestedActualThroughDate;
+    private LocalDate actualDataThroughDate;
+    private ActualDataStatus actualDataStatus;
+    private Integer actualSourceLagDays;
+    private Instant sourceRefreshedAt;
 
     /** Underlying hours make the percentage and target gap independently auditable. */
     private Double actualBillableHours;

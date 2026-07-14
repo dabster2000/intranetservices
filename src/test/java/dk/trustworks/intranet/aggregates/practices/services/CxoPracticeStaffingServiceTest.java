@@ -1,9 +1,12 @@
 package dk.trustworks.intranet.aggregates.practices.services;
 
+import dk.trustworks.intranet.aggregates.utilization.dto.ActualDataStatus;
+import dk.trustworks.intranet.aggregates.utilization.services.FactUserDayFreshnessService;
 import org.junit.jupiter.api.Test;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -20,12 +23,22 @@ class CxoPracticeStaffingServiceTest {
     @Test
     void completed28DayWindow_hasTwentyWeekdays() {
         CxoPracticeStaffingService.StaffingWindow window =
-                CxoPracticeStaffingService.staffingWindow(LocalDate.of(2026, 7, 14));
+                CxoPracticeStaffingService.staffingWindow(LocalDate.of(2026, 7, 13));
 
         assertEquals(LocalDate.of(2026, 6, 16), window.actualFromDate());
         assertEquals(LocalDate.of(2026, 7, 13), window.actualToDate());
         assertEquals(20, CxoPracticeStaffingService.countWeekdays(
                 window.actualFromDate(), window.actualToDate()));
+    }
+
+    @Test
+    void sourceLag_movesEntire28DayWindowToCertifiedCutoff() {
+        CxoPracticeStaffingService.StaffingWindow window =
+                CxoPracticeStaffingService.staffingWindow(LocalDate.of(2026, 7, 12));
+
+        assertEquals(LocalDate.of(2026, 6, 15), window.actualFromDate());
+        assertEquals(LocalDate.of(2026, 7, 12), window.actualToDate());
+        assertNull(CxoPracticeStaffingService.staffingWindow(null));
     }
 
     @Test
@@ -81,7 +94,12 @@ class CxoPracticeStaffingServiceTest {
 
         assertTrue(planned.contains("SUM(fud.net_available_hours)"));
         assertTrue(planned.contains("SUM(budgetHours)"));
-        assertTrue(planned.contains("COALESCE(b.budget_hours, 0)"));
+        assertTrue(planned.contains("GROUP BY useruuid, document_date"));
+        assertTrue(planned.contains("db.useruuid = fud.useruuid"));
+        assertTrue(planned.contains("db.document_date = fud.document_date"));
+        assertTrue(planned.contains("COALESCE(SUM(COALESCE(db.budget_hours, 0)), 0)"));
+        assertTrue(planned.contains("fud.consultant_type = 'CONSULTANT'"));
+        assertTrue(planned.contains("fud.status_type = 'ACTIVE'"));
         assertFalse(planned.contains("AVG("));
         assertTrue(actual.contains("SUM(fud.registered_billable_hours)"));
         assertTrue(actual.contains("LEFT JOIN user_practice_history"));
@@ -114,6 +132,35 @@ class CxoPracticeStaffingServiceTest {
     }
 
     @Test
+    void unavailableActualEvidence_isNullRatherThanFalseZero() {
+        FactUserDayFreshnessService.Freshness unavailable = new FactUserDayFreshnessService.Freshness(
+                LocalDate.of(2026, 7, 13),
+                null,
+                ActualDataStatus.UNAVAILABLE,
+                null,
+                null);
+        CxoPracticeStaffingService service = serviceWithRows(
+                List.<Object[]>of(new Object[]{
+                        "user-1", "Ada", "Lovelace", "PM", "202607", 160.0, 0.0}),
+                List.<Object[]>of(new Object[]{
+                        "user-1", "Ada", "Lovelace", "PM", 100.0, 20.0}),
+                unavailable);
+
+        var response = service.getStaffing("PM", LocalDate.of(2026, 7, 14));
+        var summary = response.practices().stream()
+                .filter(p -> "PM".equals(p.practiceId()))
+                .findFirst().orElseThrow();
+
+        assertNull(response.actualFromDate());
+        assertNull(response.actualToDate());
+        assertEquals(ActualDataStatus.UNAVAILABLE, response.actualDataStatus());
+        assertNull(summary.actualUnderutilizedHeadcount());
+        assertNull(summary.actualUnusedFte());
+        assertEquals(1, response.consultants().size());
+        assertFalse(response.consultants().getFirst().hasActualEvidence());
+    }
+
+    @Test
     void oneConsultantChangingPracticeRetainsBothActualSummarySegments() {
         CxoPracticeStaffingService service = serviceWithRows(List.of(), List.of(
                 new Object[]{"user-1", "Ada", "Lovelace", "PM", 100.0, 20.0},
@@ -137,6 +184,21 @@ class CxoPracticeStaffingServiceTest {
     private static CxoPracticeStaffingService serviceWithRows(
             List<Object[]> plannedRows,
             List<Object[]> actualRows) {
+        return serviceWithRows(
+                plannedRows,
+                actualRows,
+                new FactUserDayFreshnessService.Freshness(
+                        LocalDate.of(2026, 7, 13),
+                        LocalDate.of(2026, 7, 13),
+                        ActualDataStatus.COMPLETE,
+                        0,
+                        Instant.parse("2026-07-14T03:00:00Z")));
+    }
+
+    private static CxoPracticeStaffingService serviceWithRows(
+            List<Object[]> plannedRows,
+            List<Object[]> actualRows,
+            FactUserDayFreshnessService.Freshness freshness) {
         EntityManager em = mock(EntityManager.class);
         Query plannedQuery = mock(Query.class);
         Query actualQuery = mock(Query.class);
@@ -154,6 +216,9 @@ class CxoPracticeStaffingServiceTest {
         CxoPracticeStaffingService service = new CxoPracticeStaffingService();
         service.em = em;
         service.practiceAttributionService = attribution;
+        FactUserDayFreshnessService freshnessService = mock(FactUserDayFreshnessService.class);
+        when(freshnessService.resolve(LocalDate.of(2026, 7, 14))).thenReturn(freshness);
+        service.factUserDayFreshnessService = freshnessService;
         return service;
     }
 }

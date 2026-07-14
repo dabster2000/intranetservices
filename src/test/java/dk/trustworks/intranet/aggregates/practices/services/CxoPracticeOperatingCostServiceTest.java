@@ -1,9 +1,14 @@
 package dk.trustworks.intranet.aggregates.practices.services;
 
 import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeOperatingCostDTO;
+import dk.trustworks.intranet.aggregates.practices.dto.cxo.PracticeOperatingCostResponseDTO;
 import org.junit.jupiter.api.Test;
 
-import java.time.LocalDate;
+import java.time.Instant;
+import java.time.YearMonth;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,17 +60,17 @@ class CxoPracticeOperatingCostServiceTest {
     }
 
     @Test
-    void reportingWindowUsesConservativeMonthMinusTwoAndTwoAdjacentTtms() {
+    void reportingWindowUsesCompleteMetadataAnchorAndTwoAdjacentTtms() {
         CxoPracticeOperatingCostService.OperatingWindow window =
-                CxoPracticeOperatingCostService.reportingWindow(LocalDate.of(2026, 7, 14));
+                CxoPracticeOperatingCostService.reportingWindow(YearMonth.of(2026, 3));
 
-        assertEquals("202605", window.reportingThroughMonthKey());
-        assertEquals("202506", window.currentStartMonthKey());
-        assertEquals("202605", window.currentEndMonthKey());
-        assertEquals("202406", window.priorStartMonthKey());
-        assertEquals("202505", window.priorEndMonthKey());
-        assertEquals("202605", CxoPracticeOperatingCostService.reportingThroughMonthKey(
-                LocalDate.of(2026, 7, 1)));
+        assertEquals("202603", window.reportingThroughMonthKey());
+        assertEquals("202504", window.currentStartMonthKey());
+        assertEquals("202603", window.currentEndMonthKey());
+        assertEquals("202404", window.priorStartMonthKey());
+        assertEquals("202503", window.priorEndMonthKey());
+        assertEquals(YearMonth.of(2021, 8),
+                CxoPracticeOperatingCostService.metadataStartMonth(YearMonth.of(2026, 6)));
     }
 
     @Test
@@ -98,6 +103,64 @@ class CxoPracticeOperatingCostServiceTest {
     }
 
     @Test
+    void latestCompleteAnchorSearchesBackwardAndRequiresTwelveCompleteCompanyMonths() {
+        List<CxoPracticeOperatingCostService.SalaryCompletenessCell> cells = completeMetadata(
+                YearMonth.of(2025, 4), 12);
+
+        assertEquals(YearMonth.of(2026, 3),
+                CxoPracticeOperatingCostService.latestCompleteAnchor(
+                                cells, YearMonth.of(2026, 6))
+                        .orElseThrow());
+
+        cells.remove(0);
+        assertTrue(CxoPracticeOperatingCostService.latestCompleteAnchor(
+                cells, YearMonth.of(2026, 6)).isEmpty());
+    }
+
+    @Test
+    void currentAndPriorCostCompletenessAreEvaluatedIndependently() {
+        List<CxoPracticeOperatingCostService.SalaryCompletenessCell> cells = completeMetadata(
+                YearMonth.of(2024, 4), 24);
+        CxoPracticeOperatingCostService.SalaryCompletenessCell first = cells.get(0);
+        cells.set(0, new CxoPracticeOperatingCostService.SalaryCompletenessCell(
+                first.companyId(), first.monthKey(),
+                first.expectedSalaryCellCount(), first.actualSalaryCellCount(),
+                first.coveredSalaryCellCount(), first.missingSalaryCellCount(),
+                first.unexpectedSalaryCellCount(), false));
+
+        CxoPracticeOperatingCostService.PeriodCostCompleteness current =
+                CxoPracticeOperatingCostService.summarizeCostCompleteness(
+                        cells, "202504", "202603");
+        CxoPracticeOperatingCostService.PeriodCostCompleteness prior =
+                CxoPracticeOperatingCostService.summarizeCostCompleteness(
+                        cells, "202404", "202503");
+
+        assertTrue(current.complete());
+        assertEquals(72, current.salaryCoverage().expectedCount());
+        assertEquals(72, current.salaryCoverage().coveredCount());
+        assertEquals(0, current.salaryCoverage().missingCount());
+        assertFalse(prior.complete());
+        assertTrue(prior.salaryCoverage().complete(),
+                "exact allocation cells do not override a failed aggregate salary rule");
+    }
+
+    @Test
+    void fteCoverageUsesExactlyFivePracticesAcrossTwelveMonths() {
+        Set<String> expected = CxoPracticeOperatingCostService.expectedPracticeMonthCells(
+                "202504", "202603");
+        Set<String> actual = new HashSet<>(expected);
+        actual.remove("SA:202603");
+
+        CxoPracticeOperatingCostService.CoverageResult coverage =
+                CxoPracticeOperatingCostService.coverage(expected, actual);
+
+        assertEquals(60, coverage.expectedCount());
+        assertEquals(59, coverage.coveredCount());
+        assertEquals(1, coverage.missingCount());
+        assertFalse(coverage.complete());
+    }
+
+    @Test
     void completenessStatusDistinguishesSalaryAndFteFailures() {
         assertEquals("COMPLETE", CxoPracticeOperatingCostService.completenessStatus(true, true));
         assertEquals("INCOMPLETE_SALARY_COVERAGE",
@@ -111,6 +174,7 @@ class CxoPracticeOperatingCostServiceTest {
     @Test
     void costQueryIsBoundToSelectedPostingStatusesAndOperatingCostTypes() {
         String sql = CxoPracticeOperatingCostService.COST_ROWS_SQL;
+        assertTrue(sql.contains("company_id IN (:companies)"));
         assertTrue(sql.contains("posting_status IN (:postingStatuses)"));
         assertTrue(sql.contains("cost_type IN ('SALARIES', 'OPEX')"));
         assertFalse(sql.contains("REVENUE"));
@@ -118,5 +182,139 @@ class CxoPracticeOperatingCostServiceTest {
                 Set.copyOf(dk.trustworks.intranet.financeservice.model.enums.CostSource.BOOKED.postingStatusNames()));
         assertEquals(Set.of("BOOKED", "DRAFT"),
                 Set.copyOf(dk.trustworks.intranet.financeservice.model.enums.CostSource.BOOKED_PLUS_DRAFT.postingStatusNames()));
+        assertTrue(CxoPracticeOperatingCostService.SALARY_COMPLETENESS_ROWS_SQL.contains(
+                "FROM fact_practice_salary_completeness_mat"));
+        assertTrue(CxoPracticeOperatingCostService.SALARY_COMPLETENESS_ROWS_SQL.contains(
+                "rule_version = :ruleVersion"));
+        assertTrue(CxoPracticeOperatingCostService.PUBLICATION_SNAPSHOT_SQL.contains(
+                "COUNT(materialized_at) AS timestamped_rows"));
+        assertFalse(CxoPracticeOperatingCostService.PUBLICATION_SNAPSHOT_SQL.contains(
+                "bi_refresh_watermark"),
+                "coherent cost evidence remains independent of actual-data refresh failures");
+    }
+
+    @Test
+    void publicationValidationAcceptsOnlyOneCompleteReadyGeneration() {
+        Instant generation = Instant.parse("2026-07-14T08:30:00.123456Z");
+        CxoPracticeOperatingCostService.PublicationSnapshot valid = publication(
+                "READY", null, generation,
+                source(100, generation), source(60, generation), source(360, generation));
+
+        assertNull(CxoPracticeOperatingCostService.publicationValidationFailure(valid));
+
+        CxoPracticeOperatingCostService.PublicationSnapshot empty = publication(
+                "READY", null, generation,
+                source(0, generation), source(60, generation), source(360, generation));
+        assertEquals("operating-cost source is empty",
+                CxoPracticeOperatingCostService.publicationValidationFailure(empty));
+
+        CxoPracticeOperatingCostService.PublicationSnapshot wrongCount =
+                new CxoPracticeOperatingCostService.PublicationSnapshot(
+                        "READY", null, generation, generation.plusMillis(1),
+                        101, 60, 360,
+                        source(100, generation), source(60, generation), source(360, generation));
+        assertEquals("operating-cost row count does not match publication",
+                CxoPracticeOperatingCostService.publicationValidationFailure(wrongCount));
+
+        CxoPracticeOperatingCostService.SourcePublication partiallyStamped =
+                new CxoPracticeOperatingCostService.SourcePublication(
+                        100, 99, generation, generation);
+        CxoPracticeOperatingCostService.PublicationSnapshot partial = publication(
+                "READY", null, generation,
+                partiallyStamped, source(60, generation), source(360, generation));
+        assertEquals("operating-cost contains unpublished rows",
+                CxoPracticeOperatingCostService.publicationValidationFailure(partial));
+
+        Instant otherGeneration = generation.plusSeconds(1);
+        CxoPracticeOperatingCostService.PublicationSnapshot mismatch = publication(
+                "READY", null, generation,
+                source(100, otherGeneration), source(60, generation), source(360, generation));
+        assertEquals("operating-cost generation does not match publication",
+                CxoPracticeOperatingCostService.publicationValidationFailure(mismatch));
+    }
+
+    @Test
+    void publicationValidationRejectsRunningFailedAndActiveRefreshStates() {
+        Instant generation = Instant.parse("2026-07-14T08:30:00Z");
+
+        assertEquals("publication is not READY",
+                CxoPracticeOperatingCostService.publicationValidationFailure(publication(
+                        "RUNNING", null, generation,
+                        source(100, generation), source(60, generation), source(360, generation))));
+        assertEquals("publication is not READY",
+                CxoPracticeOperatingCostService.publicationValidationFailure(publication(
+                        "FAILED", null, generation,
+                        source(100, generation), source(60, generation), source(360, generation))));
+        assertEquals("publication token is still active",
+                CxoPracticeOperatingCostService.publicationValidationFailure(publication(
+                        "READY", "active-token", generation,
+                        source(100, generation), source(60, generation), source(360, generation))));
+    }
+
+    @Test
+    void preAndPostPublicationMustRemainIdentical() {
+        Instant firstGeneration = Instant.parse("2026-07-14T08:30:00Z");
+        Instant secondGeneration = firstGeneration.plusSeconds(10);
+        CxoPracticeOperatingCostService.PublicationSnapshot before = publication(
+                "READY", null, firstGeneration,
+                source(100, firstGeneration), source(60, firstGeneration), source(360, firstGeneration));
+        CxoPracticeOperatingCostService.PublicationSnapshot same = publication(
+                "READY", null, firstGeneration,
+                source(100, firstGeneration), source(60, firstGeneration), source(360, firstGeneration));
+        CxoPracticeOperatingCostService.PublicationSnapshot changed = publication(
+                "READY", null, secondGeneration,
+                source(100, secondGeneration), source(60, secondGeneration), source(360, secondGeneration));
+
+        assertTrue(CxoPracticeOperatingCostService.samePublication(before, same));
+        assertFalse(CxoPracticeOperatingCostService.samePublication(before, changed));
+    }
+
+    @Test
+    void sourceFreshnessIsAnUtcInstantContract() {
+        assertEquals(Instant.class,
+                List.of(PracticeOperatingCostResponseDTO.class.getRecordComponents()).stream()
+                        .filter(component -> component.getName().equals("sourceRefreshedAt"))
+                        .findFirst()
+                        .orElseThrow()
+                        .getType());
+    }
+
+    private static List<CxoPracticeOperatingCostService.SalaryCompletenessCell> completeMetadata(
+            YearMonth start, int monthCount) {
+        List<CxoPracticeOperatingCostService.SalaryCompletenessCell> cells = new ArrayList<>();
+        for (int monthOffset = 0; monthOffset < monthCount; monthOffset++) {
+            String monthKey = start.plusMonths(monthOffset).toString().replace("-", "");
+            for (String company : CxoPracticeOperatingCostService.PRODUCTION_COMPANIES) {
+                cells.add(new CxoPracticeOperatingCostService.SalaryCompletenessCell(
+                        company, monthKey, 2, 2, 2, 0, 0, true));
+            }
+        }
+        return cells;
+    }
+
+    private static CxoPracticeOperatingCostService.SourcePublication source(
+            long rowCount, Instant generation) {
+        return new CxoPracticeOperatingCostService.SourcePublication(
+                rowCount, rowCount, generation, generation);
+    }
+
+    private static CxoPracticeOperatingCostService.PublicationSnapshot publication(
+            String publicationState,
+            String activeToken,
+            Instant generation,
+            CxoPracticeOperatingCostService.SourcePublication opex,
+            CxoPracticeOperatingCostService.SourcePublication fte,
+            CxoPracticeOperatingCostService.SourcePublication completeness) {
+        return new CxoPracticeOperatingCostService.PublicationSnapshot(
+                publicationState,
+                activeToken,
+                generation,
+                generation.plusMillis(1),
+                opex.totalRowCount(),
+                fte.totalRowCount(),
+                completeness.totalRowCount(),
+                opex,
+                fte,
+                completeness);
     }
 }
