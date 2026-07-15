@@ -12,6 +12,8 @@ import org.mockito.quality.Strictness;
 import org.mockito.junit.jupiter.MockitoSettings;
 
 import java.lang.reflect.Method;
+import java.math.BigInteger;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -35,6 +37,12 @@ class ChangeLogRetentionBatchletTest {
     EntityManager em;
 
     @Mock
+    Query selectQuery;
+
+    @Mock
+    Query watermarkQuery;
+
+    @Mock
     Query deleteQuery;
 
     private ChangeLogRetentionBatchlet batchlet;
@@ -45,6 +53,18 @@ class ChangeLogRetentionBatchletTest {
         real.em = em;
         real.retentionDays = 30;
         batchlet = Mockito.spy(real);
+        when(em.createNativeQuery(anyString())).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.startsWith("SELECT id")) return selectQuery;
+            if (sql.contains("UPDATE practice_revenue_source_watermark")) return watermarkQuery;
+            return deleteQuery;
+        });
+        when(selectQuery.setParameter(eq("days"), org.mockito.ArgumentMatchers.any())).thenReturn(selectQuery);
+        when(selectQuery.setMaxResults(ChangeLogRetentionBatchlet.DELETE_CHUNK_SIZE)).thenReturn(selectQuery);
+        when(watermarkQuery.setParameter(eq("highest"), org.mockito.ArgumentMatchers.any())).thenReturn(watermarkQuery);
+        when(watermarkQuery.executeUpdate()).thenReturn(1);
+        when(deleteQuery.setParameter(eq("highest"), org.mockito.ArgumentMatchers.any())).thenReturn(deleteQuery);
+        when(deleteQuery.setParameter(eq("days"), org.mockito.ArgumentMatchers.any())).thenReturn(deleteQuery);
         // Bypass QuarkusTransaction.requiringNew() — not available in unit context.
         Mockito.doAnswer(inv -> batchlet.deleteOneChunk())
                 .when(batchlet).deleteOneChunkInOwnTransaction();
@@ -52,8 +72,7 @@ class ChangeLogRetentionBatchletTest {
 
     @Test
     void run_singleShortChunk_returnsRowsDeletedAndStops() {
-        when(em.createNativeQuery(anyString())).thenReturn(deleteQuery);
-        when(deleteQuery.setParameter(eq("days"), eq(30))).thenReturn(deleteQuery);
+        when(selectQuery.getResultList()).thenReturn(List.of(3L, 9L, 14L));
         when(deleteQuery.executeUpdate()).thenReturn(7);
 
         long deleted = batchlet.run();
@@ -64,8 +83,7 @@ class ChangeLogRetentionBatchletTest {
 
     @Test
     void run_multipleFullChunks_loopsUntilShortChunk() {
-        when(em.createNativeQuery(anyString())).thenReturn(deleteQuery);
-        when(deleteQuery.setParameter(eq("days"), eq(30))).thenReturn(deleteQuery);
+        when(selectQuery.getResultList()).thenReturn(List.of(100_000L), List.of(200_000L), List.of(200_042L));
         when(deleteQuery.executeUpdate())
                 .thenReturn(ChangeLogRetentionBatchlet.DELETE_CHUNK_SIZE,
                             ChangeLogRetentionBatchlet.DELETE_CHUNK_SIZE,
@@ -79,33 +97,54 @@ class ChangeLogRetentionBatchletTest {
 
     @Test
     void run_zeroRows_returnsZeroAndExitsImmediately() {
-        when(em.createNativeQuery(anyString())).thenReturn(deleteQuery);
-        when(deleteQuery.setParameter(eq("days"), eq(30))).thenReturn(deleteQuery);
-        when(deleteQuery.executeUpdate()).thenReturn(0);
+        when(selectQuery.getResultList()).thenReturn(List.of());
 
         long deleted = batchlet.run();
 
         assertEquals(0L, deleted);
-        verify(deleteQuery, times(1)).executeUpdate();
+        verify(deleteQuery, never()).executeUpdate();
+        verify(watermarkQuery, never()).executeUpdate();
     }
 
     @Test
     void run_customRetentionDays_isBoundToQueryParameter() {
         batchlet.retentionDays = 7;
-        when(em.createNativeQuery(anyString())).thenReturn(deleteQuery);
-        when(deleteQuery.setParameter(eq("days"), eq(7))).thenReturn(deleteQuery);
-        when(deleteQuery.executeUpdate()).thenReturn(0);
+        when(selectQuery.getResultList()).thenReturn(List.of());
 
         batchlet.run();
 
-        verify(deleteQuery).setParameter("days", 7);
-        verify(deleteQuery, never()).setParameter("days", 30);
+        verify(selectQuery).setParameter("days", 7);
+        verify(selectQuery, never()).setParameter("days", 30);
+    }
+
+    @Test
+    void deleteOneChunk_recordsHighestActualDeletedIdBeforeDelete_soNumericHolesAreIgnored() {
+        when(selectQuery.getResultList()).thenReturn(List.of(7L, 11L, 42L));
+        when(deleteQuery.executeUpdate()).thenReturn(3);
+
+        assertEquals(3, batchlet.deleteOneChunk());
+
+        var order = Mockito.inOrder(watermarkQuery, deleteQuery);
+        order.verify(watermarkQuery).setParameter("highest", BigInteger.valueOf(42));
+        order.verify(watermarkQuery).executeUpdate();
+        order.verify(deleteQuery).setParameter("highest", BigInteger.valueOf(42));
+        order.verify(deleteQuery).executeUpdate();
+    }
+
+    @Test
+    void deleteOneChunk_missingWatermarkAbortsBeforeDelete() {
+        when(selectQuery.getResultList()).thenReturn(List.of(5L));
+        when(watermarkQuery.executeUpdate()).thenReturn(0);
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> batchlet.deleteOneChunk());
+
+        verify(deleteQuery, never()).executeUpdate();
     }
 
     @Test
     void scheduledRun_swallowsExceptions_soSchedulerKeepsRunning() {
-        when(em.createNativeQuery(anyString()))
-                .thenThrow(new RuntimeException("simulated DB outage"));
+        when(selectQuery.getResultList()).thenThrow(new RuntimeException("simulated DB outage"));
 
         batchlet.scheduledRun();
     }

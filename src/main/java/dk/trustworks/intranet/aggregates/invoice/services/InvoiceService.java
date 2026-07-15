@@ -47,6 +47,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
@@ -56,7 +57,11 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jetbrains.annotations.NotNull;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -456,6 +461,7 @@ public class InvoiceService {
         }
 
         Invoice.persist(invoice);
+        markRevenueDocumentChanged(invoice, null);
         log.debug("Draft invoice persisted: " + invoice.getUuid());
         return invoice;
     }
@@ -533,6 +539,7 @@ public class InvoiceService {
         // observer runs computeAttributions on a worker thread after this tx
         // commits, so the response returns immediately with the priced items.
         attributionDirtyEvent.fire(new InvoiceAttributionsDirtyEvent(invoice.getUuid()));
+        markRevenueDocumentChanged(invoice, null);
         return invoice;
     }
 
@@ -545,6 +552,7 @@ public class InvoiceService {
                 Invoice.update("status = ?1 WHERE uuid = ?2",
                 status,
                 invoice.getUuid());
+        markRevenueDocumentChanged(invoice, null);
     }
 
     /** Legacy fallback hvis engine ikke må køre for denne type */
@@ -555,8 +563,9 @@ public class InvoiceService {
         // for lines that survive the edit (user-added lines stay unlinked). The request body is
         // client-supplied, so an incoming non-blank link is accepted only when it references an
         // item of this credit note's own source invoice — never trusted verbatim.
-        Map<String, String> sourceItemLinks = InvoiceItem.<InvoiceItem>list("invoiceuuid = ?1", invoice.getUuid())
-                .stream()
+        Map<String, InvoiceItem> priorItems = InvoiceItem.<InvoiceItem>list("invoiceuuid = ?1", invoice.getUuid())
+                .stream().collect(Collectors.toMap(ii -> ii.uuid, ii -> ii, (a, b) -> a));
+        Map<String, String> sourceItemLinks = priorItems.values().stream()
                 .filter(ii -> ii.getSourceItemUuid() != null && !ii.getSourceItemUuid().isBlank())
                 .collect(Collectors.toMap(ii -> ii.uuid, InvoiceItem::getSourceItemUuid, (a, b) -> a));
         Set<String> sourceInvoiceItemUuids = Set.of();
@@ -581,11 +590,13 @@ public class InvoiceService {
             ii.setInvoiceuuid(invoice.getUuid());
             ii.setSourceItemUuid(resolveSourceItemLink(
                     ii.getSourceItemUuid(), sourceItemLinks.get(ii.uuid), validSourceItems));
+            applyServerOwnedCreditEvidence(ii, priorItems.get(ii.uuid), validSourceItems);
         });
         InvoiceItem.persist(invoice.getInvoiceitems());
         if (invoice.getType() == InvoiceType.CREDIT_NOTE) {
             invoiceAttributionService.copyAttributionsFromSource(invoice);
         }
+        markRevenueDocumentChanged(invoice, null);
         return invoice;
     }
 
@@ -608,15 +619,38 @@ public class InvoiceService {
 
     /**
      * Resolves the server-managed {@code sourceItemUuid} for a credit-note line on draft save:
-     * a client-supplied link is honoured only when it points at an item of the credit note's own
-     * source invoice; anything else falls back to the previously persisted link (matched by the
-     * line's uuid), or null for genuinely new/unlinked lines.
+     * client input is never an authority for linking. Only the previously persisted link for the
+     * same server-owned line UUID survives, and only while it still belongs to the source invoice.
      */
     static String resolveSourceItemLink(String incoming, String priorLink, Set<String> validSourceItems) {
-        if (incoming != null && !incoming.isBlank() && validSourceItems.contains(incoming)) {
-            return incoming;
+        return priorLink != null && validSourceItems.contains(priorLink) ? priorLink : null;
+    }
+
+    static void applyServerOwnedCreditEvidence(InvoiceItem incoming,
+                                               InvoiceItem prior,
+                                               Set<String> validSourceItems) {
+        incoming.setSourceAttributionUuid(null);
+        incoming.setCreditCopyKind("NONE");
+        incoming.setCreditCopyScope(null);
+        incoming.setCreditCopyScale(null);
+        incoming.setCreditCopyOriginalSourceNativeAmount(null);
+        incoming.setCreditCopyFingerprint(null);
+        clearPricingProvenance(incoming);
+        if (prior == null || prior.getSourceItemUuid() == null
+                || !validSourceItems.contains(prior.getSourceItemUuid())) {
+            incoming.setSourceItemUuid(null);
+            return;
         }
-        return priorLink;
+        incoming.setSourceItemUuid(prior.getSourceItemUuid());
+        incoming.setSourceAttributionUuid(prior.getSourceAttributionUuid());
+        incoming.setCreditCopyKind(prior.getCreditCopyKind());
+        incoming.setCreditCopyScope(prior.getCreditCopyScope());
+        incoming.setCreditCopyScale(prior.getCreditCopyScale());
+        incoming.setCreditCopyOriginalSourceNativeAmount(prior.getCreditCopyOriginalSourceNativeAmount());
+        incoming.setCreditCopyFingerprint(prior.getCreditCopyFingerprint());
+        if ("BYTE_IDENTICAL".equals(prior.getCreditCopyKind())) {
+            copyPricingProvenance(prior, incoming);
+        }
     }
 
     /**
@@ -676,6 +710,7 @@ public class InvoiceService {
         draftInvoice.setType(InvoiceType.PHANTOM);
         // No PDF generated for PHANTOM invoices per §9.5 accountant sign-off
         saveInvoice(draftInvoice);
+        markRevenueDocumentChanged(draftInvoice, null);
         log.infof("Phantom invoice %s finalized (no e-conomic upload per §9.5)", draftInvoice.getUuid());
         return draftInvoice;
     }
@@ -686,7 +721,9 @@ public class InvoiceService {
      */
     @Transactional
     public Invoice bookInvoice(String invoiceUuid, String sendBy) {
-        return orchestrator.bookDraft(invoiceUuid, sendBy);
+        Invoice booked = orchestrator.bookDraft(invoiceUuid, sendBy);
+        markRevenueDocumentChanged(booked, null);
+        return booked;
     }
 
     /**
@@ -695,7 +732,9 @@ public class InvoiceService {
      */
     @Transactional
     public Invoice cancelFinalization(String invoiceUuid) {
-        return orchestrator.cancelFinalization(invoiceUuid);
+        Invoice cancelled = orchestrator.cancelFinalization(invoiceUuid);
+        markRevenueDocumentChanged(cancelled, null);
+        return cancelled;
     }
 
     private void saveInvoice(Invoice invoice) {
@@ -798,7 +837,25 @@ public class InvoiceService {
         Invoice.persist(creditNote);
         creditNote.getInvoiceitems().forEach(invoiceItem -> InvoiceItem.persist(invoiceItem));
         invoiceAttributionService.copyAttributionsFromSource(creditNote);
+        markRevenueDocumentChanged(creditNote, null);
         return creditNote;
+    }
+
+    /** Advances the invoice source watermark in the surrounding transaction. */
+    void markRevenueDocumentChanged(Invoice invoice, String sourceItemUuid) {
+        if (em == null || em.getDelegate() == null || invoice == null || invoice.getUuid() == null) return;
+        LocalDate sourceDate = invoice.getInvoicedate();
+        if (sourceDate == null && invoice.getYear() > 0 && invoice.getMonth() > 0) {
+            sourceDate = LocalDate.of(invoice.getYear(), invoice.getMonth(), 1);
+        }
+        Query marker = em.createNativeQuery("""
+                CALL sp_mark_practice_revenue_document_and_credit_dependents_changed(
+                    :documentUuid, :itemUuid, :sourceMonth)
+                """);
+        marker.setParameter("documentUuid", invoice.getUuid());
+        marker.setParameter("itemUuid", sourceItemUuid);
+        marker.setParameter("sourceMonth", sourceDate == null ? null : sourceDate.withDayOfMonth(1));
+        marker.executeUpdate();
     }
 
     /**
@@ -846,10 +903,16 @@ public class InvoiceService {
         if (unmatchable) {
             log.warnf("createCreditNote: source %s has credit-note items without sourceItemUuid — "
                     + "falling back to a single invoice-level residual line (%.2f)", source.getUuid(), invoiceResidual);
-            creditNote.getInvoiceitems().add(new InvoiceItem(null,
+            InvoiceItem residualItem = new InvoiceItem(null,
                     "Restkreditering",
                     "Restkreditering af faktura " + StringUtils.convertInvoiceNumberToString(source.invoicenumber),
-                    invoiceResidual, 1.0, 1, creditNote.uuid, InvoiceItemOrigin.BASE));
+                    invoiceResidual, 1.0, 1, creditNote.uuid, InvoiceItemOrigin.BASE);
+            residualItem.setCreditCopyKind("RESIDUAL");
+            residualItem.setCreditCopyScope("SOURCE_INVOICE");
+            residualItem.setCreditCopyOriginalSourceNativeAmount(
+                    normalizedNativeAmount(source.getSumNoTax(), 1.0));
+            residualItem.setCreditCopyFingerprint(creditCopyFingerprint(source.getUuid(), residualItem));
+            creditNote.getInvoiceitems().add(residualItem);
             return;
         }
 
@@ -864,7 +927,7 @@ public class InvoiceService {
                 continue;
             }
             creditNote.getInvoiceitems().add(copyItemForCreditNote(item, creditNote.uuid,
-                    item.getRate(), residual / item.getRate()));
+                    item.getRate(), residual / item.getRate(), "RESIDUAL"));
         }
 
         if (creditNote.getInvoiceitems().isEmpty()) {
@@ -878,6 +941,17 @@ public class InvoiceService {
     /** Copies a source line onto a credit note, back-linking it via {@code sourceItemUuid}. */
     static InvoiceItem copyItemForCreditNote(InvoiceItem sourceItem, String creditNoteUuid,
                                              double rate, double hours) {
+        BigDecimal sourceAmount = normalizedNativeAmount(sourceItem.getRate(), sourceItem.getHours());
+        BigDecimal creditAmount = normalizedNativeAmount(rate, hours);
+        String kind = sourceAmount.compareTo(creditAmount) == 0
+                && normalizedOperand(sourceItem.getRate()).compareTo(normalizedOperand(rate)) == 0
+                && normalizedOperand(sourceItem.getHours()).compareTo(normalizedOperand(hours)) == 0
+                ? "BYTE_IDENTICAL" : "SCALED";
+        return copyItemForCreditNote(sourceItem, creditNoteUuid, rate, hours, kind);
+    }
+
+    static InvoiceItem copyItemForCreditNote(InvoiceItem sourceItem, String creditNoteUuid,
+                                             double rate, double hours, String copyKind) {
         InvoiceItem newItem = new InvoiceItem(
                 sourceItem.consultantuuid,
                 sourceItem.getItemname(),
@@ -890,13 +964,79 @@ public class InvoiceService {
         );
         // Link CN item back to its source for precise attribution matching.
         newItem.sourceItemUuid = sourceItem.uuid;
+        newItem.setCreditCopyKind(copyKind);
+        newItem.setCreditCopyScope("SOURCE_ITEM");
+        BigDecimal sourceAmount = normalizedNativeAmount(sourceItem.getRate(), sourceItem.getHours());
+        BigDecimal creditAmount = normalizedNativeAmount(rate, hours);
+        newItem.setCreditCopyOriginalSourceNativeAmount(sourceAmount);
+        if ("BYTE_IDENTICAL".equals(copyKind)) {
+            newItem.setCreditCopyScale(new BigDecimal("1.000000000000000000"));
+        } else if (sourceAmount.signum() != 0) {
+            newItem.setCreditCopyScale(creditAmount.divide(sourceAmount, MathContext.DECIMAL128)
+                    .setScale(18, RoundingMode.HALF_UP));
+        }
+        newItem.setCreditCopyFingerprint(creditCopyFingerprint(sourceItem.uuid, newItem));
         // Preserve additional fields for CALCULATED items
         if (sourceItem.getOrigin() == InvoiceItemOrigin.CALCULATED) {
             newItem.setCalculationRef(sourceItem.getCalculationRef());
             newItem.setRuleId(sourceItem.getRuleId());
             newItem.setLabel(sourceItem.getLabel());
+            if ("BYTE_IDENTICAL".equals(copyKind)) {
+                copyPricingProvenance(sourceItem, newItem);
+            }
         }
         return newItem;
+    }
+
+    private static BigDecimal normalizedOperand(double source) {
+        if (!Double.isFinite(source)) throw new IllegalArgumentException("non-finite invoice item value");
+        return BigDecimal.valueOf(source).setScale(6, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal normalizedNativeAmount(double rate, double hours) {
+        return normalizedOperand(rate).multiply(normalizedOperand(hours))
+                .setScale(12, RoundingMode.UNNECESSARY);
+    }
+
+    private static String creditCopyFingerprint(String sourceKey, InvoiceItem item) {
+        String canonical = String.join("|",
+                sourceKey == null ? "" : sourceKey,
+                item.getCreditCopyKind() == null ? "NONE" : item.getCreditCopyKind(),
+                item.getCreditCopyScope() == null ? "" : item.getCreditCopyScope(),
+                item.getSourceItemUuid() == null ? "" : item.getSourceItemUuid(),
+                normalizedNativeAmount(item.getRate(), item.getHours()).toPlainString(),
+                item.getOrigin() == null ? "" : item.getOrigin().name(),
+                item.getRuleId() == null ? "" : item.getRuleId(),
+                item.getPricingInputFingerprint() == null ? "" : item.getPricingInputFingerprint(),
+                item.getPricingOutputFingerprint() == null ? "" : item.getPricingOutputFingerprint());
+        try {
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    private static void clearPricingProvenance(InvoiceItem item) {
+        item.setPricingPolicyVersion(null);
+        item.setPricingStepId(null);
+        item.setPricingStepSequence(null);
+        item.setPricingRuleType(null);
+        item.setPricingInputFingerprint(null);
+        item.setPricingOutputFingerprint(null);
+        item.setPricingOutputAmount(null);
+        item.setCalculationAlgorithmVersion(null);
+    }
+
+    private static void copyPricingProvenance(InvoiceItem source, InvoiceItem target) {
+        target.setPricingPolicyVersion(source.getPricingPolicyVersion());
+        target.setPricingStepId(source.getPricingStepId());
+        target.setPricingStepSequence(source.getPricingStepSequence());
+        target.setPricingRuleType(source.getPricingRuleType());
+        target.setPricingInputFingerprint(source.getPricingInputFingerprint());
+        target.setPricingOutputFingerprint(source.getPricingOutputFingerprint());
+        target.setPricingOutputAmount(source.getPricingOutputAmount());
+        target.setCalculationAlgorithmVersion(source.getCalculationAlgorithmVersion());
     }
 
     /**

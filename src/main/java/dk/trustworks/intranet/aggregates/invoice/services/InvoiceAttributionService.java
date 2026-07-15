@@ -26,6 +26,9 @@ import lombok.extern.jbosslog.JBossLog;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -226,6 +229,7 @@ public class InvoiceAttributionService {
                 invoiceUuid, invoice.invoiceitems.size());
 
         cascadeToLinkedInternals(invoiceUuid, itemUuids);
+        markAttributionChanged(invoice);
     }
 
     /**
@@ -263,6 +267,7 @@ public class InvoiceAttributionService {
                 invoiceUuid, items.size());
 
         cascadeToLinkedInternals(invoiceUuid, changedItemUuids);
+        markAttributionChanged(invoice);
     }
 
     // ── Attribute non-consultant lines at draft creation ──────────────
@@ -1394,10 +1399,9 @@ public class InvoiceAttributionService {
      * Copy attribution rows from a source invoice to its credit note, one-to-one
      * per line item. Used both at CN creation time and at admin-triggered recompute.
      *
-     * Matching strategy:
-     *   1. Prefer {@code cnItem.sourceItemUuid} (set on new CNs by createCreditNote).
-     *   2. Fall back to fuzzy match on (consultantuuid, itemname, description, rate, hours)
-     *      for older CNs that predate V300 and don't have sourceItemUuid set.
+     * Matching is server-owned and exact through {@code cnItem.sourceItemUuid}.
+     * Historical unlinked rows deliberately remain unproven rather than being relinked by
+     * mutable labels, descriptions, rates, or amounts.
      *
      * The CN attribution mirrors the source's per-consultant shares; amounts stay
      * positive and the CN's type flag handles sign inversion at read time.
@@ -1434,6 +1438,7 @@ public class InvoiceAttributionService {
             }
 
             List<InvoiceItemAttribution> sourceAttrs = getAttributions(sourceItem.uuid);
+            String sourceFingerprint = sourceDistributionFingerprint(sourceItem.uuid, sourceAttrs);
             InvoiceItemAttribution.delete("invoiceitemUuid", cnItem.uuid);
 
             BigDecimal cnItemHours = BigDecimal.valueOf(cnItem.hours);
@@ -1451,35 +1456,63 @@ public class InvoiceAttributionService {
                         amount,
                         originalHours,
                         AttributionSource.AUTO);
+                newAttr.sourceItemUuid = sourceItem.uuid;
+                newAttr.sourceAttributionUuid = src.uuid;
+                newAttr.copyProvenance = "CREDIT_SOURCE_COPY_V1";
+                newAttr.sourceDistributionFingerprint = sourceFingerprint;
+                newAttr.attributionAlgorithmVersion = "CREDIT_SOURCE_COPY_V1";
+                newAttr.attributionSourceKind = "SOURCE_ITEM_ATTRIBUTION";
+                newAttr.attributionDependencyFingerprint = sourceFingerprint;
                 newAttr.persist();
             }
             matched++;
         }
         log.infof("copyAttributionsFromSource: creditNote=%s source=%s matched=%d unmatched=%d",
                 creditNote.uuid, sourceUuid, matched, unmatched);
+        markAttributionChanged(creditNote);
+    }
+
+    /** Advances the attribution watermark atomically with the attribution mutation. */
+    private void markAttributionChanged(Invoice invoice) {
+        if (em == null || em.getDelegate() == null || invoice == null) return;
+        LocalDate date = invoice.getInvoicedate();
+        if (date == null && invoice.getYear() > 0 && invoice.getMonth() > 0) {
+            date = LocalDate.of(invoice.getYear(), invoice.getMonth(), 1);
+        }
+        em.createNativeQuery("CALL sp_mark_practice_revenue_source_changed('INVOICE_ATTRIBUTION', :month)")
+                .setParameter("month", date == null ? null : date.withDayOfMonth(1))
+                .executeUpdate();
     }
 
     /**
-     * Find the source invoice item that corresponds to a CN item.
-     * Prefers explicit {@code sourceItemUuid} linkage; falls back to fuzzy match on
-     * (consultantuuid, itemname, description, rate, hours).
+     * Find the exact server-linked source invoice item for a CN item.
      */
     private InvoiceItem findMatchingSourceItem(InvoiceItem cnItem, Invoice source) {
         if (cnItem.sourceItemUuid != null && !cnItem.sourceItemUuid.isBlank()) {
             for (InvoiceItem s : source.invoiceitems) {
                 if (cnItem.sourceItemUuid.equals(s.uuid)) return s;
             }
-            // fall through to fuzzy match if explicit link didn't resolve
-        }
-        for (InvoiceItem s : source.invoiceitems) {
-            if (!java.util.Objects.equals(cnItem.consultantuuid, s.consultantuuid)) continue;
-            if (!java.util.Objects.equals(cnItem.itemname, s.itemname)) continue;
-            if (!java.util.Objects.equals(cnItem.description, s.description)) continue;
-            if (cnItem.rate != s.rate) continue;
-            if (cnItem.hours != s.hours) continue;
-            return s;
         }
         return null;
+    }
+
+    private static String sourceDistributionFingerprint(String sourceItemUuid,
+                                                        List<InvoiceItemAttribution> sourceAttrs) {
+        String canonical = sourceAttrs.stream()
+                .sorted(java.util.Comparator.comparing(attr -> attr.uuid))
+                .map(attr -> String.join("|",
+                        attr.uuid,
+                        attr.consultantUuid == null ? "" : attr.consultantUuid,
+                        attr.sharePct == null ? "" : attr.sharePct.stripTrailingZeros().toPlainString(),
+                        attr.source == null ? "" : attr.source.name()))
+                .collect(java.util.stream.Collectors.joining("\n"));
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((sourceItemUuid + "\n" + canonical).getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     // ── Cascade to linked internal invoices (spec §5.3) ───────────────────

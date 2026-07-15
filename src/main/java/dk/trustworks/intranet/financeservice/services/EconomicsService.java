@@ -3,6 +3,7 @@ package dk.trustworks.intranet.financeservice.services;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsJournalsAPI;
+import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import dk.trustworks.intranet.expenseservice.remote.JournalEntryResponse;
 import dk.trustworks.intranet.financeservice.model.AccountingAccount;
 import dk.trustworks.intranet.financeservice.model.Finance;
@@ -25,9 +26,12 @@ import org.eclipse.microprofile.rest.client.RestClientBuilder;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import java.net.URI;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -38,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import static dk.trustworks.intranet.financeservice.model.IntegrationKey.getIntegrationKeyValue;
 import static dk.trustworks.intranet.financeservice.model.enums.EconomicAccountGroup.*;
@@ -45,6 +50,12 @@ import static dk.trustworks.intranet.financeservice.model.enums.EconomicAccountG
 @JBossLog
 @ApplicationScoped
 public class EconomicsService {
+
+    @Inject
+    PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
+
+    @Inject
+    EntityManager em;
 
     @ConfigProperty(name = "quarkus.rest-client.economics-journals-api.url", defaultValue = "https://apis.e-conomic.com/journalsapi/v13.0.1")
     URI journalsApiUri;
@@ -61,6 +72,27 @@ public class EconomicsService {
 
     @SneakyThrows
     public Map<PostingStatus, Map<Range<Integer>, List<FinanceEntry>>> getAllEntries(Company company, String date) {
+        return withFinanceGlWatermark(() -> getAllEntriesCaptured(company, date, false));
+    }
+
+    /**
+     * Strict evidence-only import used by the owned FINANCE_GL recovery flow.
+     *
+     * <p>The recovery coordinator already owns the durable FINANCE_GL token and is the only
+     * component allowed to complete that token. Consequently this method deliberately does not
+     * begin, complete, or fail an ordinary source import. Unlike the nightly compatibility path,
+     * every supplemental e-conomic source is mandatory and any per-company failure propagates to
+     * the coordinator.</p>
+     */
+    @SneakyThrows
+    public Map<PostingStatus, Map<Range<Integer>, List<FinanceEntry>>> getAllEntriesForRecovery(
+            Company company, String date) {
+        return getAllEntriesCaptured(company, date, true);
+    }
+
+    @SneakyThrows
+    Map<PostingStatus, Map<Range<Integer>, List<FinanceEntry>>> getAllEntriesCaptured(
+            Company company, String date, boolean strictSupplementalSources){
         Map<PostingStatus, Map<Range<Integer>, List<FinanceEntry>>> collectionResultMap = new EnumMap<>(PostingStatus.class);
         collectionResultMap.put(PostingStatus.BOOKED, emptyEntryMap());
         collectionResultMap.put(PostingStatus.DRAFT, emptyEntryMap());
@@ -112,12 +144,18 @@ public class EconomicsService {
         try {
             loadDraftEntries(company, date, result, collectionResultMap.get(PostingStatus.DRAFT), financeDetails);
         } catch (Exception e) {
+            if (strictSupplementalSources) {
+                throw strictImportFailure("FINANCE_GL_DRAFT_ENTRIES_FAILED", company, date, e);
+            }
             log.warnf(e, "Draft e-conomic entries could not be loaded for company %s period %s; continuing with booked entries", company.getUuid(), date);
         }
 
         try {
             loadDraftSupplierInvoices(company, date, result, collectionResultMap.get(PostingStatus.DRAFT), financeDetails);
         } catch (Exception e) {
+            if (strictSupplementalSources) {
+                throw strictImportFailure("FINANCE_GL_DRAFT_SUPPLIER_FAILED", company, date, e);
+            }
             log.warnf(e, "Draft intercompany supplier invoices could not be loaded for company %s period %s; continuing", company.getUuid(), date);
         }
 
@@ -158,6 +196,37 @@ public class EconomicsService {
         final List<FinanceDetails> entriesToPersist = new ArrayList<>(deduped.values());
         QuarkusTransaction.requiringNew().run(() -> FinanceDetails.persist(entriesToPersist));
         return collectionResultMap;
+    }
+
+    static IllegalStateException strictImportFailure(
+            String safeCode, Company company, String date, Exception cause) {
+        String companyUuid = company == null ? "UNKNOWN" : company.getUuid();
+        return new IllegalStateException(safeCode + ":" + companyUuid + ":" + date, cause);
+    }
+
+    <T extends Map<PostingStatus,Map<Range<Integer>,List<FinanceEntry>>>> T withFinanceGlWatermark(
+            Supplier<T> work){
+        if(practiceRevenueDirtyMarker==null)return work.get();
+        String token=practiceRevenueDirtyMarker.beginImport(PracticeRevenueDirtyMarker.Source.FINANCE_GL);
+        try{
+            T result=work.get();
+            YearMonth start=null,end=null;
+            for(Map<Range<Integer>,List<FinanceEntry>> byAccount:result.values()){
+                for(List<FinanceEntry> entries:byAccount.values()){
+                    for(FinanceEntry entry:entries){
+                        YearMonth month=YearMonth.from(entry.period());
+                        if(start==null||month.isBefore(start))start=month;
+                        if(end==null||month.isAfter(end))end=month;
+                    }
+                }
+            }
+            practiceRevenueDirtyMarker.completeImport(PracticeRevenueDirtyMarker.Source.FINANCE_GL,
+                    token,start,end);
+            return result;
+        }catch(RuntimeException failure){
+            practiceRevenueDirtyMarker.failImport(PracticeRevenueDirtyMarker.Source.FINANCE_GL,token);
+            throw failure;
+        }
     }
 
     @Transactional
@@ -449,6 +518,36 @@ public class EconomicsService {
 
     @Transactional
     public void clean() {
+        if (financeGlOwnerCount(null) != 0) {
+            throw new IllegalStateException("SOURCE_IMPORT_ALREADY_RUNNING");
+        }
+        deleteFinanceData();
+    }
+
+    /** Destructive clean restricted to the exact durable FINANCE_GL recovery owner. */
+    @Transactional
+    public void cleanForRecovery(String recoveryToken) {
+        if (recoveryToken == null || recoveryToken.isBlank()
+                || financeGlOwnerCount(recoveryToken) != 1) {
+            throw new IllegalStateException("FINANCE_GL_RECOVERY_OWNER_CHANGED");
+        }
+        deleteFinanceData();
+    }
+
+    long financeGlOwnerCount(String recoveryToken) {
+        if (em == null) return 0;
+        Object[] row = (Object[]) em.createNativeQuery(
+                        "SELECT source_state, attempt_token "
+                                + "FROM practice_revenue_source_watermark "
+                                + "WHERE source_name='FINANCE_GL' FOR UPDATE")
+                .setHint("jakarta.persistence.query.timeout", 120_000)
+                .getSingleResult();
+        boolean running = "RUNNING".equals(String.valueOf(row[0]));
+        if (recoveryToken == null) return running ? 1 : 0;
+        return running && recoveryToken.equals(row[1]) ? 1 : 0;
+    }
+
+    void deleteFinanceData() {
         FinanceDetails.deleteAll();
         Finance.deleteAll();
     }

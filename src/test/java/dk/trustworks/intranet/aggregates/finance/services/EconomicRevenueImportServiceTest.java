@@ -3,6 +3,7 @@ package dk.trustworks.intranet.aggregates.finance.services;
 import dk.trustworks.intranet.aggregates.finance.dto.DryRunOutcome;
 import dk.trustworks.intranet.aggregates.finance.services.EconomicRevenueImportService.AggregatedVoucher;
 import dk.trustworks.intranet.aggregates.finance.services.EconomicRevenueImportService.DedupLayer;
+import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
@@ -86,6 +88,41 @@ class EconomicRevenueImportServiceTest {
         service = new EconomicRevenueImportService();
         service.em = em;
         service.dryRun = true;  // default — flipped per test as needed
+    }
+
+    @Test
+    void liveImportUsesTokenGuardedInvoiceDocumentWatermark(){
+        PracticeRevenueDirtyMarker marker=mock(PracticeRevenueDirtyMarker.class);
+        when(marker.beginImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT)).thenReturn("owner");
+        DryRunOutcome expected=new DryRunOutcome(0,0,Map.of(),Map.of(),Map.of(),false);
+        EconomicRevenueImportService owned=new EconomicRevenueImportService(){
+            @Override public DryRunOutcome refreshTransactional(LocalDate from,LocalDate to){return expected;}
+        };
+        owned.dryRun=false;
+        owned.practiceRevenueDirtyMarker=marker;
+
+        assertEquals(expected,owned.refresh(LocalDate.parse("2026-01-01"),LocalDate.parse("2026-02-28")));
+
+        verify(marker).completeImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT,"owner",
+                java.time.YearMonth.parse("2026-01"),java.time.YearMonth.parse("2026-02"));
+    }
+
+    @Test
+    void failedLiveImportMovesOnlyItsOwnedAttemptToFailed(){
+        PracticeRevenueDirtyMarker marker=mock(PracticeRevenueDirtyMarker.class);
+        when(marker.beginImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT)).thenReturn("owner");
+        EconomicRevenueImportService owned=new EconomicRevenueImportService(){
+            @Override public DryRunOutcome refreshTransactional(LocalDate from,LocalDate to){
+                throw new IllegalStateException("import failed");
+            }
+        };
+        owned.dryRun=false;
+        owned.practiceRevenueDirtyMarker=marker;
+
+        assertThrows(IllegalStateException.class,()->owned.refresh(
+                LocalDate.parse("2026-01-01"),LocalDate.parse("2026-02-28")));
+
+        verify(marker).failImport(PracticeRevenueDirtyMarker.Source.INVOICE_DOCUMENT,"owner");
     }
 
     // ------------------------------------------------------------------------

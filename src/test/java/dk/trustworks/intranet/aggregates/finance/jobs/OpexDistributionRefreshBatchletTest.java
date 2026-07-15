@@ -68,6 +68,7 @@ class OpexDistributionRefreshBatchletTest {
         batchlet.scheduledRun();
 
         assertNull(batchlet.lastAlertSent.get());
+        verify(refreshService).emitReadyCostGenerationSignal();
         verify(slackService, never()).sendMessage(anyString(), anyString(), anyString());
     }
 

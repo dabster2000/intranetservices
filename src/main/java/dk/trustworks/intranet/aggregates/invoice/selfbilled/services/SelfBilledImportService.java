@@ -8,6 +8,7 @@ import dk.trustworks.intranet.aggregates.invoice.selfbilled.model.SelfBilledSour
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.parse.ParsedLine;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.parse.SelfBilledTextParser;
 import dk.trustworks.intranet.aggregates.invoice.selfbilled.parse.SelfBilledVoucherAggregator;
+import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import dk.trustworks.intranet.expenseservice.remote.EconomicsAPI;
 import dk.trustworks.intranet.financeservice.model.IntegrationKey;
 import dk.trustworks.intranet.financeservice.remote.EconomicsDynamicHeaderFilter;
@@ -28,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /** Captures per-consultant self-billed lines from e-conomic into selfbilled_line. Augments — never touches — the lump-PHANTOM import. */
 @ApplicationScoped
@@ -38,6 +40,7 @@ public class SelfBilledImportService {
 
     @Inject SelfBilledCodeResolver codeResolver;
     @Inject SelfBilledImportService self;   // proxy so REQUIRES_NEW engages on self-calls
+    @Inject PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
 
     /** Raw e-conomic debtor line, before parsing. */
     public record RawLine(int account, int voucher, long entry, LocalDate date, String text, BigDecimal amount) {}
@@ -65,6 +68,7 @@ public class SelfBilledImportService {
             }
         } catch (Exception e) {
             log.errorf(e, "SelfBilledImportService: discoverAccountingYears failed");
+            throw new IllegalStateException("SELF_BILLED_ACCOUNTING_YEAR_FETCH_FAILED",e);
         }
         return codes;
     }
@@ -95,10 +99,12 @@ public class SelfBilledImportService {
                 int total = root.path("pagination").path("results").asInt(-1);
                 if (count < pageSize) break;
                 if (total >= 0 && (skip + 1) * pageSize >= total) break;
-                if (++skip > 50) { log.warnf("fetchAccountLines: skip cap account=%d year=%s", account, yearCode); break; }
+                if (++skip > 50) {
+                    throw new IllegalStateException("SELF_BILLED_PAGE_LIMIT_EXCEEDED");
+                }
             } catch (Exception e) {
-                log.warnf(e, "fetchAccountLines: error account=%d year=%s skip=%d — stopping", account, yearCode, skip);
-                break;
+                log.warnf(e, "fetchAccountLines: error account=%d year=%s skip=%d", account, yearCode, skip);
+                throw new IllegalStateException("SELF_BILLED_PAGE_FETCH_FAILED",e);
             }
         }
         return out;
@@ -112,22 +118,60 @@ public class SelfBilledImportService {
 
     /** Capture all enabled sources over the work window [from,to]. Each source commits independently. */
     public Map<String, Integer> capture(LocalDate from, LocalDate to) {
+        return withImportWatermark(from,to,()->captureSources(from,to,false));
+    }
+
+    /** Rebuilds evidence under an already-owned source-recovery token. */
+    public Map<String,Integer> captureForRecovery(LocalDate from,LocalDate to){
+        return captureSources(from,to,true);
+    }
+
+    private Map<String,Integer> captureSources(LocalDate from,LocalDate to,boolean recovery){
         Map<String, Integer> counts = new LinkedHashMap<>();
+        boolean failed=false;
         for (SelfBilledSource source : SelfBilledSource.listEnabled()) {
             try {
-                counts.put(source.label + "(" + source.accountNumber + ")", self.captureSource(source, from, to));
+                int count=recovery?self.captureSourceForRecovery(source,from,to)
+                        :self.captureSource(source,from,to);
+                counts.put(source.label+"("+source.accountNumber+")",count);
             } catch (RuntimeException e) {
                 log.errorf(e, "capture: source %s failed", source.accountNumber);
                 counts.put("ERROR:" + source.accountNumber, -1);
+                failed=true;
             }
         }
+        if(failed)throw new IllegalStateException("SELF_BILLED_IMPORT_INCOMPLETE");
         log.infof("SelfBilledImportService.capture %s..%s -> %s", from, to, counts);
         return counts;
+    }
+
+    <T> T withImportWatermark(LocalDate from,LocalDate to,Supplier<T> work){
+        if(practiceRevenueDirtyMarker==null)return work.get();
+        String token=practiceRevenueDirtyMarker.beginImport(PracticeRevenueDirtyMarker.Source.SELF_BILLED);
+        try{
+            T result=work.get();
+            practiceRevenueDirtyMarker.completeImport(PracticeRevenueDirtyMarker.Source.SELF_BILLED,token,
+                    java.time.YearMonth.from(from),java.time.YearMonth.from(to));
+            return result;
+        }catch(RuntimeException failure){
+            practiceRevenueDirtyMarker.failImport(PracticeRevenueDirtyMarker.Source.SELF_BILLED,token);
+            throw failure;
+        }
     }
 
     /** Fetch one source's lines from e-conomic, then process+upsert them. Own transaction. */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public int captureSource(SelfBilledSource source, LocalDate from, LocalDate to) {
+        return captureSourceInternal(source,from,to,true);
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public int captureSourceForRecovery(SelfBilledSource source,LocalDate from,LocalDate to){
+        return captureSourceInternal(source,from,to,false);
+    }
+
+    private int captureSourceInternal(
+            SelfBilledSource source,LocalDate from,LocalDate to,boolean markDirty) {
         Company company = Company.findById(source.agreementCompanyUuid);
         if (company == null) { log.warnf("captureSource: company %s missing", source.agreementCompanyUuid); return 0; }
         IntegrationKey.IntegrationKeyValue keys = IntegrationKey.getIntegrationKeyValue(company);
@@ -139,8 +183,9 @@ public class SelfBilledImportService {
             }
         } catch (Exception e) {
             log.errorf(e, "captureSource: e-conomic fetch failed for account=%d", source.accountNumber);
+            throw new IllegalStateException("SELF_BILLED_SOURCE_FETCH_FAILED",e);
         }
-        return processLines(source, raw);
+        return processLines(source,raw,markDirty);
     }
 
     /**
@@ -150,6 +195,10 @@ public class SelfBilledImportService {
      * the transaction (captureSource is REQUIRES_NEW; the IT wraps it @Transactional).
      */
     public int processLines(SelfBilledSource source, List<RawLine> raw) {
+        return processLines(source,raw,true);
+    }
+
+    private int processLines(SelfBilledSource source,List<RawLine> raw,boolean markDirty){
         List<SelfBilledVoucherAggregator.LineInput> inputs = new ArrayList<>();
         Map<Long, RawLine> byEntry = new LinkedHashMap<>();
         for (RawLine l : raw) {
@@ -187,6 +236,9 @@ public class SelfBilledImportService {
             }
         }
         log.infof("processLines account=%d vouchers=%d entries=%d", source.accountNumber, vouchers.size(), upserts);
+        if (markDirty&&upserts>0) {
+            markRevenueDirty();
+        }
         return upserts;
     }
 
@@ -234,5 +286,12 @@ public class SelfBilledImportService {
         // NOT NULL columns (source_uuid, client_uuid, debtor_company_uuid, account_number,
         // voucher_number, amount, status) must be populated BEFORE persist() on the create path.
         if (isNew) row.persist();
+    }
+
+    private void markRevenueDirty() {
+        // Kept null-tolerant for existing direct-construction unit tests; CDI always injects it.
+        if (practiceRevenueDirtyMarker != null) {
+            practiceRevenueDirtyMarker.mark(PracticeRevenueDirtyMarker.Source.SELF_BILLED, null);
+        }
     }
 }

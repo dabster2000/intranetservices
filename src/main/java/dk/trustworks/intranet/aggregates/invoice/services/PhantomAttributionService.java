@@ -10,6 +10,7 @@ import dk.trustworks.intranet.aggregates.invoice.model.enums.AttributionSource;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceStatus;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.InvoiceType;
 import dk.trustworks.intranet.aggregates.invoice.model.enums.PhantomDerivationStatus;
+import dk.trustworks.intranet.aggregates.practices.services.PracticeRevenueDirtyMarker;
 import dk.trustworks.intranet.aggregates.invoice.resources.dto.PhantomClientMapRequest;
 import dk.trustworks.intranet.dao.crm.model.Client;
 import dk.trustworks.intranet.dao.workservice.services.WorkService;
@@ -26,12 +27,15 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Derives per-consultant attribution for e-conomic-imported PHANTOM invoices
@@ -67,6 +71,9 @@ public class PhantomAttributionService {
 
     @Inject
     PhantomClientResolver phantomClientResolver;
+
+    @Inject
+    PracticeRevenueDirtyMarker practiceRevenueDirtyMarker;
 
     /** Per-consultant work aggregate for a client+month. */
     public record WorkAgg(BigDecimal hours, BigDecimal revenue) {}
@@ -177,14 +184,39 @@ public class PhantomAttributionService {
      */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
     public PhantomDerivationStatus deriveForPhantom(String invoiceUuid) {
+        LocalDate fyStart=DateUtils.getCurrentFiscalStartDate();
+        return deriveForPhantom(invoiceUuid,fyStart,fyStart.plusYears(1),false,true,false);
+    }
+
+    /** Strict recovery item derivation over recognition dates, without ordinary watermark writes. */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public PhantomDerivationStatus deriveForPhantomInRange(
+            String invoiceUuid,LocalDate fromInclusive,LocalDate toInclusive){
+        return deriveForPhantom(invoiceUuid,fromInclusive,toInclusive,true,false,false);
+    }
+
+    /** Strict derivation for a UUID already selected by the immutable bounded dependency set. */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public PhantomDerivationStatus deriveForPhantomRecoveryDependency(String invoiceUuid){
+        return deriveForPhantom(invoiceUuid,LocalDate.MIN,LocalDate.MAX,true,false,true);
+    }
+
+    private PhantomDerivationStatus deriveForPhantom(
+            String invoiceUuid,LocalDate fromInclusive,LocalDate toInclusive,
+            boolean recognitionRange,boolean markDirty,boolean exactDependency){
         Invoice phantom = Invoice.findById(invoiceUuid);
         if (phantom == null) {
             log.warnf("deriveForPhantom: invoice not found uuid=%s", invoiceUuid);
             return PhantomDerivationStatus.OUT_OF_SCOPE;
         }
-        LocalDate fyStart = DateUtils.getCurrentFiscalStartDate();
-        LocalDate fyEnd = fyStart.plusYears(1);
-        if (!isInScope(phantom, fyStart, fyEnd)) {
+        boolean inScope=recognitionRange
+                ?phantom.getType()==InvoiceType.PHANTOM&&phantom.getStatus()==InvoiceStatus.CREATED
+                &&!phantom.internalInvoiceSkip&&phantom.invoicedate!=null
+                &&(exactDependency||!phantom.invoicedate.isBefore(fromInclusive)
+                                    &&!phantom.invoicedate.isAfter(toInclusive))
+                &&phantom.getYear()>0&&phantom.getMonth()>0&&phantom.getMonth()<=12
+                :isInScope(phantom,fromInclusive,toInclusive);
+        if(!inScope){
             return PhantomDerivationStatus.OUT_OF_SCOPE;
         }
 
@@ -192,6 +224,9 @@ public class PhantomAttributionService {
         InvoiceItem item = (items == null) ? null : items.stream().findFirst().orElse(null);
         if (item == null) {
             log.warnf("deriveForPhantom: phantom has no invoiceitem uuid=%s", invoiceUuid);
+            return PhantomDerivationStatus.NO_WORK;
+        }
+        if(recognitionRange&&items.size()!=1){
             return PhantomDerivationStatus.NO_WORK;
         }
         if (items.size() > 1) {
@@ -215,9 +250,14 @@ public class PhantomAttributionService {
                     attr.recalculateAmount(itemTotal);
                     attr.updatedAt = LocalDateTime.now();
                 }
+                if(markDirty)markRevenueDirty(phantom);
                 return PhantomDerivationStatus.SKIPPED_MANUAL;
             }
             case EMPTY, AUTO_ONLY:
+                if(recognitionRange){
+                    InvoiceItemAttribution.delete("invoiceitemUuid = ?1 AND source = ?2",
+                            item.uuid,AttributionSource.AUTO);
+                }
                 break; // -> derive below
         }
 
@@ -236,6 +276,7 @@ public class PhantomAttributionService {
             return PhantomDerivationStatus.UNRESOLVED_CLIENT;
         }
         phantom.setBillingClientUuid(resolvedClientUuid);
+        if(markDirty)markRevenueDirty(phantom);
 
         // Registered work for the resolved client + the phantom's month.
         List<ConsultantWorkRevenue> work =
@@ -272,6 +313,93 @@ public class PhantomAttributionService {
                 invoiceUuid, resolvedClientUuid, rows.size(), phantomTotal, groupTotal);
         return PhantomDerivationStatus.ATTRIBUTED;
     }
+
+    /**
+     * Rebuilds every recognized PHANTOM dependency in the closed interval. It never catches an
+     * item failure, and re-reads the exact UUID set before returning so concurrent population drift
+     * cannot be certified by the recovery owner.
+     */
+    public StrictRangeResult deriveRangeStrict(LocalDate fromInclusive,LocalDate toInclusive){
+        if(fromInclusive==null||toInclusive==null||fromInclusive.isAfter(toInclusive)){
+            throw new IllegalArgumentException("invalid PHANTOM recovery bounds");
+        }
+        List<String> expected=self.listRecognitionRangeUuids(fromInclusive,toInclusive);
+        Map<PhantomDerivationStatus,Integer> counts=new EnumMap<>(PhantomDerivationStatus.class);
+        Set<String> processed=new HashSet<>();
+        for(String uuid:expected){
+            if(!processed.add(uuid))throw new IllegalStateException("PHANTOM_DEPENDENCY_DUPLICATE");
+            PhantomDerivationStatus status=self.deriveForPhantomRecoveryDependency(uuid);
+            self.validateStrictOutcome(uuid,status);
+            counts.merge(status,1,Integer::sum);
+        }
+        List<String> finalPopulation=self.listRecognitionRangeUuids(fromInclusive,toInclusive);
+        if(!expected.equals(finalPopulation)||processed.size()!=expected.size()){
+            throw new IllegalStateException("PHANTOM_DEPENDENCY_SET_ADVANCED");
+        }
+        return new StrictRangeResult(expected.size(),Map.copyOf(counts));
+    }
+
+    @Transactional
+    public List<String> listRecognitionRangeUuids(LocalDate fromInclusive,LocalDate toInclusive){
+        @SuppressWarnings("unchecked")
+        List<String> rows=em.createNativeQuery("""
+                SELECT DISTINCT i.uuid FROM invoices i
+                WHERE i.type='PHANTOM' AND i.status='CREATED' AND i.internal_invoice_skip=FALSE
+                  AND (i.invoicedate BETWEEN :fromDate AND :toDate
+                       OR i.uuid IN (
+                           SELECT m.source_document_uuid
+                           FROM practice_basis_dependency_manifest_mat m
+                           JOIN practice_operating_cost_publication o
+                             ON o.publication_id=1
+                            AND o.practice_basis_generation_id=m.generation_id
+                           WHERE m.recognized_document_type='CREDIT_NOTE'
+                             AND m.recognized_month BETWEEN :fromDate AND :toDate
+                             AND m.source_document_uuid IS NOT NULL
+                       ))
+                ORDER BY i.uuid
+                """).setParameter("fromDate",fromInclusive).setParameter("toDate",toInclusive)
+                .getResultList();
+        return List.copyOf(rows);
+    }
+
+    @Transactional
+    public void validateStrictOutcome(String invoiceUuid,PhantomDerivationStatus status){
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows=em.createNativeQuery("""
+                SELECT a.source,COUNT(*),COUNT(DISTINCT a.consultant_uuid),
+                       MIN(a.share_pct),MAX(a.share_pct),SUM(a.share_pct)
+                FROM invoice_item_attributions a
+                JOIN invoiceitems ii ON ii.uuid=a.invoiceitem_uuid
+                WHERE ii.invoiceuuid=:invoiceUuid
+                GROUP BY a.source
+                """).setParameter("invoiceUuid",invoiceUuid).getResultList();
+        Map<String,Object[]> bySource=new LinkedHashMap<>();
+        for(Object[] row:rows)bySource.put(String.valueOf(row[0]),row);
+        if(status==PhantomDerivationStatus.ATTRIBUTED){
+            Object[] auto=bySource.get(AttributionSource.AUTO.name());
+            if(auto==null||((Number)auto[1]).longValue()!=((Number)auto[2]).longValue()
+                    ||decimal(auto[3]).signum()<0||decimal(auto[4]).compareTo(HUNDRED)>0
+                    ||decimal(auto[5]).compareTo(new BigDecimal("99.9900"))<0
+                    ||decimal(auto[5]).compareTo(new BigDecimal("100.0100"))>0){
+                throw new IllegalStateException("PHANTOM_AUTO_VALIDATION_FAILED");
+            }
+        }else if(status==PhantomDerivationStatus.SKIPPED_MANUAL){
+            if(!bySource.containsKey(AttributionSource.MANUAL.name()))
+                throw new IllegalStateException("PHANTOM_MANUAL_VALIDATION_FAILED");
+        }else if(status==PhantomDerivationStatus.SKIPPED_SELFBILLED){
+            if(!bySource.containsKey(AttributionSource.SELFBILLED_ASSIGNMENT.name()))
+                throw new IllegalStateException("PHANTOM_SELF_BILLED_VALIDATION_FAILED");
+        }else if(bySource.containsKey(AttributionSource.AUTO.name())){
+            throw new IllegalStateException("PHANTOM_STALE_AUTO_EVIDENCE");
+        }
+    }
+
+    private static BigDecimal decimal(Object value){
+        return value instanceof BigDecimal decimal?decimal:new BigDecimal(value.toString());
+    }
+
+    public record StrictRangeResult(int dependencyCount,
+                                    Map<PhantomDerivationStatus,Integer> statusCounts){}
 
     /**
      * Signed Σ of phantom item totals over the settlement group — the denominator that apportions
@@ -519,5 +647,13 @@ public class PhantomAttributionService {
         if (s == null) return null;
         String t = s.trim();
         return t.isEmpty() ? null : t;
+    }
+
+    private void markRevenueDirty(Invoice phantom) {
+        // Kept null-tolerant for existing direct-construction unit tests; CDI always injects it.
+        if (practiceRevenueDirtyMarker != null) {
+            practiceRevenueDirtyMarker.mark(PracticeRevenueDirtyMarker.Source.PHANTOM_ATTRIBUTION,
+                    YearMonth.of(phantom.getYear(), phantom.getMonth()));
+        }
     }
 }

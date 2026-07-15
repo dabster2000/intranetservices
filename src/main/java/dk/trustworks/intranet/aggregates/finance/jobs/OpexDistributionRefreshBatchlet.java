@@ -62,6 +62,9 @@ public class OpexDistributionRefreshBatchlet {
             log.infof("fact_opex_distribution_mat refreshed: inserted=%d deleted=%d took=%dms window=[%s..%s)",
                     outcome.inserted(), outcome.deleted(), outcome.took().toMillis(),
                     outcome.windowFrom(), outcome.windowTo());
+            if (refreshService.emitReadyCostGenerationSignal()) {
+                log.info("Emitted durable practice cost-generation-changed signal");
+            }
             lastAlertSent.set(null);
         } catch (Exception e) {
             log.errorf(e, "fact_opex_distribution_mat refresh failed");
@@ -83,6 +86,7 @@ public class OpexDistributionRefreshBatchlet {
             managedExecutor.submit(() -> {
                 try {
                     refreshService.refresh();
+                    refreshService.emitReadyCostGenerationSignal();
                 } catch (Exception e) {
                     log.errorf(e, "startup one-shot refresh failed");
                     fireSlackAlertIfNeeded(e);

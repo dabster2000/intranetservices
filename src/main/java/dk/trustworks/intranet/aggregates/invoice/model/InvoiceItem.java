@@ -10,6 +10,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.util.UUID;
+import java.math.BigDecimal;
 
 /**
  * Created by hans on 08/07/2017.
@@ -62,6 +63,58 @@ public class InvoiceItem extends PanacheEntityBase {
      */
     @Column(name = "source_attribution_uuid")
     public String sourceAttributionUuid;
+
+    @JsonIgnore
+    @Column(name = "pricing_policy_version")
+    public String pricingPolicyVersion;
+
+    @JsonIgnore
+    @Column(name = "pricing_step_id")
+    public String pricingStepId;
+
+    @JsonIgnore
+    @Column(name = "pricing_step_sequence")
+    public Integer pricingStepSequence;
+
+    @JsonIgnore
+    @Column(name = "pricing_rule_type")
+    public String pricingRuleType;
+
+    @JsonIgnore
+    @Column(name = "pricing_input_fingerprint")
+    public String pricingInputFingerprint;
+
+    @JsonIgnore
+    @Column(name = "pricing_output_fingerprint")
+    public String pricingOutputFingerprint;
+
+    @JsonIgnore
+    @Column(name = "pricing_output_amount", precision = 48, scale = 12)
+    public BigDecimal pricingOutputAmount;
+
+    @JsonIgnore
+    @Column(name = "calculation_algorithm_version")
+    public String calculationAlgorithmVersion;
+
+    @JsonIgnore
+    @Column(name = "credit_copy_kind")
+    public String creditCopyKind = "NONE";
+
+    @JsonIgnore
+    @Column(name = "credit_copy_scope")
+    public String creditCopyScope;
+
+    @JsonIgnore
+    @Column(name = "credit_copy_scale", precision = 38, scale = 18)
+    public BigDecimal creditCopyScale;
+
+    @JsonIgnore
+    @Column(name = "credit_copy_original_source_native_amount", precision = 48, scale = 12)
+    public BigDecimal creditCopyOriginalSourceNativeAmount;
+
+    @JsonIgnore
+    @Column(name = "credit_copy_fingerprint")
+    public String creditCopyFingerprint;
 
     public InvoiceItem() {
         if( this.uuid == null ) {
