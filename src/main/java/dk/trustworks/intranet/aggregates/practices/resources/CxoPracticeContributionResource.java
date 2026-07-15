@@ -33,7 +33,9 @@ public class CxoPracticeContributionResource {
 
     @GET
     public PracticeContributionResponseDTO getContribution(@Context UriInfo uriInfo) {
-        List<String> values = uriInfo.getQueryParameters(false).get("costSource");
+        // Decoded (the default). Quarkus REST rejects getQueryParameters(false) outright with
+        // "We do not support non-decoded parameters", making every call a 500.
+        List<String> values = uriInfo.getQueryParameters().get("costSource");
         return service.getContribution(parseCostSource(values));
     }
 

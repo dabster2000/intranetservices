@@ -57,7 +57,7 @@ class CxoPracticeResourcesContractTest {
         PracticeContributionResponseDTO expected = mock(PracticeContributionResponseDTO.class);
         when(service.getContribution(CostSource.BOOKED)).thenReturn(expected);
         UriInfo uriInfo = mock(UriInfo.class);
-        when(uriInfo.getQueryParameters(false)).thenReturn(new MultivaluedHashMap<>());
+        when(uriInfo.getQueryParameters()).thenReturn(new MultivaluedHashMap<>());
         CxoPracticeContributionResource resource = new CxoPracticeContributionResource();
         resource.service = service;
 
@@ -73,7 +73,7 @@ class CxoPracticeResourcesContractTest {
         MultivaluedHashMap<String, String> parameters = new MultivaluedHashMap<>();
         parameters.add("costSource", "BOOKED_PLUS_DRAFT");
         UriInfo uriInfo = mock(UriInfo.class);
-        when(uriInfo.getQueryParameters(false)).thenReturn(parameters);
+        when(uriInfo.getQueryParameters()).thenReturn(parameters);
         CxoPracticeContributionResource resource = new CxoPracticeContributionResource();
         resource.service = service;
 
