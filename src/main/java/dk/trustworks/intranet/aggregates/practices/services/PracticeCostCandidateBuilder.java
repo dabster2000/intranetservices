@@ -133,8 +133,19 @@ final class PracticeCostCandidateBuilder {
     }
 
     private static String resolveMonthEnd(String userUuid, String monthKey, List<EffectiveCell> rows) {
-        LocalDate date = YearMonth.parse(monthKey, MONTH).atEndOfMonth();
-        return rows.stream().filter(row -> row.userUuid().equals(userUuid))
+        LocalDate monthEnd = YearMonth.parse(monthKey, MONTH).atEndOfMonth();
+        List<EffectiveCell> userRows = rows.stream()
+                .filter(row -> row.userUuid().equals(userUuid)).toList();
+        // Basis intervals are clamped to the generation's coverage end (exclusive). For the final
+        // partial coverage month, the calendar month-end lies beyond every clamped interval, so the
+        // month-end practice is resolved at the last COVERED day instead. A month that starts after
+        // the user's coverage entirely stays unresolvable and fails closed.
+        LocalDate lastCovered = userRows.stream().map(EffectiveCell::effectiveToExclusive)
+                .max(Comparator.naturalOrder()).map(end -> end.minusDays(1)).orElse(null);
+        if (lastCovered == null) return null;
+        LocalDate date = monthEnd.isAfter(lastCovered) ? lastCovered : monthEnd;
+        if (date.isBefore(monthEnd.withDayOfMonth(1))) return null;
+        return userRows.stream()
                 .filter(row -> !date.isBefore(row.effectiveFrom()) && date.isBefore(row.effectiveToExclusive()))
                 .map(EffectiveCell::practiceCode).findFirst().orElse(null);
     }
