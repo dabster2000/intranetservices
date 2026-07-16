@@ -18,9 +18,7 @@ public record TeamBonusProjectionDTO(
         @Schema(description = "Pool bonus breakdown") PoolBonusDetail poolBonus,
         @Schema(description = "Production bonus breakdown") ProductionBonusDetail productionBonus,
         @Schema(description = "Combined total bonus (pool + production)") double combinedBonus,
-        @Schema(description = "Previous FY bonus total, null if unavailable") Double previousFyBonus,
-        @Schema(description = "Admin adjustments summary (split/prepaid/util override)") AdjustmentsSummary adjustments,
-        @Schema(description = "Pool basis source information") PoolInfo poolInfo
+        @Schema(description = "Previous FY bonus total, null if unavailable") Double previousFyBonus
 ) {
 
     /**
@@ -59,28 +57,5 @@ public record TeamBonusProjectionDTO(
             @Schema(description = "Prorated annual threshold (DKK)") double proratedThreshold,
             @Schema(description = "Production bonus = MAX((revenue - threshold) * 0.20, 0) (DKK)") double productionBonus,
             @Schema(description = "Annualized revenue projection based on completed months (DKK)") double annualizedRevenue
-    ) {}
-
-    /**
-     * Admin adjustments summary for the leader's fiscal year. Appended to the projection so the
-     * team-dashboard tab can surface split/prepaid figures and the util-override flag. Frontend
-     * treats these fields as optional (works against an older backend that omits them).
-     */
-    @Schema(name = "BonusAdjustmentsSummary", description = "Admin adjustments summary for the leader")
-    public record AdjustmentsSummary(
-            @Schema(description = "Σ SPLIT_BONUS amounts (DKK)") double splitBonus,
-            @Schema(description = "Auto-computed prepaid deduction (DKK)") double prepaidAuto,
-            @Schema(description = "Σ manual PREPAID_DEDUCTION amounts (DKK)") double prepaidManual,
-            @Schema(description = "True when team utilization was overridden by an admin") boolean utilOverridden,
-            @Schema(description = "Utilization override note (null when not overridden)") String utilOverrideNote,
-            @Schema(description = "Total = pool + production + split − (prepaidAuto + prepaidManual) (DKK)") double totalBonus
-    ) {}
-
-    /** Pool basis provenance for the leader's fiscal year. */
-    @Schema(name = "BonusPoolInfo", description = "Pool basis source information")
-    public record PoolInfo(
-            @Schema(description = "Pool basis (Overskud) used to derive the pool amount (DKK)") double poolBasis,
-            @Schema(description = "Total pool amount for the program (DKK)") double poolAmount,
-            @Schema(description = "Basis source: ESTIMATE or OVERRIDE") String basisSource
     ) {}
 }
