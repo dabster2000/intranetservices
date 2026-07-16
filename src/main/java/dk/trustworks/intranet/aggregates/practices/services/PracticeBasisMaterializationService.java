@@ -119,6 +119,7 @@ public class PracticeBasisMaterializationService {
         Map<String, EffectiveRow> effectiveRows = new LinkedHashMap<>();
         List<CapacityRow> capacityRows = new ArrayList<>();
         LocalDate historyCoverageStart = null;
+        LocalDate coverageEndExclusive = input.manifest().coverageEnd().plusDays(1);
 
         List<UserBasisInput> users = input.users().stream()
                 .sorted(Comparator.comparing(UserBasisInput::userUuid)).toList();
@@ -128,8 +129,13 @@ public class PracticeBasisMaterializationService {
                     || history.getFirst().effectiveFrom().isBefore(historyCoverageStart))) {
                 historyCoverageStart = history.getFirst().effectiveFrom();
             }
+            // The pre-history fallback end must obey the same coverage clamp as history ends below:
+            // an unclamped first-history effectiveFrom beyond coverage (e.g. a seeding date) leaks
+            // into revenue dependency envelopes as an uncoverable capacity end and loops
+            // BASIS_COVERAGE_MISS escalations forever — the manifest never enumerates capacity horizons.
             LocalDate fallbackEnd = history.isEmpty()
-                    ? input.manifest().coverageEnd().plusDays(1) : history.getFirst().effectiveFrom();
+                    || history.getFirst().effectiveFrom().isAfter(coverageEndExclusive)
+                    ? coverageEndExclusive : history.getFirst().effectiveFrom();
             if (input.manifest().coverageStart().isBefore(fallbackEnd)) {
                 if (user.currentPractice() == null || user.currentPractice().isBlank()) {
                     // Offending user identity is diagnostic detail for the protected server log only.
@@ -145,8 +151,8 @@ public class PracticeBasisMaterializationService {
                 LocalDate from = interval.effectiveFrom().isBefore(input.manifest().coverageStart())
                         ? input.manifest().coverageStart() : interval.effectiveFrom();
                 LocalDate to = interval.effectiveToExclusive() == null
-                        || interval.effectiveToExclusive().isAfter(input.manifest().coverageEnd().plusDays(1))
-                        ? input.manifest().coverageEnd().plusDays(1) : interval.effectiveToExclusive();
+                        || interval.effectiveToExclusive().isAfter(coverageEndExclusive)
+                        ? coverageEndExclusive : interval.effectiveToExclusive();
                 if (from.isBefore(to)) {
                     addEffective(effectiveRows, new EffectiveRow(user.userUuid(), from, to,
                             user.consultantType(), interval.practice(), "HISTORY", null,
@@ -181,6 +187,14 @@ public class PracticeBasisMaterializationService {
         List<EffectiveRow> rows = effectiveRows.values().stream()
                 .sorted(Comparator.comparing(EffectiveRow::userUuid).thenComparing(EffectiveRow::effectiveFrom))
                 .toList();
+        for (EffectiveRow row : rows) {
+            // Fail the cost build immediately if any segment escapes coverage — an escaped end is
+            // otherwise only detected by the revenue side, where it becomes a non-convergent
+            // BASIS_COVERAGE_MISS escalation loop instead of a named cost-side failure.
+            if (row.effectiveToExclusive().isAfter(coverageEndExclusive)) {
+                throw new BasisMaterializationException("BASIS_SEGMENT_EXCEEDS_COVERAGE user=" + row.userUuid());
+            }
+        }
         return new PreparedBasis(generationId, rows, List.copyOf(capacityRows), historyCoverageStart,
                 hash(rows.toString(), input.manifest().fingerprint()),
                 hash(capacityRows.toString(), input.manifest().fingerprint()));
