@@ -144,6 +144,58 @@ class BatchTriggerResourceTest {
         verify(jobOperator, never()).start(eq(BatchTriggerResource.REVENUE_JOB), any(Properties.class));
     }
 
+    /**
+     * An operator explicitly retargeting the exact latest FAILED same-input request revives that
+     * row (FAILED -> PENDING, attempt_count+1) beyond the automatic retry budget and starts the job;
+     * a target that is not that exact row stays a 409 with the safe successor.
+     */
+    @Test
+    void operatorRetargetingTheExactLatestFailedRequestRevivesItAndStartsTheJob() {
+        Query precondition = query();
+        Query retry = query();
+        when(em.createNativeQuery(BatchTriggerResource.COST_START_PRECONDITION_SQL)).thenReturn(precondition);
+        when(em.createNativeQuery(BatchTriggerResource.COST_START_OPERATOR_RETRY_SQL)).thenReturn(retry);
+        when(precondition.getSingleResult()).thenReturn(0L);
+        when(retry.executeUpdate()).thenReturn(1);
+        when(jobOperator.getJobNames()).thenReturn(Set.of());
+        when(jobOperator.start(eq(BatchTriggerResource.COST_JOB), any(Properties.class))).thenReturn(52L);
+
+        Response response = resource.startCostBasis(new BatchTriggerResource.CostBasisStartRequest(
+                true, BigInteger.valueOf(36), HASH_A, HASH_B), ACTOR);
+
+        assertEquals(200, response.getStatus());
+        verify(retry).setParameter("requestId", BigInteger.valueOf(36));
+        verify(retry).setParameter("requestKey", HASH_A);
+        verify(retry).setParameter("inputVector", HASH_B);
+        verify(jobOperator).start(eq(BatchTriggerResource.COST_JOB), any(Properties.class));
+    }
+
+    @Test
+    void staleCostStartTargetStaysAConflictWhenTheFailedReviveMatchesNothing() {
+        Query precondition = query();
+        Query retry = query();
+        Query successor = query();
+        when(em.createNativeQuery(BatchTriggerResource.COST_START_PRECONDITION_SQL)).thenReturn(precondition);
+        when(em.createNativeQuery(BatchTriggerResource.COST_START_OPERATOR_RETRY_SQL)).thenReturn(retry);
+        when(em.createNativeQuery(anyString())).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.equals(BatchTriggerResource.COST_START_PRECONDITION_SQL)) return precondition;
+            if (sql.equals(BatchTriggerResource.COST_START_OPERATOR_RETRY_SQL)) return retry;
+            return successor;
+        });
+        when(precondition.getSingleResult()).thenReturn(0L);
+        when(retry.executeUpdate()).thenReturn(0);
+        when(successor.getSingleResult()).thenReturn(BigInteger.valueOf(41));
+
+        Response response = resource.startCostBasis(new BatchTriggerResource.CostBasisStartRequest(
+                true, BigInteger.valueOf(36), HASH_A, HASH_B), ACTOR);
+
+        assertEquals(409, response.getStatus());
+        assertEquals(new BatchTriggerResource.CostBasisConflictResponse(
+                "COST_BASIS_START_PRECONDITION_FAILED", BigInteger.valueOf(41)), response.getEntity());
+        verify(jobOperator, never()).start(anyString(), any(Properties.class));
+    }
+
     @Test
     void runningCostJobReturnsClosedConflictWithoutStartingAnotherExecution() {
         Query query = query();
