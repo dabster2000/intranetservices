@@ -1021,6 +1021,16 @@ class PracticeRevenueMaterializationServiceTest {
         assertEquals(java.util.List.of(),bundle.dependenciesFor(null));
         assertEquals(java.util.List.of(),bundle.dependenciesFor("missing"));
     }
+    /**
+     * The atomic build+persist transaction must outlive Narayana's 600s default (a staging revenue
+     * build was reaper-aborted at 600s and surfaced ~953s in). The clamp keeps a misconfigured
+     * Duration from passing a non-positive timeout or disabling the reaper outright.
+     */
+    @Test void buildTransactionTimeoutClampsToWholeSecondsWithinSaneBounds(){
+        assertEquals(3600,PracticeRevenueMaterializationService.transactionTimeoutSeconds(java.time.Duration.ofHours(1)));
+        assertEquals(1,PracticeRevenueMaterializationService.transactionTimeoutSeconds(java.time.Duration.ZERO));
+        assertEquals(86_400,PracticeRevenueMaterializationService.transactionTimeoutSeconds(java.time.Duration.ofDays(30)));
+    }
 
     @Test void economicAccountingYearUnparseablePresentValueIsInvalidNotAbsent(){
         assertEquals(-1,PracticeRevenueMaterializationService.accountingYearStart("not-a-year"));
