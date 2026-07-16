@@ -20,6 +20,8 @@ final class PracticeCostCandidateBuilder {
     private static final DateTimeFormatter MONTH = DateTimeFormatter.ofPattern("yyyyMM");
     private static final BigDecimal HOURS_PER_DAY = new BigDecimal("7.4");
     private static final MathContext MC = MathContext.DECIMAL128;
+    /** Designated conservation bucket for salary whose month practice is unknowable; never a core card. */
+    static final String UNRESOLVED_PRACTICE_BUCKET = "UNRESOLVED";
 
     Result build(List<SalaryCell> salaries, List<CapacityCell> capacities,
                  List<EffectiveCell> effective, List<GlControl> controls) {
@@ -52,11 +54,11 @@ final class PracticeCostCandidateBuilder {
             Map<String, BigDecimal> shares;
             if (userCapacity == null || sum(userCapacity).signum() == 0) {
                 String fallback = resolveMonthEnd(salary.userUuid(), salary.monthKey(), effective);
-                // The offending cell identity is diagnostic detail for the protected server log only;
-                // request/queue safe_reason stays the bare COST_BASIS_BUILD_FAILED code.
-                if (fallback == null) throw new CandidateIntegrityException(
-                        "SALARY_MONTH_END_PRACTICE_UNAVAILABLE user=" + salary.userUuid()
-                                + " company=" + salary.companyUuid() + " month=" + salary.monthKey());
+                // Design owner directive: a salary month whose practice is unknowable goes to the
+                // designated UNRESOLVED conservation bucket — retained like the other non-core
+                // buckets, never displayed as a core card and never guessed onto a practice. It is
+                // counted with the disclosed fallback employee-months.
+                if (fallback == null) fallback = UNRESOLVED_PRACTICE_BUCKET;
                 shares = Map.of(fallback, DeterministicShareNormalizer.ONE);
                 monthEndFallbackEmployeeMonths.add(userCompanyMonth);
             } else {

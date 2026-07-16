@@ -175,8 +175,17 @@ public class PracticeCostBasisRefreshService {
                         basis.dependencyManifestFingerprint());
             }
 
+            // Cost cells only exist for months the dashboard can actually serve (design owner
+            // directive): a bounded recent window ending at the last COMPLETE calendar month, wide
+            // enough for any current+prior TTM anchor. The basis/capacity/manifest keep the full
+            // revenue-dependency coverage; unbounded historical or running-month cost cells are
+            // never materialized.
+            YearMonth lastCompleteMonth = YearMonth.now(java.time.ZoneOffset.UTC).minusMonths(1);
+            LocalDate costCellStart = maxDate(manifest.coverageStart(),
+                    lastCompleteMonth.minusMonths(35).atDay(1));
+            LocalDate costCellEnd = minDate(manifest.coverageEnd(), lastCompleteMonth.atEndOfMonth());
             CostCandidatePersistence candidate = buildAndPersistCostCandidate(
-                    basisGenerationId, manifest.coverageStart(), manifest.coverageEnd());
+                    basisGenerationId, costCellStart, costCellEnd);
             java.time.Instant candidateSnapshotAt = java.time.Instant.now();
             PracticeCostSnapshotProvider.CanonicalWindow bookedWindow = PracticeCostSnapshotProvider.windowOf(
                     costSnapshotProvider.loadCandidateSnapshot(
@@ -790,6 +799,8 @@ public class PracticeCostBasisRefreshService {
     private static boolean bool(Object value) { return value instanceof Boolean b ? b : number(value).intValue() != 0; }
     private static LocalDate toDate(Object value) { return value instanceof LocalDate d ? d : ((java.sql.Date) value).toLocalDate(); }
     private static LocalDate toDateOrNull(Object value) { return value == null ? null : toDate(value); }
+    private static LocalDate maxDate(LocalDate a, LocalDate b) { return a.isAfter(b) ? a : b; }
+    private static LocalDate minDate(LocalDate a, LocalDate b) { return a.isBefore(b) ? a : b; }
     private static LocalDateTime toLocalDateTime(Object value) {
         if (value == null) return null;
         if (value instanceof LocalDateTime dt) return dt;
