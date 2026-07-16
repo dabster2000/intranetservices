@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <job id="practice-cost-basis-refresh" xmlns="http://xmlns.jcp.org/xml/ns/javaee" version="1.0">
+    <!-- JobContext.getProperties() exposes only these job-level properties, never the raw runtime
+         parameters, so every jobOperator.start(job, parameters) caller depends on this mapping.
+         The names must match PracticeCostBasisRefreshService.ExpectedRequest's property constants. -->
+    <properties>
+        <property name="expectedRequestId" value="#{jobParameters['expectedRequestId']}"/>
+        <property name="expectedRequestKey" value="#{jobParameters['expectedRequestKey']}"/>
+        <property name="expectedInputVectorFingerprint" value="#{jobParameters['expectedInputVectorFingerprint']}"/>
+    </properties>
     <listeners>
         <listener ref="jobMonitoringListener"/>
     </listeners>
